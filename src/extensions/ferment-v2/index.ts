@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto"
-import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type {
 	AgentEndEvent,
 	ExtensionAPI,
@@ -15,13 +14,11 @@ import { formatCount } from "../format.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
 import { holdPromptSummary } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { isHarnessSteer, SYSTEM_REMINDER_CLOSE, SYSTEM_REMINDER_OPEN } from "../steer-marker.js"
 import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js"
 import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import type { TodoItem } from "../todos/types.js"
 import { holdWorkingIndicator } from "../ui.js"
 import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
 import {
@@ -34,6 +31,16 @@ import {
 } from "./constants.js"
 import { FERMENT_V2_EVENTS, type FermentV2EventName, type FermentV2LifecyclePayload } from "./domain-events.js"
 import { evaluateFermentV2, type FermentV2EvaluationResult } from "./evaluator.js"
+import {
+	type AcceptedFinalAnswerDraft,
+	type CompletionCandidate,
+	clearAssistantText,
+	finalAnswerPrompt,
+	isThinkingOnlyAssistantStop,
+	latestFinalAnswerDraftEntry,
+	parseAcceptedFinalAnswerDraft,
+	recoverAcceptedFinalAnswerDraft,
+} from "./final-answer.js"
 import { type FermentV2Lesson, updateFermentV2Lessons } from "./lessons.js"
 import {
 	buildFermentV2Continuation,
@@ -58,6 +65,18 @@ import {
 	setFermentV2Status,
 	setFermentV2UnchangedContinuationTurns,
 } from "./reducer.js"
+import {
+	deriveContinuationDecision,
+	deriveSettledStatus,
+	type FermentV2TodoState,
+	fermentV2ProgressFingerprint,
+	isReadyForFinalAnswer,
+	isStatusOnlyTodoSettlement,
+	isSupersededFermentV2,
+	matchesFermentV2,
+	rebindTodoState,
+	todoCounts,
+} from "./runtime-policy.js"
 import { getFermentV2Settings } from "./settings.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
@@ -94,24 +113,6 @@ type CapturedFermentV2Conversation = PendingFermentV2Continuation & {
 	failed: boolean
 	finalAnswerAlreadyVisible?: boolean
 }
-type CompletionCandidate = PendingFermentV2Continuation & {
-	message: AssistantMessage
-	withheld: boolean
-}
-type AcceptedFinalAnswerDraft = PendingFermentV2Continuation & {
-	draft: string
-	alreadyVisible: boolean
-}
-type WithheldAssistantMessage = {
-	[ASSISTANT_OUTPUT_WITHHELD]?: boolean
-}
-type FermentV2TodoState = PendingFermentV2Continuation & {
-	todos: readonly TodoItem[]
-	total: number
-	blocked: number
-	completed: number
-	settledStatus?: "complete" | "blocked"
-}
 type PreparedFermentV2Evaluation = {
 	conversation: CapturedFermentV2Conversation
 	hadSubstantiveToolUse: boolean
@@ -120,69 +121,9 @@ type PreparedFermentV2Evaluation = {
 	result: FermentV2EvaluationResult
 }
 const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
-const FINAL_ANSWER_PROMPT = `The objective is complete and ready for user delivery.
-
-Give the user only the final answer to the original objective. If the original objective requires exact output, return exactly that output with no preface or summary. Otherwise, start with the outcome. Do not narrate the completion check, control messages, evidence gathering, or your internal process unless directly required by the original objective. Do not call tools.`
-const FINAL_ANSWER_DRAFT_PREFIX = "Return this evaluated draft verbatim: "
-
-function finalAnswerPrompt(evaluatedDraft?: string): string {
-	return evaluatedDraft
-		? `${FINAL_ANSWER_PROMPT}\n\n${FINAL_ANSWER_DRAFT_PREFIX}${JSON.stringify(evaluatedDraft)}`
-		: FINAL_ANSWER_PROMPT
-}
-
-function parseAcceptedFinalAnswerDraft(content: string): string | undefined {
-	const prompt = unwrapHarnessSteer(content)
-	const markerIndex = prompt.lastIndexOf(FINAL_ANSWER_DRAFT_PREFIX)
-	if (markerIndex < 0) return undefined
-	try {
-		const value = JSON.parse(prompt.slice(markerIndex + FINAL_ANSWER_DRAFT_PREFIX.length).trim())
-		return typeof value === "string" && value.trim().length > 0 && finalAnswerPrompt(value) === prompt
-			? value
-			: undefined
-	} catch {
-		return undefined
-	}
-}
-
-function unwrapHarnessSteer(content: string): string {
-	return isHarnessSteer(content) ? content.slice(SYSTEM_REMINDER_OPEN.length, -SYSTEM_REMINDER_CLOSE.length) : content
-}
-
-function latestFinalAnswerDraft(messages: CapturedFermentV2Conversation["messages"]): string | undefined {
-	return latestFinalAnswerDraftEntry(messages)?.draft
-}
-
-function latestFinalAnswerDraftEntry(
-	messages: CapturedFermentV2Conversation["messages"],
-): { draft: string; visible: boolean } | undefined {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index]
-		if (message?.role !== "assistant" || message.content.some((block) => block.type === "toolCall")) continue
-		const text = message.content
-			.filter((block) => block.type === "text")
-			.map((block) => block.text)
-			.join("")
-			.trim()
-		if (text) {
-			return {
-				draft: text,
-				visible: (message as unknown as WithheldAssistantMessage)[ASSISTANT_OUTPUT_WITHHELD] !== true,
-			}
-		}
-	}
-	return undefined
-}
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
-}
-
-function clearAssistantText(message: AgentEndEvent["messages"][number]): void {
-	if (message.role !== "assistant") return
-	for (const block of message.content) {
-		if (block.type === "text") block.text = ""
-	}
 }
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
@@ -197,7 +138,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let pendingFinalAnswer: PendingFermentV2Continuation | undefined
 	let activeFinalAnswer: PendingFermentV2Continuation | undefined
 	let acceptedFinalAnswerDraft: AcceptedFinalAnswerDraft | undefined
-	let finalAnswerHasText = false
+	let finalAnswerText: string | undefined
 	let finalAnswerInterruption: "aborted" | "error" | undefined
 	let completionClaim: FermentV2CompletionClaim | undefined
 	let bufferingAssistantText = false
@@ -377,7 +318,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		pendingContinuation = matchesFermentV2(preservedContinuation, currentFermentV2, currentSessionId)
 			? preservedContinuation
 			: undefined
-		if (isReadyForFinalAnswer(currentFermentV2, currentSessionId, ctx.hasUI)) {
+		if (isReadyForFinalAnswer(currentFermentV2, todoStateFor, currentSessionId, ctx.hasUI)) {
 			pendingFinalAnswer = matchesFermentV2(preservedPendingFinalAnswer, currentFermentV2, currentSessionId)
 				? preservedPendingFinalAnswer
 				: undefined
@@ -547,7 +488,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		deliverAs: "steer" | "followUp",
 		evaluatedDraft?: string,
 	): boolean {
-		if (!isReadyForFinalAnswer(fermentV2, currentSessionId, ctx.hasUI)) return false
+		if (!isReadyForFinalAnswer(fermentV2, todoStateFor, currentSessionId, ctx.hasUI)) return false
 		if (matchesFermentV2(pendingFinalAnswer, fermentV2, currentSessionId)) return true
 		const accepted = acceptedFinalAnswerFor(fermentV2, currentSessionId)
 		const draft = evaluatedDraft ?? accepted?.draft
@@ -586,7 +527,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					current?.id !== expected.fermentV2Id ||
 					current.revision !== expected.revision ||
 					current.status !== "active" ||
-					!isReadyForFinalAnswer(current, sessionId, ctx.hasUI)
+					!isReadyForFinalAnswer(current, todoStateFor, sessionId, ctx.hasUI)
 				)
 					return
 				if (queueFinalAnswerTurn(ctx, current, "followUp", evaluatedDraft)) {
@@ -612,6 +553,19 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		releaseFermentV2PromptSummary()
 	}
 
+	function completeFinalAnswerDelivery(ctx: ExtensionContext, fermentV2: SessionFermentV2, sessionId: string): void {
+		const completed = setFermentV2Status(fermentV2, fermentV2.id, fermentV2.revision, "complete", timestamp())
+		commitFermentV2(completed, false)
+		emitFermentV2Lifecycle(FERMENT_V2_EVENTS.COMPLETED, completed)
+		clearFinalAnswerDelivery()
+		acceptedFinalAnswerDraft = undefined
+		capturedConversation = undefined
+		ctx.ui.notify("Ferment V2 complete.", "info")
+		resolveFermentV2Waiter(sessionId, fermentV2.id)
+		releaseEvaluationIndicator()
+		releaseFermentV2PromptSummary()
+	}
+
 	function invalidateContinuation(): void {
 		pendingContinuation = undefined
 		turnStartFingerprint = undefined
@@ -621,7 +575,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function clearFinalAnswerDelivery(): void {
 		pendingFinalAnswer = undefined
 		activeFinalAnswer = undefined
-		finalAnswerHasText = false
+		finalAnswerText = undefined
 		finalAnswerInterruption = undefined
 	}
 
@@ -770,20 +724,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			!matchesFermentV2(pendingUserMutation, fermentV2, sessionId) &&
 			!fermentV2HasPendingMessages(ctx) &&
 			fermentV2ToolsAvailable([UPDATE_FERMENT_V2_TOOL_NAME])
-		)
-	}
-
-	function isReadyForFinalAnswer(
-		fermentV2: SessionFermentV2 | undefined,
-		sessionId: string | undefined,
-		hasUI: boolean,
-	): boolean {
-		const todoState = matchesFermentV2(todoStateFor, fermentV2, sessionId) ? todoStateFor : undefined
-		return Boolean(
-			fermentV2 &&
-				(fermentV2.status === "active" || fermentV2.status === "paused") &&
-				fermentV2.lastEvaluation?.verdict === "met" &&
-				(!hasUI || (todoState?.total && todoState.settledStatus === "complete")),
 		)
 	}
 
@@ -1054,7 +994,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
-			if (isReadyForFinalAnswer(current, sessionId, ctx.hasUI)) {
+			if (isReadyForFinalAnswer(current, todoStateFor, sessionId, ctx.hasUI)) {
 				invalidateContinuation()
 				if (queueFinalAnswerTurn(ctx, current, "steer") && !ctx.hasUI) {
 					terminalWaiter = ensureFermentV2Waiter(sessionId, current.id)
@@ -1264,8 +1204,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const latest = currentFermentV2
 			if (latest?.id !== fermentV2Id || latest.revision !== fermentV2Revision || latest.status !== "active") return
 			if (fermentV2ResumeBlocked(ctx)) return
-			if (isReadyForFinalAnswer(latest, sessionId, ctx.hasUI)) queueFinalAnswerTurn(ctx, latest, "followUp")
-			else queueFermentV2Turn(ctx, latest, buildFermentV2StartSteer("resumed"), "session_start_resume", "followUp")
+			if (isReadyForFinalAnswer(latest, todoStateFor, sessionId, ctx.hasUI)) {
+				queueFinalAnswerTurn(ctx, latest, "followUp")
+			} else queueFermentV2Turn(ctx, latest, buildFermentV2StartSteer("resumed"), "session_start_resume", "followUp")
 		}, 0)
 		resumeKickTimer.unref()
 	})
@@ -1372,10 +1313,18 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event, ctx) => {
 		bindSession(ctx)
 		if (event.message.role === "assistant" && matchesFermentV2(activeFinalAnswer, currentFermentV2, currentSessionId)) {
-			const content = event.message.content.map((block, index) =>
-				block.type === "text" ? { ...block, text: (bufferedAssistantText?.get(index) ?? block.text).trim() } : block,
-			)
-			finalAnswerHasText = content.some((block) => block.type === "text" && block.text.length > 0)
+			const deliveredText = event.message.content
+				.flatMap((block, index) => (block.type === "text" ? [bufferedAssistantText?.get(index) ?? block.text] : []))
+				.join("")
+				.trim()
+			finalAnswerText = deliveredText
+			let emittedText = false
+			const content = event.message.content.map((block) => {
+				if (block.type !== "text") return block
+				const text = emittedText ? "" : deliveredText
+				emittedText = true
+				return { ...block, text }
+			})
 			bufferingAssistantText = false
 			bufferedAssistantText = undefined
 			streamedAssistantTextIndices = undefined
@@ -1545,7 +1494,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			: matchesFermentV2(pendingFinalAnswer, fermentV2, currentSessionId)
 				? pendingFinalAnswer
 				: undefined
-		finalAnswerHasText = false
+		finalAnswerText = undefined
 		finalAnswerInterruption = undefined
 		if (finalAnswer) {
 			activeTurn = undefined
@@ -1691,7 +1640,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				evaluatedAt: now,
 			}
 			const evaluated = recordFermentV2Evaluation(fermentV2, fermentV2.id, fermentV2.revision, evaluation, now)
-			const evaluatedDraft = latestFinalAnswerDraft(conversation.messages)
+			const evaluatedDraft = result.verdict === "met" ? result.acceptedFinalAnswer : undefined
 			capturedConversation = undefined
 			substantiveToolUseSinceEvaluation = false
 
@@ -1784,25 +1733,17 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 
 			// Keep the claim across continue; it remains scoped to this Ferment V2 revision.
-			const missingTodoForMet = result.verdict === "met" && !todoState?.total
-			const continuationReason = missingTodoForMet
-				? 'Create a visible Todo list now, mark verified work completed, and record concrete "Evidence: ..." notes before finishing.'
-				: result.verdict === "met"
-					? "Keep a visible, fully completed Todo list before finishing."
-					: result.reason
-			const fingerprint = fermentV2ProgressFingerprint(evaluated, todoState, fermentV2Lessons)
+			const continuation = deriveContinuationDecision({
+				verdict: result.verdict,
+				reason: result.reason,
+				evaluated,
+				previousEvaluation: fermentV2.lastEvaluation,
+				todoState,
+				lessons: fermentV2Lessons,
+				startFingerprint,
+				hadSubstantiveToolUse,
+			})
 			const { maxUnchangedContinuations } = getFermentV2Settings()
-			const repeatedGap =
-				result.verdict === "continue" &&
-				fermentV2.lastEvaluation?.verdict === "continue" &&
-				fermentV2.lastEvaluation.reason === result.reason &&
-				fingerprint === startFingerprint
-			const unchanged =
-				(missingTodoForMet && fingerprint === startFingerprint) ||
-				repeatedGap ||
-				(!hadSubstantiveToolUse && fingerprint === startFingerprint)
-					? (evaluated.unchangedContinuationTurns ?? 0) + 1
-					: 0
 			// Folded into the single commit below (a no-op if unchanged) rather than committed
 			// separately after queueFermentV2Turn: that would mean two commits per turn, and by then
 			// queueFermentV2Turn's pi.sendMessage(triggerTurn) may already have raced a synchronously-started next turn.
@@ -1810,10 +1751,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				evaluated,
 				evaluated.id,
 				evaluated.revision,
-				unchanged,
+				continuation.unchanged,
 				now,
 			)
-			if (unchanged >= maxUnchangedContinuations) {
+			if (continuation.unchanged >= maxUnchangedContinuations) {
 				const paused = setFermentV2Status(
 					withContinuationCount,
 					withContinuationCount.id,
@@ -1829,7 +1770,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 						level: "warning",
 					},
 					{
-						details: { reason: "no_progress", continuationCount: unchanged },
+						details: { reason: "no_progress", continuationCount: continuation.unchanged },
 						keepCompletionClaim: true,
 					},
 				)
@@ -1838,7 +1779,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 			commitFermentV2(withContinuationCount)
 			emitEvaluation(withContinuationCount)
-			const content = buildFermentV2Continuation(unchanged > 0, continuationReason)
+			const content = buildFermentV2Continuation(continuation.unchanged > 0, continuation.reason)
 			if (queueDuringAgentRun) {
 				if (!queueFermentV2Turn(ctx, withContinuationCount, content, "evaluation", "followUp")) {
 					releaseFermentV2PromptSummary()
@@ -1877,7 +1818,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			!hadCandidate &&
 			fermentV2?.status === "active" &&
 			isThinkingOnlyAssistantStop(event.messages) &&
-			!(isReadyForFinalAnswer(fermentV2, sessionId, ctx.hasUI) && acceptedFinalAnswerDraftFor(fermentV2, sessionId))
+			!(
+				isReadyForFinalAnswer(fermentV2, todoStateFor, sessionId, ctx.hasUI) &&
+				acceptedFinalAnswerDraftFor(fermentV2, sessionId)
+			)
 		) {
 			capturedConversation = undefined
 			queueFermentV2TurnAfterSettled(
@@ -1946,52 +1890,24 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		pendingBudgetLimitedOutput = undefined
 		const finalAnswer = activeFinalAnswer
 		if (capturedFermentV2 && finalAnswer && matchesFermentV2(finalAnswer, capturedFermentV2, sessionId)) {
-			const delivered = finalAnswerHasText && finalAnswerInterruption === undefined
+			const expectedDraft = acceptedFinalAnswerDraftFor(capturedFermentV2, sessionId)
+			const delivered =
+				Boolean(finalAnswerText) &&
+				finalAnswerInterruption === undefined &&
+				(expectedDraft === undefined || finalAnswerText === expectedDraft)
 			if (!delivered) {
 				pauseFinalAnswerDelivery(ctx, capturedFermentV2)
 				return
 			}
-			const completed = setFermentV2Status(
-				capturedFermentV2,
-				capturedFermentV2.id,
-				capturedFermentV2.revision,
-				"complete",
-				timestamp(),
-			)
-			commitFermentV2(completed, false)
-			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.COMPLETED, completed)
-			activeFinalAnswer = undefined
-			acceptedFinalAnswerDraft = undefined
-			finalAnswerHasText = false
-			finalAnswerInterruption = undefined
-			capturedConversation = undefined
-			ctx.ui.notify("Ferment V2 complete.", "info")
-			resolveFermentV2Waiter(sessionId, finalAnswer.fermentV2Id)
-			releaseEvaluationIndicator()
-			releaseFermentV2PromptSummary()
+			completeFinalAnswerDelivery(ctx, capturedFermentV2, sessionId)
 			return
 		}
 		const conversation = capturedConversation
 		const accepted = capturedFermentV2 ? acceptedFinalAnswerFor(capturedFermentV2, sessionId) : undefined
-		if (capturedFermentV2 && isReadyForFinalAnswer(capturedFermentV2, sessionId, ctx.hasUI) && accepted) {
+		if (capturedFermentV2 && isReadyForFinalAnswer(capturedFermentV2, todoStateFor, sessionId, ctx.hasUI) && accepted) {
 			capturedConversation = undefined
 			if (accepted.alreadyVisible) {
-				const completed = setFermentV2Status(
-					capturedFermentV2,
-					capturedFermentV2.id,
-					capturedFermentV2.revision,
-					"complete",
-					timestamp(),
-				)
-				commitFermentV2(completed, false)
-				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.COMPLETED, completed)
-				acceptedFinalAnswerDraft = undefined
-				finalAnswerHasText = false
-				finalAnswerInterruption = undefined
-				ctx.ui.notify("Ferment V2 complete.", "info")
-				resolveFermentV2Waiter(sessionId, capturedFermentV2.id)
-				releaseEvaluationIndicator()
-				releaseFermentV2PromptSummary()
+				completeFinalAnswerDelivery(ctx, capturedFermentV2, sessionId)
 				return
 			}
 			holdFermentV2PromptSummary()
@@ -2058,80 +1974,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	})
 }
 
-function matchesFermentV2(
-	marker: PendingFermentV2Continuation | undefined,
-	fermentV2: SessionFermentV2 | undefined,
-	sessionId: string | undefined,
-): boolean {
-	return Boolean(
-		marker &&
-			fermentV2 &&
-			marker.sessionId === sessionId &&
-			marker.fermentV2Id === fermentV2.id &&
-			marker.revision === fermentV2.revision,
-	)
-}
-
-function isSupersededFermentV2(
-	marker: PendingFermentV2Continuation | undefined,
-	fermentV2: SessionFermentV2 | undefined,
-	sessionId: string | undefined,
-): boolean {
-	return Boolean(
-		marker &&
-			fermentV2 &&
-			marker.sessionId === sessionId &&
-			marker.fermentV2Id === fermentV2.id &&
-			marker.revision < fermentV2.revision,
-	)
-}
-
-function recoverAcceptedFinalAnswerDraft(
-	entries: readonly SessionEntry[],
-	fermentV2: SessionFermentV2 | undefined,
-	sessionId: string | undefined,
-): AcceptedFinalAnswerDraft | undefined {
-	if (!fermentV2 || !sessionId) return undefined
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index]
-		if (
-			!isRecord(entry) ||
-			entry.type !== "custom_message" ||
-			entry.customType !== FERMENT_V2_CONTROL_MESSAGE_TYPE ||
-			entry.display !== false ||
-			typeof entry.content !== "string" ||
-			!isRecord(entry.details) ||
-			entry.details.source !== "evaluation_accepted" ||
-			entry.details.fermentV2Id !== fermentV2.id ||
-			entry.details.revision !== fermentV2.revision
-		) {
-			continue
-		}
-		const draft = parseAcceptedFinalAnswerDraft(entry.content)
-		if (!draft) continue
-		return {
-			sessionId,
-			fermentV2Id: fermentV2.id,
-			revision: fermentV2.revision,
-			draft,
-			alreadyVisible: false,
-		}
-	}
-	return undefined
-}
-
-function isThinkingOnlyAssistantStop(messages: readonly AgentEndEvent["messages"][number][]): boolean {
-	const message = [...messages].reverse().find((entry) => entry.role === "assistant")
-	if (!message) return false
-	let hasThinking = false
-	for (const block of message.content) {
-		if (block.type === "toolCall") return false
-		if (block.type === "text" && block.text.trim()) return false
-		if (block.type === "thinking") hasThinking = true
-	}
-	return hasThinking
-}
-
 function restoreFermentV2Runtime(
 	entries: readonly SessionEntry[],
 	sessionId: string,
@@ -2174,91 +2016,6 @@ function restoreFermentV2Runtime(
 
 function sameFermentV2Revision(left: FermentV2State, right: FermentV2State): boolean {
 	return left?.id === right?.id && left?.revision === right?.revision
-}
-
-function todoCounts(todos: readonly unknown[]): Pick<FermentV2TodoState, "total" | "blocked" | "completed"> {
-	const counts = { total: todos.length, blocked: 0, completed: 0 }
-	for (const todo of todos) {
-		if (!isRecord(todo)) continue
-		if (todo.status === "blocked") counts.blocked += 1
-		else if (todo.status === "completed") counts.completed += 1
-	}
-	return counts
-}
-
-/**
- * A settled empty list carries no verdict of its own — an item that was just
- * cleared should not silently overwrite the previous settled status, so an
- * empty count keeps whatever the list last settled to.
- */
-function deriveSettledStatus(
-	counts: Pick<FermentV2TodoState, "total" | "blocked" | "completed">,
-	previousSettledStatus: FermentV2TodoState["settledStatus"],
-): FermentV2TodoState["settledStatus"] {
-	if (counts.total === 0) return previousSettledStatus
-	if (counts.completed === counts.total) return "complete"
-	if (counts.blocked > 0 && counts.completed + counts.blocked === counts.total) return "blocked"
-	return undefined
-}
-
-function rebindTodoState(state: FermentV2TodoState, fermentV2: SessionFermentV2): FermentV2TodoState {
-	return {
-		sessionId: state.sessionId,
-		fermentV2Id: fermentV2.id,
-		revision: fermentV2.revision,
-		todos: state.todos,
-		total: state.total,
-		blocked: state.blocked,
-		completed: state.completed,
-	}
-}
-
-function isStatusOnlyTodoSettlement(previous: readonly TodoItem[], next: readonly TodoItem[]): boolean {
-	if (previous.length !== next.length) return false
-	const previousById = new Map(previous.map((todo) => [todo.id, todo]))
-	const seenIds = new Set<TodoItem["id"]>()
-	for (const item of next) {
-		if (seenIds.has(item.id)) return false
-		seenIds.add(item.id)
-		const before = previousById.get(item.id)
-		if (!before) return false
-		if (
-			before.content !== item.content ||
-			before.activeForm !== item.activeForm ||
-			before.note !== item.note ||
-			(item.status !== before.status && item.status !== "completed")
-		) {
-			return false
-		}
-	}
-	return true
-}
-
-/**
- * Ignore pending-only additions; progress begins when an item starts or settles.
- * Canonicalize identity-keyed items so display-only reordering is not progress.
- */
-function fermentV2ProgressFingerprint(
-	fermentV2: SessionFermentV2,
-	todoState: FermentV2TodoState | undefined,
-	lessons: readonly FermentV2Lesson[],
-): string {
-	const todos = todoState
-		? [...todoState.todos]
-				.filter((todo) => todo.status !== "pending")
-				.sort((a, b) => a.id - b.id)
-				.map(({ id, status, content, activeForm, note }) => [
-					id,
-					status,
-					content,
-					activeForm?.trim() ?? null,
-					note?.trim() ?? null,
-				])
-		: []
-	const durableLessons = [...lessons]
-		.sort((a, b) => a.todoId - b.todoId)
-		.map(({ todoId, kind, text }) => [todoId, kind, text])
-	return JSON.stringify([fermentV2.id, fermentV2.revision, todos, durableLessons])
 }
 
 function assistantTurnTokens(event: TurnEndEvent): number {

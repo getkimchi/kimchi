@@ -16,13 +16,32 @@ const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
 
-it("recovers from malformed evaluation, completes headless, and delivers the evaluated draft exactly", {
-	timeout: 25_000,
-}, async () => {
+async function withFermentV2PrintFixture(
+	options: Parameters<typeof startFakeOpenAiServer>[0],
+	run: (fixture: { fake: FakeOpenAiServer; homeDir: string; workDir: string; sessionPath: string }) => Promise<void>,
+): Promise<void> {
 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
-		fake = await startFakeOpenAiServer({
+		fake = await startFakeOpenAiServer(options)
+		const homeDir = join(tempRoot, "home")
+		const workDir = join(tempRoot, "work")
+		const sessionPath = join(tempRoot, "main.jsonl")
+		mkdirSync(homeDir, { recursive: true })
+		mkdirSync(workDir, { recursive: true })
+		writeKimchiConfig(homeDir, fake.baseUrl, options.models)
+		await run({ fake, homeDir, workDir, sessionPath })
+	} finally {
+		await fake?.stop().catch(() => {})
+		rmSync(tempRoot, { recursive: true, force: true })
+	}
+}
+
+it("recovers from malformed evaluation, completes headless, and delivers the evaluated draft exactly", {
+	timeout: 25_000,
+}, async () => {
+	await withFermentV2PrintFixture(
+		{
 			responses: [
 				{ stream: ["NO_TODO_DRAFT"] },
 				{
@@ -32,259 +51,188 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 				{
 					match: isFermentV2EvaluatorRequest,
 					stream: [
-						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","evidence":[]}],"reason":"ready"}',
+						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
 					],
 				},
 				{ stream: ["\n\nNO_TODO_DRAFT\n"] },
 			],
-		})
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+		},
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			const result = await runFermentV2Print(
+				homeDir,
+				workDir,
+				sessionPath,
+				"/ferment-v2 Reply with exactly NO_TODO_DRAFT and no other characters.",
+			)
+			const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const result = await runFermentV2Print(
-			homeDir,
-			workDir,
-			sessionPath,
-			"/ferment-v2 Reply with exactly NO_TODO_DRAFT and no other characters.",
-		)
-		const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
-		expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
-		const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-		expect(chatRequests, failure).toHaveLength(4)
-		expect(chatRequests.filter(isFermentV2EvaluatorRequest), failure).toHaveLength(2)
-		expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("previous response was not valid JSON")
-		expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain(
-			'Return this evaluated draft verbatim: \\"NO_TODO_DRAFT\\"',
-		)
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
+			expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
+			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			expect(chatRequests, failure).toHaveLength(4)
+			expect(chatRequests.filter(isFermentV2EvaluatorRequest), failure).toHaveLength(2)
+			expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("previous response was not valid JSON")
+			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain(
+				'Return this evaluated draft verbatim: \\"NO_TODO_DRAFT\\"',
+			)
+		},
+	)
 })
 
 it("keeps --print alive across continue and exits only after Ferment V2 evaluates met", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		fake = await startFakeOpenAiServer({ responses: fermentV2Responses() })
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+	await withFermentV2PrintFixture(
+		{ responses: fermentV2Responses() },
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(
-			fermentV2Runs.some((fermentV2) => fermentV2.lastEvaluation?.verdict === "continue"),
-			failure,
-		).toBe(true)
-		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
-		expect(result.stdout, failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-		expect(result.stdout, failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION\n")
-		const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-		const evaluatorRequests = chatRequests.filter(isFermentV2EvaluatorRequest)
-		expect(evaluatorRequests, failure).toHaveLength(2)
-		expect(JSON.stringify(evaluatorRequests.at(-1)?.body), failure).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-		expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain("Return this evaluated draft verbatim")
-		expect(chatRequests, failure).toHaveLength(7)
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(
+				fermentV2Runs.some((fermentV2) => fermentV2.lastEvaluation?.verdict === "continue"),
+				failure,
+			).toBe(true)
+			expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
+			expect(result.stdout, failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+			expect(result.stdout, failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION\n")
+			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			const evaluatorRequests = chatRequests.filter(isFermentV2EvaluatorRequest)
+			expect(evaluatorRequests, failure).toHaveLength(2)
+			expect(JSON.stringify(evaluatorRequests.at(-1)?.body), failure).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).not.toContain("Return this evaluated draft verbatim")
+			expect(chatRequests, failure).toHaveLength(7)
+		},
+	)
 })
 
 it("pauses --print and exits nonzero when final-answer delivery fails", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		fake = await startFakeOpenAiServer({
-			responses: fermentV2Responses({ streamError: "scripted final delivery failure" }),
-		})
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+	await withFermentV2PrintFixture(
+		{ responses: fermentV2Responses({ streamError: "scripted final delivery failure" }) },
+		async ({ homeDir, workDir, sessionPath }) => {
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(1)
-		expect(fermentV2Runs.at(-1), failure).toMatchObject({
-			status: "paused",
-			lastEvaluation: { verdict: "met" },
-		})
-		expect(result.stdout, failure).not.toContain("VERIFIED_FINAL_AFTER_EVALUATION")
-		expect(result.stdout, failure).not.toContain("Ferment V2 complete.")
-		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(1)
+			expect(fermentV2Runs.at(-1), failure).toMatchObject({
+				status: "paused",
+				lastEvaluation: { verdict: "met" },
+			})
+			expect(result.stdout, failure).not.toContain("VERIFIED_FINAL_AFTER_EVALUATION")
+			expect(result.stdout, failure).not.toContain("Ferment V2 complete.")
+			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+		},
+	)
 })
 
 it("exits --print with code 0 when the evaluator returns no parseable verdict, instead of hanging", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		fake = await startFakeOpenAiServer({ responses: unparseableEvaluatorResponses() })
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+	await withFermentV2PrintFixture(
+		{ responses: unparseableEvaluatorResponses() },
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(fermentV2Runs.at(-1)?.status, failure).toBe("paused")
-		expect(fermentV2Runs.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
-		expect(
-			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
-			failure,
-		).toHaveLength(3)
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(fermentV2Runs.at(-1)?.status, failure).toBe("paused")
+			expect(fermentV2Runs.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
+			expect(
+				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
+				failure,
+			).toHaveLength(3)
+		},
+	)
 })
 
 it("answers a resumed --print prompt instead of crashing on the session_start resume kick", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		fake = await startFakeOpenAiServer({ responses: resumedActiveFermentV2Responses() })
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+	await withFermentV2PrintFixture(
+		{ responses: resumedActiveFermentV2Responses() },
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			writeSeededActiveFermentV2Session(sessionPath, workDir)
 
-		writeSeededActiveFermentV2Session(sessionPath, workDir)
+			const prompt = "Check on progress please."
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath, prompt)
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const prompt = "Check on progress please."
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath, prompt)
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(result.stderr, failure).not.toMatch(/Agent is already processing/)
-		expect(
-			fake.requests.some(
-				(request) =>
-					request.url.startsWith("/openai/v1/chat/completions") && JSON.stringify(request.body).includes(prompt),
-			),
-			failure,
-		).toBe(true)
-		expect(result.stdout.match(/Still working on it\./g), failure).toHaveLength(1)
-		expect(readFileSync(sessionPath, "utf-8").match(/Still working on it\./g), failure).toHaveLength(1)
-		expect(
-			JSON.stringify(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))),
-			failure,
-		).not.toContain("The user resumed the Kimchi session Ferment V2.")
-		expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(result.stderr, failure).not.toMatch(/Agent is already processing/)
+			expect(
+				fake.requests.some(
+					(request) =>
+						request.url.startsWith("/openai/v1/chat/completions") && JSON.stringify(request.body).includes(prompt),
+				),
+				failure,
+			).toBe(true)
+			expect(result.stdout.match(/Still working on it\./g), failure).toHaveLength(1)
+			expect(readFileSync(sessionPath, "utf-8").match(/Still working on it\./g), failure).toHaveLength(1)
+			expect(
+				JSON.stringify(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))),
+				failure,
+			).not.toContain("The user resumed the Kimchi session Ferment V2.")
+			expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
+		},
+	)
 })
 
 it("delivers an evaluated final answer after resuming an active --print session", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		fake = await startFakeOpenAiServer({ responses: resumedActiveFermentV2CompletionResponses() })
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
-		writeSeededActiveFermentV2Session(sessionPath, workDir, true)
+	await withFermentV2PrintFixture(
+		{ responses: resumedActiveFermentV2CompletionResponses() },
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			writeSeededActiveFermentV2Session(sessionPath, workDir, true)
 
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath, "Continue the active objective.")
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath, "Continue the active objective.")
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(result.stdout.trim(), failure).toBe("RESUMED_FINAL_AFTER_EVALUATION")
-		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
-		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
-		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(6)
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(result.stdout.trim(), failure).toBe("RESUMED_FINAL_AFTER_EVALUATION")
+			expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
+			expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
+			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(6)
+		},
+	)
 })
 
 it("exits --print after update_ferment_v2 blocked persists final turn usage", { timeout: 25_000 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		fake = await startFakeOpenAiServer({ responses: blockedFermentV2Responses() })
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+	await withFermentV2PrintFixture(
+		{ responses: blockedFermentV2Responses() },
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
-		expect(fermentV2Runs.at(-1)?.tokensUsed, failure).toBe(10)
-		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(1)
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
+			expect(fermentV2Runs.at(-1)?.tokensUsed, failure).toBe(10)
+			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(1)
+		},
+	)
 })
 
 it("exits --print cleanly after the Ferment V2 token budget is reached", { timeout: 25_000 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
-	let fake: FakeOpenAiServer | undefined
-	try {
-		const models = resolveModels([{ ...DEFAULT_MODEL, contextWindow: 262_144, maxTokens: 16_384 }])
-		fake = await startFakeOpenAiServer({
+	const models = resolveModels([{ ...DEFAULT_MODEL, contextWindow: 262_144, maxTokens: 16_384 }])
+	await withFermentV2PrintFixture(
+		{
 			models,
 			responses: [
 				{
@@ -301,30 +249,27 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 				},
 				{ stream: ["UNVERIFIED_POST_BUDGET_OUTPUT"] },
 			],
-		})
-		const homeDir = join(tempRoot, "home")
-		const workDir = join(tempRoot, "work")
-		const sessionPath = join(tempRoot, "main.jsonl")
-		mkdirSync(homeDir, { recursive: true })
-		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl, models)
+		},
+		async ({ fake, homeDir, workDir, sessionPath }) => {
+			const result = await runFermentV2Print(
+				homeDir,
+				workDir,
+				sessionPath,
+				"/ferment-v2 --tokens 10 implement feature A",
+			)
+			const fermentV2Runs = readFermentV2Journal(sessionPath)
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		const result = await runFermentV2Print(homeDir, workDir, sessionPath, "/ferment-v2 --tokens 10 implement feature A")
-		const fermentV2Runs = readFermentV2Journal(sessionPath)
-		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-
-		expect(result.timedOut, failure).toBe(false)
-		expect(result.code, failure).toBe(0)
-		expect(fermentV2Runs.at(-1), failure).toMatchObject({ status: "budget_limited", tokensUsed: 10 })
-		expect(result.stdout, failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
-		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
-		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(2)
-		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
-		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("Extension error")
-	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
-	}
+			expect(result.timedOut, failure).toBe(false)
+			expect(result.code, failure).toBe(0)
+			expect(fermentV2Runs.at(-1), failure).toMatchObject({ status: "budget_limited", tokensUsed: 10 })
+			expect(result.stdout, failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
+			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
+			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(2)
+			expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
+			expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("Extension error")
+		},
+	)
 })
 
 function resumedActiveFermentV2Responses() {

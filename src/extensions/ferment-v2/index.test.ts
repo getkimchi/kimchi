@@ -679,6 +679,7 @@ describe("Ferment V2 extension", () => {
 			reason: "All requirements are evidenced.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			acceptedFinalAnswer: "Accepted answer.",
 		})
 
 		await harness.fire("agent_end", {
@@ -731,6 +732,7 @@ describe("Ferment V2 extension", () => {
 			reason: "All requirements are evidenced.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			acceptedFinalAnswer: "Accepted answer.",
 		})
 		await harness.fire("agent_end", { type: "agent_end", messages: [ended.message] })
 		await harness.fire("agent_settled", { type: "agent_settled" })
@@ -805,7 +807,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer.")
 		expect(evaluateFermentV2Mock).toHaveBeenCalledTimes(1)
 
 		harness.sendMessage.mockClear()
@@ -852,7 +854,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer before extra work.")
 
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
@@ -895,7 +897,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer.")
 
 		harness.sendMessage.mockClear()
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
@@ -1307,7 +1309,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Branch-local accepted answer.")
 		expect(harness.currentFermentV2()).toMatchObject({ lastEvaluation: { verdict: "met" } })
 
 		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
@@ -1361,7 +1363,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer.")
 
 		harness.sendMessage.mockClear()
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
@@ -1439,7 +1441,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer before failed delivery.")
 		expect(harness.sendMessage.mock.lastCall?.[0].content).toContain(
 			'Return this evaluated draft verbatim: "Accepted answer before failed delivery."',
 		)
@@ -1454,7 +1456,52 @@ describe("Ferment V2 extension", () => {
 		expect(harness.sendMessage.mock.lastCall?.[0].content).toContain(
 			'Return this evaluated draft verbatim: "Accepted answer before failed delivery."',
 		)
-		await finishFinalAnswerTurn(harness, "Delivered after failure.")
+		await finishFinalAnswerTurn(harness, "Accepted answer before failed delivery.")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "complete" })
+	})
+
+	it("pauses when final-answer delivery rewrites the accepted draft", async () => {
+		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await completeVisibleTodo(harness)
+		const message = {
+			role: "assistant",
+			content: [{ type: "text", text: "Accepted answer." }],
+			stopReason: "stop",
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+		await harness.fire("message_start", { type: "message_start", message })
+		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
+		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer.")
+
+		await finishFinalAnswerTurn(harness, "Accepted answer with extra text.")
+
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", lastEvaluation: { verdict: "met" } })
+	})
+
+	it("preserves an accepted final answer split across text blocks", async () => {
+		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await completeVisibleTodo(harness)
+		const message = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Hello " },
+				{ type: "text", text: "world" },
+			],
+			stopReason: "stop",
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+		await harness.fire("message_start", { type: "message_start", message })
+		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
+		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
+		await settleFermentV2(harness, "met", false, undefined, "Hello world")
+
+		await finishFinalAnswerTurn(harness, ["Hello ", "world"])
+
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete" })
 	})
 
@@ -1472,7 +1519,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
-		await settleFermentV2(harness, "met", false)
+		await settleFermentV2(harness, "met", false, undefined, "Accepted answer before failed delivery.")
 		await finishFinalAnswerTurn(harness, "Partial answer.", "error")
 		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", lastEvaluation: { verdict: "met" } })
 		const capturedBranch = [...harness.branch]
@@ -4216,6 +4263,7 @@ async function settleFermentV2(
 	verdict: "continue" | "met" | "impossible" | "unavailable" = "continue",
 	deliverAcceptedAnswer = true,
 	reason?: string,
+	acceptedFinalAnswer?: string,
 ): Promise<void> {
 	evaluateFermentV2Mock.mockResolvedValueOnce(
 		verdict === "unavailable"
@@ -4225,6 +4273,7 @@ async function settleFermentV2(
 					reason: reason ?? (verdict === "met" ? "All requirements are evidenced." : "More work is required."),
 					model: "test/evaluator",
 					usage: EVALUATOR_USAGE,
+					...(acceptedFinalAnswer ? { acceptedFinalAnswer } : {}),
 				},
 	)
 	await harness.fire("agent_end", { type: "agent_end", messages: [] })
@@ -4240,14 +4289,15 @@ async function settleFermentV2(
 
 async function finishFinalAnswerTurn(
 	harness: ReturnType<typeof createHarness>,
-	text: string,
+	text: string | readonly string[],
 	stopReason: "stop" | "error" | "aborted" = "stop",
 	usage: { input?: number; output?: number } = { input: 0, output: 0 },
 ): Promise<void> {
 	await harness.fire("turn_start", { type: "turn_start", turnIndex: 99, timestamp: Date.now() })
+	const textBlocks = typeof text === "string" ? [text] : text
 	const message = {
 		role: "assistant",
-		content: [{ type: "text", text }],
+		content: textBlocks.map((blockText) => ({ type: "text", text: blockText })),
 		stopReason,
 		usage,
 		timestamp: Date.now(),

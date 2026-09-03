@@ -230,6 +230,10 @@ describe("Ferment V2 evaluator", () => {
 			systemPrompt: expect.stringContaining("set candidateRef to last_assistant"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining("Final delivery replays that draft verbatim after met"),
+		})
+		expect(completeMock.mock.calls[0]?.[1]?.systemPrompt).not.toContain("ignore its presentation format")
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
 			systemPrompt: expect.stringContaining("<evidence_policy>"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
@@ -327,7 +331,7 @@ describe("Ferment V2 evaluator", () => {
 	it("accepts a final-answer check without tool evidence", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
-				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","evidence":[]}],"reason":"ready"}',
+				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK"}],"reason":"ready"}',
 			),
 		)
 
@@ -343,13 +347,35 @@ describe("Ferment V2 evaluator", () => {
 				},
 				evaluatorContext(),
 			),
-		).resolves.toMatchObject({ verdict: "met", reason: "ready" })
+		).resolves.toMatchObject({ verdict: "met", reason: "ready", acceptedFinalAnswer: "OK" })
 	})
 
 	it("rejects a final-answer check that is not bound to the proposed answer", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
 				'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"other","evidence":[]}],"reason":"ready"}',
+			),
+		)
+
+		await expect(
+			evaluateFermentV2(
+				{
+					objective: "reply exactly OK",
+					messages: [transcriptMessage("assistant", [{ type: "text", text: "Explanation.\n\nOK" }])],
+					todos: [],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({
+			verdict: "continue",
+			reason: expect.stringContaining("reply exactly OK"),
+		})
+	})
+
+	it("rejects a final-answer check that quotes only part of the proposed answer", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK","evidence":[]}],"reason":"ready"}',
 			),
 		)
 
@@ -387,14 +413,25 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 	})
 
-	it("treats a null work-check candidate reference as absent", () => {
+	it("treats null work-check answer fields as absent", () => {
 		expect(
 			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"evidence":[]}],"reason":"run tests"}',
+				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]}],"reason":"run tests"}',
 			),
 		).toMatchObject({
 			verdict: "continue",
 			checks: [{ kind: "work", requirement: "tests pass", met: false, evidence: [], todoIds: [] }],
+		})
+	})
+
+	it("treats null optional final-answer arrays as empty", () => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				'{"verdict":"continue","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
+			),
+		).toMatchObject({
+			verdict: "continue",
+			checks: [{ kind: "final_answer", requirement: "reply exactly OK", evidence: [], todoIds: [] }],
 		})
 	})
 
@@ -1008,8 +1045,6 @@ describe("Ferment V2 evaluator", () => {
 		const transcript = sentTranscript()
 		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"git diff --stat"}')
 		expect(transcript).toContain("[m2] [toolResult bash for c1.1] 50 files changed")
-		expect(transcript).not.toContain("[m3]")
-		expect(transcript).not.toContain("[m4]")
 		expect(transcript).toContain("[assistant] summary complete")
 		expect(transcript).not.toContain("[m5]")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
@@ -1058,6 +1093,37 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"pnpm test"}')
 		expect(transcript).toContain("[m2] [toolResult bash for c1.1]")
 		expect(transcript).toContain("tests passed")
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
+	})
+
+	it("clips an older oversized evidence unit after retaining newer Todo chatter", async () => {
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"inspect evidence"}'))
+		const messages = [
+			transcriptMessage("assistant", [
+				{ type: "toolCall", id: "call-package", name: "read", arguments: { path: "package.json" } },
+				{ type: "toolCall", id: "call-readme", name: "read", arguments: { path: "README.md" } },
+			]),
+			transcriptMessage("toolResult", `PACKAGE_HEAD\n${"p".repeat(MAX_TRANSCRIPT_CHARS)}\nPACKAGE_TAIL`, {
+				toolName: "read",
+				toolCallId: "call-package",
+			}),
+			transcriptMessage("toolResult", `README_HEAD\n${"r".repeat(MAX_TRANSCRIPT_CHARS)}\nREADME_TAIL`, {
+				toolName: "read",
+				toolCallId: "call-readme",
+			}),
+			...linkedToolMessages("call-todo", "mark_todo", { id: 1, status: "completed" }, "Todo completed"),
+			transcriptMessage("assistant", "Two sources verified."),
+		]
+
+		await evaluateFermentV2({ objective: "inspect two files", messages, todos: [] }, evaluatorContext())
+
+		const transcript = sentTranscript()
+		expect(transcript).toContain("PACKAGE_HEAD")
+		expect(transcript).toContain("PACKAGE_TAIL")
+		expect(transcript).toContain("README_HEAD")
+		expect(transcript).toContain("README_TAIL")
+		expect(transcript).toContain("Todo completed")
+		expect(transcript).toContain("Two sources verified.")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 
