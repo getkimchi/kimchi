@@ -541,7 +541,7 @@ describe("guidelinesFor", () => {
 	// section and no instruction to hand work to another agent.
 	it("subagent mode contains neither coordinator block", () => {
 		expect(guidelinesFor("subagent")).not.toContain("**Coordinator and delegation**")
-		expect(guidelinesFor("subagent")).not.toContain("**Coordinator altitude**")
+		expect(guidelinesFor("subagent")).not.toContain("**Coordination level**")
 	})
 
 	it("subagent mode does NOT ask for a review pass by a fresh subagent", () => {
@@ -561,12 +561,12 @@ describe("guidelinesFor", () => {
 		expect(guidelinesFor("orchestrator")).not.toContain("**Coordinator and delegation**")
 	})
 
-	it("orchestrator mode DOES contain '**Coordinator altitude**'", () => {
-		expect(guidelinesFor("orchestrator")).toContain("**Coordinator altitude**")
+	it("orchestrator mode DOES contain '**Coordination level**'", () => {
+		expect(guidelinesFor("orchestrator")).toContain("**Coordination level**")
 	})
 
-	it("single mode does NOT contain '**Coordinator altitude**'", () => {
-		expect(guidelinesFor("single")).not.toContain("**Coordinator altitude**")
+	it("single mode does NOT contain '**Coordination level**'", () => {
+		expect(guidelinesFor("single")).not.toContain("**Coordination level**")
 	})
 
 	it("both single and orchestrator keep a base safety rule", () => {
@@ -659,14 +659,14 @@ describe("disciplineNudgeFor", () => {
 // ---------------------------------------------------------------------------
 
 describe("default variant byte-identical guard", () => {
-	it("default single prompt does NOT contain '**Coordinator altitude**'", () => {
+	it("default single prompt does NOT contain '**Coordination level**'", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })
-		expect(result).not.toContain("**Coordinator altitude**")
+		expect(result).not.toContain("**Coordination level**")
 	})
 
-	it("default orchestrator prompt does NOT contain '**Coordinator altitude**'", () => {
+	it("default orchestrator prompt does NOT contain '**Coordination level**'", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator" })
-		expect(result).not.toContain("**Coordinator altitude**")
+		expect(result).not.toContain("**Coordination level**")
 	})
 
 	it("default single prompt does NOT contain '### Working discipline' (spicy-only section)", () => {
@@ -684,9 +684,9 @@ describe("default variant byte-identical guard", () => {
 		expect(result).not.toContain("**Coordinator and delegation**")
 	})
 
-	it("spicy orchestrator prompt DOES contain '**Coordinator altitude**'", () => {
+	it("spicy orchestrator prompt DOES contain '**Coordination level**'", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
-		expect(result).toContain("**Coordinator altitude**")
+		expect(result).toContain("**Coordination level**")
 	})
 })
 

@@ -168,6 +168,7 @@ describe("variant-scoped agent tuning", () => {
 
 	it("spicy variant: the discipline block carries working discipline only, not tool-output or file-reading rules", () => {
 		expect(AGENT_DISCIPLINE_BLOCK).toContain("Work from the requirements")
+		expect(AGENT_DISCIPLINE_BLOCK).toContain("user-facing README or summary")
 		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("Bound tool output at the source")
 		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("Re-read before editing")
 	})
