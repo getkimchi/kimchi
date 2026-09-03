@@ -3,19 +3,6 @@ import { RST_FG } from "../ansi.js"
 import { DEFAULT_VARIANT, resolvePromptVariant } from "../extensions/prompt-construction/variants/index.js"
 import { getFolder, getGitBranch, getVersion } from "../utils.js"
 
-const LOGO_GLYPHS = [
-	"     █▀  █  █ ▀█▀ █▄ ▄█ ▄▀▀ █  █ ▀█▀",
-	"    ███  █▀▄   █  █ ▀ █ █   █▀▀█  █",
-	"▄  ▄███  █  █  █  █   █ █▄▄ █  █  █",
-	"▀████▀   ▀  ▀ ▀▀▀ ▀   ▀  ▀▀ ▀  ▀ ▀▀▀",
-]
-
-const FIRE_COLORS = ["\x1b[38;5;196m", "\x1b[38;5;202m", "\x1b[38;5;208m", "\x1b[38;5;214m"]
-
-function buildBurningLogoLines(): string[] {
-	return LOGO_GLYPHS.map((glyph, i) => `${FIRE_COLORS[i]}${glyph}${RST_FG}`)
-}
-
 let cachedVersion: string | undefined
 
 /** Truncate a file-system path to fit `maxWidth` while preserving the basename. */
@@ -59,6 +46,14 @@ const WORD_ROWS = [
 	"   ▀  ▀ ▀▀▀ ▀   ▀  ▀▀ ▀  ▀ ▀▀▀",
 ]
 
+const FIRE_COLORS = ["\x1b[38;5;196m", "\x1b[38;5;202m", "\x1b[38;5;208m", "\x1b[38;5;214m"]
+
+// The spicy variant burns the same rows in a fire gradient instead of the
+// theme colours, so all logo variants stay built from one set of glyphs.
+function buildBurningLogoLines(): string[] {
+	return PEPPER_ROWS.map((pepper, i) => `${FIRE_COLORS[i]}${pepper}${WORD_ROWS[i]}${RST_FG}`)
+}
+
 export function buildLogoLines(theme: Theme): string[] {
 	const variant = resolvePromptVariant()
 	if (variant.name !== DEFAULT_VARIANT.name) return buildBurningLogoLines()
@@ -100,7 +95,7 @@ export function buildInfoLines(
 	}
 	const variant = resolvePromptVariant()
 	if (variant.name !== DEFAULT_VARIANT.name) {
-		lines.push(`\x1b[38;5;208mvariant ${variant.tagline ?? variant.name}${RST_FG}`)
+		lines.push(`${theme.getFgAnsi("accent")}variant ${variant.tagline ?? variant.name}${RST_FG}`)
 	}
 	return lines
 }

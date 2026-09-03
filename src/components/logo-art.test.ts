@@ -93,6 +93,8 @@ describe("logo art per prompt variant", () => {
 
 		const info = buildInfoLines(theme, { getBranch: () => "main" })
 		expect(stripAnsi(info[info.length - 1])).toBe("variant spicy architect")
+		// The variant line takes its colour from the theme like every other info line.
+		expect(info[info.length - 1]).toContain(theme.getFgAnsi("accent"))
 	})
 
 	it("falls back to the default logo and info lines for an unknown variant name", () => {
