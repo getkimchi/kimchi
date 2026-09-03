@@ -67,6 +67,21 @@ export const SPICY_FERMENT_STEER = `## Ferment Discipline (priority)
 
 Call \`scope_ferment\` first. Do not narrate a plan in prose, ask for permission, or end your turn before \`scope_ferment\` has been called with the full plan-scope gate verdicts. A ferment that ends without \`scope_ferment\` produces zero files and is a failure, not a draft. After scoping, drive the lifecycle through each phase to \`complete_ferment\`.`
 
+/**
+ * Added for a single-model planner. Spicy's general stance is to delegate the
+ * implementation, but the single-model planner supplement below asks for direct
+ * step execution and treats delegation as the exception. The planner's stance
+ * wins for the duration of the ferment, so the two do not pull in opposite
+ * directions.
+ */
+export const SPICY_FERMENT_STEER_SINGLE_MODE_EXECUTION =
+	"While this ferment is active, follow the execution stance in the planner rules below: run the steps yourself and delegate only the cases those rules call out. That stance replaces any general instruction in this session to delegate implementation by default."
+
+export function fermentSteerFor(mode: PromptMode): string {
+	if (mode === "orchestrator") return SPICY_FERMENT_STEER
+	return `${SPICY_FERMENT_STEER}\n\n${SPICY_FERMENT_STEER_SINGLE_MODE_EXECUTION}`
+}
+
 // ---------------------------------------------------------------------------
 // Opinionated working-discipline block
 // ---------------------------------------------------------------------------

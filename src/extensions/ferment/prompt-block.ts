@@ -4,6 +4,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
@@ -107,8 +108,12 @@ After \`propose_ferment_scoping\` returns "Plan ready for review", the host take
 After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation already happened and the implementation toolset is active. Do not call \`propose_ferment_scoping\` again, do not tell the user the draft is waiting in the TUI, and do not summarize the plan in chat. Continue with the next state-machine action (usually \`activate_ferment_phase\`).`
 
 	const agentsSection = buildAgentsSection()
+	// The planner runs on the main thread, so its prompt mode is the same
+	// multi-model setting that picks the delegation mode here.
+	const plannerMode: PromptMode = delegationMode === "strict" ? "orchestrator" : "single"
 	const fermentSteer = resolvePromptVariant().fermentSteer
-	const steer = fermentSteer ? `${fermentSteer}\n\n` : ""
+	const steerText = typeof fermentSteer === "function" ? fermentSteer(plannerMode) : fermentSteer
+	const steer = steerText ? `${steerText}\n\n` : ""
 
 	const delegationRules =
 		delegationMode === "strict"

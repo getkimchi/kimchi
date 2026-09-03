@@ -83,9 +83,12 @@ export interface PromptVariant {
 	/**
 	 * Extra guidance prepended to the ferment planner supplement. Set it when
 	 * the variant needs the planner to follow a specific lifecycle stance.
-	 * Undefined leaves the supplement as-is.
+	 * Undefined leaves the supplement as-is. Receives the planner's prompt mode,
+	 * because the supplement's own execution stance differs between the two:
+	 * an orchestrator planner delegates every step, a single-model planner
+	 * executes them directly.
 	 */
-	fermentSteer?: string
+	fermentSteer?: string | ((mode: PromptMode) => string)
 
 	/**
 	 * When defined, the discipline-reminder extension periodically nudges the

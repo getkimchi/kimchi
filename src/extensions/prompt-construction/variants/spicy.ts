@@ -9,11 +9,11 @@ import type { PromptMode } from "../system-prompt.js"
 import {
 	appendDisciplineBlock,
 	disciplineNudgeFor,
+	fermentSteerFor,
 	guidelinesFor,
 	ORCHESTRATOR_INTRO,
 	SINGLE_INTRO,
 	SPICY_COMMIT_ATTRIBUTION,
-	SPICY_FERMENT_STEER,
 	SPICY_SINGLE_MODE_DELEGATION,
 } from "./spicy-prompts.js"
 import type { PromptVariant } from "./types.js"
@@ -36,7 +36,7 @@ export const SPICY: PromptVariant = {
 	factualAccuracy: null,
 	commitAttribution: SPICY_COMMIT_ATTRIBUTION,
 	singleModeDelegation: SPICY_SINGLE_MODE_DELEGATION,
-	fermentSteer: SPICY_FERMENT_STEER,
+	fermentSteer: fermentSteerFor,
 	disciplineReminder: {
 		text: disciplineNudgeFor,
 		everyPrompts: 4,
