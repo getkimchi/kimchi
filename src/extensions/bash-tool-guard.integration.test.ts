@@ -7,16 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import bashToolGuardExtension, { bashToolDescription, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 import { setExperimentalFeaturesEnabled } from "./experimental.js"
-import type { PromptVariant } from "./prompt-construction/variants/index.js"
+import { PROMPT_VARIANT_ENV } from "./prompt-construction/variants/index.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true
-
-const mockResolvePromptVariant = vi.fn((): PromptVariant => ({ name: "default" }))
-
-vi.mock("./prompt-construction/variants/index.js", () => ({
-	resolvePromptVariant: () => mockResolvePromptVariant(),
-}))
 
 vi.mock("./permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (mockMode ? { mode: mockMode, source: "user" } : undefined),
@@ -35,7 +29,6 @@ beforeEach(() => {
 afterEach(() => {
 	mockMode = "default"
 	mockResourceEnabled = true
-	mockResolvePromptVariant.mockReturnValue({ name: "default" })
 	setExperimentalFeaturesEnabled(false)
 })
 
@@ -877,41 +870,50 @@ describe("bashToolGuardExtension - description override", () => {
 	})
 })
 
+// The guard runs in every session whatever prompt variant is selected: no
+// variant can opt out of the corrected bash description or the runtime steers.
 describe("bashToolGuardExtension - prompt variants", () => {
-	it("registers handlers with the default variant", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "default" })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
-		expect(pi.handlers.input?.length).toBeGreaterThan(0)
-		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
+	let savedVariant: string | undefined
+
+	beforeEach(() => {
+		savedVariant = process.env[PROMPT_VARIANT_ENV]
 	})
 
-	it("registers handlers with the spicy variant", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
-		expect(pi.handlers.input?.length).toBeGreaterThan(0)
-		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
+	afterEach(() => {
+		if (savedVariant === undefined) {
+			delete process.env[PROMPT_VARIANT_ENV]
+		} else {
+			process.env[PROMPT_VARIANT_ENV] = savedVariant
+		}
 	})
 
-	it("registers the corrected bash tool description with the spicy variant", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		fireSessionStart(pi)
-		expect(pi.registeredTools.get("bash")?.description).toBe(bashToolDescription())
-	})
-
-	it("steers on a bash tool_call with the spicy variant", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		fireSessionStart(pi)
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
-			deliverAs: "steer",
+	for (const variantName of ["default", "spicy"]) {
+		it(`registers its handlers with the ${variantName} variant selected`, () => {
+			process.env[PROMPT_VARIANT_ENV] = variantName
+			const pi = createMockPI()
+			bashToolGuardExtension(pi as unknown as PI)
+			expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
+			expect(pi.handlers.input?.length).toBeGreaterThan(0)
+			expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
 		})
-	})
+
+		it(`registers the corrected bash tool description with the ${variantName} variant selected`, () => {
+			process.env[PROMPT_VARIANT_ENV] = variantName
+			const pi = createMockPI()
+			bashToolGuardExtension(pi as unknown as PI)
+			fireSessionStart(pi)
+			expect(pi.registeredTools.get("bash")?.description).toBe(bashToolDescription())
+		})
+
+		it(`steers on a bash tool_call with the ${variantName} variant selected`, () => {
+			process.env[PROMPT_VARIANT_ENV] = variantName
+			const pi = createMockPI()
+			bashToolGuardExtension(pi as unknown as PI)
+			fireSessionStart(pi)
+			emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+			expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+				deliverAs: "steer",
+			})
+		})
+	}
 })

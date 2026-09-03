@@ -1,25 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import explorationGuardExtension, {
 	ExplorationGuard,
 	type ExplorationGuardOptions,
 	STEER_MESSAGE_TYPE,
 } from "./exploration-guard.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
-import type { PromptVariant } from "./prompt-construction/variants/index.js"
-
-const mockResolvePromptVariant = vi.fn((): PromptVariant => ({ name: "default" }))
+import { PROMPT_VARIANT_ENV } from "./prompt-construction/variants/index.js"
 
 vi.mock("./permissions/mode-controller.js", () => ({
 	getPermissionMode: vi.fn(() => undefined),
 }))
-
-vi.mock("./prompt-construction/variants/index.js", () => ({
-	resolvePromptVariant: () => mockResolvePromptVariant(),
-}))
-
-afterEach(() => {
-	mockResolvePromptVariant.mockReturnValue({ name: "default" })
-})
 
 function createGuard(options?: ExplorationGuardOptions): ExplorationGuard {
 	return new ExplorationGuard(options)
@@ -657,8 +647,25 @@ describe("explorationGuardExtension - warn sendMessage delivery", () => {
 	})
 })
 
+// The guard runs in every session whatever prompt variant is selected: its
+// stall steers and subagent termination are recovery mechanisms, not wording
+// choices a variant can opt out of.
 describe("explorationGuardExtension - prompt variants", () => {
 	type Handler = (event: unknown, ctx?: unknown) => unknown
+
+	let savedVariant: string | undefined
+
+	beforeEach(() => {
+		savedVariant = process.env[PROMPT_VARIANT_ENV]
+	})
+
+	afterEach(() => {
+		if (savedVariant === undefined) {
+			delete process.env[PROMPT_VARIANT_ENV]
+		} else {
+			process.env[PROMPT_VARIANT_ENV] = savedVariant
+		}
+	})
 
 	function createPi() {
 		const handlers = new Map<string, Handler[]>()
@@ -683,49 +690,25 @@ describe("explorationGuardExtension - prompt variants", () => {
 		for (const h of handlers.get("turn_end") ?? []) h({ message: { role: "assistant", stopReason: "stop" } })
 	}
 
-	// The guard is part of every session regardless of the active prompt variant:
-	// its stall steers and subagent termination are recovery mechanisms, not
-	// wording choices a variant opts out of.
+	for (const variantName of ["default", "spicy"]) {
+		it(`registers its handlers with the ${variantName} variant selected`, () => {
+			process.env[PROMPT_VARIANT_ENV] = variantName
+			const { pi, handlers } = createPi()
+			explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+			expect(handlers.get("session_start")?.length).toBeGreaterThan(0)
+			expect(handlers.get("turn_start")?.length).toBeGreaterThan(0)
+			expect(handlers.get("tool_call")?.length).toBeGreaterThan(0)
+			expect(handlers.get("turn_end")?.length).toBeGreaterThan(0)
+		})
 
-	it("registers handlers with the default variant", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "default" })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		expect(handlers.get("session_start")?.length).toBeGreaterThan(0)
-		expect(handlers.get("turn_start")?.length).toBeGreaterThan(0)
-		expect(handlers.get("tool_call")?.length).toBeGreaterThan(0)
-		expect(handlers.get("turn_end")?.length).toBeGreaterThan(0)
-	})
-
-	it("steers on read-only turns with the default variant", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "default" })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers, sendMessage } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		driveReadTurn(handlers)
-		expect(sendMessage).toHaveBeenCalledOnce()
-	})
-
-	it("registers handlers with the spicy variant", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		expect(handlers.get("session_start")?.length).toBeGreaterThan(0)
-		expect(handlers.get("turn_start")?.length).toBeGreaterThan(0)
-		expect(handlers.get("tool_call")?.length).toBeGreaterThan(0)
-		expect(handlers.get("turn_end")?.length).toBeGreaterThan(0)
-	})
-
-	it("steers on read-only turns with the spicy variant", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers, sendMessage } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		driveReadTurn(handlers)
-		expect(sendMessage).toHaveBeenCalledOnce()
-	})
+		it(`steers on read-only turns with the ${variantName} variant selected`, () => {
+			process.env[PROMPT_VARIANT_ENV] = variantName
+			const { pi, handlers, sendMessage } = createPi()
+			explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+			driveReadTurn(handlers)
+			expect(sendMessage).toHaveBeenCalledOnce()
+		})
+	}
 })
 
 describe("Subagent terminate behavior", () => {

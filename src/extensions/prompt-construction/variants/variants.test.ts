@@ -172,6 +172,10 @@ describe("SPICY descriptor", () => {
 		expect(SPICY.suppress).toBeUndefined()
 	})
 
+	it("sets no suppress* field at all, so nothing is switched off for spicy sessions", () => {
+		expect(Object.keys(SPICY).filter((key) => key.startsWith("suppress"))).toEqual([])
+	})
+
 	it("factualAccuracy is null (omits the Factual Accuracy section)", () => {
 		expect(SPICY.factualAccuracy).toBeNull()
 	})
