@@ -37,8 +37,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
 import { getReadOnlyToolNames } from "./read-only-tool-registry.js"
-import type { ToolProfile } from "./tool-catalog.js"
-import { getToolsForProfile } from "./tool-catalog.js"
+import { getToolsForProfile, isAdhocOnlyToolName, type ToolProfile } from "./tool-catalog.js"
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -114,11 +113,16 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 		// MCP/custom/third-party tools are preserved, then merge in the
 		// required ferment catalog tools defensively (they may not be
 		// registered in the mock/test environment, but must always be present).
-		const registeredNames = new Set(pi.getAllTools().map((t) => t.name))
+		// First-party adhoc-only tools (e.g. `questionnaire`) are excluded — the
+		// ferment interactive-question surface is `ask_user`.
+		const registeredNames = pi
+			.getAllTools()
+			.map((t) => t.name)
+			.filter((name) => !isAdhocOnlyToolName(name))
 		const catalogTools = getToolsForProfile(profile).map((t) => t.name)
 		// Union: registered tools first (preserves order), then any catalog
 		// tools not already present.
-		const merged = [...registeredNames, ...catalogTools.filter((name) => !registeredNames.has(name))]
+		const merged = [...registeredNames, ...catalogTools.filter((name) => !registeredNames.includes(name))]
 		allowedNames = merged.filter((name) => !disabled.has(name))
 	} else {
 		const tools = getToolsForProfile(profile)

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
 	getCliModeArg,
 	getParsedCliArgs,
+	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isExplicitAutoModelSelection,
@@ -217,6 +218,30 @@ describe("isExperimentalFeaturesArg", () => {
 
 	it("returns false for empty args", () => {
 		expect(isExperimentalFeaturesArg([])).toBe(false)
+	})
+})
+
+describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
+	it("returns true for the bare flag", () => {
+		expect(hasFermentOneshotArg(["--ferment-oneshot"])).toBe(true)
+	})
+
+	it("returns true for the kwarg form", () => {
+		expect(hasFermentOneshotArg(["ferment-oneshot=true"])).toBe(true)
+		expect(hasFermentOneshotArg(["--print", "ferment-oneshot=true"])).toBe(true)
+	})
+
+	it("returns true when mixed with other args", () => {
+		expect(hasFermentOneshotArg(["--model", "foo", "--print", "--ferment-oneshot"])).toBe(true)
+	})
+
+	it("returns false when absent", () => {
+		expect(hasFermentOneshotArg(["--print"])).toBe(false)
+		expect(hasFermentOneshotArg([])).toBe(false)
+	})
+
+	it("returns false when the suffix appears inside an unrelated flag", () => {
+		expect(hasFermentOneshotArg(["--foo-ferment-oneshot=true"])).toBe(false)
 	})
 })
 

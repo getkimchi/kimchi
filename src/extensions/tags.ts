@@ -27,6 +27,8 @@ import { Type } from "typebox"
 import { readJson } from "../config/json.js"
 import { readConfigSetting } from "../config/settings.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
+import { shouldSuppressFermentModeTools } from "./print-mode.js"
 import { getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
@@ -562,53 +564,63 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	// Register the set_phase tool
-	pi.registerTool({
-		name: "set_phase",
-		label: "Set Phase",
-		description:
-			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
-		parameters: SetPhaseParams,
+	// Register the set_phase tool — unless this is a headless non-ferment run
+	// that is not multi-model. In --print sessions without a ferment one-shot
+	// the tool is dead surface (~217 est) for single-model runs, which never
+	// tag phases. Multi-model sessions run the orchestrator prompt, whose
+	// instructions tell the model to call set_phase — the tool must be
+	// registered whenever the session resolves multi-model so those
+	// instructions are satisfiable even when the print gate suppresses the
+	// ferment suite. Registration-time resolution covers the
+	// session-independent layers (CLI flag, settings default); the per-turn
+	// prompt gate re-checks the full effective value.
+	if (!shouldSuppressFermentModeTools() || resolveMultiModelEnabled(null).value)
+		pi.registerTool({
+			name: "set_phase",
+			label: "Set Phase",
+			description:
+				"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
+			parameters: SetPhaseParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const phase = params.phase as Phase
-			const thinking = params.thinking as ThinkingLevel | undefined
-			const tagManager = getExtensionTagManager(ctx)
-			const sessionId = ctx.sessionManager.getSessionId()
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				const phase = params.phase as Phase
+				const thinking = params.thinking as ThinkingLevel | undefined
+				const tagManager = getExtensionTagManager(ctx)
+				const sessionId = ctx.sessionManager.getSessionId()
 
-			setCurrentPhase(sessionId, phase)
-			if (thinking) {
-				pi.setThinkingLevel(thinking)
-			}
+				setCurrentPhase(sessionId, phase)
+				if (thinking) {
+					pi.setThinkingLevel(thinking)
+				}
 
-			if (ctx.hasUI) {
-				updateStatusLineTags(tagManager, ctx)
-			}
+				if (ctx.hasUI) {
+					updateStatusLineTags(tagManager, ctx)
+				}
 
-			return {
-				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase, thinking, model: ctx.model?.id },
-			}
-		},
+				return {
+					content: [{ type: "text", text: `Phase changed to: ${phase}` }],
+					details: { phase, thinking, model: ctx.model?.id },
+				}
+			},
 
-		renderCall(_args, _theme) {
-			return new Text("", 0, 0)
-		},
-
-		renderResult(result, _options, theme) {
-			if (readHidePhaseChanges()) {
+			renderCall(_args, _theme) {
 				return new Text("", 0, 0)
-			}
-			const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
-			const phase = details?.phase ?? "unknown"
-			const model = details?.model
-			const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
-			const dash = theme.fg("dim", "- ")
-			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
-			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
-			return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
-		},
-	})
+			},
+
+			renderResult(result, _options, theme) {
+				if (readHidePhaseChanges()) {
+					return new Text("", 0, 0)
+				}
+				const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
+				const phase = details?.phase ?? "unknown"
+				const model = details?.model
+				const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
+				const dash = theme.fg("dim", "- ")
+				const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
+				const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
+				return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
+			},
+		})
 
 	// Initialize status line tags status and default phase on session start
 	pi.on("session_start", async (_event, ctx) => {

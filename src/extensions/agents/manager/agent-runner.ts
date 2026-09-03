@@ -194,8 +194,10 @@ function getGuidelinesRegistry(): ModelRegistry {
 
 /** Info about a tool event in the subagent. */
 export interface ToolActivity {
-	type: "start" | "end"
 	toolName: string
+	toolCallId?: string
+	/** ACP tool-call status — "in_progress" = start, "completed"/"failed" = end. */
+	status: "pending" | "in_progress" | "completed" | "failed"
 }
 
 export interface RunOptions {
@@ -562,7 +564,7 @@ ${skillLines}`
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
-				type: "end",
+				status: "completed",
 				toolName: `extension-error:${err.extensionPath}`,
 			})
 		},
@@ -677,11 +679,11 @@ ${skillLines}`
 				// to ensure the agent loop halts and this tool call is skipped.
 				hardAbort(session)
 			} else {
-				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+				options.onToolActivity?.({ status: "in_progress", toolName: event.toolName })
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
 				queueMicrotask(() => hardAbort(session))
@@ -921,11 +923,11 @@ export async function resumeAgent(
 			if (budgetAborted) {
 				hardAbort(session)
 			} else {
-				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+				options.onToolActivity?.({ status: "in_progress", toolName: event.toolName })
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
 			if (options.shouldTerminateAfterTool?.(event.toolName)) {
 				terminationToolCompleted = true
 				queueMicrotask(() => hardAbort(session))

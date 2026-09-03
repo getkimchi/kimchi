@@ -6,6 +6,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, Key, Markdown, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
+import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import { withWorkingHidden } from "./prompt-ui.js"
 
 export interface PendingPlanReview {
@@ -16,15 +17,27 @@ export interface PendingPlanReview {
 export type PlanReviewOutcome =
 	| { kind: "start" }
 	| { kind: "start_auto" }
+	| { kind: "start_cloud" }
 	| { kind: "feedback"; text: string }
 	| { kind: "cancelled"; reason: "decision_cancelled" | "feedback_cancelled" | "empty_feedback" }
 
 const pendingPlanReviews = new Map<string, PendingPlanReview>()
-const DECISION_OPTIONS = [
+
+const BASE_DECISION_OPTIONS = [
 	"Start execution",
 	"Start execution in auto mode (run all stages without stopping)",
 	"Let me say something",
 ] as const
+
+const CLOUD_DECISION_OPTION = "Start execution in cloud"
+
+/** Returns the decision options for the plan review dialog, conditionally
+ *  including the cloud execution option when KIMCHI_REMOTE_RUN is set. */
+function getDecisionOptions(): string[] {
+	return isRemoteRunEnabled()
+		? [BASE_DECISION_OPTIONS[0], BASE_DECISION_OPTIONS[1], CLOUD_DECISION_OPTION, BASE_DECISION_OPTIONS[2]]
+		: [...BASE_DECISION_OPTIONS]
+}
 
 export function setPendingPlanReview(review: PendingPlanReview): void {
 	pendingPlanReviews.set(review.fermentId, review)
@@ -73,6 +86,7 @@ class PlanReviewComponent extends Container {
 	private readonly tui: TUI
 	private readonly keybindings: KeybindingsManager
 	private readonly decisionOptions = new Container()
+	private readonly options: string[]
 	private selectedIndex = 0
 	private mode: "decision" | "feedback" = "decision"
 	private editor: ExtensionEditorComponent | undefined
@@ -91,6 +105,7 @@ class PlanReviewComponent extends Container {
 		this.theme = theme
 		this.keybindings = keybindings
 		this.done = done
+		this.options = getDecisionOptions()
 		this.markdown = new Markdown(planMarkdown, 1, 0, getMarkdownTheme())
 		this.showDecision()
 
@@ -117,7 +132,7 @@ class PlanReviewComponent extends Container {
 
 		if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
 			const delta = matchesKey(data, Key.up) ? -1 : 1
-			this.selectedIndex = (this.selectedIndex + delta + DECISION_OPTIONS.length) % DECISION_OPTIONS.length
+			this.selectedIndex = (this.selectedIndex + delta + this.options.length) % this.options.length
 			this.updateDecisionOptions()
 			this.tui.requestRender()
 			return
@@ -127,10 +142,13 @@ class PlanReviewComponent extends Container {
 			return
 		}
 		if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-			if (this.selectedIndex === 0) {
+			const selected = this.options[this.selectedIndex]
+			if (selected === BASE_DECISION_OPTIONS[0]) {
 				this.done({ kind: "start" })
-			} else if (this.selectedIndex === 1) {
+			} else if (selected === BASE_DECISION_OPTIONS[1]) {
 				this.done({ kind: "start_auto" })
+			} else if (selected === CLOUD_DECISION_OPTION) {
+				this.done({ kind: "start_cloud" })
 			} else {
 				this.mode = "feedback"
 				this.showFeedback()
@@ -173,7 +191,7 @@ class PlanReviewComponent extends Container {
 	}
 
 	private renderDecisionOptions(): string[] {
-		return DECISION_OPTIONS.map((label, index) => {
+		return this.options.map((label: string, index: number) => {
 			const selected = index === this.selectedIndex
 			const marker = selected ? this.theme.fg("accent", "> ") : "  "
 			const styledLabel = selected ? this.theme.fg("accent", label) : this.theme.fg("text", label)

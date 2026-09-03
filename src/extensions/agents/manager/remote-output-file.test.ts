@@ -104,7 +104,7 @@ function toolCallUpdateNotification(
 function makeInnerCallbacks(): { callbacks: AcpSessionCallbacks; activities: string[] } {
 	const activities: string[] = []
 	const callbacks: AcpSessionCallbacks = {
-		onToolActivity: (a: { type: "start" | "end"; toolName: string }) => activities.push(`${a.type}:${a.toolName}`),
+		onToolActivity: (a: { status: string; toolName: string }) => activities.push(`${a.status}:${a.toolName}`),
 		onTextDelta: vi.fn(),
 		onTurnEnd: vi.fn(),
 	}
@@ -141,12 +141,12 @@ describe("streamRemoteToOutputFile", () => {
 				}),
 			)
 			// Then onToolActivity start fires
-			callbacks.onToolActivity?.({ type: "start", toolName: "Reading file.ts" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Reading file.ts" })
 			// Tool completes
 			callbacks.onRawNotification?.(
 				toolCallUpdateNotification("call-123", { status: "completed", rawOutput: "file contents" }),
 			)
-			callbacks.onToolActivity?.({ type: "end", toolName: "Reading file.ts" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Reading file.ts" })
 			// Turn end to flush
 			callbacks.onTurnEnd?.(1)
 
@@ -156,8 +156,8 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
 			expect(toolUse.id).toBe("call-123")
 			expect(toolUse.name).toBe("Reading file.ts")
-			expect(activities).toContain("start:Reading file.ts")
-			expect(activities).toContain("end:Reading file.ts")
+			expect(activities).toContain("in_progress:Reading file.ts")
+			expect(activities).toContain("completed:Reading file.ts")
 		})
 
 		it("falls back to toolName for id when no toolCallId arrived before start", () => {
@@ -166,9 +166,9 @@ describe("streamRemoteToOutputFile", () => {
 			setOutputPath(outputPath, "agent-1")
 
 			// onToolActivity fires before any raw notification with toolCallId
-			callbacks.onToolActivity?.({ type: "start", toolName: "Shell command" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command" })
 			callbacks.onRawNotification?.(toolCallUpdateNotification("call-456", { status: "completed", rawOutput: "done" }))
-			callbacks.onToolActivity?.({ type: "end", toolName: "Shell command" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command" })
 			callbacks.onTurnEnd?.(1)
 
 			const entries = parseEntries(readJsonl(outputPath))
@@ -189,11 +189,11 @@ describe("streamRemoteToOutputFile", () => {
 					rawInput: { path: "/app/file.ts" },
 				}),
 			)
-			callbacks.onToolActivity?.({ type: "start", toolName: "Editing file.ts" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Editing file.ts" })
 			callbacks.onRawNotification?.(
 				toolCallUpdateNotification("call-789", { status: "completed", rawOutput: { success: true } }),
 			)
-			callbacks.onToolActivity?.({ type: "end", toolName: "Editing file.ts" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Editing file.ts" })
 			callbacks.onTurnEnd?.(1)
 
 			const entries = parseEntries(readJsonl(outputPath))
@@ -254,7 +254,7 @@ describe("streamRemoteToOutputFile", () => {
 					rawInput: { path: "/app/file.ts" },
 				}),
 			)
-			callbacks.onToolActivity?.({ type: "start", toolName: "Reading file.ts" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Reading file.ts" })
 
 			// Abort before tool completes
 			flushRemaining()
@@ -301,7 +301,7 @@ describe("streamRemoteToOutputFile", () => {
 
 			// tool_call with no rawInput, just status in_progress
 			callbacks.onRawNotification?.(toolCallNotification("call-late", "Late input tool", "in_progress"))
-			callbacks.onToolActivity?.({ type: "start", toolName: "Late input tool" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Late input tool" })
 
 			// rawInput arrives in a tool_call_update
 			callbacks.onRawNotification?.(
@@ -311,7 +311,7 @@ describe("streamRemoteToOutputFile", () => {
 					rawOutput: "file1.txt",
 				}),
 			)
-			callbacks.onToolActivity?.({ type: "end", toolName: "Late input tool" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Late input tool" })
 			callbacks.onTurnEnd?.(1)
 
 			const entries = parseEntries(readJsonl(outputPath))
@@ -334,11 +334,11 @@ describe("streamRemoteToOutputFile", () => {
 					rawInput: { path: "/app/file.ts" },
 				}),
 			)
-			callbacks.onToolActivity?.({ type: "start", toolName: "Early input tool" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Early input tool" })
 			callbacks.onRawNotification?.(
 				toolCallUpdateNotification("call-early", { status: "completed", rawOutput: "contents" }),
 			)
-			callbacks.onToolActivity?.({ type: "end", toolName: "Early input tool" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Early input tool" })
 			callbacks.onTurnEnd?.(1)
 
 			const entries = parseEntries(readJsonl(outputPath))

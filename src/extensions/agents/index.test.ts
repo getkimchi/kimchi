@@ -55,6 +55,13 @@ describe("AGENT_TOOL_GUIDELINES", () => {
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("Return decision-ready findings to the parent; do not write files.")
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("write a complete implementation spec")
 	})
+	it("keeps companion-tool references and parallel-work guidance after the Phase 1 diet", () => {
+		// Chunk 2 diet regression guard: these are the behavioral contracts a trim must not drop.
+		expect(AGENT_TOOL_GUIDELINES).toContain("run_in_background")
+		expect(AGENT_TOOL_GUIDELINES).toContain("resume_subagent")
+		expect(AGENT_TOOL_GUIDELINES).toContain("get_subagent_result")
+		expect(AGENT_TOOL_GUIDELINES).toContain("steer_subagent")
+	})
 })
 
 describe("AGENT_MODEL_PARAMETER_DESCRIPTION", () => {

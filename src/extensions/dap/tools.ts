@@ -294,6 +294,42 @@ const WatchChangeSchema = Type.Object({
 	timeout_ms: Type.Optional(Type.Number({ description: "Wall-clock timeout in ms (default 30000)" })),
 })
 
+// =============================================================================
+// Deferral split
+// =============================================================================
+
+/** Visible at session start: the entry point (debug_launch) plus the four
+ *  self-contained one-shots. Everything session-scoped is hidden until a
+ *  debug session becomes active (see dap.ts installSessionToolDeferral). */
+export const DAP_ALWAYS_VISIBLE_TOOL_NAMES = [
+	"debug_launch",
+	"debug_state_at",
+	"debug_last_error",
+	"debug_trace_calls",
+	"debug_watch_change",
+] as const
+
+/** Session-scoped tools — useless until a session exists. Hidden by default
+ *  (~1.2k est tokens); revealed one-way on first active debug session. Name
+ *  order matches createLayer1Tools. */
+export const DAP_SESSION_TOOL_NAMES = [
+	"debug_set_breakpoint",
+	"debug_continue",
+	"debug_locals",
+	"debug_eval",
+	"debug_backtrace",
+	"debug_terminate",
+	"step_in",
+	"step_over",
+	"step_out",
+	"debug_set_variable",
+	"debug_restart",
+] as const
+
+/** Point one-shot users at the interactive path (no skill dependence). */
+const INTERACTIVE_DISCOVERY_LINE =
+	" For interactive stepping use debug_launch — the session tools appear automatically then."
+
 /** Cap on debug_locals output lines — huge structs would otherwise flood the
  *  tool result and the agent's context. */
 const MAX_LOCALS_LINES = 100
@@ -313,7 +349,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_launch",
 			label: "DAP: Launch Debug Session",
 			description:
-				"Launch a debug session for a program. Returns a session id to use with other debug_* tools. The program does NOT start running until you call debug_continue — so you can set breakpoints with debug_set_breakpoint after launching. Workflow: (1) debug_launch, (2) debug_set_breakpoint, (3) debug_continue → stops at breakpoint, (4) debug_locals/debug_eval, (5) debug_terminate. Auto-detects the adapter from the file extension (.ts/.js→js-debug, .py→debugpy, .go→dlv, .rs/.c→lldb-dap). For Go package directories, pass the directory path and set adapter='dlv'. Tip: For one-off state inspection, prefer debug_state_at instead — it handles launch+breakpoint+inspect+terminate in one call.",
+				"Launch a debug session for a program. Returns a session id to use with other debug_* tools. The program does NOT start running until you call debug_continue — so you can set breakpoints with debug_set_breakpoint after launching. Workflow: (1) debug_launch, (2) debug_set_breakpoint, (3) debug_continue → stops at breakpoint, (4) debug_locals/debug_eval, (5) debug_terminate. Auto-detects the adapter from the file extension (.ts/.js→js-debug, .py→debugpy, .go→dlv, .rs/.c→lldb-dap). For Go package directories, pass the directory path and set adapter='dlv'. Tip: For one-off state inspection, prefer debug_state_at instead — it handles launch+breakpoint+inspect+terminate in one call. On launch, the session tools (debug_set_breakpoint, debug_continue, step_in/over/out, debug_locals, debug_eval, debug_backtrace, debug_set_variable, debug_restart, debug_terminate) appear automatically.",
 			promptSnippet: "Launch a debug session for a program and get a sessionId",
 			parameters: DebugLaunchSchema,
 			async execute(_toolCallId, params: Static<typeof DebugLaunchSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -603,7 +639,8 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_state_at",
 			label: "DAP: Capture State at Line",
 			description:
-				"Get the actual runtime value of variables at a specific line — faster than writing a repro or reasoning through code. Sets a breakpoint at file:line, runs to it, and returns locals (with one level of nested struct fields), backtrace, evaluated expressions, and stdout/stderr. Use the `evaluated` parameter to inspect specific expressions. For Go/dlv: field access works (e.g. 'cache.capacity', 'cache.items', 'cache.lru') and built-in functions work (e.g. 'len(cache.items)'), but method calls on unexported fields fail (e.g. 'cache.lru.Len()'). If evaluation fails, just pass the variable name and inspect its fields in the locals output. Auto-launches and terminates a session if no session_id is given.",
+				"Get the actual runtime value of variables at a specific line — faster than writing a repro or reasoning through code. Sets a breakpoint at file:line, runs to it, and returns locals (with one level of nested struct fields), backtrace, evaluated expressions, and stdout/stderr. Use the `evaluated` parameter to inspect specific expressions. For Go/dlv: field access works (e.g. 'cache.capacity', 'cache.items', 'cache.lru') and built-in functions work (e.g. 'len(cache.items)'), but method calls on unexported fields fail (e.g. 'cache.lru.Len()'). If evaluation fails, just pass the variable name and inspect its fields in the locals output. Auto-launches and terminates a session if no session_id is given." +
+				INTERACTIVE_DISCOVERY_LINE,
 			promptSnippet: "Get actual runtime values at a breakpoint (replaces repro scripts)",
 			parameters: StateAtSchema,
 			async execute(_toolCallId, params: Static<typeof StateAtSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -629,7 +666,8 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_last_error",
 			label: "DAP: Capture Last Error",
 			description:
-				"Find out why a program throws and what local state caused it — no need to add logging or reason about the error path. Runs the program until it throws, then returns the exception type/message, locals at the throw site, backtrace, and stdout/stderr. Returns null if the program completes without throwing.",
+				"Find out why a program throws and what local state caused it — no need to add logging or reason about the error path. Runs the program until it throws, then returns the exception type/message, locals at the throw site, backtrace, and stdout/stderr. Returns null if the program completes without throwing." +
+				INTERACTIVE_DISCOVERY_LINE,
 			promptSnippet: "Run until exception and capture throw-site state",
 			parameters: LastErrorSchema,
 			async execute(_toolCallId, params: Static<typeof LastErrorSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -653,7 +691,8 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_trace_calls",
 			label: "DAP: Trace Call Sequence",
 			description:
-				"Collect pre-instrumented trace output. IMPORTANT: this tool does NOT instrument anything for you — it only parses lines the program already prints. It runs the program to completion and extracts structured call records (function name, args, return value) from __KIMCHI_TRACE__ JSON sentinels the program explicitly logs itself (e.g. console.log('__KIMCHI_TRACE__' + JSON.stringify({fn, args, result}))). If the program prints no such markers, the result says 'not instrumented' — add markers or use debug_state_at/debug_watch_change instead.",
+				"Collect pre-instrumented trace output. IMPORTANT: this tool does NOT instrument anything for you — it only parses lines the program already prints. It runs the program to completion and extracts structured call records (function name, args, return value) from __KIMCHI_TRACE__ JSON sentinels the program explicitly logs itself (e.g. console.log('__KIMCHI_TRACE__' + JSON.stringify({fn, args, result}))). If the program prints no such markers, the result says 'not instrumented' — add markers or use debug_state_at/debug_watch_change instead." +
+				INTERACTIVE_DISCOVERY_LINE,
 			promptSnippet: "Get the actual call sequence (replaces reading code to trace flow)",
 			parameters: TraceCallsSchema,
 			async execute(_toolCallId, params: Static<typeof TraceCallsSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -676,7 +715,8 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_watch_change",
 			label: "DAP: Watch Expression Changes",
 			description:
-				"See how a variable's value changes as the program steps — replaces adding print statements to observe mutations. Sets a breakpoint at file:line, then steps through watching an expression for value changes. Returns each change location with old/new values.",
+				"See how a variable's value changes as the program steps — replaces adding print statements to observe mutations. Sets a breakpoint at file:line, then steps through watching an expression for value changes. Returns each change location with old/new values." +
+				INTERACTIVE_DISCOVERY_LINE,
 			promptSnippet: "Watch a variable change across steps (replaces print statements)",
 			parameters: WatchChangeSchema,
 			async execute(_toolCallId, params: Static<typeof WatchChangeSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {

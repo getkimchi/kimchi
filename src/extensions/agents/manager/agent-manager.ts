@@ -28,6 +28,7 @@ import {
 	type ToolActivity,
 } from "./agent-runner.js"
 import { runRemoteAgent } from "./remote-agent-runner.js"
+import { RemoteAgentSession } from "./remote-agent-session.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -42,7 +43,7 @@ const DEFAULT_MAX_REPORT_FINALIZERS = 1
 const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
 
 /** Result shape returned by `_runRemote()`, mirroring `RunResult` from agent-runner.ts. */
-type RemoteRunResult = Omit<RunResult, "session"> & { session: undefined }
+type RemoteRunResult = Omit<RunResult, "session"> & { session: AgentSession }
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -273,7 +274,9 @@ export class AgentManager {
 						sessionDir: options.sessionDir,
 						signal: record.abortController?.signal,
 						onToolActivity: (activity) => {
-							if (activity.type === "end") record.toolUses++
+							// Count only terminal statuses — a "pending" notification is
+							// not a completed tool use.
+							if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 							options.onToolActivity?.(activity)
 						},
 						onTurnEnd: (turnCount) => {
@@ -399,6 +402,16 @@ export class AgentManager {
 			gitDetails = undefined
 		}
 
+		// Create the adapter before calling runRemoteAgent so it's available
+		// on record.session as soon as the prompt starts — enables steer_subagent
+		// and get_subagent_result to work mid-run.
+		const remoteSession = new RemoteAgentSession()
+		record.session = remoteSession as unknown as AgentSession
+
+		// Seed the transcript with the user prompt so ConversationViewer shows it
+		// immediately, before any assistant text arrives.
+		remoteSession.setUserPrompt(prompt)
+
 		const result = await runRemoteAgent(workspaceId, prompt, {
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
@@ -406,17 +419,31 @@ export class AgentManager {
 			gitDetails,
 			localPath: ctx.cwd,
 			workspaceName: dirName,
+			onReady: (acpClient, meta) => {
+				remoteSession.bindClient(acpClient, meta)
+			},
 			callbacks: {
-				onTextDelta: (delta, fullText) => options.onTextDelta?.(delta, fullText),
+				onTextDelta: (delta, fullText) => {
+					remoteSession.appendAssistantText(fullText)
+					options.onTextDelta?.(delta, fullText)
+				},
 				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
+					if (activity.status === "in_progress") {
+						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId)
+					} else {
+						const isError = activity.status === "failed"
+						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
+						record.toolUses++
+					}
 					options.onToolActivity?.(activity)
 				},
 				onTurnEnd: (turnCount) => {
 					record.lastTurnCount = turnCount
+					remoteSession.incrementTurnCount()
 					options.onTurnEnd?.(turnCount)
 				},
 				onAssistantUsage: (usage) => {
+					remoteSession.addUsage(usage)
 					addUsage(record.lifetimeUsage, usage)
 					options.onAssistantUsage?.(usage)
 				},
@@ -426,13 +453,15 @@ export class AgentManager {
 			},
 		})
 
+		record.remoteSession = result.remoteSession
+
 		return {
 			responseText: result.responseText,
-			session: undefined,
+			session: remoteSession as unknown as AgentSession,
 			aborted: result.stopReason === "cancelled",
 			abortReason: undefined,
 			steered: false,
-			turnsUsed: 1,
+			turnsUsed: remoteSession.turnCount,
 			maxTurns: undefined,
 		}
 	}
@@ -557,7 +586,7 @@ export class AgentManager {
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
 		const resumePromise = resumeAgent(record.session, attemptPrompt, {
 			onToolActivity: (activity) => {
-				if (activity.type === "end") record.toolUses++
+				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 			},
 			onTurnEnd: (turnCount) => {
 				record.lastTurnCount = turnCount

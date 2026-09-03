@@ -62,7 +62,7 @@ export function streamRemoteToOutputFile(
 
 	const callbacks: AcpSessionCallbacks = {
 		onToolActivity: (activity) => {
-			if (activity.type === "start") {
+			if (activity.status === "in_progress") {
 				if (pendingAssistantText) {
 					writeEntry("assistant", { role: "assistant", content: [{ type: "text", text: pendingAssistantText }] })
 					pendingAssistantText = ""
@@ -85,7 +85,7 @@ export function streamRemoteToOutputFile(
 					],
 				})
 			}
-			if (activity.type === "end" && pendingToolCall) {
+			if (activity.status !== "in_progress" && pendingToolCall) {
 				const outputText =
 					pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : activity.toolName
 				writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })
@@ -112,7 +112,7 @@ export function streamRemoteToOutputFile(
 		onRawNotification: (params: SessionNotification) => {
 			const u = params.update
 			if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
-				// Always capture the toolCallId so onToolActivity("start") can use it
+				// Always capture the toolCallId so onToolActivity("in_progress") can use it
 				// for the tool_use entry's id field. rawInput may arrive in a later
 				// tool_call_update, but toolCallId is present from the first notification.
 				if (u.toolCallId != null) {

@@ -1,5 +1,7 @@
+import type { StreamOptions } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
+import { selectTelemetryProviderHeaders } from "../telemetry/provider-headers.js"
 import type { RouterConfig } from "./router-config.js"
 
 const RouterResponseSchema = Type.Object(
@@ -21,10 +23,12 @@ export type RouteQueryResult =
 
 export const ROUTER_TIMEOUT_MS = 5000
 
+type RouteQueryOptions = Pick<StreamOptions, "signal" | "headers"> & { fetchImpl?: typeof fetch }
+
 export async function routeQuery(
 	query: string,
 	config: RouterConfig,
-	options: { fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+	options: RouteQueryOptions = {},
 ): Promise<RouteQueryResult> {
 	const controller = new AbortController()
 	let timedOut = false
@@ -39,7 +43,11 @@ export async function routeQuery(
 	try {
 		const response = await (options.fetchImpl ?? fetch)(new URL("/v1/route", config.endpoint), {
 			method: "POST",
-			headers: { "Content-Type": "application/json", "X-API-Key": config.apiKey },
+			headers: {
+				...selectTelemetryProviderHeaders(options.headers),
+				"Content-Type": "application/json",
+				"X-API-Key": config.apiKey,
+			},
 			body: JSON.stringify({ query }),
 			signal: controller.signal,
 		})

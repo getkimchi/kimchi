@@ -12,9 +12,9 @@
  * | ACP `sessionUpdate`             | Callback                          |
  * | ------------------------------- | --------------------------------- |
  * | `agent_message_chunk`           | `onTextDelta(delta, fullText)`    |
- * | `tool_call` (in_progress)       | `onToolActivity({ type: "start"})`|
- * | `tool_call` (completed/failed)  | `onToolActivity({ type: "end" })` |
- * | `tool_call_update` (→completed) | `onToolActivity({ type: "end" })` |
+ * | `tool_call` (in_progress)       | `onToolActivity({ status: "in_progress" })`|
+ * | `tool_call` (completed/failed)  | `onToolActivity({ status: "completed"/"failed" })` |
+ * | `tool_call_update` (→completed) | `onToolActivity({ status: "completed"/"failed" })` |
  * | `prompt()` resolves             | `onTurnEnd(++turnCount)`          |
  * | `PromptResponse.usage`          | `onAssistantUsage({...})`         |
  *
@@ -50,8 +50,8 @@ const textDecoder = new TextDecoder()
 export interface AcpSessionCallbacks {
 	/** Streaming text delta from the assistant. Receives the delta and the accumulated full text. */
 	onTextDelta?: (delta: string, fullText: string) => void
-	/** Tool activity start/end with the tool's display title. */
-	onToolActivity?: (activity: { type: "start" | "end"; toolName: string }) => void
+	/** Tool activity start/end with the tool's display title and ACP status. */
+	onToolActivity?: (activity: { toolName: string; toolCallId?: string; status: ToolCallStatus }) => void
 	/** Called at the end of each ACP turn with the cumulative turn count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called with per-turn token usage when a `prompt()` resolves. */
@@ -100,6 +100,9 @@ export class AcpSessionClient {
 	private _abortListener: (() => void) | undefined
 	/** Reject function for the currently-pending initialize()/prompt() promise. */
 	private _pendingReject: ((err: Error) => void) | undefined
+	/** Maps toolCallId → title so tool_call_update events with null title
+	 *  can resolve to the original tool name from the initial tool_call. */
+	private _toolCallTitles = new Map<string, string>()
 
 	constructor(options: AcpSessionClientOptions) {
 		this._options = options
@@ -164,6 +167,23 @@ export class AcpSessionClient {
 			),
 		)
 		this._sessionId = newSessionResponse.sessionId
+
+		// Set permission mode to yolo after session creation. The ACP server's
+		// initial mode resolution doesn't read the --yolo CLI flag (it reads
+		// env vars and config), so we explicitly set it here via the ACP
+		// setSessionConfigOption method. This is the same mechanism used by
+		// the ACP config option dropdown.
+		await this._withAbortRejection(
+			this._withTimeout(
+				this._connection.setSessionConfigOption({
+					sessionId: this._sessionId,
+					configId: "permissions-mode",
+					value: "yolo",
+				}),
+				30_000,
+				"setSessionConfigOption",
+			),
+		)
 
 		if (this._aborted) {
 			await this.cancel()
@@ -406,11 +426,16 @@ export class AcpSessionClient {
 				break
 			}
 			case "tool_call": {
-				this._dispatchToolActivity(cb, update.status, update.title)
+				if (update.title) {
+					this._toolCallTitles.set(update.toolCallId, update.title)
+				}
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, update.title)
 				break
 			}
 			case "tool_call_update": {
-				this._dispatchToolActivity(cb, update.status, update.title ?? "tool")
+				// tool_call_update may omit title — resolve from the initial tool_call.
+				const title = update.title ?? this._toolCallTitles.get(update.toolCallId)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, title)
 				break
 			}
 			default:
@@ -423,12 +448,14 @@ export class AcpSessionClient {
 	private _dispatchToolActivity(
 		cb: AcpSessionCallbacks,
 		status: ToolCallStatus | null | undefined,
-		title: string,
+		toolCallId: string,
+		title: string | undefined,
 	): void {
 		if (status === "in_progress") {
-			cb.onToolActivity?.({ type: "start", toolName: title })
+			cb.onToolActivity?.({ toolName: title ?? toolCallId, toolCallId, status })
 		} else if (status === "completed" || status === "failed") {
-			cb.onToolActivity?.({ type: "end", toolName: title })
+			cb.onToolActivity?.({ toolName: title ?? toolCallId, toolCallId, status })
+			this._toolCallTitles.delete(toolCallId)
 		}
 	}
 

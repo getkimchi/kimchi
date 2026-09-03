@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import { isAgentWorker } from "./agent-worker-context.js"
 import {
 	adapterExists,
 	adapterForDirectory,
@@ -25,8 +26,9 @@ import {
 } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
-import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"
+import { createLayer1Tools, createLayer2Tools, DAP_SESSION_TOOL_NAMES, type LaunchSessionOptions } from "./dap/tools.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
+import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
@@ -288,6 +290,23 @@ export default function (pi: ExtensionAPI) {
 	const clientRegistry = new DapClientRegistry()
 	const sessionRegistry = new DapSessionRegistry()
 
+	// Session-tool deferral
+	// The 11 session-scoped DAP tools are hidden at session start until a
+	// debug session becomes active (~1.2k est tokens/run saved when the agent
+	// never debugs interactively). Reveal is one-way: once a session exists
+	// the tools stay visible for the rest of the session. Agent workers are
+	// carved out: their tool profiles list DAP tools as shared and the
+	// profile manager filters against disabled votes, so hiding here would
+	// carve them out of worker profiles by side effect.
+	const visibility = createToolVisibility(pi)
+	let sessionToolsRevealed = false
+
+	function revealSessionToolsOnce(): void {
+		if (sessionToolsRevealed || isAgentWorker()) return
+		sessionToolsRevealed = true
+		visibility.enable(DAP_SESSION_TOOL_NAMES)
+	}
+
 	// On-demand skill injection: language skills are NOT injected until the
 	// agent calls a debug tool for the first time. This saves ~1K tokens per
 	// API call when the agent is not debugging.
@@ -350,14 +369,26 @@ export default function (pi: ExtensionAPI) {
 		updateStatusFooter()
 
 		// Register Layer 1 tools (idempotent — registerTool replaces by name).
-		// Deps are wired here so tools.ts stays free of extension wiring.
+		// Deps are wired here so tools.ts stays free of extension wiring. Layer 1
+		// gets a revealing wrapper: only a persistent session (debug_launch)
+		// exposes the session tools. Layer 2 one-shots auto-launch and terminate
+		// their session inside a single call — revealing there would surface 11
+		// tools whose session no longer exists by the time the model sees them.
 		const deps = {
 			cwd,
 			getSession: (id: string) => sessionRegistry.get(id),
 			removeSession: (id: string) => sessionRegistry.remove(id),
-			launchSession: (opts: LaunchSessionOptions) => launchSession(opts),
+			launchSession: async (opts: LaunchSessionOptions) => launchSession(opts),
 		}
-		for (const tool of createLayer1Tools(deps)) {
+		const interactiveDeps = {
+			...deps,
+			launchSession: async (opts: LaunchSessionOptions) => {
+				const session = await launchSession(opts)
+				revealSessionToolsOnce()
+				return session
+			},
+		}
+		for (const tool of createLayer1Tools(interactiveDeps)) {
 			pi.registerTool(tool)
 		}
 		// Register Layer 2 composed tools (debug_state_at, debug_last_error,
@@ -365,6 +396,13 @@ export default function (pi: ExtensionAPI) {
 		// session registry and launchSession helper.
 		for (const tool of createLayer2Tools(deps)) {
 			pi.registerTool(tool)
+		}
+
+		// Defer session-scoped tools until they're useful (see above). Agents
+		// keep full visibility — they are profile-managed.
+		sessionToolsRevealed = false
+		if (!isAgentWorker()) {
+			visibility.disable(DAP_SESSION_TOOL_NAMES)
 		}
 	})
 

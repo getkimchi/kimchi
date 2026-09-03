@@ -46,6 +46,8 @@ kimchi-session-*.html
 
 # Session logs/transcripts
 *.jsonl
+# Parser-test fixtures are source, not transcripts — keep them
+!benchmark/manual/fixtures/*.jsonl
 
 # Root-level test stubs only — src/__mocks__ is for vitest alias stubs and must be committed
 /__mocks__/

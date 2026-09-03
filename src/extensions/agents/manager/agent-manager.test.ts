@@ -894,3 +894,64 @@ async function expectStillPending(promise: Promise<unknown>): Promise<void> {
 	await Promise.resolve()
 	expect(settled).toBe(false)
 }
+
+describe("AgentManager detachToBackground", () => {
+	it("returns true and marks agent as background when detachResolver is set", () => {
+		mockRunAgent.mockImplementationOnce(() => new Promise<never>(() => {}))
+		const manager = new AgentManager()
+		const id = manager.spawn(fakePi(), fakeCtx(), "Explore", "test", {
+			description: "test",
+			isBackground: false,
+		})
+		const record = manager.getRecord(id)
+		expect(record).toBeDefined()
+		if (!record) {
+			manager.dispose()
+			return
+		}
+		expect(record.isBackground).toBe(false)
+
+		// Set detachResolver (as spawnRemoteAgentFn / Agent tool does)
+		let detached = false
+		record.detachResolver = () => {
+			detached = true
+		}
+
+		const result = manager.detachToBackground(id)
+		expect(result).toBe(true)
+		expect(detached).toBe(true)
+		expect(record.isBackground).toBe(true)
+		expect(record.detachResolver).toBeUndefined()
+
+		manager.dispose()
+	})
+
+	it("returns false when detachResolver is not set", () => {
+		mockRunAgent.mockImplementationOnce(() => new Promise<never>(() => {}))
+		const manager = new AgentManager()
+		const id = manager.spawn(fakePi(), fakeCtx(), "Explore", "test", {
+			description: "test",
+			isBackground: false,
+		})
+
+		expect(manager.detachToBackground(id)).toBe(false)
+
+		manager.dispose()
+	})
+
+	it("returns false for a non-running agent", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		const manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "test", {
+			description: "test",
+		})
+
+		// Agent has completed — detach should fail
+		expect(manager.detachToBackground(record.id)).toBe(false)
+	})
+})

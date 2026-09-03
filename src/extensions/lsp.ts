@@ -26,6 +26,7 @@ import { detectMissingCandidates, detectServers, findRoot, serverForFile } from 
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
+import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export function clientCwd(filePath: string, sessionCwd: string): string {
@@ -35,6 +36,16 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
 const DIAG_WAIT_TIMEOUT_MS = 2000
+
+/** All five LSP tool names. Hidden at session start when detection finds no
+ *  language server for the session cwd. */
+export const LSP_TOOL_NAMES = [
+	"lsp_diagnostics",
+	"lsp_hover",
+	"lsp_definition",
+	"lsp_references",
+	"lsp_rename",
+] as const
 
 const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
 
@@ -53,6 +64,14 @@ export default function (pi: ExtensionAPI) {
 	let degradedServers: ReturnType<typeof detectMissingCandidates> = []
 	let warned = false
 	let ui: ExtensionUIContext | undefined
+	// The five lsp_* tools (~670 est of
+	// description+schema) are dead weight when no language server exists for the
+	// session cwd — every execute() would only answer "No LSP server available".
+	// Detection needs ctx.cwd, which only exists at session_start, so the gate
+	// is a visibility vote rather than a registration skip: tools stay
+	// registered but hidden from the advertised surface. The vote is static per
+	// session — servers do not warm up later — so there is no reveal transition.
+	const visibility = createToolVisibility(pi)
 	// Tracks the pending diagnostic wait so a newer edit can cancel the previous
 	// one (avoiding stale status-bar updates) and so session_shutdown can
 	// abort any leftover waiter before tearing down clients. The local
@@ -98,7 +117,11 @@ export default function (pi: ExtensionAPI) {
 			ui.setStatus("lsp", `LSP: ${names}`)
 		}
 
-		if (activeServers.length === 0) return
+		if (activeServers.length === 0) {
+			// Gate: hide the five lsp_* tools for this session.
+			visibility.disable(LSP_TOOL_NAMES)
+			return
+		}
 
 		// Eagerly start servers that have a project marker directly in sessionCwd
 		const goMarkers = ["go.mod"]

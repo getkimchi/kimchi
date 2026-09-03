@@ -20,6 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import { withBlocked } from "../herdr-events.js"
+import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
@@ -169,6 +170,29 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 // ─── Extension ────────────────────────────────────────────────────────────────
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
+	// Autonomous-mode block: registered unconditionally, even when the
+	// questionnaire tool itself is gated out of print sessions (the print-mode gate).
+	// In headless sessions without a ferment-oneshot judge, there is no
+	// audience for questions — not a human (no TUI), not a judge (no
+	// ferment-oneshot flag) — and this block is what tells the model to act
+	// autonomously instead of ending turns with questions into the void. It is
+	// load-bearing for benchmark behavior and must NOT be gated.
+	// Ferment one-shot sessions are excluded: ask_user routes to the LLM judge
+	// there, so questions have a real audience.
+	pi.on("before_agent_start", (event, ctx: ExtensionContext) => {
+		if (ctx.hasUI) return
+		if (pi.getFlag?.("ferment-oneshot") === true) return
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.`,
+		}
+	})
+
+	// In --print sessions the TUI form can
+	// never run, so skip registration entirely (~526 est saved) instead of
+	// registering + hiding. Interactive sessions are unchanged: the visibility
+	// vote below still governs UI-less interactive runs.
+	if (shouldSuppressInteractiveTools()) return
+
 	// The questionnaire tool drives a multi-question TUI form. When no UI is
 	// attached the execute body would return an error — worse, the model can
 	// retry the same call because the tool stays visible. Hide it from the
@@ -180,20 +204,6 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			visibility.enable(["questionnaire"])
 		} else {
 			visibility.disable(["questionnaire"])
-		}
-	})
-
-	// In headless sessions without a ferment-oneshot judge, there is no
-	// audience for questions — not a human (no TUI), not a judge (no
-	// ferment-oneshot flag). Inject a system-prompt instruction so the model
-	// acts autonomously instead of ending turns with questions into the void.
-	// Ferment one-shot sessions are excluded: ask_user routes to the LLM judge
-	// there, so questions have a real audience.
-	pi.on("before_agent_start", (event, ctx: ExtensionContext) => {
-		if (ctx.hasUI) return
-		if (pi.getFlag?.("ferment-oneshot") === true) return
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.`,
 		}
 	})
 

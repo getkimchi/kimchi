@@ -43,6 +43,16 @@ vi.mock("../../config.js", async (importOriginal) => {
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
 }))
+// Pin getVersion() so initialize() agentInfo assertions are deterministic
+// and don't depend on the repo's package.json.
+const getVersionMock = vi.fn(() => "1.2.3-test")
+vi.mock("../../utils.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../utils.js")>()
+	return {
+		...actual,
+		getVersion: () => getVersionMock(),
+	}
+})
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
@@ -53,6 +63,7 @@ import { clearApiKey, writeApiKey } from "../../config.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -90,9 +101,13 @@ function cleanPermissionEnv(): void {
 	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
 	// set by one test don't leak into another via the module-level cache.
 	populateCliArgs([])
+	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => {
+	getVersionMock.mockReturnValue("1.2.3-test")
+})
 afterEach(cleanPermissionEnv)
 
 /** Model shape used by FakeAgentSession's model registry. */
@@ -151,6 +166,13 @@ class FakeAgentSession {
 	aborted = false
 	clearQueueCalls = 0
 	clearQueueReturn = { steering: [] as string[], followUp: [] as string[] }
+	// Steering-seam state for the cancel-ordering regression: steer() records
+	// as pending, clearQueue() drops what was never delivered, and `order`
+	// pins the clear-before-abort sequence. `emulatedHistory` receives
+	// whatever an abort's wait lets pi-mono's steering chain deliver.
+	pendingSteers: string[] = []
+	emulatedHistory: string[] = []
+	order: string[] = []
 	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
@@ -266,11 +288,18 @@ class FakeAgentSession {
 
 	async abort(): Promise<void> {
 		this.aborted = true
+		this.order.push("abort")
 		await this.abortImpl()
+	}
+
+	async steer(text: string, _images?: unknown[]): Promise<void> {
+		this.pendingSteers.push(text)
 	}
 
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		this.clearQueueCalls++
+		this.order.push("clearQueue")
+		this.pendingSteers = []
 		return this.clearQueueReturn
 	}
 
@@ -540,6 +569,36 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			expect(response.agentCapabilities?.auth?.logout).toEqual({})
+		})
+
+		it("includes agentInfo with name kimchi and current version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("9.8.7-test")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo).toEqual({
+				name: "kimchi",
+				version: "9.8.7-test",
+			})
+		})
+
+		it("reflects the live getVersion() value in agentInfo.version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("0.0.0-canary.42")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo?.name).toBe("kimchi")
+			expect(response.agentInfo?.version).toBe("0.0.0-canary.42")
 		})
 	})
 
@@ -926,6 +985,85 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await promptP
 		expect(fake.aborted).toBe(true)
 		expect(fake.clearQueueCalls).toBe(1)
+	})
+
+	// Arms a turn that hangs until abort() runs — emulating a still-running
+	// turn when session/cancel arrives. onAbort runs inside abortImpl after
+	// the hang flag flips, while prompt() is still parked.
+	function armHangingTurn(onAbort?: () => void): void {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+			onAbort?.()
+		}
+	}
+
+	// Regression: cancel() must drain the queue BEFORE awaiting the abort.
+	// pi-mono chains queued steering messages into the running prompt —
+	// session.prompt() resolves only after all chained calls — so awaiting
+	// abort() first lets every queued steer self-deliver into history one
+	// reply at a time (observed in dogfooding: steers landing +3.7s/+10.9s
+	// after the abort, each with a full reply). The fake's abortImpl
+	// emulates that chaining by delivering whatever is still pending.
+	it("never delivers queued steers after cancel", async () => {
+		// Emulate pi-mono's steering chain: a waiting abort() gives every
+		// still-queued steer time to deliver into the session's history.
+		armHangingTurn(() => {
+			for (const text of fake.pendingSteers) {
+				fake.emulatedHistory.push(text)
+			}
+		})
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+		await fake.steer("t2")
+		await fake.steer("t3")
+
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.emulatedHistory).toEqual([])
+		expect(fake.order).toEqual(["clearQueue", "abort"])
+	})
+
+	// clearQueue() throwing must not skip the abort — the turn is already
+	// marked cancelled, and leaving the agent running would burn tokens
+	// until the LLM responds. try/finally guarantees abort runs regardless.
+	it("still aborts when clearQueue throws", async () => {
+		armHangingTurn()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
+			throw new Error("clearQueue boom")
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+
+		// cancel() must resolve — clearQueue's error is caught so abort still runs.
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.aborted).toBe(true)
+		// The drain failure is logged, not silently swallowed — a recurring
+		// clearQueue failure must be observable, not re-leak steers quietly.
+		expect(errorSpy).toHaveBeenCalledWith(
+			"kimchi acp: clearQueue() failed during cancel; aborting anyway",
+			expect.any(Error),
+		)
+		errorSpy.mockRestore()
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
@@ -1531,29 +1669,34 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is declared in the ACP request shape but kimchi has no hook to
-	// wire them into a live session — pi-coding-agent loads MCP servers from its
-	// own config. Silently dropping them would leave the client believing those
-	// servers are available; reject up-front with invalidParams instead.
-	it("rejects newSession when mcpServers is non-empty", async () => {
+	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
+	// servers are pushed onto the caller-servers registry and consumed by
+	// initializeMcp during session_start. This test verifies the session is
+	// created successfully (factory called) and the servers land in the registry.
+	it("accepts newSession with non-empty mcpServers and registers them", async () => {
 		const factoryCalled = { count: 0 }
 		const factory: AcpSessionFactory = async () => {
 			factoryCalled.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(
-			localAgent.newSession({
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(factoryCalled.count).toBe(0)
+		// Clear any stale entries from beforeEach's newSession call so peek
+		// returns only this test's entry.
+		clearCallerMcpServers()
+		const res = await localAgent.newSession({
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(res.sessionId).toBe("with-mcp")
+		expect(factoryCalled.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -5806,22 +5949,23 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
-	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
+	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
-		await expect(
-			agent.loadSession({
-				sessionId: "s1",
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(loaderCalls.count).toBe(0)
+		await agent.loadSession({
+			sessionId: "s1",
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(loaderCalls.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {

@@ -987,7 +987,7 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 
 	it("runAgent: skips tool calls from over-budget message (not mid-stream abort)", async () => {
 		const abortSpy = vi.fn()
-		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const toolActivities: Array<{ status: string; toolName: string }> = []
 		const session = makeFakeSession({
 			abortSpy,
 			promptAction: async (emit) => {
@@ -1026,7 +1026,7 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 
 	it("resumeAgent: skips tool calls from over-budget message", async () => {
 		const abortSpy = vi.fn()
-		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const toolActivities: Array<{ status: string; toolName: string }> = []
 		const subscribers: Subscriber[] = []
 		const session = {
 			subscribe: vi.fn((cb: Subscriber) => {

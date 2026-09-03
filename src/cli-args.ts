@@ -360,6 +360,13 @@ export function isExperimentalFeaturesArg(args: string[]): boolean {
 	return args.includes("--enable-experimental-features")
 }
 
+/** True when argv requests a ferment one-shot `--ferment-oneshot[=true]` or the
+ * bare kwarg form. A headless one-shot planner still needs the ferment suite,
+ * so suppression must compose. */
+export function hasFermentOneshotArg(args: readonly string[]): boolean {
+	return args.some((a) => a === "--ferment-oneshot" || a === "--ferment-oneshot=true" || a === "ferment-oneshot=true")
+}
+
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
 }

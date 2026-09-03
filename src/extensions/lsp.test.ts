@@ -36,7 +36,7 @@ vi.mock("./prompt-construction/index.js", () => ({
 import * as clientMod from "./lsp/client.js"
 import * as editsMod from "./lsp/edits.js"
 import * as serversMod from "./lsp/servers.js"
-import lspExtension from "./lsp.js"
+import lspExtension, { LSP_TOOL_NAMES } from "./lsp.js"
 import * as promptMod from "./prompt-construction/index.js"
 
 // ---------------------------------------------------------------------------
@@ -265,6 +265,50 @@ describe("extension registration", () => {
 		await pi.fireSessionStart()
 		const names = pi.getAllTools().map((t) => t.name)
 		expect(names).toContain("lsp_rename")
+	})
+})
+
+// =============================================================================
+// 1b. Tool visibility gate (token-optimization Phase 1 Chunk 6)
+// =============================================================================
+
+describe("tool visibility gate (Chunk 6)", () => {
+	it("keeps all five tools advertised when detection finds a server", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		const active = pi.getActiveTools()
+		for (const name of LSP_TOOL_NAMES) {
+			expect(active).toContain(name)
+		}
+	})
+
+	it("hides all five tools at session_start when no server is detected, but keeps them registered", async () => {
+		// beforeEach default: detectServers -> []
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		// Registered (availability preserved — the gate is a visibility vote,
+		// not a registration skip)…
+		expect(pi.getAllTools()).toHaveLength(5)
+		// …but never advertised to the model.
+		const active = pi.getActiveTools()
+		for (const name of LSP_TOOL_NAMES) {
+			expect(active).not.toContain(name)
+		}
+	})
+
+	it("also hides the tools when only degraded candidates exist (no binary on PATH)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		const active = pi.getActiveTools()
+		for (const name of LSP_TOOL_NAMES) {
+			expect(active).not.toContain(name)
+		}
 	})
 })
 

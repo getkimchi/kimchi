@@ -151,7 +151,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				Boolean(event.images?.length) ||
 				branchHasImages(ctx.sessionManager.getBranch())
 
-			stageAutoRoutingAttempt(sessionId, async (signal) => {
+			stageAutoRoutingAttempt(sessionId, async ({ signal, headers }) => {
 				const fail = (reason: AutoFailureReason): Extract<AutoRoutingState, { status: "failed" }> => {
 					setAutoRoutingState(sessionId, { status: "unresolved" })
 					return { status: "failed", reason }
@@ -168,7 +168,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				}
 				if (!config) return fail("no_auth")
 
-				const route = await routeQuery(query.query, config, { signal })
+				const route = await routeQuery(query.query, config, { signal, headers })
 				if (!route.ok) return fail(routeFailureReason(route.reason))
 
 				const resolution = resolveRecommendation(route.recommendation, ctx, requiresVision)

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { consumeCallerMcpServers } from "./caller-servers.js"
 import { loadMcpConfig } from "./config.js"
 import { ConsentManager } from "./consent-manager.js"
 import { getMissingConfiguredDirectToolServers, resolveDirectTools } from "./direct-tools.js"
@@ -21,7 +22,7 @@ import {
 import { McpServerManager } from "./server-manager.js"
 import type { McpExtensionState } from "./state.js"
 import { buildToolMetadata, totalToolCount } from "./tool-metadata.js"
-import type { DirectToolSpec, ToolMetadata } from "./types.js"
+import type { DirectToolSpec, ServerDefinition, ToolMetadata } from "./types.js"
 import { UiResourceHandler } from "./ui-resource-handler.js"
 import { openUrl, parallelLimit } from "./utils.js"
 
@@ -64,6 +65,22 @@ export async function initializeMcp(
 		sendMessage: (message, options) => pi.sendMessage(message, options),
 		dynamicToolNames: new Set(),
 	}
+
+	// Merge caller-supplied MCP servers (from ACP session/new or session/load)
+	// with config-sourced servers. Caller-wins on name collision: the ACP
+	// client explicitly requested that server, so its definition takes
+	// precedence over a same-named entry in the config file.
+	const callerServers = consumeCallerMcpServers(ctx.sessionManager.getSessionId())
+	const mergedServers: Record<string, ServerDefinition> = { ...config.mcpServers }
+	for (const [name, definition] of Object.entries(callerServers)) {
+		if (name in mergedServers) {
+			logger.debug(`MCP: caller-supplied server "${name}" overrides config entry`)
+		}
+		mergedServers[name] = definition
+	}
+	// Update config.mcpServers so downstream code (status bar, tool metadata,
+	// purge) sees the merged set.
+	config.mcpServers = mergedServers
 
 	const serverEntries = Object.entries(config.mcpServers)
 	if (serverEntries.length === 0) {

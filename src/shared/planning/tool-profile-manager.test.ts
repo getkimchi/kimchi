@@ -13,7 +13,12 @@ import {
 } from "./tool-profile-manager.js"
 
 /** Build a fresh mock ExtensionAPI. */
-const makeMockPi = (overrides: { allTools?: Array<{ name: string }> } = {}): ExtensionAPI => {
+const makeMockPi = (
+	overrides: {
+		allTools?: Array<{ name: string }>
+		events?: { on: (c: string, h: (d: unknown) => void) => () => void; emit: (c: string, d: unknown) => void }
+	} = {},
+): ExtensionAPI => {
 	const on = vi.fn()
 	const getAllTools = vi.fn(() => overrides.allTools ?? [])
 	// The cooperative visibility layer calls pi.getActiveTools() and
@@ -30,6 +35,7 @@ const makeMockPi = (overrides: { allTools?: Array<{ name: string }> } = {}): Ext
 		on,
 		getAllTools,
 		getActiveTools,
+		events: overrides.events,
 	} as unknown as ExtensionAPI
 }
 
@@ -125,6 +131,29 @@ describe("apply", () => {
 		expect(calledWith).toContain("write")
 		expect(calledWith).toContain("Agent")
 	})
+
+	it("implementation-ferment excludes adhoc-only tools (questionnaire) while keeping third-party tools", () => {
+		// The adhoc planning tool `questionnaire` must stay hidden: its ferment
+		// counterpart `ask_user` is the interactive-question surface inside a
+		// ferment. Regression for the getAllTools-base resurrecting first-party
+		// adhoc-only tools; third-party/MCP tools must still be preserved.
+		const pi = makeMockPi({
+			allTools: [
+				{ name: "read" },
+				{ name: "bash" },
+				{ name: "questionnaire" }, // catalog modes: ["adhoc"] — NOT ferment
+				{ name: "my_custom_mcp_tool" }, // third-party -> preserved
+			],
+		})
+
+		apply("implementation-ferment", "ferment", pi)
+
+		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).not.toContain("questionnaire")
+		expect(calledWith).toContain("my_custom_mcp_tool")
+		expect(calledWith).toContain("read")
+		expect(calledWith).toContain("bash")
+	})
 	describe("planning-ferment read-only MCP union", () => {
 		it("includes read-only-qualified tool names from registered providers", () => {
 			const pi = makeMockPi()
@@ -189,6 +218,40 @@ describe("apply", () => {
 
 			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
 			expect(calledWith).not.toContain("server_get_record")
+		})
+
+		it("applyCore on a PEER pi excludes a cross-extension vote cast on the shared bus (the DAP→ferment case)", () => {
+			// pi-mono hands each extension its own ExtensionAPI; a full-toolset
+			// snapshot taken under ferment's pi must still respect votes DAP cast
+			// under DAP's pi. The shared synchronous bus is the session identity,
+			// exactly as in the real runner (resource-loader creates one bus per
+			// session).
+			const handlers = new Map<string, Set<(d: unknown) => void>>()
+			const events = {
+				on: (c: string, h: (d: unknown) => void) => {
+					const set = handlers.get(c) ?? new Set()
+					set.add(h)
+					handlers.set(c, set)
+					return () => set.delete(h)
+				},
+				emit: (c: string, d: unknown) => {
+					for (const h of [...(handlers.get(c) ?? [])]) h(d)
+				},
+			}
+			const dapPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
+			const fermentPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
+
+			// DAP votes to defer a tool under its own pi at session_start.
+			createToolVisibility(dapPi).disable(["bash"])
+
+			// Ferment applies the full-toolset "idle" profile under ITS pi at
+			// before_agent_start. The vote must be visible cross-pi, so the
+			// snapshot must NOT re-surface bash.
+			apply("idle", "ferment", fermentPi)
+
+			const calledWith = (fermentPi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string[]
+			expect(calledWith).not.toContain("bash")
+			expect(calledWith).toContain("edit")
 		})
 	})
 })

@@ -11,6 +11,7 @@ export function createExtensionApi(): {
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	emitEvent: ReturnType<typeof vi.fn>
+	getAppendedEntries<T = unknown>(type: string): T[]
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
 	const on = vi.fn((event: string, handler: RegisteredHandler) => {
@@ -19,7 +20,10 @@ export function createExtensionApi(): {
 		handlers.set(event, registered)
 	})
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>()
-	const appendEntry = vi.fn<ExtensionAPI["appendEntry"]>()
+	const appendedEntries: Array<{ type: string; payload: unknown }> = []
+	const appendEntry = vi.fn((type: string, payload: unknown) => {
+		appendedEntries.push({ type, payload })
+	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
@@ -44,8 +48,11 @@ export function createExtensionApi(): {
 			return (handlers.get(event) ?? []) as ExtensionHandler<E, R>[]
 		},
 		sendMessage,
-		appendEntry,
 		setModel,
 		emitEvent,
+		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
+		getAppendedEntries<T = unknown>(type: string): T[] {
+			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)
+		},
 	}
 }

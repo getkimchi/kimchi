@@ -11,12 +11,18 @@
  * fake ExtensionAPI + controllable fake registry.
  */
 import type { ExtensionAPI, ExtensionContext, InputSource, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import bashControlExtension, {
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
 	formatGateBlockReason,
 } from "./bash-control-extension.js"
 import type { ProcessRegistry } from "./process-registry.js"
+
+// Control isAgentWorker() per test: workers keep bash_control visible.
+const workerState = vi.hoisted(() => ({ isWorker: false }))
+vi.mock("../agent-worker-context.js", () => ({
+	isAgentWorker: () => workerState.isWorker,
+}))
 
 // ─── Fake ExtensionAPI ────────────────────────────────────────────────────────
 
@@ -32,6 +38,10 @@ interface SentMessage {
 interface FakePi {
 	handlers: Map<string, AnyHandler[]>
 	registeredTools: string[]
+	/** Active tool set — what the model would be offered (visibility layer writes here). */
+	activeTools: Set<string>
+	/** Every setActiveTools call, in order (visibility transition log). */
+	activeTransitions: string[][]
 	messages: SentMessage[]
 	emit(event: string, payload: unknown): Promise<unknown[]>
 }
@@ -41,6 +51,8 @@ function makeFakePi(): FakePi & ExtensionAPI {
 	const state: FakePi = {
 		handlers,
 		registeredTools: [],
+		activeTools: new Set(),
+		activeTransitions: [],
 		messages: [],
 		async emit(event: string, payload: unknown) {
 			const list = handlers.get(event) ?? []
@@ -60,6 +72,15 @@ function makeFakePi(): FakePi & ExtensionAPI {
 		},
 		registerTool(tool: { name: string }) {
 			state.registeredTools.push(tool.name)
+			// Real runtime: a newly registered tool is active by default.
+			state.activeTools.add(tool.name)
+		},
+		getActiveTools(): string[] {
+			return [...state.activeTools]
+		},
+		setActiveTools(names: string[]) {
+			state.activeTransitions.push([...names])
+			state.activeTools = new Set(names)
 		},
 		sendMessage(message: Omit<SentMessage, "options">, options?: Record<string, unknown>) {
 			state.messages.push({ ...message, options })
@@ -204,6 +225,90 @@ async function startGatedSession(pi: ExtensionAPI, registry: FakeRegistry, handl
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+describe("bashControlExtension — bash_control deferral (token-optimization Chunk 4)", () => {
+	it("registers bash_control but keeps it hidden at session_start in main sessions", async () => {
+		workerState.isWorker = false
+		const pi = makeFakePi()
+		bashControlExtension(pi)
+		await fireSessionStart(pi)
+
+		// Registered (availability preserved) but not advertised (surface reduced).
+		const state = pi as unknown as FakePi
+		expect(state.registeredTools).toContain("bash_control")
+		expect(state.activeTools.has("bash_control")).toBe(false)
+	})
+
+	it("reveals bash_control on the first bash result with a background handle", async () => {
+		workerState.isWorker = false
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
+		await fireSessionStart(pi)
+		const state = pi as unknown as FakePi
+		expect(state.activeTools.has("bash_control")).toBe(false)
+
+		// A short-task bash result (no handle) must NOT reveal.
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c0",
+			input: { command: "echo hi" },
+			content: [{ type: "text", text: "hi" }],
+			isError: false,
+			details: { checkin: false },
+		})
+		expect(state.activeTools.has("bash_control")).toBe(false)
+
+		await fireToolResult(pi, checkinResult("h1"))
+		expect(state.activeTools.has("bash_control")).toBe(true)
+	})
+
+	it("reveal is one-way: a second handle does not re-transition visibility", async () => {
+		workerState.isWorker = false
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
+		await fireSessionStart(pi)
+		const state = pi as unknown as FakePi
+
+		await fireToolResult(pi, checkinResult("h1"))
+		const transitionsAfterReveal = state.activeTransitions.length
+		expect(transitionsAfterReveal).toBeGreaterThan(0)
+
+		await fireToolResult(pi, checkinResult("h2"))
+		expect(state.activeTransitions.length).toBe(transitionsAfterReveal)
+	})
+
+	it("keeps bash_control visible in agent workers (carve-out)", async () => {
+		workerState.isWorker = true
+		const pi = makeFakePi()
+		bashControlExtension(pi)
+		await fireSessionStart(pi)
+
+		const state = pi as unknown as FakePi
+		expect(state.activeTools.has("bash_control")).toBe(true)
+		// No visibility transitions at all in workers.
+		expect(state.activeTransitions).toHaveLength(0)
+		workerState.isWorker = false
+	})
+
+	it("a re-entered session_start after reveal does not re-hide bash_control", async () => {
+		workerState.isWorker = false
+		const pi = makeFakePi()
+		bashControlExtension(pi)
+		await fireSessionStart(pi)
+		await fireToolResult(pi, checkinResult("h1"))
+		const state = pi as unknown as FakePi
+		expect(state.activeTools.has("bash_control")).toBe(true)
+
+		// Resume/fork re-enters session_start; reveal is one-way per factory lifetime.
+		const transitions = state.activeTransitions.length
+		await fireSessionStart(pi)
+		expect(state.activeTools.has("bash_control")).toBe(true)
+		expect(state.activeTransitions.length).toBe(transitions)
+	})
+})
 
 describe("bashControlExtension — gate via tool_call hard blocks", () => {
 	it("registers the bash_control tool on session_start", async () => {

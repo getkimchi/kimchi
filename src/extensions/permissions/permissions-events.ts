@@ -38,6 +38,7 @@ export type ModeChangeReason =
 	| "ferment_restore"
 	| "plan_approval"
 	| "questionnaire_promotion"
+	| "cloud_spawn_failed" // revert to plan mode when a cloud-agent spawn fails
 	| "command"
 	| "session_start"
 	| "controller" // ACP/IDE SessionPermissionFlagController setMode callback

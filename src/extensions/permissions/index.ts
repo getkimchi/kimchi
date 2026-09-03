@@ -43,6 +43,8 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
+import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -748,10 +750,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const EXECUTE = "Execute the plan"
 			const DECLINE = "Rework the plan"
 			const START_AS_FERMENT = "Start as ferment"
+			const START_IN_CLOUD = "Start execution in cloud"
+
+			const options = [EXECUTE, DECLINE, START_AS_FERMENT]
+			if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
 
 			void withBlocked(pi.events, "Plan complete", () =>
 				withWorkingHidden(ctx, () =>
-					ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT], {
+					ctx.ui.select("Plan complete. How would you like to proceed?", options, {
 						signal: planMenuAbort.signal,
 					}),
 				),
@@ -769,6 +775,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					} else if (choice === START_AS_FERMENT) {
 						emitPlanReviewDecision(pi, {
 							decision: "start_ferment",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					} else if (choice === START_IN_CLOUD) {
+						emitPlanReviewDecision(pi, {
+							decision: "start_cloud",
 							source: "kimchi-tui",
 							planReviewSource: "adhoc",
 						})
@@ -797,7 +809,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	// Decision handler for adhoc plan reviews — handles decisions from both
 	// the TUI menu and plannotator's browser UI (first decision wins).
-	onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+	onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
 		if (payload.planReviewSource !== "adhoc") return
 		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
@@ -968,6 +980,29 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+			}
+		} else if (payload.decision === "start_cloud") {
+			// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
+			// Mode switches to auto immediately; the call blocks until the remote
+			// agent completes (or is killed via Ctrl+X). The result is injected
+			// into the local session as a steer message so the local agent has
+			// context for follow-up work.
+			const approvedSlug = activePlanSlug
+			activePlanSlug = undefined
+			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
+			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
+			try {
+				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
+			} catch (err) {
+				// Spawn failed — otherwise the user is stranded in auto mode with
+				// no active plan and no visible error. Surface the error and
+				// restore plan mode so they can retry.
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
+				activePlanSlug = approvedSlug
+				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 			}
 		} else if (payload.decision === "feedback") {
 			safeSendMessage(

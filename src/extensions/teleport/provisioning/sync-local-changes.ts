@@ -8,7 +8,7 @@ import { formatRsyncFailure, runRsync } from "./rsync-runner.js"
  * The clone's `.git` must never be touched, and secrets / harness state
  * should not leak to the sandbox.
  */
-const DIFF_RSYNC_EXCLUDES: readonly string[] = [".git/", ".env", ".env.*", ".envrc", ".kimchi/"]
+export const DIFF_RSYNC_EXCLUDES: readonly string[] = [".git/", ".env", ".env.*", ".envrc", ".kimchi/"]
 
 export interface SyncLocalChangesOptions {
 	/** Absolute path to the local working directory (source). */

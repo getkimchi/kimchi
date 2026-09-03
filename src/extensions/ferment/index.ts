@@ -26,7 +26,10 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { withBlocked } from "../herdr-events.js"
+import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { runCloudAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
 import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
@@ -49,6 +52,7 @@ import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
 import { canToggleFermentStopPolicy, FERMENT_STOP_POLICY_SHORTCUT } from "./status-line.js"
 import { createFermentTipProvider } from "./tips.js"
 import { registerFermentTodoSync } from "./todo-sync.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./tools/lifecycle.js"
@@ -222,6 +226,13 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 							fermentId: review.fermentId,
 							auto: outcome.kind === "start_auto",
 						})
+					} else if (outcome.kind === "start_cloud") {
+						emitPlanReviewDecision(pi, {
+							decision: "start_cloud",
+							source: "kimchi-tui",
+							planReviewSource: "ferment",
+							fermentId: review.fermentId,
+						})
 					} else if (outcome.kind === "feedback") {
 						emitPlanReviewDecision(pi, {
 							decision: "feedback",
@@ -273,6 +284,45 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				deliverAs: "followUp",
 				fermentId,
 				tag: "Plan review start",
+			})
+		} else if (payload.decision === "start_cloud") {
+			// Confirm pending scope so the ferment is saved locally, then spawn
+			// a remote agent to execute the plan in a cloud sandbox. The local
+			// ferment is left as-is (scoped, not activated) — the remote agent
+			// creates its own ferment from the plan text.
+			const scopeOutcome = confirmPendingScope(runtime, fermentId, undefined, "turn_end", pi)
+			if (!scopeOutcome.ok) {
+				reviewCtx.ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
+				return
+			}
+			runtime.clearPendingPlanReview(fermentId)
+			applyFermentRuntimeToolProfile(pi, runtime)
+			// Pause the ferment before spawning the cloud agent so the scheduler
+			// can't nudge the agent to activate_ferment_phase between confirm
+			// and spawn. The ferment is completed (on sync) or resumed (on
+			// review/custom/done) when the cloud agent finishes.
+			const pauseOutcome = createApplyAndPersist(runtime)(fermentId, { type: "pause" })
+			if (pauseOutcome.ok) {
+				runtime.setActive(pauseOutcome.ferment)
+			}
+			const planMarkdown = reviewCtx.planText
+			const cloudPrompt = buildRemotePlanPrompt(planMarkdown, { origin: "ferment" })
+			const cloudDescription = `cloud: ${planMarkdown.slice(0, 60)}${planMarkdown.length > 60 ? "..." : ""}`
+			const ui = reviewCtx.ctx?.ui
+			void runCloudAgent(pi, reviewCtx.ctx, cloudPrompt, cloudDescription, {
+				background: true,
+				origin: "ferment plan",
+				fermentId,
+			}).catch((err) => {
+				// Spawn failed after the ferment was paused — resume it so the
+				// user isn't left with a stuck ferment and no recovery path,
+				// and surface the error.
+				const message = err instanceof Error ? err.message : String(err)
+				ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
+				const resumeOutcome = createApplyAndPersist(runtime)(fermentId, { type: "resume" })
+				if (resumeOutcome.ok) {
+					runtime.setActive(resumeOutcome.ferment)
+				}
 			})
 		} else if (payload.decision === "feedback") {
 			// Clear the pending review before triggering the revision turn.
@@ -457,9 +507,20 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
-	registerLifecycleTools(pi, runtime)
-	registerPhaseTools(pi, runtime)
-	registerStepTools(pi, runtime)
-	registerKnowledgeTools(pi, runtime)
+	// In a plain --print session with no
+	// ferment one-shot in flight there is no audience for the ferment suite
+	// (list_ferments, lifecycle, phase, step, knowledge tools — including
+	// ask_user, which headless-non-oneshot sessions cannot route to any
+	// audience). Suppress the suite so it never enters the advertised surface
+	// of demonstrate non-interactive runs. A --print run launched WITH
+	// -oneshot=true keeps everything: that session IS the one-shot
+	// planner, and its toolset composes via shouldSuppressFermentModeTools().
+	// The spawn guard is an event guard, not tool surface — always registered.
+	if (!shouldSuppressFermentModeTools()) {
+		registerLifecycleTools(pi, runtime)
+		registerPhaseTools(pi, runtime)
+		registerStepTools(pi, runtime)
+		registerKnowledgeTools(pi, runtime)
+	}
 	registerAgentSpawnGuard(pi, runtime)
 }

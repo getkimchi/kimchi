@@ -34,10 +34,11 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackSubagentSpawned } from "../telemetry/index.js"
+import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -64,7 +65,6 @@ import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getAllTypes,
-	getAvailableTypes,
 	getDefaultAgentNames,
 	getUserAgentNames,
 	registerAgents,
@@ -142,19 +142,12 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
-- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
-- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
-- Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
-- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
-- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
-- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- One call per task, detailed prompt; run_in_background for parallelism.
+- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -280,8 +273,8 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	}
 
 	const callbacks = {
-		onToolActivity: (activity: { type: "start" | "end"; toolName: string }) => {
-			if (activity.type === "start") {
+		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
+			if (activity.status === "in_progress") {
 				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
 			} else {
 				for (const [key, name] of state.activeTools) {
@@ -521,9 +514,15 @@ export function getActiveManager(): AgentManager | undefined {
 
 /** Options for spawnRemoteAgent. */
 export interface SpawnRemoteAgentOptions {
-	/** Called with the agent id as soon as it is spawned, before the promise resolves.
-	 *  Use this to register abort handlers that need the id during the startup phase. */
-	onSpawn?: (id: string) => void
+	/** When true, spawn as a background agent — returns immediately with the agent ID.
+	 *  The caller will be notified on completion. Default: false (foreground). */
+	background?: boolean
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). Default: "plan". */
+	origin?: string
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on
+	 *  completion. */
+	fermentId?: string
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -534,19 +533,30 @@ let spawnRemoteAgentFn:
 			prompt: string,
 			description: string,
 			opts?: SpawnRemoteAgentOptions,
-	  ) => Promise<{ id: string; result: string }>)
+	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
 	| undefined
+
+/** Build numeric stats for remote_execution.completed/failed telemetry from a finished record. */
+export function buildRemoteExecutionStats(record: AgentRecord): RemoteExecutionStats {
+	return {
+		duration_ms: record.completedAt != null ? record.completedAt - record.startedAt : 0,
+		tool_calls: record.toolUses,
+		turns: record.lastTurnCount,
+		input_tokens: record.lifetimeUsage.input,
+		output_tokens: record.lifetimeUsage.output,
+	}
+}
 
 /** Spawns a foreground remote agent with full UI streaming support.
  *  Returns the agent id (for targeted abort) and the result text.
- *  Pass `onSpawn` to get the agent id before the promise resolves. */
+ */
 export async function spawnRemoteAgent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	prompt: string,
 	description: string,
 	opts?: SpawnRemoteAgentOptions,
-): Promise<{ id: string; result: string }> {
+): Promise<{ id: string; result: string; backgrounded?: boolean }> {
 	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
 	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
 }
@@ -975,6 +985,39 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
+			// Remote agents spawned as background get the post-completion dropdown
+			// (Review / Sync / Done) instead of the normal nudge path.
+			if (record.triggersRemoteCompletion) {
+				record.triggersRemoteCompletion = false
+				trackRemoteExecution(
+					isError ? "failed" : "completed",
+					record.remoteOrigin ?? "plan",
+					buildRemoteExecutionStats(record),
+				)
+				// spawnCtx is captured at spawn time and is always valid for this
+				// agent — don't fall back to a stale global context.
+				const completionCtx = record.spawnCtx
+				if (completionCtx) {
+					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
+						transcriptPath: record.outputFile,
+						agentId: record.id,
+						remoteSession: record.remoteSession,
+						fermentId: record.fermentId,
+					}).catch((err) => {
+						currentUi?.notify(
+							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
+					})
+				} else {
+					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				}
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
 			const result = groupJoin.onAgentComplete(record)
 			if (result === "pass") {
 				sendIndividualNudge(record)
@@ -1041,7 +1084,7 @@ export default function (pi: ExtensionAPI) {
 
 		const spawnOpts = {
 			description: desc,
-			isBackground: false,
+			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
 			...transcriptCallbacks,
@@ -1050,6 +1093,9 @@ export default function (pi: ExtensionAPI) {
 
 		const record = manager.getRecord(id)
 		if (record) {
+			record.spawnCtx = ctx
+			record.remoteOrigin = opts?.origin ?? "plan"
+			record.fermentId = opts?.fermentId
 			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
 			setOutputPath(record.outputFile, id)
@@ -1058,15 +1104,61 @@ export default function (pi: ExtensionAPI) {
 		widget.ensureTimer()
 		widget.update()
 
-		// Notify the caller of the agent id immediately so abort handlers
-		// (e.g. Ctrl+X) can target this agent during the startup phase.
-		opts?.onSpawn?.(id)
+		// Background mode: return immediately — the caller will be notified on completion.
+		if (opts?.background) {
+			if (record) record.triggersRemoteCompletion = true
+			return { id, result: "", backgrounded: true }
+		}
+
+		// Set up detach resolver so Ctrl+B can background the remote agent mid-run.
+		let detachResolve!: () => void
+		const detachPromise = new Promise<void>((r) => {
+			detachResolve = r
+		})
+		if (record) record.detachResolver = detachResolve
 
 		const rec = manager.getRecord(id)
 		if (!rec?.promise) return { id, result: "" }
 		try {
+			const raceResult = await Promise.race([
+				rec.promise.then(() => "completed" as const),
+				detachPromise.then(() => "detached" as const),
+			])
+
+			if (raceResult === "detached") {
+				// Remote agent was backgrounded via Ctrl+B.
+				// _runRemote's promise is still in flight — it will resolve naturally
+				// and the completion path in startAgent handles cleanup + notification.
+				if (record) record.triggersRemoteCompletion = true
+				flushRemaining()
+				widget.ensureTimer()
+				widget.update()
+
+				pi.events.emit("subagents:backgrounded", {
+					id,
+					type: "Remote-Runner",
+					description: desc,
+					visibility: "user",
+				})
+
+				const outputFile = record?.outputFile ?? ""
+				return {
+					id,
+					backgrounded: true,
+					result:
+						`Agent sent to background by the user (Ctrl+B).\n` +
+						`Agent ID: ${id}\n` +
+						`Type: Remote-Runner\n` +
+						`Description: ${desc}\n` +
+						`${outputFile ? `Output file: ${outputFile}\n` : ""}` +
+						`The agent continues running in the background. You will be notified when it completes.`,
+				}
+			}
+
+			// Normal completion path
+			if (record) record.detachResolver = undefined
 			const result = await rec.promise
-			return { id, result }
+			return { id, result, backgrounded: false }
 		} finally {
 			// Flush any buffered transcript entries on completion or error so
 			// nothing is lost if the remote run is aborted or fails mid-stream.
@@ -1170,12 +1262,9 @@ export default function (pi: ExtensionAPI) {
 		})
 
 		return [
-			"Default agents:",
+			"Agent types:",
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
-			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
-			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
@@ -1203,11 +1292,8 @@ export default function (pi: ExtensionAPI) {
 		defineTool({
 			name: "Agent",
 			label: "Agent",
-			description: `Launch a new agent to handle complex, multi-step tasks autonomously.
+			description: `Launch an agent to run a complex multi-step task autonomously.
 
-The Agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
-
-Available agent types:
 ${typeListText}
 
 ${AGENT_TOOL_GUIDELINES}`,
@@ -1219,7 +1305,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					description: "A short (3-5 word) description of the task (shown in UI).",
 				}),
 				subagent_type: Type.String({
-					description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .kimchi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
+					description:
+						"Agent type (see list above); custom agents come from .kimchi/agents/*.md (project) or the global agents dir.",
 				}),
 				model: Type.Optional(
 					Type.String({
@@ -1229,7 +1316,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh, max. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
+							"Thinking effort: off, minimal, low, medium, high, xhigh, max. Overrides agent profile defaults.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -2045,14 +2132,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 			name: "steer_subagent",
 			label: "Steer Agent",
 			description:
-				"Send a steering message to a running agent. The message will interrupt the agent after its current tool execution " +
-				"and be injected into its conversation, allowing you to redirect its work mid-run. Only works on running agents.",
+				"Send a steering message to a running agent; it is injected into the agent's conversation after the current tool completes.",
 			parameters: Type.Object({
 				agent_id: Type.String({
-					description: "The agent ID to steer (must be currently running).",
+					description: "The running agent's ID.",
 				}),
 				message: Type.String({
-					description: "The steering message to send. This will appear as a user message in the agent's conversation.",
+					description: "Steering message (appears as a user message in the agent's conversation).",
 				}),
 			}),
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {

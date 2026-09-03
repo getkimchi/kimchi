@@ -22,7 +22,7 @@ export const PLAN_REVIEW_REQUEST_CHANNEL = "kimchi:plan-review-request"
 export const PLAN_REVIEW_DECISION_CHANNEL = "kimchi:plan-review-decision"
 
 export type PlanReviewSource = "adhoc" | "ferment"
-export type PlanReviewDecision = "execute" | "start_ferment" | "rework" | "feedback"
+export type PlanReviewDecision = "execute" | "start_ferment" | "start_cloud" | "rework" | "feedback"
 export type PlanReviewDecisionSource = "kimchi-tui" | "plannotator"
 
 export interface PlanReviewRequestPayload {

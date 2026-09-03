@@ -473,8 +473,22 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
+/**
+ * Route explicit child-session requests and legacy prompt-marked subagents
+ * to the subagent response queue.
+ */
+const REPLACE_MODE_SUBAGENT_HEADER = "You are a kimchi coding agent sub-agent."
+
 function isSubagentRequest(request: FakeResponseRequest): boolean {
-	return request.headers["x-parent-session-id"] !== undefined
+	if (request.headers["x-parent-session-id"] !== undefined) return true
+	const messages = asRecord(request.body).messages
+	if (!Array.isArray(messages)) return false
+	return messages.some((message) => {
+		const record = asRecord(message)
+		if (record.role !== "system") return false
+		const content = readMessageContent(record.content)
+		return content.includes("<inherited_system_prompt>") || content.includes(REPLACE_MODE_SUBAGENT_HEADER)
+	})
 }
 
 /**

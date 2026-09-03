@@ -2,9 +2,10 @@
  * types.ts — Type definitions for the agents extension.
  */
 
-import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { ModelTier } from "../../orchestration/model-registry/types.js"
 import type { ModelRole } from "../../orchestration/model-roles.js"
+import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 
@@ -206,6 +207,18 @@ export interface AgentRecord {
 	isBackground?: boolean
 	/** When true, this agent runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** Remote session metadata (workspace, host, cwd) — set by _runRemote, used by post-completion sync. */
+	remoteSession?: RemoteSessionMeta
+	/** ExtensionContext captured at spawn time — used by the completion handler when
+	 *  currentCtx is undefined (background agent completing between turns). */
+	spawnCtx?: ExtensionContext
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). */
+	remoteOrigin?: string
+	/** Set when this remote background agent should trigger handleRemoteCompletion on completion. */
+	triggersRemoteCompletion?: boolean
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on completion. */
+	fermentId?: string
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

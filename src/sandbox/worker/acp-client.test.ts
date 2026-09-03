@@ -215,6 +215,14 @@ async function initClient(client: AcpSessionClient): Promise<{ socket: MockSocke
 	const newSessionReq = findRequest(getSentMessages(socket), "session/new")
 	serverSendMessage(socket, rpcResponse(newSessionReq.id, { sessionId: "session-abc" }))
 
+	// The client sends a session/set_config_option request after newSession
+	// to set the permission mode. Respond so initialize() can resolve.
+	await vi.waitFor(() => {
+		expect(getSentMessages(socket).some((m) => m.method === "session/set_config_option")).toBe(true)
+	})
+	const configReq = findRequest(getSentMessages(socket), "session/set_config_option")
+	serverSendMessage(socket, rpcResponse(configReq.id, {}))
+
 	await initPromise
 
 	return { socket }
@@ -669,8 +677,9 @@ describe("AcpSessionClient", () => {
 
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
-					type: "start",
 					toolName: "Reading file.ts",
+					toolCallId: "tc-1",
+					status: "in_progress",
 				})
 			})
 
@@ -710,8 +719,9 @@ describe("AcpSessionClient", () => {
 
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
-					type: "end",
 					toolName: "Reading file.ts",
+					toolCallId: "tc-1",
+					status: "completed",
 				})
 			})
 
@@ -751,8 +761,9 @@ describe("AcpSessionClient", () => {
 
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
-					type: "end",
 					toolName: "Running tests",
+					toolCallId: "tc-1",
+					status: "failed",
 				})
 			})
 
@@ -791,8 +802,9 @@ describe("AcpSessionClient", () => {
 
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
-					type: "start",
-					toolName: "tool",
+					toolName: "tc-1",
+					toolCallId: "tc-1",
+					status: "in_progress",
 				})
 			})
 
@@ -832,13 +844,77 @@ describe("AcpSessionClient", () => {
 
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
-					type: "end",
 					toolName: "Updated title",
+					toolCallId: "tc-1",
+					status: "completed",
 				})
 			})
 
 			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
 			await p
+			client.close()
+		})
+
+		it("resolves null-title tool_call_update from initial tool_call title", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Initial tool_call with a real title
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "pnpm run typecheck",
+						status: "in_progress",
+					},
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "pnpm run typecheck",
+					toolCallId: "tc-1",
+					status: "in_progress",
+				})
+			})
+
+			// Update with null title — should resolve to the original
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						status: "completed",
+					},
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "pnpm run typecheck",
+					toolCallId: "tc-1",
+					status: "completed",
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+
 			client.close()
 		})
 
@@ -1074,6 +1150,13 @@ describe("AcpSessionClient", () => {
 			})
 			const newSessionReq = findRequest(getSentMessages(socket), "session/new")
 			serverSendMessage(socket, rpcResponse(newSessionReq.id, { sessionId: "session-abc" }))
+
+			// Respond to session/set_config_option so initialize() can resolve
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/set_config_option")).toBe(true)
+			})
+			const configReq = findRequest(getSentMessages(socket), "session/set_config_option")
+			serverSendMessage(socket, rpcResponse(configReq.id, {}))
 			await initPromise
 
 			client.close()

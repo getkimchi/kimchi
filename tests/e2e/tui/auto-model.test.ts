@@ -173,7 +173,7 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 		async (fixture, trace) => {
 			terminal.submit("Choose a model for this session")
 			await waitForText(terminal, "First routed reply.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("first prompt routed")
 
@@ -181,10 +181,16 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			await waitForText(terminal, "Second routed reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
-			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
+			const routerRequests = requestsTo(fixture, "/v1/route")
+			expect(routerRequests).toHaveLength(1)
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests).toHaveLength(2)
 			expect(chatRequests.map((request) => requestModel(request.body))).toEqual(["routed", "routed"])
+			expect(routerRequests[0]?.headers["x-session-id"]).toBe(chatRequests[0]?.headers["x-session-id"])
+			expect(routerRequests[0]?.headers["x-conversation-id"]).toBe(chatRequests[0]?.headers["x-conversation-id"])
+			expect(routerRequests[0]?.headers["x-turn-index"]).toBe(chatRequests[0]?.headers["x-turn-index"])
+			expect(routerRequests[0]?.headers.traceparent).toBe(chatRequests[0]?.headers.traceparent)
+			expect(routerRequests[0]?.headers["x-parent-session-id"]).toBeUndefined()
 
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))
 			expect(settings.defaultProvider).toBe("kimchi-dev")
@@ -248,7 +254,7 @@ test("Auto uses the highest-ranked eligible model when the best model is outside
 		async (fixture) => {
 			terminal.submit("Use the first eligible router-ranked model")
 			await waitForText(terminal, "Ranked fallback reply.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto (fallback) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
@@ -281,7 +287,7 @@ test("Auto stops an unavailable-router prompt and retries when the user submits 
 
 			terminal.submit("Try the router again")
 			await waitForText(terminal, "Router retry succeeded.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(2)
@@ -320,7 +326,7 @@ test("Escape cancels an in-flight router request and the corrected prompt can ro
 
 			terminal.submit("Use this corrected prompt instead")
 			await waitForText(terminal, "Corrected prompt succeeded.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(2)
@@ -418,7 +424,7 @@ test("resuming an Auto session reuses its concrete resolution without the flag",
 		fixture.initialModel = false
 		launchKimchi(terminal, fixture, ["-r", sessionId ?? ""], fixture.seedEnv)
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
-		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		terminal.submit("Continue the same session")
 		await waitForText(terminal, "Resumed Auto reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 		await waitForTurnToSettle(fixture.fake.requests)
@@ -502,10 +508,22 @@ test("a child that inherits Auto makes one independent routing decision", async 
 			await waitForText(terminal, "Parent finished.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
-			expect(requestsTo(fixture, "/v1/route")).toHaveLength(2)
+			const routerRequests = requestsTo(fixture, "/v1/route")
+			expect(routerRequests).toHaveLength(2)
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests).toHaveLength(3)
 			expect(chatRequests.map((request) => requestModel(request.body))).toEqual(["routed", "routed", "routed"])
+
+			const parentRouterRequest = routerRequests.find((request) => !request.headers["x-parent-session-id"])
+			const childRouterRequest = routerRequests.find((request) => request.headers["x-parent-session-id"])
+			const childChatRequest = chatRequests.find((request) => request.headers["x-parent-session-id"])
+			expect(childRouterRequest?.headers["x-session-id"]).toBe(parentRouterRequest?.headers["x-session-id"])
+			expect(childRouterRequest?.headers["x-conversation-id"]).not.toBe(
+				parentRouterRequest?.headers["x-conversation-id"],
+			)
+			expect(childRouterRequest?.headers["x-session-id"]).toBe(childChatRequest?.headers["x-session-id"])
+			expect(childRouterRequest?.headers["x-conversation-id"]).toBe(childChatRequest?.headers["x-conversation-id"])
+			expect(childRouterRequest?.headers["x-parent-session-id"]).toBe(childChatRequest?.headers["x-parent-session-id"])
 		},
 	)
 })

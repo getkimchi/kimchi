@@ -64,6 +64,8 @@ import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
+import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
+import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -91,6 +93,7 @@ import type { PermissionMode, PermissionModeState } from "../../extensions/permi
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { updateModelsConfig } from "../../models.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
@@ -428,6 +431,10 @@ export class KimchiAcpAgent implements Agent {
 
 		return {
 			protocolVersion: PROTOCOL_VERSION,
+			agentInfo: {
+				name: "kimchi",
+				version: getVersion(),
+			},
 			agentCapabilities: {
 				loadSession: true,
 				// Advertise logout support so clients know they can call
@@ -439,6 +446,7 @@ export class KimchiAcpAgent implements Agent {
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
 				_meta: {
 					[CAPABILITIES_KEY]: {
@@ -530,23 +538,12 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		// mcpServers isn't plumbed: kimchi loads MCP servers from its own config via
-		// mcpAdapterExtension, so a caller-supplied list would be silently ignored.
-		// Surface that as invalidParams instead of accepting the request and
-		// pretending those servers are live.
-		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
-			throw RequestError.invalidParams(
-				undefined,
-				"mcpServers is not supported; configure MCP servers via kimchi config",
-			)
-		}
 		const session = await this.sessionFactory(params)
-		const initialMode = this.getInitialPermissionMode(session)
-		// Once the factory hands us a live session we own its lifecycle. If model
-		// verification, extension binding, subscribe, or the registering Map.set
-		// throws before we hand it back to the caller, nothing else will ever
-		// dispose it — so make ownership transfer atomic.
 		try {
+			// Caller-supplied MCP servers, keyed by sessionId so concurrent
+			// sessions can't consume each other's entries.
+			setCallerMcpServers(session.sessionId, convertAcpMcpServers(params.mcpServers ?? []))
+			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
 
 			const sessionId = session.sessionId
@@ -581,17 +578,17 @@ export class KimchiAcpAgent implements Agent {
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(session, () => this.getInitialPermissionMode(session).mode)
+			const configOptions = buildConfigOptions(session, initialMode.mode)
 			return {
 				sessionId,
 				configOptions,
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
+			removePendingEntry(session.sessionId)
 			unregisterAcpPrompter(session.sessionId)
 			unregisterSessionPermissionFlagController(session.sessionId)
 			clearPermissionModeEnv(session.sessionId)
-
 			session.dispose()
 			throw err
 		}
@@ -677,7 +674,7 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
 		return {
-			configOptions: buildConfigOptions(record.session, () => this.getInitialPermissionMode(record.session).mode),
+			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
 		}
 	}
 
@@ -753,14 +750,6 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		// Same posture as newSession: mcpServers isn't plumbed, surface as
-		// invalidParams instead of silently dropping caller intent.
-		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
-			throw RequestError.invalidParams(
-				undefined,
-				"mcpServers is not supported; configure MCP servers via kimchi config",
-			)
-		}
 		const sessionId = params.sessionId
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
@@ -770,10 +759,7 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(existing.session)
 			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(
-				existing.session,
-				() => this.getInitialPermissionMode(existing.session).mode,
-			)
+			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
@@ -794,61 +780,62 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		const session: AgentSession = await this.sessionLoader(params)
-		const initialMode = this.getInitialPermissionMode(session)
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		const sid = session.sessionId
-		// Defensive: pi reads the sessionId from the JSONL header, not the
-		// filename, so a corrupted / hand-edited session whose header id
-		// disagrees with the requested id would land under the wrong key in
-		// `sessions`. Subsequent session/prompt for params.sessionId would then
-		// fail with "unknown sessionId" while the file is still held open.
-		// Reject up front and dispose so we don't quietly diverge.
-		if (sid !== params.sessionId) {
-			session.dispose()
-			throw RequestError.invalidParams(
-				undefined,
-				`session header id ${sid} does not match requested sessionId ${params.sessionId}`,
-			)
-		}
+		const loadedSession = await this.sessionLoader(params)
+		const initialMode = this.getInitialPermissionMode(loadedSession)
+		const sessionId = loadedSession.sessionId
 		try {
-			assertSessionHasModel(session)
+			// Defensive: pi reads the sessionId from the JSONL header, not the
+			// filename, so a corrupted / hand-edited session whose header id
+			// disagrees with the requested id would land under the wrong key in
+			// `sessions`. Subsequent session/prompt for params.sessionId would then
+			// fail with "unknown sessionId" while the file is still held open.
+			// Reject up front and dispose so we don't quietly diverge.
+			if (sessionId !== params.sessionId) {
+				loadedSession.dispose()
+				throw RequestError.invalidParams(
+					undefined,
+					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
+				)
+			}
+			setCallerMcpServers(sessionId, convertAcpMcpServers(params.mcpServers ?? []))
+			assertSessionHasModel(loadedSession)
 
-			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			const uiContext = this.createUiContext(loadedSession)
+			registerPermissionFlagController(loadedSession, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
-				session,
+				session: loadedSession,
 				unsubscribe: () => {},
 				// The session header cwd was validated against params.cwd above, so
 				// the session manager's cwd is the session's true cwd.
-				cwd: session.sessionManager.getCwd(),
+				cwd: loadedSession.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
+				skillCommands: new Map(discoverAcpSkillCommands(loadedSession.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
-				sid,
-				createAcpPermissionPrompter(this.conn, sid, uiContext, (piToolCallId, toolName) =>
+				sessionId,
+				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
 					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
 				),
 			)
-			await this.bindAcpExtensions(session, uiContext)
+			await this.bindAcpExtensions(loadedSession, uiContext)
 
-			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, record)
-			this.startPlanTracker(record, sid)
+			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.sessions.set(sessionId, record)
+			this.startPlanTracker(record, sessionId)
 			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
 			// already-active phase, so the tracker also snapshots from the
 			// restored todo store (gated on an active ferment — emits nothing
@@ -858,32 +845,32 @@ export class KimchiAcpAgent implements Agent {
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
-			this.seedBlockCounterFromBranch(session, record)
+			this.seedBlockCounterFromBranch(loadedSession, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
-			this.replayTranscript(session)
-			this.sendAvailableCommandsUpdate(sid)
+			this.replayTranscript(loadedSession)
+			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(session, () => this.getInitialPermissionMode(session).mode)
+			const configOptions = buildConfigOptions(loadedSession, initialMode.mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sid)
-			unregisterSessionPermissionFlagController(sid)
-			clearPermissionModeEnv(sid)
-
-			const existing = this.sessions.get(sid)
+			removePendingEntry(sessionId)
+			unregisterAcpPrompter(sessionId)
+			unregisterSessionPermissionFlagController(sessionId)
+			clearPermissionModeEnv(sessionId)
+			const existing = this.sessions.get(sessionId)
 			if (existing) {
-				this.sessions.delete(sid)
+				this.sessions.delete(sessionId)
 				existing.planTracker?.stop()
 				existing.unsubscribe()
 			}
-			session.dispose()
+			loadedSession.dispose()
 			throw err
 		}
 	}
@@ -990,10 +977,30 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
-		await entry.session.abort()
-		// Drain the steer/follow-up queue so queued text doesn't leak into the
-		// next prompt. Mirrors the TUI's Escape → clearAllQueues() behaviour.
-		entry.session.clearQueue()
+		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
+		// chains queued steering messages into the running prompt —
+		// session.prompt() resolves only after all chained calls — so awaiting
+		// abort() first lets every still-queued steer self-deliver into history
+		// with a full reply while we wait for idle. clearQueue() is synchronous,
+		// so running it first drops undelivered steers before the chain can
+		// drain them. Mirrors the TUI's Escape → clearAllQueues() behaviour.
+		// The drain is wrapped in try/catch/finally so a clearQueue() failure
+		// can never skip the abort — the turn is already marked cancelled, and
+		// leaving the agent running would burn tokens until the LLM responds.
+		// cancel() is a notification (fire-and-forget), so the error is caught
+		// and logged rather than rethrown as an unhandled rejection; the worst
+		// case is a partially-drained queue, which is no worse than before the
+		// fix.
+		try {
+			entry.session.clearQueue()
+		} catch (err) {
+			// clearQueue failure is non-fatal — abort must still run. Log so a
+			// recurring drain failure is observable instead of silently leaking
+			// queued steers into history again.
+			console.error("kimchi acp: clearQueue() failed during cancel; aborting anyway", err)
+		} finally {
+			await entry.session.abort()
+		}
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1762,12 +1769,8 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
-function buildConfigOptions(
-	session: AgentSession,
-	defaultMode: PermissionMode | (() => PermissionMode),
-): SessionConfigOption[] {
-	const mode =
-		getPermissionMode(session.sessionId)?.mode ?? (typeof defaultMode === "function" ? defaultMode() : defaultMode)
+function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
+	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
 	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 

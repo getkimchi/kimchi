@@ -4,6 +4,7 @@ import type { TelemetryConfig } from "../../config.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
 import { createContext } from "../__mocks__/context.js"
 import telemetryExtension, {
+	trackRemoteExecution,
 	trackSubagentSpawned,
 	trackSurveyAnswered,
 	trackSurveyDismissed,
@@ -240,6 +241,92 @@ describe("telemetryExtension integration", () => {
 			"telemetry.os": expect.any(String),
 			"user.account_uuid": "",
 		})
+	})
+
+	it("remote execution tracking emits all lifecycle event stages", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const stages = [
+			"started",
+			"completed",
+			"failed",
+			"sync.started",
+			"sync.completed",
+			"sync.failed",
+			"viewed",
+			"custom_action",
+			"done",
+		] as const
+		for (const stage of stages) {
+			trackRemoteExecution(stage, "ferment plan")
+		}
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+
+		for (const stage of stages) {
+			const record = allRecords.find((rec) => rec.eventName === `remote_execution.${stage}`)
+			expect(record, `remote_execution.${stage}`).toBeDefined()
+			const attrs = Object.fromEntries(record?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+			expect(attrs.origin).toBe("ferment plan")
+		}
+	})
+
+	it("remote execution stats attributes flow through on completed/failed events", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		await getHandler(handlers, "session_start")({}, ctx)
+		trackRemoteExecution("completed", "plan", {
+			duration_ms: 42_000,
+			tool_calls: 7,
+			turns: 3,
+			input_tokens: 1000,
+			output_tokens: 500,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue?: string; intValue?: string } }>
+			}>
+		})
+
+		const record = allRecords.find((rec) => rec.eventName === "remote_execution.completed")
+		expect(record).toBeDefined()
+		const attrs = Object.fromEntries(
+			record?.attributes.map((a) => [a.key, a.value.stringValue ?? a.value.intValue]) ?? [],
+		)
+		expect(attrs.origin).toBe("plan")
+		expect(attrs.duration_ms).toBeDefined()
+		expect(attrs.tool_calls).toBeDefined()
+		expect(attrs.turns).toBeDefined()
+		expect(attrs.input_tokens).toBeDefined()
+		expect(attrs.output_tokens).toBeDefined()
+	})
+
+	it("remote execution tracking is a no-op when telemetry is disabled", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig({ enabled: false }))(api)
+
+		trackRemoteExecution("started", "plan")
+		expect(handlers.size).toBe(0)
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		expect(logCalls).toHaveLength(0)
 	})
 
 	it("survey tracking helpers send survey events through the telemetry batch", async () => {
