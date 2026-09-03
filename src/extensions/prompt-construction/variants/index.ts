@@ -36,5 +36,7 @@ const REGISTRY: Record<string, PromptVariant> = {
 export function resolvePromptVariant(name?: string): PromptVariant {
 	const key = (name ?? process.env[PROMPT_VARIANT_ENV] ?? "").trim()
 	if (!key || key === DEFAULT_VARIANT.name) return DEFAULT_VARIANT
-	return REGISTRY[key] ?? DEFAULT_VARIANT
+	// Own-property check only: names such as "constructor" or "toString" are
+	// inherited from Object.prototype and must not resolve to a variant.
+	return Object.hasOwn(REGISTRY, key) ? REGISTRY[key] : DEFAULT_VARIANT
 }

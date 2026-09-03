@@ -141,6 +141,19 @@ describe("resolvePromptVariant", () => {
 		const result = resolvePromptVariant()
 		expect(result).toBe(DEFAULT_VARIANT)
 	})
+
+	// Names inherited from Object.prototype must not be treated as registered
+	// variants, otherwise a stray env var yields a bogus "variant" object.
+	for (const inherited of ["constructor", "__proto__", "toString"]) {
+		it(`returns DEFAULT_VARIANT for the inherited property name '${inherited}'`, () => {
+			expect(resolvePromptVariant(inherited)).toBe(DEFAULT_VARIANT)
+		})
+
+		it(`returns DEFAULT_VARIANT when env var is set to '${inherited}'`, () => {
+			process.env[PROMPT_VARIANT_ENV] = inherited
+			expect(resolvePromptVariant()).toBe(DEFAULT_VARIANT)
+		})
+	}
 })
 
 // ---------------------------------------------------------------------------
