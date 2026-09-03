@@ -16,6 +16,7 @@ import {
 	guidelinesFor,
 	ORCHESTRATOR_INTRO,
 	SINGLE_INTRO,
+	SPICY_FERMENT_STEER,
 	SPICY_SINGLE_MODE_DELEGATION,
 } from "./spicy-prompts.js"
 import type { PromptVariant } from "./types.js"
@@ -37,6 +38,7 @@ export const SPICY: PromptVariant = {
 	guidelines: guidelinesFor,
 	factualAccuracy: null,
 	singleModeDelegation: SPICY_SINGLE_MODE_DELEGATION,
+	fermentSteer: SPICY_FERMENT_STEER,
 	disciplineReminder: {
 		text: disciplineNudgeFor,
 		everyPrompts: 4,

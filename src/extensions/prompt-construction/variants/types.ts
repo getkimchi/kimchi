@@ -73,11 +73,11 @@ export interface PromptVariant {
 	suppress?: readonly SuppressibleSection[]
 
 	/**
-	 * When `false`, suppresses the per-turn "maintain session todos" steer nudge
-	 * (the model still gets the Todos guidance block; it just isn't pushed to
-	 * create todos on every turn). Default/undefined keeps the nudge on.
+	 * Extra guidance prepended to the ferment planner supplement. Set it when
+	 * the variant needs the planner to follow a specific lifecycle stance.
+	 * Undefined leaves the supplement as-is.
 	 */
-	todoSteer?: boolean
+	fermentSteer?: string
 
 	/**
 	 * When defined, the discipline-reminder extension periodically nudges the

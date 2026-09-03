@@ -470,20 +470,6 @@ describe("single-mode delegation stance", () => {
 })
 
 // ---------------------------------------------------------------------------
-// G) todoSteer flag
-// ---------------------------------------------------------------------------
-
-describe("todoSteer flag", () => {
-	it("DEFAULT_VARIANT.todoSteer is undefined (nudge stays on)", () => {
-		expect(DEFAULT_VARIANT.todoSteer).toBeUndefined()
-	})
-
-	it("SPICY.todoSteer is undefined (cleanup nudge active for all variants)", () => {
-		expect(SPICY.todoSteer).toBeUndefined()
-	})
-})
-
-// ---------------------------------------------------------------------------
 // H) AGENT_DISCIPLINE_BLOCK content
 // ---------------------------------------------------------------------------
 

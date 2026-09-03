@@ -55,6 +55,19 @@ export const SPICY_SINGLE_MODE_DELEGATION =
 	"Delegate implementation, testing, and review to focused subagents; keep this thread orchestrating the work and verifying the results."
 
 // ---------------------------------------------------------------------------
+// Ferment steer
+// ---------------------------------------------------------------------------
+
+/**
+ * Prepended to the ferment planner supplement. It puts scoping first so the
+ * planner calls `scope_ferment` instead of describing the plan in prose and
+ * ending the turn, which produces no files.
+ */
+export const SPICY_FERMENT_STEER = `## Ferment Discipline (priority)
+
+Call \`scope_ferment\` first. Do not narrate a plan in prose, ask for permission, or end your turn before \`scope_ferment\` has been called with the full plan-scope gate verdicts. A ferment that ends without \`scope_ferment\` produces zero files and is a failure, not a draft. After scoping, drive the lifecycle through each phase to \`complete_ferment\`.`
+
+// ---------------------------------------------------------------------------
 // Opinionated working-discipline block
 // ---------------------------------------------------------------------------
 
