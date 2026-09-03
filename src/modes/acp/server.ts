@@ -522,17 +522,12 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		// Once the factory hands us a live session we own its lifecycle. If model
-		// verification, extension binding, subscribe, or the registering Map.set
-		// throws before we hand it back to the caller, nothing else will ever
-		// dispose it — so make ownership transfer atomic.
-		// Declared outside the try so the catch block can tell whether the
-		// factory already produced a live session (needs disposal + unregister)
-		// or threw before one existed (skip those, only remove the caller-servers
-		// entry if it was set).
-		let session: AgentSession | undefined
+		// sessionFactory does not throw — it creates a session or returns an
+		// error result. The lifecycle ownership starts once we have a live
+		// session and call bindAcpExtensions; any throw after that point must
+		// unwind registration and dispose.
+		const session = await this.sessionFactory(params)
 		try {
-			session = await this.sessionFactory(params)
 			// Convert caller-supplied MCP servers and store them keyed by sessionId.
 			// This must happen AFTER sessionFactory (sessionId is known) but BEFORE
 			// bindAcpExtensions (session_start → initializeMcp drains by sessionId).
@@ -582,18 +577,12 @@ export class KimchiAcpAgent implements Agent {
 			// Remove this session's caller-servers entry if it hasn't been
 			// consumed yet by initializeMcp (e.g. bindExtensions threw before
 			// session_start fired). Keyed by sessionId so only this session's
-			// entry is removed — no-op if already consumed or if sessionFactory
-			// threw before setCallerMcpServers was called.
-			if (session) removePendingEntry(session.sessionId)
-			// Only unwind registration + dispose if the factory actually handed us
-			// a live session. If sessionFactory itself threw, `session` is still
-			// undefined and there is nothing to unregister or dispose.
-			if (session) {
-				unregisterAcpPrompter(session.sessionId)
-				unregisterSessionPermissionFlagController(session.sessionId)
-				clearPermissionModeEnv(session.sessionId)
-				session.dispose()
-			}
+			// entry is removed — no-op if already consumed.
+			removePendingEntry(session.sessionId)
+			unregisterAcpPrompter(session.sessionId)
+			unregisterSessionPermissionFlagController(session.sessionId)
+			clearPermissionModeEnv(session.sessionId)
+			session.dispose()
 			throw err
 		}
 	}
@@ -797,31 +786,31 @@ export class KimchiAcpAgent implements Agent {
 		// setCallerMcpServers is called after sessionLoader returns (sessionId
 		// is known) but before bindAcpExtensions, so the early-return paths in
 		// loadSession (session already live / already loading) never set an entry.
-		let session: AgentSession | undefined
-		let sid: string | undefined
+		// sessionLoader does not throw — it creates a session or returns an
+		// error result. Lifecycle ownership starts once we have a live session
+		// and call bindAcpExtensions; any throw after that must unwind
+		// registration and dispose.
+		const loadedSession = await this.sessionLoader(params)
+		const initialMode = this.getInitialPermissionMode(loadedSession)
+		const sessionId = loadedSession.sessionId
 		try {
-			const loadedSession = await this.sessionLoader(params)
-			session = loadedSession
-			const initialMode = this.getInitialPermissionMode(loadedSession)
-			const sessionSid = loadedSession.sessionId
-			sid = sessionSid
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
 			// disagrees with the requested id would land under the wrong key in
 			// `sessions`. Subsequent session/prompt for params.sessionId would then
 			// fail with "unknown sessionId" while the file is still held open.
 			// Reject up front and dispose so we don't quietly diverge.
-			if (sessionSid !== params.sessionId) {
+			if (sessionId !== params.sessionId) {
 				loadedSession.dispose()
 				throw RequestError.invalidParams(
 					undefined,
-					`session header id ${sessionSid} does not match requested sessionId ${params.sessionId}`,
+					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
 				)
 			}
 			// Convert caller-supplied MCP servers and store keyed by sessionId.
 			// Must happen after sessionLoader (sessionId known) but before
 			// bindAcpExtensions (session_start → initializeMcp drains by sessionId).
-			setCallerMcpServers(sessionSid, convertAcpMcpServers(params.mcpServers ?? []))
+			setCallerMcpServers(sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			assertSessionHasModel(loadedSession)
 
 			const uiContext = this.createUiContext(loadedSession)
@@ -843,16 +832,16 @@ export class KimchiAcpAgent implements Agent {
 				skillCommands: new Map(discoverAcpSkillCommands(loadedSession.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
-				sessionSid,
-				createAcpPermissionPrompter(this.conn, sessionSid, uiContext, (piToolCallId, toolName) =>
+				sessionId,
+				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
 					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
 				),
 			)
 			await this.bindAcpExtensions(loadedSession, uiContext)
 
-			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionSid, event))
-			this.sessions.set(sessionSid, record)
-			this.startPlanTracker(record, sessionSid)
+			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.sessions.set(sessionId, record)
+			this.startPlanTracker(record, sessionId)
 			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
 			// already-active phase, so the tracker also snapshots from the
 			// restored todo store (gated on an active ferment — emits nothing
@@ -869,9 +858,9 @@ export class KimchiAcpAgent implements Agent {
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
 			this.replayTranscript(loadedSession)
-			this.sendAvailableCommandsUpdate(sessionSid)
+			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(loadedSession, () => this.getInitialPermissionMode(loadedSession).mode)
+			const configOptions = buildConfigOptions(loadedSession, initialMode.mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
@@ -879,19 +868,17 @@ export class KimchiAcpAgent implements Agent {
 		} catch (err) {
 			// Remove this session's caller-servers entry if it hasn't been consumed
 			// by initializeMcp yet (same pattern as newSession).
-			if (sid) removePendingEntry(sid)
-			if (sid) {
-				unregisterAcpPrompter(sid)
-				unregisterSessionPermissionFlagController(sid)
-				clearPermissionModeEnv(sid)
-				const existing = this.sessions.get(sid)
-				if (existing) {
-					this.sessions.delete(sid)
-					existing.planTracker?.stop()
-					existing.unsubscribe()
-				}
+			removePendingEntry(sessionId)
+			unregisterAcpPrompter(sessionId)
+			unregisterSessionPermissionFlagController(sessionId)
+			clearPermissionModeEnv(sessionId)
+			const existing = this.sessions.get(sessionId)
+			if (existing) {
+				this.sessions.delete(sessionId)
+				existing.planTracker?.stop()
+				existing.unsubscribe()
 			}
-			if (session) session.dispose()
+			loadedSession.dispose()
 			throw err
 		}
 	}
