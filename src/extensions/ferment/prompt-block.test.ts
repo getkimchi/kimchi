@@ -4,7 +4,9 @@ import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
-import { PROMPT_VARIANT_ENV } from "../prompt-construction/variants/index.js"
+import { PROMPT_VARIANT_ENV, resolvePromptVariant } from "../prompt-construction/variants/index.js"
+import { SPICY } from "../prompt-construction/variants/spicy.js"
+import { SPICY_FERMENT_STEER } from "../prompt-construction/variants/spicy-prompts.js"
 
 // Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
 // without depending on real config state. Default to true (multi-model / strict)
@@ -625,10 +627,10 @@ describe("buildFermentPromptBlock", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Spicy ferment steer tests
+// Variant ferment steer tests
 // ---------------------------------------------------------------------------
 
-describe("buildFermentPromptBlock: spicy ferment steer", () => {
+describe("buildFermentPromptBlock: variant ferment steer", () => {
 	let savedEnv: string | undefined
 
 	afterEach(() => {
@@ -640,33 +642,31 @@ describe("buildFermentPromptBlock: spicy ferment steer", () => {
 		registerAgents(new Map())
 	})
 
-	it("with spicy active the planner supplement leads with '## Ferment Discipline'", () => {
+	it("the spicy descriptor supplies the steer text", () => {
+		expect(SPICY.fermentSteer).toBe(SPICY_FERMENT_STEER)
+	})
+
+	it("prepends the active variant's steer to the planner supplement", () => {
 		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		process.env[PROMPT_VARIANT_ENV] = "spicy"
 		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
-		expect(out).toContain("## Ferment Discipline")
+		expect(out).toContain(SPICY_FERMENT_STEER)
 	})
 
-	it("with spicy active the supplement contains 'Call `scope_ferment` first'", () => {
-		savedEnv = process.env[PROMPT_VARIANT_ENV]
-		process.env[PROMPT_VARIANT_ENV] = "spicy"
-		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
-		expect(out).toContain("Call `scope_ferment` first")
-	})
-
-	it("with default variant the supplement does NOT contain '## Ferment Discipline'", () => {
+	it("omits the steer when the active variant declares none", () => {
 		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		delete process.env[PROMPT_VARIANT_ENV]
+		expect(resolvePromptVariant().fermentSteer).toBeUndefined()
 		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
-		expect(out).not.toContain("## Ferment Discipline")
+		expect(out).not.toContain(SPICY_FERMENT_STEER)
 	})
 
-	it("spicy steer appears for planned and running status", () => {
+	it("includes the steer for planned and running status", () => {
 		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		process.env[PROMPT_VARIANT_ENV] = "spicy"
 		for (const status of ["planned", "running"] as const) {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status })) ?? ""
-			expect(out, `status=${status}`).toContain("## Ferment Discipline")
+			expect(out, `status=${status}`).toContain(SPICY_FERMENT_STEER)
 		}
 	})
 })
