@@ -285,13 +285,23 @@ describe("per-role agent tuning (spicy variant)", () => {
 		}
 	})
 
-	it("spicy variant: General-Purpose persona contains delegation anchor (new content)", () => {
+	it("spicy variant: General-Purpose persona contains minimal-scope anchor (new content)", () => {
 		const variant = resolvePromptVariant("spicy")
 		registerAgents(new Map(), variant.transformAgents)
 
 		const config = getAgentConfig(AGENT_GENERAL_PURPOSE)
 		// Anchor phrase is new, not in the stock empty systemPrompt
-		expect(config?.systemPrompt).toContain("delegate them to focused agents")
+		expect(config?.systemPrompt).toContain("Keep scope minimal: do only what was asked")
+	})
+
+	// In-process workers never receive the Agent tool (agent-runner strips it),
+	// so the persona must not tell them to hand work to another agent.
+	it("spicy variant: General-Purpose persona does not instruct delegation", () => {
+		const variant = resolvePromptVariant("spicy")
+		registerAgents(new Map(), variant.transformAgents)
+
+		const config = getAgentConfig(AGENT_GENERAL_PURPOSE)
+		expect(config?.systemPrompt).not.toContain("delegate them to focused agents")
 	})
 
 	it("spicy variant: Explore persona contains path:line citation anchor (new content)", () => {

@@ -29,6 +29,7 @@ import {
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
+	OPINIONATED_BLOCK_SUBAGENT,
 	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_SINGLE_MODE_DELEGATION,
 } from "./spicy-prompts.js"
@@ -545,8 +546,24 @@ describe("guidelinesFor", () => {
 		expect(guidelinesFor("single")).toContain("**Coordinator and delegation**")
 	})
 
-	it("subagent mode contains '**Coordinator and delegation**'", () => {
-		expect(guidelinesFor("subagent")).toContain("**Coordinator and delegation**")
+	// A subagent has the delegation tools stripped, so it gets no coordinator
+	// section and no instruction to hand work to another agent.
+	it("subagent mode contains neither coordinator block", () => {
+		expect(guidelinesFor("subagent")).not.toContain("**Coordinator and delegation**")
+		expect(guidelinesFor("subagent")).not.toContain("**Coordinator altitude**")
+	})
+
+	it("subagent mode does NOT ask for a review pass by a fresh subagent", () => {
+		expect(guidelinesFor("subagent")).not.toContain("run a review pass with a fresh subagent")
+		expect(guidelinesFor("single")).toContain("run a review pass with a fresh subagent")
+		expect(guidelinesFor("orchestrator")).toContain("run a review pass with a fresh subagent")
+	})
+
+	it("subagent mode keeps the shared working-discipline sections", () => {
+		const subagent = guidelinesFor("subagent")
+		expect(subagent).toContain("### Working discipline")
+		expect(subagent).toContain("**Testing discipline**")
+		expect(subagent).toContain("**Version-control safety**")
 	})
 
 	it("orchestrator mode does NOT contain '**Coordinator and delegation**'", () => {
@@ -594,8 +611,9 @@ describe("appended working-discipline block states each principle once", () => {
 	const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1
 
 	const blocks: [string, string][] = [
-		["single/subagent", OPINIONATED_BLOCK],
+		["single", OPINIONATED_BLOCK],
 		["orchestrator", OPINIONATED_BLOCK_ORCHESTRATOR],
+		["subagent", OPINIONATED_BLOCK_SUBAGENT],
 	]
 
 	for (const [label, block] of blocks) {
