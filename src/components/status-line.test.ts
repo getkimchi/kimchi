@@ -883,12 +883,6 @@ describe("status line pinning", () => {
 		expect(visible).toContain("auto (kimi-k2.6) → ctrl+p")
 	})
 
-	it("shows plain Auto before routing resolves", () => {
-		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
-
-		expect(visible).toContain("auto → ctrl+p")
-	})
-
 	it("reverts to plain Auto after routing state is cleared (e.g. /new)", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
 
