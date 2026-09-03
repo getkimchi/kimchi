@@ -1,0 +1,59 @@
+import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { isAgentWorker } from "./agent-worker-context.js"
+import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
+import { getSessionMode } from "./session-mode.js"
+import { markHarnessSteer } from "./steer-marker.js"
+
+export const RULES_REMINDER_TYPE = "rules-reminder"
+
+export default function rulesReminderExtension(pi: ExtensionAPI): void {
+	const cfg = resolvePromptVariant().rulesReminder
+	if (!cfg) return
+	if (isAgentWorker()) return
+
+	// One timestamp per session: a process can serve several sessions, and each
+	// of them has its own conversation whose rules age on its own clock.
+	const lastInjectedAt = new Map<string, number>()
+
+	pi.on("input", (event: InputEvent, ctx: ExtensionContext) => {
+		if (event.source === "extension") return
+		const sessionId = ctx.sessionManager?.getSessionId?.()
+		if (!sessionId) return
+
+		// The rules depend on the session's prompt mode, which is recorded when
+		// the prompt is built. Until then the mode is unknown, and staying quiet
+		// beats sending the wrong mode's rules.
+		const mode = getSessionMode(sessionId)
+		if (!mode) return
+		const text = cfg.text(mode)
+		if (!text) return
+
+		const now = Date.now()
+		const last = lastInjectedAt.get(sessionId)
+		// The first prompt of a session always gets the rules: nothing in the
+		// conversation carries them yet. After that the interval keeps them from
+		// repeating on every turn.
+		if (last !== undefined && now - last < cfg.intervalMs) return
+		lastInjectedAt.set(sessionId, now)
+
+		pi.sendMessage(
+			{
+				customType: RULES_REMINDER_TYPE,
+				content: [{ type: "text", text: markHarnessSteer(text) }],
+				display: false,
+			},
+			{ deliverAs: "nextTurn" },
+		)
+
+		try {
+			console.debug?.(`[rules-reminder] appended rules to session ${sessionId} (mode ${mode})`)
+		} catch {
+			// console.debug may be undefined in some environments — never throw.
+		}
+	})
+
+	pi.on("session_shutdown", (_event, ctx: ExtensionContext | undefined) => {
+		const sessionId = ctx?.sessionManager?.getSessionId?.()
+		if (sessionId) lastInjectedAt.delete(sessionId)
+	})
+}

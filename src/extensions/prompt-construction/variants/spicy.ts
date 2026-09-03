@@ -8,10 +8,10 @@
 import type { PromptMode } from "../system-prompt.js"
 import {
 	appendDisciplineBlock,
-	disciplineNudgeFor,
 	fermentSteerFor,
 	guidelinesFor,
 	ORCHESTRATOR_INTRO,
+	rulesBlockFor,
 	SINGLE_INTRO,
 	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_SINGLE_MODE_DELEGATION,
@@ -37,9 +37,12 @@ export const SPICY: PromptVariant = {
 	commitAttribution: SPICY_COMMIT_ATTRIBUTION,
 	singleModeDelegation: SPICY_SINGLE_MODE_DELEGATION,
 	fermentSteer: fermentSteerFor,
-	disciplineReminder: {
-		text: disciplineNudgeFor,
-		everyPrompts: 4,
+	rulesReminder: {
+		text: rulesBlockFor,
+		// Five minutes: long enough that a burst of short prompts does not repeat
+		// the rules, short enough that they stay in recent context on a long
+		// session where earlier turns have scrolled far back.
+		intervalMs: 5 * 60 * 1000,
 	},
 	transformAgents: appendDisciplineBlock,
 }

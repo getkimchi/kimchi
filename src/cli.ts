@@ -70,7 +70,6 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
-import disciplineReminderExtension from "./extensions/discipline-reminder.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -120,6 +119,7 @@ import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
 import autoModelExtension from "./extensions/router/index.js"
+import rulesReminderExtension from "./extensions/rules-reminder.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -651,7 +651,7 @@ try {
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
-			disciplineReminderExtension,
+			rulesReminderExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,

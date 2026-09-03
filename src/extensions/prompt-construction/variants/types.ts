@@ -56,12 +56,15 @@ export interface PromptVariant {
 	fermentSteer?: string | ((mode: PromptMode) => string)
 
 	/**
-	 * When defined, the discipline-reminder extension periodically nudges the
-	 * model with the given text. Presence (defined) enables the reminder;
-	 * absent/undefined disables it entirely. everyPrompts controls cadence:
-	 * fires on run 1 and every Nth run after that.
+	 * When defined, the rules-reminder extension appends the variant's working
+	 * rules to the user's turn. Presence (defined) enables the reminder;
+	 * absent/undefined disables it entirely. `text` returns the block for the
+	 * session's prompt mode, or undefined when that mode gets no rules.
+	 * `intervalMs` throttles repeats within a session: the first prompt always
+	 * gets the block, later prompts only once the interval has passed. 0 sends
+	 * it on every prompt.
 	 */
-	disciplineReminder?: { text: string | ((mode: PromptMode) => string); everyPrompts: number }
+	rulesReminder?: { text: (mode: PromptMode) => string | undefined; intervalMs: number }
 
 	/**
 	 * Transform built-in default agent personas before they are registered for

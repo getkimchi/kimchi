@@ -21,15 +21,12 @@ import {
 	AGENT_DISCIPLINE_BLOCK,
 	AGENT_ROLE_TUNING,
 	COORDINATOR_DELEGATION_BLOCK,
-	DISCIPLINE_NUDGE_CORE,
-	DISCIPLINE_NUDGE_DELEGATION,
-	DISCIPLINE_NUDGE_PREFIX,
-	DISCIPLINE_NUDGE_TEXT,
-	disciplineNudgeFor,
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
 	OPINIONATED_BLOCK_SUBAGENT,
+	RULES_BLOCK_HEADER,
+	rulesBlockFor,
 	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_SINGLE_MODE_DELEGATION,
 } from "./spicy-prompts.js"
@@ -180,23 +177,17 @@ describe("SPICY descriptor", () => {
 		expect(SPICY.intro("single")).not.toContain("orchestrator")
 	})
 
-	it("disciplineReminder is an object (enabled)", () => {
-		expect(SPICY.disciplineReminder).toBeDefined()
-		expect(typeof SPICY.disciplineReminder).toBe("object")
+	it("rulesReminder is an object (enabled)", () => {
+		expect(SPICY.rulesReminder).toBeDefined()
+		expect(typeof SPICY.rulesReminder).toBe("object")
 	})
 
-	it("disciplineReminder.text is a function (mode-aware)", () => {
-		expect(typeof SPICY.disciplineReminder?.text).toBe("function")
+	it("rulesReminder.text is the mode-aware rules block", () => {
+		expect(SPICY.rulesReminder?.text("single")).toBe(rulesBlockFor("single"))
 	})
 
-	it("disciplineReminder.text('single') returns the full nudge text", () => {
-		const text = SPICY.disciplineReminder?.text
-		const result = typeof text === "function" ? text("single") : text
-		expect(result).toBe(DISCIPLINE_NUDGE_TEXT)
-	})
-
-	it("disciplineReminder.everyPrompts is 4", () => {
-		expect(SPICY.disciplineReminder?.everyPrompts).toBe(4)
+	it("rulesReminder.intervalMs is five minutes", () => {
+		expect(SPICY.rulesReminder?.intervalMs).toBe(5 * 60 * 1000)
 	})
 
 	it("name is 'spicy'", () => {
@@ -625,32 +616,32 @@ describe("appended working-discipline block states each principle once", () => {
 })
 
 // ---------------------------------------------------------------------------
-// K) disciplineNudgeFor: mode-aware nudge
+// K) rulesBlockFor: mode-aware working rules
 // ---------------------------------------------------------------------------
 
-describe("disciplineNudgeFor", () => {
-	it("single mode returns the full DISCIPLINE_NUDGE_TEXT", () => {
-		expect(disciplineNudgeFor("single")).toBe(DISCIPLINE_NUDGE_TEXT)
+describe("rulesBlockFor", () => {
+	it("single mode opens with the rules header and keeps the delegation bullet", () => {
+		const block = rulesBlockFor("single")
+		expect(block).toMatch(new RegExp(`^${RULES_BLOCK_HEADER}`))
+		expect(block).toContain("- Delegate implementation, testing, and review to focused subagents")
 	})
 
-	it("subagent mode returns the full DISCIPLINE_NUDGE_TEXT", () => {
-		expect(disciplineNudgeFor("subagent")).toBe(DISCIPLINE_NUDGE_TEXT)
+	it("orchestrator mode drops the delegation bullet and names the review personas", () => {
+		const block = rulesBlockFor("orchestrator")
+		expect(block).toMatch(new RegExp(`^${RULES_BLOCK_HEADER}`))
+		expect(block).not.toContain("- Delegate implementation, testing, and review to focused subagents")
+		expect(block).toContain("use the Reviewer and Fixer personas")
 	})
 
-	it("orchestrator mode does NOT contain 'default to delegating'", () => {
-		expect(disciplineNudgeFor("orchestrator")).not.toContain("default to delegating")
+	it("both modes carry the shared rules", () => {
+		for (const mode of ["single", "orchestrator"] as const) {
+			expect(rulesBlockFor(mode)).toContain("Never delete a failing test")
+			expect(rulesBlockFor(mode)).toContain("Never commit or push unless asked.")
+		}
 	})
 
-	it("orchestrator mode starts with 'Working-discipline check:'", () => {
-		expect(disciplineNudgeFor("orchestrator")).toMatch(/^Working-discipline check:/)
-	})
-
-	it("orchestrator mode contains a core marker from DISCIPLINE_NUDGE_CORE (test honesty)", () => {
-		expect(disciplineNudgeFor("orchestrator")).toContain("never delete or bend a passing test")
-	})
-
-	it("PREFIX + DELEGATION + CORE === DISCIPLINE_NUDGE_TEXT (byte-identity of parts)", () => {
-		expect(DISCIPLINE_NUDGE_PREFIX + DISCIPLINE_NUDGE_DELEGATION + DISCIPLINE_NUDGE_CORE).toBe(DISCIPLINE_NUDGE_TEXT)
+	it("subagent mode gets no rules block", () => {
+		expect(rulesBlockFor("subagent")).toBeUndefined()
 	})
 })
 
