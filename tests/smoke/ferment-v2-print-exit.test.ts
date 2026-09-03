@@ -43,7 +43,7 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
 		expect(result.stdout, failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-		expect(result.stdout, failure).toContain("VERIFIED_FINAL_AFTER_EVALUATION")
+		expect(result.stdout.trim(), failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION")
 		expect(
 			JSON.stringify(
 				fake.requests
@@ -54,6 +54,14 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 			),
 			failure,
 		).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+		expect(
+			JSON.stringify(
+				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")).at(-1)?.body,
+			),
+			failure,
+		).toContain(
+			"If the original objective requires exact output, return exactly that output with no preface or summary.",
+		)
 		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(7)
 	} finally {
 		await fake?.stop().catch(() => {})

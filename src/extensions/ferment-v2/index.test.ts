@@ -634,6 +634,9 @@ describe("Ferment V2 extension", () => {
 		expect(resumed.sendMessage.mock.lastCall?.[0]).toMatchObject({
 			details: expect.objectContaining({ source: "evaluation_accepted" }),
 		})
+		expect(resumed.sendMessage.mock.lastCall?.[0].content).toContain(
+			"If the original objective requires exact output, return exactly that output with no preface or summary.",
+		)
 	})
 
 	it("retries accepted final-answer delivery after pause and resume", async () => {

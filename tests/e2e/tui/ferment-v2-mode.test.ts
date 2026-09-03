@@ -609,7 +609,47 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			expect(JSON.stringify(chatRequests(fixture.fake.requests).at(-1)?.body)).toContain(
 				"Do not narrate the completion check, control messages, evidence gathering, or your internal process unless directly required by the original objective.",
 			)
+			expect(JSON.stringify(chatRequests(fixture.fake.requests).at(-1)?.body)).toContain(
+				"If the original objective requires exact output, return exactly that output with no preface or summary.",
+			)
 			trace.step("accepted final answer appeared only after the evaluator returned met")
+		},
+	)
+})
+
+test("experimental Ferment V2 preserves exact output when accepted final delivery resumes", async ({ terminal }) => {
+	const sessionFile = "accepted-final-restart.jsonl"
+	const exactOutput = "EXACT-FINAL-RESTART-PAYLOAD"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-mode-accepted-final-restart",
+			extraArgs: ["--session", sessionFile],
+			responses: [
+				{
+					match: (request) =>
+						JSON.stringify(request.body).includes(
+							"If the original objective requires exact output, return exactly that output with no preface or summary.",
+						),
+					stream: [exactOutput],
+				},
+			],
+			seedHome(homeDir, workDir) {
+				enableFermentV2Mode(homeDir)
+				writeAcceptedFermentV2Session(join(workDir, sessionFile), workDir)
+			},
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, exactOutput, { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			const requests = chatRequests(fixture.fake.requests)
+			expect(requests).toHaveLength(1)
+			expect(requests.filter(isFermentV2EvaluatorRequest)).toHaveLength(0)
+			expect(JSON.stringify(requests[0]?.body)).toContain(
+				"If the original objective requires exact output, return exactly that output with no preface or summary.",
+			)
+			expect(readFileSync(join(fixture.workDir, sessionFile), "utf-8")).toContain('"status":"complete"')
+			trace.step("accepted replay delivered the exact payload without reevaluation")
 		},
 	)
 })
@@ -780,6 +820,57 @@ function enableFermentV2Mode(homeDir: string, compaction?: { reserveTokens: numb
 	settings.resources = { "extensions.ferment-v2": true }
 	if (compaction) settings.compaction = { enabled: true, ...compaction }
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
+}
+
+function writeAcceptedFermentV2Session(sessionPath: string, workDir: string): void {
+	const now = new Date().toISOString()
+	const header = { type: "session", version: 3, id: "accepted-final-restart", timestamp: now, cwd: workDir }
+	const fermentV2Entry = {
+		type: "custom",
+		customType: "kimchi_ferment_v2_state",
+		data: {
+			schemaVersion: 1,
+			op: "put",
+			fermentV2: {
+				schemaVersion: 1,
+				id: "accepted-final-restart-ferment-v2",
+				revision: 1,
+				objective: "Return only the uppercase form of exact-final-restart-payload, with no other text.",
+				status: "active",
+				evaluationCount: 1,
+				lastEvaluation: {
+					verdict: "met",
+					reason: "The completed Todo retains verification evidence.",
+					evaluatedAt: now,
+				},
+				tokensUsed: 0,
+				timeUsedMs: 0,
+				createdAt: now,
+				updatedAt: now,
+			},
+		},
+		id: "accepted-final-restart-state",
+		parentId: null,
+		timestamp: now,
+	}
+	const todoEntry = {
+		type: "custom",
+		customType: "kimchi.todos",
+		data: {
+			schemaVersion: 1,
+			scope: { kind: "global" },
+			todos: [{ id: 1, content: "Prepare the exact response", status: "completed" }],
+			updatedAt: now,
+		},
+		id: "accepted-final-restart-todo",
+		parentId: "accepted-final-restart-state",
+		timestamp: now,
+	}
+	writeFileSync(
+		sessionPath,
+		`${[header, fermentV2Entry, todoEntry].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		"utf-8",
+	)
 }
 
 async function waitForChatRequest(requests: FakeResponseRequest[], count: number): Promise<FakeResponseRequest> {

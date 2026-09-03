@@ -112,7 +112,7 @@ type PreparedFermentV2Evaluation = {
 const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
 const FINAL_ANSWER_PROMPT = `The objective is complete and ready for user delivery.
 
-Give the user only the final answer to the original objective. Start with the outcome. Do not narrate the completion check, control messages, evidence gathering, or your internal process unless directly required by the original objective. Do not call tools.`
+Give the user only the final answer to the original objective. If the original objective requires exact output, return exactly that output with no preface or summary. Otherwise, start with the outcome. Do not narrate the completion check, control messages, evidence gathering, or your internal process unless directly required by the original objective. Do not call tools.`
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
