@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
+import { setExperimentalFeaturesEnabled } from "../extensions/experimental.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/router/state.js"
@@ -315,6 +316,17 @@ describe("compact-form builders", () => {
 			const seg = buildModelAbbrev(compactCtx, false, "claude-opus-4-7")
 			expect(seg.text).toBe("claude-opus-4-7 → ctrl+p")
 			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
+		})
+
+		it("keeps the routed model next to auto in the compact form", () => {
+			const seg = buildModelAbbrev(compactCtx, false, "auto", "kimi-k2.6")
+			expect(seg.text).toBe("auto (kimi-k2.6) → ctrl+p")
+			expect(seg.raw).toEqual({
+				kind: "model",
+				multiModel: false,
+				modelId: "auto",
+				routedModelId: "kimi-k2.6",
+			})
 		})
 	})
 
@@ -849,6 +861,7 @@ describe("status line pinning", () => {
 
 	afterEach(() => {
 		clearAutoRoutingState("test-session")
+		setExperimentalFeaturesEnabled(false)
 		vi.restoreAllMocks()
 		restorePlatform()
 		pinnedElements = []
@@ -870,6 +883,59 @@ describe("status line pinning", () => {
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
 		expect(visible).toContain("auto → ctrl+p")
+	})
+
+	it("shows the routed model next to Auto when experimental features are enabled and routing resolved", () => {
+		setExperimentalFeaturesEnabled(true)
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto (kimi-k2.6) → ctrl+p")
+	})
+
+	it("shows plain Auto even with experimental features enabled before routing resolves", () => {
+		setExperimentalFeaturesEnabled(true)
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto → ctrl+p")
+	})
+
+	it("reverts to plain Auto after routing state is cleared (e.g. /new)", () => {
+		setExperimentalFeaturesEnabled(true)
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		// Before /new — routed model is shown
+		const beforeClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+		expect(beforeClear).toContain("auto (kimi-k2.6) → ctrl+p")
+
+		// /new clears the routing state for the session
+		clearAutoRoutingState("test-session")
+
+		// After /new — label reverts to plain Auto
+		const afterClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+		expect(afterClear).toContain("auto → ctrl+p")
+		expect(afterClear).not.toContain("kimi-k2.6")
+	})
+
+	it("keeps the multi-model label unchanged when the active model is Auto", () => {
+		setExperimentalFeaturesEnabled(true)
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("multi-model (auto) → ctrl+p")
+	})
+
+	it("keeps the routed suffix through compaction at narrow width", () => {
+		setExperimentalFeaturesEnabled(true)
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(40)[0])
+
+		expect(visible).toContain("auto (kimi-k2.6)")
 	})
 
 	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {

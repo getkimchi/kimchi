@@ -10,11 +10,14 @@ import { readStatusLineConfig } from "../config/status-line-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
+import { isExperimentalFeaturesEnabled } from "../extensions/experimental.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
+import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
+import { getEffectiveModel } from "../extensions/router/state.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -43,7 +46,7 @@ export type SegmentId =
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "model"; multiModel: boolean; modelId: string }
+	| { kind: "model"; multiModel: boolean; modelId: string; routedModelId?: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
@@ -203,14 +206,19 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 }
 
 /** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
-	const label = multiModel ? `m-m (${modelId})` : modelId
+export function buildModelAbbrev(
+	ctx: CompactionContext,
+	multiModel: boolean,
+	modelId: string,
+	routedModelId?: string,
+): Segment {
+	const label = multiModel ? `m-m (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
 	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
 	return {
 		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId },
+		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
 	}
 }
 
@@ -290,7 +298,9 @@ const STEPS: CompactionStep[] = [
 	{
 		name: "abbrev-model-label",
 		apply: (segs, ctx) =>
-			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
+			recompactSegment(segs, "model", "model", (raw) =>
+				buildModelAbbrev(ctx, raw.multiModel, raw.modelId, raw.routedModelId),
+			),
 	},
 	{
 		name: "drop-shortcut-hints",
@@ -428,9 +438,25 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const multiModel = getMultiModelEnabled(ctx.sessionManager)
 	const selectedModelId = ctx.model?.id ?? "n/a"
 	const modelId = selectedModelId
-	const label = multiModel ? `multi-model (${modelId})` : modelId
+	const routedModelId = resolveRoutedModelId(ctx)
+	const label = multiModel ? `multi-model (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
-	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId } }
+	return {
+		id: "model",
+		text,
+		width: visibleWidth(text),
+		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
+	}
+}
+
+/** Concrete model id chosen by the Auto router, shown next to the `auto` label
+ *  in single-model mode. `undefined` before routing resolves (or when the flag
+ *  is off / the model isn't Auto / multi-model mode), keeping the plain `auto` label. */
+function resolveRoutedModelId(ctx: ExtensionContext): string | undefined {
+	if (!isExperimentalFeaturesEnabled()) return undefined
+	if (!isAutoModel(ctx.model)) return undefined
+	const effective = getEffectiveModel(ctx)
+	return effective && effective.id !== AUTO_MODEL_ID ? effective.id : undefined
 }
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
