@@ -290,7 +290,7 @@ export default function (pi: ExtensionAPI) {
 	const clientRegistry = new DapClientRegistry()
 	const sessionRegistry = new DapSessionRegistry()
 
-	// ── Session-tool deferral (token-optimization Phase 1 Chunk 3) ──────────
+	// Session-tool deferral
 	// The 11 session-scoped DAP tools are hidden at session start until a
 	// debug session becomes active (~1.2k est tokens/run saved when the agent
 	// never debugs interactively). Reveal is one-way: once a session exists

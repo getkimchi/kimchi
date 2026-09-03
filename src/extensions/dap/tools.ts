@@ -295,7 +295,7 @@ const WatchChangeSchema = Type.Object({
 })
 
 // =============================================================================
-// Deferral split (token-optimization Phase 1 Chunk 3)
+// Deferral split
 // =============================================================================
 
 /** Visible at session start: the entry point (debug_launch) plus the four

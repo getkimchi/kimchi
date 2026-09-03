@@ -146,9 +146,9 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	// LSP_TOOL_NAMES are filtered out of the canonical surface below.
 	{ module: "./lsp.js", source: "lsp" },
 	{ module: "./agents/index.js", source: "agents" },
-	// Config-gated (token-optimization Phase 1 Chunk 5): with zero configured
-	// MCP servers the adapter registers no tools at all — mocked zero in
-	// context-budget.test.ts, so this module contributes nothing there.
+	// With zero configured MCP servers, the adapter registers no tools at all.
+	// context-budget.test.ts mocks this state, so this module contributes
+	// nothing to the canonical measurement.
 	{ module: "./mcp-adapter/index.js", source: "mcp-adapter" },
 	{ module: "./tags.js", source: "tags(set_phase)" },
 	{ module: "./claude-code-skills/index.js", source: "claude-code-skills(skill)" },
@@ -174,9 +174,9 @@ async function measureBuiltinTools(out: Map<string, ToolSurfaceEntry>): Promise<
 	bashControlExtension(bashControlApi as never)
 	await fireBashControl("session_start")
 	for (const tool of bashTools.values()) {
-		// bash_control is deferred (token-optimization Phase 1 Chunk 4):
-		// registered but hidden at session start until the first background
-		// bash handle exists, so it is not part of the canonical surface.
+		// bash_control is registered but hidden at session start until the first
+		// background bash handle exists, so it is not part of the canonical
+		// surface.
 		if (tool.name === BASH_CONTROL_TOOL_NAME) continue
 		out.set(tool.name, entry("extension:bash-control", tool))
 	}
@@ -246,21 +246,22 @@ export async function measureCanonicalToolSurface(): Promise<ToolSurfaceResult> 
 	await measureBuiltinTools(tools)
 	await measureExtensionTools(tools, exclusions)
 	// DAP tools are measured at their session-start surface: with the Phase 1
-	// Chunk 3 deferral, only the always-visible set (debug_launch + one-shots)
-	// is advertised until a debug session becomes active. The 11 session tools
-	// are registered but hidden, so they are not part of the canonical surface.
+	// DAP tools are measured at their session-start surface: only the always-visible
+	// set (debug_launch + one-shots) is advertised until a debug session becomes
+	// active. The 11 session tools are registered but hidden, so they are not part
+	// of the canonical surface.
 	for (const tool of [...createLayer1Tools(dapDeps()), ...createLayer2Tools(dapDeps())]) {
 		if ((DAP_ALWAYS_VISIBLE_TOOL_NAMES as readonly string[]).includes(tool.name)) {
 			tools.set(tool.name, entry("extension:dap", tool))
 		}
 	}
-	// Token-optimization Phase 1 Chunk 6: the five lsp_* tools are detection-gated
-	// — registered but hidden at session_start when no language server matches the
-	// session cwd. The canonical surface assumes the no-server state (a session in a
-	// directory without project markers/PATH binaries), so filter them out. Any
-	// buffer that surfaces them locally (e.g. this repo's own dev sessions, which
-	// DO match typescript-language-server) exceeds the canonical measurement by
-	// exactly their est — recorded in the budget test's lsp slice.
+	// The five lsp_* tools are registered but hidden at session_start when no
+	// language server matches the session cwd. The canonical surface assumes the
+	// no-server state (a session in a directory without project markers/PATH
+	// binaries), so filter them out. A buffer that surfaces them locally (for
+	// example, this repo's dev sessions, which match typescript-language-server)
+	// exceeds the canonical measurement by exactly their estimate, recorded in the
+	// budget test's LSP slice.
 	for (const name of LSP_TOOL_NAMES) {
 		tools.delete(name)
 	}

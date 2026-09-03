@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import type { BeforeAgentStartEvent, BeforeProviderRequestEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 /**
- * Context-assembly accounting extension (token-optimization initiative, Phase 0).
+ * Context-assembly accounting extension.
  *
  * Writes `context_assembly` entries into the session JSONL (via pi.appendEntry, same
  * mechanism as trace-id.ts) so benchmark parsers can attribute the token surface of a
@@ -21,7 +21,7 @@ import type { BeforeAgentStartEvent, BeforeProviderRequestEvent, ExtensionAPI } 
  * - reason "composition": emitted on `before_agent_start` when the assembled system
  *   prompt composition changes. Attribution is component-category based
  *   (contextFile / skill / guideline / toolSnippet / appended / customPrompt /
- *   unattributed), not per-extension fold-chain deltas — see the plan Decision Log.
+ *   unattributed), rather than per-extension fold-chain deltas.
  * - reason "prefix-change": emitted on `before_provider_request` when the hash of the
  *   provider-facing prefix material (system prompt + tool definitions) changes. This is
  *   the cache-break signal; per-tool schema sizes ride along.

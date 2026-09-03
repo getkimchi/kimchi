@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 /**
- * Cache-metrics accounting extension (token-optimization initiative, Phase 0).
+ * Cache-metrics accounting extension.
  *
  * Emits cumulative `cache_summary` entries into the session JSONL on every turn_end so
  * benchmark parsers (analyze-session.py, terminal-bench tooling) can compute cache
