@@ -57,9 +57,11 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 		expect(result.code, failure).toBe(0)
 		expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
 		expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
-		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(4)
-		expect(JSON.stringify(fake.requests.at(-2)?.body), failure).toContain("previous response was not valid JSON")
-		expect(JSON.stringify(fake.requests.at(-1)?.body), failure).toContain(
+		const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+		expect(chatRequests, failure).toHaveLength(4)
+		expect(chatRequests.filter(isFermentV2EvaluatorRequest), failure).toHaveLength(2)
+		expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("previous response was not valid JSON")
+		expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain(
 			'Return this evaluated draft verbatim: \\"NO_TODO_DRAFT\\"',
 		)
 	} finally {
@@ -95,26 +97,13 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
 		expect(result.stdout, failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-		expect(result.stdout.trim(), failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION")
-		expect(
-			JSON.stringify(
-				fake.requests
-					.filter(
-						(request) => request.url.startsWith("/openai/v1/chat/completions") && isFermentV2EvaluatorRequest(request),
-					)
-					.at(-1)?.body,
-			),
-			failure,
-		).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
-		expect(
-			JSON.stringify(
-				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")).at(-1)?.body,
-			),
-			failure,
-		).toContain(
-			"If the original objective requires exact output, return exactly that output with no preface or summary.",
-		)
-		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(7)
+		expect(result.stdout, failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION\n")
+		const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+		const evaluatorRequests = chatRequests.filter(isFermentV2EvaluatorRequest)
+		expect(evaluatorRequests, failure).toHaveLength(2)
+		expect(JSON.stringify(evaluatorRequests.at(-1)?.body), failure).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+		expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain("Return this evaluated draft verbatim")
+		expect(chatRequests, failure).toHaveLength(7)
 	} finally {
 		await fake?.stop().catch(() => {})
 		rmSync(tempRoot, { recursive: true, force: true })

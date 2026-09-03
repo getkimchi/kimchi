@@ -636,7 +636,7 @@ test("experimental Ferment V2 preserves exact output when accepted final deliver
 			],
 			seedHome(homeDir, workDir) {
 				enableFermentV2Mode(homeDir)
-				writeAcceptedFermentV2Session(join(workDir, sessionFile), workDir)
+				writeAcceptedFermentV2Session(join(workDir, sessionFile), workDir, exactOutput)
 			},
 		},
 		async (fixture, trace) => {
@@ -822,9 +822,11 @@ function enableFermentV2Mode(homeDir: string, compaction?: { reserveTokens: numb
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
 }
 
-function writeAcceptedFermentV2Session(sessionPath: string, workDir: string): void {
+function writeAcceptedFermentV2Session(sessionPath: string, workDir: string, acceptedDraft: string): void {
 	const now = new Date().toISOString()
 	const header = { type: "session", version: 3, id: "accepted-final-restart", timestamp: now, cwd: workDir }
+	const fermentV2Id = "accepted-final-restart-ferment-v2"
+	const revision = 1
 	const fermentV2Entry = {
 		type: "custom",
 		customType: "kimchi_ferment_v2_state",
@@ -833,8 +835,8 @@ function writeAcceptedFermentV2Session(sessionPath: string, workDir: string): vo
 			op: "put",
 			fermentV2: {
 				schemaVersion: 1,
-				id: "accepted-final-restart-ferment-v2",
-				revision: 1,
+				id: fermentV2Id,
+				revision,
 				objective: "Return only the uppercase form of exact-final-restart-payload, with no other text.",
 				status: "active",
 				evaluationCount: 1,
@@ -866,11 +868,33 @@ function writeAcceptedFermentV2Session(sessionPath: string, workDir: string): vo
 		parentId: "accepted-final-restart-state",
 		timestamp: now,
 	}
+	const acceptedFinalControlEntry = {
+		type: "custom_message",
+		customType: "kimchi_ferment_v2_control",
+		content: acceptedFinalControlContent(acceptedDraft),
+		display: false,
+		details: {
+			source: "evaluation_accepted",
+			fermentV2Id,
+			revision,
+		},
+		id: "accepted-final-restart-control",
+		parentId: "accepted-final-restart-todo",
+		timestamp: now,
+	}
 	writeFileSync(
 		sessionPath,
-		`${[header, fermentV2Entry, todoEntry].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		`${[header, fermentV2Entry, todoEntry, acceptedFinalControlEntry].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
 		"utf-8",
 	)
+}
+
+function acceptedFinalControlContent(acceptedDraft: string): string {
+	return `The objective is complete and ready for user delivery.
+
+Give the user only the final answer to the original objective. If the original objective requires exact output, return exactly that output with no preface or summary. Otherwise, start with the outcome. Do not narrate the completion check, control messages, evidence gathering, or your internal process unless directly required by the original objective. Do not call tools.
+
+Return this evaluated draft verbatim: ${JSON.stringify(acceptedDraft)}`
 }
 
 async function waitForChatRequest(requests: FakeResponseRequest[], count: number): Promise<FakeResponseRequest> {
