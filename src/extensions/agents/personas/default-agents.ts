@@ -139,13 +139,10 @@ multiple options apply; single for one choice.
 
 STEP 3 — use the \`questionnaire\` tool to confirm criteria with the user.
 
-STEP 5 — draft the plan directly in your response, then end with one of these markers
-on its own line:
-  <!-- PLAN_COMPLETE -->
-  or simply:
-  <done>
-The harness saves the plan to \`.kimchi/plans/<slug>.md\` automatically when the marker appears.
-Do NOT include markers on incomplete drafts, while assumptions remain unresolved, or
+STEP 5 — call the \`submit_plan\` tool with the full plan as the \`plan\` parameter.
+Your turn ends when the tool returns. The harness saves the submitted plan to
+\`.kimchi/plans/<slug>.md\` automatically.
+Do NOT call \`submit_plan\` on incomplete drafts, while assumptions remain unresolved, or
 when asking clarifying questions.
 
 # Tool Usage

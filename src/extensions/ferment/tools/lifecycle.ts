@@ -29,6 +29,7 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { fermentPlanFileName, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
+import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
@@ -1251,9 +1252,23 @@ ${renderGateGuidance("scope_ferment")}`,
 					proposeIterations: nextIterations,
 					savedAt: new Date().toISOString(),
 				})
-				return planToolOk(
-					`Plan ready for review.${savedPlanNote}\n\nThe review dialog will open when this turn finishes.`,
+
+				// Emit plan-review request — TUI popup and plannotator both listen.
+				// Fire-and-forget: first decision wins. The decision handler in
+				// index.ts acts on whichever surface decides first.
+				emitPlanReviewRequest(
+					pi,
+					{
+						planContent: planEntry,
+						planFilePath: planPath,
+						source: "ferment",
+						fermentId,
+					},
+					{ ctx, planPath, planText: planEntry, fermentId },
 				)
+
+				const result = planToolOk(`Plan ready for review.${savedPlanNote}`)
+				return { ...result, terminate: true }
 			}
 
 			// 7. Tabbed question form + review loop.

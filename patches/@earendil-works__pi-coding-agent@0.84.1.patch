@@ -4,6 +4,14 @@
 # generic changes to https://github.com/earendil-works/pi before the next upgrade.
 # Retains Kimchi CLI/provider defaults, extension-triggered prompt handling,
 # forced compaction, model selection, extension UI helpers, and compact visuals.
+# Also fixes two issues that block third-party npm extensions (e.g. plannotator):
+#   - Type2 ReferenceError: Bun's bundler renames Google GenAI's `Type` enum to
+#     `Type2` (collision with typebox's `Type`); the pi-ai compat module re-exports
+#     `Type` from typebox, but the bundled getter references the broken `Type2`
+#     binding. A Proxy overrides `.Type` with the typebox namespace directly.
+#   - Flag conflict crash: when an npm extension registers a flag that kimchi
+#     already provides (e.g. `--plan`), the conflict is downgraded from a hard
+#     error to a warning (kimchi built-in extensions load first and win).
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
 # or Kimchi no longer needs the branded behavior.
 #
@@ -548,3 +556,104 @@ index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9b
                  this.showStatus(`Session exported to: ${filePath}`);
              }
              else {
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -29,6 +29,20 @@
+ import { createSyntheticSourceInfo } from "../source-info.js";
+ import { time } from "../timings.js";
+ /** Modules available to extensions via virtualModules (for compiled Bun binary) */
++// When Bun bundles the binary it renames Google GenAI's `Type` enum to `Type2`
++// (collision with typebox's `Type`). The pi-ai compat module re-exports `Type`
++// from typebox via `export { Type } from "typebox"`, but the bundled getter
++// for `.Type` references the broken `Type2` binding, producing
++// `ReferenceError: Type2 is not defined` when an extension accesses it.
++// This Proxy overrides `.Type` with the typebox namespace directly —
++// the same object pi-ai re-exports.
++const _bundledPiAiCompatSafe = new Proxy(_bundledPiAiCompat, {
++    get(target, prop, receiver) {
++        if (prop === "Type")
++            return _bundledTypebox.Type;
++        return Reflect.get(target, prop, receiver);
++    },
++});
+ const VIRTUAL_MODULES = {
+     typebox: _bundledTypebox,
+     "typebox/compile": _bundledTypeboxCompile,
+@@ -41,15 +55,23 @@
+     // Extensions resolve the pi-ai root to the compat entrypoint (a strict
+     // superset of the core entrypoint): existing extensions using the old
+     // global API keep working at runtime until compat is removed.
+-    "@earendil-works/pi-ai": _bundledPiAiCompat,
+-    "@earendil-works/pi-ai/compat": _bundledPiAiCompat,
++    //
++    // Bun's bundler renames Google GenAI's `Type` enum to `Type2` (collision
++    // with typebox's `Type`), but the renamed `Type2` binding is not
++    // accessible from the getter that `_bundledPiAiCompat.Type` triggers,
++    // producing `ReferenceError: Type2 is not defined` when an extension
++    // accesses `.Type` (e.g. `Type.Object(...)`). The Proxy intercepts `Type`
++    // and returns the typebox namespace directly — it is the same object
++    // pi-ai re-exports via `export { Type } from "typebox"`.
++    "@earendil-works/pi-ai": _bundledPiAiCompatSafe,
++    "@earendil-works/pi-ai/compat": _bundledPiAiCompatSafe,
+     "@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
+     "@earendil-works/pi-ai/providers/all": _bundledPiAiProviders,
+     "@earendil-works/pi-coding-agent": _bundledPiCodingAgent,
+     "@mariozechner/pi-agent-core": _bundledPiAgentCore,
+     "@mariozechner/pi-tui": _bundledPiTui,
+-    "@mariozechner/pi-ai": _bundledPiAiCompat,
+-    "@mariozechner/pi-ai/compat": _bundledPiAiCompat,
++    "@mariozechner/pi-ai": _bundledPiAiCompatSafe,
++    "@mariozechner/pi-ai/compat": _bundledPiAiCompatSafe,
+     "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
+     "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
+     "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
+diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
+--- a/dist/core/resource-loader.js
++++ b/dist/core/resource-loader.js
+@@ -458,9 +458,16 @@
+     addExtensionConflictDiagnostics(extensionsResult) {
+         // Detect extension conflicts (tools, commands, flags with same names from different extensions)
+         // Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
++        // Tool conflicts are hard errors; flag conflicts are warnings (kimchi
++        // built-in extensions load first and win at runtime).
+         const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
+         for (const conflict of conflicts) {
+-            extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
++            if (conflict.severity === "warning") {
++                extensionsResult.warnings ??= [];
++                extensionsResult.warnings.push({ path: conflict.path, message: conflict.message });
++            } else {
++                extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
++            }
+         }
+     }
+     mapSkillPath(resource, metadataByPath) {
+@@ -841,7 +848,7 @@
+         const toolOwners = new Map();
+         const flagOwners = new Map();
+         for (const ext of extensions) {
+-            // Check tools
++            // Check tools — hard errors (genuinely ambiguous at runtime)
+             for (const toolName of ext.tools.keys()) {
+                 const existingOwner = toolOwners.get(toolName);
+                 if (existingOwner && existingOwner !== ext.path) {
+@@ -854,13 +861,16 @@
+                     toolOwners.set(toolName, ext.path);
+                 }
+             }
+-            // Check flags
++            // Check flags — warnings only (first registration wins at runtime;
++            // kimchi built-in extensions load first, so clashes from npm
++            // extensions are benign)
+             for (const flagName of ext.flags.keys()) {
+                 const existingOwner = flagOwners.get(flagName);
+                 if (existingOwner && existingOwner !== ext.path) {
+                     conflicts.push({
+                         path: ext.path,
+-                        message: `Flag "--${flagName}" conflicts with ${existingOwner}`,
++                        severity: "warning",
++                        message: `Flag "--${flagName}" conflicts with ${existingOwner}; kimchi's registration takes precedence.`,
+                     });
+                 }
+                 else {

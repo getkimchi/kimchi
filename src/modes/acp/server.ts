@@ -111,7 +111,7 @@ import {
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
-import { asString, truncate } from "./utils.js"
+import { asString, extractImages, truncate } from "./utils.js"
 
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
@@ -912,15 +912,7 @@ export class KimchiAcpAgent implements Agent {
 		}
 
 		// Extract image blocks from the prompt only if model supports vision.
-		const images: ImageContent[] = supportsImages
-			? params.prompt
-					.filter((b: ContentBlock): b is ContentBlock & { type: "image" } => b.type === "image")
-					.map((b) => ({
-						type: "image" as const,
-						data: b.data,
-						mimeType: b.mimeType,
-					}))
-			: []
+		const images: ImageContent[] = supportsImages ? extractImages(params.prompt) : []
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}

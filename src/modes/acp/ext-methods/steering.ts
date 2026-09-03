@@ -4,7 +4,9 @@
 // kimchi-native-chat ticket (#06), advertised via _meta["kimchi.dev"].steering.
 
 import { RequestError } from "@agentclientprotocol/sdk"
+import type { ImageContent } from "@earendil-works/pi-ai"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import { extractImages } from "../utils.js"
 
 export type SteeringStatus = "injected" | "promptRequired"
 
@@ -26,6 +28,25 @@ export type SteeringTarget = {
 
 function respond(status: SteeringStatus): SteeringResponse {
 	return { status }
+}
+
+/**
+ * Parse and validate the optional `attachments` param into pi-ai
+ * `ImageContent[]`. Blocks follow the ACP image `ContentBlock` shape
+ * (`{ type: "image", data, mimeType }`); conversion is shared with the
+ * prompt() path via `extractImages`, while this wrapper enforces strict
+ * shapes — a malformed attachment is a caller bug, not content to drop.
+ */
+function parseSteeringImages(attachments: unknown): ImageContent[] {
+	if (attachments == null) return []
+	if (!Array.isArray(attachments)) {
+		throw RequestError.invalidParams(undefined, "attachments must be an array of image blocks")
+	}
+	const images = extractImages(attachments)
+	if (images.length !== attachments.length) {
+		throw RequestError.invalidParams(undefined, "attachments must all be valid image blocks")
+	}
+	return images
 }
 
 /**
@@ -59,6 +80,8 @@ export async function handleSteering(
 		throw RequestError.invalidParams(undefined, "prompt is required and must be a non-empty string")
 	}
 
+	const images = parseSteeringImages(params.attachments)
+
 	const target = getTarget(sessionId)
 	if (!target) {
 		throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
@@ -69,7 +92,7 @@ export async function handleSteering(
 	}
 
 	try {
-		await target.session.steer(prompt)
+		await target.session.steer(prompt, images.length > 0 ? images : undefined)
 		return respond("injected")
 	} catch (err) {
 		// Extension commands can't be queued; that's a caller input problem,

@@ -226,12 +226,10 @@ export function launchKimchi(
 		`HOME=${sh(fixture.homeDir)}`,
 		`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
 		"KIMCHI_PERMISSIONS=yolo",
-		// Disable startup network hooks (self-update probe and RTK
-		// auto-install) so the session boots without background HTTP or
-		// synchronous tar/exec work. Keeps the TUI e2e hermetic and its
-		// timing deterministic.
+		// Disable startup network hooks (self-update probe) so the
+		// session boots without background HTTP or synchronous tar/exec
+		// work. Keeps the TUI e2e hermetic and its timing deterministic.
 		"KIMCHI_NO_UPDATE_CHECK=1",
-		"KIMCHI_RTK_AUTO_INSTALL=0",
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",

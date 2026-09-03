@@ -116,7 +116,8 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 			// firing mid-test and consuming scripted responses.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
-				// Turn 1: model calls propose_ferment_scoping.
+				// Turn 1: model calls propose_ferment_scoping. terminate:true ends
+				// the turn; the review dialog appears via onPlanReviewRequest.
 				{
 					toolCalls: [
 						{
@@ -127,8 +128,6 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 						},
 					],
 				},
-				// Turn 1 continuation after the tool result is sent back.
-				{ stream: ["Plan ready for review."] },
 				// Turn 2 (after the new user turn): short text response.
 				{ stream: ["Understood, I'll wait for your direction."] },
 			],
@@ -211,7 +210,8 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			// firing mid-test and consuming scripted responses.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
-				// Turn 1: model calls propose_ferment_scoping.
+				// Turn 1: model calls propose_ferment_scoping. terminate:true ends
+				// the turn; the review dialog appears via onPlanReviewRequest.
 				{
 					toolCalls: [
 						{
@@ -222,8 +222,6 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 						},
 					],
 				},
-				// Turn 1 continuation after the tool result is sent back.
-				{ stream: ["Plan ready for review."] },
 				// Turn 2 (after the feedback): short text response.
 				{ stream: ["Got it — I'll revise the plan based on your feedback."] },
 			],

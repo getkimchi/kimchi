@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import dapExtension from "../../dap.js"
@@ -620,10 +620,18 @@ describe("runAgent — Plan agent plan persistence", () => {
 		vi.clearAllMocks()
 	})
 
-	it("saves the plan file when a Plan agent emits PLAN_COMPLETE", async () => {
-		const planText = "# My Plan\n\nDo the thing.\n\n<!-- PLAN_COMPLETE -->\n"
+	function makePlanToolsSession(planText: string, planPath: string) {
+		// Closure body runs after makeFakeSession returns (during prompt()), so
+		// `session` is defined by then. Pushes the worker's submit_plan tool
+		// result onto session messages — this is what extractSubmitPlanPath reads.
 		const session = makeFakeSession({
 			promptAction: async (emit) => {
+				;(session.messages as unknown[]).push({
+					role: "toolResult",
+					toolName: "submit_plan",
+					content: [{ type: "text", text: `Plan submitted and saved to ${planPath}.` }],
+					details: { submitted: true, planPath },
+				})
 				emit({ type: "message_start" })
 				emit({
 					type: "message_update",
@@ -632,43 +640,55 @@ describe("runAgent — Plan agent plan persistence", () => {
 				emit({ type: "turn_end" })
 			},
 		})
+		return session
+	}
+
+	function mockSession(session: unknown) {
 		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			session: session as Awaited<ReturnType<typeof createAgentSession>>["session"],
 			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
 				ReturnType<typeof createAgentSession>
 			>["extensionsResult"],
 		})
+	}
+
+	it("surfaces planPath when the Plan agent submitted via submit_plan", async () => {
+		const planText = "# My Plan\n\nDo the thing.\n"
+		const savedPath = join(tempCwd, ".kimchi", "plans", "plan-my-plan.md")
+		mkdirSync(dirname(savedPath), { recursive: true })
+		writeFileSync(savedPath, planText, "utf-8")
+		const session = makePlanToolsSession(planText, savedPath)
+		mockSession(session)
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(result.planPath).toBeDefined()
-		const planPath = result.planPath as string
-		expect(existsSync(planPath)).toBe(true)
-		const content = readFileSync(planPath, "utf-8")
-		expect(content).toContain("Do the thing.")
-		expect(content).not.toContain("<!-- PLAN_COMPLETE -->")
+		expect(result.planPath).toBe(savedPath)
+		expect(existsSync(result.planPath as string)).toBe(true)
 	})
 
-	it("does not save a plan when a non-Plan agent emits PLAN_COMPLETE", async () => {
-		const planText = "Some text\n\n<!-- PLAN_COMPLETE -->\n"
+	it("returns undefined planPath when the Plan agent made no submit_plan call", async () => {
 		const session = makeFakeSession({
 			promptAction: async (emit) => {
 				emit({ type: "message_start" })
-				emit({
-					type: "message_update",
-					assistantMessageEvent: { type: "text_delta", delta: planText },
-				})
+				emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "# Draft plan\n" } })
 				emit({ type: "turn_end" })
 			},
 		})
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
+		mockSession(session)
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
 		})
+
+		expect(result.planPath).toBeUndefined()
+	})
+
+	it("does not surface planPath for a non-Plan agent even if it calls submit_plan", async () => {
+		const savedPath = join(tempCwd, ".kimchi", "plans", "plan-gp.md")
+		const session = makePlanToolsSession("# My Plan\n\nDo the thing.\n", savedPath)
+		mockSession(session)
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "plan it", {
 			pi: pi as unknown as RunOptions["pi"],

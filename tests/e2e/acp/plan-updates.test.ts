@@ -282,22 +282,17 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// or stay idle under the manual continuation policy — in which case the
 		// first client prompt absorbs those same scripts. Wait briefly for the
 		// wake path; if no plan arrives, prod with an explicit prompt.
+		// Under manual continuation policy the wake path never fires, so
+		// prompt immediately instead of waiting 15s (which races with the
+		// resume path's model turn on slow CI runners).
+		await prompt(fixture, sessionId, "continue the ferment")
 		const initial = await waitForSnapshotWith(
 			fixture,
 			sessionId,
 			(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
-			15_000,
-			"wake-path initial plan",
-		).catch(async () => {
-			await prompt(fixture, sessionId, "continue the ferment")
-			return waitForSnapshotWith(
-				fixture,
-				sessionId,
-				(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
-				PROMPT_TIMEOUT_LONG_MS,
-				"prompt-driven initial plan",
-			)
-		})
+			PROMPT_TIMEOUT_LONG_MS,
+			"initial plan",
+		)
 
 		expect(
 			initial.map((e) => e.content),
@@ -365,24 +360,19 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 
 		const sessionA = await newSession(fixture, fixture.workDir)
 
-		// Drive activation in session A (via the wake path, or an explicit
-		// prompt when the wake path stays idle under the manual policy).
+		// Under manual continuation policy the wake path never fires, so
+		// prompt immediately instead of waiting 15s (which races with the
+		// resume path's model turn on slow CI runners — the resume turn
+		// consumes the first scripted response, leaving the prompt with a
+		// no-tool-call response and no plan snapshot).
+		await prompt(fixture, sessionA, "continue the ferment")
 		await waitForSnapshotWith(
 			fixture,
 			sessionA,
 			(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
-			15_000,
-			"session A wake-path initial plan",
-		).catch(async () => {
-			await prompt(fixture, sessionA, "continue the ferment")
-			await waitForSnapshotWith(
-				fixture,
-				sessionA,
-				(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
-				PROMPT_TIMEOUT_LONG_MS,
-				"session A prompt-driven initial plan",
-			)
-		})
+			PROMPT_TIMEOUT_LONG_MS,
+			"session A initial plan",
+		)
 
 		// A second session on the same process must not get plan notifications:
 		// the ferment events are emitted on session A's bus and the todo bridge

@@ -1,4 +1,5 @@
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
+import type { ImageContent } from "@earendil-works/pi-ai"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
@@ -22,7 +23,7 @@ class FakeAgentSession {
 		appendCustomEntry: () => "entry-id",
 	}
 	setSessionName = vi.fn()
-	steer = vi.fn(async (_text: string) => {})
+	steer = vi.fn(async (_text: string, _images?: ImageContent[]) => {})
 	clearQueue = vi.fn(() => ({ steering: [] as string[], followUp: [] as string[] }))
 	extensionRunner = { emit: async () => {} }
 	getToolDefinition = vi.fn((_name: string) => undefined)
@@ -115,10 +116,108 @@ describe("KimchiAcpAgent extMethod steering", () => {
 
 		expect(result).toEqual({ status: "injected" })
 		expect(session.steer).toHaveBeenCalledTimes(1)
-		expect(session.steer).toHaveBeenCalledWith("actually, do it differently")
+		expect(session.steer).toHaveBeenCalledWith("actually, do it differently", undefined)
 
 		session.finishTurn()
 		expect(await promptPromise).toEqual({ stopReason: "end_turn" })
+	})
+
+	it("forwards image attachments to session.steer", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const promptPromise = agent.prompt({
+			sessionId: "sess-1",
+			prompt: [{ type: "text", text: "do work" }],
+		})
+		await Promise.resolve()
+
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+			sessionId: "sess-1",
+			prompt: "this is the screen I meant",
+			attachments: [
+				{ type: "image", data: "aW1hZ2UtYnl0ZXM=", mimeType: "image/png" },
+				{ type: "image", data: "bW9yZS1ieXRlcw==", mimeType: "image/jpeg" },
+			],
+		})
+
+		expect(result).toEqual({ status: "injected" })
+		expect(session.steer).toHaveBeenCalledWith("this is the screen I meant", [
+			{ type: "image", data: "aW1hZ2UtYnl0ZXM=", mimeType: "image/png" },
+			{ type: "image", data: "bW9yZS1ieXRlcw==", mimeType: "image/jpeg" },
+		])
+
+		session.finishTurn()
+		await promptPromise
+	})
+
+	it("treats an empty attachments array the same as no attachments", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const promptPromise = agent.prompt({
+			sessionId: "sess-1",
+			prompt: [{ type: "text", text: "do work" }],
+		})
+		await Promise.resolve()
+
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+			sessionId: "sess-1",
+			prompt: "adjust course",
+			attachments: [],
+		})
+
+		expect(result).toEqual({ status: "injected" })
+		expect(session.steer).toHaveBeenCalledWith("adjust course", undefined)
+
+		session.finishTurn()
+		await promptPromise
+	})
+
+	it("rejects malformed attachments with invalidParams", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const promptPromise = agent.prompt({
+			sessionId: "sess-1",
+			prompt: [{ type: "text", text: "do work" }],
+		})
+		await Promise.resolve()
+
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+				sessionId: "sess-1",
+				prompt: "check this",
+				attachments: "not-an-array",
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+				sessionId: "sess-1",
+				prompt: "check this",
+				attachments: [{ type: "text", text: "hello" }],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+				sessionId: "sess-1",
+				prompt: "check this",
+				attachments: [{ type: "image", data: 123, mimeType: "image/png" }],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+
+		expect(session.steer).not.toHaveBeenCalled()
+
+		session.finishTurn()
+		await promptPromise
 	})
 
 	it("returns promptRequired instead of throwing when no turn is in progress", async () => {

@@ -64,7 +64,7 @@ export function clearAllPendingPlanReviews(): void {
 
 export async function promptPlanReview(
 	ctx: ExtensionContext,
-	opts: { planMarkdown: string },
+	opts: { planMarkdown: string; onDismissRegister?: (dismiss: () => void) => void },
 ): Promise<PlanReviewOutcome | undefined> {
 	if (ctx.mode !== "tui") return undefined
 	const ui = ctx.ui
@@ -72,7 +72,7 @@ export async function promptPlanReview(
 		ui,
 		() =>
 			ui.custom?.<PlanReviewOutcome>((tui, theme, keybindings, done) =>
-				createPlanReviewComponent(tui, theme, keybindings, opts.planMarkdown, done),
+				createPlanReviewComponent(tui, theme, keybindings, opts.planMarkdown, done, opts.onDismissRegister),
 			) ?? Promise.resolve(undefined),
 	)
 }
@@ -90,6 +90,7 @@ class PlanReviewComponent extends Container {
 	private selectedIndex = 0
 	private mode: "decision" | "feedback" = "decision"
 	private editor: ExtensionEditorComponent | undefined
+	private dismissed = false
 
 	constructor(
 		tui: TUI,
@@ -97,6 +98,7 @@ class PlanReviewComponent extends Container {
 		keybindings: KeybindingsManager,
 		planMarkdown: string,
 		done: (result: PlanReviewOutcome) => void,
+		onDismissRegister?: (dismiss: () => void) => void,
 	) {
 		super()
 		this.tui = tui
@@ -106,6 +108,14 @@ class PlanReviewComponent extends Container {
 		this.options = getDecisionOptions()
 		this.markdown = new Markdown(planMarkdown, 1, 0, getMarkdownTheme())
 		this.showDecision()
+
+		// Register an external dismiss function so the caller can close
+		// the popup when plannotator decides first.
+		onDismissRegister?.(() => {
+			if (this.dismissed) return
+			this.dismissed = true
+			this.done({ kind: "cancelled", reason: "decision_cancelled" })
+		})
 	}
 
 	override render(width: number): string[] {
@@ -218,6 +228,7 @@ export function createPlanReviewComponent(
 	keybindings: KeybindingsManager,
 	planMarkdown: string,
 	done: (result: PlanReviewOutcome) => void,
+	onDismissRegister?: (dismiss: () => void) => void,
 ): Component {
-	return new PlanReviewComponent(tui, theme, keybindings, planMarkdown, done)
+	return new PlanReviewComponent(tui, theme, keybindings, planMarkdown, done, onDismissRegister)
 }

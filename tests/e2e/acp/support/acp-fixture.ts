@@ -351,12 +351,10 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				PI_PACKAGE_DIR: PACKAGE_DIR,
 				KIMCHI_DISABLE_BUILTIN_PROVIDERS: "1",
 				PI_SKIP_VERSION_CHECK: "1",
-				// Disable startup network hooks (self-update probe and RTK
-				// auto-install) so the session boots without background HTTP or
-				// synchronous tar/exec work. Keeps the ACP e2e hermetic and
-				// deterministic.
+				// Disable startup network hooks (self-update probe) so the
+				// session boots without background HTTP or synchronous tar/exec
+				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
-				KIMCHI_RTK_AUTO_INSTALL: "0",
 				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
 			},
 			cwd: workDir,

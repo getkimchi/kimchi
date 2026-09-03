@@ -363,7 +363,7 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 			render(width: number): string[] {
 				if (!state.visible) return []
 				return buildTodoWidgetLines(theme, state.expanded, sessionId).map((line) =>
-					truncateToWidth(line, Math.max(20, width - 4)),
+					truncateToWidth(line, Math.max(1, width - 4)),
 				)
 			},
 			invalidate: unregister,

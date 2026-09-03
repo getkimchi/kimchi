@@ -92,9 +92,7 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 						},
 					],
 				},
-				// Turn 2 (after tool result): short text, no trailing "?".
-				{ stream: ["I've outlined the scope for the cache layer feature."] },
-				// Turn 3 (post-confirmation): keeps session alive.
+				// Turn 2 (post-confirmation): keeps session alive.
 				{},
 			],
 		},

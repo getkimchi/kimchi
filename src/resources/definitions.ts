@@ -15,13 +15,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: true,
 	},
 	{
-		id: "hooks.rtk-rewrite",
-		kind: "hooks",
-		label: "RTK rewrite",
-		description: "Rewrite Bash commands through rtk before execution.",
-		defaultEnabled: true,
-	},
-	{
 		id: "tools.web_search",
 		kind: "tools",
 		label: "Web search",
@@ -89,6 +82,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Claude Code skills",
 		description: "Load Claude Code skills from .claude/skills into Kimchi's native skill prompt.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
+		id: "extensions.workflows",
+		kind: "extensions",
+		label: "Kimchi Workflows",
+		description: "Enable the /workflow command for authoring and running TypeScript workflows.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

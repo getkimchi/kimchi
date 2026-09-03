@@ -108,7 +108,7 @@ async function runClassifier(
 						const existing = Array.isArray(p.tags) ? (p.tags as string[]) : []
 						p.tags = [CLASSIFIER_REQUEST_TAG, ...existing]
 					}
-					return omitKimchiMaxTokensFromPayload(payload, model.provider)
+					return omitKimchiMaxTokensFromPayload(payload, model)
 				},
 			},
 		)

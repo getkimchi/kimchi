@@ -64,13 +64,11 @@ __pycache__/
 # LLM tools
 .codegraph/
 
+# vendor/superpowers is a local-only directory, not a submodule
+vendor/superpowers/
+
 # Terraform local state and plans
 .terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan
-
-# Python
-__pycache__/
-*.pyc
-*.pyo

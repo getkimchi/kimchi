@@ -50,6 +50,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
@@ -393,13 +394,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
 
 			try {
+				// pi-mono auth resolution reads the stored credentials file, not the
+				// OPENAI_API_KEY env var — availability requires a real auth entry
+				// on disk (probe: env stub alone leaves auth configured: false).
+				writeFileSync(
+					resolve(tempAgentDir, "auth.json"),
+					JSON.stringify({ openai: { type: "api_key", key: "fake-key" } }),
+				)
 				const modelsJson = {
 					providers: {
 						openai: {
+							baseUrl: "https://api.openai.com/v1",
 							models: [
 								{
 									id: "gpt-4o",
 									name: "GPT-4o",
+									api: "openai-responses",
 									input: ["text", "image"],
 								},
 							],
@@ -4736,9 +4746,10 @@ describe("ACP mode controller integration with permissions extension", () => {
 			},
 			getFlag: (name: string) => flags[name],
 			registerFlag: () => {},
+			registerTool: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
-			events: { emit: () => {} },
+			events: createMiniEventBus().events,
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),

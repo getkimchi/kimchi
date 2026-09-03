@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { getRawErrorMessage } from "./error-preservation.js"
 import {
 	__getPendingProviderError,
 	__resetInteractiveErrorSurfaceState,
@@ -116,6 +117,27 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		emitMessageEnd(message)
 		expect(message.errorMessage).toContain("The request could not be completed (bad request)")
 		expect(message.errorMessage).not.toContain("BadRequestError")
+	})
+
+	// Non-retryable errors get sanitized for display but the raw error must be
+	// recoverable: upstream's `_checkCompaction` → `isContextOverflow` looks for
+	// provider-specific overflow phrases the sanitized label does not contain.
+	// This is the regression test for over-context sessions never auto-compacting.
+	it("preserves the raw errorMessage when sanitizing non-retryable errors", () => {
+		const { emitMessageEnd } = createHarness()
+		const raw = `{"error":{"type":"invalid_request_error","message":"The input (313972 tokens) is longer than the model's context length (262144 tokens).","retryable":false,"code":"400"}}`
+		const message = { role: "assistant", stopReason: "error", errorMessage: raw }
+		emitMessageEnd(message)
+		expect(message.errorMessage).toContain("The request could not be completed (context window exceeded)")
+		expect(getRawErrorMessage(message)).toBe(raw)
+	})
+
+	it("preserves the raw errorMessage for retryable errors too (no double-preserve)", () => {
+		const { emitMessageEnd } = createHarness()
+		const message = { role: "assistant", stopReason: "error", errorMessage: VLLM_RAW }
+		emitMessageEnd(message)
+		expect(message.errorMessage).toBe("Retrying…")
+		expect(getRawErrorMessage(message)).toBe(VLLM_RAW)
 	})
 
 	it("clears pending state on a successful assistant message_end", () => {

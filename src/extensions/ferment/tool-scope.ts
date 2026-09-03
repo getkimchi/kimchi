@@ -156,8 +156,9 @@ export function applyFermentToolProfile(pi: ExtensionAPI, profile: FermentToolPr
 export function applyFermentRuntimeToolProfile(pi: ExtensionAPI, runtime: FermentRuntime): void {
 	// If a plan review is pending (propose_ferment_scoping returned "Plan ready
 	// for review"), suppress ALL tools. This forces the model's next LLM call
-	// to be text-only (stopReason: "stop"), ending the turn so `agent_end` fires
-	// and the review dialog is shown via the setTimeout(0) in index.ts.
+	// to be text-only (stopReason: "stop"), ending the turn. The review is
+	// now triggered directly by propose_ferment_scoping via emitPlanReviewRequest,
+	// so no agent_end → setTimeout chain is needed.
 	// Restored by the caller after confirmPendingScope() or review cancellation.
 	if (hasPendingPlanReview(runtime)) {
 		pi.setActiveTools([])

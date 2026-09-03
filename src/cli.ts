@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	getParsedCliArgs,
 	isCliAtFileArg,
@@ -46,6 +47,7 @@ import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
+import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
@@ -91,6 +93,7 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
+import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -102,7 +105,6 @@ import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
 import autoModelExtension from "./extensions/router/index.js"
-import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -160,7 +162,7 @@ import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
-import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
+import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -171,6 +173,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 // Wrap InteractiveMode.prototype.showError so retried provider errors are
@@ -605,6 +608,10 @@ try {
 			// session_shutdown intentionally kills nothing here.
 			// EXPERIMENTAL: gated behind --enable-experimental-features.
 			...(experimentalFeatures ? [daemonExtension] : []),
+			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
+			// and `user_bash` events. Must run before bashToolGuardExtension so
+			// hooks see the original command and any rewrite/block propagates.
+			bashHooksAdapterExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
@@ -623,7 +630,6 @@ try {
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
 			promptEnrichmentExtension(effectiveSkillPaths),
-			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),
@@ -632,6 +638,7 @@ try {
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
 			kimchiHooksAdapter,
+			plannotatorExtension,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,
@@ -648,6 +655,7 @@ try {
 			tipsExtension(),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
+				{ id: "extensions.workflows", factory: piWorkflowsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,

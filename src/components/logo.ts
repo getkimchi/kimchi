@@ -138,6 +138,9 @@ export class LogoHeader implements Component {
 		// Bottom border
 		result.push(accentBorder(`└${"─".repeat(borderInner)}┘`))
 
-		return result
+		// The left column is fixed at the logo width, so on terminals narrower
+		// than the logo every body line would overflow. pi-tui treats an
+		// over-wide line as a fatal crash, so hard-truncate every row here.
+		return result.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line))
 	}
 }
