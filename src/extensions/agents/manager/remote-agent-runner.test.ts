@@ -484,6 +484,18 @@ describe("runRemoteAgent", () => {
 			// createSession was still called
 			expect(createSession).toHaveBeenCalledOnce()
 		})
+
+		it("re-throws AbortError when signal is aborted during provisioning", async () => {
+			const abortErr = new Error("aborted")
+			abortErr.name = "AbortError"
+			vi.mocked(provisionGitCredential).mockRejectedValue(abortErr)
+			const gitCredential = { host: "gitlab.com", token: "tok" }
+
+			await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitCredential }))).rejects.toThrow("aborted")
+
+			// createSession must NOT have been called — abort should stop the run
+			expect(createSession).not.toHaveBeenCalled()
+		})
 	})
 
 	describe("onReady callback", () => {

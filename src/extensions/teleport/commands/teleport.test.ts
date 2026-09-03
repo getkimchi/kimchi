@@ -575,7 +575,7 @@ describe("runTeleport", () => {
 			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)
 
 			expect(progressInstances[0]?.promptGitToken).toHaveBeenCalledWith("github.com")
-			expect(writeGitTokenMock).toHaveBeenCalledWith("github.com", "ghp_new", undefined)
+			expect(writeGitTokenMock).toHaveBeenCalledWith("github.com", "ghp_new")
 			expect(provisionGitCredentialMock).toHaveBeenCalledOnce()
 			expect(provisionGitCredentialMock.mock.calls[0][1]).toMatchObject({
 				gitHost: "github.com",

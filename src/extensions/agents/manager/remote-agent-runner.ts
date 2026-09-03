@@ -152,6 +152,8 @@ export async function runRemoteAgent(
 				signal,
 			)
 		} catch (err) {
+			// Honor abort — don't continue to createSession if the user cancelled.
+			if (err instanceof Error && err.name === "AbortError") throw err
 			console.warn(
 				`[remote-agent-runner] git credential provisioning failed: ${err instanceof Error ? err.message : err}`,
 			)

@@ -400,7 +400,14 @@ export class AgentManager {
 				targetDirectory: repoBasename(clonePlan.url),
 				noHistory: true,
 			}
-			gitCredential = await resolveGitCredential(ctx, clonePlan)
+			// Resolve git credential separately — a failure here (bad URL, prompt
+			// rejection) must not wipe the clone plan. The clone proceeds without
+			// creds; private repos fail, public repos still work.
+			try {
+				gitCredential = await resolveGitCredential(ctx, clonePlan)
+			} catch (err) {
+				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
+			}
 		} catch {
 			// Not a git repo or no origin — proceed without git details.
 			gitDetails = undefined

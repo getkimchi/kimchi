@@ -1090,4 +1090,24 @@ describe("AgentManager remote git credential resolution", () => {
 			}),
 		)
 	})
+
+	it("preserves gitDetails but sets gitCredential undefined when resolveGitCredential throws", async () => {
+		mockResolveGitToken.mockRejectedValue(new Error("prompt rejected"))
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		// gitDetails is preserved — the clone plan is not lost
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				gitDetails: expect.objectContaining({ repo: "https://gitlab.com/team/repo.git" }),
+				gitCredential: undefined,
+			}),
+		)
+	})
 })
