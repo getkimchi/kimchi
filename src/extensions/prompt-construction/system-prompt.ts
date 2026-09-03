@@ -219,9 +219,8 @@ Write substantive output (research notes, findings, verification reports) to fil
  * around delegation can swap exactly this text through `singleModeDelegation`
  * instead of re-authoring the section. The following sentence about which model
  * a spawned subagent runs on is deliberately kept out of this constant: it
- * applies whatever the delegation stance is. A guard test asserts this literal
- * still appears in the assembled single-mode prompt so the swap can never
- * silently no-op if the text drifts.
+ * applies whatever the delegation stance is. The assembled single-mode prompt
+ * must keep this literal verbatim, or the swap has nothing to replace.
  */
 export const SINGLE_MODE_DELEGATION_TEXT = `Handle tasks directly yourself.
 

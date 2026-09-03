@@ -355,7 +355,6 @@ describe("buildSystemPrompt: spicy variant", () => {
 		expect(result).toMatchSnapshot()
 	})
 
-	// Completion guidance assertions
 	it("SPICY.guidelines carries requirements-completion guidance", () => {
 		const combined = guidelinesFor("single")
 		expect(combined).toMatch(/requirements/i)

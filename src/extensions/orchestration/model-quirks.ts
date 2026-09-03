@@ -10,10 +10,9 @@
  * stop (for example a genuine question it was waiting on an answer for), so the
  * nudge is scoped tightly to the ids listed here rather than applied by default.
  *
- * New ids are added to this one array so the scope lives in data, not in
- * branching code. Matching is a lower-cased substring test, so provider
- * prefixes (for example `kimchi-dev/kimi-k2.6`) and point releases
- * (`kimi-k2.7`) are covered by a single entry.
+ * New ids are added to this one array. Matching is a lower-cased substring
+ * test, so provider prefixes (for example `kimchi-dev/kimi-k2.6`) and point
+ * releases (`kimi-k2.7`) are covered by a single entry.
  */
 const CONTINUATION_STALL_QUIRK_MODEL_SUBSTRINGS = ["kimi-k2", "minimax-m3"]
 
