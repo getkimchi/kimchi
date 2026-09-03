@@ -47,6 +47,14 @@ export interface PromptVariant {
 	factualAccuracy?: string | null
 
 	/**
+	 * Replace the commit-trailer bullet (`CORE_GUIDELINES_COMMIT_TRAILER_LINE`)
+	 * with the variant's own commit-attribution rule. Applied wherever the core
+	 * guidelines are emitted, including the subagent personas that pull them in,
+	 * so the main thread and its subagents follow one attribution rule.
+	 */
+	commitAttribution?: string
+
+	/**
 	 * Replace the delegation stance inside the Single-Model Mode section (the
 	 * stock `SINGLE_MODE_DELEGATION_TEXT`). Set it when the variant's own
 	 * guidance is built on delegating work to subagents, so the two do not

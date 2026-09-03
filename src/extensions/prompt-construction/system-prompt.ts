@@ -318,12 +318,23 @@ export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information
  * Management` is deliberately omitted: subagents do not manage phase
  * lifecycle — their persona fixes their phase, and they never call
  * `set_phase`.
+ *
+ * The active variant's commit-attribution and Factual Accuracy overrides apply
+ * here too, so a subagent follows the same attribution and factual-accuracy
+ * rules as the thread that spawned it. The variant's own opinionated guidance
+ * is deliberately not injected: the persona prompt already carries it.
  */
 export function buildCoreGuidelinesSections(activeToolNames?: readonly string[]): string {
 	const toolNames = activeToolNames ? new Set(activeToolNames) : undefined
+	const variant = resolvePromptVariant()
+	const guidelines = variant.commitAttribution
+		? CORE_GUIDELINES.replace(CORE_GUIDELINES_COMMIT_TRAILER_LINE, variant.commitAttribution)
+		: CORE_GUIDELINES
+	const factualAccuracy: string | null =
+		variant.factualAccuracy !== undefined ? variant.factualAccuracy : FACTUAL_ACCURACY
 	return [
-		`## Guidelines\n\n${CORE_GUIDELINES}`,
-		`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`,
+		`## Guidelines\n\n${guidelines}`,
+		factualAccuracy === null ? "" : `## Factual Accuracy\n\n${factualAccuracy}`,
 		`## Documents\n\n${DOCUMENTS_SECTION}`,
 		buildOutputAndTruncationSection(toolNames),
 		buildToolSelectionSection(toolNames),

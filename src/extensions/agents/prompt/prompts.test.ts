@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
+import { CORE_GUIDELINES_COMMIT_TRAILER_LINE } from "../../prompt-construction/system-prompt.js"
+import { PROMPT_VARIANT_ENV } from "../../prompt-construction/variants/index.js"
+import { SPICY_COMMIT_ATTRIBUTION } from "../../prompt-construction/variants/spicy-prompts.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
 	AGENT_EXPLORE,
@@ -495,5 +498,42 @@ Use the Skill tool to load a skill's full instructions.
 		expect(output).toContain("## Available Skills")
 		expect(output).toContain("**my-skill**")
 		expect(output).toContain("Skill tool")
+	})
+})
+
+describe("core guidelines follow the active prompt variant", () => {
+	let savedVariant: string | undefined
+
+	beforeEach(() => {
+		savedVariant = process.env[PROMPT_VARIANT_ENV]
+	})
+
+	afterEach(() => {
+		if (savedVariant === undefined) {
+			delete process.env[PROMPT_VARIANT_ENV]
+		} else {
+			process.env[PROMPT_VARIANT_ENV] = savedVariant
+		}
+	})
+
+	function generalPurposePrompt(): string {
+		return buildAgentPrompt(getRequired(AGENT_GENERAL_PURPOSE), FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			activeToolNames: ["read", "bash", "edit"],
+		})
+	}
+
+	it("keeps the stock commit trailer and Factual Accuracy section with no variant selected", () => {
+		delete process.env[PROMPT_VARIANT_ENV]
+		const output = generalPurposePrompt()
+		expect(output).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
+		expect(output).toContain("## Factual Accuracy")
+	})
+
+	it("swaps in the variant's commit attribution and drops the section the variant omits", () => {
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		const output = generalPurposePrompt()
+		expect(output).not.toContain("Co-Authored-By: Kimchi")
+		expect(output).toContain(SPICY_COMMIT_ATTRIBUTION)
+		expect(output).not.toContain("## Factual Accuracy")
 	})
 })
