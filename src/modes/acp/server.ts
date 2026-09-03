@@ -64,6 +64,8 @@ import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
+import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
+import { consumeCallerMcpServers, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -428,6 +430,7 @@ export class KimchiAcpAgent implements Agent {
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
 				_meta: {
 					[CAPABILITIES_KEY]: {
@@ -519,23 +522,25 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		// mcpServers isn't plumbed: kimchi loads MCP servers from its own config via
-		// mcpAdapterExtension, so a caller-supplied list would be silently ignored.
-		// Surface that as invalidParams instead of accepting the request and
-		// pretending those servers are live.
-		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
-			throw RequestError.invalidParams(
-				undefined,
-				"mcpServers is not supported; configure MCP servers via kimchi config",
-			)
-		}
-		const session = await this.sessionFactory(params)
-		const initialMode = this.getInitialPermissionMode(session)
 		// Once the factory hands us a live session we own its lifecycle. If model
 		// verification, extension binding, subscribe, or the registering Map.set
 		// throws before we hand it back to the caller, nothing else will ever
 		// dispose it — so make ownership transfer atomic.
+		// Declared outside the try so the catch block can tell whether the
+		// factory already produced a live session (needs disposal + unregister)
+		// or threw before one existed (skip those, only drain the caller-servers
+		// queue).
+		let session: AgentSession | undefined
 		try {
+			// Convert caller-supplied MCP servers (from the ACP session/new
+			// request) and push them onto the caller-server registry. The mcpAdapter
+			// extension's session_start handler drains this registry inside
+			// initializeMcp(), connecting the servers alongside config-sourced ones.
+			// Must be inside the try block: if sessionFactory or bindExtensions
+			// throws, the catch drains the queue to avoid leaking to the next session.
+			setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
+			session = await this.sessionFactory(params)
+			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
 
 			const sessionId = session.sessionId
@@ -569,18 +574,29 @@ export class KimchiAcpAgent implements Agent {
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(session, () => this.getInitialPermissionMode(session).mode)
+			const configOptions = buildConfigOptions(session, initialMode.mode)
 			return {
 				sessionId,
 				configOptions,
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			unregisterAcpPrompter(session.sessionId)
-			unregisterSessionPermissionFlagController(session.sessionId)
-			clearPermissionModeEnv(session.sessionId)
-
-			session.dispose()
+			// Drain any caller-servers entry that was pushed but never consumed
+			// by initializeMcp (e.g. sessionFactory or bindExtensions threw before
+			// session_start fired). Without this, the stale entry would leak to
+			// the next newSession/loadSession call. Run unconditionally: the
+			// queue entry is pushed before sessionFactory, so it exists regardless
+			// of which statement threw.
+			consumeCallerMcpServers()
+			// Only unwind registration + dispose if the factory actually handed us
+			// a live session. If sessionFactory itself threw, `session` is still
+			// undefined and there is nothing to unregister or dispose.
+			if (session) {
+				unregisterAcpPrompter(session.sessionId)
+				unregisterSessionPermissionFlagController(session.sessionId)
+				clearPermissionModeEnv(session.sessionId)
+				session.dispose()
+			}
 			throw err
 		}
 	}
@@ -741,14 +757,6 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		// Same posture as newSession: mcpServers isn't plumbed, surface as
-		// invalidParams instead of silently dropping caller intent.
-		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
-			throw RequestError.invalidParams(
-				undefined,
-				"mcpServers is not supported; configure MCP servers via kimchi config",
-			)
-		}
 		const sessionId = params.sessionId
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
@@ -782,6 +790,14 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		// Convert caller-supplied MCP servers (from the ACP session/load
+		// request) and push them onto the caller-server registry, so the
+		// mcpAdapter session_start handler drains them inside initializeMcp.
+		// Pushed here — inside loadSessionFresh — rather than at the top of
+		// loadSession, so the early-return paths (session already live, session
+		// already loading) never enqueue an entry that this method's
+		// session_start → initializeMcp would never consume.
+		setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
 		const session: AgentSession = await this.sessionLoader(params)
 		const initialMode = this.getInitialPermissionMode(session)
 		// Atomic ownership transfer mirrors newSession but covers the full

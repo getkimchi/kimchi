@@ -1531,29 +1531,28 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is declared in the ACP request shape but kimchi has no hook to
-	// wire them into a live session — pi-coding-agent loads MCP servers from its
-	// own config. Silently dropping them would leave the client believing those
-	// servers are available; reject up-front with invalidParams instead.
-	it("rejects newSession when mcpServers is non-empty", async () => {
+	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
+	// servers are pushed onto the caller-servers registry and consumed by
+	// initializeMcp during session_start. This test verifies the session is
+	// created successfully (factory called) and the servers land in the registry.
+	it("accepts newSession with non-empty mcpServers and registers them", async () => {
 		const factoryCalled = { count: 0 }
 		const factory: AcpSessionFactory = async () => {
 			factoryCalled.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(
-			localAgent.newSession({
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(factoryCalled.count).toBe(0)
+		const res = await localAgent.newSession({
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(res.sessionId).toBe("with-mcp")
+		expect(factoryCalled.count).toBe(1)
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -5665,22 +5664,20 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
-	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
+	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
-		await expect(
-			agent.loadSession({
-				sessionId: "s1",
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(loaderCalls.count).toBe(0)
+		await agent.loadSession({
+			sessionId: "s1",
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(loaderCalls.count).toBe(1)
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
