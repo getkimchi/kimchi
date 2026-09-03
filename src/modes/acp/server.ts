@@ -65,7 +65,11 @@ import { clearApiKey, writeApiKey } from "../../config.js"
 import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
-import { consumeCallerMcpServers, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
+import {
+	type CallerServerEntry,
+	removePendingEntry,
+	setCallerMcpServers,
+} from "../../extensions/mcp-adapter/caller-servers.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -531,14 +535,18 @@ export class KimchiAcpAgent implements Agent {
 		// or threw before one existed (skip those, only drain the caller-servers
 		// queue).
 		let session: AgentSession | undefined
+		let callerEntry: CallerServerEntry | undefined
 		try {
 			// Convert caller-supplied MCP servers (from the ACP session/new
 			// request) and push them onto the caller-server registry. The mcpAdapter
 			// extension's session_start handler drains this registry inside
 			// initializeMcp(), connecting the servers alongside config-sourced ones.
 			// Must be inside the try block: if sessionFactory or bindExtensions
-			// throws, the catch drains the queue to avoid leaking to the next session.
-			setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
+			// throws, the catch removes the pending entry to avoid leaking to the
+			// next session. removePendingEntry uses reference identity so it only
+			// removes THIS session's entry — if initializeMcp already consumed it
+			// (via consumeCallerMcpServers), the removal is a no-op.
+			callerEntry = setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
 			session = await this.sessionFactory(params)
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
@@ -581,13 +589,13 @@ export class KimchiAcpAgent implements Agent {
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			// Drain any caller-servers entry that was pushed but never consumed
-			// by initializeMcp (e.g. sessionFactory or bindExtensions threw before
-			// session_start fired). Without this, the stale entry would leak to
-			// the next newSession/loadSession call. Run unconditionally: the
-			// queue entry is pushed before sessionFactory, so it exists regardless
-			// of which statement threw.
-			consumeCallerMcpServers()
+			// Remove this session's caller-servers entry if it hasn't been
+			// consumed yet by initializeMcp (e.g. sessionFactory or bindExtensions
+			// threw before session_start fired). removePendingEntry uses reference
+			// identity so it only removes THIS session's entry — if initializeMcp
+			// already consumed it, this is a no-op, and no other session's entry
+			// is affected.
+			if (callerEntry) removePendingEntry(callerEntry)
 			// Only unwind registration + dispose if the factory actually handed us
 			// a live session. If sessionFactory itself threw, `session` is still
 			// undefined and there is nothing to unregister or dispose.
@@ -790,68 +798,72 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		// Convert caller-supplied MCP servers (from the ACP session/load
-		// request) and push them onto the caller-server registry, so the
-		// mcpAdapter session_start handler drains them inside initializeMcp.
-		// Pushed here — inside loadSessionFresh — rather than at the top of
-		// loadSession, so the early-return paths (session already live, session
-		// already loading) never enqueue an entry that this method's
-		// session_start → initializeMcp would never consume.
-		setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
-		const session: AgentSession = await this.sessionLoader(params)
-		const initialMode = this.getInitialPermissionMode(session)
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		const sid = session.sessionId
-		// Defensive: pi reads the sessionId from the JSONL header, not the
-		// filename, so a corrupted / hand-edited session whose header id
-		// disagrees with the requested id would land under the wrong key in
-		// `sessions`. Subsequent session/prompt for params.sessionId would then
-		// fail with "unknown sessionId" while the file is still held open.
-		// Reject up front and dispose so we don't quietly diverge.
-		if (sid !== params.sessionId) {
-			session.dispose()
-			throw RequestError.invalidParams(
-				undefined,
-				`session header id ${sid} does not match requested sessionId ${params.sessionId}`,
-			)
-		}
+		//
+		// callerEntry is declared outside the try so the catch can remove it
+		// from the caller-servers queue if the session fails before initializeMcp
+		// consumes it. setCallerMcpServers is inside the try so the early-return
+		// paths in loadSession (session already live / already loading) never
+		// enqueue an entry.
+		let callerEntry: CallerServerEntry | undefined
+		let session: AgentSession | undefined
+		let sid: string | undefined
 		try {
-			assertSessionHasModel(session)
+			callerEntry = setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
+			const loadedSession = await this.sessionLoader(params)
+			session = loadedSession
+			const initialMode = this.getInitialPermissionMode(loadedSession)
+			const sessionSid = loadedSession.sessionId
+			sid = sessionSid
+			// Defensive: pi reads the sessionId from the JSONL header, not the
+			// filename, so a corrupted / hand-edited session whose header id
+			// disagrees with the requested id would land under the wrong key in
+			// `sessions`. Subsequent session/prompt for params.sessionId would then
+			// fail with "unknown sessionId" while the file is still held open.
+			// Reject up front and dispose so we don't quietly diverge.
+			if (sessionSid !== params.sessionId) {
+				loadedSession.dispose()
+				throw RequestError.invalidParams(
+					undefined,
+					`session header id ${sessionSid} does not match requested sessionId ${params.sessionId}`,
+				)
+			}
+			assertSessionHasModel(loadedSession)
 
-			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			const uiContext = this.createUiContext(loadedSession)
+			registerPermissionFlagController(loadedSession, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
-				session,
+				session: loadedSession,
 				unsubscribe: () => {},
 				// The session header cwd was validated against params.cwd above, so
 				// the session manager's cwd is the session's true cwd.
-				cwd: session.sessionManager.getCwd(),
+				cwd: loadedSession.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
+				skillCommands: new Map(discoverAcpSkillCommands(loadedSession.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
-				sid,
-				createAcpPermissionPrompter(this.conn, sid, uiContext, (piToolCallId, toolName) =>
+				sessionSid,
+				createAcpPermissionPrompter(this.conn, sessionSid, uiContext, (piToolCallId, toolName) =>
 					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
 				),
 			)
-			await this.bindAcpExtensions(session, uiContext)
+			await this.bindAcpExtensions(loadedSession, uiContext)
 
-			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, record)
-			this.startPlanTracker(record, sid)
+			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionSid, event))
+			this.sessions.set(sessionSid, record)
+			this.startPlanTracker(record, sessionSid)
 			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
 			// already-active phase, so the tracker also snapshots from the
 			// restored todo store (gated on an active ferment — emits nothing
@@ -861,32 +873,36 @@ export class KimchiAcpAgent implements Agent {
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
-			this.seedBlockCounterFromBranch(session, record)
+			this.seedBlockCounterFromBranch(loadedSession, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
-			this.replayTranscript(session)
-			this.sendAvailableCommandsUpdate(sid)
+			this.replayTranscript(loadedSession)
+			this.sendAvailableCommandsUpdate(sessionSid)
 
-			const configOptions = buildConfigOptions(session, () => this.getInitialPermissionMode(session).mode)
+			const configOptions = buildConfigOptions(loadedSession, () => this.getInitialPermissionMode(loadedSession).mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sid)
-			unregisterSessionPermissionFlagController(sid)
-			clearPermissionModeEnv(sid)
-
-			const existing = this.sessions.get(sid)
-			if (existing) {
-				this.sessions.delete(sid)
-				existing.planTracker?.stop()
-				existing.unsubscribe()
+			// Remove this session's caller-servers entry if it hasn't been consumed
+			// by initializeMcp yet (same pattern as newSession).
+			if (callerEntry) removePendingEntry(callerEntry)
+			if (sid) {
+				unregisterAcpPrompter(sid)
+				unregisterSessionPermissionFlagController(sid)
+				clearPermissionModeEnv(sid)
+				const existing = this.sessions.get(sid)
+				if (existing) {
+					this.sessions.delete(sid)
+					existing.planTracker?.stop()
+					existing.unsubscribe()
+				}
 			}
-			session.dispose()
+			if (session) session.dispose()
 			throw err
 		}
 	}

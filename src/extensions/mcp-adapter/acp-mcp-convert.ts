@@ -40,6 +40,10 @@ function headersArrayToRecord(
  * of `command` (stdio) vs `url` (http/sse) to distinguish transports.
  */
 export function convertAcpMcpServer(server: McpServer): ServerEntry {
+	// Capture the name early for error messages — don't use JSON.stringify
+	// on the server object as env/headers may contain secrets.
+	const name = server.name
+
 	// Stdio: no `type` field, has `command`
 	if ("command" in server) {
 		const entry: ServerEntry = {
@@ -49,6 +53,11 @@ export function convertAcpMcpServer(server: McpServer): ServerEntry {
 		const env = envArrayToRecord(server.env)
 		if (env) entry.env = env
 		return entry
+	}
+
+	// SSE: we don't advertise sse support in mcpCapabilities, so reject.
+	if ("type" in server && server.type === "sse") {
+		throw new Error(`SSE transport is not supported for server "${name}"`)
 	}
 
 	// HTTP: `type === "http"`
@@ -62,7 +71,7 @@ export function convertAcpMcpServer(server: McpServer): ServerEntry {
 	}
 
 	// Should not happen with a well-formed ACP McpServer, but guard anyway.
-	throw new Error(`Unrecognized ACP McpServer shape: ${JSON.stringify(server)}`)
+	throw new Error(`Unrecognized ACP McpServer shape for server "${name}"`)
 }
 
 /**

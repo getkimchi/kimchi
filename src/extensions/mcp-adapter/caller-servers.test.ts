@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest"
 import {
+	type CallerServerEntry,
 	clearCallerMcpServers,
 	consumeCallerMcpServers,
 	peekCallerMcpServers,
+	removePendingEntry,
 	setCallerMcpServers,
 } from "./caller-servers.js"
 import type { ServerEntry } from "./types.js"
@@ -51,6 +53,41 @@ describe("caller-servers queue", () => {
 
 		it("returns undefined on empty queue", () => {
 			expect(peekCallerMcpServers()).toBeUndefined()
+		})
+	})
+
+	describe("removePendingEntry", () => {
+		it("removes a pending entry that has not been consumed", () => {
+			const entry: CallerServerEntry = setCallerMcpServers({ foo: stdioEntry })
+			removePendingEntry(entry)
+			expect(peekCallerMcpServers()).toBeUndefined()
+			expect(consumeCallerMcpServers()).toEqual({})
+		})
+
+		it("is a no-op if the entry was already consumed", () => {
+			const entry: CallerServerEntry = setCallerMcpServers({ foo: stdioEntry })
+			expect(consumeCallerMcpServers()).toEqual({ foo: stdioEntry })
+			// Already consumed — should not throw or drain the next entry
+			removePendingEntry(entry)
+			expect(peekCallerMcpServers()).toBeUndefined()
+		})
+
+		it("only removes the specified entry, not others", () => {
+			const entry1: CallerServerEntry = setCallerMcpServers({ a: stdioEntry })
+			setCallerMcpServers({ b: httpEntry })
+			removePendingEntry(entry1)
+			// entry1 removed, entry2 still in queue
+			expect(consumeCallerMcpServers()).toEqual({ b: httpEntry })
+			expect(consumeCallerMcpServers()).toEqual({})
+		})
+
+		it("does not remove a different entry with the same content (reference identity)", () => {
+			const entry1: CallerServerEntry = setCallerMcpServers({ same: stdioEntry })
+			setCallerMcpServers({ same: stdioEntry })
+			removePendingEntry(entry1)
+			// entry1 removed by reference, second entry (same content) remains
+			expect(consumeCallerMcpServers()).toEqual({ same: stdioEntry })
+			expect(consumeCallerMcpServers()).toEqual({})
 		})
 	})
 

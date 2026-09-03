@@ -16,15 +16,27 @@ import type { ServerEntry } from "./types.js"
  * were set for that specific session, in call order.
  */
 
-const queue: Array<Record<string, ServerEntry>> = []
+/**
+ * Internal queue entry. The `servers` field holds the actual server definitions;
+ * the object identity (reference) is used by `removePendingEntry` to safely
+ * remove only the entry that this specific `setCallerMcpServers` call created,
+ * without accidentally draining a different session's entry.
+ */
+export interface CallerServerEntry {
+	servers: Record<string, ServerEntry>
+}
+
+const queue: CallerServerEntry[] = []
 
 /**
  * Push caller-supplied MCP servers onto the registry queue.
- * Called by the ACP server before `bindAcpExtensions` so the
- * `session_start` handler picks them up.
+ * Returns the opaque entry so the caller can remove it later if the session
+ * fails before `initializeMcp` consumes it.
  */
-export function setCallerMcpServers(servers: Record<string, ServerEntry>): void {
-	queue.push(servers)
+export function setCallerMcpServers(servers: Record<string, ServerEntry>): CallerServerEntry {
+	const entry: CallerServerEntry = { servers }
+	queue.push(entry)
+	return entry
 }
 
 /**
@@ -33,14 +45,32 @@ export function setCallerMcpServers(servers: Record<string, ServerEntry>): void 
  * entry is gone — subsequent calls return `{}` until the next `setCallerMcpServers`.
  */
 export function consumeCallerMcpServers(): Record<string, ServerEntry> {
-	return queue.shift() ?? {}
+	return queue.shift()?.servers ?? {}
 }
 
 /**
  * Return the oldest entry without removing it (for tests/debugging).
  */
 export function peekCallerMcpServers(): Record<string, ServerEntry> | undefined {
-	return queue[0]
+	return queue[0]?.servers
+}
+
+/**
+ * Remove a specific pending entry from the queue if it hasn't been consumed yet.
+ * Used by the ACP server's catch blocks to clean up after a session failure:
+ * if `initializeMcp` already consumed the entry (via `consumeCallerMcpServers`),
+ * this is a no-op. If it hasn't (e.g. `sessionFactory` threw before
+ * `session_start` fired), the entry is removed so it doesn't leak to the next
+ * session.
+ *
+ * Uses reference identity (`===`) so it only removes the exact entry returned
+ * by `setCallerMcpServers`, never a different session's entry.
+ */
+export function removePendingEntry(entry: CallerServerEntry): void {
+	const index = queue.indexOf(entry)
+	if (index !== -1) {
+		queue.splice(index, 1)
+	}
 }
 
 /**

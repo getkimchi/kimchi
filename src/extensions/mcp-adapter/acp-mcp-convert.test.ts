@@ -87,24 +87,20 @@ describe("convertAcpMcpServer", () => {
 	})
 
 	describe("sse transport", () => {
-		it("converts an sse server with url and headers", () => {
+		it("rejects SSE servers since sse is not advertised in mcpCapabilities", () => {
 			const server: McpServer = {
 				name: "event-stream",
 				type: "sse",
 				url: "https://events.example.com/mcp",
 				headers: [{ name: "X-API-Key", value: "apikey456" }],
 			}
-			const entry = convertAcpMcpServer(server)
-			expect(entry).toEqual({
-				url: "https://events.example.com/mcp",
-				headers: { "X-API-Key": "apikey456" },
-			})
+			expect(() => convertAcpMcpServer(server)).toThrow(/SSE transport is not supported/)
 		})
 	})
 
 	it("throws on unrecognized server shape", () => {
 		const malformed = { name: "bad" } as unknown as McpServer
-		expect(() => convertAcpMcpServer(malformed)).toThrow(/Unrecognized ACP McpServer shape/)
+		expect(() => convertAcpMcpServer(malformed)).toThrow(/Unrecognized ACP McpServer shape for server "bad"/)
 	})
 })
 

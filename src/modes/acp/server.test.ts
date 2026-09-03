@@ -53,6 +53,7 @@ import { clearApiKey, writeApiKey } from "../../config.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -90,6 +91,7 @@ function cleanPermissionEnv(): void {
 	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
 	// set by one test don't leak into another via the module-level cache.
 	populateCliArgs([])
+	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
@@ -1546,6 +1548,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
+		// Clear any stale entries from beforeEach's newSession call so peek
+		// returns only this test's entry.
+		clearCallerMcpServers()
 		const res = await localAgent.newSession({
 			cwd: "/tmp",
 			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
@@ -1553,6 +1558,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		expect(res.sessionId).toBe("with-mcp")
 		expect(factoryCalled.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the queue — verify it was pushed.
+		expect(peekCallerMcpServers()).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -5678,6 +5686,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
 		})
 		expect(loaderCalls.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the queue — verify it was pushed.
+		expect(peekCallerMcpServers()).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
