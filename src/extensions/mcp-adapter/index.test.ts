@@ -7,7 +7,7 @@ import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
 
-// Token-optimization Chunk 5 gate tests need control over the REGISTERED
+// Gate tests need control over the REGISTERED
 // proxy surface, which is derived from loadMcpConfig() at factory time.
 // Mock it so the gate is deterministic and does not read (or purge) the
 // developer machine's ambient mcp.json / mcp-cache.json.
@@ -90,7 +90,7 @@ function makePi(): ExtensionAPI & { fireShutdown: () => Promise<void> } {
 }
 
 beforeEach(() => {
-	// Default to one fake server: the Chunk 5 registration gate requires at
+	// Default to one fake server: the registration gate requires at
 	// least one configured MCP server to register the proxy tool. Gate-off
 	// tests explicitly empty this map.
 	mcpConfigState.config.mcpServers = { "test-server": { command: "definitely-not-a-real-kimchi-test-binary" } }
@@ -138,7 +138,7 @@ function makeState(meta: ToolMetadata, serverName: string): McpExtensionState {
 	} as unknown as McpExtensionState
 }
 
-describe("mcp proxy registration gate (token-optimization Phase 1 Chunk 5)", () => {
+describe("mcp proxy registration gate", () => {
 	it("registers the proxy tool when at least one MCP server is configured", async () => {
 		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
 		const pi = makePi()

@@ -1,5 +1,6 @@
 /**
- * Token-budget CI (token-optimization initiative, plan Chunk 4 + Phase 1 Chunk 1).
+ * Token-budget CI — canonical tool-surface and prompt measurement with
+ * committed budget caps.
  *
  * Assembles canonical context surfaces and fails when they grow past committed
  * budgets. Three surfaces are measured deterministically:
@@ -30,8 +31,8 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
 import { measureCanonicalToolSurface } from "./context-budget-tools.js"
 
-// Pin the mcp-adapter to zero configured servers (token-optimization Phase 1
-// Chunk 5): with no servers the adapter registers nothing, so the canonical
+// Pin the mcp-adapter to zero configured servers: with no servers the
+// adapter registers nothing, so the canonical
 // surface must not depend on the ambient machine's mcp.json. The metadata
 // cache is stubbed too — with zero servers the factory would otherwise purge
 // and rewrite the developer machine's real mcp-cache.json.
@@ -65,22 +66,22 @@ const CHARS_PER_TOKEN = 4
 /** Budget slices (estimated tokens). Headroom over the recorded baseline below. */
 const BUDGET = {
 	/** buildSystemPrompt with the canonical single-mode options below
-	 *  (recorded 2026-09-01 post-Phase-2: 1909 est after P2-1..P2-4 — tool
-	 *  descriptions removed from the prompt, phase payload gated on set_phase,
-	 *  Consent/Output/Environment sections dieted; ~7% headroom). */
+	 *  (recorded 2026-09-01: 1,909 est — tool descriptions live in the API
+	 *  payload, the phase payload is gated on set_phase, Consent/Output/
+	 *  Environment sections dieted; ~7% headroom). */
 	systemPrompt: 2050,
 	/** Sum of name + description chars across resources/skills frontmatter. */
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 2150,
-	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-6: 6764 est across
+	/** Total canonical tool surface (recorded 2026-08-28: 6764 est across
 	 *  26 tools after the DAP session-tool + bash_control deferrals, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
 	 *  ~5% headroom). Dev sessions in a repo WITH a detected language server will
 	 *  exceed this by the five gated lsp_* tools (~666 est) — that is by design,
 	 *  see LSP_TOOL_NAMES in lsp.ts. */
 	toolSurface: 7100,
-	/** Print-mode slice (recorded 2026-08-28 post-Chunk-7: 6021 est across 24
+	/** Print-mode slice (recorded 2026-08-28: 6021 est across 24
 	 *  tools — the canonical surface minus questionnaire (526) and set_phase
 	 *  (217), which the registration gates drop in headless --print runs;
 	 *  ~5% headroom). */
@@ -170,11 +171,11 @@ describe("context budget", () => {
 		)
 		const total = systemPromptTokens + skillsTokens
 
-		// P2-1 guard: tool descriptions belong to the API payload only. If this
+		// Regression guard: tool descriptions belong in the API payload only. If this
 		// marker reappears, a section builder is re-embedding them in the prompt.
 		expect(
 			systemPrompt,
-			"canonical prompt must not embed <tool name=...> description blocks (P2-1 regression guard)",
+			"canonical prompt must not embed <tool name=...> description blocks (tool-description regression guard)",
 		).not.toContain('<tool name="')
 
 		const breakdown = [
@@ -239,7 +240,7 @@ describe("context budget", () => {
 		).toBeLessThanOrEqual(BUDGET.toolSurface)
 	})
 
-	it("print-mode slice drops interactive/ferment-mode tools (token-optimization Chunk 7)", async () => {
+	it("print-mode slice drops interactive/ferment-mode tools", async () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))

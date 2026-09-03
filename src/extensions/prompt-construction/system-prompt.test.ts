@@ -175,7 +175,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("token_budget")
 		})
 
-		it("includes all tool names (descriptions live in the API payload — P2-1)", () => {
+		it("includes all tool names (descriptions live in the API payload)", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -183,7 +183,7 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
 			// Descriptions are intentionally not duplicated in the prompt: the API
-			// tools parameter already carries them (token-optimization Phase 2).
+			// tools parameter already carries them.
 			expect(result).not.toContain("<available_tools>")
 			expect(result).not.toContain("Launch a specialized agent")
 		})
@@ -614,7 +614,7 @@ describe("buildSystemPrompt", () => {
 		})
 
 		// Interactive single-model sessions expose set_phase — phase payloads are
-		// paid only when the tool is reachable (token-optimization P2-2 gate).
+		// paid only when the tool is reachable.
 		const phaseTools = [...tools, { name: "set_phase", description: "Tag the current work phase" }]
 
 		it("includes Phase Management section when phase and model are provided", () => {
@@ -630,7 +630,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
-		it("drops the entire phase payload in single-model sessions without set_phase (P2-2)", () => {
+		it("drops the entire phase payload in single-model sessions without set_phase", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
