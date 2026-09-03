@@ -424,7 +424,7 @@ test("resuming an Auto session reuses its concrete resolution without the flag",
 		fixture.initialModel = false
 		launchKimchi(terminal, fixture, ["-r", sessionId ?? ""], fixture.seedEnv)
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
-		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		terminal.submit("Continue the same session")
 		await waitForText(terminal, "Resumed Auto reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 		await waitForTurnToSettle(fixture.fake.requests)

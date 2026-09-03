@@ -10,7 +10,6 @@ import { readStatusLineConfig } from "../config/status-line-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
-import { isExperimentalFeaturesEnabled } from "../extensions/experimental.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
@@ -450,10 +449,9 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 }
 
 /** Concrete model id chosen by the Auto router, shown next to the `auto` label
- *  in single-model mode. `undefined` before routing resolves (or when the flag
- *  is off / the model isn't Auto / multi-model mode), keeping the plain `auto` label. */
+ *  in single-model mode. `undefined` before routing resolves (or when the
+ *  model isn't Auto / multi-model mode), keeping the plain `auto` label. */
 function resolveRoutedModelId(ctx: ExtensionContext): string | undefined {
-	if (!isExperimentalFeaturesEnabled()) return undefined
 	if (!isAutoModel(ctx.model)) return undefined
 	const effective = getEffectiveModel(ctx)
 	return effective && effective.id !== AUTO_MODEL_ID ? effective.id : undefined
