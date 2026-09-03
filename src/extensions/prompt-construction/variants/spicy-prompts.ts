@@ -41,6 +41,20 @@ export const SPICY_COMMIT_ATTRIBUTION =
 	"- **Git commits and PR descriptions**: write them in a plain, human tone and do not add AI-attribution signatures or trailers, unless your project or user instructions (for example a project or global guidelines file) ask for a specific commit trailer or signature, in which case follow those instead."
 
 // ---------------------------------------------------------------------------
+// Single-mode delegation stance
+// ---------------------------------------------------------------------------
+
+/**
+ * Spicy's replacement for the base single-mode delegation stance. The base text
+ * tells the model to handle everything itself and not to spawn subagents, which
+ * contradicts spicy's coordinator guidance, its periodic delegation reminder,
+ * and its fresh-subagent review step. It swaps in for
+ * SINGLE_MODE_DELEGATION_TEXT inside the Single-Model Mode section.
+ */
+export const SPICY_SINGLE_MODE_DELEGATION =
+	"Delegate implementation, testing, and review to focused subagents; keep this thread orchestrating the work and verifying the results."
+
+// ---------------------------------------------------------------------------
 // Opinionated working-discipline block
 // ---------------------------------------------------------------------------
 

@@ -91,6 +91,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
+		singleModeDelegation: variant.singleModeDelegation,
 	})
 
 	let blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode: effectiveMode }) : []
@@ -194,6 +195,8 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	/** Variant override for the single-mode delegation stance, if any. */
+	singleModeDelegation?: string
 }): string {
 	if (args.mode === "orchestrator") {
 		return resolveOrchestrationInstructions({
@@ -206,7 +209,7 @@ function resolveModeInstructions(args: {
 	if (args.mode === "subagent") {
 		return SUBAGENT_INSTRUCTIONS
 	}
-	return buildSingleModelInstructions(args.currentModelId)
+	return buildSingleModelInstructions(args.currentModelId, args.singleModeDelegation)
 }
 
 // ---------------------------------------------------------------------------
@@ -230,15 +233,28 @@ Write substantive output (research notes, findings, verification reports) to fil
 // Single-model instructions
 // ---------------------------------------------------------------------------
 
-function buildSingleModelInstructions(currentModelId?: string): string {
+/**
+ * The default delegation stance inside `## Single-Model Mode`: do the work in
+ * this thread and only spawn subagents when asked. Exported so a variant built
+ * around delegation can swap exactly this text through `singleModeDelegation`
+ * instead of re-authoring the section. The following sentence about which model
+ * a spawned subagent runs on is deliberately kept out of this constant: it
+ * applies whatever the delegation stance is. A guard test asserts this literal
+ * still appears in the assembled single-mode prompt so the swap can never
+ * silently no-op if the text drifts.
+ */
+export const SINGLE_MODE_DELEGATION_TEXT = `Handle tasks directly yourself.
+
+Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation.`
+
+function buildSingleModelInstructions(currentModelId?: string, delegationOverride?: string): string {
 	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	const delegation = delegationOverride ?? SINGLE_MODE_DELEGATION_TEXT
 	return `## Single-Model Mode
 
 Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.
 
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
-
-Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
+You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. ${delegation} When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
 
 export const DOCUMENTS_SECTION =

@@ -13,6 +13,7 @@ import {
 	CORE_GUIDELINES_COMMIT_TRAILER_LINE,
 	type EnvironmentInfo,
 	resolveCoreGuidelines,
+	SINGLE_MODE_DELEGATION_TEXT,
 } from "../system-prompt.js"
 import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./index.js"
 import {
@@ -30,6 +31,7 @@ import {
 	SPICY,
 	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_NAME,
+	SPICY_SINGLE_MODE_DELEGATION,
 } from "./spicy.js"
 
 // ---------------------------------------------------------------------------
@@ -422,6 +424,48 @@ describe("spicy additive guidelines", () => {
 		// would silently no-op and the base trailer would leak into spicy. This
 		// guard fails loudly instead.
 		expect(CORE_GUIDELINES).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// D3) Single-Model Mode delegation stance: stock text by default, spicy's
+//     delegation text under spicy
+// ---------------------------------------------------------------------------
+
+describe("single-mode delegation stance", () => {
+	const single = (variantName?: string) =>
+		buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName })
+
+	it("guards that the exported delegation constant is still present in the stock single-mode section", () => {
+		// If the Single-Model Mode wording drifts away from this constant, a
+		// variant's replacement would silently no-op. This guard fails loudly.
+		expect(single()).toContain(SINGLE_MODE_DELEGATION_TEXT)
+	})
+
+	it("default single prompt keeps the do-not-spawn-subagents stance", () => {
+		expect(single()).toContain("Do not spawn subagents")
+		expect(single()).toContain("Handle tasks directly yourself.")
+	})
+
+	it("spicy single prompt drops the do-not-spawn-subagents stance", () => {
+		expect(single("spicy")).not.toContain("Do not spawn subagents")
+		expect(single("spicy")).not.toContain("Handle tasks directly yourself.")
+	})
+
+	it("spicy single prompt carries the delegation stance instead", () => {
+		expect(single("spicy")).toContain(SPICY_SINGLE_MODE_DELEGATION)
+	})
+
+	it("spicy single prompt keeps the subagent model rule that follows the swapped text", () => {
+		expect(single("spicy")).toContain(
+			"When you do spawn a subagent, pass your own model ID in the `model` parameter by default",
+		)
+	})
+
+	it("spicy orchestrator prompt has no Single-Model Mode section and no delegation stance text", () => {
+		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
+		expect(result).not.toContain("## Single-Model Mode")
+		expect(result).not.toContain(SPICY_SINGLE_MODE_DELEGATION)
 	})
 })
 

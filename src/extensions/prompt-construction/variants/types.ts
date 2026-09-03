@@ -47,6 +47,15 @@ export interface PromptVariant {
 	factualAccuracy?: string | null
 
 	/**
+	 * Replace the delegation stance inside the Single-Model Mode section (the
+	 * stock `SINGLE_MODE_DELEGATION_TEXT`). Set it when the variant's own
+	 * guidance is built on delegating work to subagents, so the two do not
+	 * contradict each other. Only that text is replaced; the rest of the section,
+	 * including which model a spawned subagent runs on, is untouched.
+	 */
+	singleModeDelegation?: string
+
+	/**
 	 * Transform the skill list before it is formatted into the Skills section.
 	 * Return a filtered/modified array, or `undefined` to leave the list
 	 * unchanged. Runs before formatSkills, so it shapes the entire section.
