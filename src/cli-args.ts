@@ -397,33 +397,23 @@ export function stripExperimentalFeaturesArg(args: string[]): string[] {
 }
 
 /**
- * Extract the `--spicy` boolean flag from argv.
+ * Apply the `--spicy` boolean flag to the process environment and return the
+ * argv with every `--spicy` token removed, so the flag never reaches the
+ * subcommand dispatcher or the pi SDK parser.
  *
- * Strips the `--spicy` token wherever it appears and returns spicy=true if it
- * was present. The flag takes no value. The flag is removed from `rest` so it
- * never reaches the pi SDK parser.
- */
-export function extractSpicyFlag(args: string[]): { spicy: boolean; rest: string[] } {
-	const rest = args.filter((a) => a !== "--spicy")
-	return { spicy: rest.length !== args.length, rest }
-}
-
-/**
- * Apply the `--spicy` flag to the process environment and return the stripped argv.
- *
- * - When `--spicy` is present: sets `env[PROMPT_VARIANT_ENV]="spicy"` and
- *   removes the flag token from the returned array.
- * - When the flag is absent: leaves `env` untouched and returns args unchanged
- *   (so `KIMCHI_PROMPT_VARIANT` still works as an escape hatch).
+ * - When `--spicy` is present: sets `env[PROMPT_VARIANT_ENV]="spicy"`.
+ * - When the flag is absent: leaves `env` untouched (so
+ *   `KIMCHI_PROMPT_VARIANT` still works as an escape hatch) and returns the
+ *   args unchanged.
  *
  * The variant travels as an environment variable rather than an argument, so
  * child processes such as worker subagents inherit the same variant.
  *
  * Pass an isolated env object in tests to avoid mutating `process.env`.
  */
-export function applyVariantSelection(argv: string[], env: NodeJS.ProcessEnv): string[] {
-	const { spicy, rest } = extractSpicyFlag(argv)
-	if (spicy) {
+export function applySpicyFlag(argv: string[], env: NodeJS.ProcessEnv): string[] {
+	const rest = argv.filter((a) => a !== "--spicy")
+	if (rest.length !== argv.length) {
 		env[PROMPT_VARIANT_ENV] = "spicy"
 	}
 	return rest

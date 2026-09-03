@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
-	applyVariantSelection,
+	applySpicyFlag,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
@@ -278,7 +278,7 @@ const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 // before any branch that consumes arguments. Every path below works from
 // argsWithoutVariant so the flag never reaches the subcommand dispatcher, the
 // @file/resume normalization, or the pi SDK argument parser.
-const argsWithoutVariant = applyVariantSelection(originalArgs, process.env)
+const argsWithoutVariant = applySpicyFlag(originalArgs, process.env)
 
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
