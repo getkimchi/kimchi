@@ -33,7 +33,9 @@ jobs:
         run: make -C tools/proxy-helper build
 
       - name: Run MCP end-to-end suite
-        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test:e2e:mcp
+        run: |
+          test -x tools/proxy-helper/bin/proxy-helper
+          KIMCHI_PROXY_HELPER=$(pwd)/tools/proxy-helper/bin/proxy-helper pnpm run test:e2e:mcp
 
       - name: Upload MCP E2E artifacts
         if: failure()
