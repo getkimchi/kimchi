@@ -356,7 +356,7 @@ describe("maybeAutoUpdateOnLaunch — happy path", () => {
 
 		await maybeAutoUpdateOnLaunch()
 
-		expect(mockApplyUpdate).toHaveBeenCalledWith({ tag: "v1.1.0" })
+		expect(mockApplyUpdate).toHaveBeenCalledWith({ tag: "v1.1.0", signal: expect.any(AbortSignal) })
 		expect(execveSpy).toHaveBeenCalledTimes(1)
 		// execve(file, args, env): file is process.execPath; args is
 		// [process.execPath, ...userArgs] where userArgs is process.argv.slice(2)
@@ -689,5 +689,153 @@ describe("maybeAutoUpdateOnLaunch — re-exec unavailable fallback", () => {
 		} finally {
 			;(process.stderr.write as unknown) = originalWrite
 		}
+	})
+})
+
+describe("maybeAutoUpdateOnLaunch — Ctrl+C skip", () => {
+	const updateAvailable = {
+		currentVersion: "1.0.0",
+		latestVersion: "1.1.0",
+		tag: "v1.1.0",
+		releaseUrl: "https://example/v1.1.0",
+		hasUpdate: true,
+		cached: false,
+	}
+
+	function makeStderrSpy() {
+		const originalWrite = process.stderr.write.bind(process.stderr)
+		const spy = vi.fn((_chunk: string | Uint8Array, _enc?: unknown, _cb?: unknown) => true)
+		;(process.stderr.write as unknown) = spy
+		return {
+			restore: () => {
+				;(process.stderr.write as unknown) = originalWrite
+			},
+			getLines: () => spy.mock.calls.map((c) => String(c[0])).join(""),
+		}
+	}
+
+	it("prints the skip hint exactly once, even when an update is applied", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockResolvedValue(updateAvailable)
+			mockApplyUpdate.mockResolvedValue({ from: "v1.1.0", to: "v1.1.0" })
+
+			await maybeAutoUpdateOnLaunch()
+
+			const lines = stderr.getLines()
+			expect(lines).toContain("checking for updates — press Ctrl+C to skip and launch the current version")
+			expect((lines.match(/press Ctrl\+C to skip/g) ?? []).length).toBe(1)
+		} finally {
+			stderr.restore()
+		}
+	})
+
+	it("skips the update when SIGINT fires during the check phase", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockImplementation(async () => {
+				process.emit("SIGINT")
+				return updateAvailable
+			})
+
+			await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
+
+			expect(mockApplyUpdate).not.toHaveBeenCalled()
+			expect(execveSpy).not.toHaveBeenCalled()
+			expect(stderr.getLines()).toContain("update skipped by user — launching current version (1.0.0)")
+		} finally {
+			stderr.restore()
+		}
+	})
+
+	it("pauses after the skip message so the user can read it before launch continues", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockImplementation(async () => {
+				process.emit("SIGINT")
+				return updateAvailable
+			})
+
+			const started = Date.now()
+			await maybeAutoUpdateOnLaunch()
+
+			expect(Date.now() - started).toBeGreaterThanOrEqual(1_000)
+			expect(stderr.getLines()).toContain("update skipped by user — launching current version (1.0.0)")
+		} finally {
+			stderr.restore()
+		}
+	})
+
+	it("skips the update when SIGINT fires during apply and aborts the in-flight signal", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockResolvedValue(updateAvailable)
+			let seenSignal: AbortSignal | undefined
+			mockApplyUpdate.mockImplementation(async (opts: { tag: string; signal?: AbortSignal }) => {
+				seenSignal = opts.signal
+				expect(seenSignal?.aborted).toBe(false)
+				process.emit("SIGINT")
+				// Model fetchWithRetry's rejection once the combined signal fires.
+				throw new Error("This operation was aborted")
+			})
+
+			await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
+
+			expect(seenSignal).toBeInstanceOf(AbortSignal)
+			expect(seenSignal?.aborted).toBe(true)
+			expect(execveSpy).not.toHaveBeenCalled()
+			expect(stderr.getLines()).toContain("update skipped by user")
+		} finally {
+			stderr.restore()
+		}
+	})
+
+	it("threads an abort signal into checkForUpdate and applyUpdate", async () => {
+		mockCheckForUpdate.mockResolvedValue(updateAvailable)
+		mockApplyUpdate.mockResolvedValue({ from: "v1.1.0", to: "v1.1.0" })
+
+		await maybeAutoUpdateOnLaunch()
+
+		const checkOpts = mockCheckForUpdate.mock.calls[0][0] as { signal?: AbortSignal }
+		const applyOpts = mockApplyUpdate.mock.calls[0][0] as { signal?: AbortSignal }
+		expect(checkOpts.signal).toBeInstanceOf(AbortSignal)
+		expect(applyOpts.signal).toBeInstanceOf(AbortSignal)
+		expect(checkOpts.signal?.aborted).toBe(false)
+	})
+
+	it("still re-execs when apply completed before the SIGINT was observed", async () => {
+		// Mirrors the external-signal semantics: once applyUpdate returns
+		// successfully the install is committed, so we hand off to the new
+		// binary regardless of a late Ctrl+C.
+		mockCheckForUpdate.mockResolvedValue(updateAvailable)
+		mockApplyUpdate.mockImplementation(async () => {
+			process.emit("SIGINT")
+			return { from: "v1.1.0", to: "v1.1.0" }
+		})
+
+		await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
+		expect(execveSpy).toHaveBeenCalledOnce()
+	})
+
+	it("leaves no SIGINT listener installed on any exit path", async () => {
+		const baseline = process.listenerCount("SIGINT")
+
+		// Gate-skip path: the listener must never be installed.
+		mockLoadAutoUpdateSetting.mockReturnValue(false)
+		await maybeAutoUpdateOnLaunch()
+		expect(process.listenerCount("SIGINT")).toBe(baseline)
+
+		// No-update path: installed for the check, removed on return.
+		mockLoadAutoUpdateSetting.mockReturnValue(true)
+		await maybeAutoUpdateOnLaunch()
+		expect(process.listenerCount("SIGINT")).toBe(baseline)
+
+		// User-skip path: `.once` is consumed by the emit; cleanup is a no-op.
+		mockCheckForUpdate.mockImplementation(async () => {
+			process.emit("SIGINT")
+			return updateAvailable
+		})
+		await maybeAutoUpdateOnLaunch()
+		expect(process.listenerCount("SIGINT")).toBe(baseline)
 	})
 })

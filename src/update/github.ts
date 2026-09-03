@@ -32,6 +32,10 @@ export interface GitHubClientOptions {
 	apiBase?: string
 	downloadBase?: string
 	fetch?: typeof globalThis.fetch
+	/** Aborts every request this client issues (forwarded to fetchWithRetry).
+	 *  Lets a caller — e.g. the on-launch auto-update on Ctrl+C — actually
+	 *  cancel an in-flight download instead of merely abandoning the promise. */
+	signal?: AbortSignal
 }
 
 export const KIMCHI_REPO: Repo = { owner: "getkimchi", name: "kimchi", binary: "kimchi" }
@@ -71,11 +75,13 @@ export class GitHubClient {
 	private readonly apiBase: string
 	private readonly downloadBase: string
 	private readonly fetchImpl: typeof globalThis.fetch
+	private readonly signal: AbortSignal | undefined
 
 	constructor(opts: GitHubClientOptions = {}) {
 		this.apiBase = opts.apiBase ?? DEFAULT_API_BASE
 		this.downloadBase = opts.downloadBase ?? DEFAULT_DOWNLOAD_BASE
 		this.fetchImpl = opts.fetch ?? globalThis.fetch
+		this.signal = opts.signal
 	}
 
 	/** GET /repos/{owner}/{name}/releases/latest. Returns tag + URL. */
@@ -84,7 +90,7 @@ export class GitHubClient {
 		const res = await fetchWithRetry(
 			url,
 			{ headers: { Accept: "application/vnd.github+json" } },
-			{ fetchImpl: this.fetchImpl, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
 		)
 		if (!res.ok) {
 			throw new Error(`github API returned ${res.status}`)
@@ -105,7 +111,7 @@ export class GitHubClient {
 		const res = await fetchWithRetry(
 			url,
 			{ headers: { Accept: "application/vnd.github+json" } },
-			{ fetchImpl: this.fetchImpl, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
 		)
 		if (res.status === 404) {
 			throw new Error(`release ${tag} not found (404)`)
@@ -129,7 +135,7 @@ export class GitHubClient {
 		const res = await fetchWithRetry(
 			url,
 			{ headers: { Accept: "application/vnd.github+json" } },
-			{ fetchImpl: this.fetchImpl, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
 		)
 		if (!res.ok) {
 			throw new Error(`github API returned ${res.status}`)
@@ -163,6 +169,7 @@ export class GitHubClient {
 		const url = `${this.downloadBase}/${repo.owner}/${repo.name}/releases/download/${tag}/checksums.txt`
 		const res = await fetchWithRetry(url, undefined, {
 			fetchImpl: this.fetchImpl,
+			signal: this.signal,
 			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
 		})
 		if (!res.ok) {
@@ -184,6 +191,7 @@ export class GitHubClient {
 		const url = `${this.downloadBase}/${repo.owner}/${repo.name}/releases/download/${tag}/${assetName(repo)}`
 		const res = await fetchWithRetry(url, undefined, {
 			fetchImpl: this.fetchImpl,
+			signal: this.signal,
 			timeoutMs: 60_000,
 			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
 		})
@@ -194,7 +202,29 @@ export class GitHubClient {
 		// fetch's body is a Web ReadableStream; convert via Readable.fromWeb so we
 		// can pipe it through pipeline() with proper backpressure + cleanup.
 		const source = Readable.fromWeb(res.body as WebReadable<Uint8Array>)
-		await pipeline(source, sink)
+		// On abort, destroy the Node-side stream directly. Pipeline cannot rely
+		// on the web stream's own error terminal here: under Bun,
+		// Readable.fromWeb never settles when a wrapped stream (the idle-timeout
+		// wrapper's) errors while an abort is in flight — observed on Ctrl+C
+		// during auto-update as a hanging launch plus an unhandled AbortError
+		// storm. Node-stream destroy settles pipeline on every runtime; the
+		// underlying request is torn down via fromWeb's cancel/abort chain.
+		const onAbort = () => {
+			source.destroy(this.signal?.reason)
+		}
+		// The signal may have fired during the fetch await above (addEventListener
+		// on an already-aborted signal never calls a new listener) — destroy
+		// immediately in that case so pipeline doesn't wait for body EOF.
+		if (this.signal?.aborted) {
+			onAbort()
+		} else {
+			this.signal?.addEventListener("abort", onAbort, { once: true })
+		}
+		try {
+			await pipeline(source, sink)
+		} finally {
+			this.signal?.removeEventListener("abort", onAbort)
+		}
 	}
 }
 
