@@ -1,10 +1,21 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
+import { getMultiModelEnabled } from "./multi-model.js"
+import type { PromptMode } from "./prompt-construction/system-prompt.js"
 import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
 import { getPromptMode } from "./prompt-mode-cache.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export const RULES_REMINDER_TYPE = "rules-reminder"
+
+/**
+ * The prompt mode the next system-prompt build will use. Mirrors the choice in
+ * prompt-enrichment: a worker never reaches here, so the multi-model setting
+ * decides between the orchestrator and single-model sections.
+ */
+function derivePromptMode(ctx: ExtensionContext): PromptMode {
+	return getMultiModelEnabled(ctx.sessionManager ?? null) ? "orchestrator" : "single"
+}
 
 export default function rulesReminderExtension(pi: ExtensionAPI): void {
 	const cfg = resolvePromptVariant().rulesReminder
@@ -21,10 +32,11 @@ export default function rulesReminderExtension(pi: ExtensionAPI): void {
 		if (!sessionId) return
 
 		// The rules depend on the session's prompt mode, which is recorded when
-		// the prompt is built. Until then the mode is unknown, and staying quiet
-		// beats sending the wrong mode's rules.
-		const mode = getPromptMode(sessionId)
-		if (!mode) return
+		// the system prompt is built. The first prompt of a session arrives
+		// before that build, so derive the mode from the same multi-model
+		// setting the builder reads. From the second prompt on the recorded
+		// value takes over, so a mid-session mode change still wins here.
+		const mode = getPromptMode(sessionId) ?? derivePromptMode(ctx)
 		const text = cfg.text(mode)
 		if (!text) return
 

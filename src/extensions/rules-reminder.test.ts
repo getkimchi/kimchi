@@ -13,6 +13,14 @@ vi.mock("./prompt-construction/variants/index.js", () => ({
 	resolvePromptVariant: () => mockResolvePromptVariant(),
 }))
 
+// Drives the mode the reminder derives when the session has none recorded yet.
+const mockMultiModelEnabled = vi.fn()
+
+vi.mock("./multi-model.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./multi-model.js")>()),
+	getMultiModelEnabled: () => mockMultiModelEnabled(),
+}))
+
 // ---------------------------------------------------------------------------
 // Pi mock factory
 // ---------------------------------------------------------------------------
@@ -47,7 +55,7 @@ function firePrompt(handlers: Map<string, Handler[]>, sessionId: string) {
 	fire(handlers, "input", { type: "input", text: "hi", source: "interactive" }, sessionCtx(sessionId))
 }
 
-/** The reminder only fires for a session whose prompt mode has been recorded. */
+/** Stands in for the prompt build that records the session's mode. */
 async function recordPromptMode(sessionId: string, mode: "single" | "orchestrator" | "subagent") {
 	const { setPromptMode } = await import("./prompt-mode-cache.js")
 	setPromptMode(sessionId, mode)
@@ -71,6 +79,7 @@ function deliveredText(sendMessage: ReturnType<typeof vi.fn>, call = 0): string 
 beforeEach(() => {
 	vi.resetModules()
 	mockResolvePromptVariant.mockReturnValue(spicyReminder())
+	mockMultiModelEnabled.mockReturnValue(false)
 })
 
 afterEach(() => {
@@ -78,8 +87,7 @@ afterEach(() => {
 })
 
 describe("rulesReminderExtension throttling", () => {
-	it("appends the rules on the first prompt of a session", async () => {
-		await recordPromptMode("rules-first", "single")
+	it("appends the rules on the first prompt of a session, before any prompt build", async () => {
 		const { handlers, sendMessage } = await loadExtension()
 
 		firePrompt(handlers, "rules-first")
@@ -193,17 +201,28 @@ describe("rulesReminderExtension message content", () => {
 		expect(text).not.toContain("- Delegate implementation, testing, and review to focused subagents")
 		expect(text).toContain("use the Reviewer and Fixer personas")
 	})
+
+	it("derives the mode from the multi-model setting until a prompt build records one", async () => {
+		mockMultiModelEnabled.mockReturnValue(true)
+		const { handlers, sendMessage } = await loadExtension()
+
+		firePrompt(handlers, "rules-derived-orch")
+
+		expect(deliveredText(sendMessage)).toContain("use the Reviewer and Fixer personas")
+	})
+
+	it("uses the recorded mode instead of the derived one", async () => {
+		await recordPromptMode("rules-recorded-wins", "orchestrator")
+		mockMultiModelEnabled.mockReturnValue(false)
+		const { handlers, sendMessage } = await loadExtension()
+
+		firePrompt(handlers, "rules-recorded-wins")
+
+		expect(deliveredText(sendMessage)).toContain("use the Reviewer and Fixer personas")
+	})
 })
 
 describe("rulesReminderExtension quiet cases", () => {
-	it("sends nothing while the session's prompt mode is still unknown", async () => {
-		const { handlers, sendMessage } = await loadExtension()
-
-		firePrompt(handlers, "rules-unrecorded-session")
-
-		expect(sendMessage).not.toHaveBeenCalled()
-	})
-
 	it("sends nothing for input that carries no session", async () => {
 		const { handlers, sendMessage } = await loadExtension()
 
@@ -221,8 +240,7 @@ describe("rulesReminderExtension quiet cases", () => {
 		expect(sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("is inert for agent workers", async () => {
-		await recordPromptMode("rules-worker", "single")
+	it("is inert for agent workers, whose mode is never recorded", async () => {
 		const savedSubagent = process.env.KIMCHI_SUBAGENT
 		process.env.KIMCHI_SUBAGENT = "1"
 		try {
@@ -243,7 +261,6 @@ describe("rulesReminderExtension quiet cases", () => {
 
 	it("is inert when the variant defines no rules reminder", async () => {
 		mockResolvePromptVariant.mockReturnValue({ name: "default" })
-		await recordPromptMode("rules-default-variant", "single")
 		const { handlers, sendMessage } = await loadExtension()
 
 		firePrompt(handlers, "rules-default-variant")
