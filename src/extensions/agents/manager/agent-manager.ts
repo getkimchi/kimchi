@@ -406,6 +406,7 @@ export class AgentManager {
 			try {
 				gitCredential = await resolveGitCredential(ctx, clonePlan)
 			} catch (err) {
+				gitCredential = undefined
 				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
 			}
 		} catch {
