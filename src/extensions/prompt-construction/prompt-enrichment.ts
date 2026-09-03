@@ -50,6 +50,7 @@ import {
 	stripUiOnlyMessages,
 	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
+import { modelHasContinuationStallQuirk } from "../orchestration/model-quirks.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
 	DEFAULT_MODEL_ROLES,
@@ -551,7 +552,11 @@ export default function (skillPathsFromConfig: string[]) {
 					return
 				}
 
-				if (!continuationNudge.evaluateTurn(assistantMsg, getEffectiveModel(ctx)?.id)) return
+				// Only models with the narrate-then-stop quirk get this nudge: for any
+				// other model it reads as fresh user input and pushes it past a
+				// legitimate stop.
+				if (!modelHasContinuationStallQuirk(getEffectiveModel(ctx)?.id)) return
+				if (!continuationNudge.evaluateTurn(assistantMsg)) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,

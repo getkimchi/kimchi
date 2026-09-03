@@ -3,8 +3,9 @@
  * loop in a stuck-looking state. Both target the same failure class (model said
  * one thing, didn't follow through in the next tool-use step) and are delivered
  * as `followUp` messages from the `turn_end` handler so the agent loop restarts.
- * The continuation nudge only runs for models with the narrate-then-stop quirk;
- * that set is owned by `modelHasContinuationStallQuirk` in `model-quirks.ts`.
+ * The continuation nudge only runs for models with the narrate-then-stop quirk.
+ * That set is owned by `modelHasContinuationStallQuirk` in `model-quirks.ts` and
+ * the caller checks it before asking for a verdict.
  *
  *   1. Continuation nudge — the orchestrator reasons in prose, announces it
  *      will delegate, and ends its turn without emitting the `Agent` tool
@@ -27,7 +28,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
-import { modelHasContinuationStallQuirk } from "./model-quirks.js"
 
 /**
  * Message-array shape passed through `context` events. Derived from
@@ -180,8 +180,7 @@ export class ContinuationNudge {
 		return this.accumulatedResponseText.trim() === DONE_SIGNAL
 	}
 
-	evaluateTurn(message: AssistantMessage, modelId?: string): boolean {
-		if (!modelHasContinuationStallQuirk(modelId)) return false
+	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= ContinuationNudge.MAX_NUDGES) return false
 		// In a fresh session, suppress the nudge until at least one tool has been called.
 		if (!this.toolsCalledThisSession) return false
