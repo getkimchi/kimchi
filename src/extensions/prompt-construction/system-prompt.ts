@@ -257,6 +257,16 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
 - **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
+/**
+ * The exact commit-trailer bullet inside CORE_GUIDELINES. Exported so a variant
+ * can target that single line precisely (for example to swap it for its own
+ * attribution rule) without re-authoring the whole guidelines block. A guard
+ * test asserts this literal still appears in CORE_GUIDELINES so the swap can
+ * never silently no-op if the guidelines text drifts.
+ */
+export const CORE_GUIDELINES_COMMIT_TRAILER_LINE =
+	"- **Git commits**: end every commit message with a blank line, then `Co-Authored-By: Kimchi <noreply@kimchi.dev>`."
+
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
 - Before starting, orient the user per Orchestration — use the phased pipeline instead of ad-hoc exploration or inline implementation.
@@ -272,7 +282,7 @@ function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptM
 	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
 }
 
-function resolveCoreGuidelines(mode: PromptMode): string {
+export function resolveCoreGuidelines(mode: PromptMode): string {
 	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
 }
 

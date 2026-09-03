@@ -8,7 +8,13 @@
 
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { buildSystemPrompt, type EnvironmentInfo } from "../system-prompt.js"
+import {
+	buildSystemPrompt,
+	CORE_GUIDELINES,
+	CORE_GUIDELINES_COMMIT_TRAILER_LINE,
+	type EnvironmentInfo,
+	resolveCoreGuidelines,
+} from "../system-prompt.js"
 import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./index.js"
 import {
 	AGENT_DISCIPLINE_BLOCK,
@@ -20,13 +26,13 @@ import {
 	DISCIPLINE_NUDGE_PREFIX,
 	DISCIPLINE_NUDGE_TEXT,
 	disciplineNudgeFor,
-	GUIDELINES,
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
 	RULES_BLOCK,
 	RULES_BLOCK_ORCHESTRATOR,
 	SPICY,
+	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_NAME,
 } from "./spicy.js"
 
@@ -371,9 +377,9 @@ describe("buildSystemPrompt: spicy variant", () => {
 		expect(result).not.toContain("## Factual Accuracy")
 	})
 
-	it("contains '### Output style' from the spicy guidelines body", () => {
+	it("contains the appended '### Working discipline' block", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
-		expect(result).toContain("### Output style")
+		expect(result).toContain("### Working discipline")
 	})
 
 	it("orchestrator mode contains the Orchestration section", () => {
@@ -456,15 +462,71 @@ describe("buildSystemPrompt: spicy variant", () => {
 	})
 
 	// Completion guidance assertions
-	it("SPICY.guidelines contains the completion guidance anchor", () => {
-		const combined = `${GUIDELINES}${OPINIONATED_BLOCK}`
-		expect(combined).toContain("See the task through to completion")
-		expect(combined).toMatch(/original requirements/i)
+	it("SPICY.guidelines carries requirements-completion guidance", () => {
+		const combined = guidelinesFor("single")
+		expect(combined).toMatch(/requirements/i)
+		expect(combined).toContain("check off each one before calling the task done")
 	})
 
 	it("SPICY.guidelines contains '### Working discipline'", () => {
-		const combined = `${GUIDELINES}${OPINIONATED_BLOCK}`
-		expect(combined).toContain("### Working discipline")
+		expect(guidelinesFor("single")).toContain("### Working discipline")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// D2) Additive guidelines: spicy keeps base safety rules, swaps the trailer,
+//     and appends the working-discipline block
+// ---------------------------------------------------------------------------
+
+describe("spicy additive guidelines", () => {
+	const spicySingle = () => buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName: "spicy" })
+
+	it("keeps the base shell-timeout safety rule", () => {
+		expect(spicySingle()).toContain("Always bound shell commands")
+	})
+
+	it("keeps the base never-run-interactive-commands rule", () => {
+		expect(spicySingle()).toContain("Never run interactive commands")
+	})
+
+	it("keeps the base stop-after-3-attempts rule", () => {
+		expect(spicySingle()).toContain("fails to advance the task after 3 attempts")
+	})
+
+	it("does NOT contain the base commit trailer", () => {
+		expect(spicySingle()).not.toContain("Co-Authored-By: Kimchi")
+	})
+
+	it("swaps in the overridable commit-attribution default", () => {
+		expect(spicySingle()).toContain(SPICY_COMMIT_ATTRIBUTION)
+		expect(SPICY_COMMIT_ATTRIBUTION).toMatch(/unless your project or user instructions/i)
+	})
+
+	it("appends the compact truthfulness bullet", () => {
+		expect(spicySingle()).toContain(
+			"Do not invent facts, APIs, or file contents; verify before asserting and say plainly when something is unverified.",
+		)
+	})
+
+	it("appends the fresh-review-before-done bullet", () => {
+		expect(spicySingle()).toContain("run a review pass with a fresh subagent rather than only self-checking")
+	})
+
+	it("appends the numbered-requirements bullet", () => {
+		expect(spicySingle()).toContain(
+			"write the requirements as a short numbered list before implementing and check off each one",
+		)
+	})
+
+	it("has no '## Factual Accuracy' heading", () => {
+		expect(spicySingle()).not.toContain("## Factual Accuracy")
+	})
+
+	it("guards that the exported trailer constant is still present in the base guidelines", () => {
+		// If future base-prompt drift renames this line, the swap in guidelinesFor
+		// would silently no-op and the base trailer would leak into spicy. This
+		// guard fails loudly instead.
+		expect(CORE_GUIDELINES).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
 	})
 })
 
@@ -688,9 +750,9 @@ describe("guidelinesFor", () => {
 		expect(guidelinesFor("single")).not.toContain("**Coordinator altitude**")
 	})
 
-	it("both single and orchestrator contain '### Output style'", () => {
-		expect(guidelinesFor("single")).toContain("### Output style")
-		expect(guidelinesFor("orchestrator")).toContain("### Output style")
+	it("both single and orchestrator keep a base safety rule", () => {
+		expect(guidelinesFor("single")).toContain("After every tool result, ALWAYS produce text")
+		expect(guidelinesFor("orchestrator")).toContain("After every tool result, ALWAYS produce text")
 	})
 
 	it("both single and orchestrator contain '### Working discipline'", () => {
@@ -698,16 +760,18 @@ describe("guidelinesFor", () => {
 		expect(guidelinesFor("orchestrator")).toContain("### Working discipline")
 	})
 
-	it("single mode: GUIDELINES + OPINIONATED_BLOCK === guidelinesFor('single') (byte-identity)", () => {
-		expect(GUIDELINES + OPINIONATED_BLOCK).toBe(guidelinesFor("single"))
+	it("single mode: base guidelines with trailer swapped, then the opinionated block", () => {
+		const base = resolveCoreGuidelines("single").replace(CORE_GUIDELINES_COMMIT_TRAILER_LINE, SPICY_COMMIT_ATTRIBUTION)
+		expect(guidelinesFor("single")).toBe(base + OPINIONATED_BLOCK)
 	})
 
 	it("OPINIONATED_BLOCK still contains the coordinator bullets (byte-identity preserved)", () => {
 		expect(OPINIONATED_BLOCK).toContain(COORDINATOR_DELEGATION_BLOCK)
 	})
 
-	it("orchestrator mode uses OPINIONATED_BLOCK_ORCHESTRATOR", () => {
-		expect(guidelinesFor("orchestrator")).toBe(GUIDELINES + OPINIONATED_BLOCK_ORCHESTRATOR)
+	it("orchestrator mode: base guidelines plus appended attribution, then the orchestrator block", () => {
+		const base = resolveCoreGuidelines("orchestrator")
+		expect(guidelinesFor("orchestrator")).toBe(`${base}\n${SPICY_COMMIT_ATTRIBUTION}${OPINIONATED_BLOCK_ORCHESTRATOR}`)
 	})
 })
 
@@ -919,5 +983,45 @@ describe("default variant byte-identical guard", () => {
 		const result = SPICY.rewriteBlock({ owner: "behaviours", id: "rules", content: "x" })
 		expect(typeof result).toBe("string")
 		expect(result as string).toContain("add a short user-facing README or summary")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// O) User-override precedence for the commit-attribution default
+// ---------------------------------------------------------------------------
+
+describe("spicy commit-attribution override precedence", () => {
+	// A project context file asks for a specific commit trailer. This asserts the
+	// prompt-level precondition for the override: spicy's attribution rule is
+	// phrased as deferrable, and the user's instruction is present and appears
+	// after the ## Guidelines section. It does not (and a unit test cannot) assert
+	// the model's runtime behaviour of actually preferring the user instruction.
+	const acmeInstruction = "Always sign commits with Co-Authored-By: Acme <ci@acme.example>"
+	const build = () =>
+		buildSystemPrompt({
+			tools: fakeTools,
+			env: testEnv,
+			mode: "single",
+			variantName: "spicy",
+			contextFiles: [{ path: "/repo/AGENTS.md", content: acmeInstruction }],
+		})
+
+	it("keeps spicy's overridable attribution default in the guidelines", () => {
+		expect(build()).toContain(SPICY_COMMIT_ATTRIBUTION)
+	})
+
+	it("renders the project instruction under ## Project Guidelines", () => {
+		const result = build()
+		expect(result).toContain("## Project Guidelines")
+		expect(result).toContain(acmeInstruction)
+	})
+
+	it("places the project instruction after the ## Guidelines section", () => {
+		const result = build()
+		expect(result.indexOf(acmeInstruction)).toBeGreaterThan(result.indexOf("## Guidelines"))
+	})
+
+	it("does not carry the base Kimchi trailer that the user instruction overrides", () => {
+		expect(build()).not.toContain("Co-Authored-By: Kimchi")
 	})
 })
