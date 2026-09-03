@@ -1,9 +1,5 @@
 /**
- * default: the stock no-op variant.
- *
- * Opening this file shows exactly what the default variant configures: nothing
- * beyond stock. Every field is absent/undefined, so the assembled prompt is
- * byte-for-byte identical to the original when no variant is active.
+ * default: the stock no-op variant, used when no variant is selected.
  */
 
 import type { PromptVariant } from "./types.js"
@@ -15,7 +11,6 @@ import type { PromptVariant } from "./types.js"
 /** The no-op default variant: changes nothing beyond stock. */
 export const DEFAULT_VARIANT: PromptVariant = {
 	name: "default",
-	// All other fields are intentionally absent.
-	// No intro override, no guidelines, no discipline reminder.
-	// The assembled prompt is byte-for-byte identical to the original.
+	// Every other field is intentionally absent, so the assembled prompt stays
+	// byte-for-byte identical to the original.
 }

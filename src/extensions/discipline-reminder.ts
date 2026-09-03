@@ -29,8 +29,7 @@ export default function disciplineReminderExtension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
 
 	// One counter per session so a process serving several sessions keeps the
-	// cadence of each one separate. Each entry is a single number and lives for
-	// the process lifetime.
+	// cadence of each one separate.
 	const reminders = new Map<string, DisciplineReminder>()
 
 	function reminderFor(sessionId: string | undefined): DisciplineReminder {
@@ -55,5 +54,10 @@ export default function disciplineReminderExtension(pi: ExtensionAPI): void {
 			},
 			{ deliverAs: "nextTurn" },
 		)
+	})
+
+	pi.on("session_shutdown", (_event, ctx: ExtensionContext | undefined) => {
+		const sessionId = ctx?.sessionManager?.getSessionId?.()
+		reminders.delete(sessionId ?? UNSCOPED_SESSION_KEY)
 	})
 }

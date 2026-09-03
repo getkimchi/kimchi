@@ -16,6 +16,7 @@ import {
 	SINGLE_MODE_DELEGATION_TEXT,
 } from "../system-prompt.js"
 import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./index.js"
+import { SPICY, SPICY_NAME } from "./spicy.js"
 import {
 	AGENT_DISCIPLINE_BLOCK,
 	AGENT_ROLE_TUNING,
@@ -28,11 +29,9 @@ import {
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
-	SPICY,
 	SPICY_COMMIT_ATTRIBUTION,
-	SPICY_NAME,
 	SPICY_SINGLE_MODE_DELEGATION,
-} from "./spicy.js"
+} from "./spicy-prompts.js"
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -309,8 +308,8 @@ describe("buildSystemPrompt: spicy variant", () => {
 		expect(result).toContain("## Orchestration")
 	})
 
-	// The variant's toolDescription overrides do not reach the prompt: the tools
-	// section lists names only, for every variant.
+	// The tools section lists names only, for every variant; tool descriptions
+	// travel through the function-calling payload instead.
 	it("lists tool names only, same as the default variant", () => {
 		const result = buildSystemPrompt({
 			tools: [{ name: "read", description: "ORIGINAL" }],
@@ -434,8 +433,7 @@ describe("spicy additive guidelines", () => {
 
 	it("guards that the exported trailer constant is still present in the base guidelines", () => {
 		// If future base-prompt drift renames this line, the swap in guidelinesFor
-		// would silently no-op and the base trailer would leak into spicy. This
-		// guard fails loudly instead.
+		// would silently no-op and the base trailer would leak into spicy.
 		expect(CORE_GUIDELINES).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
 	})
 })
@@ -451,7 +449,7 @@ describe("single-mode delegation stance", () => {
 
 	it("guards that the exported delegation constant is still present in the stock single-mode section", () => {
 		// If the Single-Model Mode wording drifts away from this constant, a
-		// variant's replacement would silently no-op. This guard fails loudly.
+		// variant's replacement would silently no-op.
 		expect(single()).toContain(SINGLE_MODE_DELEGATION_TEXT)
 	})
 

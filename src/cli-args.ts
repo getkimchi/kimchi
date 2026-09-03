@@ -416,6 +416,9 @@ export function extractSpicyFlag(args: string[]): { spicy: boolean; rest: string
  * - When the flag is absent: leaves `env` untouched and returns args unchanged
  *   (so `KIMCHI_PROMPT_VARIANT` still works as an escape hatch).
  *
+ * The variant travels as an environment variable rather than an argument, so
+ * child processes such as worker subagents inherit the same variant.
+ *
  * Pass an isolated env object in tests to avoid mutating `process.env`.
  */
 export function applyVariantSelection(argv: string[], env: NodeJS.ProcessEnv): string[] {
@@ -425,5 +428,3 @@ export function applyVariantSelection(argv: string[], env: NodeJS.ProcessEnv): s
 	}
 	return rest
 }
-
-export { PROMPT_VARIANT_ENV }

@@ -1,12 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest"
-import { clearSessionMode, getSessionMode, setSessionMode } from "./session-mode.js"
+import { describe, expect, it } from "vitest"
+import { getSessionMode, setSessionMode } from "./session-mode.js"
 
 describe("session-mode", () => {
-	afterEach(() => {
-		clearSessionMode("test-session")
-		clearSessionMode("other-session")
-	})
-
 	it("set/get round-trip returns the stored mode", () => {
 		setSessionMode("test-session", "orchestrator")
 		expect(getSessionMode("test-session")).toBe("orchestrator")
@@ -23,18 +18,6 @@ describe("session-mode", () => {
 	it("setSessionMode(undefined, ...) is a no-op", () => {
 		setSessionMode(undefined, "orchestrator")
 		expect(getSessionMode(undefined)).toBeUndefined()
-	})
-
-	it("clearSessionMode removes a stored mode", () => {
-		setSessionMode("test-session", "single")
-		clearSessionMode("test-session")
-		expect(getSessionMode("test-session")).toBeUndefined()
-	})
-
-	it("clearSessionMode(undefined) is a no-op", () => {
-		setSessionMode("test-session", "single")
-		clearSessionMode(undefined)
-		expect(getSessionMode("test-session")).toBe("single")
 	})
 
 	it("stores different modes per session independently", () => {

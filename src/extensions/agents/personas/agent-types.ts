@@ -22,9 +22,10 @@ const lowerCaseIndex = new Map<string, string>()
  * Starts with DEFAULT_AGENTS (optionally transformed), then overlays user agents.
  *
  * @param userAgents - Custom agents loaded from project/.kimchi/agents or global config.
- * @param transformDefaults - Optional transform applied only to built-in default agents
- *   before registration. User/project custom agents are never passed through it. When
- *   undefined the default path is byte-identical (no allocation, no mutation).
+ * @param transformDefaults - Optional transform that rewrites the built-in default
+ *   agent configs (for example appending prompt text) before they are registered.
+ *   It receives the pristine DEFAULT_AGENTS on every call, so repeated registration
+ *   cannot stack its output. User/project custom agents are never passed through it.
  */
 export function registerAgents(
 	userAgents: Map<string, AgentConfig>,

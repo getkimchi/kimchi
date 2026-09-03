@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DISCIPLINE_REMINDER_TYPE, DisciplineReminder } from "./discipline-reminder.js"
+import { SPICY } from "./prompt-construction/variants/spicy.js"
 import {
 	DISCIPLINE_NUDGE_CORE,
 	DISCIPLINE_NUDGE_PREFIX,
 	DISCIPLINE_NUDGE_TEXT,
-	SPICY,
-} from "./prompt-construction/variants/spicy.js"
+} from "./prompt-construction/variants/spicy-prompts.js"
 import { isHarnessSteer, markHarnessSteer } from "./steer-marker.js"
 
 // ---------------------------------------------------------------------------
@@ -240,22 +240,18 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		})
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
 		// Import session-mode from the same module registry as discipline-reminder
-		const { setSessionMode: setMode, clearSessionMode: clearMode } = await import("./session-mode.js")
+		const { setSessionMode: setMode } = await import("./session-mode.js")
 		setMode(SESSION_ID, "orchestrator")
-		try {
-			const { pi, handlers, sendMessage } = createPiMock()
-			disciplineReminderExtension(pi as never)
+		const { pi, handlers, sendMessage } = createPiMock()
+		disciplineReminderExtension(pi as never)
 
-			const ctx = { sessionManager: { getSessionId: () => SESSION_ID } }
-			for (const h of handlers.get("agent_end") ?? []) (h as (...a: unknown[]) => unknown)({}, ctx)
+		const ctx = { sessionManager: { getSessionId: () => SESSION_ID } }
+		for (const h of handlers.get("agent_end") ?? []) (h as (...a: unknown[]) => unknown)({}, ctx)
 
-			expect(sendMessage).toHaveBeenCalledOnce()
-			const [msg] = sendMessage.mock.calls[0]
-			expect(msg.content[0].text).not.toContain("default to delegating")
-			expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_PREFIX + DISCIPLINE_NUDGE_CORE))
-		} finally {
-			clearMode(SESSION_ID)
-		}
+		expect(sendMessage).toHaveBeenCalledOnce()
+		const [msg] = sendMessage.mock.calls[0]
+		expect(msg.content[0].text).not.toContain("default to delegating")
+		expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_PREFIX + DISCIPLINE_NUDGE_CORE))
 	})
 
 	it("with mode=single the delivered text is the full DISCIPLINE_NUDGE_TEXT", async () => {
@@ -265,21 +261,17 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 			disciplineReminder: { text: SPICY.disciplineReminder?.text, everyPrompts: EVERY_PROMPTS },
 		})
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
-		const { setSessionMode: setMode, clearSessionMode: clearMode } = await import("./session-mode.js")
+		const { setSessionMode: setMode } = await import("./session-mode.js")
 		setMode(SESSION_ID, "single")
-		try {
-			const { pi, handlers, sendMessage } = createPiMock()
-			disciplineReminderExtension(pi as never)
+		const { pi, handlers, sendMessage } = createPiMock()
+		disciplineReminderExtension(pi as never)
 
-			const ctx = { sessionManager: { getSessionId: () => SESSION_ID } }
-			for (const h of handlers.get("agent_end") ?? []) (h as (...a: unknown[]) => unknown)({}, ctx)
+		const ctx = { sessionManager: { getSessionId: () => SESSION_ID } }
+		for (const h of handlers.get("agent_end") ?? []) (h as (...a: unknown[]) => unknown)({}, ctx)
 
-			expect(sendMessage).toHaveBeenCalledOnce()
-			const [msg] = sendMessage.mock.calls[0]
-			expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_TEXT))
-		} finally {
-			clearMode(SESSION_ID)
-		}
+		expect(sendMessage).toHaveBeenCalledOnce()
+		const [msg] = sendMessage.mock.calls[0]
+		expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_TEXT))
 	})
 
 	it("cache miss (no setSessionMode) falls back to full DISCIPLINE_NUDGE_TEXT", async () => {

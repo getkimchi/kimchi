@@ -274,10 +274,11 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 }
 const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
-// Strip --spicy once, before any branch that calls main(), and apply it to
-// the environment. Every main() call below receives argsWithoutVariant so the
-// flag never reaches the pi SDK parser.
-const argsWithoutVariant = applyVariantSelection(process.argv.slice(2), process.env)
+// Apply the variant flag to the environment and strip it from the argv once,
+// before any branch that consumes arguments. Every path below works from
+// argsWithoutVariant so the flag never reaches the subcommand dispatcher, the
+// @file/resume normalization, or the pi SDK argument parser.
+const argsWithoutVariant = applyVariantSelection(originalArgs, process.env)
 
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
@@ -303,7 +304,7 @@ try {
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
-	const dispatch = await dispatchSubcommand(originalArgs)
+	const dispatch = await dispatchSubcommand(argsWithoutVariant)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
 		process.exit(dispatch.exitCode)
@@ -533,9 +534,6 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
-		// argsWithoutVariant is computed once at the top of cli.ts (before the
-		// helpOrVersion branch) so --spicy is stripped on every code path before
-		// pi-mono or the @file/resume normalization sees it.
 		const atFileArgs = normalizeAtFileArgs(
 			normalizeResumeIdArgs(stripExperimentalFeaturesArg(argsWithoutVariant)),
 			process.cwd(),
