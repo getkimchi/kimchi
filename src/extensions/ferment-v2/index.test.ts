@@ -2131,10 +2131,61 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
-		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 paused after 3 unchanged continuation turns without substantive tool use.",
-			"warning",
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 stalled continuation turns.", "warning")
+	})
+
+	it("pauses after three repeated evaluation gaps despite substantive tool use", async () => {
+		await harness.command("keep going")
+
+		for (let turnIndex = 1; turnIndex <= 4; turnIndex += 1) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("tool_execution_end", {
+				type: "tool_execution_end",
+				toolName: "read",
+				toolCallId: `call-${turnIndex}`,
+				isError: false,
+				result: {},
+			})
+			await settleFermentV2(harness, "continue")
+		}
+
+		expect(harness.currentFermentV2()?.status).toBe("paused")
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			FERMENT_V2_EVENTS.STALLED,
+			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 stalled continuation turns.", "warning")
+	})
+
+	it("resets repeated-gap progress when substantive work changes the evaluator gap", async () => {
+		await harness.command("keep going")
+
+		for (let turnIndex = 1; turnIndex <= 2; turnIndex += 1) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("tool_execution_end", {
+				type: "tool_execution_end",
+				toolName: "read",
+				toolCallId: `call-${turnIndex}`,
+				isError: false,
+				result: {},
+			})
+			await settleFermentV2(harness, "continue")
+		}
+
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "read",
+			toolCallId: "call-3",
+			isError: false,
+			result: {},
+		})
+		await settleFermentV2(harness, "continue", true, "A different requirement remains.")
+
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBeUndefined()
 	})
 
 	it("pauses after three no-progress continuation turns split across a session restart", async () => {
@@ -3064,10 +3115,7 @@ describe("Ferment V2 extension", () => {
 				FERMENT_V2_EVENTS.STALLED,
 				expect.objectContaining({ reason: "no_progress", continuationCount: 2, status: "paused" }),
 			)
-			expect(harness.ui.notify).toHaveBeenCalledWith(
-				"Ferment V2 paused after 2 unchanged continuation turns without substantive tool use.",
-				"warning",
-			)
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 2 stalled continuation turns.", "warning")
 		})
 
 		it("pauses at the configured maxConsecutiveErrors count, not the default", async () => {
@@ -3301,13 +3349,14 @@ async function settleFermentV2(
 	harness: ReturnType<typeof createHarness>,
 	verdict: "continue" | "met" | "impossible" | "unavailable" = "continue",
 	deliverAcceptedAnswer = true,
+	reason?: string,
 ): Promise<void> {
 	evaluateFermentV2Mock.mockResolvedValueOnce(
 		verdict === "unavailable"
 			? { verdict, reason: "No evaluator model is available." }
 			: {
 					verdict,
-					reason: verdict === "met" ? "All requirements are evidenced." : "More work is required.",
+					reason: reason ?? (verdict === "met" ? "All requirements are evidenced." : "More work is required."),
 					model: "test/evaluator",
 					usage: EVALUATOR_USAGE,
 				},

@@ -691,6 +691,52 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 	)
 })
 
+test("experimental Ferment V2 pauses after the same unresolved gap repeats three times", async ({ terminal }) => {
+	const repeatedGap = "The same objective requirement remains unverified."
+	const responses = Array.from(
+		{ length: 4 },
+		(_, index) =>
+			[
+				{
+					stream: [`Checking source ${index + 1}.`],
+					toolCalls: [
+						{
+							id: `repeated-gap-check-${index + 1}`,
+							function: { name: "bash", arguments: JSON.stringify({ command: "pwd" }) },
+						},
+					],
+				},
+				{ stream: [`Checked source ${index + 1}.`] },
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [JSON.stringify({ verdict: "continue", reason: repeatedGap })],
+				},
+			] satisfies FakeResponseScript[],
+	).flat()
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-mode-repeated-gap",
+			seedHome: enableFermentV2Mode,
+			responses,
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+
+			terminal.submit("/ferment-v2 verify the same requirement")
+			await waitForText(terminal, "Ferment V2 paused after 3 stalled continuation turns.", {
+				timeoutMs: 15_000,
+			})
+			terminal.submit("/ferment-v2")
+			await waitForText(terminal, "Status: paused", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Evaluations: 4", { timeoutMs: 5_000 })
+			expect(chatRequests(fixture.fake.requests).filter(isFermentV2EvaluatorRequest)).toHaveLength(4)
+			trace.step("three repeated evaluator gaps paused substantive but ineffective retry work")
+		},
+	)
+})
+
 test("experimental Ferment V2 shows the reason when work is blocked", async ({ terminal }) => {
 	const blockedReason = "Needs a user-owned API token."
 	await runKimchiSession(

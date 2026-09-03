@@ -1756,8 +1756,15 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				result.verdict === "met" ? "Keep a visible, fully completed Todo list before finishing." : result.reason
 			const fingerprint = fermentV2ProgressFingerprint(evaluated, todoState, fermentV2Lessons)
 			const { maxUnchangedContinuations } = getFermentV2Settings()
+			const repeatedGap =
+				result.verdict === "continue" &&
+				fermentV2.lastEvaluation?.verdict === "continue" &&
+				fermentV2.lastEvaluation.reason === result.reason &&
+				fingerprint === startFingerprint
 			const unchanged =
-				!hadSubstantiveToolUse && fingerprint === startFingerprint ? (evaluated.unchangedContinuationTurns ?? 0) + 1 : 0
+				repeatedGap || (!hadSubstantiveToolUse && fingerprint === startFingerprint)
+					? (evaluated.unchangedContinuationTurns ?? 0) + 1
+					: 0
 			// Folded into the single commit below (a no-op if unchanged) rather than committed
 			// separately after queueFermentV2Turn: that would mean two commits per turn, and by then
 			// queueFermentV2Turn's pi.sendMessage(triggerTurn) may already have raced a synchronously-started next turn.
@@ -1780,7 +1787,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					paused,
 					FERMENT_V2_EVENTS.STALLED,
 					{
-						message: `Ferment V2 paused after ${maxUnchangedContinuations} unchanged continuation turns without substantive tool use.`,
+						message: `Ferment V2 paused after ${maxUnchangedContinuations} stalled continuation turns.`,
 						level: "warning",
 					},
 					{
