@@ -51,6 +51,13 @@ export interface ContextAssemblyToolSurface {
 	tokensEstimated: number
 }
 
+export interface ContextAssemblySection {
+	/** `## Header` text for sectioned parts, or "(intro)" for the preamble. */
+	name: string
+	chars: number
+	tokensEstimated: number
+}
+
 export interface ContextAssemblyEntry {
 	schemaVersion: number
 	reason: "composition" | "prefix-change"
@@ -60,6 +67,8 @@ export interface ContextAssemblyEntry {
 	prefixHash?: string
 	systemPrompt: { chars: number; tokensEstimated: number }
 	components?: ContextAssemblyComponent[]
+	/** Per-`## `-section size table of the assembled prompt. */
+	sections?: ContextAssemblySection[]
 	tools?: ContextAssemblyToolSurface[]
 	toolSurface?: { chars: number; tokensEstimated: number }
 }
@@ -108,6 +117,39 @@ export function attributeComponents(systemPrompt: string, options: SystemPromptO
 		components.push(component("unattributed", unattributed))
 	}
 	return components
+}
+
+/**
+ * Per-section size table of the composed system prompt, split on top-level
+ * `## Header` boundaries. The preamble before the first header is reported as
+ * "(intro)". Section chars sum to the prompt length (the header line is counted
+ * in the section it starts); this is a size table only — contributor attribution
+ * stays in `components`. Headers from verbatim embedded content (skill bodies,
+ * appended-prompt text, memory excerpts) also split the table — context files are
+ * pre-neutralized by shiftHeadings — so some section names may be content-derived.
+ */
+export function sectionSizes(systemPrompt: string): ContextAssemblySection[] {
+	const boundaries: Array<{ name: string; start: number }> = []
+	const re = /^## .+$/gm
+	let match = re.exec(systemPrompt)
+	while (match !== null) {
+		boundaries.push({ name: match[0], start: match.index })
+		match = re.exec(systemPrompt)
+	}
+	const sections: ContextAssemblySection[] = []
+	const push = (name: string, chars: number): void => {
+		if (chars > 0) sections.push({ name, chars, tokensEstimated: tokensEstimated(chars) })
+	}
+	if (boundaries.length === 0) {
+		push("(intro)", systemPrompt.length)
+		return sections
+	}
+	push("(intro)", boundaries[0].start)
+	for (let i = 0; i < boundaries.length; i++) {
+		const end = i + 1 < boundaries.length ? boundaries[i + 1].start : systemPrompt.length
+		push(boundaries[i].name, end - boundaries[i].start)
+	}
+	return sections
 }
 
 interface ExtractedTool {
@@ -181,6 +223,7 @@ export default function contextAssemblyExtension(pi: ExtensionAPI): void {
 			promptHash,
 			systemPrompt: { chars: event.systemPrompt.length, tokensEstimated: tokensEstimated(event.systemPrompt.length) },
 			components,
+			sections: sectionSizes(event.systemPrompt),
 		}
 		pendingFlush.push(entry)
 		return undefined

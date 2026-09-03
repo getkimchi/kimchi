@@ -11,6 +11,7 @@ import contextAssemblyExtension, {
 	CONTEXT_ASSEMBLY_SCHEMA_VERSION,
 	type ContextAssemblyEntry,
 	extractPayloadSurface,
+	sectionSizes,
 } from "./context-assembly.js"
 
 function beforeAgentStartEvent(
@@ -125,6 +126,43 @@ describe("context-assembly", () => {
 			appendSystemPrompt: "MUCH LARGER THAN THE PROMPT ITSELF",
 		} as never)
 		expect(components.find((c) => c.kind === "unattributed")).toBeUndefined()
+	})
+
+	it("sectionSizes attributes prompt size by ## section with exact arithmetic", () => {
+		const prompt = [
+			"HEADER TEXT",
+			"## Rules",
+			"no rules files",
+			"## Available Tools",
+			"read, bash",
+			"## Debugger (DAP)",
+			"debugger guidance",
+		].join("\n")
+		const sections = sectionSizes(prompt)
+		expect(sections.reduce((sum, s) => sum + s.chars, 0)).toBe(prompt.length)
+		expect(sections.map((s) => s.name)).toEqual(["(intro)", "## Rules", "## Available Tools", "## Debugger (DAP)"])
+		expect(sections[0].chars).toBe("HEADER TEXT".length + 1) // newline before first header
+		expect(sections[1].tokensEstimated).toBe(Math.ceil(sections[1].chars / 4))
+	})
+
+	it("sectionSizes collapses a headerless prompt into the intro bucket", () => {
+		const sections = sectionSizes("HEADER TEXT")
+		expect(sections).toEqual([
+			{ name: "(intro)", chars: "HEADER TEXT".length, tokensEstimated: Math.ceil("HEADER TEXT".length / 4) },
+		])
+	})
+
+	it("includes the section size table on composition entries", () => {
+		const { api, getHandler, getAppendedEntries } = createExtensionApi()
+		contextAssemblyExtension(api)
+		const handler = getHandler<BeforeAgentStartEvent>("before_agent_start")
+		const prompt = "intro text\n## Rules\nbody"
+		handler(beforeAgentStartEvent(prompt), {} as never)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
+		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
+		expect(entries).toHaveLength(1)
+		expect(entries[0].sections?.map((s) => s.name)).toEqual(["(intro)", "## Rules"])
+		expect(entries[0].sections?.reduce((sum, s) => sum + s.chars, 0)).toBe(prompt.length)
 	})
 
 	it("emits a prefix-change entry with per-tool surface on the first provider request and dedups stable prefixes", () => {

@@ -5,8 +5,10 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
-import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
+import { GitTokenPromptComponent, type GitTokenPromptResult } from "../../teleport/ui/git-token-prompt.js"
 import type {
 	AgentOutcome,
 	AgentRecord,
@@ -389,6 +391,7 @@ export class AgentManager {
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
 		// If cwd isn't a git repo or has no origin, this is a no-op.
 		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
+		let gitCredential: { host: string; token: string } | undefined
 		try {
 			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
 			gitDetails = {
@@ -397,9 +400,19 @@ export class AgentManager {
 				targetDirectory: repoBasename(clonePlan.url),
 				noHistory: true,
 			}
+			// Resolve git credential separately — a failure here (bad URL, prompt
+			// rejection) must not wipe the clone plan. The clone proceeds without
+			// creds; private repos fail, public repos still work.
+			try {
+				gitCredential = await resolveGitCredential(ctx, clonePlan)
+			} catch (err) {
+				gitCredential = undefined
+				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
+			}
 		} catch {
 			// Not a git repo or no origin — proceed without git details.
 			gitDetails = undefined
+			gitCredential = undefined
 		}
 
 		// Create the adapter before calling runRemoteAgent so it's available
@@ -417,6 +430,7 @@ export class AgentManager {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: record.abortController?.signal,
 			gitDetails,
+			gitCredential,
 			localPath: ctx.cwd,
 			workspaceName: dirName,
 			onReady: (acpClient, meta) => {
@@ -850,6 +864,31 @@ export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abort
 		return "budget_exhausted"
 	}
 	return "failed"
+}
+
+/**
+ * Resolve a git credential for the sandbox clone. Checks for a cached token
+ * first (config.json), then prompts the user via the same PAT dialog
+ * teleport uses. Returns undefined when no token is available (e.g. user
+ * skipped or non-interactive mode) — the clone proceeds without creds and
+ * will succeed for public repos only.
+ */
+async function resolveGitCredential(
+	ctx: ExtensionContext,
+	clonePlan: ClonePlan,
+): Promise<{ host: string; token: string } | undefined> {
+	const host = new URL(clonePlan.httpsUrl).hostname
+	const prompt: () => Promise<GitTokenPromptResult> =
+		ctx.mode === "tui"
+			? () =>
+					ctx.ui.custom(
+						(tui, theme, _kb, done) => new GitTokenPromptComponent(theme, host, done, () => tui.requestRender()),
+					)
+			: async () => ({ outcome: "skipped" as const })
+	const token = await resolveGitToken(host, prompt, (err) =>
+		console.warn(`[agent-manager] could not save git token: ${err instanceof Error ? err.message : err}`),
+	)
+	return token ? { host, token } : undefined
 }
 
 function buildRemainingWorkGuidance(

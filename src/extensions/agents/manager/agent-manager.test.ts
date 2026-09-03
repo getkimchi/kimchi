@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("./agent-runner.js", () => ({
 	runAgent: vi.fn(),
@@ -7,12 +7,48 @@ vi.mock("./agent-runner.js", () => ({
 	MIN_FINALIZE_TOKEN_BUDGET: 256,
 }))
 
+vi.mock("../../../config.js", () => ({
+	loadConfig: vi.fn().mockReturnValue({ apiKey: "test-key" }),
+	readGitToken: vi.fn().mockReturnValue(undefined),
+	writeGitToken: vi.fn(),
+}))
+
+vi.mock("../../../sandbox/cloud/workspaces.js", () => ({
+	listWorkspaces: vi.fn().mockResolvedValue([]),
+}))
+
+vi.mock("../../teleport/provisioning/clone-plan.js", () => ({
+	resolveClonePlan: vi.fn(),
+}))
+
+vi.mock("../../teleport/provisioning/paths.js", () => ({
+	repoBasename: vi.fn().mockReturnValue("repo"),
+}))
+
+vi.mock("./remote-agent-runner.js", () => ({
+	runRemoteAgent: vi.fn(),
+}))
+
+vi.mock("../../teleport/ui/git-token-prompt.js", () => ({
+	GitTokenPromptComponent: vi.fn(),
+}))
+
+vi.mock("../../teleport/provisioning/git-token.js", () => ({
+	resolveGitToken: vi.fn(),
+}))
+
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
+import { runRemoteAgent } from "./remote-agent-runner.js"
 
 const mockRunAgent = vi.mocked(runAgent)
 const mockResumeAgent = vi.mocked(resumeAgent)
+const mockResolveClonePlan = vi.mocked(resolveClonePlan)
+const mockResolveGitToken = vi.mocked(resolveGitToken)
+const mockRunRemoteAgent = vi.mocked(runRemoteAgent)
 
 function fakePi(): ExtensionAPI {
 	return {} as ExtensionAPI
@@ -953,5 +989,125 @@ describe("AgentManager detachToBackground", () => {
 
 		// Agent has completed — detach should fail
 		expect(manager.detachToBackground(record.id)).toBe(false)
+	})
+})
+
+describe("AgentManager remote git credential resolution", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	function fakeRemoteCtx(mode: "tui" | "rpc" = "tui"): ExtensionContext {
+		return {
+			cwd: "/work/myrepo",
+			mode,
+			ui: { custom: vi.fn() },
+		} as unknown as ExtensionContext
+	}
+
+	beforeEach(() => {
+		// Default mocks for remote path
+		mockResolveClonePlan.mockResolvedValue({
+			url: "git@gitlab.com:team/repo.git",
+			httpsUrl: "https://gitlab.com/team/repo.git",
+			branch: "main",
+		})
+		mockResolveGitToken.mockResolvedValue(undefined)
+		mockRunRemoteAgent.mockResolvedValue({
+			responseText: "done",
+			stopReason: "end_turn",
+			remoteSession: {
+				workspaceId: "ws-1",
+				sessionName: "acp-test",
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+				cwd: "/home/sandbox/acp-test",
+			},
+		})
+	})
+
+	it("resolves git credential from cached token without prompting", async () => {
+		mockResolveGitToken.mockResolvedValue("glpat-cached-token")
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(record.status).toBe("completed")
+		// resolveGitToken was called with the host extracted from httpsUrl
+		expect(mockResolveGitToken).toHaveBeenCalledWith("gitlab.com", expect.any(Function), expect.any(Function))
+		// gitCredential was forwarded to runRemoteAgent
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				gitCredential: { host: "gitlab.com", token: "glpat-cached-token" },
+			}),
+		)
+	})
+
+	it("passes undefined gitCredential when no token is resolved (non-interactive mode)", async () => {
+		mockResolveGitToken.mockResolvedValue(undefined)
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx("rpc"), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		// gitCredential should be undefined (no cached token, non-interactive)
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				gitCredential: undefined,
+			}),
+		)
+	})
+
+	it("proceeds without gitDetails when resolveClonePlan throws", async () => {
+		mockResolveClonePlan.mockRejectedValue(new Error("not a git repo"))
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(mockResolveGitToken).not.toHaveBeenCalled()
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				gitDetails: undefined,
+				gitCredential: undefined,
+			}),
+		)
+	})
+
+	it("preserves gitDetails but sets gitCredential undefined when resolveGitCredential throws", async () => {
+		mockResolveGitToken.mockRejectedValue(new Error("prompt rejected"))
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		// gitDetails is preserved — the clone plan is not lost
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				gitDetails: expect.objectContaining({ repo: "https://gitlab.com/team/repo.git" }),
+				gitCredential: undefined,
+			}),
+		)
 	})
 })

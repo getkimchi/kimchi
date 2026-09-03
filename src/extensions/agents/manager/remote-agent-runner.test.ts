@@ -25,6 +25,10 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 	deleteSession: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock("../../teleport/provisioning/git-provision.js", () => ({
+	provisionGitCredential: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock("../../teleport/provisioning/sync-local-changes.js", () => ({
 	syncLocalChangesAfterClone: vi.fn().mockResolvedValue(undefined),
 }))
@@ -59,6 +63,7 @@ import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import { AcpSessionClient, type AcpSessionClientOptions } from "../../../sandbox/worker/acp-client.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, deleteSession } from "../../../sandbox/worker/sessions.js"
+import { provisionGitCredential } from "../../teleport/provisioning/git-provision.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
 import { type RemoteRunOptions, runRemoteAgent } from "./remote-agent-runner.js"
 
@@ -427,6 +432,70 @@ describe("runRemoteAgent", () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails }))
 
 		expect(syncLocalChangesAfterClone).not.toHaveBeenCalled()
+	})
+
+	describe("git credential provisioning", () => {
+		beforeEach(() => {
+			vi.mocked(provisionGitCredential).mockResolvedValue(undefined)
+		})
+
+		it("provisions git credential before createSession when gitCredential is provided", async () => {
+			const gitCredential = { host: "gitlab.com", token: "glpat-xyz123" }
+			const gitDetails = {
+				repo: "https://gitlab.com/team/repo.git",
+				branch: "main",
+				targetDirectory: "repo",
+				noHistory: true,
+			}
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails, gitCredential }))
+
+			expect(provisionGitCredential).toHaveBeenCalledWith(
+				expect.anything(),
+				{ gitHost: "gitlab.com", gitToken: "glpat-xyz123" },
+				undefined,
+			)
+
+			// provisionGitCredential must be called BEFORE createSession
+			const provisionOrder = vi.mocked(provisionGitCredential).mock.invocationCallOrder[0]
+			const createOrder = vi.mocked(createSession).mock.invocationCallOrder[0]
+			expect(provisionOrder).toBeLessThan(createOrder)
+		})
+
+		it("does not provision git credential when gitCredential is not provided", async () => {
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+			expect(provisionGitCredential).not.toHaveBeenCalled()
+		})
+
+		it("does not abort the run when credential provisioning fails", async () => {
+			vi.mocked(provisionGitCredential).mockRejectedValue(new Error("provisioning failed"))
+			const gitCredential = { host: "gitlab.com", token: "bad-token" }
+			const gitDetails = {
+				repo: "https://gitlab.com/team/repo.git",
+				branch: "main",
+				targetDirectory: "repo",
+				noHistory: true,
+			}
+
+			// Should not throw — provisioning failure is non-fatal
+			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails, gitCredential }))
+
+			expect(result.stopReason).toBe("end_turn")
+			// createSession was still called
+			expect(createSession).toHaveBeenCalledOnce()
+		})
+
+		it("re-throws AbortError when signal is aborted during provisioning", async () => {
+			const abortErr = new Error("aborted")
+			abortErr.name = "AbortError"
+			vi.mocked(provisionGitCredential).mockRejectedValue(abortErr)
+			const gitCredential = { host: "gitlab.com", token: "tok" }
+
+			await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitCredential }))).rejects.toThrow("aborted")
+
+			// createSession must NOT have been called — abort should stop the run
+			expect(createSession).not.toHaveBeenCalled()
+		})
 	})
 
 	describe("onReady callback", () => {

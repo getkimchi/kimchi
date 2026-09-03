@@ -16,6 +16,7 @@ import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { type AcpSessionCallbacks, AcpSessionClient } from "../../../sandbox/worker/acp-client.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, deleteSession } from "../../../sandbox/worker/sessions.js"
+import { provisionGitCredential } from "../../teleport/provisioning/git-provision.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
 
 /** Remote session metadata for reconnection/steer/resume/sync. */
@@ -41,6 +42,8 @@ export interface RemoteRunOptions {
 	gitDetails?: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean }
 	/** Local working directory to diff-sync on top of the clone (when gitDetails is set). */
 	localPath?: string
+	/** Git credential to provision on the sandbox before cloning. */
+	gitCredential?: { host: string; token: string }
 	/** Workspace name passed to authenticateWorkspace (used for matching/reuse). */
 	workspaceName?: string
 	/**
@@ -134,6 +137,28 @@ export async function runRemoteAgent(
 		signal,
 		cwd,
 	})
+
+	// Provision git credentials on the worker BEFORE createSession — the clone
+	// bootstrapper runs synchronously inside createSession and needs the token
+	// available for private repos. Non-fatal: clone may still succeed for public repos.
+	if (options.gitCredential) {
+		try {
+			await provisionGitCredential(
+				client,
+				{
+					gitHost: options.gitCredential.host,
+					gitToken: options.gitCredential.token,
+				},
+				signal,
+			)
+		} catch (err) {
+			// Honor abort — don't continue to createSession if the user cancelled.
+			if (err instanceof Error && err.name === "AbortError") throw err
+			console.warn(
+				`[remote-agent-runner] git credential provisioning failed: ${err instanceof Error ? err.message : err}`,
+			)
+		}
+	}
 
 	let stopReason = "end_turn"
 

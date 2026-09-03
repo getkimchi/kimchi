@@ -16,6 +16,7 @@ import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
+import { toolNamesFromSection } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
@@ -210,8 +211,8 @@ describe("prompt enrichment tool visibility", () => {
 		try {
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(result.systemPrompt).toContain('<tool name="read">')
-			expect(result.systemPrompt).not.toContain('<tool name="bash">')
+			expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
+			expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
 		} finally {
 			visibility.enable(["bash"])
 		}
@@ -242,8 +243,8 @@ describe("prompt enrichment tool visibility", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain('<tool name="read">')
-		expect(result.systemPrompt).not.toContain('<tool name="bash">')
+		expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
+		expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
 	})
 })
 
@@ -263,7 +264,7 @@ describe("prompt enrichment environment context", () => {
 
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
+			expect(result.systemPrompt).not.toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
 			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
 			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
