@@ -53,8 +53,14 @@ import clipboardImageExtension from "./clipboard-image.js"
 
 type Handlers = Record<string, (...args: unknown[]) => unknown>
 
-function makeMockCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
-	const terminalInputHandler: { current?: (data: string) => void } = {}
+interface MockTerminalInput {
+	current?: (data: string) => void
+}
+
+function makeMockCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext & {
+	_mockTerminalInput: MockTerminalInput
+} {
+	const terminalInputHandler: MockTerminalInput = {}
 	return {
 		model: { id: "glm-4", slug: "glm-4", input_modalities: ["text", "image"] as string[] },
 		ui: {
@@ -66,17 +72,24 @@ function makeMockCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContex
 					terminalInputHandler.current = undefined
 				}
 			},
-			_terminalInput: terminalInputHandler,
 		},
+		_mockTerminalInput: terminalInputHandler,
 		...overrides,
-	} as unknown as ExtensionContext
+	} as unknown as ExtensionContext & { _mockTerminalInput: MockTerminalInput }
 }
 
-function simulatePaste(ctx: ExtensionContext) {
-	const handler = (ctx.ui as unknown as { _terminalInput: { current?: (data: string) => void } })._terminalInput.current
+function simulatePaste(ctx: ExtensionContext & { _mockTerminalInput: MockTerminalInput }) {
+	const handler = ctx._mockTerminalInput.current
 	expect(handler).toBeDefined()
 	if (!handler) throw new Error("expected terminal input handler to be registered")
 	handler("\x1b[200~/dummy.png\x1b[201~")
+}
+
+function simulateTypedInput(ctx: ExtensionContext & { _mockTerminalInput: MockTerminalInput }) {
+	const handler = ctx._mockTerminalInput.current
+	expect(handler).toBeDefined()
+	if (!handler) throw new Error("expected terminal input handler to be registered")
+	handler("typed text")
 }
 
 function makeMockPi(): ExtensionAPI & { _handlers: Handlers } {
@@ -342,6 +355,16 @@ describe("clipboard-image extension", () => {
 
 		it("leaves text untouched when the input is typed, not pasted", () => {
 			const { pi } = startVisionSession()
+			const result = callInputHandler(pi, { text: String(imgPath), images: [] })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("leaves text untouched when input is typed after a paste (sticky flag reset)", () => {
+			const { pi, ctx } = startVisionSession()
+			simulatePaste(ctx)
+			// Simulate typed keystrokes after the paste — these reset lastInputWasPaste.
+			simulateTypedInput(ctx)
 			const result = callInputHandler(pi, { text: String(imgPath), images: [] })
 			expect(result).toBeUndefined()
 			expect(mockAddImage).not.toHaveBeenCalled()

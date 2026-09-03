@@ -25,6 +25,15 @@ let lastInputWasPaste = false
 let inBracketedPaste = false
 let unsubscribeTerminalInput: (() => void) | null = null
 
+function teardownTerminalInput(): void {
+	if (unsubscribeTerminalInput) {
+		unsubscribeTerminalInput()
+		unsubscribeTerminalInput = null
+	}
+	lastInputWasPaste = false
+	inBracketedPaste = false
+}
+
 const CLIPBOARD_POLL_INTERVAL_MS = 1000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
 let clipboardHasImage = false
@@ -226,17 +235,12 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
-		if (unsubscribeTerminalInput) {
-			unsubscribeTerminalInput()
-			unsubscribeTerminalInput = null
-		}
+		teardownTerminalInput()
 		sessionGeneration++
 		isCheckingFinder = false
 		currentCtx = ctx
 		pendingImages = []
 		imageCounter = 0
-		lastInputWasPaste = false
-		inBracketedPaste = false
 		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
 		setImageCacheDir(dir)
@@ -252,20 +256,21 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Watch raw terminal input for bracketed-paste sequences so we can tell
 		// pasted/dropped text apart from typed text. The editor strips these
 		// markers, but they still flow through the raw input listeners.
-		unsubscribeTerminalInput =
-			ctx.ui?.onTerminalInput?.((data) => {
-				if (inBracketedPaste) {
-					if (data.includes("\x1b[201~")) {
-						inBracketedPaste = false
-					}
-					return undefined
-				}
-				if (data.includes("\x1b[200~")) {
-					lastInputWasPaste = true
-					inBracketedPaste = !data.includes("\x1b[201~")
+		unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
+			if (inBracketedPaste) {
+				if (data.includes("\x1b[201~")) {
+					inBracketedPaste = false
 				}
 				return undefined
-			}) ?? null
+			}
+			if (data.includes("\x1b[200~")) {
+				lastInputWasPaste = true
+				inBracketedPaste = !data.includes("\x1b[201~")
+			} else {
+				lastInputWasPaste = false
+			}
+			return undefined
+		})
 	})
 
 	pi.on("session_shutdown", () => {
@@ -273,16 +278,11 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
-		if (unsubscribeTerminalInput) {
-			unsubscribeTerminalInput()
-			unsubscribeTerminalInput = null
-		}
+		teardownTerminalInput()
 		// Increment the generation so any in-flight Finder file-type probe
 		// from the dying session is treated as stale when its callback lands.
 		sessionGeneration++
 		currentCtx = null
-		lastInputWasPaste = false
-		inBracketedPaste = false
 	})
 
 	pi.on("input", (event) => {
