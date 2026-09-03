@@ -9,6 +9,7 @@ import {
 	AGENT_EXPLORE,
 	AGENT_FIXER,
 	AGENT_GENERAL_PURPOSE,
+	AGENT_GRADER,
 	AGENT_PLAN,
 	AGENT_RESEARCHER,
 	AGENT_REVIEWER,
@@ -124,14 +125,25 @@ describe("variant-scoped agent tuning", () => {
 		expect(variant.transformAgents).toBeUndefined()
 	})
 
-	it("spicy variant: each default persona's systemPrompt contains the discipline block", () => {
+	it("spicy variant: each working default persona's systemPrompt contains the discipline block", () => {
 		const variant = resolvePromptVariant("spicy")
 		registerAgents(new Map(), variant.transformAgents)
 
 		for (const name of DEFAULT_AGENT_NAMES) {
+			if (name === AGENT_GRADER) continue
 			const registered = getAgentConfig(name)
 			expect(registered?.systemPrompt, `${name} should contain discipline block`).toContain(AGENT_DISCIPLINE_BLOCK)
 		}
+	})
+
+	it("spicy variant: the Grader persona is left untouched (it judges work, it does not build it)", () => {
+		const variant = resolvePromptVariant("spicy")
+		registerAgents(new Map(), variant.transformAgents)
+
+		const original = DEFAULT_AGENTS.get(AGENT_GRADER)
+		const registered = getAgentConfig(AGENT_GRADER)
+		expect(registered?.systemPrompt).toBe(original?.systemPrompt)
+		expect(registered?.systemPrompt).not.toContain(AGENT_DISCIPLINE_BLOCK)
 	})
 
 	it("spicy variant: discipline block anchors on 'Work from the requirements'", () => {
@@ -150,28 +162,28 @@ describe("variant-scoped agent tuning", () => {
 		expect(config?.systemPrompt).toContain("Report honestly")
 	})
 
-	it("spicy variant: discipline block carries the worker tool discipline moved from RULES_BLOCK", () => {
-		// These three markers were moved out of the main-thread RULES_BLOCK into the
-		// worker personas, where the file work actually happens.
-		expect(AGENT_DISCIPLINE_BLOCK).toContain("Bound tool output at the source")
-		expect(AGENT_DISCIPLINE_BLOCK).toContain("Re-read before editing")
-		expect(AGENT_DISCIPLINE_BLOCK).toContain("user-facing README or summary")
+	it("spicy variant: discipline block carries working discipline only, not tool-output or file-reading rules", () => {
+		// Tool-output bounding and re-read-before-editing are base prompt sections;
+		// repeating them here would give a persona two versions of the same rule.
+		expect(AGENT_DISCIPLINE_BLOCK).toContain("Work from the requirements")
+		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("Bound tool output at the source")
+		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("Re-read before editing")
+		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("user-facing README or summary")
 
 		const variant = resolvePromptVariant("spicy")
 		registerAgents(new Map(), variant.transformAgents)
 		const builder = getAgentConfig(AGENT_BUILDER)
-		expect(builder?.systemPrompt).toContain("Bound tool output at the source")
-		expect(builder?.systemPrompt).toContain("Re-read before editing")
-		expect(builder?.systemPrompt).toContain("user-facing README or summary")
+		expect(builder?.systemPrompt).toContain("Work from the requirements")
+		expect(builder?.systemPrompt).not.toContain("Bound tool output at the source")
 	})
 
-	it("default variant: personas do NOT carry the moved worker tool discipline markers", () => {
+	it("default variant: personas do NOT carry the working-discipline markers", () => {
 		const variant = resolvePromptVariant("default")
 		registerAgents(new Map(), variant.transformAgents)
 		for (const name of DEFAULT_AGENT_NAMES) {
 			const registered = getAgentConfig(name)
-			expect(registered?.systemPrompt, `${name} should not contain bound-output marker`).not.toContain(
-				"Bound tool output at the source",
+			expect(registered?.systemPrompt, `${name} should not contain the discipline heading`).not.toContain(
+				"## Working Discipline",
 			)
 		}
 	})
@@ -210,6 +222,7 @@ describe("variant-scoped agent tuning", () => {
 		for (const name of DEFAULT_AGENT_NAMES) {
 			const config = getAgentConfig(name)
 			expect(config, `${name} should be in registry`).toBeDefined()
+			if (name === AGENT_GRADER) continue
 			expect(config?.systemPrompt).toContain(AGENT_DISCIPLINE_BLOCK)
 		}
 	})

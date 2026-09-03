@@ -5,7 +5,7 @@
  * spicy variant. spicy.ts is the descriptor that wires them into a PromptVariant.
  */
 
-import type { AgentConfig } from "../../agents/personas/types.js"
+import { AGENT_GRADER, type AgentConfig } from "../../agents/personas/types.js"
 import { CORE_GUIDELINES_COMMIT_TRAILER_LINE, type PromptMode, resolveCoreGuidelines } from "../system-prompt.js"
 
 // ---------------------------------------------------------------------------
@@ -203,8 +203,12 @@ export const ORCHESTRATOR_INTRO =
 // ---------------------------------------------------------------------------
 
 /**
- * Working discipline block appended to each built-in default agent persona's
- * system prompt when an opinionated variant is active.
+ * Working discipline block appended to the built-in default agent personas that
+ * carry out work when an opinionated variant is active.
+ *
+ * Holds working discipline only. Tool-output bounding and file-reading rules are
+ * left to the base prompt sections so a persona never receives two versions of
+ * the same rule.
  *
  * Designed to be generic and public-repo-safe: no internal tooling references,
  * no vendor or organisation names.
@@ -220,20 +224,7 @@ export const AGENT_DISCIPLINE_BLOCK = `
 - Cite code as path:line so it is easy to verify.
 - Report honestly: what you did, what you skipped, and what failed.
 - Test honesty: when you change behaviour, add or update the tests that cover it; never delete or weaken a test to get a green result - fix the code or fix the test.
-- Version-control safety: do not force-push, hard-reset, or otherwise discard existing work; back up untracked files before modifying them.
-
-**Tool output discipline**
-
-Bound tool output at the source (recovering from a flood of output is expensive):
-- Bash: pipe to head/tail or pass -n/--tail. Use \`git log -n 20 --oneline\`, \`git diff --stat\`, \`2>&1 | tail -100\` for build/test output, and \`| head -c 5000\` for large responses. Avoid \`git status -uall\` on big repos.
-- Searching: list paths before content, cap broad matches, and narrow with glob/type filters before searching.
-- Reads: never read a known-large file (lockfiles, generated code, fixtures) without an offset; search to locate, then read around the hit.
-- Use the file and search tools, not \`cat | grep\` or bash \`find\`.
-
-Re-read before editing:
-- If any bash command ran since you last read a file, re-read it before editing; formatters, codegen, and git can change it underneath you.
-- Never edit from a stale snapshot. A re-read is cheap; a broken edit from outdated content wastes a turn.
-- When the work produces something others will read or run, add a short user-facing README or summary covering what it is, the key choices and why, and how to run it, rather than leaving that rationale only in code comments.`
+- Version-control safety: do not force-push, hard-reset, or otherwise discard existing work; back up untracked files before modifying them.`
 
 /**
  * Per-role tuning blocks.
@@ -296,6 +287,11 @@ export const AGENT_ROLE_TUNING: Record<string, string> = {
 
 export function appendDisciplineBlock(agents: readonly AgentConfig[]): readonly AgentConfig[] {
 	return agents.map((agent) => {
+		// The grading persona assesses finished work instead of producing it, so
+		// build-and-ship discipline does not apply to it and would only skew its
+		// verdicts.
+		if (agent.name === AGENT_GRADER) return agent
+
 		const roleBlock = AGENT_ROLE_TUNING[agent.name] ?? ""
 		return {
 			...agent,
