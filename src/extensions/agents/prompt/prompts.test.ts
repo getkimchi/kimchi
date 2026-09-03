@@ -238,7 +238,8 @@ During **build** phase:
 
 		// Plan-Agent-specific tool bindings (override the shared planning process).
 		expect(output).toContain("`questionnaire`")
-		expect(output).toContain("harness saves the plan")
+		expect(output).toContain("`submit_plan`")
+		expect(output).toContain("harness saves the submitted plan")
 
 		// The shared planning process must be embedded verbatim. Asserting on the
 		// imported constant means any legitimate tweak to the shared process is

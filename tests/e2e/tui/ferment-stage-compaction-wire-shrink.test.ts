@@ -108,11 +108,9 @@ test("stage compaction makes the next request carry the summary instead of the o
 						},
 					],
 				},
-				// Turn 2 (after tool result): short ack ending the turn → plan dialog.
-				{ stream: ["I've outlined the scope."] },
-				// Turn 3 (post-confirmation keepalive nudge).
+				// Turn 2 (post-confirmation keepalive nudge).
 				{},
-				// Turn 4 (host nudge): activate the phase.
+				// Turn 3 (host nudge): activate the phase.
 				{
 					stream: ["Activating the phase."],
 					toolCalls: [

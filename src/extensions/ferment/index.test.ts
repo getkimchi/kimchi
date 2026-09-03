@@ -8,6 +8,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
@@ -63,6 +64,8 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	const commands = new Map<string, CommandHandler>()
 	const shortcuts = new Map<string, { description?: string; handler: ShortcutHandler }>()
 	const registeredFlags = new Set<string>()
+	const { events } = createMiniEventBus()
+
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			// `handlers` keeps the first registration per event for tests that fetch a
@@ -91,7 +94,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
-		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
+		events,
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)

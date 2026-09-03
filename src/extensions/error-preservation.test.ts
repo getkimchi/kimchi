@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { getRawErrorMessage, preserveRawErrorMessage } from "./error-preservation.js"
+import { getRawErrorMessage, hasPreservedRawErrorMessage, preserveRawErrorMessage } from "./error-preservation.js"
 
 describe("preserveRawErrorMessage", () => {
 	it("preserves the original errorMessage before mutation", () => {
@@ -50,5 +50,22 @@ describe("preserveRawErrorMessage", () => {
 		const message = { errorMessage: "original" }
 		message.errorMessage = "mutated"
 		expect(getRawErrorMessage(message)).toBe("mutated")
+	})
+})
+
+describe("hasPreservedRawErrorMessage", () => {
+	it("returns true only when preservation actually happened", () => {
+		const message = { errorMessage: "raw error" }
+		expect(hasPreservedRawErrorMessage(message)).toBe(false)
+		preserveRawErrorMessage(message)
+		expect(hasPreservedRawErrorMessage(message)).toBe(true)
+	})
+
+	it("returns false when errorMessage was absent (nothing to preserve)", () => {
+		expect(hasPreservedRawErrorMessage({})).toBe(false)
+	})
+
+	it("returns false when errorMessage was empty (nothing preserved)", () => {
+		expect(hasPreservedRawErrorMessage({ errorMessage: "" })).toBe(false)
 	})
 })

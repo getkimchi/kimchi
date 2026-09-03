@@ -1,16 +1,30 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getRawErrorMessage } from "./extensions/error-preservation.js"
+import { getRawErrorMessage, hasPreservedRawErrorMessage } from "./extensions/error-preservation.js"
+import { GATEWAY_CLASSIFICATION_AUDIT_TYPE } from "./infrastructure-error.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
 type RetryableMessage = Partial<Pick<AssistantMessage, "stopReason" | "errorMessage">>
 type RetryableClassifier = (message: RetryableMessage) => boolean
 type RetryPreparer = (message: RetryableMessage) => Promise<boolean>
+/** Message shape upstream `_checkCompaction` consumes; spread-copied when restored. */
+type CompactionCheckMessage = RetryableMessage & Record<string, unknown>
+type CompactionChecker = (message: CompactionCheckMessage, skipAbortedCheck?: boolean) => Promise<boolean>
+type SessionBranchEntry = {
+	type?: string
+	customType?: string
+	data?: { rawMessage?: unknown }
+}
+type BranchBackedSession = {
+	sessionManager?: { getBranch?: () => SessionBranchEntry[] }
+}
 type PatchableAgentSession = {
 	prototype: {
 		_isRetryableError?: RetryableClassifier
 		_prepareRetry?: RetryPreparer
+		_checkCompaction?: CompactionChecker
 		_kimchiInfrastructureRetryPatch?: boolean
+		_kimchiCompactionRecoveryPatch?: boolean
 	}
 }
 
@@ -183,6 +197,88 @@ type RetryingSession = {
 	_retryAttempt: number
 	_retryAbortController?: AbortController
 	_emit: (event: Record<string, unknown>) => void
+}
+
+// --- Overflow-compaction recovery error restoration ---
+//
+// The interactive-error-surface extension sanitizes message.errorMessage on
+// every classified provider error so provider internals never reach the UI.
+// Upstream's compaction recovery (`AgentSession._checkCompaction`, invoked
+// from `_handlePostAgentRun` / prompt()) runs AFTER that mutation and matches
+// provider-specific overflow regexes (pi-ai `isContextOverflow`) against
+// `assistantMessage.errorMessage`. The sanitized label ("The request could
+// not be completed (context window exceeded)…") matches none of them, so an
+// over-limit request terminated the session instead of triggering upstream's
+// single compact-and-retry.
+//
+// This patch wraps `_checkCompaction` to restore the raw provider error for
+// the duration of the check. Display text stays sanitized — only the internal
+// overflow classifier sees the raw error, on a throwaway copy of the message.
+
+/**
+ * Raw overflow error for a message, when recoverable. Preference order:
+ * 1. the in-process preserved raw message (written before sanitization by
+ *    interactive-error-surface via error-preservation),
+ * 2. the most recent gateway classification audit entry on the session branch
+ *    (covers resumed sessions, where the in-memory symbol is gone).
+ */
+function rawErrorForCompactionRecovery(
+	message: CompactionCheckMessage,
+	session: BranchBackedSession,
+): string | undefined {
+	// Prefer the in-process preserved raw unconditionally: even when it equals
+	// the display text (sanitization no-op), a branch audit entry belongs to an
+	// EARLIER message and would inject a stale raw error here. The caller
+	// already passes the message through unchanged when raw === errorMessage.
+	if (hasPreservedRawErrorMessage(message)) return getRawErrorMessage(message)
+
+	const branch = session.sessionManager?.getBranch?.() ?? []
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i]
+		if (entry.type === "custom" && entry.customType === GATEWAY_CLASSIFICATION_AUDIT_TYPE) {
+			const raw = entry.data?.rawMessage
+			if (typeof raw === "string" && raw.length > 0) return raw
+		}
+	}
+	return undefined
+}
+
+/**
+ * Companion to {@link installInfrastructureRetryPatch}: teaches upstream's
+ * `_checkCompaction` to classify overflow from the preserved raw provider
+ * error rather than the sanitized display text.
+ *
+ * The wrap is a pure delegation — classification, the one-attempt-per-turn
+ * `_overflowRecoveryAttempted` gate, the dropped failed message, and
+ * `_runAutoCompaction("overflow", willRetry)` all stay upstream-owned, so
+ * behavior changes only for messages whose display text hid the raw error.
+ */
+export function installCompactionRecoveryPatch(
+	sessionClass: Pick<PatchableAgentSession, "prototype"> = AgentSession as unknown as PatchableAgentSession,
+): void {
+	const proto = sessionClass.prototype
+	if (proto._kimchiCompactionRecoveryPatch) return
+	const original = proto._checkCompaction
+	if (!original) return
+
+	proto._checkCompaction = async function patchedCheckCompaction(
+		this: BranchBackedSession,
+		message: CompactionCheckMessage,
+		skipAbortedCheck?: boolean,
+	): Promise<boolean> {
+		// Restore the raw provider error for the classification, leaving the
+		// display text untouched. A shared copy (not the session message) is
+		// passed through so nothing downstream observes the swap.
+		if (typeof message.errorMessage === "string") {
+			const raw = rawErrorForCompactionRecovery(message, this)
+			if (raw && raw !== message.errorMessage) {
+				return original.call(this, { ...message, errorMessage: raw }, skipAbortedCheck)
+			}
+		}
+		return original.call(this, message, skipAbortedCheck)
+	}
+
+	proto._kimchiCompactionRecoveryPatch = true
 }
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {

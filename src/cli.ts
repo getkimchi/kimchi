@@ -96,6 +96,7 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
+import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -164,7 +165,7 @@ import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
-import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
+import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -175,6 +176,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 // Wrap InteractiveMode.prototype.showError so retried provider errors are
@@ -639,6 +641,7 @@ try {
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
 			kimchiHooksAdapter,
+			plannotatorExtension,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,

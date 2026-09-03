@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import type { Component, TUI } from "@earendil-works/pi-tui"
+import { type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { _resetSurveyStateForTests, INITIAL_SURVEY, InitialSurveyComponent, showInitialSurvey } from "./survey.js"
 
@@ -154,4 +154,21 @@ describe("initial survey UI", () => {
 			rmSync(tempDir, { recursive: true, force: true })
 		}
 	})
+})
+
+describe("narrow terminals", () => {
+	// Regression guard: the render must never emit over-wide lines or throw
+	// for widths smaller than the title.
+	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 24]) {
+		it(`renders without crashing or overflowing at width ${width}`, () => {
+			const component = new InitialSurveyComponent(theme(), vi.fn(), vi.fn())
+			let lines: string[] = []
+			expect(() => {
+				lines = component.render(width)
+			}).not.toThrow()
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	}
 })

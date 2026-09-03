@@ -6,7 +6,7 @@ import {
 	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
 	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
 	hasFermentScopingCompletionSignal,
-	hasPlanCompletionSignal,
+	hasPlanSubmitToolCall,
 	isNudgeSuppressed,
 	MAX_PLANNING_STOP_NUDGES,
 	PLAN_MODE_STOP_NUDGE,
@@ -54,25 +54,17 @@ describe("isNudgeSuppressed", () => {
 	})
 })
 
-describe("hasPlanCompletionSignal", () => {
-	it("detects <!-- PLAN_COMPLETE --> marker", () => {
-		expect(hasPlanCompletionSignal("Here is the plan.\n\n<!-- PLAN_COMPLETE -->")).toBe(true)
+describe("hasPlanSubmitToolCall", () => {
+	it("returns true when submit_plan is in the tool call list", () => {
+		expect(hasPlanSubmitToolCall(["read", "submit_plan"])).toBe(true)
 	})
 
-	it("detects <done> marker", () => {
-		expect(hasPlanCompletionSignal("Plan complete.\n<done>")).toBe(true)
+	it("returns false when only exploration tools are present", () => {
+		expect(hasPlanSubmitToolCall(["read", "grep", "questionnaire"])).toBe(false)
 	})
 
-	it("returns false for text without any marker", () => {
-		expect(hasPlanCompletionSignal("Here is the plan but it is not done.")).toBe(false)
-	})
-
-	it("returns false for empty string", () => {
-		expect(hasPlanCompletionSignal("")).toBe(false)
-	})
-
-	it("detects marker embedded in longer text", () => {
-		expect(hasPlanCompletionSignal("Some text <!-- PLAN_COMPLETE --> more text")).toBe(true)
+	it("returns false for an empty list", () => {
+		expect(hasPlanSubmitToolCall([])).toBe(false)
 	})
 })
 
@@ -140,8 +132,13 @@ describe("contentHasToolCall", () => {
 })
 
 describe("PLAN_MODE_STOP_NUDGE", () => {
-	it("references the completion marker", () => {
-		expect(PLAN_MODE_STOP_NUDGE).toContain("<!-- PLAN_COMPLETE -->")
+	it("instructs the model to call the submit_plan tool", () => {
+		expect(PLAN_MODE_STOP_NUDGE).toContain("`submit_plan`")
+	})
+
+	it("does not reference the removed plan-completion markers", () => {
+		expect(PLAN_MODE_STOP_NUDGE).not.toContain("PLAN_COMPLETE")
+		expect(PLAN_MODE_STOP_NUDGE).not.toContain("<done>")
 	})
 
 	it("references the questionnaire tool", () => {

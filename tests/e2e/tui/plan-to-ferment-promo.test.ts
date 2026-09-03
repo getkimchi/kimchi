@@ -8,10 +8,10 @@
  *    Choosing Start as ferment must trigger the implementation turn without
  *    another user message.
  *
- * 2. "plan-to-ferment promotion — side effects via plan complete handler"
+ * 2. "plan-to-ferment promotion — side effects via submit_plan handler"
  *    (test): Verifies the side effects of the plan-to-ferment flow by
  *    checking that the approved plan file is written to .kimchi/plans/ when
- *    the model emits <!-- PLAN_COMPLETE -->. No dropdown UI assertions.
+ *    the model calls submit_plan. No dropdown UI assertions.
  *    The tool-swap from questionnaire → ask_user is also confirmed via the
  *    recorded request bodies (proxied by the TUI's tool-list rendering).
  */
@@ -43,7 +43,25 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 						"- **Files Changed**: src/parser.ts\n",
 						"- **Accept When**: streaming think blocks parse correctly\n\n",
 						"## Verification Strategy\nRun the parser tests.\n\n",
-						"<!-- PLAN_COMPLETE -->\n",
+					],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan:
+										"## Goal\nImplement a streaming think parser.\n\n" +
+										"## Constraints\n- Preserve the existing parser API\n\n" +
+										"## Chunks\n\n" +
+										"### Chunk 1: Implement streaming parser\n" +
+										"- **Files Changed**: src/parser.ts\n" +
+										"- **Accept When**: streaming think blocks parse correctly\n\n" +
+										"## Verification Strategy\nRun the parser tests.\n",
+								}),
+							},
+						},
 					],
 				},
 				{ stream: ["I'll start implementing the streaming think parser."] },
@@ -57,11 +75,11 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
-			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
+			// Stage 2: submit request → model streams the plan, then calls
+			// submit_plan. The dropdown appears after the tool call terminates
+			// the turn.
 			terminal.submit("Implement a streaming think parser")
 			trace.step("submitted planning request")
-			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("plan complete marker seen")
 
 			// Stage 3: dropdown appears — all three options must be visible in buffer.
 			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
@@ -107,12 +125,12 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 })
 
 // ---------------------------------------------------------------------------
-// Test 2: Side-effect verification via plan-complete handler (no dropdown UI)
+// Test 2: Side-effect verification via submit_plan handler (no dropdown UI)
 // ---------------------------------------------------------------------------
 
 // Verifies the plan-to-ferment contract by checking the filesystem side effects
-// of the plan-complete handler (permissions/index.ts:506-540). The model emits
-// <!-- PLAN_COMPLETE -->, the handler writes the approved plan to .kimchi/plans/
+// of the submit_plan handler (permissions/index.ts). The model calls submit_plan
+// with the plan text, the handler writes the approved plan to .kimchi/plans/
 // and transitions to auto mode. No dropdown UI assertions are made — this test
 // proves the contract works by examining the artifact files and TUI state.
 test("plan-to-ferment promotion — side effects: plan file written + tool swap at turn boundary", async ({
@@ -130,7 +148,22 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 						"1. Read the relevant source files\n",
 						"2. Make the targeted change\n",
 						"3. Run tests to verify\n\n",
-						"<!-- PLAN_COMPLETE -->\n",
+					],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan:
+										"Here's a lightweight plan:\n\n" +
+										"1. Read the relevant source files\n" +
+										"2. Make the targeted change\n" +
+										"3. Run tests to verify\n",
+								}),
+							},
+						},
 					],
 				},
 				{ stream: ["Plan executed. Ready for the next task.\n"] },
@@ -144,17 +177,16 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
-			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
+			// Stage 2: submit request → model streams the plan, then calls
+			// submit_plan. The dropdown appears after the tool call terminates
+			// the turn.
 			terminal.submit("Plan out how to add a new feature.")
 			trace.step("submitted planning request")
-			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("plan complete marker seen — plan-complete handler should have fired")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("submit_plan tool called — plan-complete handler fired")
 
-			// Stage 3: the dropdown appears. NOTE: in this TUI test harness the dropdown
-			// overlay is not reliably captured by `terminal.getBuffer()` (observed across
-			// multiple runs), so we press Enter directly after seeing PLAN_COMPLETE — the
-			// plan-complete handler is awaited by `ctx.ui.select(...)` which accepts Enter
-			// to default-select "Execute the plan" (first option).
+			// Stage 3: the dropdown appears. Press Enter to default-select
+			// "Execute the plan" (first option).
 			terminal.keyPress(Key.Enter)
 			trace.step("pressed Enter to select default dropdown option ('Execute the plan')")
 
@@ -164,8 +196,8 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			await waitForText(terminal, /auto(?: → shift\+tab)? · basic\b/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("status line transitioned to auto — handler fired and mode changed")
 
-			// Verify the approved plan file was written (proof that plan-complete
-			// handler executed the write path at permissions/index.ts:527-540).
+			// Verify the approved plan file was written (proof that submit_plan
+			// executed the write path at permissions/index.ts).
 			const plansDir = join(fixture.workDir, ".kimchi", "plans")
 			const planFiles = readdirSync(plansDir)
 			expect(planFiles.length > 0).toBe(true)
@@ -173,9 +205,8 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			expect(planFile).toMatch(/\.md$/)
 
 			const planContent = readFileSync(join(plansDir, planFile), "utf-8")
+			// The plan text comes from the submit_plan tool argument.
 			expect(planContent.includes("Read the relevant source files")).toBe(true)
-			// Markers are stripped by savePlanMarkdown before persistence.
-			expect(planContent.includes("<!-- PLAN_COMPLETE -->")).toBe(false)
 			expect(planContent.includes("Make the targeted change")).toBe(true)
 			expect(planContent.includes("Run tests to verify")).toBe(true)
 			trace.step("approved plan file written and content verified")

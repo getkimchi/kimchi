@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import type { RemoteSessionNode, RemoteWorkspaceNode } from "./remote-sessions-panel.js"
 import { createRemoteSessionsPanel, RemoteSessionsPanel } from "./remote-sessions-panel.js"
@@ -288,5 +289,22 @@ describe("RemoteSessionsPanel", () => {
 			const panel = new RemoteSessionsPanel(treeNodes, tui, done)
 			expect(panel.render(80).length).toBeGreaterThan(0)
 		})
+	})
+
+	describe("narrow terminals", () => {
+		// Regression: border title math produced a negative "─".repeat count
+		// below the title width, crashing with RangeError.
+		for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 24]) {
+			it(`renders without crashing or overflowing at width ${width}`, () => {
+				const { panel } = makePanel()
+				let lines: string[] = []
+				expect(() => {
+					lines = panel.render(width)
+				}).not.toThrow()
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			})
+		}
 	})
 })

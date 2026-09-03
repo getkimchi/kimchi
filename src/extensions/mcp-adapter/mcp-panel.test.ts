@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { computeVisibleWindow, createMcpPanel } from "./mcp-panel.js"
 import type { MetadataCache } from "./metadata-cache.js"
@@ -318,4 +319,21 @@ describe("McpPanel return on tool row", () => {
 		// No changes because return did not toggle isDirect
 		expect(onSave).not.toHaveBeenCalled()
 	})
+})
+
+describe("narrow terminals", () => {
+	// Regression: unclamped innerW and border title math produced negative
+	// "─".repeat counts at narrow widths, crashing with RangeError.
+	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 24]) {
+		it(`renders without crashing or overflowing at width ${width}`, () => {
+			const { panel } = makePanel()
+			let lines: string[] = []
+			expect(() => {
+				lines = panel.render(width)
+			}).not.toThrow()
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	}
 })

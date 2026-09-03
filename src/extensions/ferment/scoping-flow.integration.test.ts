@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { createContext } from "../__mocks__/context.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, runScopingFlow } from "./scoping.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
@@ -40,6 +41,7 @@ function createHarness() {
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
 	let activeTools: string[] = []
+	const { events } = createMiniEventBus()
 
 	const pi = {
 		on: vi.fn(),
@@ -49,6 +51,7 @@ function createHarness() {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
+		events,
 		getActiveTools: vi.fn(() => activeTools),
 		getAllTools: vi.fn(() => Array.from(tools.keys()).map((name) => ({ name }))),
 		setActiveTools: vi.fn((names: string[]) => {
