@@ -16,6 +16,14 @@ let currentCtx: ExtensionContext | null = null
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
 let imageCounter = 0
+// Tracks whether the current editor content was introduced by a paste (or
+// drag-and-drop, which most terminals deliver as a bracketed paste). Set when
+// we observe a bracketed-paste start sequence in the raw terminal input; the
+// input handler consumes and clears it. This keeps typed image-path mentions
+// from being auto-attached while still giving pasted/dropped paths paste parity.
+let lastInputWasPaste = false
+let inBracketedPaste = false
+let unsubscribeTerminalInput: (() => void) | null = null
 
 const CLIPBOARD_POLL_INTERVAL_MS = 1000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
@@ -218,11 +226,17 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		if (unsubscribeTerminalInput) {
+			unsubscribeTerminalInput()
+			unsubscribeTerminalInput = null
+		}
 		sessionGeneration++
 		isCheckingFinder = false
 		currentCtx = ctx
 		pendingImages = []
 		imageCounter = 0
+		lastInputWasPaste = false
+		inBracketedPaste = false
 		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
 		setImageCacheDir(dir)
@@ -230,9 +244,28 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		updateIndicator()
 		// Linux clipboard detection shells out to wl-paste/xclip, so keep it on-demand.
 		// Polling wl-paste can create transient surfaces that steal focus on Wayland.
-		if (process.platform === "linux") return
-		checkClipboard()
-		clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
+		if (process.platform !== "linux") {
+			checkClipboard()
+			clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
+		}
+
+		// Watch raw terminal input for bracketed-paste sequences so we can tell
+		// pasted/dropped text apart from typed text. The editor strips these
+		// markers, but they still flow through the raw input listeners.
+		unsubscribeTerminalInput =
+			ctx.ui?.onTerminalInput?.((data) => {
+				if (inBracketedPaste) {
+					if (data.includes("\x1b[201~")) {
+						inBracketedPaste = false
+					}
+					return undefined
+				}
+				if (data.includes("\x1b[200~")) {
+					lastInputWasPaste = true
+					inBracketedPaste = !data.includes("\x1b[201~")
+				}
+				return undefined
+			}) ?? null
 	})
 
 	pi.on("session_shutdown", () => {
@@ -240,26 +273,36 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		if (unsubscribeTerminalInput) {
+			unsubscribeTerminalInput()
+			unsubscribeTerminalInput = null
+		}
 		// Increment the generation so any in-flight Finder file-type probe
 		// from the dying session is treated as stale when its callback lands.
 		sessionGeneration++
 		currentCtx = null
+		lastInputWasPaste = false
+		inBracketedPaste = false
 	})
 
 	pi.on("input", (event) => {
 		const incoming = event.images ?? []
-		// Typed image paths get paste parity: attach them the same way so the model
-		// receives the image inline instead of depending on the read tool's image
-		// pipeline. Vision-less models keep the text untouched so the read tool
-		// remains the fallback (and errors loudly there). Path images are appended
-		// after pasted/attached ones so existing marker numbering is unchanged.
-		const fromPaths: ImageContent[] = modelSupportsImages(currentCtx?.model)
-			? extractTypedImagePaths(event.text, currentCtx?.cwd ?? process.cwd()).map((match) => ({
-					type: "image" as const,
-					data: Buffer.from(match.image.bytes).toString("base64"),
-					mimeType: match.image.mimeType,
-				}))
-			: []
+		// Typed image paths get paste parity only for pasted or dropped text.
+		// We detect paste/drop by watching for bracketed-paste sequences in the
+		// raw terminal input; this covers Ctrl+V and most drag-and-drop cases.
+		// Vision-less models keep the text untouched so the read tool remains the
+		// fallback (and errors loudly there). Path images are appended after
+		// pasted/attached ones so existing marker numbering is unchanged.
+		const shouldAttachPaths = lastInputWasPaste
+		lastInputWasPaste = false
+		const fromPaths: ImageContent[] =
+			shouldAttachPaths && modelSupportsImages(currentCtx?.model)
+				? extractTypedImagePaths(event.text, currentCtx?.cwd ?? process.cwd()).map((match) => ({
+						type: "image" as const,
+						data: Buffer.from(match.image.bytes).toString("base64"),
+						mimeType: match.image.mimeType,
+					}))
+				: []
 		const totalImages = incoming.length + pendingImages.length + fromPaths.length
 
 		if (totalImages === 0) return

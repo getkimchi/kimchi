@@ -6,11 +6,13 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-// UX consistency: typing an image path must behave like pasting the image —
-// the input transform attaches it, the [Image #N] marker appears in the user
-// message, and the model request carries the binary payload (no read-tool
-// round-trip, which can silently drop the image).
-test("typed image path attaches the image to the user turn", async ({ terminal }) => {
+// UX consistency: pasting an image path (or dragging a file into the terminal)
+// must behave like pasting the image itself — the input transform attaches it,
+// the [Image #N] marker appears in the user message, and the model request
+// carries the binary payload (no read-tool round-trip, which can silently drop
+// the image). Typed paths without a paste are left alone so filename mentions
+// in prose don't auto-attach.
+test("pasted image path attaches the image to the user turn", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -33,8 +35,13 @@ test("typed image path attaches the image to the user turn", async ({ terminal }
 			},
 		},
 		async (fixture, trace) => {
-			terminal.submit("cat.png what's this?")
-			trace.step("submitted typed image path prompt")
+			// Simulate a paste (or drag-and-drop) by wrapping the path in the
+			// standard terminal bracketed-paste sequences. The editor strips the
+			// markers, but the extension sees them in the raw terminal input and
+			// treats the submission as pasted.
+			terminal.write("\x1b[200~cat.png\x1b[201~")
+			terminal.submit("")
+			trace.step("submitted pasted image path prompt")
 
 			// User-visible evidence: the attached image's marker prefixes the message.
 			await waitForText(terminal, "[Image #1]")
