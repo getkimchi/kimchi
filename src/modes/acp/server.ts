@@ -657,7 +657,7 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
 		return {
-			configOptions: buildConfigOptions(record.session, () => this.getInitialPermissionMode(record.session).mode),
+			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
 		}
 	}
 
@@ -742,10 +742,7 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(existing.session)
 			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(
-				existing.session,
-				() => this.getInitialPermissionMode(existing.session).mode,
-			)
+			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
@@ -1695,12 +1692,8 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
-function buildConfigOptions(
-	session: AgentSession,
-	defaultMode: PermissionMode | (() => PermissionMode),
-): SessionConfigOption[] {
-	const mode =
-		getPermissionMode(session.sessionId)?.mode ?? (typeof defaultMode === "function" ? defaultMode() : defaultMode)
+function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
+	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
 	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 
