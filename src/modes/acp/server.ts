@@ -522,16 +522,10 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		// sessionFactory does not throw — it creates a session or returns an
-		// error result. The lifecycle ownership starts once we have a live
-		// session and call bindAcpExtensions; any throw after that point must
-		// unwind registration and dispose.
 		const session = await this.sessionFactory(params)
 		try {
-			// Convert caller-supplied MCP servers and store them keyed by sessionId.
-			// This must happen AFTER sessionFactory (sessionId is known) but BEFORE
-			// bindAcpExtensions (session_start → initializeMcp drains by sessionId).
-			// Keyed by sessionId so concurrent sessions can't consume each other's entries.
+			// Caller-supplied MCP servers, keyed by sessionId so concurrent
+			// sessions can't consume each other's entries.
 			setCallerMcpServers(session.sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
@@ -574,10 +568,6 @@ export class KimchiAcpAgent implements Agent {
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			// Remove this session's caller-servers entry if it hasn't been
-			// consumed yet by initializeMcp (e.g. bindExtensions threw before
-			// session_start fired). Keyed by sessionId so only this session's
-			// entry is removed — no-op if already consumed.
 			removePendingEntry(session.sessionId)
 			unregisterAcpPrompter(session.sessionId)
 			unregisterSessionPermissionFlagController(session.sessionId)
@@ -782,14 +772,6 @@ export class KimchiAcpAgent implements Agent {
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		//
-		// setCallerMcpServers is called after sessionLoader returns (sessionId
-		// is known) but before bindAcpExtensions, so the early-return paths in
-		// loadSession (session already live / already loading) never set an entry.
-		// sessionLoader does not throw — it creates a session or returns an
-		// error result. Lifecycle ownership starts once we have a live session
-		// and call bindAcpExtensions; any throw after that must unwind
-		// registration and dispose.
 		const loadedSession = await this.sessionLoader(params)
 		const initialMode = this.getInitialPermissionMode(loadedSession)
 		const sessionId = loadedSession.sessionId
@@ -807,9 +789,6 @@ export class KimchiAcpAgent implements Agent {
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
 				)
 			}
-			// Convert caller-supplied MCP servers and store keyed by sessionId.
-			// Must happen after sessionLoader (sessionId known) but before
-			// bindAcpExtensions (session_start → initializeMcp drains by sessionId).
 			setCallerMcpServers(sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			assertSessionHasModel(loadedSession)
 
@@ -866,8 +845,6 @@ export class KimchiAcpAgent implements Agent {
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			// Remove this session's caller-servers entry if it hasn't been consumed
-			// by initializeMcp yet (same pattern as newSession).
 			removePendingEntry(sessionId)
 			unregisterAcpPrompter(sessionId)
 			unregisterSessionPermissionFlagController(sessionId)
