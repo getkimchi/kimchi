@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	injectAutoModel,
@@ -116,7 +117,37 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"]).toBeDefined()
 		expect(config.providers["kimchi-dev/anthropic"].api).toBe("anthropic-messages")
 		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/anthropic")
-		expect(config.providers["kimchi-dev/anthropic"].models[0]).not.toHaveProperty("compat")
+
+		const model = config.providers["kimchi-dev/anthropic"].models[0]
+		const upstream = ANTHROPIC_MODELS["claude-sonnet-4-6"]
+		expect(model.compat).toEqual(upstream.compat)
+		expect(model.thinkingLevelMap).toEqual(upstream.thinkingLevelMap)
+	})
+
+	it("leaves compat unset for anthropic models not in the upstream catalog", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{
+						slug: "claude-unknown-9",
+						display_name: "Claude Unknown 9",
+						provider: "anthropic",
+						reasoning: true,
+						input_modalities: ["text", "image"],
+						is_serverless: false,
+						limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+					},
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const model = config.providers["kimchi-dev/anthropic"].models[0]
+		expect(model).not.toHaveProperty("compat")
+		expect(model).not.toHaveProperty("thinkingLevelMap")
 	})
 
 	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
