@@ -57,6 +57,8 @@ const fakeTools = [
 	{ name: "edit", description: "ORIGINAL edit description" },
 ]
 
+const ALL_MODES = ["single", "orchestrator", "subagent"] as const
+
 // ---------------------------------------------------------------------------
 // A) resolvePromptVariant: resolver logic
 // ---------------------------------------------------------------------------
@@ -363,14 +365,21 @@ describe("buildSystemPrompt: spicy variant", () => {
 		}
 	})
 
-	it("passing variantName 'default' produces the same output as omitting variantName", () => {
-		const withDefault = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName: "default" })
-		const withoutVariant = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })
-		expect(withDefault).toBe(withoutVariant)
-	})
+	for (const mode of ALL_MODES) {
+		it(`${mode} mode: passing variantName 'default' produces the same output as omitting variantName`, () => {
+			const withDefault = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode, variantName: "default" })
+			const withoutVariant = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode })
+			expect(withDefault).toBe(withoutVariant)
+		})
+	}
 
 	it("spicy full prompt (orchestrator mode) matches snapshot", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
+		expect(result).toMatchSnapshot()
+	})
+
+	it("spicy full prompt (single mode) matches snapshot", () => {
+		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName: "spicy" })
 		expect(result).toMatchSnapshot()
 	})
 
