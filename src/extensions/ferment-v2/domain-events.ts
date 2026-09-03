@@ -21,7 +21,13 @@ export interface FermentV2LifecyclePayload {
 	timeUsedMs: number
 	tokenBudget?: number
 	completionConfidence?: SessionFermentV2["completionConfidence"]
-	reason?: "user" | "agent_aborted" | "agent_errors" | "no_progress" | "evaluator_unavailable"
+	reason?:
+		| "user"
+		| "agent_aborted"
+		| "agent_errors"
+		| "no_progress"
+		| "evaluator_unavailable"
+		| "final_answer_delivery_failed"
 	continuationCount?: number
 }
 

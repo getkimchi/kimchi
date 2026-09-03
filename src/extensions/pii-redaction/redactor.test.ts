@@ -280,6 +280,17 @@ describe("redactObjectStrings — sensitive JSON fields", () => {
 		const result = await redactObjectStrings({ name: "test", count: 42, items: ["a", "b"] })
 		expect(result).toEqual({ name: "test", count: 42, items: ["a", "b"] })
 	})
+
+	it("preserves symbol metadata while redacting its value", async () => {
+		const marker = Symbol.for("kimchi.assistant-output-withheld")
+		const result = await redactObjectStrings({
+			[marker]: "john.doe@example.com",
+			content: "john.doe@example.com",
+		})
+
+		expect(result[marker]).toBe("[REDACTED-EMAIL_ADDRESS]")
+		expect(result.content).toBe("[REDACTED-EMAIL_ADDRESS]")
+	})
 })
 
 describe("redactObjectStrings — trace ID preservation", () => {

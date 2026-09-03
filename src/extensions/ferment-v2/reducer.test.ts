@@ -34,13 +34,13 @@ describe("Ferment V2 reducer", () => {
 		})
 	})
 
-	it("rejects empty and overlong newly entered objectives", () => {
+	it("rejects empty objectives and preserves objectives longer than 4,000 characters", () => {
 		expect(() => createFermentV2(undefined, " \n ", "ferment-v2-a", T1)).toThrow("Ferment V2 objective cannot be empty")
-		expect(createFermentV2(undefined, "x".repeat(4_000), "ferment-v2-a", T1).objective).toHaveLength(4_000)
-		expect(() => createFermentV2(undefined, "x".repeat(4_001), "ferment-v2-a", T1)).toThrow("cannot exceed 4,000")
-		expect(() =>
-			editFermentV2(createFermentV2(undefined, "old", "ferment-v2-a", T1), "ferment-v2-a", 1, "x".repeat(4_001), T2),
-		).toThrow("cannot exceed 4,000")
+		expect(createFermentV2(undefined, "x".repeat(4_001), "ferment-v2-a", T1).objective).toHaveLength(4_001)
+		expect(
+			editFermentV2(createFermentV2(undefined, "old", "ferment-v2-a", T1), "ferment-v2-a", 1, "x".repeat(4_001), T2)
+				.objective,
+		).toHaveLength(4_001)
 	})
 
 	it("edits in place by incrementing revision and preserving status", () => {
@@ -51,10 +51,19 @@ describe("Ferment V2 reducer", () => {
 			"paused",
 			T2,
 		)
-		const edited = editFermentV2(paused, "ferment-v2-a", 1, "new", T2)
+		const evaluated = recordFermentV2Evaluation(
+			paused,
+			"ferment-v2-a",
+			1,
+			{ verdict: "met", reason: "Old objective met", evaluatedAt: T2 },
+			T2,
+		)
+		const edited = editFermentV2({ ...evaluated, completionConfidence: "tested" }, "ferment-v2-a", 1, "new", T2)
 
 		expect(edited).toMatchObject({ id: "ferment-v2-a", revision: 2, objective: "new", status: "paused" })
 		expect(edited.createdAt).toBe(T1)
+		expect(edited).not.toHaveProperty("lastEvaluation")
+		expect(edited).not.toHaveProperty("completionConfidence")
 	})
 
 	it("replaces with a new ID, revision one, and active status", () => {
@@ -166,9 +175,9 @@ describe("Ferment V2 reducer", () => {
 		expect(restoreFermentV2([clearFermentV2Entry(revision2, T2)], revision2)).toBeUndefined()
 	})
 
-	it("rejects persisted objectives above the entry limit", () => {
+	it("restores persisted objectives longer than 4,000 characters", () => {
 		const persisted = { ...createFermentV2(undefined, "old", "ferment-v2-a", T1), objective: "x".repeat(4_001) }
-		expect(restoreFermentV2([putFermentV2Entry(persisted)])).toBeUndefined()
+		expect(restoreFermentV2([putFermentV2Entry(persisted)])?.objective).toHaveLength(4_001)
 	})
 
 	it("records guarded evaluations and round-trips them", () => {

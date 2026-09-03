@@ -20,7 +20,7 @@ The persisted state includes:
 - consecutive-error and unchanged-continuation counters;
 - assistant token usage, optional token budget, active time, and timestamps.
 
-Objectives are trimmed and limited to 4,000 characters. Mutations are fenced by both ID and revision, so a stale turn cannot update an edited or replaced objective.
+Objectives are trimmed. Mutations are fenced by both ID and revision, so a stale turn cannot update an edited or replaced objective.
 
 ## Commands
 
@@ -29,12 +29,12 @@ Objectives are trimmed and limited to 4,000 characters. Mutations are fenced by 
 | `/ferment-v2 <objective>` | Create an active revision 1 and queue a hidden start steer. An unfinished replacement asks for interactive confirmation; headless replacement is rejected. A completed run can be replaced directly. |
 | `/ferment-v2 --tokens 50k <objective>` | Set a positive per-run token budget. `--tokens` overrides `fermentV2.defaultTokenBudget`. |
 | `/ferment-v2` | Show status, blocked reason, revision, objective, active time, evaluations, latest verdict/reason, and currently valid commands. |
-| `/ferment-v2 edit [objective]` | Checkpoint active time, increment the revision, reset error/stall counters, abort an evaluator, and steer work to the new objective. A retained Todo list must be reconciled for the new revision. |
-| `/ferment-v2 pause` | Persist `paused`, stop automatic continuation, abort evaluation, and send a cooperative stop steer when an agent turn is running. A running operation is not forcibly rolled back. |
-| `/ferment-v2 resume` | Reactivate a paused or blocked run, reset guard counters, and queue a hidden start steer. Exhausted budgets and completed runs cannot resume. |
-| `/ferment-v2 clear` | Append a clear tombstone, remove the current run from the selected branch, abort evaluation, and cooperatively stop a running turn. |
+| `/ferment-v2 edit [objective]` | Immediately checkpoint active time, increment the revision, reset error/stall counters, abort an evaluator, and queue a steer to the new objective. The current agent operation may finish and its usage is accounted, but old-revision prose stays hidden and a not-yet-started Todo write is blocked. A retained Todo list must be reconciled for the new revision. |
+| `/ferment-v2 pause` | Persist `paused` and stop automatic continuation after active agent work settles. |
+| `/ferment-v2 resume` | Reactivate a paused or blocked run, reset guard counters, and queue a hidden start steer. If evaluation already accepted the run, retry only final-answer delivery. Exhausted budgets and completed runs cannot resume. |
+| `/ferment-v2 clear` | Append a clear tombstone and remove the current run from the selected branch after active agent work settles. |
 
-Management mutations are serialized per session. Before an active run or evaluator is changed, V2 asks the current turn to stop after its running operation and waits for it to settle. User Todo mutations use the same boundary, then V2 reads the updated list before continuing. Read-only commands remain immediate.
+Management mutations are serialized per session. Edit commits the next revision immediately, aborts only a running evaluator, and queues its steer behind the operation already in flight. Revision fencing prevents the old turn from evaluating or mutating the new revision. Other state and Todo mutations wait for active agent work to settle; V2 then reads an updated Todo list before continuing. Read-only commands remain immediate.
 
 ## Settings
 
@@ -60,7 +60,8 @@ turn_start → work and Todo writes → turn_end
              ▼              ▼              ▼              ▼
          continue          met       impossible      unavailable
        hidden follow-up  + complete    blocked          paused
-                         Todo → final answer
+                         Todo → final answer → complete
+                                      delivery failure → paused
 ```
 
 The core agent marks a run inactive before dispatching `agent_settled`. V2 therefore treats an in-flight evaluator as busy even though the core context reports idle.
@@ -75,26 +76,29 @@ The active context tells the agent to:
 
 - keep one visible tactical Todo list and leave it visible;
 - add Todos when objective-required work is discovered;
+- preserve settled Todos and their evidence when more work is found, extending the list or reopening the matching item;
 - preserve compact `Decision:`, `Evidence:`, or `Dead-end:` notes for compaction;
-- settle every Todo before attempting completion; and
-- call `update_ferment_v2` only after the final Todo result, as the only tool call in that response, without a final answer.
+- settle every Todo and map each objective requirement to current evidence before finishing; and
+- communicate only task work, results, and blockers; give the concrete outcome and evidence when ready, otherwise state the next concrete need.
 
 Todo writes use normal scope resolution. Omitted scope is auto-routed; agent workers use global scope. V2 accepts observations only from the currently resolved scope and binds them to the current session, V2 ID, and revision. A visible list is required for completion, and every item must be completed for the `complete` gate. An explicit `blocked` update is immediate.
 
 Terminal Todo notes become at most five bounded durable lessons. Only lessons prefixed `Evidence:` are evaluator evidence; unprefixed completed notes are decisions, and blocked notes are dead ends.
 
-`update_ferment_v2 complete` records a runtime-only completion claim and terminates the working turn. Once the Todo list is complete, assistant prose is suppressed until evaluation finishes, so an unaccepted candidate cannot reach TUI, print, JSON, or ACP consumers. The claim is not proof and is not required for a `met` evaluator result to complete a run; if present, its self-reported confidence is copied to the completed state. A `met` verdict queues one visible, tool-free final-answer turn and headless mode waits for that turn to settle. `update_ferment_v2 blocked` persists immediately and records its reason.
+`update_ferment_v2 complete` records an optional runtime-only completion claim and terminates the working turn; no standalone claim turn is required because a settled visible Todo list also makes text-only assistant output a completion candidate. Assistant prose is buffered while it streams and released at `message_end`: only a completion candidate stays hidden, so an unaccepted candidate never reaches TUI, print, JSON, ACP, or the working journal; an in-memory copy of it is available only to the evaluator. Ordinary current-revision tool-bearing work remains visible even when the preceding Todo snapshot was settled. The hidden message is marked as intentionally withheld so generic empty-turn and exploration guards cannot inject extra turns around evaluation. Thinking and already-running tool activity are not suppressed. After an edit, however, prose from the assistant message that began under the old revision remains hidden, and a Todo write emitted by that stale message is blocked before execution. The claim is not proof and is not required for a `met` evaluator result to complete a run; if present, its self-reported confidence is copied forward. A `met` verdict queues one visible final-answer turn and headless mode waits for it; tool calls are blocked during that turn. The run becomes `complete` and emits its completion event only after that turn delivers non-empty text without aborting or erroring; otherwise it becomes resumably `paused`. Restart and explicit resume recover an accepted-but-undelivered answer from the persisted `met` verdict and completed Todo state. If pause, edit, clear, or a Todo command mutation invalidates an already queued delivery, its hidden control message is removed from provider context; Todo mutation also clears the stale accepted evaluation before work resumes. `update_ferment_v2 blocked` persists immediately and records its reason.
 
 ## Settled evaluation
 
-The evaluator uses the session model in single-model mode. With multi-model enabled, it resolves the first configured `judge` role and falls back to the session model if that lookup fails. It makes one tool-free `completeSimple` call with a 180-second default timeout (`fermentV2.evaluationTimeoutMs` is configurable), a reasoning-aware token limit, and provider JSON mode for Moonshot. Each call is recorded as a child Pi session linked to the working session, so its prompt, response, model, activity, and usage stay out of the working journal.
+The evaluator uses the session model in single-model mode. With multi-model enabled, it resolves the first configured `judge` role and falls back to the session model if that lookup fails. It makes one tool-free `completeSimple` call with a 180-second default timeout (`fermentV2.evaluationTimeoutMs` is configurable), a reasoning-aware token limit, and provider JSON mode for Moonshot and Kimchi-managed evaluators. When PII redaction is enabled, the complete rendered evaluator prompt is redacted before it is recorded or sent; a redaction failure makes evaluation unavailable instead of sending raw input. When an interactive turn produced a hidden candidate, the evaluator runs inside the awaited `agent_end` hook and holds Kimchi's existing cooking animation for the call; every other turn evaluates at `agent_settled`, so automatic compaction between those hooks is never blocked. Each call is recorded as a child Pi session linked to the working session, so its prompt, response, model, activity, and usage stay out of the working journal.
 
-Its input is the objective, bounded Todo state (8,000 characters), at most five lessons, and the newest transcript units (16,000 characters). Tool calls stay paired with linked results where possible; thinking is removed. A `met` verdict is accepted only when every check is met, names a plausible failure mode, cites retained evidence, uses known Todo IDs, and covers every settled Todo. Only linked tool results and `Evidence:` lessons count as authoritative evidence. Claims, plans, tool calls, file edits, decisions, dead ends, and exit status alone do not.
+Its input is the objective, bounded Todo state (8,000 characters), at most five lessons, and bounded transcript units (16,000 characters). Tool calls stay paired with linked results where possible; oversized non-evidence chatter is skipped so older linked results can remain, and thinking is removed. A `met` verdict is accepted only when every objective check is met, names a plausible failure mode, cites at least one retained authoritative item, and uses only known Todo IDs. Extra context citations do not invalidate an otherwise evidenced check. Todos remain a tactical completeness gate, but incidental settled Todos do not need artificial evaluator checks. Only linked tool results and `Evidence:` lessons receive citation IDs and count as authoritative evidence. Claims, plans, tool calls, file edits, decisions, dead ends, and exit status alone do not.
+
+If the evaluator returns `continue` after the Todo list was settled, the continuation prompt tells the agent to preserve the settled Todos and their evidence, then extend the list with the concrete missing work or reopen the matching Todo. A check with no cited authoritative evidence explicitly asks for a proving check and an `Evidence:` Todo note. Evaluator reasons are passed through only when task-facing; protocol-framed reasons fall back to the first unmet requirement so internal evaluator language cannot leak into working turns or status output.
 
 Verdicts have these effects:
 
 - `continue`: persist the evaluation and queue one hidden `followUp` continuation while all gates still pass. A reason is included in the hidden checkpoint steer.
-- `met`: complete only when the current revision has a non-empty visible Todo list whose items are all completed; otherwise remain active and continue with the missing-Todo reason.
+- `met`: request the final answer only when the current revision has a non-empty visible Todo list whose items are all completed; mark complete only after that answer is delivered successfully, otherwise pause.
 - `impossible`: persist `blocked` with the evaluator reason.
 - `unavailable`: persist the evaluation and pause. Missing model/authentication, timeout, cancellation, call failure, malformed output, and truncated output all fail closed after that single call.
 
@@ -104,23 +108,23 @@ Evaluation and continuation require an active current revision, no pending user 
 
 An aborted agent turn pauses immediately. Agent errors are counted once at the settled run boundary, not once per retry `turn_end`; three consecutive errors pause by default. Three unchanged continuation checkpoints pause by default when there was no substantive active work and the canonical fingerprint did not change. Pending-only Todo additions and display-only reordering do not count as progress; starting or settling a Todo, revising its active fields, adding durable lessons, or using a substantive work tool does.
 
-Token usage is checkpointed at `turn_end`. If the run reaches its token budget, it becomes `budget_limited` and no evaluator or continuation is started for that turn. Active time is accumulated only while an active agent turn is running; it is checkpointed on turn end and management mutations.
+Working-turn token usage is checkpointed at `turn_end`. If the run reaches its token budget, it becomes `budget_limited` and no evaluator or continuation is started for that turn. The already accepted final-answer delivery is excluded from this work budget; its usage remains in the normal session record. Active time is accumulated only while an active work turn is running; it is checkpointed on turn end and management mutations.
 
 ## Replay, restart, compaction, and headless runs
 
 `session_start` and `session_tree` replay the selected session branch. Rewind and fork therefore select independent V2 histories. After compaction or branch navigation, V2 replays the latest state and Todo writes and rebuilds the context message. Durable Todo notes can remain available as lessons after terminal Todos leave the current list. Explicit `/ferment-v2 resume` restores the persisted guard counters only to reset them in its own commit; ordinary replay preserves them.
 
-An active run schedules a deferred automatic resume only for an interactive UI session, after checking for busy state, pending messages, and unchanged ID/revision. Headless `session_start` deliberately does not compete with the incoming prompt. Headless create, edit, and resume commands wait only when they successfully queue a turn; waiters resolve on terminal state, clear, replacement, or when a continuation cannot be queued (for example, tools are unavailable or synchronous context is stale).
+An active run schedules a deferred automatic resume only for an interactive UI session, after checking for busy state, pending messages, and unchanged ID/revision. If its last evaluation was `met` and its restored Todo list is complete, that kick delivers the final answer instead of resuming work. Headless `session_start` deliberately does not compete with the incoming prompt. Headless create, edit, and resume commands wait only when they successfully queue a turn; waiters resolve on terminal state, clear, replacement, or when a continuation cannot be queued (for example, tools are unavailable or synchronous context is stale).
 
-Runtime-only state is rebuilt on replay; a pending continuation or terminal-feedback marker is retained only when its same-session ID/revision still matches the replayed V2, and is otherwise discarded. Cross-session replay resets it, along with active/failed turn markers, completion claim, captured conversation, evaluator abort controller, active-time start, progress fingerprint, and in-memory Todo/lesson bindings. The journal persists the objective state, accounting, evaluations, and guard counters.
+Runtime-only state is rebuilt on replay; pending continuation, terminal-feedback, and queued/active final-answer markers are retained only when their same-session ID/revision still matches the replayed V2, and are otherwise discarded. Cross-session replay resets them, along with active/failed turn markers, completion claim, captured conversation, evaluator abort controller, active-time start, progress fingerprint, and in-memory Todo/lesson bindings. Accepted final-answer readiness is derived again from the persisted evaluation and Todo state. The journal persists the objective state, accounting, evaluations, and guard counters.
 
 ## Visibility, telemetry, and benchmark accounting
 
-V2 control/context messages and the `get_ferment_v2`/`update_ferment_v2` tools are hidden from normal tool rendering and bypass permission prompts. Evaluation details are not emitted as visible transcript text. `/ferment-v2` is the supported user-facing status surface; there is no dedicated V2 status-line segment.
+V2 control/context messages and the `get_ferment_v2`/`update_ferment_v2` tools are hidden from normal tool rendering and bypass permission prompts. Evaluation details are not emitted as visible transcript text. The existing working indicator remains active while an interactive completion candidate is evaluated, and prompt-summary display waits for true session idle so it cannot become an accidental model steer during a slow evaluation. `/ferment-v2` is the supported user-facing status surface; there is no dedicated V2 status-line segment.
 
 The extension emits these lifecycle events: `ferment-v2:started`, `ferment-v2:replaced`, `ferment-v2:edited`, `ferment-v2:completed`, `ferment-v2:blocked`, `ferment-v2:paused`, `ferment-v2:stalled`, and `ferment-v2:evaluated`. Built-in telemetry subscribes only to `ferment-v2:evaluated` and records the V2 ID, verdict, count, evaluator model, token buckets, total tokens, and cost. It does not record the evaluator reason or objective, and unavailable evaluations do not emit an evaluated telemetry record.
 
-V2 runtime accounting describes the working session's assistant turns. Evaluator usage belongs to its child sessions. The Terminal-Bench adapter recursively scans every discovered `sessions/**/*.jsonl`, sums valid assistant entries, and includes cache read/write in the input total, so working, evaluator, and other child sessions are counted once through the same path.
+V2 runtime accounting describes the working assistant turns and excludes accepted final-answer delivery from its work budget. Evaluator usage belongs to its child sessions. Both delivery and evaluator usage remain in their normal session records. The Terminal-Bench adapter recursively scans every discovered `sessions/**/*.jsonl`, sums valid assistant entries, and includes cache read/write in the input total, so working, evaluator, and other child sessions are counted once through the same path.
 
 ## Ferment V1 boundary
 

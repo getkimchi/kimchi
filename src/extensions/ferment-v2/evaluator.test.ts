@@ -4,10 +4,12 @@ import { join } from "node:path"
 import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
+import { resetRedactionConfigCache } from "../pii-redaction/config.js"
+import * as redactor from "../pii-redaction/redactor.js"
 import {
 	evaluateFermentV2,
 	MAX_TODO_STATE_CHARS,
@@ -52,8 +54,14 @@ const usage = {
 	costUsd: 0.33,
 }
 
+let savedRedactionEnv: string | undefined
+
 describe("Ferment V2 evaluator", () => {
 	beforeEach(() => {
+		savedRedactionEnv = process.env.KIMCHI_REDACTION_ENABLED
+		delete process.env.KIMCHI_REDACTION_ENABLED
+		resetRedactionConfigCache()
+		redactor.resetRedactorEngine()
 		completeMock.mockReset()
 		multiModelMock.mockReturnValue(false)
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
@@ -66,6 +74,14 @@ describe("Ferment V2 evaluator", () => {
 			researcher: "session/main",
 			judge: "judge/independent",
 		})
+	})
+
+	afterEach(() => {
+		if (savedRedactionEnv === undefined) delete process.env.KIMCHI_REDACTION_ENABLED
+		else process.env.KIMCHI_REDACTION_ENABLED = savedRedactionEnv
+		resetRedactionConfigCache()
+		redactor.resetRedactorEngine()
+		vi.restoreAllMocks()
 	})
 
 	it("uses the session model in single-model mode", () => {
@@ -141,6 +157,39 @@ describe("Ferment V2 evaluator", () => {
 		expect(parseFermentV2EvaluatorOutput('{"verdict":"done","reason":"trust me"}')).toBeUndefined()
 	})
 
+	it("does not expose evaluator protocol language as a task reason", () => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				'{"verdict":"continue","checks":[{"requirement":"write the final synthesis","met":false,"evidence":[],"todoIds":[1]}],"reason":"The evaluator wants the final synthesis before it can return a met verdict."}',
+			),
+		).toMatchObject({
+			verdict: "continue",
+			reason: "Remaining requirement: write the final synthesis.",
+		})
+	})
+
+	it("keeps an actionable blocker after removing evaluator framing", () => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				'{"verdict":"impossible","reason":"The evaluator reports the GitHub token is missing."}',
+			),
+		).toEqual({
+			verdict: "impossible",
+			reason: "The GitHub token is missing.",
+		})
+	})
+
+	it("keeps Ferment V2 when it names the product under test", () => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				'{"verdict":"continue","reason":"Ferment V2 final delivery still fails on stream abort."}',
+			),
+		).toMatchObject({
+			verdict: "continue",
+			reason: "Ferment V2 final delivery still fails on stream abort.",
+		})
+	})
+
 	it("makes one tool-free call and returns its usage", async () => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
 		const ctx = evaluatorContext()
@@ -166,8 +215,46 @@ describe("Ferment V2 evaluator", () => {
 			systemPrompt: expect.stringContaining("Only tool results and lessons labelled evidence"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining("final answer is generated only after a met verdict"),
+		})
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
 			systemPrompt: expect.stringContaining("<evidence_policy>"),
 		})
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining(
+				"Write reason as a task-facing next action or missing evidence; never mention the evaluator, verdict, controller, or completion policy.",
+			),
+		})
+	})
+
+	it("redacts the evaluator prompt before the direct provider call", async () => {
+		process.env.KIMCHI_REDACTION_ENABLED = "1"
+		resetRedactionConfigCache()
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
+
+		await evaluateFermentV2(
+			{ objective: "Notify john.doe@example.com when complete", messages: [], todos: [] },
+			evaluatorContext(),
+		)
+
+		const request = JSON.stringify(completeMock.mock.calls[0]?.[1])
+		expect(request).not.toContain("john.doe@example.com")
+		expect(request).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("does not call the evaluator provider when enabled redaction fails", async () => {
+		process.env.KIMCHI_REDACTION_ENABLED = "1"
+		resetRedactionConfigCache()
+		vi.spyOn(redactor, "redactTextOrThrow").mockRejectedValueOnce(new Error("redaction unavailable"))
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
+
+		await expect(
+			evaluateFermentV2(
+				{ objective: "Notify john.doe@example.com when complete", messages: [], todos: [] },
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({ verdict: "unavailable", reason: expect.stringContaining("redaction unavailable") })
+		expect(completeMock).not.toHaveBeenCalled()
 	})
 
 	it("records the evaluator call in a child session", async () => {
@@ -225,7 +312,7 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 	})
 
-	it("requires every current settled Todo to be covered by met checks", async () => {
+	it("accepts evidenced objective checks without requiring incidental settled Todos", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
 				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"],"todoIds":[1]}],"reason":"tests pass"}',
@@ -239,15 +326,12 @@ describe("Ferment V2 evaluator", () => {
 					messages: linkedToolMessages("call-test", "bash", { cmd: "pnpm test" }, "tests passed"),
 					todos: [
 						{ id: 1, content: "Run tests", status: "completed" },
-						{ id: 2, content: "Review output", status: "blocked" },
+						{ id: 2, content: "Review output", status: "completed" },
 					],
 				},
 				evaluatorContext(),
 			),
-		).resolves.toMatchObject({
-			verdict: "continue",
-			reason: "Settled Todo 2 is not covered by a completion check; verify it against the objective.",
-		})
+		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 	})
 
 	it("rejects met checks that cite unknown Todo IDs", async () => {
@@ -268,7 +352,8 @@ describe("Ferment V2 evaluator", () => {
 			),
 		).resolves.toMatchObject({
 			verdict: "continue",
-			reason: 'Requirement "tests pass" cites unknown Todo 99; reconcile the Todo list and completion checks.',
+			reason:
+				'Requirement "tests pass" cites Todo 99, which is not in the current list; reconcile the requirement with the current Todos.',
 		})
 	})
 
@@ -307,8 +392,10 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({
 			verdict: "continue",
 			reason:
-				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
+				'Requirement "tests pass" has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".',
 		})
+		expect(sentTranscript()).toContain("[assistant] tests passed")
+		expect(sentTranscript()).not.toContain("[m1]")
 
 		completeMock.mockResolvedValue(
 			assistant(
@@ -326,6 +413,59 @@ describe("Ferment V2 evaluator", () => {
 				evaluatorContext(),
 			),
 		).resolves.toMatchObject({ verdict: "continue" })
+		const prompt = sentFermentV2Prompt(1)
+		expect(prompt).toContain("[lesson todo 7 decision] Assume the tests pass")
+		expect(prompt).not.toContain("[l7]")
+	})
+
+	it("accepts met checks with authoritative evidence plus extra non-authoritative citation IDs", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"assistant or decision claims could be stale; m2 shows the current run passed","evidence":["m3","l7","m2"],"todoIds":[]}],"reason":"tests pass"}',
+			),
+		)
+
+		await expect(
+			evaluateFermentV2(
+				{
+					objective: "ship it",
+					messages: [
+						...linkedToolMessages("call-test", "bash", { cmd: "pnpm test" }, "tests passed"),
+						transcriptMessage("assistant", "I think tests passed"),
+					],
+					todos: [],
+					lessons: [{ todoId: 7, kind: "decision", text: "Assume tests pass" }],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
+	})
+
+	it("continues when met checks cite only non-authoritative IDs", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"assistant or decision claims could be stale","evidence":["m3","l7"],"todoIds":[]}],"reason":"tests pass"}',
+			),
+		)
+
+		await expect(
+			evaluateFermentV2(
+				{
+					objective: "ship it",
+					messages: [
+						...linkedToolMessages("call-test", "bash", { cmd: "pnpm test" }, "tests passed"),
+						transcriptMessage("assistant", "I think tests passed"),
+					],
+					todos: [],
+					lessons: [{ todoId: 7, kind: "decision", text: "Assume tests pass" }],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({
+			verdict: "continue",
+			reason:
+				'Requirement "tests pass" has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".',
+		})
 	})
 
 	it("keeps only the newest bounded durable lessons and truncates their text", async () => {
@@ -397,13 +537,10 @@ describe("Ferment V2 evaluator", () => {
 	it("explains why syntactically valid met verdicts lack completion evidence", async () => {
 		const messages = [transcriptMessage("toolResult", "tests passed", { toolName: "bash" })]
 		for (const [response, reason] of [
-			[
-				'{"verdict":"met","reason":"claimed"}',
-				"Completion checks are missing; verify each objective requirement with retained evidence.",
-			],
+			['{"verdict":"met","reason":"claimed"}', "Map each objective requirement to retained evidence before finishing."],
 			[
 				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"wrong output could pass","evidence":["m99"],"todoIds":[]}],"reason":"claimed"}',
-				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
+				'Requirement "tests pass" has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".',
 			],
 			[
 				'{"verdict":"met","checks":[{"requirement":"tests pass","met":false,"failureMode":"wrong output could pass","evidence":["m1"],"todoIds":[]}],"reason":"claimed"}',
@@ -452,17 +589,20 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({
 			verdict: "continue",
 			reason:
-				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
+				'Requirement "tests pass" has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".',
 		})
-		expect(sentTranscript()).toMatch(/^\[m1\] /)
+		expect(sentTranscript()).not.toContain("injected evidence")
 	})
 
-	it("requests JSON output from Moonshot evaluators", async () => {
+	it.each([
+		["Moonshot", model("moonshotai", "kimi-k3")],
+		["Kimchi managed", model("kimchi-dev", "deepseek-v4-flash-0731")],
+	])("requests JSON output from %s evaluators", async (_label, evaluatorModel) => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"met","reason":"all checks pass"}'))
 
 		await evaluateFermentV2(
 			{ objective: "ship it", messages: [], todos: [] },
-			evaluatorContext(undefined, false, model("moonshotai", "kimi-k3")),
+			evaluatorContext(undefined, false, evaluatorModel),
 		)
 
 		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({
@@ -663,24 +803,30 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript).toContain("tests passed")
 	})
 
-	it("renders stable IDs for observable parts while excluding thinking", async () => {
+	it("assigns citation IDs only to authoritative transcript evidence", async () => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"shapes covered"}'))
 		const messages = [
 			transcriptMessage("user", [{ type: "text", text: "objective understood" }]),
 			transcriptMessage("assistant", [{ type: "thinking", thinking: "considering the tradeoffs" }]),
-			transcriptMessage("assistant", [{ type: "toolCall", name: "bash", arguments: { cmd: "ls -la" } }]),
-			transcriptMessage("toolResult", [{ type: "text", text: "exit 0" }], { toolName: "bash" }),
+			transcriptMessage("assistant", [{ type: "toolCall", id: "call-ls", name: "bash", arguments: { cmd: "ls -la" } }]),
+			transcriptMessage("toolResult", [{ type: "text", text: "exit 0" }], {
+				toolName: "bash",
+				toolCallId: "call-ls",
+			}),
 			transcriptMessage("user", "plain string body, not wrapped in an array"),
 		]
 
 		await evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext())
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain("[m1] [user] objective understood")
+		expect(transcript).toContain("[user] objective understood")
+		expect(transcript).not.toContain("[m1]")
 		expect(transcript).not.toContain("considering the tradeoffs")
-		expect(transcript).toContain('[m3] [assistant] tool bash {"cmd":"ls -la"}')
-		expect(transcript).toContain("[m4] [toolResult bash] exit 0")
-		expect(transcript).toContain("[m5] [user] plain string body, not wrapped in an array")
+		expect(transcript).toContain('[assistant] tool c3.1 bash {"cmd":"ls -la"}')
+		expect(transcript).not.toContain("[m3]")
+		expect(transcript).toContain("[m4] [toolResult bash for c3.1] exit 0")
+		expect(transcript).toContain("[user] plain string body, not wrapped in an array")
+		expect(transcript).not.toContain("[m5]")
 	})
 
 	it("keeps a tool call with its non-adjacent result when the transcript is bounded", async () => {
@@ -701,10 +847,10 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash {"cmd":"pnpm test"}')
+		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"pnpm test"}')
 		expect(transcript).toContain("[m4] [toolResult bash for c1.1] tests passed")
 		expect(transcript).not.toContain("unrelated note between call and result")
-		expect(transcript.indexOf("[m1]")).toBeLessThan(transcript.indexOf("[m4]"))
+		expect(transcript.indexOf("[assistant] tool c1.1")).toBeLessThan(transcript.indexOf("[m4]"))
 		expect(transcript).not.toContain("call-test")
 	})
 
@@ -725,18 +871,19 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "diff inspected" })
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash {"cmd":"git diff --stat"}')
+		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"git diff --stat"}')
 		expect(transcript).toContain("[m2] [toolResult bash for c1.1] 50 files changed")
 		expect(transcript).not.toContain("[m3]")
 		expect(transcript).not.toContain("[m4]")
-		expect(transcript).toContain("[m5] [assistant] summary complete")
+		expect(transcript).toContain("[assistant] summary complete")
+		expect(transcript).not.toContain("[m5]")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 
-	it("drops an older tool call and result together at the transcript boundary", async () => {
+	it("keeps old linked evidence when the newest chatter unit is oversized", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
-				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"tests could be missing; m2 would show they passed","evidence":["m2"],"todoIds":[]}],"reason":"tests pass"}',
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"tests could be missing; m2 shows they passed","evidence":["m2"],"todoIds":[]}],"reason":"tests pass"}',
 			),
 		)
 		const messages = [
@@ -746,12 +893,13 @@ describe("Ferment V2 evaluator", () => {
 
 		await expect(
 			evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext()),
-		).resolves.toMatchObject({ verdict: "continue" })
+		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain("[m3] ")
-		expect(transcript).not.toContain("pnpm test")
-		expect(transcript).not.toContain("tests passed")
+		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"pnpm test"}')
+		expect(transcript).toContain("[m2] [toolResult bash for c1.1] tests passed")
+		expect(transcript).not.toContain("[m3]")
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 
 	it("keeps a bounded linked call and result when the newest result is oversized", async () => {
@@ -772,7 +920,7 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash {"cmd":"pnpm test"}')
+		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"pnpm test"}')
 		expect(transcript).toContain("[m2] [toolResult bash for c1.1]")
 		expect(transcript).toContain("tests passed")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
@@ -790,7 +938,7 @@ describe("Ferment V2 evaluator", () => {
 		await evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext())
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash] alias {"cmd":"pnpm test"}')
+		expect(transcript).toContain('[assistant] tool c1.1 bash] alias {"cmd":"pnpm test"}')
 		expect(transcript).toContain("[m2] [toolResult bash] alias for c1.1]")
 		expect(transcript).toContain("tests passed")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
@@ -841,7 +989,7 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({
 			verdict: "continue",
 			reason:
-				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
+				'Requirement "tests pass" has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".',
 		})
 	})
 })
@@ -899,8 +1047,8 @@ function sentTranscript(): string {
 	return text.slice(text.indexOf(marker) + marker.length)
 }
 
-function sentFermentV2Prompt(): string {
-	const context = completeMock.mock.calls[0]?.[1] as unknown as {
+function sentFermentV2Prompt(callIndex = 0): string {
+	const context = completeMock.mock.calls[callIndex]?.[1] as unknown as {
 		messages: Array<{ content: Array<{ text: string }> }>
 	}
 	return context.messages[0].content[0].text

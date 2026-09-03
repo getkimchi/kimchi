@@ -8,7 +8,6 @@ import {
 	type SessionFermentV2,
 } from "./types.js"
 
-const MAX_FERMENT_V2_OBJECTIVE_LENGTH = 4_000
 const MAX_BLOCKED_REASON_LENGTH = 1_000
 
 export type FermentV2State = SessionFermentV2 | undefined
@@ -16,9 +15,6 @@ export type FermentV2State = SessionFermentV2 | undefined
 function normalizeObjective(value: unknown): string {
 	const objective = typeof value === "string" ? value.trim() : ""
 	if (!objective) throw new Error("Ferment V2 objective cannot be empty.")
-	if (objective.length > MAX_FERMENT_V2_OBJECTIVE_LENGTH) {
-		throw new Error("Ferment V2 objective cannot exceed 4,000 characters.")
-	}
 	return objective
 }
 
@@ -45,8 +41,9 @@ export function editFermentV2(
 	now: string,
 ): SessionFermentV2 {
 	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const { completionConfidence: _completionConfidence, lastEvaluation: _lastEvaluation, ...editable } = current
 	return {
-		...current,
+		...editable,
 		revision: current.revision + 1,
 		objective: normalizeObjective(objective),
 		updatedAt: now,
@@ -257,7 +254,6 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		!isNonEmptyString(value.id) ||
 		!isPositiveInteger(value.revision) ||
 		!isNonEmptyString(value.objective) ||
-		value.objective.length > MAX_FERMENT_V2_OBJECTIVE_LENGTH ||
 		status === undefined ||
 		(value.blockedReason !== undefined && !isNonEmptyString(value.blockedReason)) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||

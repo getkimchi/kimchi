@@ -7,6 +7,7 @@ import {
 	DEFAULT_MODEL,
 	type FakeOpenAiServer,
 	type FakeResponseRequest,
+	type FakeResponseScript,
 	resolveModels,
 	startFakeOpenAiServer,
 } from "../e2e/tui/support/fake-openai-server.js"
@@ -41,8 +42,54 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 		).toBe(true)
 		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
 		expect(result.stdout, failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 		expect(result.stdout, failure).toContain("VERIFIED_FINAL_AFTER_EVALUATION")
+		expect(
+			JSON.stringify(
+				fake.requests
+					.filter(
+						(request) => request.url.startsWith("/openai/v1/chat/completions") && isFermentV2EvaluatorRequest(request),
+					)
+					.at(-1)?.body,
+			),
+			failure,
+		).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(7)
+	} finally {
+		await fake?.stop().catch(() => {})
+		rmSync(tempRoot, { recursive: true, force: true })
+	}
+})
+
+it("pauses --print and exits nonzero when final-answer delivery fails", {
+	timeout: 25_000,
+}, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
+	let fake: FakeOpenAiServer | undefined
+	try {
+		fake = await startFakeOpenAiServer({
+			responses: fermentV2Responses({ streamError: "scripted final delivery failure" }),
+		})
+		const homeDir = join(tempRoot, "home")
+		const workDir = join(tempRoot, "work")
+		const sessionPath = join(tempRoot, "main.jsonl")
+		mkdirSync(homeDir, { recursive: true })
+		mkdirSync(workDir, { recursive: true })
+		writeKimchiConfig(homeDir, fake.baseUrl)
+
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
+		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+
+		expect(result.timedOut, failure).toBe(false)
+		expect(result.code, failure).toBe(1)
+		expect(fermentV2Runs.at(-1), failure).toMatchObject({
+			status: "paused",
+			lastEvaluation: { verdict: "met" },
+		})
+		expect(result.stdout, failure).not.toContain("VERIFIED_FINAL_AFTER_EVALUATION")
+		expect(result.stdout, failure).not.toContain("Ferment V2 complete.")
+		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 	} finally {
 		await fake?.stop().catch(() => {})
 		rmSync(tempRoot, { recursive: true, force: true })
@@ -112,11 +159,12 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 			),
 			failure,
 		).toBe(true)
-		expect(result.stdout, failure).toContain("Still working on it.")
+		expect(result.stdout.match(/Still working on it\./g), failure).toHaveLength(1)
+		expect(readFileSync(sessionPath, "utf-8").match(/Still working on it\./g), failure).toHaveLength(1)
 		expect(
-			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
+			JSON.stringify(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))),
 			failure,
-		).toHaveLength(2)
+		).not.toContain("The user resumed the Kimchi session Ferment V2.")
 		expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
 	} finally {
 		await fake?.stop().catch(() => {})
@@ -154,7 +202,10 @@ it("exits --print after update_ferment_v2 blocked persists final turn usage", { 
 function resumedActiveFermentV2Responses() {
 	return [
 		{ stream: ["Still working on it."] },
-		{ stream: ['{"verdict":"impossible","reason":"Blocked on missing external approval."}'] },
+		{
+			match: isFermentV2EvaluatorRequest,
+			stream: ['{"verdict":"impossible","reason":"Blocked on missing external approval."}'],
+		},
 	]
 }
 
@@ -220,7 +271,9 @@ function readFermentV2Journal(sessionPath: string): FermentV2JournalState[] {
 		.filter((fermentV2): fermentV2 is FermentV2JournalState => fermentV2 !== undefined)
 }
 
-function fermentV2Responses() {
+function fermentV2Responses(
+	finalAnswer: FakeResponseScript = { stream: ["VERIFIED_FINAL_AFTER_EVALUATION"] },
+): FakeResponseScript[] {
 	return [
 		{
 			stream: ["Creating the Todo."],
@@ -273,7 +326,7 @@ function fermentV2Responses() {
 				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
 			],
 		},
-		{ stream: ["VERIFIED_FINAL_AFTER_EVALUATION"] },
+		finalAnswer,
 	]
 }
 

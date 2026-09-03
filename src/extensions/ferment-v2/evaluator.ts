@@ -3,6 +3,8 @@ import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
+import { getRedactionConfig } from "../pii-redaction/config.js"
+import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { isRecord } from "./reducer.js"
@@ -12,9 +14,20 @@ import type { FermentV2EvaluatorUsage } from "./types.js"
 export const MAX_TRANSCRIPT_CHARS = 16_000
 export const MAX_TODO_STATE_CHARS = 8_000
 const MAX_REASON_CHARS = 1_000
+const INTERNAL_REASON_PATTERN =
+	/\b(?:the evaluator|evaluator (?:wants|needs|requires|says|found|reports|returned|rejected|accepted)|(?:met|continue|impossible) verdict|completion (?:policy|claim|check)|independent completion check|update_ferment_v2)\b/i
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
+}
+
+function isKimchiManagedJsonModeProvider(provider: string): boolean {
+	return (
+		provider === "moonshotai" ||
+		provider === "kimchi-dev" ||
+		provider.startsWith("kimchi-dev/") ||
+		provider === "kimchi-experimental"
+	)
 }
 /**
  * Reasoning models spend this budget on thinking before they emit an answer, so
@@ -29,23 +42,26 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 <output_contract>
 - Return exactly one JSON object and no markdown:
 {"verdict":"continue|met|impossible","checks":[{"requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
+- Write reason as a task-facing next action or missing evidence; never mention the evaluator, verdict, controller, or completion policy.
 </output_contract>
 
 <evidence_policy>
-- Observable transcript entries have IDs such as [m12]. Durable Ferment V2 lessons have IDs such as [l3]. Cite only shown IDs.
+- Authoritative tool results have IDs such as [m12]. Evidence-labelled Ferment V2 lessons have IDs such as [l3]. Other context is intentionally unnumbered. Cite only shown IDs.
 - Only tool results and lessons labelled evidence can support met. User or assistant claims, plans, tool calls, file edits, decision or dead-end lessons, and command exit status alone are not proof.
 - Judge evidence against the objective's full scope and likely failure modes, not only supplied examples or self-selected checks.
 </evidence_policy>
 
 <completion_checks>
 - Check each requirement separately.
-- Include every settled Todo ID covered by the checks.
+- The user-facing final answer is generated only after a met verdict. Do not require it to already appear in the transcript; judge whether the completed work and retained evidence are sufficient to produce it.
+- Treat final-response wording, formatting, and delivery instructions as constraints on that later answer, not as missing work.
+- Include the Todo IDs that substantiate each requirement. Incidental tactical Todos do not need separate checks.
 - Every met check needs a concrete failureMode that the cited evidence challenges.
 - Every met check needs retained evidence. Partial, missing, or ambiguous evidence means continue.
 </completion_checks>
 
 <verdict_policy>
-- met: every requirement is met and every settled Todo is covered.
+- met: every objective requirement is met and supported by retained evidence.
 - continue: work can still progress. Name the first unmet requirement and its exact missing or weak evidence.
 - impossible: progress requires unavailable user input or an external state change. A missing preferred tool or check is not enough when another approach exists.
 </verdict_policy>
@@ -119,11 +135,32 @@ export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2Evalu
 		if (hasChecks && checks === undefined) continue
 		return {
 			verdict: value.verdict,
-			reason: value.reason.trim().slice(0, MAX_REASON_CHARS),
+			reason: taskFacingReason(value.reason, value.verdict, checks),
 			...(checks ? { checks } : {}),
 		}
 	}
 	return undefined
+}
+
+function taskFacingReason(
+	reason: string,
+	verdict: FermentV2EvaluatorVerdict,
+	checks: readonly FermentV2EvaluatorCheck[] | undefined,
+): string {
+	const normalized = reason.trim().slice(0, MAX_REASON_CHARS)
+	if (!INTERNAL_REASON_PATTERN.test(normalized)) return normalized
+	const unframed = normalized.replace(
+		/^(?:the\s+)?evaluator\s+(?:wants|needs|requires|says|found|reports|returned|rejected|accepted)(?:\s+that)?\s+/i,
+		"",
+	)
+	if (unframed !== normalized && unframed && !INTERNAL_REASON_PATTERN.test(unframed)) {
+		return `${unframed[0]?.toUpperCase()}${unframed.slice(1)}`
+	}
+	const requirement = checks?.find((check) => !check.met)?.requirement.replace(/[.\s]+$/, "")
+	if (requirement && !INTERNAL_REASON_PATTERN.test(requirement)) return `Remaining requirement: ${requirement}.`
+	if (verdict === "impossible") return "Progress requires unavailable user input or an external change."
+	if (verdict === "met") return "The current evidence covers every objective requirement."
+	return "Continue work on the first unmet objective requirement and gather concrete evidence."
 }
 
 function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
@@ -204,6 +241,8 @@ export async function evaluateFermentV2(
 		const transcript = renderRecentTranscript(input.messages)
 		const lessons = renderFermentV2Lessons(input.lessons)
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
+		let prompt = `Objective:\n${input.objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
+		if (getRedactionConfig().enabled) prompt = await redactTextOrThrow(prompt)
 		const context = {
 			systemPrompt: EVALUATOR_SYSTEM_PROMPT,
 			messages: [
@@ -212,7 +251,7 @@ export async function evaluateFermentV2(
 					content: [
 						{
 							type: "text" as const,
-							text: `Objective:\n${input.objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`,
+							text: prompt,
 						},
 					],
 					timestamp: Date.now(),
@@ -234,7 +273,9 @@ export async function evaluateFermentV2(
 				headers: auth.headers,
 				reasoning: "minimal",
 				maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
-				samplingParams: model.provider === "moonshotai" ? { response_format: { type: "json_object" } } : undefined,
+				samplingParams: isKimchiManagedJsonModeProvider(model.provider)
+					? { response_format: { type: "json_object" } }
+					: undefined,
 				signal,
 			})
 		let response = await request()
@@ -319,7 +360,7 @@ function unsupportedMetReason(
 	evidenceIds: ReadonlySet<string>,
 	todos: readonly TodoItem[],
 ): string | undefined {
-	if (!checks?.length) return "Completion checks are missing; verify each objective requirement with retained evidence."
+	if (!checks?.length) return "Map each objective requirement to retained evidence before finishing."
 	const todoIds = new Set(todos.map((todo) => todo.id))
 	for (const check of checks) {
 		const requirement = JSON.stringify(check.requirement.slice(0, 200))
@@ -328,19 +369,13 @@ function unsupportedMetReason(
 			return `Requirement ${requirement} does not name the plausible failure mode ruled out by its evidence; inspect the risk and verify it.`
 		if (check.evidence.length === 0)
 			return `Requirement ${requirement} has no retained evidence; run a relevant check and surface its result.`
-		if (check.evidence.some((evidenceId) => !evidenceIds.has(evidenceId)))
-			return `Requirement ${requirement} cites evidence that is not retained as authoritative; gather and surface current observable evidence.`
+		if (!check.evidence.some((evidenceId) => evidenceIds.has(evidenceId)))
+			return `Requirement ${requirement} has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".`
 		const unknownTodoId = check.todoIds.find((todoId) => !todoIds.has(todoId))
 		if (unknownTodoId !== undefined)
-			return `Requirement ${requirement} cites unknown Todo ${unknownTodoId}; reconcile the Todo list and completion checks.`
+			return `Requirement ${requirement} cites Todo ${unknownTodoId}, which is not in the current list; reconcile the requirement with the current Todos.`
 	}
-	const coveredTodoIds = new Set(checks.flatMap((check) => check.todoIds))
-	const uncoveredTodo = todos.find(
-		(todo) => (todo.status === "completed" || todo.status === "blocked") && !coveredTodoIds.has(todo.id),
-	)
-	return uncoveredTodo
-		? `Settled Todo ${uncoveredTodo.id} is not covered by a completion check; verify it against the objective.`
-		: undefined
+	return undefined
 }
 
 function renderTodoState(todos: readonly TodoItem[]): string | undefined {
@@ -368,10 +403,11 @@ function renderFermentV2Lessons(lessons: readonly FermentV2Lesson[] | undefined)
 } {
 	const entries = (lessons ?? []).slice(-MAX_FERMENT_V2_LESSONS).map((lesson) => {
 		const id = `l${lesson.todoId}`
+		const evidence = lesson.kind === "evidence"
 		return {
 			id,
 			kind: lesson.kind,
-			text: `[${id}] [lesson todo ${lesson.todoId} ${lesson.kind}] ${lesson.text.slice(0, MAX_FERMENT_V2_LESSON_CHARS)}`,
+			text: `${evidence ? `[${id}] ` : ""}[lesson todo ${lesson.todoId} ${lesson.kind}] ${lesson.text.slice(0, MAX_FERMENT_V2_LESSON_CHARS)}`,
 		}
 	})
 	return {
@@ -409,6 +445,10 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 				kept.push(entry)
 			}
 			length += separatorLength + unitText.length
+			continue
+		}
+		if (!entries.some((entry) => entry.evidence)) {
+			skippedUnit = true
 			continue
 		}
 		if (kept.length === 0) {
@@ -492,12 +532,13 @@ function renderTranscriptEntry(
 	const rendered = renderMessage(message, callLabelsById)
 	if (!rendered) return undefined
 	const id = `m${index + 1}`
+	const evidence = linkedToolResultIndexes.has(index)
 	return {
 		index,
 		id,
-		prefix: `[${id}] ${rendered.prefix}`,
+		prefix: `${evidence ? `[${id}] ` : ""}${rendered.prefix}`,
 		content: rendered.content,
-		evidence: linkedToolResultIndexes.has(index),
+		evidence,
 	}
 }
 

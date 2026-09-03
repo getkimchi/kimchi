@@ -4,6 +4,7 @@ import explorationGuardExtension, {
 	type ExplorationGuardOptions,
 	STEER_MESSAGE_TYPE,
 } from "./exploration-guard.js"
+import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
 
 function createGuard(options?: ExplorationGuardOptions): ExplorationGuard {
 	return new ExplorationGuard(options)
@@ -709,9 +710,18 @@ describe("explorationGuardExtension turn_end", () => {
 		// The extension gates itself on a session id resolved from the context captured here.
 		handlers.get("session_start")?.({}, { abort, sessionManager: { getSessionId: () => "session-under-test" } })
 
-		function turn(stopReason: "stop" | "error" = "stop") {
+		function turn(stopReason: "stop" | "error" = "stop", outputWithheld = false) {
 			handlers.get("turn_start")?.({}, {})
-			handlers.get("turn_end")?.({ message: { role: "assistant", stopReason } }, {})
+			handlers.get("turn_end")?.(
+				{
+					message: {
+						role: "assistant",
+						stopReason,
+						...(outputWithheld ? { [ASSISTANT_OUTPUT_WITHHELD]: true } : {}),
+					},
+				},
+				{},
+			)
 		}
 
 		return { sendMessage, abort, turn }
@@ -727,6 +737,18 @@ describe("explorationGuardExtension turn_end", () => {
 		turn()
 		turn()
 		expect(sendMessage).not.toHaveBeenCalled()
+		turn()
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not count output intentionally withheld by another extension", () => {
+		const { sendMessage, turn } = createHarness()
+
+		turn()
+		turn()
+		turn("stop", true)
+		expect(sendMessage).not.toHaveBeenCalled()
+
 		turn()
 		expect(sendMessage).toHaveBeenCalledTimes(1)
 	})

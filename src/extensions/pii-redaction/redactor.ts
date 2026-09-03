@@ -198,24 +198,29 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 		return Promise.all(obj.map((item) => redactObjectStrings(item))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
-		const entries = Object.entries(obj as Record<string, unknown>)
+		const source = obj as Record<PropertyKey, unknown>
+		const keys: PropertyKey[] = [
+			...Object.keys(source),
+			...Object.getOwnPropertySymbols(source).filter((key) => Object.prototype.propertyIsEnumerable.call(source, key)),
+		]
 		const values = await Promise.all(
-			entries.map(([key, value]) => {
+			keys.map((key) => {
+				const value = source[key]
 				// Trace IDs are diagnostic identifiers, not secrets — pass through
 				// unchanged (handles both `traceId: string` and `traceIds: string[]`).
-				if (isPreservedKey(key)) {
+				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
 				// Redact any string value stored under a sensitive key name.
-				if (typeof value === "string" && isSensitiveKey(key)) {
+				if (typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
 				return redactObjectStrings(value)
 			}),
 		)
-		const result: Record<string, unknown> = {}
-		for (let i = 0; i < entries.length; i++) {
-			result[entries[i][0]] = values[i]
+		const result: Record<PropertyKey, unknown> = {}
+		for (let i = 0; i < keys.length; i++) {
+			result[keys[i]] = values[i]
 		}
 		return result as T
 	}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
 	buildFermentV2Continuation,
+	buildFermentV2EditSteer,
 	buildFermentV2ErrorContinuation,
 	buildFermentV2StartSteer,
 	replaceFermentV2ContextMessages,
@@ -33,27 +34,30 @@ describe("the Ferment V2 context block", () => {
   "status": "active",
   "objective": "ship the parser"
 }
-Autonomous Ferment V2 continuation is enabled.
+Persistent objective continuation is enabled.
 
-<objective_policy>
-- Treat the Ferment V2 JSON above as authoritative.
+<objective_rules>
+- Treat the objective JSON above as authoritative.
 - Do not call get_ferment_v2 while this context is present.
-</objective_policy>
+</objective_rules>
 
-<todo_policy>
-- Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this Ferment V2 is active.
+<todo_rules>
+- Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.
+- If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list.
 - Name each Todo as a short concrete action, and keep activeForm as the exact current action.
 - Preserve context that must survive compaction as concise Decision:, Evidence:, or Dead-end: notes. Terminal notes may remain after their Todos leave the list.
+- Prefix verification results with Evidence: when completion should rely on them; Decision: and Dead-end: notes do not prove completion.
 - Do not repeat dead ends without new evidence.
-</todo_policy>
+</todo_rules>
 
-<completion_policy>
+<finish_rules>
 - Settle every Todo.
-- Before completion, map every explicit Ferment V2 requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
-- Call update_ferment_v2 only after receiving the final todo result that settles the list, as the only tool call in that response.
-- Do not include a final answer in the completion-claim response. The runtime requests it only after the evaluator accepts the work.
-</completion_policy>
+- Before completion, map every explicit objective requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
+- Communicate only task work, results, and blockers; do not narrate internal checks, policies, or bookkeeping.
+- When the work is ready, give the concrete outcome and evidence needed for the user to use or verify it.
+- If useful work remains or you are blocked, end with the current progress, evidence, and next concrete need.
+</finish_rules>
 </kimchi_session_ferment_v2>`,
 		)
 	})
@@ -67,15 +71,48 @@ Autonomous Ferment V2 continuation is enabled.
 	})
 
 	it("permits adding a todo for objective-required work discovered mid-Ferment V2", () => {
-		expect(contextText("ship the parser")).toContain(
+		const text = contextText("ship the parser")
+		expect(text).toContain(
 			"Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.",
 		)
-		expect(contextText("ship the parser")).toContain("Name each Todo as a short concrete action")
+		expect(text).toContain("Name each Todo as a short concrete action")
+		expect(text).toContain(
+			"Prefix verification results with Evidence: when completion should rely on them; Decision: and Dead-end: notes do not prove completion.",
+		)
 	})
 
 	it("lets normal continuation revise tactical todos without weakening the Ferment V2 objective", () => {
 		expect(buildFermentV2Continuation()).toContain("Keep Todos aligned with required work you discover.")
+		expect(buildFermentV2Continuation()).not.toContain("from the current in-progress Todo")
+		expect(buildFermentV2Continuation(false, "More verification is required.")).toContain(
+			"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list.",
+		)
+		expect(buildFermentV2Continuation(false, "More verification is required.")).toContain(
+			"Remaining task gap: More verification is required.",
+		)
 		expect(buildFermentV2Continuation()).toContain("without dropping any objective requirement")
+	})
+
+	it("keeps controller mechanics out of model-facing prose", () => {
+		const editSteer = buildFermentV2EditSteer({ ...fermentV2("ship the parser"), revision: 2 })
+		const prompts = [
+			contextText("ship the parser"),
+			buildFermentV2StartSteer("created"),
+			buildFermentV2Continuation(false, "More verification is required."),
+			buildFermentV2ErrorContinuation(),
+			editSteer,
+		]
+		for (const prompt of prompts) {
+			expect(prompt).not.toMatch(/Ferment V2|\bevaluator\b|independent completion check|completion policy/i)
+			expect(prompt).not.toMatch(/completion-claim response|only tool call|until update_ferment_v2 succeeds/i)
+			expect(prompt).not.toContain("stop naturally after reporting progress and its evidence")
+			expect(prompt).not.toContain("The user-facing final answer is requested separately")
+			expect(prompt).toContain(
+				"Communicate only task work, results, and blockers; do not narrate internal checks, policies, or bookkeeping.",
+			)
+		}
+		expect(editSteer).toContain("The new objective supersedes the previous objective")
+		expect(editSteer).not.toMatch(/revision \d/)
 	})
 
 	it("orients once when Ferment V2 starts", () => {
@@ -91,7 +128,7 @@ Autonomous Ferment V2 continuation is enabled.
 		["a normal continuation", buildFermentV2Continuation()],
 		["error recovery", buildFermentV2ErrorContinuation()],
 	])("keeps a useful checkpoint shape during %s", (_case, prompt) => {
-		expect(prompt).toContain("Ferment V2 asks for an artifact")
+		expect(prompt).toContain("objective asks for an artifact")
 		expect(prompt).toContain("Timebox uncertain exploration")
 		expect(prompt).toContain("End the turn after a meaningful completed Todo or timeboxed failed approach")
 	})
@@ -101,7 +138,7 @@ Autonomous Ferment V2 continuation is enabled.
 		const message = messages?.[0] as { content: Array<{ text: string }> } | undefined
 		const text = message?.content[0]?.text ?? ""
 		expect(text).not.toContain("Add a Todo when you discover work the objective requires")
-		expect(text).not.toContain("Autonomous Ferment V2 continuation is enabled")
-		expect(text).toContain("Autonomous Ferment V2 continuation is disabled while status is paused.")
+		expect(text).not.toContain("Persistent objective continuation is enabled")
+		expect(text).toContain("Persistent objective continuation is disabled while status is paused.")
 	})
 })

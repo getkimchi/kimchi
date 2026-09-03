@@ -2,6 +2,7 @@ import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
 import { isHarnessSteer } from "../steer-marker.js"
 import {
+	ASSISTANT_OUTPUT_WITHHELD,
 	brandUnmarkedSteers,
 	ContinuationNudge,
 	DONE_SIGNAL,
@@ -569,6 +570,12 @@ describe("EmptyTurnNudge", () => {
 	it("does not nudge on a text-only turn", () => {
 		const guard = new EmptyTurnNudge()
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("does not nudge output intentionally withheld by another extension", () => {
+		const guard = new EmptyTurnNudge()
+		const withheld = { ...emptyMessage, [ASSISTANT_OUTPUT_WITHHELD]: true }
+		expect(guard.evaluateTurn(withheld)).toBe(false)
 	})
 
 	it("resets tracking after two nudges", () => {

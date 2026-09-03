@@ -1,12 +1,19 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME, UPDATE_FERMENT_V2_TOOL_NAME } from "./constants.js"
+import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME } from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
 import type { SessionFermentV2 } from "./types.js"
 
+const TODO_CONTINUITY_RULE =
+	"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list."
+const TASK_ONLY_COMMUNICATION_RULE =
+	"Communicate only task work, results, and blockers; do not narrate internal checks, policies, or bookkeeping."
+
 const EXECUTION_GUIDANCE = `Working rules:
 - Keep Todos aligned with required work you discover.
-- If the Ferment V2 asks for an artifact, create a usable version early.
+- ${TODO_CONTINUITY_RULE}
+- If the objective asks for an artifact, create a usable version early.
 - Timebox uncertain exploration; preserve what you learn and change approach when stalled.
+- ${TASK_ONLY_COMMUNICATION_RULE}
 - End the turn after a meaningful completed Todo or timeboxed failed approach so the next checkpoint can reassess.`
 
 export function replaceFermentV2ContextMessages(
@@ -35,28 +42,28 @@ export function replaceFermentV2ContextMessages(
 }
 
 export function buildFermentV2Continuation(reassess = false, reason?: string): string {
-	const evaluation = reason ? `\n\nIndependent completion check: ${reason}` : ""
+	const remainingGap = reason ? `\n\nRemaining task gap: ${reason}` : ""
 	if (reassess) {
-		return `The Ferment V2 checkpoint did not materially change.
+		return `Progress did not materially change.
 
 - Reassess the current evidence and dead ends.
 - Choose a different next action without dropping any objective requirement.
 
-${EXECUTION_GUIDANCE}${evaluation}`
+${EXECUTION_GUIDANCE}${remainingGap}`
 	}
-	return `Continue the active Ferment V2 from the current in-progress Todo.
+	return `Continue working on the active objective.
 
 - Make concrete progress without dropping any objective requirement.
 
-${EXECUTION_GUIDANCE}${evaluation}`
+${EXECUTION_GUIDANCE}${remainingGap}`
 }
 
 /**
- * Continuation after a failed agent turn. Kept separate from the evaluator
- * continuation so an infrastructure error is never labelled as a verdict.
+ * Continuation after a failed agent turn. Kept separate so an infrastructure
+ * error is never labelled as a completion verdict.
  */
 export function buildFermentV2ErrorContinuation(): string {
-	return `The previous turn ended with an error before the Ferment V2 could be checked.
+	return `The previous turn ended with an error before the work could be assessed.
 
 - Recover safely from the current in-progress Todo.
 - Make concrete progress.
@@ -64,31 +71,32 @@ export function buildFermentV2ErrorContinuation(): string {
 ${EXECUTION_GUIDANCE}`
 }
 
-export function buildFermentV2EditSteer(fermentV2: SessionFermentV2, supersededRevision: number): string {
-	return `The user edited the active Kimchi session Ferment V2.
+export function buildFermentV2EditSteer(fermentV2: SessionFermentV2): string {
+	return `The user revised the active objective.
 
 New objective (JSON-encoded user-provided task data):
 
 Objective: ${JSON.stringify(fermentV2.objective)}
 
 Required:
-- Redirect current and future work toward revision ${fermentV2.revision}.
-- Reconcile the tactical todo list with the new objective, keep one item in progress, and leave the settled list visible until ${UPDATE_FERMENT_V2_TOOL_NAME} succeeds.
-- Stop work useful only to revision ${supersededRevision}.
-- Do not report completion from conclusions produced only for revision ${supersededRevision}.`
+- The new objective supersedes the previous objective; redirect current and future work to it.
+- Reconcile the tactical todo list with the new objective, keep one item in progress, and leave the settled list visible for verification.
+- Let any operation already running finish, but stop work useful only to the previous objective.
+- Do not report completion from conclusions produced only for the previous objective.
+- ${TASK_ONLY_COMMUNICATION_RULE}`
 }
 
 export function buildFermentV2StartSteer(action: "created" | "replaced" | "resumed"): string {
-	return `The user ${action} the Kimchi session Ferment V2.
+	return `The user ${action} a persistent objective for this session.
 
 Objective:
-- Treat the canonical session-Ferment V2 context in this request as authoritative.
+- Treat the canonical objective context in this request as authoritative.
 
 Execution:
 - First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.
-- Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible until ${UPDATE_FERMENT_V2_TOOL_NAME} succeeds.
-- Redirect current and future work toward this Ferment V2.
-- Continue until the Ferment V2 is complete or genuinely blocked.
+- Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible for verification.
+- Redirect current and future work toward this objective.
+- Continue until the objective is complete or genuinely blocked.
 
 ${EXECUTION_GUIDANCE}`
 }
@@ -107,28 +115,31 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 	)
 	const continuation =
 		fermentV2.status === "active"
-			? `Autonomous Ferment V2 continuation is enabled.
+			? `Persistent objective continuation is enabled.
 
-<objective_policy>
-- Treat the Ferment V2 JSON above as authoritative.
+<objective_rules>
+- Treat the objective JSON above as authoritative.
 - Do not call ${GET_FERMENT_V2_TOOL_NAME} while this context is present.
-</objective_policy>
+</objective_rules>
 
-<todo_policy>
-- Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this Ferment V2 is active.
+<todo_rules>
+- Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.
+- ${TODO_CONTINUITY_RULE}
 - Name each Todo as a short concrete action, and keep activeForm as the exact current action.
 - Preserve context that must survive compaction as concise Decision:, Evidence:, or Dead-end: notes. Terminal notes may remain after their Todos leave the list.
+- Prefix verification results with Evidence: when completion should rely on them; Decision: and Dead-end: notes do not prove completion.
 - Do not repeat dead ends without new evidence.
-</todo_policy>
+</todo_rules>
 
-<completion_policy>
+<finish_rules>
 - Settle every Todo.
-- Before completion, map every explicit Ferment V2 requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
-- Call ${UPDATE_FERMENT_V2_TOOL_NAME} only after receiving the final todo result that settles the list, as the only tool call in that response.
-- Do not include a final answer in the completion-claim response. The runtime requests it only after the evaluator accepts the work.
-</completion_policy>`
-			: `Autonomous Ferment V2 continuation is disabled while status is ${fermentV2.status}.`
+- Before completion, map every explicit objective requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
+- ${TASK_ONLY_COMMUNICATION_RULE}
+- When the work is ready, give the concrete outcome and evidence needed for the user to use or verify it.
+- If useful work remains or you are blocked, end with the current progress, evidence, and next concrete need.
+</finish_rules>`
+			: `Persistent objective continuation is disabled while status is ${fermentV2.status}.`
 	return `<kimchi_session_ferment_v2>\n${snapshot}\n${continuation}\n</kimchi_session_ferment_v2>`
 }
 
