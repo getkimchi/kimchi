@@ -168,12 +168,8 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("keeps an actionable blocker after removing evaluator framing", () => {
-		expect(
-			parseFermentV2EvaluatorOutput(
-				'{"verdict":"impossible","reason":"The evaluator reports the GitHub token is missing."}',
-			),
-		).toEqual({
+	it("keeps an actionable impossible reason", () => {
+		expect(parseFermentV2EvaluatorOutput('{"verdict":"impossible","reason":"The GitHub token is missing."}')).toEqual({
 			verdict: "impossible",
 			reason: "The GitHub token is missing.",
 		})
@@ -187,6 +183,17 @@ describe("Ferment V2 evaluator", () => {
 		).toMatchObject({
 			verdict: "continue",
 			reason: "Ferment V2 final delivery still fails on stream abort.",
+		})
+	})
+
+	it("keeps task language that happens to mention a completion check", () => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				'{"verdict":"continue","reason":"Run the completion check in the CLI and verify its output."}',
+			),
+		).toMatchObject({
+			verdict: "continue",
+			reason: "Run the completion check in the CLI and verify its output.",
 		})
 	})
 
@@ -215,7 +222,12 @@ describe("Ferment V2 evaluator", () => {
 			systemPrompt: expect.stringContaining("Only tool results and lessons labelled evidence"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
-			systemPrompt: expect.stringContaining("final answer is generated only after a met verdict"),
+			systemPrompt: expect.stringContaining(
+				"Mark final-response wording, formatting, and delivery constraints as kind=final_answer.",
+			),
+		})
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining("set candidateRef to last_assistant"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
 			systemPrompt: expect.stringContaining("<evidence_policy>"),
@@ -310,6 +322,80 @@ describe("Ferment V2 evaluator", () => {
 				evaluatorContext(),
 			),
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
+	})
+
+	it("accepts a final-answer check without tool evidence", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","evidence":[]}],"reason":"ready"}',
+			),
+		)
+
+		await expect(
+			evaluateFermentV2(
+				{
+					objective: "run tests, then reply exactly OK",
+					messages: [
+						...linkedToolMessages("call-test", "bash", { cmd: "pnpm test" }, "tests passed"),
+						transcriptMessage("assistant", [{ type: "text", text: "OK" }]),
+					],
+					todos: [],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({ verdict: "met", reason: "ready" })
+	})
+
+	it("rejects a final-answer check that is not bound to the proposed answer", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"other","evidence":[]}],"reason":"ready"}',
+			),
+		)
+
+		await expect(
+			evaluateFermentV2(
+				{
+					objective: "reply exactly OK",
+					messages: [transcriptMessage("assistant", [{ type: "text", text: "Explanation.\n\nOK" }])],
+					todos: [],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({
+			verdict: "continue",
+			reason: expect.stringContaining("reply exactly OK"),
+		})
+	})
+
+	it("normalizes explanatory evidence citations and omitted Todo IDs", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"tests could be skipped","evidence":["m2 shows the passing test output"]}],"reason":"tests pass"}',
+			),
+		)
+
+		await expect(
+			evaluateFermentV2(
+				{
+					objective: "ship it",
+					messages: linkedToolMessages("call-test", "bash", { cmd: "pnpm test" }, "tests passed"),
+					todos: [],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
+	})
+
+	it("treats a null work-check candidate reference as absent", () => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"evidence":[]}],"reason":"run tests"}',
+			),
+		).toMatchObject({
+			verdict: "continue",
+			checks: [{ kind: "work", requirement: "tests pass", met: false, evidence: [], todoIds: [] }],
+		})
 	})
 
 	it("accepts evidenced objective checks without requiring incidental settled Todos", async () => {
@@ -648,17 +734,66 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("fails closed after one truncated response", async () => {
-		completeMock.mockResolvedValue(assistant("still thinking", { stopReason: "length" }))
+	it("retries one malformed JSON response with a correction turn", async () => {
+		completeMock
+			.mockResolvedValueOnce(
+				assistant(
+					'{"verdict":"met","checks":[{"requirement":"explain feature","met":true,"failureMode":"The answer says "good"","evidence":["m1"]}]}',
+				),
+			)
+			.mockResolvedValueOnce(
+				assistant(
+					'{"verdict":"continue","checks":[{"requirement":"explain feature","met":false,"evidence":[]}],"reason":"explanation missing"}',
+				),
+			)
+
+		await expect(
+			evaluateFermentV2({ objective: "explain it", messages: [], todos: [] }, evaluatorContext()),
+		).resolves.toEqual({
+			verdict: "continue",
+			reason: "Remaining requirement: explain feature.",
+			model: "session/main",
+			usage: {
+				input: 20,
+				output: 10,
+				cacheRead: 4,
+				cacheWrite: 2,
+				totalTokens: 36,
+				costUsd: 0.66,
+			},
+		})
+		expect(completeMock).toHaveBeenCalledTimes(2)
+		expect(completeMock.mock.calls[1]?.[1].messages.at(-1)).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: expect.stringContaining("valid JSON") }],
+		})
+	})
+
+	it("retries one truncated response with a zero thinking budget", async () => {
+		completeMock
+			.mockResolvedValueOnce(assistant("", { stopReason: "length", kind: "thinking" }))
+			.mockResolvedValueOnce(assistant('{"verdict":"continue","reason":"keep working"}'))
 		await expect(
 			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
 		).resolves.toEqual({
-			verdict: "unavailable",
-			reason: "Evaluator session/main response was truncated before it returned a verdict.",
+			verdict: "continue",
+			reason: "keep working",
 			model: "session/main",
-			usage,
+			usage: {
+				input: 20,
+				output: 10,
+				cacheRead: 4,
+				cacheWrite: 2,
+				totalTokens: 36,
+				costUsd: 0.66,
+			},
 		})
-		expect(completeMock).toHaveBeenCalledOnce()
+		expect(completeMock).toHaveBeenCalledTimes(2)
+		expect(completeMock.mock.calls[1]?.[2]).toMatchObject({
+			reasoning: "minimal",
+			maxTokens: 1_024,
+			thinkingBudgets: { minimal: 0 },
+		})
 	})
 
 	it("fails closed without retrying when the call times out", async () => {
@@ -1059,7 +1194,14 @@ function transcriptMessage(
 	content: unknown,
 	extra: Record<string, unknown> = {},
 ): AgentEndEvent["messages"][number] {
-	return { role, content, timestamp: Date.now(), ...extra } as unknown as AgentEndEvent["messages"][number]
+	const normalizedContent =
+		role === "assistant" && typeof content === "string" ? [{ type: "text", text: content }] : content
+	return {
+		role,
+		content: normalizedContent,
+		timestamp: Date.now(),
+		...extra,
+	} as unknown as AgentEndEvent["messages"][number]
 }
 
 function linkedToolMessages(

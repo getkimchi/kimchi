@@ -114,6 +114,26 @@ const FINAL_ANSWER_PROMPT = `The objective is complete and ready for user delive
 
 Give the user only the final answer to the original objective. If the original objective requires exact output, return exactly that output with no preface or summary. Otherwise, start with the outcome. Do not narrate the completion check, control messages, evidence gathering, or your internal process unless directly required by the original objective. Do not call tools.`
 
+function finalAnswerPrompt(evaluatedDraft?: string): string {
+	return evaluatedDraft
+		? `${FINAL_ANSWER_PROMPT}\n\nReturn this evaluated draft verbatim: ${JSON.stringify(evaluatedDraft)}`
+		: FINAL_ANSWER_PROMPT
+}
+
+function latestFinalAnswerDraft(messages: CapturedFermentV2Conversation["messages"]): string | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]
+		if (message?.role !== "assistant" || message.content.some((block) => block.type === "toolCall")) continue
+		const text = message.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("")
+			.trim()
+		if (text) return text
+	}
+	return undefined
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
@@ -318,7 +338,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		pendingContinuation = matchesFermentV2(preservedContinuation, currentFermentV2, currentSessionId)
 			? preservedContinuation
 			: undefined
-		if (isReadyForFinalAnswer(currentFermentV2, currentSessionId)) {
+		if (isReadyForFinalAnswer(currentFermentV2, currentSessionId, ctx.hasUI)) {
 			pendingFinalAnswer = matchesFermentV2(preservedPendingFinalAnswer, currentFermentV2, currentSessionId)
 				? preservedPendingFinalAnswer
 				: undefined
@@ -353,7 +373,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		resolveFermentV2Waiter(currentSessionId, fermentV2.id)
 	}
 
-	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = FERMENT_V2_TOOL_NAMES): boolean {
+	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = [UPDATE_FERMENT_V2_TOOL_NAME]): boolean {
 		try {
 			const active = new Set(pi.getActiveTools())
 			return [...fermentV2ToolNames, ...TODO_TOOL_NAMES].every((name) => active.has(name))
@@ -475,8 +495,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		fermentV2: SessionFermentV2,
 		deliverAs: "steer" | "followUp",
+		evaluatedDraft?: string,
 	): boolean {
-		if (!isReadyForFinalAnswer(fermentV2, currentSessionId)) return false
+		if (!isReadyForFinalAnswer(fermentV2, currentSessionId, ctx.hasUI)) return false
 		if (matchesFermentV2(pendingFinalAnswer, fermentV2, currentSessionId)) return true
 		pendingFinalAnswer = {
 			sessionId: currentSessionId ?? ctx.sessionManager.getSessionId(),
@@ -485,7 +506,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 		const sent = safeSendControl(
 			ctx,
-			FINAL_ANSWER_PROMPT,
+			finalAnswerPrompt(evaluatedDraft),
 			{ source: "evaluation_accepted", fermentV2Id: fermentV2.id, revision: fermentV2.revision },
 			deliverAs,
 		)
@@ -493,7 +514,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return sent
 	}
 
-	function queueFinalAnswerAfterSettled(ctx: ExtensionContext, fermentV2: SessionFermentV2): void {
+	function queueFinalAnswerAfterSettled(
+		ctx: ExtensionContext,
+		fermentV2: SessionFermentV2,
+		evaluatedDraft?: string,
+	): void {
 		const sessionId = currentSessionId
 		if (!sessionId) {
 			releaseFermentV2PromptSummary()
@@ -509,10 +534,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					current?.id !== expected.fermentV2Id ||
 					current.revision !== expected.revision ||
 					current.status !== "active" ||
-					!isReadyForFinalAnswer(current, sessionId)
+					!isReadyForFinalAnswer(current, sessionId, ctx.hasUI)
 				)
 					return
-				if (queueFinalAnswerTurn(ctx, current, "followUp")) {
+				if (queueFinalAnswerTurn(ctx, current, "followUp", evaluatedDraft)) {
 					keepHeldForNextTurn = true
 					return
 				}
@@ -669,14 +694,17 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		)
 	}
 
-	function isReadyForFinalAnswer(fermentV2: SessionFermentV2 | undefined, sessionId: string | undefined): boolean {
+	function isReadyForFinalAnswer(
+		fermentV2: SessionFermentV2 | undefined,
+		sessionId: string | undefined,
+		hasUI: boolean,
+	): boolean {
 		const todoState = matchesFermentV2(todoStateFor, fermentV2, sessionId) ? todoStateFor : undefined
 		return Boolean(
 			fermentV2 &&
 				(fermentV2.status === "active" || fermentV2.status === "paused") &&
 				fermentV2.lastEvaluation?.verdict === "met" &&
-				todoState?.total &&
-				todoState.settledStatus === "complete",
+				(!hasUI || (todoState?.total && todoState.settledStatus === "complete")),
 		)
 	}
 
@@ -946,7 +974,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
-			if (isReadyForFinalAnswer(current, sessionId)) {
+			if (isReadyForFinalAnswer(current, sessionId, ctx.hasUI)) {
 				invalidateContinuation()
 				if (queueFinalAnswerTurn(ctx, current, "steer") && !ctx.hasUI) {
 					terminalWaiter = ensureFermentV2Waiter(sessionId, current.id)
@@ -1156,7 +1184,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const latest = currentFermentV2
 			if (latest?.id !== fermentV2Id || latest.revision !== fermentV2Revision || latest.status !== "active") return
 			if (fermentV2ResumeBlocked(ctx)) return
-			if (isReadyForFinalAnswer(latest, sessionId)) queueFinalAnswerTurn(ctx, latest, "followUp")
+			if (isReadyForFinalAnswer(latest, sessionId, ctx.hasUI)) queueFinalAnswerTurn(ctx, latest, "followUp")
 			else queueFermentV2Turn(ctx, latest, buildFermentV2StartSteer("resumed"), "session_start_resume", "followUp")
 		}, 0)
 		resumeKickTimer.unref()
@@ -1227,9 +1255,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			? pendingBudgetLimitedOutput
 			: undefined
 		assistantMessageTurn = activeTurn ?? budgetLimitedTurn
-		bufferingAssistantText =
-			(fermentV2?.status === "active" || budgetLimitedTurn !== undefined) &&
-			!matchesFermentV2(activeFinalAnswer, fermentV2, currentSessionId)
+		bufferingAssistantText = fermentV2?.status === "active" || budgetLimitedTurn !== undefined
 		if (!bufferingAssistantText) return
 		const todoState = matchesFermentV2(todoStateFor, fermentV2, currentSessionId) ? todoStateFor : undefined
 		if (todoState?.settledStatus === "complete" && ctx.hasUI) {
@@ -1266,8 +1292,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event, ctx) => {
 		bindSession(ctx)
 		if (event.message.role === "assistant" && matchesFermentV2(activeFinalAnswer, currentFermentV2, currentSessionId)) {
-			finalAnswerHasText = event.message.content.some((block) => block.type === "text" && block.text.trim().length > 0)
-			return
+			const content = event.message.content.map((block, index) =>
+				block.type === "text" ? { ...block, text: (bufferedAssistantText?.get(index) ?? block.text).trim() } : block,
+			)
+			finalAnswerHasText = content.some((block) => block.type === "text" && block.text.length > 0)
+			bufferingAssistantText = false
+			bufferedAssistantText = undefined
+			streamedAssistantTextIndices = undefined
+			return { message: { ...event.message, content } }
 		}
 		if (!bufferingAssistantText || event.message.role !== "assistant") return
 		bufferingAssistantText = false
@@ -1550,6 +1582,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				evaluatedAt: now,
 			}
 			const evaluated = recordFermentV2Evaluation(fermentV2, fermentV2.id, fermentV2.revision, evaluation, now)
+			const evaluatedDraft = latestFinalAnswerDraft(conversation.messages)
 			capturedConversation = undefined
 			substantiveToolUseSinceEvaluation = false
 
@@ -1606,7 +1639,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 
 			const todoState = matchesFermentV2(todoStateFor, evaluated, sessionId) ? todoStateFor : undefined
-			if (result.verdict === "met" && todoState?.total && todoState.settledStatus === "complete") {
+			if (
+				result.verdict === "met" &&
+				(!ctx.hasUI || (Boolean(todoState?.total) && todoState?.settledStatus === "complete"))
+			) {
 				const claim = matchesFermentV2(completionClaim, evaluated, sessionId) ? completionClaim : undefined
 				const readyForFinalAnswer = {
 					...evaluated,
@@ -1618,18 +1654,22 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				activeSinceMs = undefined
 				invalidateContinuation()
 				if (queueDuringAgentRun) {
-					if (!queueFinalAnswerTurn(ctx, readyForFinalAnswer, "followUp")) {
+					if (!queueFinalAnswerTurn(ctx, readyForFinalAnswer, "followUp", evaluatedDraft)) {
 						pauseFinalAnswerDelivery(ctx, readyForFinalAnswer)
 					}
 				} else {
-					queueFinalAnswerAfterSettled(ctx, readyForFinalAnswer)
+					queueFinalAnswerAfterSettled(ctx, readyForFinalAnswer, evaluatedDraft)
 				}
 				return
 			}
 
 			// Keep the claim across continue; it remains scoped to this Ferment V2 revision.
-			const continuationReason =
-				result.verdict === "met" ? "Keep a visible, fully completed Todo list before finishing." : result.reason
+			const missingTodoForMet = result.verdict === "met" && !todoState?.total
+			const continuationReason = missingTodoForMet
+				? 'Create a visible Todo list now, mark verified work completed, and record concrete "Evidence: ..." notes before finishing.'
+				: result.verdict === "met"
+					? "Keep a visible, fully completed Todo list before finishing."
+					: result.reason
 			const fingerprint = fermentV2ProgressFingerprint(evaluated, todoState, fermentV2Lessons)
 			const { maxUnchangedContinuations } = getFermentV2Settings()
 			const repeatedGap =
@@ -1638,7 +1678,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				fermentV2.lastEvaluation.reason === result.reason &&
 				fingerprint === startFingerprint
 			const unchanged =
-				repeatedGap || (!hadSubstantiveToolUse && fingerprint === startFingerprint)
+				(missingTodoForMet && fingerprint === startFingerprint) ||
+				repeatedGap ||
+				(!hadSubstantiveToolUse && fingerprint === startFingerprint)
 					? (evaluated.unchangedContinuationTurns ?? 0) + 1
 					: 0
 			// Folded into the single commit below (a no-op if unchanged) rather than committed

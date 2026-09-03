@@ -5,12 +5,15 @@ import type { SessionFermentV2 } from "./types.js"
 
 const TODO_CONTINUITY_RULE =
 	"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list."
+const FINAL_DELIVERY_TODO_RULE =
+	"Track required work and verification in Todos, not the wording, formatting, or delivery of the final answer."
 const TASK_ONLY_COMMUNICATION_RULE =
 	"Communicate only task work, results, and blockers; do not narrate internal checks, policies, or bookkeeping."
 
 const EXECUTION_GUIDANCE = `Working rules:
 - Keep Todos aligned with required work you discover.
 - ${TODO_CONTINUITY_RULE}
+- ${FINAL_DELIVERY_TODO_RULE}
 - If the objective asks for an artifact, create a usable version early.
 - Timebox uncertain exploration; preserve what you learn and change approach when stalled.
 - ${TASK_ONLY_COMMUNICATION_RULE}
@@ -126,6 +129,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.
 - ${TODO_CONTINUITY_RULE}
+- ${FINAL_DELIVERY_TODO_RULE}
 - Name each Todo as a short concrete action, and keep activeForm as the exact current action.
 - Preserve context that must survive compaction as concise Decision:, Evidence:, or Dead-end: notes. Terminal notes may remain after their Todos leave the list.
 - Prefix verification results with Evidence: when completion should rely on them; Decision: and Dead-end: notes do not prove completion.

@@ -45,6 +45,7 @@ Persistent objective continuation is enabled.
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.
 - If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list.
+- Track required work and verification in Todos, not the wording, formatting, or delivery of the final answer.
 - Name each Todo as a short concrete action, and keep activeForm as the exact current action.
 - Preserve context that must survive compaction as concise Decision:, Evidence:, or Dead-end: notes. Terminal notes may remain after their Todos leave the list.
 - Prefix verification results with Evidence: when completion should rely on them; Decision: and Dead-end: notes do not prove completion.
@@ -91,6 +92,9 @@ Persistent objective continuation is enabled.
 			"Remaining task gap: More verification is required.",
 		)
 		expect(buildFermentV2Continuation()).toContain("without dropping any objective requirement")
+		expect(buildFermentV2Continuation()).toContain(
+			"Track required work and verification in Todos, not the wording, formatting, or delivery of the final answer.",
+		)
 	})
 
 	it("keeps controller mechanics out of model-facing prose", () => {

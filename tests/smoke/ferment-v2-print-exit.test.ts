@@ -16,6 +16,58 @@ const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
 
+it("recovers from malformed evaluation, completes headless, and delivers the evaluated draft exactly", {
+	timeout: 25_000,
+}, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
+	let fake: FakeOpenAiServer | undefined
+	try {
+		fake = await startFakeOpenAiServer({
+			responses: [
+				{ stream: ["NO_TODO_DRAFT"] },
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: ['{"verdict":"met","checks":[{"failureMode":"quoted "text" breaks JSON"}]}'],
+				},
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [
+						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","evidence":[]}],"reason":"ready"}',
+					],
+				},
+				{ stream: ["\n\nNO_TODO_DRAFT\n"] },
+			],
+		})
+		const homeDir = join(tempRoot, "home")
+		const workDir = join(tempRoot, "work")
+		const sessionPath = join(tempRoot, "main.jsonl")
+		mkdirSync(homeDir, { recursive: true })
+		mkdirSync(workDir, { recursive: true })
+		writeKimchiConfig(homeDir, fake.baseUrl)
+
+		const result = await runFermentV2Print(
+			homeDir,
+			workDir,
+			sessionPath,
+			"/ferment-v2 Reply with exactly NO_TODO_DRAFT and no other characters.",
+		)
+		const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+
+		expect(result.timedOut, failure).toBe(false)
+		expect(result.code, failure).toBe(0)
+		expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
+		expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
+		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(4)
+		expect(JSON.stringify(fake.requests.at(-2)?.body), failure).toContain("previous response was not valid JSON")
+		expect(JSON.stringify(fake.requests.at(-1)?.body), failure).toContain(
+			'Return this evaluated draft verbatim: \\"NO_TODO_DRAFT\\"',
+		)
+	} finally {
+		await fake?.stop().catch(() => {})
+		rmSync(tempRoot, { recursive: true, force: true })
+	}
+})
+
 it("keeps --print alive across continue and exits only after Ferment V2 evaluates met", {
 	timeout: 25_000,
 }, async () => {

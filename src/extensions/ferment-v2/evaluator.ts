@@ -1,4 +1,4 @@
-import type { Api, Model, Usage } from "@earendil-works/pi-ai"
+import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -14,8 +14,6 @@ import type { FermentV2EvaluatorUsage } from "./types.js"
 export const MAX_TRANSCRIPT_CHARS = 16_000
 export const MAX_TODO_STATE_CHARS = 8_000
 const MAX_REASON_CHARS = 1_000
-const INTERNAL_REASON_PATTERN =
-	/\b(?:the evaluator|evaluator (?:wants|needs|requires|says|found|reports|returned|rejected|accepted)|(?:met|continue|impossible) verdict|completion (?:policy|claim|check)|independent completion check|update_ferment_v2)\b/i
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
@@ -35,13 +33,15 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
  */
 const REASONING_MAX_TOKENS = 4_096
 const PLAIN_MAX_TOKENS = 1_024
+const INVALID_JSON_RETRY_PROMPT =
+	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and do not copy the proposed answer into the response."
 
 const EVALUATOR_SYSTEM_PROMPT = `<ferment_v2_evaluator>
 You independently decide whether a persistent coding Ferment V2 should continue.
 
 <output_contract>
 - Return exactly one JSON object and no markdown:
-{"verdict":"continue|met|impossible","checks":[{"requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
+{"verdict":"continue|met|impossible","checks":[{"kind":"work|final_answer","requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","candidateRef":"last_assistant","evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
 - Write reason as a task-facing next action or missing evidence; never mention the evaluator, verdict, controller, or completion policy.
 </output_contract>
 
@@ -54,7 +54,10 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 <completion_checks>
 - Check each requirement separately.
 - The user-facing final answer is generated only after a met verdict. Do not require it to already appear in the transcript; judge whether the completed work and retained evidence are sufficient to produce it.
-- Treat final-response wording, formatting, and delivery instructions as constraints on that later answer, not as missing work.
+- Mark final-response wording, formatting, and delivery constraints as kind=final_answer. They are checked against the proposed answer and do not require tool evidence or Todo IDs.
+- For final_answer checks, compare the complete last [assistant] entry literally. Do not infer a cleaner answer or treat quoted text inside a longer response as the answer, then set candidateRef to last_assistant.
+- Do not copy the proposed answer into the JSON response. The host rejects a final_answer check with a missing or different candidateRef.
+- Treat the latest assistant prose as a proposed answer: use its substantive result when needed, but ignore its presentation format because final delivery happens later.
 - Include the Todo IDs that substantiate each requirement. Incidental tactical Todos do not need separate checks.
 - Every met check needs a concrete failureMode that the cited evidence challenges.
 - Every met check needs retained evidence. Partial, missing, or ambiguous evidence means continue.
@@ -76,9 +79,11 @@ export type FermentV2EvaluationResult =
 	| { verdict: "unavailable"; reason: string; model?: string; usage?: FermentV2EvaluatorUsage }
 
 interface FermentV2EvaluatorCheck {
+	kind?: "work" | "final_answer"
 	requirement: string
 	met: boolean
 	failureMode?: string
+	candidateRef?: string
 	evidence: string[]
 	todoIds: number[]
 }
@@ -135,32 +140,18 @@ export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2Evalu
 		if (hasChecks && checks === undefined) continue
 		return {
 			verdict: value.verdict,
-			reason: taskFacingReason(value.reason, value.verdict, checks),
+			reason: taskFacingReason(value.reason, checks),
 			...(checks ? { checks } : {}),
 		}
 	}
 	return undefined
 }
 
-function taskFacingReason(
-	reason: string,
-	verdict: FermentV2EvaluatorVerdict,
-	checks: readonly FermentV2EvaluatorCheck[] | undefined,
-): string {
+function taskFacingReason(reason: string, checks: readonly FermentV2EvaluatorCheck[] | undefined): string {
 	const normalized = reason.trim().slice(0, MAX_REASON_CHARS)
-	if (!INTERNAL_REASON_PATTERN.test(normalized)) return normalized
-	const unframed = normalized.replace(
-		/^(?:the\s+)?evaluator\s+(?:wants|needs|requires|says|found|reports|returned|rejected|accepted)(?:\s+that)?\s+/i,
-		"",
-	)
-	if (unframed !== normalized && unframed && !INTERNAL_REASON_PATTERN.test(unframed)) {
-		return `${unframed[0]?.toUpperCase()}${unframed.slice(1)}`
-	}
 	const requirement = checks?.find((check) => !check.met)?.requirement.replace(/[.\s]+$/, "")
-	if (requirement && !INTERNAL_REASON_PATTERN.test(requirement)) return `Remaining requirement: ${requirement}.`
-	if (verdict === "impossible") return "Progress requires unavailable user input or an external change."
-	if (verdict === "met") return "The current evidence covers every objective requirement."
-	return "Continue work on the first unmet objective requirement and gather concrete evidence."
+	if (requirement) return `Remaining requirement: ${requirement}.`
+	return normalized
 }
 
 function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
@@ -169,21 +160,37 @@ function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 	for (const candidate of value) {
 		if (!isRecord(candidate) || typeof candidate.requirement !== "string" || !candidate.requirement.trim())
 			return undefined
-		if (typeof candidate.met !== "boolean" || !Array.isArray(candidate.evidence) || !Array.isArray(candidate.todoIds))
+		if (
+			typeof candidate.met !== "boolean" ||
+			!Array.isArray(candidate.evidence) ||
+			(candidate.kind !== undefined && candidate.kind !== "work" && candidate.kind !== "final_answer") ||
+			(candidate.candidateRef !== undefined &&
+				candidate.candidateRef !== null &&
+				typeof candidate.candidateRef !== "string") ||
+			(candidate.todoIds !== undefined && !Array.isArray(candidate.todoIds))
+		)
 			return undefined
 		if (candidate.evidence.some((evidence) => typeof evidence !== "string" || !evidence.trim())) return undefined
-		if (candidate.todoIds.some((todoId) => !Number.isSafeInteger(todoId) || todoId <= 0)) return undefined
+		const todoIds = candidate.todoIds ?? []
+		if (todoIds.some((todoId) => !Number.isSafeInteger(todoId) || todoId <= 0)) return undefined
 		checks.push({
+			...(candidate.kind ? { kind: candidate.kind } : {}),
 			requirement: candidate.requirement.trim(),
 			met: candidate.met,
 			...(typeof candidate.failureMode === "string" && candidate.failureMode.trim()
 				? { failureMode: candidate.failureMode.trim() }
 				: {}),
-			evidence: candidate.evidence.map((evidence) => evidence.trim()),
-			todoIds: candidate.todoIds,
+			...(typeof candidate.candidateRef === "string" ? { candidateRef: candidate.candidateRef } : {}),
+			evidence: candidate.evidence.map(normalizeEvidenceId),
+			todoIds,
 		})
 	}
 	return checks
+}
+
+function normalizeEvidenceId(evidence: string): string {
+	const normalized = evidence.trim()
+	return normalized.match(/^\[?([ml]\d+)\]?(?:\s|$)/i)?.[1]?.toLowerCase() ?? normalized
 }
 
 /**
@@ -243,7 +250,7 @@ export async function evaluateFermentV2(
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
 		let prompt = `Objective:\n${input.objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
 		if (getRedactionConfig().enabled) prompt = await redactTextOrThrow(prompt)
-		const context = {
+		const context: Context = {
 			systemPrompt: EVALUATOR_SYSTEM_PROMPT,
 			messages: [
 				{
@@ -267,12 +274,13 @@ export async function evaluateFermentV2(
 		evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
 		deadline = AbortSignal.timeout(evaluationTimeoutMs)
 		const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
-		const request = () =>
-			completeSimple(model, context, {
+		const request = (requestContext = context, correcting = false) =>
+			completeSimple(model, requestContext, {
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				reasoning: "minimal",
-				maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
+				maxTokens: correcting ? PLAIN_MAX_TOKENS : model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
+				thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 				samplingParams: isKimchiManagedJsonModeProvider(model.provider)
 					? { response_format: { type: "json_object" } }
 					: undefined,
@@ -281,12 +289,19 @@ export async function evaluateFermentV2(
 		let response = await request()
 		evaluatorSession.appendMessage(response)
 		let usage = toFermentV2EvaluatorUsage(response.usage)
+		const responseText = contentParts(response.content)
 		if (
-			response.stopReason === "aborted" &&
 			!signal.aborted &&
-			!parseFermentV2EvaluatorOutput(contentParts(response.content))
+			!parseFermentV2EvaluatorOutput(responseText) &&
+			(response.stopReason === "aborted" || response.stopReason === "length" || responseText.includes("{"))
 		) {
-			response = await request()
+			const correction = {
+				role: "user" as const,
+				content: [{ type: "text" as const, text: INVALID_JSON_RETRY_PROMPT }],
+				timestamp: Date.now(),
+			}
+			evaluatorSession.appendMessage(correction)
+			response = await request({ ...context, messages: [...context.messages, response, correction] }, true)
 			evaluatorSession.appendMessage(response)
 			const retriedUsage = toFermentV2EvaluatorUsage(response.usage)
 			usage = {
@@ -303,7 +318,9 @@ export async function evaluateFermentV2(
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }
 			const unsupportedReason =
-				parsed.verdict === "met" ? unsupportedMetReason(parsed.checks, evidenceIds, input.todos) : undefined
+				parsed.verdict === "met"
+					? unsupportedMetReason(parsed.checks, evidenceIds, input.todos, latestFinalAnswerCandidate(input.messages))
+					: undefined
 			if (unsupportedReason) {
 				return {
 					verdict: "continue",
@@ -359,12 +376,18 @@ function unsupportedMetReason(
 	checks: FermentV2EvaluatorCheck[] | undefined,
 	evidenceIds: ReadonlySet<string>,
 	todos: readonly TodoItem[],
+	proposedAnswer: string | undefined,
 ): string | undefined {
 	if (!checks?.length) return "Map each objective requirement to retained evidence before finishing."
 	const todoIds = new Set(todos.map((todo) => todo.id))
 	for (const check of checks) {
 		const requirement = JSON.stringify(check.requirement.slice(0, 200))
 		if (!check.met) return `Requirement ${requirement} is not met; continue work and verify it.`
+		if (check.kind === "final_answer") {
+			if (proposedAnswer === undefined || check.candidateRef !== "last_assistant")
+				return `Requirement ${requirement} has not been checked against the exact proposed answer; return only the required answer with no extra text.`
+			continue
+		}
 		if (!check.failureMode)
 			return `Requirement ${requirement} does not name the plausible failure mode ruled out by its evidence; inspect the risk and verify it.`
 		if (check.evidence.length === 0)
@@ -374,6 +397,19 @@ function unsupportedMetReason(
 		const unknownTodoId = check.todoIds.find((todoId) => !todoIds.has(todoId))
 		if (unknownTodoId !== undefined)
 			return `Requirement ${requirement} cites Todo ${unknownTodoId}, which is not in the current list; reconcile the requirement with the current Todos.`
+	}
+	return undefined
+}
+
+function latestFinalAnswerCandidate(messages: FermentV2EvaluationInput["messages"]): string | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]
+		if (message?.role !== "assistant" || message.content.some((block) => block.type === "toolCall")) continue
+		const text = message.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("")
+		if (text) return text
 	}
 	return undefined
 }
