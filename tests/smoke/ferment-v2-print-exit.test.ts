@@ -203,9 +203,23 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
+		const models = resolveModels([{ ...DEFAULT_MODEL, contextWindow: 262_144, maxTokens: 16_384 }])
 		fake = await startFakeOpenAiServer({
+			models,
 			responses: [
-				{ stream: ["Working until the budget is exhausted."], usage: { prompt_tokens: 7, completion_tokens: 3 } },
+				{
+					toolCalls: [
+						{
+							id: "work-before-budget",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "pwd" }),
+							},
+						},
+					],
+					usage: { prompt_tokens: 7, completion_tokens: 3 },
+				},
+				{ stream: ["UNVERIFIED_POST_BUDGET_OUTPUT"] },
 			],
 		})
 		const homeDir = join(tempRoot, "home")
@@ -213,7 +227,7 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 		const sessionPath = join(tempRoot, "main.jsonl")
 		mkdirSync(homeDir, { recursive: true })
 		mkdirSync(workDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+		writeKimchiConfig(homeDir, fake.baseUrl, models)
 
 		const result = await runFermentV2Print(homeDir, workDir, sessionPath, "/ferment-v2 --tokens 10 implement feature A")
 		const fermentV2Runs = readFermentV2Journal(sessionPath)
@@ -222,6 +236,9 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
 		expect(fermentV2Runs.at(-1), failure).toMatchObject({ status: "budget_limited", tokensUsed: 10 })
+		expect(result.stdout, failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
+		expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
+		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(2)
 		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
 		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("Extension error")
 	} finally {
@@ -388,7 +405,7 @@ function unparseableEvaluatorResponses() {
 	]
 }
 
-function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
+function writeKimchiConfig(homeDir: string, fakeBaseUrl: string, models = resolveModels(undefined)): void {
 	const configDir = join(homeDir, ".config", "kimchi")
 	const harnessDir = join(configDir, "harness")
 	mkdirSync(harnessDir, { recursive: true })
@@ -409,7 +426,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 					apiKey: "fake",
 					api: "openai-completions",
 					authHeader: true,
-					models: resolveModels(undefined).map((model) => ({
+					models: models.map((model) => ({
 						id: model.slug,
 						name: model.displayName,
 						reasoning: model.reasoning,

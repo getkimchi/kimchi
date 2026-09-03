@@ -133,6 +133,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let currentSessionId: string | undefined
 	let pendingContinuation: PendingFermentV2Continuation | undefined
 	let pendingTerminalFeedback: PendingFermentV2Continuation | undefined
+	let pendingBudgetLimitedOutput: PendingFermentV2Continuation | undefined
 	let pendingFinalAnswer: PendingFermentV2Continuation | undefined
 	let activeFinalAnswer: PendingFermentV2Continuation | undefined
 	let finalAnswerHasText = false
@@ -259,6 +260,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		releaseFermentV2PromptSummary()
 		pendingContinuation = undefined
 		pendingTerminalFeedback = undefined
+		pendingBudgetLimitedOutput = undefined
 		clearFinalAnswerDelivery()
 		completionClaim = undefined
 		bufferingAssistantText = false
@@ -1221,9 +1223,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (event.message.role !== "assistant") return
 		hiddenCompletionCandidate = undefined
 		const fermentV2 = currentFermentV2
-		assistantMessageTurn = activeTurn
+		const budgetLimitedTurn = matchesFermentV2(pendingBudgetLimitedOutput, fermentV2, currentSessionId)
+			? pendingBudgetLimitedOutput
+			: undefined
+		assistantMessageTurn = activeTurn ?? budgetLimitedTurn
 		bufferingAssistantText =
-			fermentV2?.status === "active" && !matchesFermentV2(activeFinalAnswer, fermentV2, currentSessionId)
+			(fermentV2?.status === "active" || budgetLimitedTurn !== undefined) &&
+			!matchesFermentV2(activeFinalAnswer, fermentV2, currentSessionId)
 		if (!bufferingAssistantText) return
 		const todoState = matchesFermentV2(todoStateFor, fermentV2, currentSessionId) ? todoStateFor : undefined
 		if (todoState?.settledStatus === "complete" && ctx.hasUI) {
@@ -1268,6 +1274,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const fermentV2 = currentFermentV2
 		const currentTurn = matchesFermentV2(assistantMessageTurn, fermentV2, currentSessionId) ? fermentV2 : undefined
 		const supersededTurn = isSupersededFermentV2(assistantMessageTurn, fermentV2, currentSessionId)
+		const budgetLimitedTurn =
+			fermentV2?.status === "budget_limited" &&
+			matchesFermentV2(pendingBudgetLimitedOutput, fermentV2, currentSessionId)
 		const todoState = matchesFermentV2(todoStateFor, currentTurn, currentSessionId) ? todoStateFor : undefined
 		const claimedComplete = event.message.content.some(
 			(block) =>
@@ -1291,7 +1300,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 			if (ctx.hasUI) releaseEvaluationWorkingIndicator ??= holdWorkingIndicator(ctx)
 		}
-		if (isCandidate || supersededTurn) {
+		if (isCandidate || supersededTurn || budgetLimitedTurn) {
 			bufferedAssistantText = undefined
 			streamedAssistantTextIndices = undefined
 			return {
@@ -1443,6 +1452,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				activeSinceMs = undefined
 				failedTurn = undefined
 				if (reachedBudget) {
+					pendingBudgetLimitedOutput = {
+						sessionId,
+						fermentV2Id: accounted.id,
+						revision: accounted.revision,
+					}
 					invalidateContinuation()
 					ctx.ui.notify(
 						`Ferment V2 stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
@@ -1483,6 +1497,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					invalidateContinuation()
 					ctx.ui.notify("Ferment V2 paused because the agent turn was cancelled.", "warning")
 				} else if (reachedBudget) {
+					pendingBudgetLimitedOutput = {
+						sessionId,
+						fermentV2Id: accounted.id,
+						revision: accounted.revision,
+					}
 					invalidateContinuation()
 					ctx.ui.notify(
 						`Ferment V2 stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
@@ -1563,6 +1582,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", async (_event, ctx) => {
 		const sessionId = bindSession(ctx)
 		const capturedFermentV2 = currentFermentV2
+		pendingBudgetLimitedOutput = undefined
 		const finalAnswer = activeFinalAnswer
 		if (capturedFermentV2 && finalAnswer && matchesFermentV2(finalAnswer, capturedFermentV2, sessionId)) {
 			const delivered = finalAnswerHasText && finalAnswerInterruption === undefined

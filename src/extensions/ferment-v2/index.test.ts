@@ -323,6 +323,43 @@ describe("Ferment V2 extension", () => {
 		expect(providerContext).not.toContain('"thinking":"","redacted":true')
 	})
 
+	it("withholds trailing text after the current run reaches its token budget", async () => {
+		await harness.command("--tokens 100 ship feature A")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const claim = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "claim-before-budget",
+					name: UPDATE_FERMENT_V2_TOOL_NAME,
+					arguments: { status: "complete", completion_confidence: "proven" },
+				},
+			],
+			stopReason: "toolUse",
+			usage: { input: 80, output: 20 },
+			timestamp: Date.now(),
+		}
+		await harness.fire("message_start", { type: "message_start", message: claim })
+		await harness.fire("message_end", { type: "message_end", message: claim })
+		await harness.fire("turn_end", terminalTurn("stop", { input: 80, output: 20 }))
+		expect(harness.currentFermentV2()?.status).toBe("budget_limited")
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		const trailing = {
+			role: "assistant",
+			content: [{ type: "text", text: "unverified post-budget output" }],
+			stopReason: "stop",
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+		await harness.fire("message_start", { type: "message_start", message: trailing })
+		const ended = await harness.fire("message_end", { type: "message_end", message: trailing })
+
+		expect(trailing.content).toEqual([{ type: "text", text: "" }])
+		expect(ended).toEqual({ message: expect.objectContaining({ content: [] }) })
+	})
+
 	it("keeps progress visible when settled Todos precede an ordinary tool call", async () => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
