@@ -411,6 +411,7 @@ export class AgentManager {
 		} catch {
 			// Not a git repo or no origin — proceed without git details.
 			gitDetails = undefined
+			gitCredential = undefined
 		}
 
 		// Create the adapter before calling runRemoteAgent so it's available
