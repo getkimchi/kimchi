@@ -18,7 +18,6 @@ import {
 	guidelinesFor,
 	ORCHESTRATOR_INTRO,
 	SINGLE_INTRO,
-	toolDescriptionFor,
 } from "./spicy-prompts.js"
 import type { PromptVariant } from "./types.js"
 
@@ -39,7 +38,6 @@ export const SPICY: PromptVariant = {
 	guidelines: guidelinesFor,
 	factualAccuracy: null,
 	skillsTransform: dropSuperpowers,
-	toolDescription: toolDescriptionFor,
 	rewriteBlock: blockRewriter,
 	suppressBashToolGuard: true,
 	suppressExplorationGuard: true,
@@ -75,6 +73,4 @@ export {
 	SINGLE_INTRO,
 	SPICY_COMMIT_ATTRIBUTION,
 	TODOS_BLOCK,
-	TOOL_DESCRIPTIONS,
-	toolDescriptionFor,
 } from "./spicy-prompts.js"

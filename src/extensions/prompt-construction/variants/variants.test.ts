@@ -150,38 +150,6 @@ describe("resolvePromptVariant", () => {
 // ---------------------------------------------------------------------------
 
 describe("SPICY descriptor", () => {
-	describe("toolDescription", () => {
-		it("rewrites the 'read' tool description to mention cat/head/tail preference", () => {
-			if (!SPICY.toolDescription) throw new Error("toolDescription not defined on SPICY")
-			const result = SPICY.toolDescription({ name: "read", description: "ORIGINAL" })
-			expect(result).toBeDefined()
-			expect(result).toContain("cat/head/tail")
-		})
-
-		it("rewrites the 'edit' tool to mention exact-text and unique match constraints", () => {
-			if (!SPICY.toolDescription) throw new Error("toolDescription not defined on SPICY")
-			const result = SPICY.toolDescription({ name: "edit", description: "ORIGINAL" })
-			expect(result).toBeDefined()
-			expect(result).toMatch(/exact.text/i)
-		})
-
-		it("returns undefined for an unknown tool name, leaving description unchanged", () => {
-			if (!SPICY.toolDescription) throw new Error("toolDescription not defined on SPICY")
-			const result = SPICY.toolDescription({ name: "unknowntool", description: "ORIGINAL" })
-			expect(result).toBeUndefined()
-		})
-
-		it("returns a string (not undefined) for all registered tools", () => {
-			if (!SPICY.toolDescription) throw new Error("toolDescription not defined on SPICY")
-			const registeredTools = ["read", "write", "edit", "bash", "grep", "find", "ls", "web_search"]
-			for (const name of registeredTools) {
-				const result = SPICY.toolDescription({ name, description: "ORIGINAL" })
-				expect(result, `Expected a description for tool '${name}'`).toBeDefined()
-				expect(typeof result).toBe("string")
-			}
-		})
-	})
-
 	describe("rewriteBlock", () => {
 		it("rewrites behaviours/rules block to mention bounded tool output", () => {
 			if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
@@ -237,10 +205,6 @@ describe("SPICY descriptor", () => {
 
 	it("skillsTransform is defined", () => {
 		expect(SPICY.skillsTransform).toBeDefined()
-	})
-
-	it("toolDescription is defined", () => {
-		expect(SPICY.toolDescription).toBeDefined()
 	})
 
 	it("rewriteBlock is defined", () => {

@@ -11,7 +11,7 @@
 
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { AgentConfig } from "../../agents/personas/types.js"
-import type { PromptMode, ToolInfo } from "../system-prompt.js"
+import type { PromptMode } from "../system-prompt.js"
 import type { SuppressibleSection } from "../system-prompt-blocks.js"
 
 /** A rendered system-prompt block as seen by a variant's rewriter. */
@@ -45,18 +45,6 @@ export interface PromptVariant {
 
 	/** Replace the Factual Accuracy section body. `null` omits the section. */
 	factualAccuracy?: string | null
-
-	/**
-	 * Rewrite a tool's description. Return a replacement string, or `undefined`
-	 * to leave the tool's stock description unchanged. The tool name is never
-	 * changed (names are part of the API surface).
-	 *
-	 * Not applied by the prompt assembler: the `## Available Tools` section lists
-	 * tool names only, and each description reaches the model through the
-	 * function-calling payload instead. The field is kept so a variant's intended
-	 * wording stays with the variant until a hook on that payload exists.
-	 */
-	toolDescription?: (tool: ToolInfo) => string | undefined
 
 	/**
 	 * Transform the skill list before it is formatted into the Skills section.

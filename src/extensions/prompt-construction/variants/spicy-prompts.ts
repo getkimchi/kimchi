@@ -7,19 +7,8 @@
 
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { AgentConfig } from "../../agents/personas/types.js"
-import {
-	CORE_GUIDELINES_COMMIT_TRAILER_LINE,
-	type PromptMode,
-	resolveCoreGuidelines,
-	type ToolInfo,
-} from "../system-prompt.js"
+import { CORE_GUIDELINES_COMMIT_TRAILER_LINE, type PromptMode, resolveCoreGuidelines } from "../system-prompt.js"
 import type { VariantBlock } from "./types.js"
-
-// ---------------------------------------------------------------------------
-// Provider prefix for Kimchi-hosted models
-// ---------------------------------------------------------------------------
-
-export const M = "kimchi-dev"
 
 // ---------------------------------------------------------------------------
 // Discipline nudge text
@@ -185,24 +174,6 @@ export const ORCHESTRATOR_INTRO =
 	"You are Kimchi, an interactive command-line coding agent operating as an orchestrator. You plan the work, then coordinate a team of specialised subagents to carry it out, using the tools listed under **Available Tools**: use only those, and never invent tool names."
 
 // ---------------------------------------------------------------------------
-// Reworded tool descriptions
-// ---------------------------------------------------------------------------
-
-/** Reworded core tool descriptions. Constraints preserved verbatim in meaning. */
-export const TOOL_DESCRIPTIONS: Record<string, string> = {
-	read: "Read a file's contents. Handles text and images (jpg/png/gif/webp); images return as attachments. Text output is capped at 2000 lines or 50KB, whichever comes first; for longer files pass `offset`/`limit` and keep reading from where you stopped. Prefer this over cat/head/tail.",
-	write:
-		"Create or overwrite a file with the given contents; missing parent directories are created for you. This replaces the entire file; to change part of an existing file, use `edit` instead.",
-	edit: "Make targeted changes to one file by exact-text replacement. Each `oldText` must match exactly one spot in the current file and must not overlap another edit in the same call; all matches are taken against the original file, not applied one after another. Merge nearby changes into a single edit instead of emitting overlapping ones, and don't pad an edit with large unchanged regions. Read the file first so your `oldText` is accurate.",
-	bash: "Run a bash command in the working directory and get back stdout and stderr. Output is capped at the last 2000 lines or 50KB (the full output is saved to a temp file when truncated); a non-zero exit is reported as an error. Pass `timeout` in seconds for anything that might hang. Use the dedicated file tools instead of cat/sed/echo, and `find`/`grep` instead of their bash forms.",
-	grep: "Search file contents for a pattern, returning matching lines with paths and line numbers. Honors .gitignore; capped at 100 matches or 50KB (raise the match cap with `limit`) with long lines clipped to 1024 chars. Narrow with `glob`, `ignoreCase`, `literal`, and `context`. Locate matches first, then read around them; don't shell out to grep.",
-	find: "Find files by glob pattern (e.g. `**/*.ts`), returning paths relative to the search root. Honors .gitignore; capped at 1000 results (raise with `limit`). Use this rather than bash find/ls to locate files.",
-	ls: "List a directory's entries, sorted, with a trailing `/` on directories and dotfiles included. Capped at 500 entries. Good for a quick look; use `find`/`grep` to actually search.",
-	web_search:
-		"Search the web for current information beyond your training. Prefer primary sources (official docs, papers) and corroborate important claims across sources; include links for anything you cite. Use `recency` for time-sensitive queries, and raise `search_depth` to deep only for hard queries (slower and costlier). `limit` and `max_content_chars` tune how much is returned.",
-}
-
-// ---------------------------------------------------------------------------
 // Block rewrites
 // ---------------------------------------------------------------------------
 
@@ -347,10 +318,6 @@ const SUPERPOWERS_PATH = /[\\/]superpowers[\\/]/
  */
 export function dropSuperpowers(skills: readonly Skill[]): readonly Skill[] {
 	return skills.filter((s) => !SUPERPOWERS_PATH.test(s.filePath ?? "") && !SUPERPOWERS_PATH.test(s.baseDir ?? ""))
-}
-
-export function toolDescriptionFor(tool: ToolInfo): string | undefined {
-	return TOOL_DESCRIPTIONS[tool.name]
 }
 
 export function blockRewriter(block: VariantBlock, mode: PromptMode = "single"): string | undefined {
