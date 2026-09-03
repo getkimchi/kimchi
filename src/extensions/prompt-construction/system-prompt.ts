@@ -71,23 +71,16 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId, variantName } = options
 
 	const variant = resolvePromptVariant(variantName)
-	const effectiveMode = variant.forceMode ?? mode
-
-	const effectiveTools = effectiveMode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
+	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 	const toolNames = new Set(effectiveTools.map((tool) => tool.name))
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	// The mode filter runs first so a variant's transform sees the same skill
-	// list the stock prompt would have used.
-	const filteredSkills = filterSkillsForMode(skills, effectiveMode)
-	const effectiveSkills = variant.skillsTransform
-		? (variant.skillsTransform(filteredSkills ?? []) ?? filteredSkills)
-		: filteredSkills
+	const effectiveSkills = filterSkillsForMode(skills, mode)
 
 	const orchestrationSection = resolveModeInstructions({
-		mode: effectiveMode,
+		mode,
 		currentModelId,
 		registry,
 		roles,
@@ -96,47 +89,24 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		singleModeDelegation: variant.singleModeDelegation,
 	})
 
-	let blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode: effectiveMode }) : []
-
-	if (variant.rewriteBlock) {
-		blocks = blocks
-			.map((block) => {
-				const rewritten = variant.rewriteBlock?.(
-					{ owner: block.owner, id: block.id, content: block.content },
-					effectiveMode,
-				)
-				if (rewritten === null) return null
-				if (typeof rewritten === "string") return { ...block, content: rewritten }
-				return block
-			})
-			.filter((block): block is NonNullable<typeof block> => block !== null)
-	}
+	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
 		for (const section of block.suppress) suppressed.add(section)
 	}
-	if (variant.suppress) {
-		for (const section of variant.suppress) suppressed.add(section)
-	}
 
-	const intro = variant.intro
-		? variant.intro(effectiveMode)
-		: effectiveMode === "orchestrator"
-			? ORCHESTRATOR_INTRO
-			: SINGLE_INTRO
-	const documentsSection: string | null = variant.documents !== undefined ? variant.documents : DOCUMENTS_SECTION
+	const intro = variant.intro ? variant.intro(mode) : mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
 	const guidelines =
 		typeof variant.guidelines === "function"
-			? variant.guidelines(effectiveMode)
-			: (variant.guidelines ?? resolveCoreGuidelines(effectiveMode))
+			? variant.guidelines(mode)
+			: (variant.guidelines ?? resolveCoreGuidelines(mode))
 	const factualAccuracy: string | null =
 		variant.factualAccuracy !== undefined ? variant.factualAccuracy : FACTUAL_ACCURACY
 
 	return buildPrompt({
-		mode: effectiveMode,
+		mode,
 		intro,
-		documentsSection,
 		guidelines,
 		factualAccuracy,
 		toolNames,
@@ -160,7 +130,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 interface PromptParts {
 	mode: PromptMode
 	intro: string
-	documentsSection: string | null
 	guidelines: string
 	factualAccuracy: string | null
 	toolNames: ReadonlySet<string>
@@ -512,10 +481,8 @@ function buildPrompt(parts: PromptParts): string {
 		sections.push(`## Factual Accuracy\n\n${parts.factualAccuracy}`)
 	}
 
-	// 5. Documents (variant-aware; with no variant this is DOCUMENTS_SECTION)
-	if (parts.documentsSection !== null) {
-		sections.push(`## Documents\n\n${parts.documentsSection}`)
-	}
+	// 5. Documents
+	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))

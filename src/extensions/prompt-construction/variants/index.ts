@@ -17,7 +17,7 @@ import { SPICY } from "./spicy.js"
 import type { PromptVariant } from "./types.js"
 
 export { DEFAULT_VARIANT } from "./default.js"
-export type { PromptVariant, VariantBlock } from "./types.js"
+export type { PromptVariant } from "./types.js"
 
 export const PROMPT_VARIANT_ENV = "KIMCHI_PROMPT_VARIANT"
 

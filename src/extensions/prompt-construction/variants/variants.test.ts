@@ -167,18 +167,6 @@ describe("resolvePromptVariant", () => {
 // ---------------------------------------------------------------------------
 
 describe("SPICY descriptor", () => {
-	it("forceMode is undefined (no forced mode, rides the runtime)", () => {
-		expect(SPICY.forceMode).toBeUndefined()
-	})
-
-	it("documents is undefined (keeps stock Documents section)", () => {
-		expect(SPICY.documents).toBeUndefined()
-	})
-
-	it("suppress is undefined (must NOT suppress orchestration/phase-guidelines)", () => {
-		expect(SPICY.suppress).toBeUndefined()
-	})
-
 	it("sets no suppress* field at all, so nothing is switched off for spicy sessions", () => {
 		expect(Object.keys(SPICY).filter((key) => key.startsWith("suppress"))).toEqual([])
 	})

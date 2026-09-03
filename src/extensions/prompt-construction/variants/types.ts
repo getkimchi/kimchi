@@ -9,17 +9,8 @@
  * a variant change only what it cares about.
  */
 
-import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { AgentConfig } from "../../agents/personas/types.js"
 import type { PromptMode } from "../system-prompt.js"
-import type { SuppressibleSection } from "../system-prompt-blocks.js"
-
-/** A rendered system-prompt block as seen by a variant's rewriter. */
-export interface VariantBlock {
-	owner: string
-	id: string
-	content: string
-}
 
 export interface PromptVariant {
 	/** Stable identifier, e.g. "spicy". Matches the env var value. */
@@ -28,17 +19,8 @@ export interface PromptVariant {
 	/** Human-facing label shown next to the logo, falls back to name. */
 	tagline?: string
 
-	/**
-	 * Force the assembly mode regardless of the caller's mode. Omit to keep
-	 * the caller's mode (runtime-driven variants do not set this).
-	 */
-	forceMode?: PromptMode
-
-	/** Replace the intro line. Receives the effective (post-forceMode) mode. */
+	/** Replace the intro line. Receives the assembly mode. */
 	intro?: (mode: PromptMode) => string
-
-	/** Replace the Documents section body. `null` omits the section entirely. */
-	documents?: string | null
 
 	/** Replace the Guidelines section body. */
 	guidelines?: string | ((mode: PromptMode) => string)
@@ -62,23 +44,6 @@ export interface PromptVariant {
 	 * including which model a spawned subagent runs on, is untouched.
 	 */
 	singleModeDelegation?: string
-
-	/**
-	 * Transform the skill list before it is formatted into the Skills section.
-	 * Return a filtered/modified array, or `undefined` to leave the list
-	 * unchanged. Runs before formatSkills, so it shapes the entire section.
-	 */
-	skillsTransform?: (skills: readonly Skill[]) => readonly Skill[] | undefined
-
-	/**
-	 * Rewrite a rendered system-prompt block (behaviours, todos, ...). Return a
-	 * replacement string, `null` to drop the block, or `undefined` to keep it
-	 * unchanged. Match on `owner`+`id`.
-	 */
-	rewriteBlock?: (block: VariantBlock, mode?: PromptMode) => string | null | undefined
-
-	/** Extra sections to suppress, merged with block-declared suppressions. */
-	suppress?: readonly SuppressibleSection[]
 
 	/**
 	 * Extra guidance prepended to the ferment planner supplement. Set it when
