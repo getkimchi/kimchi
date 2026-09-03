@@ -26,6 +26,7 @@ const lowerCaseIndex = new Map<string, string>()
  *   agent configs (for example appending prompt text) before they are registered.
  *   It receives the pristine DEFAULT_AGENTS on every call, so repeated registration
  *   cannot stack its output. User/project custom agents are never passed through it.
+ *   When it is omitted, the default agents are registered untouched.
  */
 export function registerAgents(
 	userAgents: Map<string, AgentConfig>,

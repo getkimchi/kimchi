@@ -59,7 +59,10 @@ export interface SystemPromptBuildOptions {
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
 	sessionId?: string
-	/** Explicit prompt-variant name. Falls back to the KIMCHI_PROMPT_VARIANT env var when omitted. */
+	/** Explicit prompt-variant name. Falls back to the KIMCHI_PROMPT_VARIANT env var when omitted.
+	 *  Production never passes it: the running session resolves its variant from the environment,
+	 *  which is also what every other part of the harness reads. Naming a variant here changes only
+	 *  the prompt this call builds, so it is a test seam for comparing variants side by side. */
 	variantName?: string
 }
 
