@@ -5,7 +5,6 @@
  * spicy variant. spicy.ts is the descriptor that wires them into a PromptVariant.
  */
 
-import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { AgentConfig } from "../../agents/personas/types.js"
 import { CORE_GUIDELINES_COMMIT_TRAILER_LINE, type PromptMode, resolveCoreGuidelines } from "../system-prompt.js"
 import type { VariantBlock } from "./types.js"
@@ -306,19 +305,6 @@ export const AGENT_ROLE_TUNING: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Matches a "superpowers" vendor-pack path segment (cross-platform). */
-const SUPERPOWERS_PATH = /[\\/]superpowers[\\/]/
-
-/**
- * Drop the third-party "superpowers" skill pack. Its skill descriptions are
- * coercive ("MUST use before any creative work", "invoke a skill before ANY
- * response") which over-triggers and confuses weaker upstream models. The user's
- * own harness skills and the context-mode helpers are kept untouched.
- */
-export function dropSuperpowers(skills: readonly Skill[]): readonly Skill[] {
-	return skills.filter((s) => !SUPERPOWERS_PATH.test(s.filePath ?? "") && !SUPERPOWERS_PATH.test(s.baseDir ?? ""))
-}
 
 export function blockRewriter(block: VariantBlock, mode: PromptMode = "single"): string | undefined {
 	if (block.owner === "behaviours" && block.id === "rules")

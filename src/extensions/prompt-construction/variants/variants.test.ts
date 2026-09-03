@@ -6,7 +6,6 @@
  * - buildSystemPrompt with variantName "spicy"
  */
 
-import type { Skill } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	buildSystemPrompt,
@@ -203,10 +202,6 @@ describe("SPICY descriptor", () => {
 		expect(SPICY.factualAccuracy).toBeNull()
 	})
 
-	it("skillsTransform is defined", () => {
-		expect(SPICY.skillsTransform).toBeDefined()
-	})
-
 	it("rewriteBlock is defined", () => {
 		expect(SPICY.rewriteBlock).toBeDefined()
 	})
@@ -364,18 +359,6 @@ describe("buildSystemPrompt: spicy variant", () => {
 		expect(result).not.toContain("ORIGINAL")
 	})
 
-	it("skillsTransform excludes superpowersSkill and includes harnessSkill", () => {
-		const result = buildSystemPrompt({
-			tools: fakeTools,
-			env: testEnv,
-			mode: "orchestrator",
-			skills: [superpowersSkill, harnessSkill],
-			variantName: "spicy",
-		})
-		expect(result).not.toContain(superpowersSkill.filePath)
-		expect(result).toContain(harnessSkill.filePath)
-	})
-
 	it("output does not reference Claude or Anthropic brand names", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
 		expect(result).not.toMatch(/claude|anthropic/i)
@@ -491,92 +474,6 @@ describe("spicy additive guidelines", () => {
 		// would silently no-op and the base trailer would leak into spicy. This
 		// guard fails loudly instead.
 		expect(CORE_GUIDELINES).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
-	})
-})
-
-// ---------------------------------------------------------------------------
-// E) skillsTransform: default variant leaves skills untouched; spicy drops the
-//    superpowers vendor pack
-// ---------------------------------------------------------------------------
-
-/** Minimal Skill stub: only filePath and baseDir are exercised by the filter. */
-function makeSkill(filePath: string, baseDir: string): Skill {
-	return {
-		name: "stub",
-		description: "stub",
-		filePath,
-		baseDir,
-		sourceInfo: { path: filePath, source: "test", scope: "user", origin: "top-level" },
-		disableModelInvocation: false,
-	}
-}
-
-const superpowersSkill = makeSkill(
-	"/home/u/.config/kimchi/vendor/superpowers/skills/brainstorming/SKILL.md",
-	"/home/u/.config/kimchi/vendor/superpowers/skills/brainstorming",
-)
-
-const harnessSkill = makeSkill(
-	"/home/u/.config/kimchi/harness/skills/daily/SKILL.md",
-	"/home/u/.config/kimchi/harness/skills/daily",
-)
-
-const otherSkill = makeSkill(
-	"/home/u/.config/kimchi/harness/skills/jira-create/SKILL.md",
-	"/home/u/.config/kimchi/harness/skills/jira-create",
-)
-
-describe("skillsTransform", () => {
-	it("DEFAULT_VARIANT has no skillsTransform", () => {
-		expect(DEFAULT_VARIANT.skillsTransform).toBeUndefined()
-	})
-
-	it("SPICY defines skillsTransform", () => {
-		expect(SPICY.skillsTransform).toBeDefined()
-	})
-
-	it("spicy skillsTransform removes a skill whose filePath contains /superpowers/", () => {
-		if (!SPICY.skillsTransform) throw new Error("skillsTransform not defined on SPICY")
-		const result = SPICY.skillsTransform([superpowersSkill, harnessSkill])
-		expect(result).not.toContain(superpowersSkill)
-	})
-
-	it("spicy skillsTransform keeps a normal harness skill", () => {
-		if (!SPICY.skillsTransform) throw new Error("skillsTransform not defined on SPICY")
-		const result = SPICY.skillsTransform([superpowersSkill, harnessSkill])
-		expect(result).toContain(harnessSkill)
-	})
-
-	it("spicy skillsTransform keeps a skill with no superpowers in filePath or baseDir", () => {
-		if (!SPICY.skillsTransform) throw new Error("skillsTransform not defined on SPICY")
-		const result = SPICY.skillsTransform([superpowersSkill, otherSkill])
-		expect(result).toContain(otherSkill)
-		expect(result).not.toContain(superpowersSkill)
-	})
-
-	it("spicy skillsTransform filters by baseDir as well as filePath", () => {
-		if (!SPICY.skillsTransform) throw new Error("skillsTransform not defined on SPICY")
-		const skillWithSuperpowersBase = makeSkill("/some/path/SKILL.md", "/home/u/vendor/superpowers/skills/brainstorm")
-		const result = SPICY.skillsTransform([skillWithSuperpowersBase])
-		expect(result).toHaveLength(0)
-	})
-
-	it("default variant passes all skills through; spicy drops superpowers but keeps harness skills", () => {
-		const skills = [superpowersSkill, harnessSkill]
-
-		const defaultResult = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", skills })
-		expect(defaultResult).toContain(superpowersSkill.filePath)
-		expect(defaultResult).toContain(harnessSkill.filePath)
-
-		const spicyResult = buildSystemPrompt({
-			tools: fakeTools,
-			env: testEnv,
-			mode: "single",
-			skills,
-			variantName: "spicy",
-		})
-		expect(spicyResult).not.toContain(superpowersSkill.filePath)
-		expect(spicyResult).toContain(harnessSkill.filePath)
 	})
 })
 
