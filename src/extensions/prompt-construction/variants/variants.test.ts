@@ -200,10 +200,6 @@ describe("SPICY descriptor", () => {
 		expect(SPICY.tagline).toBe("spicy architect")
 	})
 
-	it("suppressExplorationGuard is true", () => {
-		expect(SPICY.suppressExplorationGuard).toBe(true)
-	})
-
 	it("transformAgents is defined", () => {
 		expect(SPICY.transformAgents).toBeDefined()
 	})
@@ -426,20 +422,6 @@ describe("spicy additive guidelines", () => {
 		// would silently no-op and the base trailer would leak into spicy. This
 		// guard fails loudly instead.
 		expect(CORE_GUIDELINES).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
-	})
-})
-
-// ---------------------------------------------------------------------------
-// F) Guard suppression flags
-// ---------------------------------------------------------------------------
-
-describe("guard suppression flags", () => {
-	it("SPICY.suppressExplorationGuard is true", () => {
-		expect(SPICY.suppressExplorationGuard).toBe(true)
-	})
-
-	it("DEFAULT_VARIANT.suppressExplorationGuard is undefined", () => {
-		expect(DEFAULT_VARIANT.suppressExplorationGuard).toBeUndefined()
 	})
 })
 

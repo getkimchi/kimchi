@@ -657,7 +657,7 @@ describe("explorationGuardExtension - warn sendMessage delivery", () => {
 	})
 })
 
-describe("explorationGuardExtension - variant suppression", () => {
+describe("explorationGuardExtension - prompt variants", () => {
 	type Handler = (event: unknown, ctx?: unknown) => unknown
 
 	function createPi() {
@@ -683,51 +683,43 @@ describe("explorationGuardExtension - variant suppression", () => {
 		for (const h of handlers.get("turn_end") ?? []) h({ message: { role: "assistant", stopReason: "stop" } })
 	}
 
-	// The factory calls resolvePromptVariant() at invocation time, so updating the
-	// mock before each call is sufficient - no vi.resetModules() needed.
+	// The guard is part of every session regardless of the active prompt variant:
+	// its stall steers and subagent termination are recovery mechanisms, not
+	// wording choices a variant opts out of.
 
-	it("registers no handlers when variant is v2 (suppressExplorationGuard: true)", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "v2", suppressExplorationGuard: true })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		expect(handlers.get("session_start")).toBeUndefined()
-		expect(handlers.get("turn_start")).toBeUndefined()
-		expect(handlers.get("tool_call")).toBeUndefined()
-		expect(handlers.get("turn_end")).toBeUndefined()
-	})
-
-	it("does not steer on read-only turns when variant is v2", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "v2", suppressExplorationGuard: true })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers, sendMessage } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		driveReadTurn(handlers)
-		expect(sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("registers no handlers when variant is opinionated-v2 (inherits suppressExplorationGuard: true)", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "opinionated-v2", suppressExplorationGuard: true })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		expect(handlers.get("session_start")).toBeUndefined()
-		expect(handlers.get("turn_start")).toBeUndefined()
-		expect(handlers.get("tool_call")).toBeUndefined()
-		expect(handlers.get("turn_end")).toBeUndefined()
-	})
-
-	it("does not steer on read-only turns when variant is opinionated-v2", async () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "opinionated-v2", suppressExplorationGuard: true })
-		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
-		const { pi, handlers, sendMessage } = createPi()
-		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
-		driveReadTurn(handlers)
-		expect(sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("still steers on read-only turns with the default variant", async () => {
+	it("registers handlers with the default variant", async () => {
 		mockResolvePromptVariant.mockReturnValue({ name: "default" })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		expect(handlers.get("session_start")?.length).toBeGreaterThan(0)
+		expect(handlers.get("turn_start")?.length).toBeGreaterThan(0)
+		expect(handlers.get("tool_call")?.length).toBeGreaterThan(0)
+		expect(handlers.get("turn_end")?.length).toBeGreaterThan(0)
+	})
+
+	it("steers on read-only turns with the default variant", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "default" })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers, sendMessage } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		driveReadTurn(handlers)
+		expect(sendMessage).toHaveBeenCalledOnce()
+	})
+
+	it("registers handlers with the spicy variant", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		expect(handlers.get("session_start")?.length).toBeGreaterThan(0)
+		expect(handlers.get("turn_start")?.length).toBeGreaterThan(0)
+		expect(handlers.get("tool_call")?.length).toBeGreaterThan(0)
+		expect(handlers.get("turn_end")?.length).toBeGreaterThan(0)
+	})
+
+	it("steers on read-only turns with the spicy variant", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
 		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
 		const { pi, handlers, sendMessage } = createPi()
 		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })

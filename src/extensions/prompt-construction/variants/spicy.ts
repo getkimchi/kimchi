@@ -35,7 +35,6 @@ export const SPICY: PromptVariant = {
 	intro: (mode: PromptMode) => (mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO),
 	guidelines: guidelinesFor,
 	factualAccuracy: null,
-	suppressExplorationGuard: true,
 	disciplineReminder: {
 		text: disciplineNudgeFor,
 		everyPrompts: 4,

@@ -89,7 +89,4 @@ export interface PromptVariant {
 	 * the default path is byte-identical to today.
 	 */
 	transformAgents?: (agents: readonly AgentConfig[]) => readonly AgentConfig[]
-
-	/** When true, the exploration-guard extension does not register any handlers (entirely inert for this variant). */
-	suppressExplorationGuard?: boolean
 }
