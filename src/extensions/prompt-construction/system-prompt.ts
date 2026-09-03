@@ -364,15 +364,15 @@ export function buildPhaseManagementSection(
 	mode: PromptMode = "single",
 	roles?: ModelRoles,
 ): string {
-	// Token-optimization Phase 2 (P2-2): single-mode agents that cannot call
-	// set_phase never tag phases, so the phase-tagging guidance is inert. When
-	// set_phase is unreachable (e.g. plain --print sessions, where Chunk 7 gates
-	// it out), drop the payload to save ~2,100 est. Tool-independent safety rules
-	// that used to ride this payload (commit trailer, shell timeouts,
-	// non-interactive-command flags) now live in CORE_GUIDELINES, which is always
-	// emitted — so --print still gets them. Interactive single-model sessions keep
-	// set_phase and therefore the full payload. Orchestrator/subagent modes are
-	// unaffected (persona/role phase behaviour applies regardless of the tool).
+	// Single-mode agents that cannot call set_phase never tag phases, so the
+	// phase-tagging guidance is inert. When set_phase is unreachable (e.g. plain
+	// --print sessions, where the print-mode gate suppresses it), drop the
+	// payload to save ~2,100 est. Tool-independent safety rules that used to ride
+	// this payload (commit trailer, shell timeouts, non-interactive-command
+	// flags) now live in CORE_GUIDELINES, which is always emitted — so --print
+	// still gets them. Interactive single-model sessions keep set_phase and
+	// therefore the full payload. Orchestrator/subagent modes are unaffected
+	// (persona/role phase behaviour applies regardless of the tool).
 	if (mode === "single" && !phaseToolReachable) return ""
 	const applicablePhases =
 		mode === "orchestrator"
@@ -460,7 +460,7 @@ function buildPrompt(parts: PromptParts): string {
 
 function formatToolsSection(tools: readonly ToolInfo[]): string {
 	if (tools.length === 0) return "## Available Tools\n\n(No tools available)"
-	// Token-optimization Phase 2 (P2-1): the API request already carries each
+	// The API request already carries each
 	// tool's description in the function-calling payload, so embedding a second
 	// copy here pays ~3,000 est per call for duplicated text. Keep the prompt
 	// section to the discovery surface (names) — the model learns what each

@@ -67,7 +67,7 @@ export interface ContextAssemblyEntry {
 	prefixHash?: string
 	systemPrompt: { chars: number; tokensEstimated: number }
 	components?: ContextAssemblyComponent[]
-	/** Per-`## `-section size table of the assembled prompt (token-optimization Phase 2: P2-3). */
+	/** Per-`## `-section size table of the assembled prompt. */
 	sections?: ContextAssemblySection[]
 	tools?: ContextAssemblyToolSurface[]
 	toolSurface?: { chars: number; tokensEstimated: number }
