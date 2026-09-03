@@ -13,6 +13,7 @@ import * as agentWorkerContext from "../agent-worker-context.js"
 import * as multiModelModule from "../multi-model.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import * as modelRolesModule from "../orchestration/model-roles.js"
+import { getPromptMode, setPromptMode } from "../prompt-mode-cache.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER } from "../router/constants.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../router/state.js"
 import { isHarnessSteer } from "../steer-marker.js"
@@ -819,6 +820,21 @@ describe("deprecated model notification", () => {
 
 		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(2)
+	})
+
+	it("drops the session's recorded prompt mode on session_shutdown", async () => {
+		setupAvailableModels([])
+
+		const { sessionShutdown } = buildExtensionWithHandlers()
+		if (!sessionShutdown) throw new Error("session_shutdown handler not registered")
+
+		const ctx = createContext({ hasUI: false })
+		const sessionId = ctx.sessionManager.getSessionId()
+		setPromptMode(sessionId, "orchestrator")
+
+		await sessionShutdown({}, ctx)
+
+		expect(getPromptMode(sessionId)).toBeUndefined()
 	})
 
 	it("shows fallback message when replacement model is not available", async () => {

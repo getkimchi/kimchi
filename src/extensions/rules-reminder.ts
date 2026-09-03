@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
 import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
-import { getSessionMode } from "./session-mode.js"
+import { getPromptMode } from "./prompt-mode-cache.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export const RULES_REMINDER_TYPE = "rules-reminder"
@@ -23,7 +23,7 @@ export default function rulesReminderExtension(pi: ExtensionAPI): void {
 		// The rules depend on the session's prompt mode, which is recorded when
 		// the prompt is built. Until then the mode is unknown, and staying quiet
 		// beats sending the wrong mode's rules.
-		const mode = getSessionMode(sessionId)
+		const mode = getPromptMode(sessionId)
 		if (!mode) return
 		const text = cfg.text(mode)
 		if (!text) return

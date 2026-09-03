@@ -65,8 +65,8 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { forgetPromptMode, setPromptMode } from "../prompt-mode-cache.js"
 import { getEffectiveModel } from "../router/state.js"
-import { setSessionMode } from "../session-mode.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
@@ -370,11 +370,12 @@ export default function (skillPathsFromConfig: string[]) {
 			}
 
 			pi.on("session_shutdown", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
-				const prefix = `${sessionId} `
+				const sessionId = ctx.sessionManager.getSessionId()
+				const prefix = `${sessionId ?? "unknown"} `
 				for (const key of deprecatedNotificationFired) {
 					if (key.startsWith(prefix)) deprecatedNotificationFired.delete(key)
 				}
+				forgetPromptMode(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
@@ -667,7 +668,7 @@ export default function (skillPathsFromConfig: string[]) {
 				: getMultiModelEnabled(ctx.sessionManager)
 					? "orchestrator"
 					: "single"
-			setSessionMode(ctx.sessionManager?.getSessionId(), mode)
+			setPromptMode(ctx.sessionManager?.getSessionId(), mode)
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
