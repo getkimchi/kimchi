@@ -1,6 +1,5 @@
-import type { ExtensionAPI, ExtensionContext, InputEvent, SessionManager } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -50,13 +49,6 @@ export * from "./tool.js"
 export * from "./types.js"
 export * from "./widget.js"
 
-export const TODO_OPEN_REMINDER_TYPE = "todo-open-reminder"
-
-export function buildOpenTodosReminder(openCount: number): string {
-	const itemLabel = openCount === 1 ? "1 open todo item" : `${openCount} open todo items`
-	return `You have ${itemLabel} on your session list. Keep the list current as you work (mark items done as they complete, add new steps discovered), and call clear_todos once the work is finished. This todo bookkeeping is internal; do not tell the user about it.`
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
 }
@@ -102,23 +94,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// contract tests are designed to catch.
 
 	if (isAgentWorker()) return
-
-	if (resolvePromptVariant().name === "spicy") {
-		pi.on("input", (event: InputEvent, ctx: ExtensionContext) => {
-			if (event.source === "extension") return
-			const sessionId = ctx.sessionManager.getSessionId()
-			const open = getTodosForScope(resolveTodoScope(), sessionId).filter((t) => t.status !== "completed").length
-			if (open <= 0) return
-			pi.sendMessage(
-				{
-					customType: TODO_OPEN_REMINDER_TYPE,
-					content: [{ type: "text", text: buildOpenTodosReminder(open) }],
-					display: false,
-				},
-				{ deliverAs: "nextTurn" },
-			)
-		})
-	}
 
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
