@@ -14,6 +14,7 @@ import {
 	type EnvironmentInfo,
 	SINGLE_MODE_DELEGATION_TEXT,
 } from "../system-prompt.js"
+import { useDefaultPromptVariant } from "../test-utils.js"
 import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./index.js"
 import { SPICY, SPICY_NAME } from "./spicy.js"
 import {
@@ -29,6 +30,8 @@ import {
 	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_SINGLE_MODE_DELEGATION,
 } from "./spicy-prompts.js"
+
+useDefaultPromptVariant()
 
 // ---------------------------------------------------------------------------
 // Shared fixtures

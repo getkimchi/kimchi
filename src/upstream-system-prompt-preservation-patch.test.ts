@@ -19,6 +19,9 @@
 
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import { useDefaultPromptVariant } from "./extensions/prompt-construction/test-utils.js"
+
+useDefaultPromptVariant()
 
 type AnyFn = (...args: unknown[]) => unknown
 

@@ -28,6 +28,9 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
 import { measureCanonicalToolSurface } from "./context-budget-tools.js"
+import { useDefaultPromptVariant } from "./prompt-construction/test-utils.js"
+
+useDefaultPromptVariant()
 
 // Pin the mcp-adapter to zero configured servers: with no servers the
 // adapter registers nothing, so the canonical

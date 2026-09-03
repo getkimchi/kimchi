@@ -5,6 +5,9 @@ import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-regist
 import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
+import { useDefaultPromptVariant } from "./test-utils.js"
+
+useDefaultPromptVariant()
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",

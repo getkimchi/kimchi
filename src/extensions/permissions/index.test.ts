@@ -24,6 +24,7 @@ import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import { useDefaultPromptVariant } from "../prompt-construction/test-utils.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
@@ -37,6 +38,8 @@ import { PERMISSION_EVENTS } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import { SessionMemory } from "./session-memory.js"
 import type { PermissionModeState, Rule } from "./types.js"
+
+useDefaultPromptVariant()
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()

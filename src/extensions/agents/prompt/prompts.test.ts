@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 import { CORE_GUIDELINES_COMMIT_TRAILER_LINE } from "../../prompt-construction/system-prompt.js"
+import { useDefaultPromptVariant } from "../../prompt-construction/test-utils.js"
 import { PROMPT_VARIANT_ENV } from "../../prompt-construction/variants/index.js"
 import { SPICY_COMMIT_ATTRIBUTION } from "../../prompt-construction/variants/spicy-prompts.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
@@ -13,6 +14,8 @@ import {
 	type EnvInfo,
 } from "../personas/types.js"
 import { buildAgentPrompt, formatTokenBudget } from "./prompts.js"
+
+useDefaultPromptVariant()
 
 const FIXED_ENV: EnvInfo = {
 	isGitRepo: true,

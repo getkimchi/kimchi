@@ -21,8 +21,10 @@ import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
-import { toolNamesFromSection } from "./test-utils.js"
+import { toolNamesFromSection, useDefaultPromptVariant } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
+
+useDefaultPromptVariant()
 
 function makeUser(text: string): OrchestratorMessages[number] {
 	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
