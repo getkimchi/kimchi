@@ -199,6 +199,37 @@ it("exits --print after update_ferment_v2 blocked persists final turn usage", { 
 	}
 })
 
+it("exits --print cleanly after the Ferment V2 token budget is reached", { timeout: 25_000 }, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
+	let fake: FakeOpenAiServer | undefined
+	try {
+		fake = await startFakeOpenAiServer({
+			responses: [
+				{ stream: ["Working until the budget is exhausted."], usage: { prompt_tokens: 7, completion_tokens: 3 } },
+			],
+		})
+		const homeDir = join(tempRoot, "home")
+		const workDir = join(tempRoot, "work")
+		const sessionPath = join(tempRoot, "main.jsonl")
+		mkdirSync(homeDir, { recursive: true })
+		mkdirSync(workDir, { recursive: true })
+		writeKimchiConfig(homeDir, fake.baseUrl)
+
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath, "/ferment-v2 --tokens 10 implement feature A")
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
+		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+
+		expect(result.timedOut, failure).toBe(false)
+		expect(result.code, failure).toBe(0)
+		expect(fermentV2Runs.at(-1), failure).toMatchObject({ status: "budget_limited", tokensUsed: 10 })
+		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
+		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("Extension error")
+	} finally {
+		await fake?.stop().catch(() => {})
+		rmSync(tempRoot, { recursive: true, force: true })
+	}
+})
+
 function resumedActiveFermentV2Responses() {
 	return [
 		{ stream: ["Still working on it."] },

@@ -171,7 +171,7 @@ describe("Ferment V2 extension", () => {
 		expect(resolved).toBe(true)
 	})
 
-	it("keeps a blocked headless command pending until turn accounting is persisted", async () => {
+	it("keeps a blocked headless command pending until the accounted turn settles", async () => {
 		const headlessHarness = createHarness({ hasUI: false })
 		let resolved = false
 		const command = headlessHarness.command("ship feature A").then(() => {
@@ -189,14 +189,18 @@ describe("Ferment V2 extension", () => {
 		expect(resolved).toBe(false)
 
 		await headlessHarness.fire("turn_end", terminalTurn("stop", { input: 7, output: 3 }))
-		await command
-		expect(resolved).toBe(true)
+		expect(resolved).toBe(false)
 		expect(headlessHarness.currentFermentV2()).toMatchObject({ status: "blocked", tokensUsed: 10 })
 		expect(headlessHarness.branch.at(-1)?.type).toBe("custom")
 		expect((headlessHarness.branch.at(-1) as { data: FermentV2JournalEntry }).data).toMatchObject({
 			op: "put",
 			fermentV2: { status: "blocked", tokensUsed: 10 },
 		})
+
+		await headlessHarness.fire("agent_end", { type: "agent_end", messages: [] })
+		await headlessHarness.fire("agent_settled", { type: "agent_settled" })
+		await command
+		expect(resolved).toBe(true)
 	})
 
 	it("rejects Ferment V2 creation when required Ferment V2 or Todo tools are unavailable", async () => {
@@ -2628,6 +2632,30 @@ describe("Ferment V2 extension", () => {
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("keeps a budget-limited headless command pending until the agent settles", async () => {
+		const headless = createHarness({ hasUI: false })
+		let resolved = false
+		const command = headless.command("--tokens 100 keep going").then(() => {
+			resolved = true
+		})
+		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
+
+		await headless.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const budgetTurn = terminalTurn("stop", { input: 80, output: 20 })
+		await headless.fire("turn_end", budgetTurn)
+		await Promise.resolve()
+
+		expect(headless.currentFermentV2()?.status).toBe("budget_limited")
+		expect(resolved).toBe(false)
+
+		await headless.fire("agent_end", { type: "agent_end", messages: [budgetTurn.message] })
+		expect(resolved).toBe(false)
+
+		await headless.fire("agent_settled", { type: "agent_settled" })
+		await command
+		expect(resolved).toBe(true)
 	})
 
 	it("refuses to resume a Ferment V2 that is paused but still over its token budget", async () => {

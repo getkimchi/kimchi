@@ -1430,7 +1430,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				finalAnswerInterruption = assistantTurnInterruption(event)
 			}
 			const pendingFeedback = pendingTerminalFeedback
-			const deferTerminalWaiter = pendingFeedback !== undefined && matchesFermentV2(pendingFeedback, current, sessionId)
 			const supersededCurrent =
 				attribution?.sessionId === sessionId &&
 				current?.id === attribution.fermentV2Id &&
@@ -1440,7 +1439,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (supersededCurrent) {
 				const accounted = checkpointFermentV2(supersededCurrent, assistantTurnTokens(event), Date.now())
 				const reachedBudget = supersededCurrent.status === "active" && accounted.status === "budget_limited"
-				if (accounted !== supersededCurrent) commitFermentV2(accounted)
+				if (accounted !== supersededCurrent) commitFermentV2(accounted, false)
 				activeSinceMs = undefined
 				failedTurn = undefined
 				if (reachedBudget) {
@@ -1477,7 +1476,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				const next = aborted
 					? setFermentV2Status(withErrorTurns, current.id, current.revision, "paused", now)
 					: withErrorTurns
-				if (next !== current) commitFermentV2(next, !deferTerminalWaiter)
+				if (next !== current) commitFermentV2(next, false)
 				activeSinceMs = undefined
 				if (aborted) {
 					emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, next, { reason: "agent_aborted" })
@@ -1495,7 +1494,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (pendingFeedback && matchesFermentV2(pendingFeedback, currentFermentV2, sessionId)) {
 				ctx.ui.notify("Ferment V2 blocked.", "warning")
 				pendingTerminalFeedback = undefined
-				resolveFermentV2Waiter(sessionId, pendingFeedback.fermentV2Id)
 			}
 		})
 	})
@@ -1595,6 +1593,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (!conversation) {
 			releaseEvaluationIndicator()
 			releaseFermentV2PromptSummary()
+			if (capturedFermentV2 && capturedFermentV2.status !== "active") {
+				resolveFermentV2Waiter(sessionId, capturedFermentV2.id)
+			}
 			return
 		}
 		if (!canEvaluateFermentV2(conversation, capturedFermentV2, sessionId, ctx)) {
