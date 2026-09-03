@@ -7,7 +7,6 @@
 
 import type { AgentConfig } from "../../agents/personas/types.js"
 import { CORE_GUIDELINES_COMMIT_TRAILER_LINE, type PromptMode, resolveCoreGuidelines } from "../system-prompt.js"
-import type { VariantBlock } from "./types.js"
 
 // ---------------------------------------------------------------------------
 // Discipline nudge text
@@ -173,44 +172,6 @@ export const ORCHESTRATOR_INTRO =
 	"You are Kimchi, an interactive command-line coding agent operating as an orchestrator. You plan the work, then coordinate a team of specialised subagents to carry it out, using the tools listed under **Available Tools**: use only those, and never invent tool names."
 
 // ---------------------------------------------------------------------------
-// Block rewrites
-// ---------------------------------------------------------------------------
-
-const RULES_BOUND_OUTPUT_SECTION = `## Rules
-
-Bound tool output at the source (recovering from a flood of output is expensive):
-- Bash: pipe to head/tail or pass -n/--tail. Use \`git log -n 20 --oneline\`, \`git diff --stat\`, \`2>&1 | tail -100\` for build/test output, and \`| head -c 5000\` for large responses. Avoid \`git status -uall\` on big repos.
-- Searching: list paths before content, cap broad matches, and narrow with glob/type filters before searching.
-- Reads: never read a known-large file (lockfiles, generated code, fixtures) without an offset; search to locate, then read around the hit.
-- Use the file and search tools, not \`cat | grep\` or bash \`find\`.`
-
-const RULES_REREAD_SECTION = `
-
-Re-read before editing:
-- If any bash command ran since you last read a file, re-read it before editing; formatters, codegen, and git can change it underneath you.
-- Never edit from a stale snapshot. A re-read is cheap; a broken edit from outdated content wastes a turn.
-- When the work produces something others will read or run, add a short user-facing README or summary covering what it is, the key choices and why, and how to run it, rather than leaving that rationale only in code comments.`
-
-export const RULES_BLOCK = RULES_BOUND_OUTPUT_SECTION + RULES_REREAD_SECTION
-
-export const RULES_BLOCK_ORCHESTRATOR = RULES_BOUND_OUTPUT_SECTION
-
-export const TODOS_BLOCK = `## Todos
-
-Use a session todo list to plan and track multi-step work so your progress stays visible. These are session todos (managed with \`add_todo\`, \`update_todos\`, \`mark_todo\`, \`clear_todos\`), not \`TODO\` comments in code, which you never leave unless asked.
-
-Use a todo list when:
-- The task has more than one step, even when those steps are linear or sequential. Writing them down keeps your place and prevents losing work if the session is interrupted, so do not skip the list just because the order is obvious.
-- The user gave you several things to do, or a numbered list.
-- The work is complex or large. Break it into granular steps and include testing, validation, and review, not just the implementation. The more involved the task, the more detailed the list should be.
-
-Skip it when:
-- The task is a genuinely single step, such as a one-line fix or reading one file.
-- The reply is purely conversational or informational.
-
-When you do use one: keep exactly one item in progress at a time, mark each item done the moment it is finished (do not batch completions), and clear the list with \`clear_todos\` once the work is done so a finished list is not left lingering. If a task is truly a single step, just do it; do not manufacture a list to look thorough.`
-
-// ---------------------------------------------------------------------------
 // Working discipline blocks (appended to agent personas)
 // ---------------------------------------------------------------------------
 
@@ -305,13 +266,6 @@ export const AGENT_ROLE_TUNING: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-export function blockRewriter(block: VariantBlock, mode: PromptMode = "single"): string | undefined {
-	if (block.owner === "behaviours" && block.id === "rules")
-		return mode === "single" ? RULES_BLOCK : RULES_BLOCK_ORCHESTRATOR
-	if (block.owner === "todos" && block.id === "todo-guidance") return TODOS_BLOCK
-	return undefined
-}
 
 export function appendDisciplineBlock(agents: readonly AgentConfig[]): readonly AgentConfig[] {
 	return agents.map((agent) => {

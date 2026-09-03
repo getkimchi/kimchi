@@ -12,7 +12,6 @@
 import type { PromptMode } from "../system-prompt.js"
 import {
 	appendDisciplineBlock,
-	blockRewriter,
 	disciplineNudgeFor,
 	guidelinesFor,
 	ORCHESTRATOR_INTRO,
@@ -36,7 +35,6 @@ export const SPICY: PromptVariant = {
 	intro: (mode: PromptMode) => (mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO),
 	guidelines: guidelinesFor,
 	factualAccuracy: null,
-	rewriteBlock: blockRewriter,
 	suppressBashToolGuard: true,
 	suppressExplorationGuard: true,
 	disciplineReminder: {
@@ -54,7 +52,6 @@ export {
 	AGENT_DISCIPLINE_BLOCK,
 	AGENT_ROLE_TUNING,
 	appendDisciplineBlock,
-	blockRewriter,
 	COORDINATOR_DELEGATION_BLOCK,
 	DISCIPLINE_NUDGE_CORE,
 	DISCIPLINE_NUDGE_DELEGATION,
@@ -65,9 +62,6 @@ export {
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
 	ORCHESTRATOR_INTRO,
-	RULES_BLOCK,
-	RULES_BLOCK_ORCHESTRATOR,
 	SINGLE_INTRO,
 	SPICY_COMMIT_ATTRIBUTION,
-	TODOS_BLOCK,
 } from "./spicy-prompts.js"

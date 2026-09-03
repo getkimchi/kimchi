@@ -18,7 +18,6 @@ import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./ind
 import {
 	AGENT_DISCIPLINE_BLOCK,
 	AGENT_ROLE_TUNING,
-	blockRewriter,
 	COORDINATOR_DELEGATION_BLOCK,
 	DISCIPLINE_NUDGE_CORE,
 	DISCIPLINE_NUDGE_DELEGATION,
@@ -28,8 +27,6 @@ import {
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
-	RULES_BLOCK,
-	RULES_BLOCK_ORCHESTRATOR,
 	SPICY,
 	SPICY_COMMIT_ATTRIBUTION,
 	SPICY_NAME,
@@ -149,43 +146,6 @@ describe("resolvePromptVariant", () => {
 // ---------------------------------------------------------------------------
 
 describe("SPICY descriptor", () => {
-	describe("rewriteBlock", () => {
-		it("rewrites behaviours/rules block to mention bounded tool output", () => {
-			if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-			const result = SPICY.rewriteBlock({ owner: "behaviours", id: "rules", content: "x" })
-			expect(result).toBeDefined()
-			expect(typeof result).toBe("string")
-			expect(result as string).toContain("Bound tool output")
-		})
-
-		it("rewrites todos/todo-guidance block to include when-to and when-not-to guidance", () => {
-			if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-			const result = SPICY.rewriteBlock({ owner: "todos", id: "todo-guidance", content: "x" })
-			expect(result).toBeDefined()
-			expect(typeof result).toBe("string")
-			expect(result as string).toContain("Use a todo list when:")
-			expect(result as string).toContain("Skip it when:")
-		})
-
-		it("returns undefined for blocks not handled by the variant", () => {
-			if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-			const result = SPICY.rewriteBlock({ owner: "other", id: "x", content: "y" })
-			expect(result).toBeUndefined()
-		})
-
-		it("returns undefined for a behaviours block with an unrecognised id", () => {
-			if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-			const result = SPICY.rewriteBlock({ owner: "behaviours", id: "some-other-id", content: "y" })
-			expect(result).toBeUndefined()
-		})
-
-		it("returns undefined for a todos block with an unrecognised id", () => {
-			if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-			const result = SPICY.rewriteBlock({ owner: "todos", id: "some-other-id", content: "y" })
-			expect(result).toBeUndefined()
-		})
-	})
-
 	it("forceMode is undefined (no forced mode, rides the runtime)", () => {
 		expect(SPICY.forceMode).toBeUndefined()
 	})
@@ -200,10 +160,6 @@ describe("SPICY descriptor", () => {
 
 	it("factualAccuracy is null (omits the Factual Accuracy section)", () => {
 		expect(SPICY.factualAccuracy).toBeNull()
-	})
-
-	it("rewriteBlock is defined", () => {
-		expect(SPICY.rewriteBlock).toBeDefined()
 	})
 
 	it("intro('orchestrator') contains 'orchestrator'", () => {
@@ -511,36 +467,6 @@ describe("todoSteer flag", () => {
 	it("SPICY.todoSteer is undefined (cleanup nudge active for all variants)", () => {
 		expect(SPICY.todoSteer).toBeUndefined()
 	})
-
-	it("spicy todos block contains 'Use a todo list when:'", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "todos", id: "todo-guidance", content: "x" })
-		expect(result as string).toContain("Use a todo list when:")
-	})
-
-	it("spicy todos block contains 'Skip it when:'", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "todos", id: "todo-guidance", content: "x" })
-		expect(result as string).toContain("Skip it when:")
-	})
-
-	it("spicy todos block contains 'even when those steps are linear'", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "todos", id: "todo-guidance", content: "x" })
-		expect(result as string).toContain("even when those steps are linear")
-	})
-
-	it("spicy todos block contains 'complex or large'", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "todos", id: "todo-guidance", content: "x" })
-		expect(result as string).toContain("complex or large")
-	})
-
-	it("spicy todos block contains 'clear the list with `clear_todos`'", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "todos", id: "todo-guidance", content: "x" })
-		expect(result as string).toContain("clear the list with `clear_todos`")
-	})
 })
 
 // ---------------------------------------------------------------------------
@@ -667,131 +593,6 @@ describe("disciplineNudgeFor", () => {
 })
 
 // ---------------------------------------------------------------------------
-// L) RULES_BLOCK contains README bullet
-// ---------------------------------------------------------------------------
-
-describe("RULES_BLOCK", () => {
-	it("contains the README/summary bullet", () => {
-		expect(RULES_BLOCK).toContain("add a short user-facing README or summary")
-	})
-})
-
-// ---------------------------------------------------------------------------
-// N) Mode-aware rules block (blockRewriter / rewriteBlock)
-// ---------------------------------------------------------------------------
-
-// Stable substring markers used throughout this section.
-const MARKER_BOUND_OUTPUT = "Bound tool output at the source"
-const MARKER_REREAD = "Re-read before editing"
-const MARKER_README = "user-facing README or summary"
-
-describe("mode-aware rules block (blockRewriter)", () => {
-	const rulesBlock = { owner: "behaviours", id: "rules", content: "x" }
-
-	it("single mode: rules block contains all three discipline markers", () => {
-		const result = blockRewriter(rulesBlock, "single")
-		expect(typeof result).toBe("string")
-		expect(result as string).toContain(MARKER_BOUND_OUTPUT)
-		expect(result as string).toContain(MARKER_REREAD)
-		expect(result as string).toContain(MARKER_README)
-	})
-
-	it("orchestrator mode: rules block contains bound-output marker but NOT re-read or README markers", () => {
-		const result = blockRewriter(rulesBlock, "orchestrator")
-		expect(typeof result).toBe("string")
-		expect(result as string).toContain(MARKER_BOUND_OUTPUT)
-		expect(result as string).not.toContain(MARKER_REREAD)
-		expect(result as string).not.toContain(MARKER_README)
-	})
-
-	it("subagent mode: rules block matches orchestrator, contains bound-output only", () => {
-		const result = blockRewriter(rulesBlock, "subagent")
-		expect(typeof result).toBe("string")
-		expect(result as string).toContain(MARKER_BOUND_OUTPUT)
-		expect(result as string).not.toContain(MARKER_REREAD)
-		expect(result as string).not.toContain(MARKER_README)
-	})
-
-	it("RULES_BLOCK (full, single) contains bound-output section before re-read section", () => {
-		const boundPos = RULES_BLOCK.indexOf(MARKER_BOUND_OUTPUT)
-		const rereadPos = RULES_BLOCK.indexOf(MARKER_REREAD)
-		expect(boundPos).toBeGreaterThan(-1)
-		expect(rereadPos).toBeGreaterThan(-1)
-		expect(boundPos).toBeLessThan(rereadPos)
-	})
-
-	it("RULES_BLOCK (full) is the output of blockRewriter in single mode", () => {
-		const result = blockRewriter(rulesBlock, "single")
-		expect(result).toBe(RULES_BLOCK)
-	})
-
-	it("RULES_BLOCK_ORCHESTRATOR (slim) is the output of blockRewriter in orchestrator mode", () => {
-		const result = blockRewriter(rulesBlock, "orchestrator")
-		expect(result).toBe(RULES_BLOCK_ORCHESTRATOR)
-	})
-
-	it("RULES_BLOCK_ORCHESTRATOR does not contain re-read or README markers (slim, no those sections)", () => {
-		expect(RULES_BLOCK_ORCHESTRATOR).not.toContain(MARKER_REREAD)
-		expect(RULES_BLOCK_ORCHESTRATOR).not.toContain(MARKER_README)
-	})
-})
-
-describe("spicy buildSystemPrompt mode-aware rules content", () => {
-	// The behaviours/rules block is injected by renderSystemPromptBlocks only when
-	// a session-registered block is present. buildSystemPrompt does not inject it
-	// directly, so we assert via blockRewriter (the direct path) for mode awareness,
-	// and use buildSystemPrompt only to confirm the spicy-vs-default boundary.
-	// See "mode-aware rules block" describe above for the direct blockRewriter tests.
-	it("spicy single: rewriteBlock called with 'single' mode contains all three markers", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "behaviours", id: "rules", content: "x" }, "single")
-		expect(result as string).toContain(MARKER_BOUND_OUTPUT)
-		expect(result as string).toContain(MARKER_REREAD)
-		expect(result as string).toContain(MARKER_README)
-	})
-
-	it("spicy orchestrator: rewriteBlock called with 'orchestrator' mode omits re-read and README", () => {
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "behaviours", id: "rules", content: "x" }, "orchestrator")
-		expect(result as string).toContain(MARKER_BOUND_OUTPUT)
-		expect(result as string).not.toContain(MARKER_REREAD)
-		expect(result as string).not.toContain(MARKER_README)
-	})
-})
-
-describe("default variant spicy phrasings absent guard", () => {
-	it("default single prompt does NOT contain 'Bound tool output at the source'", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })
-		expect(result).not.toContain(MARKER_BOUND_OUTPUT)
-	})
-
-	it("default orchestrator prompt does NOT contain 'Bound tool output at the source'", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator" })
-		expect(result).not.toContain(MARKER_BOUND_OUTPUT)
-	})
-
-	it("default single prompt does NOT contain 'Re-read before editing'", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })
-		expect(result).not.toContain(MARKER_REREAD)
-	})
-
-	it("default orchestrator prompt does NOT contain 'Re-read before editing'", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator" })
-		expect(result).not.toContain(MARKER_REREAD)
-	})
-
-	it("default single prompt does NOT contain 'user-facing README or summary'", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })
-		expect(result).not.toContain(MARKER_README)
-	})
-
-	it("default orchestrator prompt does NOT contain 'user-facing README or summary'", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator" })
-		expect(result).not.toContain(MARKER_README)
-	})
-})
-
-// ---------------------------------------------------------------------------
 // M) Default variant byte-identical guard
 // ---------------------------------------------------------------------------
 
@@ -804,16 +605,6 @@ describe("default variant byte-identical guard", () => {
 	it("default orchestrator prompt does NOT contain '**Coordinator altitude**'", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator" })
 		expect(result).not.toContain("**Coordinator altitude**")
-	})
-
-	it("default single prompt does NOT contain the README/summary bullet", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })
-		expect(result).not.toContain("add a short user-facing README or summary")
-	})
-
-	it("default orchestrator prompt does NOT contain the README/summary bullet", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator" })
-		expect(result).not.toContain("add a short user-facing README or summary")
 	})
 
 	it("default single prompt does NOT contain '### Working discipline' (spicy-only section)", () => {
@@ -834,16 +625,6 @@ describe("default variant byte-identical guard", () => {
 	it("spicy orchestrator prompt DOES contain '**Coordinator altitude**'", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
 		expect(result).toContain("**Coordinator altitude**")
-	})
-
-	it("spicy RULES_BLOCK contains the README/summary bullet (injected via rewriteBlock)", () => {
-		// RULES_BLOCK is injected via rewriteBlock on the behaviours/rules block.
-		// It does not appear in buildSystemPrompt without a registered session block.
-		// Test directly on RULES_BLOCK to confirm the bullet is present.
-		if (!SPICY.rewriteBlock) throw new Error("rewriteBlock not defined on SPICY")
-		const result = SPICY.rewriteBlock({ owner: "behaviours", id: "rules", content: "x" })
-		expect(typeof result).toBe("string")
-		expect(result as string).toContain("add a short user-facing README or summary")
 	})
 })
 
