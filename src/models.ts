@@ -216,9 +216,16 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// Anthropic models are routed through the native `/v1/messages` API, so no
 	// openai-completions compat flags are needed.
 	//
+	// claude-* models from non-anthropic providers still use openai-completions,
+	// so they keep the openai-completions compat flags.
+	//
 	// ai-enabler models don't support chat_template_kwargs, so we rely on the
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
+	const compat =
+		m.provider !== "anthropic" && m.slug.startsWith("claude-")
+			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
+			: undefined
 	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
 		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
 	return {
@@ -231,6 +238,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
+		...(compat && { compat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
 }

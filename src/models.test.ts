@@ -164,7 +164,7 @@ describe("updateModelsConfig", () => {
 		expect(getSupportedThinkingLevels(model)).toContain("max")
 	})
 
-	it("routes claude-* models from non-anthropic providers through the openai-completions API without compat flags", async () => {
+	it("routes claude-* models from non-anthropic providers through openai-completions with compat flags", async () => {
 		const CLAUDE_ON_AZURE: unknown = {
 			slug: "claude-sonnet-4-6",
 			display_name: "",
@@ -185,7 +185,11 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/azure_ai"]).toBeDefined()
 		expect(config.providers["kimchi-dev/azure_ai"].api).toBe("openai-completions")
 		expect(config.providers["kimchi-dev/azure_ai"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
-		expect(config.providers["kimchi-dev/azure_ai"].models[0]).not.toHaveProperty("compat")
+		expect(config.providers["kimchi-dev/azure_ai"].models[0].compat).toEqual({
+			supportsReasoningEffort: false,
+			cacheControlFormat: "anthropic",
+			supportsUsageInStreaming: true,
+		})
 	})
 
 	it("splits ai-enabler models into kimchi-dev and non-ai-enabler models into kimchi-dev/{provider}", async () => {
