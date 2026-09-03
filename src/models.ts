@@ -24,6 +24,10 @@ export function chatCompletionsApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
 }
 
+export function anthropicMessagesApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/anthropic`
+}
+
 // HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const MAX_FETCH_ATTEMPTS = 3
@@ -209,20 +213,12 @@ function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
-	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
-	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
-	//
-	// Claude models routed through openai-completions need:
-	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
-	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
+	// Anthropic models are routed through the native `/v1/messages` API, so no
+	// openai-completions compat flags are needed.
 	//
 	// ai-enabler models don't support chat_template_kwargs, so we rely on the
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
-	const compat =
-		m.provider === "anthropic" || m.slug.startsWith("claude-")
-			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
-			: undefined
 	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
 		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
 	return {
@@ -235,7 +231,6 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
-		...(compat && { compat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
 }
@@ -270,10 +265,11 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 
 	for (const [upstreamProvider, group] of byProvider) {
 		const subProviderId = `kimchi-dev/${upstreamProvider}`
+		const isAnthropic = upstreamProvider === "anthropic"
 		providers[subProviderId] = {
-			baseUrl: chatCompletionsApi(endpoint),
+			baseUrl: isAnthropic ? anthropicMessagesApi(endpoint) : chatCompletionsApi(endpoint),
 			apiKey: "$KIMCHI_API_KEY",
-			api: "openai-completions",
+			api: isAnthropic ? "anthropic-messages" : "openai-completions",
 			authHeader: true,
 			headers: providerHeaders(upstreamProvider),
 			models: group.map(metadataToModel),
