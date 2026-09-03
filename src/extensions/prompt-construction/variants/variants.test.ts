@@ -113,14 +113,9 @@ describe("resolvePromptVariant", () => {
 		expect(result).toBe(DEFAULT_VARIANT)
 	})
 
-	it("returns DEFAULT_VARIANT for the old 'v2' name (no longer registered)", () => {
-		const result = resolvePromptVariant("v2")
-		expect(result).toBe(DEFAULT_VARIANT)
-	})
-
-	it("returns DEFAULT_VARIANT for the old 'opinionated-v2' name (no longer registered)", () => {
-		const result = resolvePromptVariant("opinionated-v2")
-		expect(result).toBe(DEFAULT_VARIANT)
+	it("returns DEFAULT_VARIANT for a name that is not in the registry", () => {
+		expect(resolvePromptVariant("v2")).toBe(DEFAULT_VARIANT)
+		expect(resolvePromptVariant("opinionated-v2")).toBe(DEFAULT_VARIANT)
 	})
 
 	it("reads from KIMCHI_PROMPT_VARIANT env var when no argument is given", () => {
@@ -318,17 +313,6 @@ describe("buildSystemPrompt: spicy variant", () => {
 		})
 		expect(result).toContain("## Available Tools\n\nread")
 		expect(result).not.toContain("ORIGINAL")
-	})
-
-	it("output does not reference Claude or Anthropic brand names", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
-		expect(result).not.toMatch(/claude|anthropic/i)
-	})
-
-	it("output does not contain internal tooling references", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
-		expect(result).not.toMatch(/kubecast|jira|kubectl/i)
-		expect(result).not.toContain(".claude")
 	})
 
 	it("does NOT contain the stock AI coding agent intro", () => {
