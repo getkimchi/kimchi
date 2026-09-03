@@ -180,6 +180,37 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 	}
 })
 
+it("delivers an evaluated final answer after resuming an active --print session", {
+	timeout: 25_000,
+}, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
+	let fake: FakeOpenAiServer | undefined
+	try {
+		fake = await startFakeOpenAiServer({ responses: resumedActiveFermentV2CompletionResponses() })
+		const homeDir = join(tempRoot, "home")
+		const workDir = join(tempRoot, "work")
+		const sessionPath = join(tempRoot, "main.jsonl")
+		mkdirSync(homeDir, { recursive: true })
+		mkdirSync(workDir, { recursive: true })
+		writeKimchiConfig(homeDir, fake.baseUrl)
+		writeSeededActiveFermentV2Session(sessionPath, workDir, true)
+
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath, "Continue the active objective.")
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
+		const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+
+		expect(result.timedOut, failure).toBe(false)
+		expect(result.code, failure).toBe(0)
+		expect(result.stdout.trim(), failure).toBe("RESUMED_FINAL_AFTER_EVALUATION")
+		expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
+		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
+		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(6)
+	} finally {
+		await fake?.stop().catch(() => {})
+		rmSync(tempRoot, { recursive: true, force: true })
+	}
+})
+
 it("exits --print after update_ferment_v2 blocked persists final turn usage", { timeout: 25_000 }, async () => {
 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
@@ -265,6 +296,36 @@ function resumedActiveFermentV2Responses() {
 	]
 }
 
+function resumedActiveFermentV2CompletionResponses(): FakeResponseScript[] {
+	return [
+		{ stream: ["RESUMED_PROGRESS_MUST_STAY_HIDDEN"] },
+		{
+			match: isFermentV2EvaluatorRequest,
+			stream: ['{"verdict":"continue","reason":"Run one final verification before delivery."}'],
+		},
+		{
+			stream: ["UNVERIFIED_RESUMED_CANDIDATE"],
+			toolCalls: [
+				{
+					id: "claim-resumed-ferment-v2-complete",
+					function: {
+						name: "update_ferment_v2",
+						arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
+					},
+				},
+			],
+		},
+		{ stream: ["UNVERIFIED_RESUMED_CANDIDATE_AFTER_CLAIM"] },
+		{
+			match: isFermentV2EvaluatorRequest,
+			stream: [
+				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
+			],
+		},
+		{ stream: ["RESUMED_FINAL_AFTER_EVALUATION"] },
+	]
+}
+
 function blockedFermentV2Responses() {
 	return [
 		{
@@ -282,7 +343,7 @@ function blockedFermentV2Responses() {
 	]
 }
 
-function writeSeededActiveFermentV2Session(sessionPath: string, workDir: string): void {
+function writeSeededActiveFermentV2Session(sessionPath: string, workDir: string, withCompletedTodo = false): void {
 	const now = new Date().toISOString()
 	const header = { type: "session", version: 3, id: "resume-race-session", timestamp: now, cwd: workDir }
 	const fermentV2Entry = {
@@ -307,7 +368,30 @@ function writeSeededActiveFermentV2Session(sessionPath: string, workDir: string)
 		parentId: null,
 		timestamp: now,
 	}
-	writeFileSync(sessionPath, `${JSON.stringify(header)}\n${JSON.stringify(fermentV2Entry)}\n`)
+	const entries = [header, fermentV2Entry]
+	if (withCompletedTodo) {
+		entries.push({
+			type: "custom",
+			customType: "kimchi.todos",
+			data: {
+				schemaVersion: 1,
+				scope: { kind: "global" },
+				todos: [
+					{
+						id: 1,
+						content: "Finish feature A",
+						status: "completed",
+						note: "Evidence: scripted verification completed",
+					},
+				],
+				updatedAt: now,
+			},
+			id: "seed-ferment-v2-todo",
+			parentId: "seed-ferment-v2-entry",
+			timestamp: now,
+		})
+	}
+	writeFileSync(sessionPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`)
 }
 
 interface FermentV2JournalState {

@@ -1517,143 +1517,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		})
 	})
 
-	pi.on("agent_end", async (_event, ctx) => {
-		const sessionId = bindSession(ctx)
-		const fermentV2 = currentFermentV2
-		const endedSupersededTurn = isSupersededFermentV2(supersededActiveTurn, fermentV2, sessionId)
-		supersededActiveTurn = undefined
-		if (endedSupersededTurn) {
-			hiddenCompletionCandidate = undefined
-			capturedConversation = undefined
-			releaseEvaluationIndicator()
-			return
-		}
-		const messages = [...buildSessionContext(ctx.sessionManager.getBranch()).messages]
-		const candidate = hiddenCompletionCandidate
-		hiddenCompletionCandidate = undefined
-		const hadHiddenCandidate = Boolean(candidate && matchesFermentV2(candidate, fermentV2, sessionId))
-		if (hadHiddenCandidate && candidate) {
-			for (let index = messages.length - 1; index >= 0; index--) {
-				if (messages[index]?.role !== "assistant") continue
-				messages[index] = candidate.message
-				break
-			}
-		}
-		capturedConversation =
-			fermentV2?.status === "active"
-				? {
-						sessionId,
-						fermentV2Id: fermentV2.id,
-						revision: fermentV2.revision,
-						messages,
-						failed: matchesFermentV2(failedTurn, fermentV2, sessionId),
-					}
-				: undefined
-		const conversation = capturedConversation
-		if (
-			!hadHiddenCandidate ||
-			!ctx.hasUI ||
-			!conversation ||
-			conversation.failed ||
-			!canEvaluateFermentV2(conversation, fermentV2, sessionId, ctx)
-		) {
-			releaseEvaluationIndicator()
-			return
-		}
-		holdFermentV2PromptSummary()
-		let keptEvaluationForSettled = false
-		try {
-			const evaluation = await runFermentV2Evaluation(fermentV2, conversation, ctx)
-			if (
-				!evaluation.abort.signal.aborted &&
-				currentSessionId === sessionId &&
-				ctx.sessionManager.getSessionId() === sessionId &&
-				canEvaluateFermentV2(conversation, currentFermentV2, sessionId, ctx)
-			) {
-				preparedEvaluation = evaluation
-				keptEvaluationForSettled = true
-			}
-		} finally {
-			if (!keptEvaluationForSettled) releaseFermentV2PromptSummary()
-			releaseEvaluationIndicator()
-		}
-	})
-
-	pi.on("agent_settled", async (_event, ctx) => {
-		const sessionId = bindSession(ctx)
-		const capturedFermentV2 = currentFermentV2
-		pendingBudgetLimitedOutput = undefined
-		const finalAnswer = activeFinalAnswer
-		if (capturedFermentV2 && finalAnswer && matchesFermentV2(finalAnswer, capturedFermentV2, sessionId)) {
-			const delivered = finalAnswerHasText && finalAnswerInterruption === undefined
-			if (!delivered) {
-				pauseFinalAnswerDelivery(ctx, capturedFermentV2)
-				return
-			}
-			const completed = setFermentV2Status(
-				capturedFermentV2,
-				capturedFermentV2.id,
-				capturedFermentV2.revision,
-				"complete",
-				timestamp(),
-			)
-			commitFermentV2(completed, false)
-			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.COMPLETED, completed)
-			activeFinalAnswer = undefined
-			finalAnswerHasText = false
-			finalAnswerInterruption = undefined
-			capturedConversation = undefined
-			ctx.ui.notify("Ferment V2 complete.", "info")
-			resolveFermentV2Waiter(sessionId, finalAnswer.fermentV2Id)
-			releaseEvaluationIndicator()
-			releaseFermentV2PromptSummary()
-			return
-		}
-		const conversation = capturedConversation
-		if (!conversation) {
-			releaseEvaluationIndicator()
-			releaseFermentV2PromptSummary()
-			if (capturedFermentV2 && capturedFermentV2.status !== "active") {
-				resolveFermentV2Waiter(sessionId, capturedFermentV2.id)
-			}
-			return
-		}
-		if (!canEvaluateFermentV2(conversation, capturedFermentV2, sessionId, ctx)) {
-			releaseEvaluationIndicator()
-			abandonFermentV2Evaluation(sessionId, conversation)
-			releaseFermentV2PromptSummary()
-			return
-		}
-		if (conversation.failed) {
-			releaseEvaluationIndicator()
-			releaseFermentV2PromptSummary()
-			const now = timestamp()
-			const settledErrors = (capturedFermentV2.consecutiveErrorTurns ?? 0) + 1
-			const withErrorTurns = setFermentV2ConsecutiveErrorTurns(
-				capturedFermentV2,
-				capturedFermentV2.id,
-				capturedFermentV2.revision,
-				settledErrors,
-				now,
-			)
-			const { maxConsecutiveErrors } = getFermentV2Settings()
-			capturedConversation = undefined
-			if (settledErrors >= maxConsecutiveErrors) {
-				const paused = setFermentV2Status(withErrorTurns, withErrorTurns.id, withErrorTurns.revision, "paused", now)
-				commitFermentV2(paused)
-				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, paused, { reason: "agent_errors" })
-				invalidateContinuation()
-				ctx.ui.notify(`Ferment V2 paused after ${maxConsecutiveErrors} consecutive agent errors.`, "warning")
-				return
-			}
-			commitFermentV2(withErrorTurns)
-			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error")
-			return
-		}
-		const prepared = preparedEvaluation?.conversation === conversation ? preparedEvaluation : undefined
-		preparedEvaluation = undefined
-		holdFermentV2PromptSummary()
-		const evaluation = prepared ?? (await runFermentV2Evaluation(capturedFermentV2, conversation, ctx))
+	async function applyFermentV2Evaluation(
+		ctx: ExtensionContext,
+		sessionId: string,
+		conversation: CapturedFermentV2Conversation,
+		evaluation: PreparedFermentV2Evaluation,
+		queueDuringAgentRun: boolean,
+	): Promise<void> {
 		const { abort, hadSubstantiveToolUse, result, startFingerprint } = evaluation
 		if (currentSessionId !== sessionId || ctx.sessionManager.getSessionId() !== sessionId) {
 			releaseFermentV2PromptSummary()
@@ -1747,7 +1617,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				completionClaim = undefined
 				activeSinceMs = undefined
 				invalidateContinuation()
-				queueFinalAnswerAfterSettled(ctx, readyForFinalAnswer)
+				if (queueDuringAgentRun) {
+					if (!queueFinalAnswerTurn(ctx, readyForFinalAnswer, "followUp")) {
+						pauseFinalAnswerDelivery(ctx, readyForFinalAnswer)
+					}
+				} else {
+					queueFinalAnswerAfterSettled(ctx, readyForFinalAnswer)
+				}
 				return
 			}
 
@@ -1800,13 +1676,167 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 			commitFermentV2(withContinuationCount)
 			emitEvaluation(withContinuationCount)
-			queueFermentV2TurnAfterSettled(
-				ctx,
-				withContinuationCount,
-				buildFermentV2Continuation(unchanged > 0, continuationReason),
-				"evaluation",
-			)
+			const content = buildFermentV2Continuation(unchanged > 0, continuationReason)
+			if (queueDuringAgentRun) {
+				if (!queueFermentV2Turn(ctx, withContinuationCount, content, "evaluation", "followUp")) {
+					releaseFermentV2PromptSummary()
+					resolveFermentV2Waiter(sessionId, withContinuationCount.id)
+				}
+			} else {
+				queueFermentV2TurnAfterSettled(ctx, withContinuationCount, content, "evaluation")
+			}
 		})
+	}
+
+	pi.on("agent_end", async (_event, ctx) => {
+		const sessionId = bindSession(ctx)
+		const fermentV2 = currentFermentV2
+		const endedSupersededTurn = isSupersededFermentV2(supersededActiveTurn, fermentV2, sessionId)
+		supersededActiveTurn = undefined
+		if (endedSupersededTurn) {
+			hiddenCompletionCandidate = undefined
+			capturedConversation = undefined
+			releaseEvaluationIndicator()
+			return
+		}
+		const messages = [...buildSessionContext(ctx.sessionManager.getBranch()).messages]
+		const candidate = hiddenCompletionCandidate
+		hiddenCompletionCandidate = undefined
+		const hadHiddenCandidate = Boolean(candidate && matchesFermentV2(candidate, fermentV2, sessionId))
+		if (hadHiddenCandidate && candidate) {
+			for (let index = messages.length - 1; index >= 0; index--) {
+				if (messages[index]?.role !== "assistant") continue
+				messages[index] = candidate.message
+				break
+			}
+		}
+		capturedConversation =
+			fermentV2?.status === "active"
+				? {
+						sessionId,
+						fermentV2Id: fermentV2.id,
+						revision: fermentV2.revision,
+						messages,
+						failed: matchesFermentV2(failedTurn, fermentV2, sessionId),
+					}
+				: undefined
+		const conversation = capturedConversation
+		// A resumed headless prompt has no slash-command waiter. Queue its next
+		// turn before agent_end returns so Pi keeps the same session.prompt alive.
+		const queueDuringAgentRun = Boolean(
+			!ctx.hasUI &&
+				fermentV2 &&
+				!matchesFermentV2(activeFinalAnswer, fermentV2, sessionId) &&
+				!fermentV2Waiters.has(fermentV2WaiterKey(sessionId, fermentV2.id)),
+		)
+		if (
+			(!hadHiddenCandidate && !queueDuringAgentRun) ||
+			!conversation ||
+			conversation.failed ||
+			!canEvaluateFermentV2(conversation, fermentV2, sessionId, ctx)
+		) {
+			releaseEvaluationIndicator()
+			return
+		}
+		holdFermentV2PromptSummary()
+		let keptEvaluationForSettled = false
+		try {
+			const evaluation = await runFermentV2Evaluation(fermentV2, conversation, ctx)
+			if (
+				!evaluation.abort.signal.aborted &&
+				currentSessionId === sessionId &&
+				ctx.sessionManager.getSessionId() === sessionId &&
+				canEvaluateFermentV2(conversation, currentFermentV2, sessionId, ctx)
+			) {
+				if (queueDuringAgentRun) {
+					await applyFermentV2Evaluation(ctx, sessionId, conversation, evaluation, true)
+				} else {
+					preparedEvaluation = evaluation
+				}
+				keptEvaluationForSettled = true
+			}
+		} finally {
+			if (!keptEvaluationForSettled) releaseFermentV2PromptSummary()
+			releaseEvaluationIndicator()
+		}
+	})
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		const sessionId = bindSession(ctx)
+		const capturedFermentV2 = currentFermentV2
+		pendingBudgetLimitedOutput = undefined
+		const finalAnswer = activeFinalAnswer
+		if (capturedFermentV2 && finalAnswer && matchesFermentV2(finalAnswer, capturedFermentV2, sessionId)) {
+			const delivered = finalAnswerHasText && finalAnswerInterruption === undefined
+			if (!delivered) {
+				pauseFinalAnswerDelivery(ctx, capturedFermentV2)
+				return
+			}
+			const completed = setFermentV2Status(
+				capturedFermentV2,
+				capturedFermentV2.id,
+				capturedFermentV2.revision,
+				"complete",
+				timestamp(),
+			)
+			commitFermentV2(completed, false)
+			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.COMPLETED, completed)
+			activeFinalAnswer = undefined
+			finalAnswerHasText = false
+			finalAnswerInterruption = undefined
+			capturedConversation = undefined
+			ctx.ui.notify("Ferment V2 complete.", "info")
+			resolveFermentV2Waiter(sessionId, finalAnswer.fermentV2Id)
+			releaseEvaluationIndicator()
+			releaseFermentV2PromptSummary()
+			return
+		}
+		const conversation = capturedConversation
+		if (!conversation) {
+			releaseEvaluationIndicator()
+			releaseFermentV2PromptSummary()
+			if (capturedFermentV2 && capturedFermentV2.status !== "active") {
+				resolveFermentV2Waiter(sessionId, capturedFermentV2.id)
+			}
+			return
+		}
+		if (!canEvaluateFermentV2(conversation, capturedFermentV2, sessionId, ctx)) {
+			releaseEvaluationIndicator()
+			abandonFermentV2Evaluation(sessionId, conversation)
+			releaseFermentV2PromptSummary()
+			return
+		}
+		if (conversation.failed) {
+			releaseEvaluationIndicator()
+			releaseFermentV2PromptSummary()
+			const now = timestamp()
+			const settledErrors = (capturedFermentV2.consecutiveErrorTurns ?? 0) + 1
+			const withErrorTurns = setFermentV2ConsecutiveErrorTurns(
+				capturedFermentV2,
+				capturedFermentV2.id,
+				capturedFermentV2.revision,
+				settledErrors,
+				now,
+			)
+			const { maxConsecutiveErrors } = getFermentV2Settings()
+			capturedConversation = undefined
+			if (settledErrors >= maxConsecutiveErrors) {
+				const paused = setFermentV2Status(withErrorTurns, withErrorTurns.id, withErrorTurns.revision, "paused", now)
+				commitFermentV2(paused)
+				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, paused, { reason: "agent_errors" })
+				invalidateContinuation()
+				ctx.ui.notify(`Ferment V2 paused after ${maxConsecutiveErrors} consecutive agent errors.`, "warning")
+				return
+			}
+			commitFermentV2(withErrorTurns)
+			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error")
+			return
+		}
+		const prepared = preparedEvaluation?.conversation === conversation ? preparedEvaluation : undefined
+		preparedEvaluation = undefined
+		holdFermentV2PromptSummary()
+		const evaluation = prepared ?? (await runFermentV2Evaluation(capturedFermentV2, conversation, ctx))
+		await applyFermentV2Evaluation(ctx, sessionId, conversation, evaluation, false)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {
