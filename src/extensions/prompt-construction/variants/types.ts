@@ -90,9 +90,6 @@ export interface PromptVariant {
 	 */
 	transformAgents?: (agents: readonly AgentConfig[]) => readonly AgentConfig[]
 
-	/** When true, the bash-tool-guard extension does not register any handlers (entirely inert for this variant). */
-	suppressBashToolGuard?: boolean
-
 	/** When true, the exploration-guard extension does not register any handlers (entirely inert for this variant). */
 	suppressExplorationGuard?: boolean
 }

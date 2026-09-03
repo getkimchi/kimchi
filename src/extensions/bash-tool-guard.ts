@@ -80,7 +80,6 @@ import {
 import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
-import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
@@ -657,8 +656,6 @@ export class BashToolGuard {
 }
 
 export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashGuardOptions): void {
-	if (resolvePromptVariant().suppressBashToolGuard) return
-
 	let ctx: ExtensionContext | undefined
 	let warnOnlySteerSentThisTurn = false
 

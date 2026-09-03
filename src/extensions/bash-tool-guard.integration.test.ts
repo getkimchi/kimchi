@@ -877,32 +877,7 @@ describe("bashToolGuardExtension - description override", () => {
 	})
 })
 
-describe("bashToolGuardExtension - variant suppression", () => {
-	it("registers no handlers when suppressBashToolGuard is true", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		expect(pi.handlers.session_start).toBeUndefined()
-		expect(pi.handlers.input).toBeUndefined()
-		expect(pi.handlers.tool_call).toBeUndefined()
-	})
-
-	it("does not register the bash tool description override when suppressBashToolGuard is true", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		fireSessionStart(pi)
-		expect(pi.registeredTools.size).toBe(0)
-	})
-
-	it("does not steer on a bash tool_call when suppressBashToolGuard is true", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "spicy", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
+describe("bashToolGuardExtension - prompt variants", () => {
 	it("registers handlers with the default variant", () => {
 		mockResolvePromptVariant.mockReturnValue({ name: "default" })
 		const pi = createMockPI()
@@ -910,5 +885,33 @@ describe("bashToolGuardExtension - variant suppression", () => {
 		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
 		expect(pi.handlers.input?.length).toBeGreaterThan(0)
 		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
+	})
+
+	it("registers handlers with the spicy variant", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
+		expect(pi.handlers.input?.length).toBeGreaterThan(0)
+		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
+	})
+
+	it("registers the corrected bash tool description with the spicy variant", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		fireSessionStart(pi)
+		expect(pi.registeredTools.get("bash")?.description).toBe(bashToolDescription())
+	})
+
+	it("steers on a bash tool_call with the spicy variant", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy" })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		fireSessionStart(pi)
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
 	})
 })

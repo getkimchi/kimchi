@@ -200,10 +200,6 @@ describe("SPICY descriptor", () => {
 		expect(SPICY.tagline).toBe("spicy architect")
 	})
 
-	it("suppressBashToolGuard is true", () => {
-		expect(SPICY.suppressBashToolGuard).toBe(true)
-	})
-
 	it("suppressExplorationGuard is true", () => {
 		expect(SPICY.suppressExplorationGuard).toBe(true)
 	})
@@ -438,16 +434,8 @@ describe("spicy additive guidelines", () => {
 // ---------------------------------------------------------------------------
 
 describe("guard suppression flags", () => {
-	it("SPICY.suppressBashToolGuard is true", () => {
-		expect(SPICY.suppressBashToolGuard).toBe(true)
-	})
-
 	it("SPICY.suppressExplorationGuard is true", () => {
 		expect(SPICY.suppressExplorationGuard).toBe(true)
-	})
-
-	it("DEFAULT_VARIANT.suppressBashToolGuard is undefined", () => {
-		expect(DEFAULT_VARIANT.suppressBashToolGuard).toBeUndefined()
 	})
 
 	it("DEFAULT_VARIANT.suppressExplorationGuard is undefined", () => {
