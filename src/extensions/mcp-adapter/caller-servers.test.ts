@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
 import {
-	type CallerServerEntry,
 	clearCallerMcpServers,
 	consumeCallerMcpServers,
 	peekCallerMcpServers,
@@ -16,100 +15,102 @@ afterEach(() => {
 const stdioEntry: ServerEntry = { command: "/path", args: [] }
 const httpEntry: ServerEntry = { url: "https://example.com" }
 
-describe("caller-servers queue", () => {
+describe("caller-servers registry (session-id-keyed)", () => {
 	describe("setCallerMcpServers / consumeCallerMcpServers", () => {
-		it("consume returns pushed servers and drains on next call", () => {
-			setCallerMcpServers({ foo: stdioEntry })
-			expect(consumeCallerMcpServers()).toEqual({ foo: stdioEntry })
-			expect(consumeCallerMcpServers()).toEqual({})
+		it("consume returns servers for the given sessionId and drains on next call", () => {
+			setCallerMcpServers("s1", { foo: stdioEntry })
+			expect(consumeCallerMcpServers("s1")).toEqual({ foo: stdioEntry })
+			expect(consumeCallerMcpServers("s1")).toEqual({})
 		})
 
-		it("consume on empty queue returns {}", () => {
-			expect(consumeCallerMcpServers()).toEqual({})
+		it("consume on unknown sessionId returns {}", () => {
+			expect(consumeCallerMcpServers("nonexistent")).toEqual({})
 		})
 
 		it("set with empty object → consume returns {}", () => {
-			setCallerMcpServers({})
-			expect(consumeCallerMcpServers()).toEqual({})
+			setCallerMcpServers("s1", {})
+			expect(consumeCallerMcpServers("s1")).toEqual({})
 		})
 
-		it("second set after first drains independently", () => {
-			setCallerMcpServers({ a: stdioEntry })
-			setCallerMcpServers({ b: httpEntry })
-			expect(consumeCallerMcpServers()).toEqual({ a: stdioEntry })
-			expect(consumeCallerMcpServers()).toEqual({ b: httpEntry })
-			expect(consumeCallerMcpServers()).toEqual({})
+		it("two sessions consume independently with no cross-contamination", () => {
+			setCallerMcpServers("s1", { a: stdioEntry })
+			setCallerMcpServers("s2", { b: httpEntry })
+			expect(consumeCallerMcpServers("s1")).toEqual({ a: stdioEntry })
+			expect(consumeCallerMcpServers("s2")).toEqual({ b: httpEntry })
+			expect(consumeCallerMcpServers("s1")).toEqual({})
+			expect(consumeCallerMcpServers("s2")).toEqual({})
 		})
 	})
 
 	describe("peekCallerMcpServers", () => {
-		it("returns the head without draining", () => {
-			setCallerMcpServers({ foo: stdioEntry })
-			expect(peekCallerMcpServers()).toEqual({ foo: stdioEntry })
-			expect(peekCallerMcpServers()).toEqual({ foo: stdioEntry })
+		it("returns the entry without draining", () => {
+			setCallerMcpServers("s1", { foo: stdioEntry })
+			expect(peekCallerMcpServers("s1")).toEqual({ foo: stdioEntry })
+			expect(peekCallerMcpServers("s1")).toEqual({ foo: stdioEntry })
 			// Still consumable after peek
-			expect(consumeCallerMcpServers()).toEqual({ foo: stdioEntry })
+			expect(consumeCallerMcpServers("s1")).toEqual({ foo: stdioEntry })
 		})
 
-		it("returns undefined on empty queue", () => {
-			expect(peekCallerMcpServers()).toBeUndefined()
+		it("returns undefined on unknown sessionId", () => {
+			expect(peekCallerMcpServers("nonexistent")).toBeUndefined()
 		})
 	})
 
 	describe("removePendingEntry", () => {
 		it("removes a pending entry that has not been consumed", () => {
-			const entry: CallerServerEntry = setCallerMcpServers({ foo: stdioEntry })
-			removePendingEntry(entry)
-			expect(peekCallerMcpServers()).toBeUndefined()
-			expect(consumeCallerMcpServers()).toEqual({})
+			setCallerMcpServers("s1", { foo: stdioEntry })
+			removePendingEntry("s1")
+			expect(peekCallerMcpServers("s1")).toBeUndefined()
+			expect(consumeCallerMcpServers("s1")).toEqual({})
 		})
 
 		it("is a no-op if the entry was already consumed", () => {
-			const entry: CallerServerEntry = setCallerMcpServers({ foo: stdioEntry })
-			expect(consumeCallerMcpServers()).toEqual({ foo: stdioEntry })
-			// Already consumed — should not throw or drain the next entry
-			removePendingEntry(entry)
-			expect(peekCallerMcpServers()).toBeUndefined()
+			setCallerMcpServers("s1", { foo: stdioEntry })
+			consumeCallerMcpServers("s1")
+			// Already consumed — should not throw
+			removePendingEntry("s1")
+			expect(peekCallerMcpServers("s1")).toBeUndefined()
 		})
 
-		it("only removes the specified entry, not others", () => {
-			const entry1: CallerServerEntry = setCallerMcpServers({ a: stdioEntry })
-			setCallerMcpServers({ b: httpEntry })
-			removePendingEntry(entry1)
-			// entry1 removed, entry2 still in queue
-			expect(consumeCallerMcpServers()).toEqual({ b: httpEntry })
-			expect(consumeCallerMcpServers()).toEqual({})
+		it("only removes the specified session, not others", () => {
+			setCallerMcpServers("s1", { a: stdioEntry })
+			setCallerMcpServers("s2", { b: httpEntry })
+			removePendingEntry("s1")
+			expect(peekCallerMcpServers("s1")).toBeUndefined()
+			expect(consumeCallerMcpServers("s2")).toEqual({ b: httpEntry })
 		})
 
-		it("does not remove a different entry with the same content (reference identity)", () => {
-			const entry1: CallerServerEntry = setCallerMcpServers({ same: stdioEntry })
-			setCallerMcpServers({ same: stdioEntry })
-			removePendingEntry(entry1)
-			// entry1 removed by reference, second entry (same content) remains
-			expect(consumeCallerMcpServers()).toEqual({ same: stdioEntry })
-			expect(consumeCallerMcpServers()).toEqual({})
+		it("is a no-op on unknown sessionId", () => {
+			// Should not throw
+			removePendingEntry("nonexistent")
 		})
 	})
 
 	describe("clearCallerMcpServers", () => {
 		it("clears all entries", () => {
-			setCallerMcpServers({ a: stdioEntry })
-			setCallerMcpServers({ b: httpEntry })
+			setCallerMcpServers("s1", { a: stdioEntry })
+			setCallerMcpServers("s2", { b: httpEntry })
 			clearCallerMcpServers()
-			expect(consumeCallerMcpServers()).toEqual({})
-			expect(peekCallerMcpServers()).toBeUndefined()
+			expect(peekCallerMcpServers("s1")).toBeUndefined()
+			expect(peekCallerMcpServers("s2")).toBeUndefined()
 		})
 	})
 
-	describe("FIFO ordering", () => {
-		it("preserves push order across multiple sessions", () => {
-			setCallerMcpServers({ first: stdioEntry })
-			setCallerMcpServers({ second: httpEntry })
-			setCallerMcpServers({ third: stdioEntry })
+	describe("concurrent session isolation", () => {
+		it("out-of-order consumption: session B can consume before session A", () => {
+			// Simulate the race: A is set first, B second, but B consumes first
+			setCallerMcpServers("A", { first: stdioEntry })
+			setCallerMcpServers("B", { second: httpEntry })
 
-			expect(consumeCallerMcpServers()).toEqual({ first: stdioEntry })
-			expect(consumeCallerMcpServers()).toEqual({ second: httpEntry })
-			expect(consumeCallerMcpServers()).toEqual({ third: stdioEntry })
+			// B consumes first — gets B's servers, not A's
+			expect(consumeCallerMcpServers("B")).toEqual({ second: httpEntry })
+
+			// A consumes second — gets A's servers, not B's
+			expect(consumeCallerMcpServers("A")).toEqual({ first: stdioEntry })
+
+			// Both drained
+			expect(consumeCallerMcpServers("A")).toEqual({})
+			expect(consumeCallerMcpServers("B")).toEqual({})
 		})
 	})
 })

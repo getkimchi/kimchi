@@ -1,81 +1,65 @@
 import type { ServerEntry } from "./types.js"
 
 /**
- * Process-level FIFO registry of caller-supplied MCP servers.
+ * Session-id-keyed registry of caller-supplied MCP servers.
  *
  * The ACP server (`src/modes/acp/server.ts`) receives `mcpServers` on
  * `session/new` and `session/load` and needs to pass them to the MCP adapter
  * extension, which runs inside pi's `session_start` handler. Since pi's
  * `ExtensionContext` has no session-scoped channel for this, we use a
- * module-level queue: `setCallerMcpServers` pushes, `consumeCallerMcpServers`
- * pops (FIFO).
+ * module-level map keyed by session ID.
  *
- * FIFO order matters: `initializeMcp` is fire-and-forget relative to
- * `bindExtensions`, so two rapid `newSession` calls can overlap. The queue
- * ensures each `session_start` → `initializeMcp` consumes the servers that
- * were set for that specific session, in call order.
+ * Keyed by sessionId (not a FIFO queue) so concurrent sessions can't consume
+ * each other's entries. The ACP server calls `setCallerMcpServers(sessionId,
+ * servers)` after the session is created (sessionId is known), and
+ * `initializeMcp` calls `consumeCallerMcpServers(sessionId)` using
+ * `ctx.sessionManager.getSessionId()`.
  */
+
+const registry = new Map<string, Record<string, ServerEntry>>()
 
 /**
- * Internal queue entry. The `servers` field holds the actual server definitions;
- * the object identity (reference) is used by `removePendingEntry` to safely
- * remove only the entry that this specific `setCallerMcpServers` call created,
- * without accidentally draining a different session's entry.
+ * Store caller-supplied MCP servers keyed by session ID.
+ * Called by the ACP server after `sessionFactory`/`sessionLoader` returns
+ * (when the session ID is known), before `bindAcpExtensions`.
  */
-export interface CallerServerEntry {
-	servers: Record<string, ServerEntry>
-}
-
-const queue: CallerServerEntry[] = []
-
-/**
- * Push caller-supplied MCP servers onto the registry queue.
- * Returns the opaque entry so the caller can remove it later if the session
- * fails before `initializeMcp` consumes it.
- */
-export function setCallerMcpServers(servers: Record<string, ServerEntry>): CallerServerEntry {
-	const entry: CallerServerEntry = { servers }
-	queue.push(entry)
-	return entry
+export function setCallerMcpServers(sessionId: string, servers: Record<string, ServerEntry>): void {
+	registry.set(sessionId, servers)
 }
 
 /**
- * Pop and return the oldest caller-supplied servers from the queue.
+ * Pop and return the caller-supplied servers for the given session ID.
  * Called by `initializeMcp` during `session_start`. After consumption, the
- * entry is gone — subsequent calls return `{}` until the next `setCallerMcpServers`.
+ * entry is deleted — subsequent calls for the same sessionId return `{}`.
  */
-export function consumeCallerMcpServers(): Record<string, ServerEntry> {
-	return queue.shift()?.servers ?? {}
-}
-
-/**
- * Return the oldest entry without removing it (for tests/debugging).
- */
-export function peekCallerMcpServers(): Record<string, ServerEntry> | undefined {
-	return queue[0]?.servers
-}
-
-/**
- * Remove a specific pending entry from the queue if it hasn't been consumed yet.
- * Used by the ACP server's catch blocks to clean up after a session failure:
- * if `initializeMcp` already consumed the entry (via `consumeCallerMcpServers`),
- * this is a no-op. If it hasn't (e.g. `sessionFactory` threw before
- * `session_start` fired), the entry is removed so it doesn't leak to the next
- * session.
- *
- * Uses reference identity (`===`) so it only removes the exact entry returned
- * by `setCallerMcpServers`, never a different session's entry.
- */
-export function removePendingEntry(entry: CallerServerEntry): void {
-	const index = queue.indexOf(entry)
-	if (index !== -1) {
-		queue.splice(index, 1)
+export function consumeCallerMcpServers(sessionId: string): Record<string, ServerEntry> {
+	const servers = registry.get(sessionId)
+	if (servers) {
+		registry.delete(sessionId)
+		return servers
 	}
+	return {}
 }
 
 /**
- * Clear the queue. Exposed for tests to ensure isolation between test cases.
+ * Return the entry for a sessionId without removing it (for tests/debugging).
+ */
+export function peekCallerMcpServers(sessionId: string): Record<string, ServerEntry> | undefined {
+	return registry.get(sessionId)
+}
+
+/**
+ * Remove a specific session's entry if it hasn't been consumed yet.
+ * Used by the ACP server's catch blocks to clean up after a session failure:
+ * if `initializeMcp` already consumed the entry, this is a no-op.
+ */
+export function removePendingEntry(sessionId: string): void {
+	registry.delete(sessionId)
+}
+
+/**
+ * Clear the registry. Exposed for tests to ensure isolation between test cases.
  */
 export function clearCallerMcpServers(): void {
-	queue.length = 0
+	registry.clear()
 }

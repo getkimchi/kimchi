@@ -65,11 +65,7 @@ import { clearApiKey, writeApiKey } from "../../config.js"
 import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
-import {
-	type CallerServerEntry,
-	removePendingEntry,
-	setCallerMcpServers,
-} from "../../extensions/mcp-adapter/caller-servers.js"
+import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -532,22 +528,16 @@ export class KimchiAcpAgent implements Agent {
 		// dispose it — so make ownership transfer atomic.
 		// Declared outside the try so the catch block can tell whether the
 		// factory already produced a live session (needs disposal + unregister)
-		// or threw before one existed (skip those, only drain the caller-servers
-		// queue).
+		// or threw before one existed (skip those, only remove the caller-servers
+		// entry if it was set).
 		let session: AgentSession | undefined
-		let callerEntry: CallerServerEntry | undefined
 		try {
-			// Convert caller-supplied MCP servers (from the ACP session/new
-			// request) and push them onto the caller-server registry. The mcpAdapter
-			// extension's session_start handler drains this registry inside
-			// initializeMcp(), connecting the servers alongside config-sourced ones.
-			// Must be inside the try block: if sessionFactory or bindExtensions
-			// throws, the catch removes the pending entry to avoid leaking to the
-			// next session. removePendingEntry uses reference identity so it only
-			// removes THIS session's entry — if initializeMcp already consumed it
-			// (via consumeCallerMcpServers), the removal is a no-op.
-			callerEntry = setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
 			session = await this.sessionFactory(params)
+			// Convert caller-supplied MCP servers and store them keyed by sessionId.
+			// This must happen AFTER sessionFactory (sessionId is known) but BEFORE
+			// bindAcpExtensions (session_start → initializeMcp drains by sessionId).
+			// Keyed by sessionId so concurrent sessions can't consume each other's entries.
+			setCallerMcpServers(session.sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
 
@@ -590,12 +580,11 @@ export class KimchiAcpAgent implements Agent {
 			}
 		} catch (err) {
 			// Remove this session's caller-servers entry if it hasn't been
-			// consumed yet by initializeMcp (e.g. sessionFactory or bindExtensions
-			// threw before session_start fired). removePendingEntry uses reference
-			// identity so it only removes THIS session's entry — if initializeMcp
-			// already consumed it, this is a no-op, and no other session's entry
-			// is affected.
-			if (callerEntry) removePendingEntry(callerEntry)
+			// consumed yet by initializeMcp (e.g. bindExtensions threw before
+			// session_start fired). Keyed by sessionId so only this session's
+			// entry is removed — no-op if already consumed or if sessionFactory
+			// threw before setCallerMcpServers was called.
+			if (session) removePendingEntry(session.sessionId)
 			// Only unwind registration + dispose if the factory actually handed us
 			// a live session. If sessionFactory itself threw, `session` is still
 			// undefined and there is nothing to unregister or dispose.
@@ -805,16 +794,12 @@ export class KimchiAcpAgent implements Agent {
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
 		//
-		// callerEntry is declared outside the try so the catch can remove it
-		// from the caller-servers queue if the session fails before initializeMcp
-		// consumes it. setCallerMcpServers is inside the try so the early-return
-		// paths in loadSession (session already live / already loading) never
-		// enqueue an entry.
-		let callerEntry: CallerServerEntry | undefined
+		// setCallerMcpServers is called after sessionLoader returns (sessionId
+		// is known) but before bindAcpExtensions, so the early-return paths in
+		// loadSession (session already live / already loading) never set an entry.
 		let session: AgentSession | undefined
 		let sid: string | undefined
 		try {
-			callerEntry = setCallerMcpServers(convertAcpMcpServers(params.mcpServers ?? []))
 			const loadedSession = await this.sessionLoader(params)
 			session = loadedSession
 			const initialMode = this.getInitialPermissionMode(loadedSession)
@@ -833,6 +818,10 @@ export class KimchiAcpAgent implements Agent {
 					`session header id ${sessionSid} does not match requested sessionId ${params.sessionId}`,
 				)
 			}
+			// Convert caller-supplied MCP servers and store keyed by sessionId.
+			// Must happen after sessionLoader (sessionId known) but before
+			// bindAcpExtensions (session_start → initializeMcp drains by sessionId).
+			setCallerMcpServers(sessionSid, convertAcpMcpServers(params.mcpServers ?? []))
 			assertSessionHasModel(loadedSession)
 
 			const uiContext = this.createUiContext(loadedSession)
@@ -890,7 +879,7 @@ export class KimchiAcpAgent implements Agent {
 		} catch (err) {
 			// Remove this session's caller-servers entry if it hasn't been consumed
 			// by initializeMcp yet (same pattern as newSession).
-			if (callerEntry) removePendingEntry(callerEntry)
+			if (sid) removePendingEntry(sid)
 			if (sid) {
 				unregisterAcpPrompter(sid)
 				unregisterSessionPermissionFlagController(sid)

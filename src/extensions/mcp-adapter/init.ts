@@ -70,7 +70,7 @@ export async function initializeMcp(
 	// with config-sourced servers. Caller-wins on name collision: the ACP
 	// client explicitly requested that server, so its definition takes
 	// precedence over a same-named entry in the config file.
-	const callerServers = consumeCallerMcpServers()
+	const callerServers = consumeCallerMcpServers(ctx.sessionManager.getSessionId())
 	const mergedServers: Record<string, ServerDefinition> = { ...config.mcpServers }
 	for (const [name, definition] of Object.entries(callerServers)) {
 		if (name in mergedServers) {

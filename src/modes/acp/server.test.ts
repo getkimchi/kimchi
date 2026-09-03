@@ -1559,8 +1559,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(res.sessionId).toBe("with-mcp")
 		expect(factoryCalled.count).toBe(1)
 		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
-		// so the caller-servers entry stays in the queue — verify it was pushed.
-		expect(peekCallerMcpServers()).toEqual({ x: { command: "x", args: [] } })
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -5687,8 +5687,8 @@ describe("KimchiAcpAgent loadSession", () => {
 		})
 		expect(loaderCalls.count).toBe(1)
 		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
-		// so the caller-servers entry stays in the queue — verify it was pushed.
-		expect(peekCallerMcpServers()).toEqual({ x: { command: "x", args: [] } })
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
