@@ -19,9 +19,7 @@
  * Token counts are an estimator (chars/4), same convention as the context-assembly
  * extension, so journal entries and budgets share units.
  *
- * Initial budgets recorded 2026-08-26: system prompt 4341 est, skills catalog 68 est
- * (slice headroom ~10%). Tool-surface budgets recorded 2026-08-27 from this exact
- * measurement. Raise budgets deliberately in the PR that grows the surface —
+ * Raise budgets deliberately in the PR that grows the surface —
  * never as a drive-by.
  */
 
@@ -63,28 +61,25 @@ vi.mock("./multi-model.js", async (importOriginal) => {
 
 const CHARS_PER_TOKEN = 4
 
-/** Budget slices (estimated tokens). Headroom over the recorded baseline below. */
+/** Budget slices (estimated tokens). Headroom over the measured baseline below. */
 const BUDGET = {
 	/** buildSystemPrompt with the canonical single-mode options below
-	 *  (recorded 2026-09-01: 1,909 est — tool descriptions live in the API
-	 *  payload, the phase payload is gated on set_phase, Consent/Output/
-	 *  Environment sections dieted; ~7% headroom). */
+	 *  (tool descriptions live in the API payload, the phase payload is gated
+	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
 	systemPrompt: 2050,
 	/** Sum of name + description chars across resources/skills frontmatter. */
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 2150,
-	/** Total canonical tool surface (recorded 2026-08-28: 6764 est across
-	 *  26 tools after the DAP session-tool + bash_control deferrals, the mcp
-	 *  zero-server registration gate, and the lsp no-server detection gate;
-	 *  ~5% headroom). Dev sessions in a repo WITH a detected language server will
-	 *  exceed this by the five gated lsp_* tools (~666 est) — that is by design,
-	 *  see LSP_TOOL_NAMES in lsp.ts. */
+	/** Total canonical tool surface (26 tools after the DAP session-tool +
+	 *  bash_control deferrals, the mcp zero-server registration gate, and the
+	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH
+	 *  a detected language server will exceed this by the five gated lsp_* tools
+	 *  — that is by design, see LSP_TOOL_NAMES in lsp.ts. */
 	toolSurface: 7100,
-	/** Print-mode slice (recorded 2026-08-28: 6021 est across 24
-	 *  tools — the canonical surface minus questionnaire (526) and set_phase
-	 *  (217), which the registration gates drop in headless --print runs;
-	 *  ~5% headroom). */
+	/** Print-mode slice (24 tools — the canonical surface minus questionnaire
+	 *  and set_phase, which the registration gates drop in headless --print
+	 *  runs; ~5% headroom). */
 	printToolSurface: 6300,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
