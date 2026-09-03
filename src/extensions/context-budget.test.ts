@@ -94,7 +94,6 @@ const FIXED_ENV: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.0.0",
 	osVersion: "fixture",
 	username: "budget",
 	homeDir: "/home/budget",

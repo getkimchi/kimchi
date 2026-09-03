@@ -24,7 +24,6 @@ export interface EnvironmentInfo {
 	rawPlatform: string
 	cpuArchitecture: string
 	shell: string
-	osRelease: string
 	osVersion: string
 	username: string
 	homeDir: string
@@ -60,6 +59,8 @@ export interface SystemPromptBuildOptions {
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
 	sessionId?: string
 }
+
+export const SET_PHASE = "set_phase"
 
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
 
@@ -201,7 +202,10 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Show file paths clearly when working with files. Always use absolute paths.
 - Do NOT introduce security vulnerabilities.
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
+- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
+- Always wrap shell commands with a timeout (default 60s) — e.g. \`timeout 60 <cmd>\` — to prevent hangs.
+- Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
+- **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
@@ -356,25 +360,27 @@ const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "
 export function buildPhaseManagementSection(
 	modelId?: string,
 	registry?: ModelRegistry,
-	includeToolInstructions = true,
+	phaseToolReachable = true,
 	mode: PromptMode = "single",
 	roles?: ModelRoles,
 ): string {
-	// Token-optimization Phase 2 (P2-2): in single-model mode the phase payload
-	// is only useful when the agent can actually tag phases. When set_phase is
-	// unreachable (e.g. --print sessions, where Chunk 7 gates it out), the
-	// ~2,100-est guideline block is dead weight — skip the section entirely.
-	// Interactive single-model sessions keep set_phase, hence the full payload.
-	// Orchestrator/subagent modes are unaffected (their persona/role models
-	// rely on phase behaviour regardless of tool reachability).
-	if (mode === "single" && !includeToolInstructions) return ""
+	// Token-optimization Phase 2 (P2-2): single-mode agents that cannot call
+	// set_phase never tag phases, so the phase-tagging guidance is inert. When
+	// set_phase is unreachable (e.g. plain --print sessions, where Chunk 7 gates
+	// it out), drop the payload to save ~2,100 est. Tool-independent safety rules
+	// that used to ride this payload (commit trailer, shell timeouts,
+	// non-interactive-command flags) now live in CORE_GUIDELINES, which is always
+	// emitted — so --print still gets them. Interactive single-model sessions keep
+	// set_phase and therefore the full payload. Orchestrator/subagent modes are
+	// unaffected (persona/role phase behaviour applies regardless of the tool).
+	if (mode === "single" && !phaseToolReachable) return ""
 	const applicablePhases =
 		mode === "orchestrator"
 			? PHASE_ORDER.filter((phase) => orchestratorShouldReceivePhaseGuidelines(phase, modelId, roles))
 			: PHASE_ORDER
 	const guidelines = applicablePhases.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
-	const intro = includeToolInstructions ? PHASE_MANAGEMENT_INTRO : "## Phase Management"
-	if (!guidelines) return includeToolInstructions ? intro : ""
+	const intro = phaseToolReachable ? PHASE_MANAGEMENT_INTRO : "## Phase Management"
+	if (!guidelines) return phaseToolReachable ? intro : ""
 	return `${intro}\n\n### Phase-specific behaviour\n\n${guidelines}`
 }
 
@@ -385,7 +391,7 @@ Ask before unrequested actions that publish externally, mutate remote state, or 
 Approval covers exactly the action the user requested — not escalations or workarounds toward the same goal. A request to "push" does not authorize opening a pull request; a request to "commit" does not authorize tagging a release. A request to investigate an issue, evaluate options, or draft a plan authorizes only the analysis — not the fix or implementation; report the findings and wait for the user's go-ahead before writing or modifying code. If the requested action is blocked or fails, propose the alternative and wait for the user to choose.
 
 - GitHub CLI: do not run mutating commands unprompted — \`gh pr/issue/run/release\` write verbs (review, comment, merge, close/reopen, ready, edit, rerun, cancel, delete, create) and any \`gh api POST/PATCH/PUT/DELETE\`. Read-only commands (\`list\`, \`view\`, \`diff\`, \`checks\`, \`status\`, \`gh api\` GETs) are fine.
-- GitLab CLI: same rule — mutating \`glab mr/issue/ci/release\` write verbs and \`glab api POST/PUT/PATCH/DELETE\` need explicit approval.
+- GitLab CLI: same rule — mutating \`glab mr/issue/ci/release\` write verbs (incl. approve, note resolve, rebase, retry) and \`glab api POST/PUT/PATCH/DELETE\` need explicit approval.
 - Git remote ops (any CLI): pushing branches, force-push, deleting branches/tags need explicit approval.`
 
 export const HARNESS_NOTES_AND_APPROVAL = `## Harness Notes and Approval
@@ -420,7 +426,7 @@ function buildPrompt(parts: PromptParts): string {
 		buildPhaseManagementSection(
 			parts.currentModelId,
 			parts.registry,
-			parts.toolNames.has("set_phase"),
+			parts.toolNames.has(SET_PHASE),
 			parts.mode,
 			parts.roles,
 		),

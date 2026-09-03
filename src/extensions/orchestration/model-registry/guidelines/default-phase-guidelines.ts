@@ -43,13 +43,10 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
-- Always wrap shell commands with a timeout to prevent hanging. Use language-native timeouts where available (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`) and \`timeout <seconds> <command>\` for everything else (e.g. \`timeout 30 go run .\`, \`timeout 60 ./server\`). Default to 60 seconds unless the task explicitly requires longer.
-- **Never run interactive commands** (e.g. \`patch -p1\`, \`git rebase\`, \`git commit\`, \`git merge\`, \`git cherry-pick\`, default \`npm init\`). Use non-interactive flags: \`patch --forward\` or \`patch -N\`, \`git -c core.editor=true ...\`, \`GIT_EDITOR=true\`, \`npm init -y\`, \`--yes\`, \`--non-interactive\`. If a command might block on input, redirect stdin from \`/dev/null\` or prefix with \`timeout\`.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - If you are uncertain about a library API (signature, existence, or current behaviour), run a quick \`web_search\` or ask the user before guessing. A few seconds of research is cheaper than a failed build/test cycle. If web tools are not available, stop and ask rather than bluff.
 - If the task names a specific library, framework, build tool, or vendor kit, assume your knowledge may be stale and verify the specific facts (version, API, install step, protocol, current convention) you plan to rely on with a quick \`web_search\`. Do not trust memory just because the name feels familiar. Best practices and defaults (error handling, project layout, testing conventions) drift over time — if your knowledge of a convention is older than ~18 months, verify it before baking it into code.
-- Keep diffs minimal and reviewable.
-- **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
+- Keep diffs minimal and reviewable.`
 
 export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Read the diff or changed files first; then read the surrounding context for any touched function.

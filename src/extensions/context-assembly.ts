@@ -124,7 +124,9 @@ export function attributeComponents(systemPrompt: string, options: SystemPromptO
  * `## Header` boundaries. The preamble before the first header is reported as
  * "(intro)". Section chars sum to the prompt length (the header line is counted
  * in the section it starts); this is a size table only — contributor attribution
- * stays in `components`.
+ * stays in `components`. Headers from verbatim embedded content (skill bodies,
+ * appended-prompt text, memory excerpts) also split the table — context files are
+ * pre-neutralized by shiftHeadings — so some section names may be content-derived.
  */
 export function sectionSizes(systemPrompt: string): ContextAssemblySection[] {
 	const boundaries: Array<{ name: string; start: number }> = []

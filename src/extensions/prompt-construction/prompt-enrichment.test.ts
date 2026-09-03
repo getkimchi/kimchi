@@ -16,6 +16,7 @@ import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
+import { toolNamesFromSection } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
@@ -210,9 +211,8 @@ describe("prompt enrichment tool visibility", () => {
 		try {
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			const namesLine = result.systemPrompt.split("## Available Tools\n\n")[1]?.split("\n")[0] ?? ""
-			expect(namesLine).toContain("read")
-			expect(namesLine).not.toContain("bash")
+			expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
+			expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
 		} finally {
 			visibility.enable(["bash"])
 		}
@@ -243,9 +243,8 @@ describe("prompt enrichment tool visibility", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-		const namesLine = result.systemPrompt.split("## Available Tools\n\n")[1]?.split("\n")[0] ?? ""
-		expect(namesLine).toContain("read")
-		expect(namesLine).not.toContain("bash")
+		expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
+		expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
 	})
 })
 

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import { toolNamesFromSection } from "../prompt-construction/test-utils.js"
 import mcpAdapter from "./index.js"
 import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
@@ -40,7 +41,6 @@ const testEnv: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -201,8 +201,7 @@ describe("mcp adapter system prompt block", () => {
 			// Consolidated core section must still cover the MCP guidance.
 			expect(result).toContain("## Tool Selection")
 			expect(result).toContain("mcp({ search")
-			const namesLine = result.split("## Available Tools\n\n")[1]?.split("\n")[0] ?? ""
-			expect(namesLine).toContain("mcp")
+			expect(toolNamesFromSection(result)).toContain("mcp")
 		} finally {
 			await pi.fireShutdown()
 		}

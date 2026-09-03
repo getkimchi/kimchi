@@ -11,7 +11,6 @@ const testEnv: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -278,7 +277,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).not.toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
 			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
@@ -546,7 +545,7 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).not.toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
 			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
@@ -643,6 +642,11 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("During **build** phase")
 			expect(result).not.toContain("During **research** phase")
 			expect(result).not.toContain("Call `set_phase`")
+			// The tool-independent safety rules that used to ride the phase payload
+			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
+			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
+			expect(result).toContain("Always wrap shell commands with a timeout")
+			expect(result).toContain("Never run interactive commands")
 		})
 
 		it("keeps phase guidelines in subagent mode even without set_phase", () => {
