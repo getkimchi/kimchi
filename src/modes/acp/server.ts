@@ -91,6 +91,7 @@ import type { PermissionMode, PermissionModeState } from "../../extensions/permi
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { updateModelsConfig } from "../../models.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
@@ -417,6 +418,10 @@ export class KimchiAcpAgent implements Agent {
 
 		return {
 			protocolVersion: PROTOCOL_VERSION,
+			agentInfo: {
+				name: "kimchi",
+				version: getVersion(),
+			},
 			agentCapabilities: {
 				loadSession: true,
 				// Advertise logout support so clients know they can call

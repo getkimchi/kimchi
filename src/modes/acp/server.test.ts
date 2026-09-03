@@ -43,6 +43,16 @@ vi.mock("../../config.js", async (importOriginal) => {
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
 }))
+// Pin getVersion() so initialize() agentInfo assertions are deterministic
+// and don't depend on the repo's package.json.
+const getVersionMock = vi.fn(() => "1.2.3-test")
+vi.mock("../../utils.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../utils.js")>()
+	return {
+		...actual,
+		getVersion: () => getVersionMock(),
+	}
+})
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
@@ -93,6 +103,9 @@ function cleanPermissionEnv(): void {
 }
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => {
+	getVersionMock.mockReturnValue("1.2.3-test")
+})
 afterEach(cleanPermissionEnv)
 
 /** Model shape used by FakeAgentSession's model registry. */
@@ -554,6 +567,36 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			expect(response.agentCapabilities?.auth?.logout).toEqual({})
+		})
+
+		it("includes agentInfo with name kimchi and current version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("9.8.7-test")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo).toEqual({
+				name: "kimchi",
+				version: "9.8.7-test",
+			})
+		})
+
+		it("reflects the live getVersion() value in agentInfo.version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("0.0.0-canary.42")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo?.name).toBe("kimchi")
+			expect(response.agentInfo?.version).toBe("0.0.0-canary.42")
 		})
 	})
 
