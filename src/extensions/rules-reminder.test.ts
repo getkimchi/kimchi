@@ -252,3 +252,51 @@ describe("rulesReminderExtension quiet cases", () => {
 		expect(handlers.get("input")).toBeUndefined()
 	})
 })
+
+describe("rulesReminderExtension debug trace", () => {
+	let savedDebugPrompts: string | undefined
+
+	beforeEach(() => {
+		savedDebugPrompts = process.env.KIMCHI_DEBUG_PROMPTS
+	})
+
+	afterEach(() => {
+		if (savedDebugPrompts === undefined) {
+			Reflect.deleteProperty(process.env, "KIMCHI_DEBUG_PROMPTS")
+		} else {
+			process.env.KIMCHI_DEBUG_PROMPTS = savedDebugPrompts
+		}
+	})
+
+	it("traces the injection while prompt debugging is on", async () => {
+		process.env.KIMCHI_DEBUG_PROMPTS = "1"
+		const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {})
+		try {
+			await recordPromptMode("rules-debug-on", "single")
+			const { handlers } = await loadExtension()
+
+			firePrompt(handlers, "rules-debug-on")
+
+			expect(debugSpy).toHaveBeenCalledOnce()
+			expect(String(debugSpy.mock.calls[0][0])).toContain("rules-debug-on")
+		} finally {
+			debugSpy.mockRestore()
+		}
+	})
+
+	it("writes nothing to the terminal while prompt debugging is off", async () => {
+		Reflect.deleteProperty(process.env, "KIMCHI_DEBUG_PROMPTS")
+		const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {})
+		try {
+			await recordPromptMode("rules-debug-off", "single")
+			const { handlers, sendMessage } = await loadExtension()
+
+			firePrompt(handlers, "rules-debug-off")
+
+			expect(sendMessage).toHaveBeenCalledOnce()
+			expect(debugSpy).not.toHaveBeenCalled()
+		} finally {
+			debugSpy.mockRestore()
+		}
+	})
+})

@@ -45,10 +45,14 @@ export default function rulesReminderExtension(pi: ExtensionAPI): void {
 			{ deliverAs: "nextTurn" },
 		)
 
-		try {
-			console.debug?.(`[rules-reminder] appended rules to session ${sessionId} (mode ${mode})`)
-		} catch {
-			// console.debug may be undefined in some environments — never throw.
+		// Only trace when prompt debugging is on: an unconditional write lands in
+		// the middle of the terminal UI and corrupts what it is drawing.
+		if (process.env.KIMCHI_DEBUG_PROMPTS === "1") {
+			try {
+				console.debug?.(`[rules-reminder] appended rules to session ${sessionId} (mode ${mode})`)
+			} catch {
+				// console.debug may be undefined in some environments — never throw.
+			}
 		}
 	})
 
