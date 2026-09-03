@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runRestartableMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpToolResult } from "./support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, parallelModelToolCalls, toolResultText } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -12,7 +13,23 @@ test("starts a cached lazy MCP server only when a tool is called", async ({ term
 		terminal,
 		{
 			artifactName: "mcp-lifecycle-lazy",
-			mcp: { lifecycle: "lazy" },
+			mcp: {
+				lifecycle: "lazy",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: warm-lazy-cache" }] },
+							{ message: "warm-lazy-cache" },
+						),
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: lazy-start" }] },
+							{ message: "lazy-start" },
+						),
+					],
+				},
+			},
 			responses: [
 				warmCache.response,
 				modelReply("The lazy MCP cache is warm."),
@@ -56,11 +73,27 @@ test("starts a cached lazy MCP server only when a tool is called", async ({ term
 test("recovers a crashed MCP server through the reconnect command", async ({ terminal }) => {
 	const disconnect = gatewayMcpCall("disconnect")
 	const afterRecovery = gatewayMcpCall("echo", { message: "manual-reconnect-recovered" })
+	const disconnectExitCode = 17
 	await runRestartableMcpKimchiSession(
 		terminal,
 		{
 			artifactName: "mcp-lifecycle-manual-reconnect",
-			mcp: { lifecycle: "keep-alive" },
+			mcp: {
+				lifecycle: "keep-alive",
+				behavior: {
+					tools: [
+						{
+							name: "disconnect",
+							response: { type: "exit", code: disconnectExitCode },
+						},
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: manual-reconnect-recovered" }] },
+							{ message: "manual-reconnect-recovered" },
+						),
+					],
+				},
+			},
 			responses: [
 				disconnect.response,
 				modelReply("The MCP crash was contained."),
@@ -71,7 +104,10 @@ test("recovers a crashed MCP server through the reconnect command", async ({ ter
 		async (fixture, session, trace) => {
 			const beforeCrash = fixture.mcp.checkpoint()
 			await session.turn("Crash the MCP server", "The MCP crash was contained.")
-			await fixture.mcp.waitForEvent("process_exited", { after: beforeCrash, where: { code: 17 } })
+			await fixture.mcp.waitForEvent("process_exited", {
+				after: beforeCrash,
+				where: { code: disconnectExitCode },
+			})
 			const afterCrash = fixture.mcp.checkpoint()
 
 			terminal.write("/mcp reconnect fixture")
@@ -101,7 +137,26 @@ test("single-flights concurrent calls that start a cached lazy MCP server", asyn
 		terminal,
 		{
 			artifactName: "mcp-lifecycle-lazy-concurrent",
-			mcp: { lifecycle: "lazy" },
+			mcp: {
+				lifecycle: "lazy",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: warm-concurrent-cache" }] },
+							{ message: "warm-concurrent-cache" },
+						),
+						{
+							name: "slow",
+							response: {
+								type: "delayed-result",
+								delayMs: 2_000,
+								value: { content: [{ type: "text", text: "fixture slow call completed" }] },
+							},
+						},
+					],
+				},
+			},
 			responses: [
 				warmCache.response,
 				modelReply("The concurrent lazy MCP cache is warm."),
@@ -139,16 +194,33 @@ test("single-flights concurrent calls that start a cached lazy MCP server", asyn
 	)
 })
 
-// Re-enable when the bundled pi-mcp-adapter is upgraded to >=2.12.0, which contains the
-// upstream close-state fix. The current adapter cannot reconnect after a stdio process exit.
-test.skip("reconnects a keep-alive MCP server after its process crashes", async ({ terminal }) => {
+// Fixed upstream in pi-mcp-adapter v2.12.0 by PR #194's client-close state handling.
+// Remove test.fail once the bundled adapter includes that fix; the current adapter cannot
+// reconnect after a stdio process exit.
+test.fail("reconnects a keep-alive MCP server after its process crashes", async ({ terminal }) => {
 	const disconnect = gatewayMcpCall("disconnect")
 	const afterRecovery = gatewayMcpCall("echo", { message: "keep-alive-recovered" })
+	const disconnectExitCode = 17
 	await runRestartableMcpKimchiSession(
 		terminal,
 		{
 			artifactName: "mcp-lifecycle-keep-alive",
-			mcp: { lifecycle: "keep-alive" },
+			mcp: {
+				lifecycle: "keep-alive",
+				behavior: {
+					tools: [
+						{
+							name: "disconnect",
+							response: { type: "exit", code: disconnectExitCode },
+						},
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: keep-alive-recovered" }] },
+							{ message: "keep-alive-recovered" },
+						),
+					],
+				},
+			},
 			responses: [
 				disconnect.response,
 				modelReply("The keep-alive crash was contained."),
@@ -159,7 +231,10 @@ test.skip("reconnects a keep-alive MCP server after its process crashes", async 
 		async (fixture, session, trace) => {
 			const beforeCrash = fixture.mcp.checkpoint()
 			await session.turn("Crash the keep-alive MCP server", "The keep-alive crash was contained.")
-			await fixture.mcp.waitForEvent("process_exited", { after: beforeCrash, where: { code: 17 } })
+			await fixture.mcp.waitForEvent("process_exited", {
+				after: beforeCrash,
+				where: { code: disconnectExitCode },
+			})
 			const afterCrash = fixture.mcp.checkpoint()
 
 			await fixture.mcp.waitForEvent("process_started", {

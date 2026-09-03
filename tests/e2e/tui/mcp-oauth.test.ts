@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, runRestartableMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpToolResult } from "./support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -11,7 +12,18 @@ test("logs into an HTTP MCP server with OAuth authorization code and PKCE", asyn
 		terminal,
 		{
 			artifactName: "mcp-oauth-login",
-			mcp: { transport: "oauth" },
+			mcp: {
+				transport: "oauth",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-login" }] },
+							{ message: "oauth-login" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("The OAuth-authenticated MCP tool returned successfully.")],
 		},
 		async (fixture, trace) => {
@@ -58,7 +70,19 @@ test("automatically authenticates and retries an OAuth-protected MCP call", asyn
 		terminal,
 		{
 			artifactName: "mcp-oauth-auto-auth",
-			mcp: { transport: "oauth", autoAuth: true },
+			mcp: {
+				transport: "oauth",
+				autoAuth: true,
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-auto-auth" }] },
+							{ message: "oauth-auto-auth" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("Automatic MCP OAuth completed without a slash command.")],
 		},
 		async (fixture, trace) => {
@@ -92,6 +116,15 @@ test("authenticates a non-interactive MCP server with client credentials", async
 					clientId: "kimchi-e2e-client",
 					clientSecret: "kimchi-e2e-client-secret",
 					scope: "mcp:tools",
+				},
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-client-credentials" }] },
+							{ message: "oauth-client-credentials" },
+						),
+					],
 				},
 			},
 			responses: [echo.response, modelReply("MCP client credentials authenticated without a browser.")],
@@ -166,7 +199,24 @@ test("refreshes an expired MCP OAuth token after a real Kimchi process restart",
 		terminal,
 		{
 			artifactName: "mcp-oauth-refresh-restart",
-			mcp: { transport: "oauth", scenario: "oauth-expiring" },
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-expiring",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: before-oauth-restart" }] },
+							{ message: "before-oauth-restart" },
+						),
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: after-oauth-refresh" }] },
+							{ message: "after-oauth-refresh" },
+						),
+					],
+				},
+			},
 			responses: [
 				beforeRestart.response,
 				modelReply("The first OAuth MCP call succeeded."),

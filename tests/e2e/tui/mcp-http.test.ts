@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpToolResult } from "./support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -11,7 +12,19 @@ test("calls a Streamable HTTP MCP tool and preserves configured headers", async 
 		terminal,
 		{
 			artifactName: "mcp-http",
-			mcp: { transport: "http", headers: { "X-Kimchi-E2E": "fixture-header" } },
+			mcp: {
+				transport: "http",
+				headers: { "X-Kimchi-E2E": "fixture-header" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: streamable-http" }] },
+							{ message: "streamable-http" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("The Streamable HTTP MCP tool returned successfully.")],
 		},
 		async (fixture, trace) => {
@@ -39,7 +52,19 @@ test("authenticates to a Streamable HTTP MCP server with a static bearer token",
 		terminal,
 		{
 			artifactName: "mcp-http-bearer",
-			mcp: { transport: "http", bearerToken: "kimchi-e2e-bearer-token" },
+			mcp: {
+				transport: "http",
+				bearerToken: "kimchi-e2e-bearer-token",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: bearer-authenticated" }] },
+							{ message: "bearer-authenticated" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("The authenticated MCP request succeeded.")],
 		},
 		async (fixture, trace) => {
@@ -65,7 +90,18 @@ test("falls back from Streamable HTTP to the legacy MCP SSE transport", async ({
 		terminal,
 		{
 			artifactName: "mcp-sse-fallback",
-			mcp: { transport: "sse" },
+			mcp: {
+				transport: "sse",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: legacy-sse" }] },
+							{ message: "legacy-sse" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("Kimchi completed the MCP call through SSE fallback.")],
 		},
 		async (fixture, trace) => {

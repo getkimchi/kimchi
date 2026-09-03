@@ -4,6 +4,7 @@ import { resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
+import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
 import type { McpConfig, McpSettings, OAuthConfig, ServerEntry } from "../../../../src/extensions/mcp-adapter/types.js"
 
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
@@ -82,12 +83,53 @@ interface WaitForMcpFixtureEventOptions<T extends McpFixtureEventType> {
 
 export type McpFixtureScenario =
 	| "basic"
-	| "startup-failure"
 	| "http-malformed"
 	| "oauth-deny"
 	| "oauth-token-failure"
 	| "oauth-expiring"
 	| "ui-app"
+
+export type McpFixtureToolResponse =
+	| { type: "result"; value: CallToolResult }
+	| { type: "exit"; code: number }
+	| { type: "delayed-result"; delayMs: number; value: CallToolResult }
+
+export interface McpFixtureToolBehavior {
+	name: string
+	/** When present, only calls with exactly these arguments use this response. */
+	arguments?: Record<string, unknown>
+	response: McpFixtureToolResponse
+}
+
+export interface McpFixtureResourceBehavior {
+	uri: string
+	response: ReadResourceResult
+}
+
+export interface McpFixtureBehavior {
+	/** Exit before connecting a transport, simulating a server that cannot start. */
+	startup?: { type: "exit"; code: number }
+	/** MCP call outcomes declared by the test that exercises them. */
+	tools?: McpFixtureToolBehavior[]
+	/** MCP resource-read outcomes declared by the test that exercises them. */
+	resources?: McpFixtureResourceBehavior[]
+}
+
+export function mcpToolResult(
+	name: string,
+	value: CallToolResult,
+	args?: Record<string, unknown>,
+): McpFixtureToolBehavior {
+	return {
+		name,
+		...(args === undefined ? {} : { arguments: args }),
+		response: { type: "result", value },
+	}
+}
+
+export function mcpResourceResult(uri: string, response: ReadResourceResult): McpFixtureResourceBehavior {
+	return { uri, response }
+}
 
 export interface McpServerFixtureOptions {
 	serverName?: string
@@ -97,6 +139,7 @@ export interface McpServerFixtureOptions {
 	idleTimeout?: number
 	toolPrefix?: McpSettings["toolPrefix"]
 	autoAuth?: boolean
+	behavior?: McpFixtureBehavior
 }
 
 export interface McpUiFixture {
@@ -213,6 +256,10 @@ function configuredServerFields(options: McpServerFixtureOptions): ServerEntry {
 	}
 }
 
+function fixtureBehaviorEnv(behavior: McpFixtureBehavior | undefined): Record<string, string> {
+	return behavior ? { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(behavior) } : {}
+}
+
 function writeMcpConfig(
 	agentDir: string,
 	serverDefinitions: Record<string, ServerEntry>,
@@ -286,6 +333,7 @@ function seedStdioServer(
 			env: {
 				KIMCHI_MCP_FIXTURE_EVENTS: eventPath,
 				KIMCHI_MCP_FIXTURE_SCENARIO: scenario,
+				...fixtureBehaviorEnv(options.behavior),
 			},
 			...configuredServerFields(options),
 		},
@@ -324,6 +372,7 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 			KIMCHI_MCP_FIXTURE_EVENTS: eventPath,
 			KIMCHI_MCP_FIXTURE_SCENARIO: scenario,
 			KIMCHI_MCP_FIXTURE_TRANSPORT: transport,
+			...fixtureBehaviorEnv(options.behavior),
 			...(oauth ? { KIMCHI_MCP_FIXTURE_OAUTH: "1" } : {}),
 			...(oauth && options.oauth?.grantType ? { KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE: options.oauth.grantType } : {}),
 			...(oauth && options.oauth?.clientId ? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID: options.oauth.clientId } : {}),

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { PROMPT_READY, runRestartableMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpToolResult } from "./support/mcp-fixture.js"
 import { directMcpCall, modelReply, requireRequestAdvertisingTool, toolResultText } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -12,7 +13,17 @@ test("persists a direct-tool choice from the MCP panel and applies it after rest
 		terminal,
 		{
 			artifactName: "mcp-panel-persistence",
-			mcp: {},
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: panel-persisted" }] },
+							{ message: "panel-persisted" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("The MCP panel direct-tool choice survived restart.")],
 		},
 		async (fixture, session, trace) => {

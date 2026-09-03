@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { mcpToolResult } from "../tui/support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "../tui/support/mcp-model-script.js"
 import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpMcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
@@ -11,7 +12,28 @@ describe("ACP integration — MCP", () => {
 	beforeEach(async () => {
 		fixture = await startAcpMcpFixture({
 			artifactName: "acp-mcp-workflow",
-			mcp: {},
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: acp-mcp" }] },
+							{ message: "acp-mcp" },
+						),
+						mcpToolResult("mixed_content", {
+							content: [
+								{ type: "text", text: "fixture mixed content: kimchi-mcp-mixed" },
+								{
+									type: "image",
+									mimeType: "image/png",
+									data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+								},
+							],
+							structuredContent: { fixture: "kimchi-mcp-structured", count: 1 },
+						}),
+					],
+				},
+			},
 			modelInput: ["text", "image"],
 			responses: [
 				echo.response,
@@ -83,7 +105,18 @@ describe("ACP integration — OAuth MCP", () => {
 	beforeEach(async () => {
 		fixture = await startAcpMcpFixture({
 			artifactName: "acp-mcp-oauth-workflow",
-			mcp: { transport: "oauth" },
+			mcp: {
+				transport: "oauth",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: acp-oauth-mcp" }] },
+							{ message: "acp-oauth-mcp" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("ACP called the OAuth-protected MCP tool.")],
 		})
 	}, STARTUP_TIMEOUT_MS)

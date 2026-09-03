@@ -4,6 +4,7 @@ import { expect, test } from "@microsoft/tui-test"
 import type { MetadataCache } from "../../../src/extensions/mcp-adapter/metadata-cache.js"
 import type { McpConfig } from "../../../src/extensions/mcp-adapter/types.js"
 import { runRestartableMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpToolResult } from "./support/mcp-fixture.js"
 import {
 	directMcpCall,
 	gatewayMcpCall,
@@ -21,7 +22,23 @@ test("uses cached MCP metadata to call a direct tool after restart", async ({ te
 		terminal,
 		{
 			artifactName: "mcp-restart-cache",
-			mcp: { directTools: ["echo"] },
+			mcp: {
+				directTools: ["echo"],
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: warm-cache" }] },
+							{ message: "warm-cache" },
+						),
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: after-restart" }] },
+							{ message: "after-restart" },
+						),
+					],
+				},
+			},
 			responses: [
 				warmCache.response,
 				modelReply("The first MCP session populated the cache."),
@@ -64,7 +81,18 @@ test("invalidates cached MCP metadata when the server config changes", async ({ 
 		terminal,
 		{
 			artifactName: "mcp-restart-config-cache-invalidation",
-			mcp: { lifecycle: "lazy" },
+			mcp: {
+				lifecycle: "lazy",
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: warm-config-cache" }] },
+							{ message: "warm-config-cache" },
+						),
+					],
+				},
+			},
 			responses: [
 				warmCache.response,
 				modelReply("The config-sensitive MCP cache is warm."),

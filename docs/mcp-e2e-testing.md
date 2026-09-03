@@ -55,20 +55,21 @@ The dedicated `MCP E2E` GitHub Actions workflow runs the aggregate suite for pul
 | ACP | server probing, cache population, MCP-backed agent turns, image forwarding, authentication-required probing, OAuth login, and protected tool calls |
 | official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack |
 
-The suite contains two `test.fail` behavioral specifications for known product regressions:
+The suite contains three `test.fail` behavioral specifications for known product regressions:
 
-- a configured direct MCP tool is not available to the first model request because asynchronous bootstrap completes too late;
-- cancelling an agent turn does not currently propagate the abort signal as MCP `notifications/cancelled`.
+- `test.fail`: a configured direct MCP tool is not available to the first model request because asynchronous bootstrap completes too late (fixed upstream in pi-mcp-adapter v2.26.1, PR #374);
+- `test.fail`: cancelling an agent turn does not currently propagate the abort signal as MCP `notifications/cancelled` (fixed upstream in pi-mcp-adapter v2.11.0, PR #159);
+- `test.fail`: a crashed keep-alive stdio server cannot reconnect because the closed client remains marked connected (fixed upstream in pi-mcp-adapter v2.12.0, PR #194).
 
-Keep these tests enabled. When either starts passing, Vitest reports an unexpected pass; remove `test.fail` as part of the corresponding production fix.
+These specifications still execute, and an unexpected pass tells us to remove `test.fail` after upgrading the bundled adapter.
 
 ## Adding a fixture behavior
 
-Prefer extending the existing fixture over creating another server:
+Keep transport mechanics in the existing fixture, but declare the MCP outcome in the test that exercises it:
 
-1. Add one deterministic tool or named scenario to `fixture-server.mjs`.
+1. Add the tool or resource protocol definition to `fixture-server.mjs` only when the fixture does not advertise it yet.
 2. Record a small event at the protocol boundary that the test needs to observe. Do not include credentials or whole request headers.
-3. Add an option to `McpFixtureOptions` only if the test must alter server setup. Tool inputs should normally select per-call behavior instead.
+3. Declare tool results, delayed results, process exits, startup exits, and resource responses under the test's `mcp.behavior` setup. Do not hardcode test outcomes in `fixture-server.mjs`.
 4. Add one user-recognizable workflow to the relevant `mcp-*.test.ts` file. Drive it through the real TUI or ACP boundary and assert the model and protocol boundaries where applicable.
 5. Give every wait a fixed timeout and ensure fixture-owned children and listeners are stopped in teardown.
 
@@ -85,7 +86,17 @@ await runMcpKimchiSession(
 	terminal,
 	{
 		artifactName: "mcp-echo",
-		mcp: {},
+		mcp: {
+			behavior: {
+				tools: [
+					mcpToolResult(
+						"echo",
+						{ content: [{ type: "text", text: "fixture echo: hello" }] },
+						{ message: "hello" },
+					),
+				],
+			},
+		},
 		responses: [echo.response, modelReply("The MCP server answered.")],
 	},
 	async (fixture) => {
@@ -99,9 +110,9 @@ await runMcpKimchiSession(
 )
 ```
 
-This verifies three production boundaries: the user-visible response, the actual MCP protocol call, and the tool result returned to the model. Prefer typed `where` filters and checkpoints over custom polling or sleeps. For process-lifecycle scenarios, use `runRestartableMcpKimchiSession`; its `restart()` waits for a verified shell exit before launching the next Kimchi process.
+Here `mcp.behavior` is the real MCP server response, while top-level `responses` scripts the fake model. This verifies three production boundaries: the user-visible response, the actual MCP protocol call, and the tool result returned to the model. Prefer typed `where` filters and checkpoints over custom polling or sleeps. For process-lifecycle scenarios, use `runRestartableMcpKimchiSession`; its `restart()` waits for a verified shell exit before launching the next Kimchi process.
 
-An empty `mcp: {}` deliberately exercises production defaults. Set `lifecycle`, `idleTimeout`, `toolPrefix`, or authentication only when that setting is the behavior under test. Add `additionalStdioServers` when a workflow needs to prove routing or isolation between multiple configured servers.
+An empty `mcp: {}` deliberately exercises production defaults only when the workflow does not call or read from the fixture. Called tools and resources require an explicit behavior; an omitted tool response becomes a model-facing fixture configuration error. Set `lifecycle`, `idleTimeout`, `toolPrefix`, or authentication only when that setting is the behavior under test. Add `additionalStdioServers` when a workflow needs to prove routing or isolation between multiple configured servers.
 
 ## Choosing the right test tier
 

@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
 import { gatewayMcpCall, mcpUiMessages, modelReply, toolResultText } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -12,7 +13,32 @@ test("bridges an MCP App tool call and prompt back into the agent", async ({ ter
 		terminal,
 		{
 			artifactName: "mcp-ui-app-bridge",
-			mcp: { scenario: "ui-app" },
+			mcp: {
+				scenario: "ui-app",
+				behavior: {
+					tools: [
+						mcpToolResult("open_ui", {
+							content: [{ type: "text", text: "fixture MCP App opened" }],
+						}),
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: from-ui" }] },
+							{ message: "from-ui" },
+						),
+					],
+					resources: [
+						mcpResourceResult("ui://fixture/app", {
+							contents: [
+								{
+									uri: "ui://fixture/app",
+									mimeType: "text/html;profile=mcp-app",
+									text: '<!doctype html><html><body><main id="kimchi-mcp-app">Kimchi MCP App fixture</main></body></html>',
+								},
+							],
+						}),
+					],
+				},
+			},
 			responses: [
 				openUi.response,
 				modelReply("The MCP App opened."),
@@ -68,7 +94,27 @@ test("denies MCP App tool access without consent and tears down on completion", 
 		terminal,
 		{
 			artifactName: "mcp-ui-consent-denial",
-			mcp: { scenario: "ui-app" },
+			mcp: {
+				scenario: "ui-app",
+				behavior: {
+					tools: [
+						mcpToolResult("open_ui", {
+							content: [{ type: "text", text: "fixture MCP App opened" }],
+						}),
+					],
+					resources: [
+						mcpResourceResult("ui://fixture/app", {
+							contents: [
+								{
+									uri: "ui://fixture/app",
+									mimeType: "text/html;profile=mcp-app",
+									text: '<!doctype html><html><body><main id="kimchi-mcp-app">Kimchi MCP App fixture</main></body></html>',
+								},
+							],
+						}),
+					],
+				},
+			},
 			responses: [openUi.response, modelReply("The consent-gated MCP App opened.")],
 		},
 		async (fixture, trace) => {

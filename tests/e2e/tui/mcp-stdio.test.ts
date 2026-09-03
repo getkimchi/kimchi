@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
 import {
 	directMcpCall,
 	emptyMcpCall,
@@ -21,7 +22,17 @@ test("calls a stdio MCP tool through the real Kimchi session", async ({ terminal
 		terminal,
 		{
 			artifactName: "mcp-stdio",
-			mcp: {},
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: `fixture echo: ${SENTINEL}` }] },
+							{ message: SENTINEL },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("The MCP fixture returned the expected echo.")],
 		},
 		async (fixture, trace) => {
@@ -49,13 +60,26 @@ test("calls a stdio MCP tool through the real Kimchi session", async ({ terminal
 
 // Known product bug: asynchronous MCP bootstrap exposes a configured direct tool only after
 // the first model request has already been built, so that request rejects the tool as unavailable.
+// Fixed upstream in pi-mcp-adapter v2.26.1 by PR #374's pre-input initialization barrier;
+// remove test.fail once the bundled adapter includes that fix.
 test.fail("registers and calls a direct MCP tool on the first session", async ({ terminal }) => {
 	const echo = directMcpCall("echo", { message: "direct-first-session" })
 	await runMcpKimchiSession(
 		terminal,
 		{
 			artifactName: "mcp-stdio-direct-tool",
-			mcp: { directTools: ["echo"] },
+			mcp: {
+				directTools: ["echo"],
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: direct-first-session" }] },
+							{ message: "direct-first-session" },
+						),
+					],
+				},
+			},
 			responses: [echo.response, modelReply("The direct MCP tool worked without restarting Kimchi.")],
 		},
 		async (fixture, trace) => {
@@ -81,7 +105,16 @@ test("delivers an MCP isError result to the next model turn", async ({ terminal 
 		terminal,
 		{
 			artifactName: "mcp-stdio-tool-error",
-			mcp: {},
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult("fail", {
+							isError: true,
+							content: [{ type: "text", text: "fixture failure: requested by test" }],
+						}),
+					],
+				},
+			},
 			responses: [failure.response, modelReply("Kimchi handled the MCP tool error and the session continued.")],
 		},
 		async (fixture, trace) => {
@@ -103,7 +136,21 @@ test("reads an MCP resource through the gateway", async ({ terminal }) => {
 		terminal,
 		{
 			artifactName: "mcp-stdio-resource",
-			mcp: {},
+			mcp: {
+				behavior: {
+					resources: [
+						mcpResourceResult("fixture://note", {
+							contents: [
+								{
+									uri: "fixture://note",
+									mimeType: "text/plain",
+									text: "fixture resource: kimchi-mcp-resource",
+								},
+							],
+						}),
+					],
+				},
+			},
 			responses: [resource.response, modelReply("The MCP resource content reached the model.")],
 		},
 		async (fixture, trace) => {
@@ -126,7 +173,23 @@ test("preserves MCP text and safely represents image content for a text-only mod
 		terminal,
 		{
 			artifactName: "mcp-stdio-mixed-content",
-			mcp: {},
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult("mixed_content", {
+							content: [
+								{ type: "text", text: "fixture mixed content: kimchi-mcp-mixed" },
+								{
+									type: "image",
+									mimeType: "image/png",
+									data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+								},
+							],
+							structuredContent: { fixture: "kimchi-mcp-structured", count: 1 },
+						}),
+					],
+				},
+			},
 			responses: [mixedContent.response, modelReply("The MCP text and image content both reached the model.")],
 		},
 		async (fixture, trace) => {
@@ -151,7 +214,17 @@ test("injects the correctly named direct tool after MCP gateway search", async (
 		terminal,
 		{
 			artifactName: "mcp-search-direct-injection",
-			mcp: {},
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: search-injected-direct-tool" }] },
+							{ message: "search-injected-direct-tool" },
+						),
+					],
+				},
+			},
 			responses: [
 				search.response,
 				echo.response,
@@ -200,7 +273,30 @@ test("routes same-named tools across multiple servers using production defaults"
 		terminal,
 		{
 			artifactName: "mcp-stdio-multiple-servers",
-			mcp: { additionalStdioServers: { secondary: {} } },
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: from-primary" }] },
+							{ message: "from-primary" },
+						),
+					],
+				},
+				additionalStdioServers: {
+					secondary: {
+						behavior: {
+							tools: [
+								mcpToolResult(
+									"echo",
+									{ content: [{ type: "text", text: "fixture echo: from-secondary" }] },
+									{ message: "from-secondary" },
+								),
+							],
+						},
+					},
+				},
+			},
 			responses: [
 				primaryEcho.response,
 				modelReply("The primary MCP server answered."),

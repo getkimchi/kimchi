@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { appendFileSync } from "node:fs"
 import { createServer } from "node:http"
 import { setTimeout as delay } from "node:timers/promises"
+import { isDeepStrictEqual } from "node:util"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
@@ -24,6 +25,16 @@ const oauthClientId = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID ?? "kimchi-
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
 const oauthAccessToken = "kimchi-e2e-oauth-access-token"
 const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
+const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
+	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
+	: {}
+
+function findToolBehavior(name, args) {
+	return fixtureBehavior.tools?.find(
+		(behavior) =>
+			behavior.name === name && (behavior.arguments === undefined || isDeepStrictEqual(behavior.arguments, args ?? {})),
+	)
+}
 
 function record(type, details = {}) {
 	if (!eventPath) return
@@ -125,55 +136,25 @@ function createFixtureServer() {
 	server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 		const { uri } = request.params
 		record("resource_read", { uri })
-		if (uri === "ui://fixture/app" && scenario === "ui-app") {
-			return {
-				contents: [
-					{
-						uri,
-						mimeType: "text/html;profile=mcp-app",
-						text: '<!doctype html><html><body><main id="kimchi-mcp-app">Kimchi MCP App fixture</main></body></html>',
-					},
-				],
-			}
-		}
-		if (uri !== "fixture://note") throw new Error(`Unknown fixture resource: ${uri}`)
-		return {
-			contents: [{ uri, mimeType: "text/plain", text: "fixture resource: kimchi-mcp-resource" }],
-		}
+		const configured = fixtureBehavior.resources?.find((behavior) => behavior.uri === uri)
+		if (configured) return configured.response
+		throw new Error(`No MCP fixture resource response configured for ${uri}`)
 	})
 
 	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args } = request.params
 		record("tool_called", { name, arguments: args ?? {} })
+		const behavior = findToolBehavior(name, args)
 
-		if (name === "fail") {
-			return {
-				isError: true,
-				content: [{ type: "text", text: "fixture failure: requested by test" }],
-			}
-		}
+		if (behavior?.response.type === "result") return behavior.response.value
 
-		if (name === "mixed_content") {
-			return {
-				content: [
-					{ type: "text", text: "fixture mixed content: kimchi-mcp-mixed" },
-					{
-						type: "image",
-						mimeType: "image/png",
-						data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-					},
-				],
-				structuredContent: { fixture: "kimchi-mcp-structured", count: 1 },
-			}
-		}
-
-		if (name === "disconnect") {
+		if (behavior?.response.type === "exit") {
 			record("disconnect_started")
-			setTimeout(() => process.exit(17), 0)
+			setTimeout(() => process.exit(behavior.response.code), 0)
 			return new Promise(() => {})
 		}
 
-		if (name === "slow") {
+		if (behavior?.response.type === "delayed-result") {
 			record("slow_call_started")
 			let onAbort
 			const aborted = new Promise((_, reject) => {
@@ -184,34 +165,22 @@ function createFixtureServer() {
 				extra.signal.addEventListener("abort", onAbort, { once: true })
 			})
 			try {
-				await Promise.race([delay(2_000), aborted])
+				await Promise.race([delay(behavior.response.delayMs), aborted])
 				record("slow_call_completed")
-				return { content: [{ type: "text", text: "fixture slow call completed" }] }
+				return behavior.response.value
 			} finally {
 				if (onAbort) extra.signal.removeEventListener("abort", onAbort)
 			}
 		}
 
-		if (name === "open_ui" && scenario === "ui-app") {
-			return { content: [{ type: "text", text: "fixture MCP App opened" }] }
-		}
-
-		if (name !== "echo") {
-			return {
-				isError: true,
-				content: [{ type: "text", text: `Unknown fixture tool: ${name}` }],
-			}
-		}
-
-		if (typeof args?.message !== "string") {
-			return {
-				isError: true,
-				content: [{ type: "text", text: "fixture validation: message must be a string" }],
-			}
-		}
-		const message = args.message
 		return {
-			content: [{ type: "text", text: `fixture echo: ${message}` }],
+			isError: true,
+			content: [
+				{
+					type: "text",
+					text: `No MCP fixture response configured for ${name} with arguments ${JSON.stringify(args ?? {})}`,
+				},
+			],
 		}
 	})
 
@@ -518,6 +487,6 @@ async function runHttpFixture() {
 process.on("exit", (code) => record("process_exited", { code }))
 record("process_started", { transport: transportKind })
 
-if (scenario === "startup-failure") process.exit(23)
+if (fixtureBehavior.startup?.type === "exit") process.exit(fixtureBehavior.startup.code)
 else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
 else await createFixtureServer().connect(new StdioServerTransport())
