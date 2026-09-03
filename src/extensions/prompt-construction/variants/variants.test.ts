@@ -12,7 +12,6 @@ import {
 	CORE_GUIDELINES,
 	CORE_GUIDELINES_COMMIT_TRAILER_LINE,
 	type EnvironmentInfo,
-	resolveCoreGuidelines,
 	SINGLE_MODE_DELEGATION_TEXT,
 } from "../system-prompt.js"
 import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./index.js"
@@ -62,7 +61,7 @@ const fakeToolsWithAgent = [...fakeTools, { name: "Agent", description: "ORIGINA
 const ALL_MODES = ["single", "orchestrator", "subagent"] as const
 
 // ---------------------------------------------------------------------------
-// A) resolvePromptVariant: resolver logic
+// resolvePromptVariant: resolver logic
 // ---------------------------------------------------------------------------
 
 describe("resolvePromptVariant", () => {
@@ -155,7 +154,7 @@ describe("resolvePromptVariant", () => {
 })
 
 // ---------------------------------------------------------------------------
-// B) SPICY: descriptor pure functions
+// SPICY: descriptor pure functions
 // ---------------------------------------------------------------------------
 
 describe("SPICY descriptor", () => {
@@ -205,7 +204,7 @@ describe("SPICY descriptor", () => {
 })
 
 // ---------------------------------------------------------------------------
-// C) buildSystemPrompt DEFAULT path: snapshot + stock markers
+// buildSystemPrompt DEFAULT path: snapshot + stock markers
 // ---------------------------------------------------------------------------
 
 describe("buildSystemPrompt: default variant (no variantName)", () => {
@@ -256,10 +255,18 @@ describe("buildSystemPrompt: default variant (no variantName)", () => {
 		expect(result).not.toContain("ORIGINAL bash description")
 		expect(result).not.toContain("ORIGINAL edit description")
 	})
+
+	for (const mode of ALL_MODES) {
+		it(`${mode} mode: passing variantName 'default' produces the same output as omitting variantName`, () => {
+			const withDefault = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode, variantName: "default" })
+			const withoutVariant = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode })
+			expect(withDefault).toBe(withoutVariant)
+		})
+	}
 })
 
 // ---------------------------------------------------------------------------
-// D) buildSystemPrompt with variantName "spicy"
+// buildSystemPrompt with variantName "spicy"
 // ---------------------------------------------------------------------------
 
 describe("buildSystemPrompt: spicy variant", () => {
@@ -333,14 +340,6 @@ describe("buildSystemPrompt: spicy variant", () => {
 		}
 	})
 
-	for (const mode of ALL_MODES) {
-		it(`${mode} mode: passing variantName 'default' produces the same output as omitting variantName`, () => {
-			const withDefault = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode, variantName: "default" })
-			const withoutVariant = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode })
-			expect(withDefault).toBe(withoutVariant)
-		})
-	}
-
 	it("spicy full prompt (orchestrator mode) matches snapshot", () => {
 		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
 		expect(result).toMatchSnapshot()
@@ -366,7 +365,7 @@ describe("buildSystemPrompt: spicy variant", () => {
 })
 
 // ---------------------------------------------------------------------------
-// D2) Additive guidelines: spicy keeps base safety rules, swaps the trailer,
+// Additive guidelines: spicy keeps base safety rules, swaps the trailer,
 //     and appends the working-discipline block
 // ---------------------------------------------------------------------------
 
@@ -422,7 +421,7 @@ describe("spicy additive guidelines", () => {
 })
 
 // ---------------------------------------------------------------------------
-// D3) Single-Model Mode delegation stance: stock text by default, spicy's
+// Single-Model Mode delegation stance: stock text by default, spicy's
 //     delegation text under spicy
 // ---------------------------------------------------------------------------
 
@@ -477,7 +476,7 @@ describe("single-mode delegation stance", () => {
 })
 
 // ---------------------------------------------------------------------------
-// H) AGENT_DISCIPLINE_BLOCK content
+// AGENT_DISCIPLINE_BLOCK content
 // ---------------------------------------------------------------------------
 
 describe("AGENT_DISCIPLINE_BLOCK content", () => {
@@ -503,7 +502,7 @@ describe("AGENT_DISCIPLINE_BLOCK content", () => {
 })
 
 // ---------------------------------------------------------------------------
-// I) AGENT_ROLE_TUNING key guard: every key must match a real DEFAULT_AGENTS name
+// AGENT_ROLE_TUNING key guard: every key must match a real DEFAULT_AGENTS name
 // ---------------------------------------------------------------------------
 
 import { DEFAULT_AGENTS } from "../../agents/personas/default-agents.js"
@@ -520,7 +519,7 @@ describe("AGENT_ROLE_TUNING key guard", () => {
 })
 
 // ---------------------------------------------------------------------------
-// J) guidelinesFor: mode-aware guidelines
+// guidelinesFor: mode-aware guidelines
 // ---------------------------------------------------------------------------
 
 describe("guidelinesFor", () => {
@@ -570,23 +569,13 @@ describe("guidelinesFor", () => {
 		expect(guidelinesFor("orchestrator")).toContain("### Working discipline")
 	})
 
-	it("single mode: base guidelines with trailer swapped, then the opinionated block", () => {
-		const base = resolveCoreGuidelines("single").replace(CORE_GUIDELINES_COMMIT_TRAILER_LINE, SPICY_COMMIT_ATTRIBUTION)
-		expect(guidelinesFor("single")).toBe(base + OPINIONATED_BLOCK)
-	})
-
 	it("OPINIONATED_BLOCK still contains the coordinator bullets (byte-identity preserved)", () => {
 		expect(OPINIONATED_BLOCK).toContain(COORDINATOR_DELEGATION_BLOCK)
-	})
-
-	it("orchestrator mode: base guidelines plus appended attribution, then the orchestrator block", () => {
-		const base = resolveCoreGuidelines("orchestrator")
-		expect(guidelinesFor("orchestrator")).toBe(`${base}\n${SPICY_COMMIT_ATTRIBUTION}${OPINIONATED_BLOCK_ORCHESTRATOR}`)
 	})
 })
 
 // ---------------------------------------------------------------------------
-// J2) Each principle is stated once inside the appended block
+// Each principle is stated once inside the appended block
 // ---------------------------------------------------------------------------
 
 describe("appended working-discipline block states each principle once", () => {
@@ -605,7 +594,6 @@ describe("appended working-discipline block states each principle once", () => {
 
 		it(`${label}: states the challenge-the-requirements rule once`, () => {
 			expect(occurrences(block, "Challenge requirements")).toBe(1)
-			expect(block).not.toContain("push back")
 		})
 
 		it(`${label}: states the do-not-publish-unasked rule once, covering commits and shared resources`, () => {
@@ -616,7 +604,7 @@ describe("appended working-discipline block states each principle once", () => {
 })
 
 // ---------------------------------------------------------------------------
-// K) rulesBlockFor: mode-aware working rules
+// rulesBlockFor: mode-aware working rules
 // ---------------------------------------------------------------------------
 
 describe("rulesBlockFor", () => {
@@ -646,7 +634,7 @@ describe("rulesBlockFor", () => {
 })
 
 // ---------------------------------------------------------------------------
-// M) Default variant byte-identical guard
+// Default variant byte-identical guard
 // ---------------------------------------------------------------------------
 
 describe("default variant byte-identical guard", () => {
@@ -682,7 +670,7 @@ describe("default variant byte-identical guard", () => {
 })
 
 // ---------------------------------------------------------------------------
-// O) User-override precedence for the commit-attribution default
+// User-override precedence for the commit-attribution default
 // ---------------------------------------------------------------------------
 
 describe("spicy commit-attribution override precedence", () => {

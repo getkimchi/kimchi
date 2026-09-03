@@ -129,7 +129,7 @@ describe("variant-scoped agent tuning", () => {
 		expect(variant.transformAgents).toBeUndefined()
 	})
 
-	it("spicy variant: each working default persona's systemPrompt contains the discipline block", () => {
+	it("spicy variant: every working default persona gets the discipline block, and the tool-output rules only where the core guidelines are absent", () => {
 		const variant = resolvePromptVariant("spicy")
 		registerAgents(new Map(), variant.transformAgents)
 
@@ -137,6 +137,17 @@ describe("variant-scoped agent tuning", () => {
 			if (name === AGENT_GRADER) continue
 			const registered = getAgentConfig(name)
 			expect(registered?.systemPrompt, `${name} should contain discipline block`).toContain(AGENT_DISCIPLINE_BLOCK)
+			// A persona that already inherits the core guidelines gets the
+			// tool-output rules from there, so appending them again would repeat.
+			if (registered?.includeCoreGuidelines) {
+				expect(registered?.systemPrompt, `${name} should not repeat the tool-output block`).not.toContain(
+					AGENT_TOOL_OUTPUT_BLOCK,
+				)
+			} else {
+				expect(registered?.systemPrompt, `${name} should contain the tool-output block`).toContain(
+					AGENT_TOOL_OUTPUT_BLOCK,
+				)
+			}
 		}
 	})
 
@@ -171,29 +182,6 @@ describe("variant-scoped agent tuning", () => {
 		expect(AGENT_DISCIPLINE_BLOCK).toContain("user-facing README or summary")
 		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("Bound tool output at the source")
 		expect(AGENT_DISCIPLINE_BLOCK).not.toContain("Re-read before editing")
-	})
-
-	it("spicy variant: a persona that includes the core guidelines gets working discipline without tool-output rules", () => {
-		const variant = resolvePromptVariant("spicy")
-		registerAgents(new Map(), variant.transformAgents)
-
-		const gp = getAgentConfig(AGENT_GENERAL_PURPOSE)
-		expect(gp?.includeCoreGuidelines).toBe(true)
-		expect(gp?.systemPrompt).toContain(AGENT_DISCIPLINE_BLOCK)
-		expect(gp?.systemPrompt).not.toContain("Bound tool output at the source")
-		expect(gp?.systemPrompt).not.toContain("Re-read before editing")
-	})
-
-	it("spicy variant: a persona without the core guidelines gets working discipline and tool-output rules", () => {
-		const variant = resolvePromptVariant("spicy")
-		registerAgents(new Map(), variant.transformAgents)
-
-		const builder = getAgentConfig(AGENT_BUILDER)
-		expect(builder?.includeCoreGuidelines).toBeUndefined()
-		expect(builder?.systemPrompt).toContain(AGENT_DISCIPLINE_BLOCK)
-		expect(builder?.systemPrompt).toContain(AGENT_TOOL_OUTPUT_BLOCK)
-		expect(builder?.systemPrompt).toContain("Bound tool output at the source")
-		expect(builder?.systemPrompt).toContain("Re-read before editing")
 	})
 
 	it("spicy variant: the Grader persona gets neither the discipline block nor the tool-output rules", () => {
