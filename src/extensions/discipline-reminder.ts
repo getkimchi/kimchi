@@ -20,9 +20,6 @@ export class DisciplineReminder {
 	}
 }
 
-/** Counter key for run-end events that arrive without a session id. */
-const UNSCOPED_SESSION_KEY = ""
-
 export default function disciplineReminderExtension(pi: ExtensionAPI): void {
 	const cfg = resolvePromptVariant().disciplineReminder
 	if (!cfg) return
@@ -32,19 +29,23 @@ export default function disciplineReminderExtension(pi: ExtensionAPI): void {
 	// cadence of each one separate.
 	const reminders = new Map<string, DisciplineReminder>()
 
-	function reminderFor(sessionId: string | undefined): DisciplineReminder {
-		const key = sessionId ?? UNSCOPED_SESSION_KEY
-		const existing = reminders.get(key)
+	function reminderFor(sessionId: string): DisciplineReminder {
+		const existing = reminders.get(sessionId)
 		if (existing) return existing
 		const created = new DisciplineReminder()
-		reminders.set(key, created)
+		reminders.set(sessionId, created)
 		return created
 	}
 
 	pi.on("agent_end", (_event, ctx: ExtensionContext | undefined) => {
 		const sessionId = ctx?.sessionManager?.getSessionId?.()
+		if (!sessionId) return
+		// The reminder wording depends on the session's prompt mode, which is
+		// recorded when the prompt is built. Until then the mode is unknown, and
+		// staying quiet beats sending the wrong mode's instructions.
+		const mode = getSessionMode(sessionId)
+		if (!mode) return
 		if (!reminderFor(sessionId).noteRunEnd(cfg.everyPrompts)) return
-		const mode = getSessionMode(sessionId) ?? "single"
 		const text = typeof cfg.text === "function" ? cfg.text(mode) : cfg.text
 		pi.sendMessage(
 			{
@@ -58,6 +59,6 @@ export default function disciplineReminderExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", (_event, ctx: ExtensionContext | undefined) => {
 		const sessionId = ctx?.sessionManager?.getSessionId?.()
-		reminders.delete(sessionId ?? UNSCOPED_SESSION_KEY)
+		if (sessionId) reminders.delete(sessionId)
 	})
 }

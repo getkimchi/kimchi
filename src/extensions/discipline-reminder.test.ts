@@ -47,6 +47,12 @@ function fireAgentEndForSession(handlers: Map<string, Handler[]>, sessionId: str
 	for (const h of handlers.get("agent_end") ?? []) (h as (...args: unknown[]) => unknown)({}, ctx)
 }
 
+/** The reminder only fires for a session whose prompt mode has been recorded. */
+async function recordSessionMode(sessionId: string, mode: "single" | "orchestrator" | "subagent") {
+	const { setSessionMode } = await import("./session-mode.js")
+	setSessionMode(sessionId, mode)
+}
+
 // ---------------------------------------------------------------------------
 // DISCIPLINE_NUDGE_TEXT content coverage
 // ---------------------------------------------------------------------------
@@ -127,6 +133,8 @@ describe("DisciplineReminder", () => {
 // ---------------------------------------------------------------------------
 
 describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", () => {
+	const SESSION_ID = "dr-cadence-session"
+
 	beforeEach(() => {
 		vi.resetModules()
 	})
@@ -139,12 +147,13 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
 		const { pi, handlers, sendMessage } = createPiMock()
 
+		await recordSessionMode(SESSION_ID, "single")
 		disciplineReminderExtension(pi as never)
 
-		fire(handlers, "agent_end")
+		fireAgentEndForSession(handlers, SESSION_ID)
 		expect(sendMessage).toHaveBeenCalledOnce()
 
-		for (let i = 0; i < EVERY_PROMPTS - 2; i++) fire(handlers, "agent_end")
+		for (let i = 0; i < EVERY_PROMPTS - 2; i++) fireAgentEndForSession(handlers, SESSION_ID)
 		expect(sendMessage).toHaveBeenCalledOnce()
 	})
 
@@ -156,9 +165,10 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
 		const { pi, handlers, sendMessage } = createPiMock()
 
+		await recordSessionMode(SESSION_ID, "single")
 		disciplineReminderExtension(pi as never)
 
-		for (let i = 0; i < 8; i++) fire(handlers, "agent_end")
+		for (let i = 0; i < 8; i++) fireAgentEndForSession(handlers, SESSION_ID)
 		expect(sendMessage).toHaveBeenCalledTimes(3)
 	})
 
@@ -170,9 +180,10 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
 		const { pi, handlers, sendMessage } = createPiMock()
 
+		await recordSessionMode(SESSION_ID, "single")
 		disciplineReminderExtension(pi as never)
 
-		fire(handlers, "agent_end") // fires on run 1
+		fireAgentEndForSession(handlers, SESSION_ID) // fires on run 1
 
 		expect(sendMessage).toHaveBeenCalledOnce()
 		const [msg, opts] = sendMessage.mock.calls[0]
@@ -190,9 +201,10 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
 		const { pi, handlers, sendMessage } = createPiMock()
 
+		await recordSessionMode(SESSION_ID, "single")
 		disciplineReminderExtension(pi as never)
 
-		fire(handlers, "agent_end")
+		fireAgentEndForSession(handlers, SESSION_ID)
 
 		const [msg] = sendMessage.mock.calls[0]
 		expect(isHarnessSteer(msg.content[0].text)).toBe(true)
@@ -207,6 +219,8 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
 		const { pi, handlers, sendMessage } = createPiMock()
 
+		await recordSessionMode("session-a", "single")
+		await recordSessionMode("session-b", "single")
 		disciplineReminderExtension(pi as never)
 
 		fireAgentEndForSession(handlers, "session-a")
@@ -274,7 +288,7 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_TEXT))
 	})
 
-	it("cache miss (no setSessionMode) falls back to full DISCIPLINE_NUDGE_TEXT", async () => {
+	it("sends nothing while the session's prompt mode is still unknown", async () => {
 		mockResolvePromptVariant.mockReturnValue({
 			name: "spicy",
 			disciplineReminder: { text: SPICY.disciplineReminder?.text, everyPrompts: EVERY_PROMPTS },
@@ -286,9 +300,21 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		const ctx = { sessionManager: { getSessionId: () => "unregistered-session-xyz" } }
 		for (const h of handlers.get("agent_end") ?? []) (h as (...a: unknown[]) => unknown)({}, ctx)
 
-		expect(sendMessage).toHaveBeenCalledOnce()
-		const [msg] = sendMessage.mock.calls[0]
-		expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_TEXT))
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("sends nothing for a run-end event that carries no session", async () => {
+		mockResolvePromptVariant.mockReturnValue({
+			name: "spicy",
+			disciplineReminder: { text: SPICY.disciplineReminder?.text, everyPrompts: EVERY_PROMPTS },
+		})
+		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
+		const { pi, handlers, sendMessage } = createPiMock()
+		disciplineReminderExtension(pi as never)
+
+		for (let i = 0; i < 10; i++) fire(handlers, "agent_end")
+
+		expect(sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("is inert for agent workers", async () => {
