@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { applySpicyFlag } from "../cli-args.js"
 import { dispatchSubcommand } from "./dispatch.js"
 
 describe("dispatchSubcommand", () => {
@@ -34,6 +35,16 @@ describe("dispatchSubcommand", () => {
 	it("falls through for harness flags so pi parses them", async () => {
 		const result = await dispatchSubcommand(["--provider", "kimchi-dev", "--model", "kimi-k2.5"])
 		expect(result).toEqual({ kind: "fallthrough" })
+	})
+
+	it("runs the subcommand that follows --spicy once the flag is stripped", async () => {
+		const argv = ["--spicy", "version"]
+
+		// The dispatcher only looks at the first argument, so an unstripped
+		// flag hides the subcommand behind it.
+		expect(await dispatchSubcommand(argv)).toEqual({ kind: "fallthrough" })
+
+		expect(await dispatchSubcommand(applySpicyFlag(argv, {}))).toEqual({ kind: "handled", exitCode: 0 })
 	})
 
 	it("falls through for --version (pi prints it)", async () => {
