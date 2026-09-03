@@ -38,7 +38,7 @@ const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
 const DIAG_WAIT_TIMEOUT_MS = 2000
 
 /** All five LSP tool names. Hidden at session start when detection finds no
- *  language server for the session cwd (token-optimization Phase 1 Chunk 6). */
+ *  language server for the session cwd. */
 export const LSP_TOOL_NAMES = [
 	"lsp_diagnostics",
 	"lsp_hover",
@@ -64,7 +64,7 @@ export default function (pi: ExtensionAPI) {
 	let degradedServers: ReturnType<typeof detectMissingCandidates> = []
 	let warned = false
 	let ui: ExtensionUIContext | undefined
-	// Token-optimization Phase 1 Chunk 6: the five lsp_* tools (~670 est of
+	// The five lsp_* tools (~670 est of
 	// description+schema) are dead weight when no language server exists for the
 	// session cwd — every execute() would only answer "No LSP server available".
 	// Detection needs ctx.cwd, which only exists at session_start, so the gate
@@ -118,7 +118,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (activeServers.length === 0) {
-			// Gate (Chunk 6): hide the five lsp_* tools for this session.
+			// Gate: hide the five lsp_* tools for this session.
 			visibility.disable(LSP_TOOL_NAMES)
 			return
 		}

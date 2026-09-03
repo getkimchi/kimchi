@@ -1,6 +1,5 @@
 /**
- * Canonical tool-surface measurement for the context-budget CI (token-optimization
- * Phase 1, Chunk 1).
+ * Canonical tool-surface measurement for the context-budget CI.
  *
  * Assembles the tool definitions a default single-model session advertises, without
  * needing a running harness:
@@ -142,7 +141,7 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	{ module: "./web-search/index.js", source: "web-search" },
 	{ module: "./web-fetch/index.js", source: "web-fetch" },
 	{ module: "./questionnaire/questionnaire.js", source: "questionnaire" },
-	// lsp registers its five tools unconditionally, but the Chunk 6 detection
+	// lsp registers its five tools unconditionally, but the detection
 	// gate hides them at session_start when no language server matches the cwd;
 	// LSP_TOOL_NAMES are filtered out of the canonical surface below.
 	{ module: "./lsp.js", source: "lsp" },

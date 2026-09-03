@@ -55,6 +55,11 @@ vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
 import { withPrintGate } from "./print-mode.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
 
+vi.mock("./multi-model.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./multi-model.js")>()
+	return { ...actual, resolveMultiModelEnabled: () => ({ value: false, source: "cli" }) }
+})
+
 const CHARS_PER_TOKEN = 4
 
 /** Budget slices (estimated tokens). Headroom over the recorded baseline below. */

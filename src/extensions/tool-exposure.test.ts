@@ -39,8 +39,14 @@ import { createContext } from "./__mocks__/context.js"
 import { EXTENSION_SOURCES } from "./context-budget-tools.js"
 import { DAP_ALWAYS_VISIBLE_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
 import { withPrintGate } from "./print-mode.js"
 import { getDisabledToolNames } from "./prompt-construction/tool-visibility.js"
+
+vi.mock("./multi-model.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./multi-model.js")>()
+	return { ...actual, resolveMultiModelEnabled: vi.fn(() => ({ value: false, source: "cli" })) }
+})
 
 // =============================================================================
 // Mock MCP config — pin zero configured servers so the Chunk 5 registration
@@ -416,6 +422,23 @@ describe("tool exposure at session start", () => {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
 		})
+	})
+
+	it("print mode keeps set_phase registered when the session is multi-model", async () => {
+		vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: true, source: "cli" })
+		try {
+			await withPrintGate({ print: true }, async () => {
+				const harness = createExposureHarness()
+				await instantiateAllExtensions(harness)
+
+				// The orchestrator prompt instructs set_phase calls; the tool must
+				// exist even though the print gate would otherwise skip it.
+				expect(harness.registered.has("set_phase"), "set_phase must register in multi-model --print").toBe(true)
+				expect(harness.registered.has("questionnaire"), "questionnaire stays print-gated").toBe(false)
+			})
+		} finally {
+			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })
+		}
 	})
 
 	it("drift guard: every registered tool is either visible or explicitly deferred, and vice versa", async () => {

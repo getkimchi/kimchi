@@ -171,7 +171,7 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
 	// Autonomous-mode block: registered unconditionally, even when the
-	// questionnaire tool itself is gated out of print sessions (Chunk 7).
+	// questionnaire tool itself is gated out of print sessions (the print-mode gate).
 	// In headless sessions without a ferment-oneshot judge, there is no
 	// audience for questions — not a human (no TUI), not a judge (no
 	// ferment-oneshot flag) — and this block is what tells the model to act
@@ -187,7 +187,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		}
 	})
 
-	// Token-optimization Phase 1 Chunk 7: in --print sessions the TUI form can
+	// In --print sessions the TUI form can
 	// never run, so skip registration entirely (~526 est saved) instead of
 	// registering + hiding. Interactive sessions are unchanged: the visibility
 	// vote below still governs UI-less interactive runs.

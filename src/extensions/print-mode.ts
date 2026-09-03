@@ -1,6 +1,6 @@
 /**
- * Shared mode gates for interactive-only and ferment-mode-only tools
- * (token-optimization Phase 1 Chunk 7).
+ * Shared mode gates for interactive-only and ferment-mode-only tools.
+ *
  *
  * `--print` / `-p` runs (headless benchmarks, scripted automations) have no
  * TUI, so TUI-only and ferment-mode-only tools are dead surface. Upstream
@@ -26,8 +26,8 @@
  * Module-level singleton by design — the flags are process-launch decisions,
  * not session state. Subagent (worker) sessions share the process, so they
  * inherit the same values: a headless `--print` run's workers are headless
- * too. For the agent-kwargs composition note, see the plan's Chunk 7 Open
- * Questions — the argv scan in cli.ts is the load-bearing composition; the
+ * too. For the agent-kwargs composition note: the argv scan in cli.ts is the
+ * load-bearing composition; the
  * ferment extension additionally re-checks its own `ferment-oneshot` pi flag
  * at the registration seam so kwargs-driven worker sessions keep the suite.
  */

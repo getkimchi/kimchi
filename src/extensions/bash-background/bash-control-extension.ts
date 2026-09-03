@@ -107,7 +107,7 @@ export function formatGateBlockReason(toolName: string, handles: readonly string
 
 export default function bashControlExtension(pi: ExtensionAPI, options?: BashControlExtensionOptions): void {
 	const getRegistry = options?.getRegistry ?? getSessionRegistry
-	// Token-optimization Phase 1 Chunk 4: bash_control (~476 est) stays deferred
+	// bash_control (~476 est) stays deferred
 	// — registered but not advertised — until a background bash handle exists.
 	// The visible `bash` description already names bash_control, so discovery
 	// needs no extra text. Reveal is one-way: once a handle has existed, the

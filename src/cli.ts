@@ -288,7 +288,7 @@ try {
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
-		// Token-optimization Phase 1 Chunk 7: publish the print-mode gate the
+		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
 		// (set_phase, list_ferments, ferment suite) tools stay out of headless
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing

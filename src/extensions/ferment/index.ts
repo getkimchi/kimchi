@@ -458,7 +458,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
-	// Token-optimization Phase 1 Chunk 7: in a plain --print session with no
+	// In a plain --print session with no
 	// ferment one-shot in flight there is no audience for the ferment suite
 	// (list_ferments, lifecycle, phase, step, knowledge tools — including
 	// ask_user, which headless-non-oneshot sessions cannot route to any

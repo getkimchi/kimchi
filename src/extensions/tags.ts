@@ -27,6 +27,7 @@ import { Type } from "typebox"
 import { readJson } from "../config/json.js"
 import { readConfigSetting } from "../config/settings.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
 import { getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
@@ -563,12 +564,17 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	// Register the set_phase tool — unless this is a headless non-ferment run.
-	// Token-optimization Phase 1 Chunk 7: set_phase is analytics/mode tracking;
-	// in --print sessions without a ferment one-shot it's pure dead surface
-	// (~217 est). A one-shot planner run keeps it (Chunk 7 composition: the
-	// argv scan in cli.ts lifts suppression when --ferment-oneshot is present).
-	if (!shouldSuppressFermentModeTools())
+	// Register the set_phase tool — unless this is a headless non-ferment run
+	// that is not multi-model. In --print sessions without a ferment one-shot
+	// the tool is dead surface (~217 est) for single-model runs, which never
+	// tag phases. Multi-model sessions run the orchestrator prompt, whose
+	// instructions tell the model to call set_phase — the tool must be
+	// registered whenever the session resolves multi-model so those
+	// instructions are satisfiable even when the print gate suppresses the
+	// ferment suite. Registration-time resolution covers the
+	// session-independent layers (CLI flag, settings default); the per-turn
+	// prompt gate re-checks the full effective value.
+	if (!shouldSuppressFermentModeTools() || resolveMultiModelEnabled(null).value)
 		pi.registerTool({
 			name: "set_phase",
 			label: "Set Phase",
