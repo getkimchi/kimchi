@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DISCIPLINE_REMINDER_TYPE, DisciplineReminder } from "./discipline-reminder.js"
-import { DISCIPLINE_NUDGE_TEXT, SPICY } from "./prompt-construction/variants/spicy.js"
+import {
+	DISCIPLINE_NUDGE_CORE,
+	DISCIPLINE_NUDGE_PREFIX,
+	DISCIPLINE_NUDGE_TEXT,
+	SPICY,
+} from "./prompt-construction/variants/spicy.js"
+import { isHarnessSteer, markHarnessSteer } from "./steer-marker.js"
 
 // ---------------------------------------------------------------------------
 // Module mock - controls resolvePromptVariant without touching the REGISTRY
@@ -34,6 +40,11 @@ function createPiMock() {
 
 function fire(handlers: Map<string, Handler[]>, event: string, payload: Record<string, unknown> = {}) {
 	for (const h of handlers.get(event) ?? []) h(payload)
+}
+
+function fireAgentEndForSession(handlers: Map<string, Handler[]>, sessionId: string) {
+	const ctx = { sessionManager: { getSessionId: () => sessionId } }
+	for (const h of handlers.get("agent_end") ?? []) (h as (...args: unknown[]) => unknown)({}, ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +81,6 @@ describe("DISCIPLINE_NUDGE_TEXT content anchors", () => {
 // ---------------------------------------------------------------------------
 
 // The production everyPrompts cadence (4), sourced from SPICY descriptor
-// SPICY.disciplineReminder is always defined; fall back to 4 satisfies TypeScript without a non-null assertion
 const EVERY_PROMPTS = SPICY.disciplineReminder?.everyPrompts ?? 4
 
 describe("DisciplineReminder", () => {
@@ -169,7 +179,44 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 		expect(opts).toEqual({ deliverAs: "nextTurn" })
 		expect(msg.customType).toBe(DISCIPLINE_REMINDER_TYPE)
 		expect(msg.display).toBe(false)
-		expect(msg.content).toEqual([{ type: "text", text: DISCIPLINE_NUDGE_TEXT }])
+		expect(msg.content).toEqual([{ type: "text", text: markHarnessSteer(DISCIPLINE_NUDGE_TEXT) }])
+	})
+
+	it("marks the reminder as harness-injected so it does not read as user input", async () => {
+		mockResolvePromptVariant.mockReturnValue({
+			name: "spicy",
+			disciplineReminder: { text: DISCIPLINE_NUDGE_TEXT, everyPrompts: EVERY_PROMPTS },
+		})
+		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
+		const { pi, handlers, sendMessage } = createPiMock()
+
+		disciplineReminderExtension(pi as never)
+
+		fire(handlers, "agent_end")
+
+		const [msg] = sendMessage.mock.calls[0]
+		expect(isHarnessSteer(msg.content[0].text)).toBe(true)
+		expect(msg.content[0].text).toContain(DISCIPLINE_NUDGE_TEXT)
+	})
+
+	it("counts runs per session so each session keeps its own cadence", async () => {
+		mockResolvePromptVariant.mockReturnValue({
+			name: "spicy",
+			disciplineReminder: { text: DISCIPLINE_NUDGE_TEXT, everyPrompts: EVERY_PROMPTS },
+		})
+		const { default: disciplineReminderExtension } = await import("./discipline-reminder.js")
+		const { pi, handlers, sendMessage } = createPiMock()
+
+		disciplineReminderExtension(pi as never)
+
+		fireAgentEndForSession(handlers, "session-a")
+		expect(sendMessage).toHaveBeenCalledTimes(1) // first run of session a
+
+		for (let i = 0; i < EVERY_PROMPTS - 1; i++) fireAgentEndForSession(handlers, "session-a")
+		expect(sendMessage).toHaveBeenCalledTimes(2) // session a reaches the cadence
+
+		fireAgentEndForSession(handlers, "session-b")
+		expect(sendMessage).toHaveBeenCalledTimes(3) // first run of session b
 	})
 
 	it("is inert when variant lacks disciplineReminder (undefined)", async () => {
@@ -205,7 +252,7 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 			expect(sendMessage).toHaveBeenCalledOnce()
 			const [msg] = sendMessage.mock.calls[0]
 			expect(msg.content[0].text).not.toContain("default to delegating")
-			expect(msg.content[0].text).toMatch(/^Working-discipline check:/)
+			expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_PREFIX + DISCIPLINE_NUDGE_CORE))
 		} finally {
 			clearMode(SESSION_ID)
 		}
@@ -229,7 +276,7 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 
 			expect(sendMessage).toHaveBeenCalledOnce()
 			const [msg] = sendMessage.mock.calls[0]
-			expect(msg.content[0].text).toBe(DISCIPLINE_NUDGE_TEXT)
+			expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_TEXT))
 		} finally {
 			clearMode(SESSION_ID)
 		}
@@ -249,7 +296,7 @@ describe("disciplineReminderExtension - every everyPrompts runs (agent_end)", ()
 
 		expect(sendMessage).toHaveBeenCalledOnce()
 		const [msg] = sendMessage.mock.calls[0]
-		expect(msg.content[0].text).toBe(DISCIPLINE_NUDGE_TEXT)
+		expect(msg.content[0].text).toBe(markHarnessSteer(DISCIPLINE_NUDGE_TEXT))
 	})
 
 	it("is inert for agent workers", async () => {

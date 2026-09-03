@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isAgentWorker } from "./agent-worker-context.js"
 import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
 import { getSessionMode } from "./session-mode.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 export const DISCIPLINE_REMINDER_TYPE = "discipline-reminder"
 
@@ -19,21 +20,37 @@ export class DisciplineReminder {
 	}
 }
 
+/** Counter key for run-end events that arrive without a session id. */
+const UNSCOPED_SESSION_KEY = ""
+
 export default function disciplineReminderExtension(pi: ExtensionAPI): void {
 	const cfg = resolvePromptVariant().disciplineReminder
 	if (!cfg) return
 	if (isAgentWorker()) return
 
-	const reminder = new DisciplineReminder()
+	// One counter per session so a process serving several sessions keeps the
+	// cadence of each one separate. Each entry is a single number and lives for
+	// the process lifetime.
+	const reminders = new Map<string, DisciplineReminder>()
+
+	function reminderFor(sessionId: string | undefined): DisciplineReminder {
+		const key = sessionId ?? UNSCOPED_SESSION_KEY
+		const existing = reminders.get(key)
+		if (existing) return existing
+		const created = new DisciplineReminder()
+		reminders.set(key, created)
+		return created
+	}
 
 	pi.on("agent_end", (_event, ctx: ExtensionContext | undefined) => {
-		if (!reminder.noteRunEnd(cfg.everyPrompts)) return
-		const mode = getSessionMode(ctx?.sessionManager?.getSessionId?.()) ?? "single"
+		const sessionId = ctx?.sessionManager?.getSessionId?.()
+		if (!reminderFor(sessionId).noteRunEnd(cfg.everyPrompts)) return
+		const mode = getSessionMode(sessionId) ?? "single"
 		const text = typeof cfg.text === "function" ? cfg.text(mode) : cfg.text
 		pi.sendMessage(
 			{
 				customType: DISCIPLINE_REMINDER_TYPE,
-				content: [{ type: "text", text }],
+				content: [{ type: "text", text: markHarnessSteer(text) }],
 				display: false,
 			},
 			{ deliverAs: "nextTurn" },
