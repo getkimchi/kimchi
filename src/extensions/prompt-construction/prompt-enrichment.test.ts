@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
@@ -13,6 +13,8 @@ import * as agentWorkerContext from "../agent-worker-context.js"
 import * as multiModelModule from "../multi-model.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import * as modelRolesModule from "../orchestration/model-roles.js"
+import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER } from "../router/constants.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../router/state.js"
 import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
@@ -1313,10 +1315,12 @@ describe("continuation nudge turn_end handler", () => {
 
 		promptEnrichmentExtension([])(pi)
 
+		const neutralCtx = createContext({ model: { provider: "kimchi-dev", id: "test-model" } })
 		const kimiCtx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.6" } })
 
-		// fire uses kimiCtx by default; pass an explicit ctx to override.
-		const fire = async (event: string, payload: unknown, ctx: unknown = kimiCtx) => {
+		// fire uses a neutral (non-quirk) model by default; tests that need the
+		// continuation nudge to fire pass kimiCtx explicitly.
+		const fire = async (event: string, payload: unknown, ctx: unknown = neutralCtx) => {
 			const handlers = handlerMap.get(event) ?? []
 			let result: unknown
 			for (const h of handlers) result = await h(payload, ctx)
@@ -1334,17 +1338,19 @@ describe("continuation nudge turn_end handler", () => {
 	}
 
 	it("sends a continuation nudge on a text-only turn with no tools called", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
 		// Simulate a tool having been called earlier in the session so the
 		// fresh-session suppression does not apply. Then a new user-input cycle.
-		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
+		await fire("tool_execution_start", {}, kimiCtx)
+		await fire("input", { source: "user" }, kimiCtx)
 
 		// Model responds with text-only, stopReason "stop".
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]) },
+			kimiCtx,
+		)
 
 		// A continuation nudge should have been sent.
 		expect(sendMessageCalls.length).toBe(1)
@@ -1352,44 +1358,48 @@ describe("continuation nudge turn_end handler", () => {
 	})
 
 	it("does not send a second nudge when model responds to nudge with stopReason 'stop'", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
 		// Tool called earlier in the session so the fresh-session guard is past.
-		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
+		await fire("tool_execution_start", {}, kimiCtx)
+		await fire("input", { source: "user" }, kimiCtx)
 
 		// First text-only turn triggers the continuation nudge.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]) },
+			kimiCtx,
+		)
 		expect(sendMessageCalls.length).toBe(1)
 
 		// Model responds to the nudge with text and stopReason "stop".
 		// The handler should NOT send a second nudge.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "OK, I am done." }]),
-		})
+		await fire("turn_end", { message: makeAssistantWithStop([{ type: "text", text: "OK, I am done." }]) }, kimiCtx)
 		expect(sendMessageCalls.length).toBe(1) // no new nudge
 	})
 
 	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
-		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
+		await fire("tool_execution_start", {}, kimiCtx)
+		await fire("input", { source: "user" }, kimiCtx)
 
 		// First text-only turn triggers the continuation nudge.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]) },
+			kimiCtx,
+		)
 		expect(sendMessageCalls.length).toBe(1)
 
 		// Model responds with stopReason "length" (e.g. output truncated).
 		// The handler should allow a second nudge since the model did not
 		// intentionally stop.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length"),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length") },
+			kimiCtx,
+		)
 		expect(sendMessageCalls.length).toBe(2)
 	})
 
@@ -1436,25 +1446,27 @@ describe("continuation nudge turn_end handler", () => {
 	})
 
 	it("does not nudge after a model switch when the previous model called tools", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
 		// Previous model called a tool during the session.
-		await fire("tool_execution_start", {})
+		await fire("tool_execution_start", {}, kimiCtx)
 
 		// User switches models (e.g. via the UI model picker).
-		await fire("model_select", {
-			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
-			previousModel: undefined,
-			source: "set",
-		})
+		await fire(
+			"model_select",
+			{ model: { id: "kimi-k2.7", provider: "kimchi-dev" }, previousModel: undefined, source: "set" },
+			kimiCtx,
+		)
 
 		// New user input after the switch.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user" }, kimiCtx)
 
 		// New model responds with orientation text only, no tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]) },
+			kimiCtx,
+		)
 
 		// No nudge should fire — the model switch reset the session-level
 		// tool latch, so the new model's orientation turn is treated like a
@@ -1463,51 +1475,55 @@ describe("continuation nudge turn_end handler", () => {
 	})
 
 	it("does not nudge after a model cycle when the previous model called tools", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
 		// Previous model called a tool during the session.
-		await fire("tool_execution_start", {})
+		await fire("tool_execution_start", {}, kimiCtx)
 
 		// User cycles models (e.g. via the keyboard shortcut).
-		await fire("model_select", {
-			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
-			previousModel: undefined,
-			source: "cycle",
-		})
+		await fire(
+			"model_select",
+			{ model: { id: "kimi-k2.7", provider: "kimchi-dev" }, previousModel: undefined, source: "cycle" },
+			kimiCtx,
+		)
 
 		// New user input after the cycle.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user" }, kimiCtx)
 
 		// New model responds with orientation text only, no tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]) },
+			kimiCtx,
+		)
 
 		// Cycling is a user-initiated switch and must also reset the latch.
 		expect(sendMessageCalls.length).toBe(0)
 	})
 
 	it("still nudges after a model restore when the previous model called tools", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
 		// Previous model called a tool during the session.
-		await fire("tool_execution_start", {})
+		await fire("tool_execution_start", {}, kimiCtx)
 
 		// Session restore is not a user-initiated switch; the conversation
 		// continues and the session-level tool latch must stay true.
-		await fire("model_select", {
-			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
-			previousModel: undefined,
-			source: "restore",
-		})
+		await fire(
+			"model_select",
+			{ model: { id: "kimi-k2.7", provider: "kimchi-dev" }, previousModel: undefined, source: "restore" },
+			kimiCtx,
+		)
 
 		// New user input after restore.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user" }, kimiCtx)
 
 		// Model responds with text only, no tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
-		})
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]) },
+			kimiCtx,
+		)
 
 		// Nudge should fire because restore must not reset the latch.
 		expect(sendMessageCalls.length).toBe(1)
@@ -1576,6 +1592,9 @@ describe("continuation nudge turn_end handler", () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 		const ineligibleCtx = createContext({ model: { provider: "kimchi-dev", id: "nemotron-3" } })
 
+		// Fire a tool execution first so the fresh-session suppression is past.
+		// This isolates the model gate as the only reason the nudge is withheld.
+		await fire("tool_execution_start", {}, ineligibleCtx)
 		await fire("input", { source: "user" }, ineligibleCtx)
 		await fire(
 			"turn_end",
@@ -1583,13 +1602,41 @@ describe("continuation nudge turn_end handler", () => {
 			ineligibleCtx,
 		)
 
-		// Ineligible model (not Kimi-K2 or minimax-m3): the continuation nudge gate must suppress the nudge entirely.
+		// Ineligible model (no narrate-then-stop quirk): the continuation nudge gate must suppress the nudge entirely.
 		const nudgeCalls = sendMessageCalls.filter(
 			(c) =>
 				(c.message as { customType?: string }).customType === "nudge" &&
 				(c.message as { content?: string }).content?.includes("ended your turn without calling a tool"),
 		)
 		expect(nudgeCalls.length).toBe(0)
+	})
+
+	it("nudges an Auto session once Auto resolves to a quirk model", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// The user selected Auto: ctx.model stays the Auto pseudo-model, but the
+		// session's routing state resolves it to a model with the narrate-then-stop
+		// quirk. The nudge must read the resolved model, not the Auto placeholder.
+		const autoCtx = createContext({ model: { provider: AUTO_MODEL_PROVIDER, id: AUTO_MODEL_ID } })
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "kimi-k2.6" } as Model<string>,
+		})
+
+		try {
+			await fire("tool_execution_start", {}, autoCtx)
+			await fire("input", { source: "user" }, autoCtx)
+			await fire(
+				"turn_end",
+				{ message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]) },
+				autoCtx,
+			)
+
+			expect(sendMessageCalls.length).toBe(1)
+			expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+		} finally {
+			clearAutoRoutingState("test-session")
+		}
 	})
 })
 

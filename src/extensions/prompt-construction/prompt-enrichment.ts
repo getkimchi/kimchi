@@ -551,7 +551,7 @@ export default function (skillPathsFromConfig: string[]) {
 					return
 				}
 
-				if (!continuationNudge.evaluateTurn(assistantMsg, ctx?.model?.id)) return
+				if (!continuationNudge.evaluateTurn(assistantMsg, getEffectiveModel(ctx)?.id)) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,

@@ -7,8 +7,6 @@ import {
 	ContinuationNudge,
 	DONE_SIGNAL,
 	EmptyTurnNudge,
-	isKimiK2Family,
-	isMinimaxM3Family,
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
@@ -175,71 +173,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 	})
 })
 
-describe("isKimiK2Family", () => {
-	it("returns true for kimi-k2.6", () => {
-		expect(isKimiK2Family("kimi-k2.6")).toBe(true)
-	})
-
-	it("returns true for kimi-k2.5", () => {
-		expect(isKimiK2Family("kimi-k2.5")).toBe(true)
-	})
-
-	it("returns true for uppercase KIMI-K2.6", () => {
-		expect(isKimiK2Family("KIMI-K2.6")).toBe(true)
-	})
-
-	it("returns true for provider-prefixed kimchi-dev/kimi-k2.6", () => {
-		expect(isKimiK2Family("kimchi-dev/kimi-k2.6")).toBe(true)
-	})
-
-	it("returns false for minimax-m3", () => {
-		expect(isKimiK2Family("minimax-m3")).toBe(false)
-	})
-
-	it("returns false for nemotron-3", () => {
-		expect(isKimiK2Family("nemotron-3")).toBe(false)
-	})
-
-	it("returns false for undefined", () => {
-		expect(isKimiK2Family(undefined)).toBe(false)
-	})
-
-	it("returns false for empty string", () => {
-		expect(isKimiK2Family("")).toBe(false)
-	})
-})
-
-describe("isMinimaxM3Family", () => {
-	it("returns true for minimax-m3", () => {
-		expect(isMinimaxM3Family("minimax-m3")).toBe(true)
-	})
-
-	it("returns true for uppercase MINIMAX-M3", () => {
-		expect(isMinimaxM3Family("MINIMAX-M3")).toBe(true)
-	})
-
-	it("returns true for provider-prefixed kimchi-dev/minimax-m3", () => {
-		expect(isMinimaxM3Family("kimchi-dev/minimax-m3")).toBe(true)
-	})
-
-	it("returns false for kimi-k2.6", () => {
-		expect(isMinimaxM3Family("kimi-k2.6")).toBe(false)
-	})
-
-	it("returns false for nemotron-3", () => {
-		expect(isMinimaxM3Family("nemotron-3")).toBe(false)
-	})
-
-	it("returns false for undefined", () => {
-		expect(isMinimaxM3Family(undefined)).toBe(false)
-	})
-
-	it("returns false for empty string", () => {
-		expect(isMinimaxM3Family("")).toBe(false)
-	})
-})
-
-describe("ContinuationNudge.evaluateTurn model gating", () => {
+describe("ContinuationNudge.evaluateTurn model gate", () => {
 	it("fires for minimax-m3", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
@@ -266,13 +200,13 @@ describe("ContinuationNudge.evaluateTurn model gating", () => {
 
 	it("suppresses the nudge for nemotron-3", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.evaluateTurn(textOnlyMessage, "nemotron-3")).toBe(false)
 	})
 
 	it("suppresses the nudge when model id is undefined", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.evaluateTurn(textOnlyMessage, undefined)).toBe(false)
 	})
 
@@ -283,7 +217,9 @@ describe("ContinuationNudge.evaluateTurn model gating", () => {
 		expect(guard.evaluateTurn(textOnlyMessage, "minimax-m3")).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage, "minimax-m3")).toBe(false)
 	})
+})
 
+describe("ContinuationNudge.evaluateTurn stop reasons", () => {
 	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
@@ -298,7 +234,7 @@ describe("ContinuationNudge.evaluateTurn model gating", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
 		const error = { ...textOnlyMessage, stopReason: "error" as const }
-		expect(guard.evaluateTurn(error)).toBe(false)
+		expect(guard.evaluateTurn(error, "kimi-k2.6")).toBe(false)
 	})
 
 	it("does not consume a nudge slot when the turn was a provider error", () => {
@@ -814,18 +750,18 @@ describe("stripUiOnlyMessages", () => {
 })
 
 describe("ContinuationNudge question suppression", () => {
-	it("does not nudge when the assistant's text ends with a question", () => {
+	it("does not nudge a quirk model when the assistant's text ends with a question", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
 		const asking = makeAssistant([{ type: "text", text: "Go ahead and commit this small ADR update?" }])
-		expect(guard.evaluateTurn(asking)).toBe(false)
+		expect(guard.evaluateTurn(asking, "kimi-k2.6")).toBe(false)
 	})
 
-	it("does not nudge when the question is followed by a quote mark", () => {
+	it("does not nudge a quirk model when the question is followed by a quote mark", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
 		const asking = makeAssistant([{ type: "text", text: 'Are you sure you want to proceed?"' }])
-		expect(guard.evaluateTurn(asking)).toBe(false)
+		expect(guard.evaluateTurn(asking, "kimi-k2.6")).toBe(false)
 	})
 
 	it("still nudges when the text contains a question but ends with a statement", () => {

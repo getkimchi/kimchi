@@ -1,9 +1,10 @@
 /**
- * Two complementary nudges for tool-calling quirks (Kimi K2.x and minimax-m3)
- * that each leave the agent loop in a stuck-looking
- * state. Both target the same failure class (model said one thing, didn't
- * follow through in the next tool-use step) and are delivered as `followUp`
- * messages from the `turn_end` handler so the agent loop restarts:
+ * Two complementary nudges for tool-calling quirks that each leave the agent
+ * loop in a stuck-looking state. Both target the same failure class (model said
+ * one thing, didn't follow through in the next tool-use step) and are delivered
+ * as `followUp` messages from the `turn_end` handler so the agent loop restarts.
+ * The continuation nudge only runs for models with the narrate-then-stop quirk;
+ * that set is owned by `modelHasContinuationStallQuirk` in `model-quirks.ts`.
  *
  *   1. Continuation nudge — the orchestrator reasons in prose, announces it
  *      will delegate, and ends its turn without emitting the `Agent` tool
@@ -26,17 +27,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
-
-/** The continuation nudge targets a Kimi-K2.x tool-calling quirk; it must not fire for other model families. */
-export function isKimiK2Family(modelId: string | undefined): boolean {
-	return modelId?.toLowerCase().includes("kimi-k2") ?? false
-}
-
-/** minimax-m3 shows the same narrate-then-stop quirk as Kimi-K2, so the
- *  continuation nudge applies to it as well. */
-export function isMinimaxM3Family(modelId: string | undefined): boolean {
-	return modelId?.toLowerCase().includes("minimax-m3") ?? false
-}
+import { modelHasContinuationStallQuirk } from "./model-quirks.js"
 
 /**
  * Message-array shape passed through `context` events. Derived from
@@ -190,7 +181,7 @@ export class ContinuationNudge {
 	}
 
 	evaluateTurn(message: AssistantMessage, modelId?: string): boolean {
-		if (!(isKimiK2Family(modelId) || isMinimaxM3Family(modelId))) return false
+		if (!modelHasContinuationStallQuirk(modelId)) return false
 		if (this.nudgeCountThisCycle >= ContinuationNudge.MAX_NUDGES) return false
 		// In a fresh session, suppress the nudge until at least one tool has been called.
 		if (!this.toolsCalledThisSession) return false
