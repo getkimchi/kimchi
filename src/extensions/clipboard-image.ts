@@ -34,6 +34,22 @@ function teardownTerminalInput(): void {
 	inBracketedPaste = false
 }
 
+// Strip CSI escape sequences (arrow keys, Home/End, etc.) and carriage returns,
+// then check whether any printable content remains. This distinguishes real
+// typed characters from control keys like Enter (\r) and escape sequences,
+// so that pressing Enter to submit a pasted prompt doesn't clear the paste flag.
+// Built via String.fromCharCode to avoid a control-character literal in the regex.
+const _ESC = String.fromCharCode(0x1b)
+const _CSI_RE = new RegExp(`${_ESC}\\[[0-9;]*[A-Za-z]`, "g")
+function hasTypedContent(data: string): boolean {
+	return (
+		data
+			.replace(_CSI_RE, "")
+			.replace(/[\r\n\t]/g, "")
+			.trim().length > 0
+	)
+}
+
 const CLIPBOARD_POLL_INTERVAL_MS = 1000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
 let clipboardHasImage = false
@@ -266,7 +282,11 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			if (data.includes("\x1b[200~")) {
 				lastInputWasPaste = true
 				inBracketedPaste = !data.includes("\x1b[201~")
-			} else {
+			} else if (hasTypedContent(data)) {
+				// Real keystrokes (letters, digits, punctuation) clear the paste flag
+				// so paste-then-type doesn't wrongly attach image paths. Control keys
+				// like Enter (\r) and escape sequences (arrow keys) are ignored — they
+				// don't represent typed content and must not clobber a just-set flag.
 				lastInputWasPaste = false
 			}
 			return undefined
