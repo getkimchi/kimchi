@@ -704,7 +704,7 @@ describe("Ferment V2 evaluator", () => {
 
 		completeMock.mockClear()
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext(undefined, true))
-		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 4_096 })
+		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 12_288 })
 	})
 
 	it("fails closed when only thinking is emitted", async () => {
@@ -769,12 +769,12 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("retries one truncated response with a zero thinking budget", async () => {
+	it("keeps the reasoning-model response budget on a truncated retry", async () => {
 		completeMock
 			.mockResolvedValueOnce(assistant("", { stopReason: "length", kind: "thinking" }))
 			.mockResolvedValueOnce(assistant('{"verdict":"continue","reason":"keep working"}'))
 		await expect(
-			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
+			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext(undefined, true)),
 		).resolves.toEqual({
 			verdict: "continue",
 			reason: "keep working",
@@ -791,7 +791,7 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock).toHaveBeenCalledTimes(2)
 		expect(completeMock.mock.calls[1]?.[2]).toMatchObject({
 			reasoning: "minimal",
-			maxTokens: 1_024,
+			maxTokens: 12_288,
 			thinkingBudgets: { minimal: 0 },
 		})
 	})

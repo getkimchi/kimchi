@@ -31,7 +31,7 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
  * Reasoning models spend this budget on thinking before they emit an answer, so
  * a budget sized for the verdict alone returns nothing at all on those models.
  */
-const REASONING_MAX_TOKENS = 4_096
+const REASONING_MAX_TOKENS = 12_288
 const PLAIN_MAX_TOKENS = 1_024
 const INVALID_JSON_RETRY_PROMPT =
 	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and do not copy the proposed answer into the response."
@@ -279,7 +279,7 @@ export async function evaluateFermentV2(
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				reasoning: "minimal",
-				maxTokens: correcting ? PLAIN_MAX_TOKENS : model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
+				maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
 				thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 				samplingParams: isKimchiManagedJsonModeProvider(model.provider)
 					? { response_format: { type: "json_object" } }
