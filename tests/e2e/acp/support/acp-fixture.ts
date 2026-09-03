@@ -12,7 +12,6 @@ import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import type { ClientSideConnection } from "@agentclientprotocol/sdk"
 import * as acp from "@agentclientprotocol/sdk"
-import { onTestFailed } from "vitest"
 import {
 	DEFAULT_MODEL,
 	type FakeModel,
@@ -21,6 +20,7 @@ import {
 	resolveModels,
 	startFakeOpenAiServer,
 } from "../../tui/support/fake-openai-server.js"
+import { createMcpFixture, type McpFixture, type McpFixtureOptions } from "../../tui/support/mcp-fixture.js"
 
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
@@ -46,12 +46,17 @@ export interface AcpFixture {
 	proc: ChildProcess
 	conn: ClientSideConnection
 	client: RecordingClient
+	mcp?: McpFixture
 	/**
 	 * Resolve on process exit. Pass `{ signal }` to abort the wait — used by
 	 * `stop()` so a SIGKILL doesn't hang the teardown on the exit promise.
 	 */
 	waitForExit(): Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>
 	stop(): Promise<void>
+}
+
+export interface AcpMcpFixture extends AcpFixture {
+	mcp: McpFixture
 }
 
 export interface AcpFixtureOptions {
@@ -62,6 +67,8 @@ export interface AcpFixtureOptions {
 	defaultProvider?: string
 	defaultModel?: string
 	extraArgs?: string[]
+	/** Input modalities advertised by the default deterministic fake model. Ignored when `models` is provided. */
+	modelInput?: ("text" | "image")[]
 	/**
 	 * Extra capabilities merged on top of the always-present fs baseline.
 	 * Defaults to `{}` (just the fs baseline — matches `verify-acp.mjs`).
@@ -80,6 +87,8 @@ export interface AcpFixtureOptions {
 	 * a custom extension that exercises those calls.
 	 */
 	extensionPath?: string
+	/** Seed the isolated Kimchi config with the shared repository-owned MCP fixture. */
+	mcp?: McpFixtureOptions
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -214,6 +223,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		artifactName,
 		responses,
 		models,
+		modelInput,
 		routerResponses,
 		providerId = "fake",
 		defaultProvider,
@@ -223,14 +233,15 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		clientMeta,
 		extensionPath,
 	} = options
-	const fake = await startFakeOpenAiServer({ responses, models, routerResponses })
 	const configuredModels = models
 		? resolveModels(models)
-		: [{ ...DEFAULT_MODEL, contextWindow: 64_000, maxTokens: 1024 }]
+		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
+	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, routerResponses })
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
 
 	let proc: ChildProcess | null = null
+	let mcp: McpFixture | undefined
 	const abort = new AbortController()
 
 	const recordArtifact = (outcome: "pass" | "fail", error?: unknown) => {
@@ -271,13 +282,16 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	// Registered as soon as the fixture exists so the artifact exists even if
 	// the failure happens mid-test; harmless when no test context is active
 	// (e.g. direct use outside vitest subscriptions).
-	try {
-		onTestFailed((ctx) => {
-			recordArtifact("fail", ctx.task.result?.errors?.[0])
-		})
-	} catch (hookError) {
-		// Not inside a test context — artifacts still written on start failure.
-		process.stderr.write(`[acp-e2e] onTestFailed registration skipped: ${String(hookError).slice(0, 200)}\n`)
+	if (process.env.VITEST) {
+		try {
+			const { onTestFailed } = await import("vitest")
+			onTestFailed((ctx) => {
+				recordArtifact("fail", ctx.task.result?.errors?.[0])
+			})
+		} catch (hookError) {
+			// Not inside a test context — artifacts still written on start failure.
+			process.stderr.write(`[acp-e2e] onTestFailed registration skipped: ${String(hookError).slice(0, 200)}\n`)
+		}
 	}
 
 	try {
@@ -337,6 +351,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				"utf-8",
 			)
 		}
+		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH
@@ -356,6 +371,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
 				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
+				...(mcp?.env ?? {}),
 			},
 			cwd: workDir,
 		})
@@ -405,6 +421,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			proc,
 			conn,
 			client,
+			mcp,
 			waitForExit,
 			async stop() {
 				abort.abort()
@@ -418,6 +435,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 					])
 				}
 				await fake.stop()
+				await mcp?.stop().catch(() => {})
 				rmSync(homeDir, { recursive: true, force: true })
 				rmSync(workDir, { recursive: true, force: true })
 			},
@@ -426,10 +444,28 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		recordArtifact("fail", error)
 		if (proc && proc.exitCode === null) proc.kill("SIGKILL")
 		await fake.stop().catch(() => {})
+		await mcp?.stop().catch(() => {})
 		rmSync(homeDir, { recursive: true, force: true })
 		rmSync(workDir, { recursive: true, force: true })
 		throw error
 	}
+}
+
+export async function startAcpMcpFixture(
+	options: StartAcpFixtureOptions & { mcp: McpFixtureOptions },
+): Promise<AcpMcpFixture> {
+	const fixture = await startAcpFixture(options)
+	try {
+		assertAcpMcpFixture(fixture)
+		return fixture
+	} catch (error) {
+		await fixture.stop().catch(() => {})
+		throw error
+	}
+}
+
+function assertAcpMcpFixture(fixture: AcpFixture): asserts fixture is AcpMcpFixture {
+	if (!fixture.mcp) throw new Error("MCP test fixture was requested but not created")
 }
 
 function mergeCapabilities(
