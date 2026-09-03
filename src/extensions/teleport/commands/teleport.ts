@@ -2,13 +2,7 @@ import { existsSync } from "node:fs"
 import { open, readFile, stat } from "node:fs/promises"
 import { platform } from "node:os"
 import { basename, dirname } from "node:path"
-import {
-	readGitToken,
-	readTeleportCompactHintEnabled,
-	readTeleportHelpSeenAt,
-	writeGitToken,
-	writeTeleportHelpSeenAt,
-} from "../../../config.js"
+import { readTeleportCompactHintEnabled, readTeleportHelpSeenAt, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
@@ -26,6 +20,7 @@ import { type ClonePlan, ClonePlanError, resolveClonePlan } from "../provisionin
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
+import { resolveGitToken as resolveGitTokenShared } from "../provisioning/git-token.js"
 import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildChangedFilesList, buildIncludeList } from "../provisioning/include-list.js"
@@ -504,18 +499,13 @@ async function resolveGitToken(
 	ctx: TeleportContext,
 ): Promise<string | undefined> {
 	if (args.noGitToken || !gitHost) return undefined
-	const cached = readGitToken(gitHost, ctx.configPath)
-	if (cached) return cached
-	const result = await progress.promptGitToken(gitHost)
-	if (result.outcome !== "submitted") return undefined
-	if (result.save) {
-		try {
-			writeGitToken(gitHost, result.token, ctx.configPath)
-		} catch (err) {
+	return resolveGitTokenShared(
+		gitHost,
+		() => progress.promptGitToken(gitHost),
+		(err: unknown) => {
 			warn(ctx, `Could not save git token: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-	return result.token
+		},
+	)
 }
 
 /**
