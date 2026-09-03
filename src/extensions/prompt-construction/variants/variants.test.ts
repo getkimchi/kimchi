@@ -576,6 +576,35 @@ describe("guidelinesFor", () => {
 })
 
 // ---------------------------------------------------------------------------
+// J2) Each principle is stated once inside the appended block
+// ---------------------------------------------------------------------------
+
+describe("appended working-discipline block states each principle once", () => {
+	const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1
+
+	const blocks: [string, string][] = [
+		["single/subagent", OPINIONATED_BLOCK],
+		["orchestrator", OPINIONATED_BLOCK_ORCHESTRATOR],
+	]
+
+	for (const [label, block] of blocks) {
+		it(`${label}: states the over-engineering rule once`, () => {
+			expect(occurrences(block, "over-engineer")).toBe(1)
+		})
+
+		it(`${label}: states the challenge-the-requirements rule once`, () => {
+			expect(occurrences(block, "Challenge requirements")).toBe(1)
+			expect(block).not.toContain("push back")
+		})
+
+		it(`${label}: states the do-not-publish-unasked rule once, covering commits and shared resources`, () => {
+			expect(occurrences(block, "unless explicitly asked")).toBe(1)
+			expect(block).toContain("Never commit, push, publish, or comment on shared resources")
+		})
+	}
+})
+
+// ---------------------------------------------------------------------------
 // K) disciplineNudgeFor: mode-aware nudge
 // ---------------------------------------------------------------------------
 

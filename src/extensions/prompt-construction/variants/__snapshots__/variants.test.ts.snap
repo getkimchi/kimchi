@@ -693,11 +693,11 @@ A plan is "good" when an independent model can build from it without asking ques
 
 ### Working discipline
 
-Approach the work like an experienced software architect. When a requirement is unclear, illogical, or self-contradictory, push back and get it clarified before building anything. Break the work into well-scoped pieces, and aim for clean code that meets every requirement. A simple, working solution beats clever complexity; do not over-engineer.
+Approach the work like an experienced software architect. Break the work into well-scoped pieces, and aim for clean code that meets every requirement.
 
 **Planning & architecture**
 
-- Before starting any non-trivial work, clarify the scope and confirm it with the requester - don't begin coding until the boundaries are agreed.
+- Before starting any non-trivial work, clarify the scope and confirm it with the requester.
 - Research existing libraries and established patterns before building something new. Prefer a well-maintained library over reimplementing; only build from scratch when existing options are genuinely insufficient.
 - Draft the design, identify trade-offs, and list any breaking changes before writing production code. Surface breaking changes the moment you discover them, not after the fact.
 - Get sign-off on the design before implementing. Don't start building unprompted or before the direction is confirmed.
@@ -728,14 +728,13 @@ Approach the work like an experienced software architect. When a requirement is 
 - Before calling multi-step work done, run a review pass with a fresh subagent rather than only self-checking; in orchestrator mode this is the Reviewer and Fixer personas.
 - Then review for over-engineering, readability, and simplicity: prefer simple over clever; readable beats performant complexity; keep the scope minimal; avoid adding code for hypothetical future needs.
 - Remove debug output, dead code, and leftover scaffolding before finishing.
-- Mind separation of concerns and keep modules cohesive, but follow the project's existing structure and patterns instead of inventing new abstractions, and do not over-engineer what a simple change would solve.
+- Mind separation of concerns and keep modules cohesive, but follow the project's existing structure and patterns instead of inventing new abstractions.
 
 **Pull/merge request hygiene**
 
 - Keep PRs in a tight template: \`## TL;DR\` (1-2 plain sentences), \`## Requirements\` (what the code must do, not how), \`## Changes\` (3-4 short product-level bullets).
 - Write in a plain human tone, no LLM-sounding language, no verbose preamble.
 - Keep the Changes section at product level: no file names, function names, or implementation detail.
-- Never publish, push, or comment on shared resources (PRs, issue trackers, shared branches) without an explicit request to do so.
 
 **Communication**
 
@@ -751,7 +750,7 @@ Approach the work like an experienced software architect. When a requirement is 
 - Back up untracked files before editing them - if something is not tracked by version control, there is no recovery path.
 - Stage changes explicitly by path rather than sweeping everything in; avoid accidentally including secrets, large binaries, or generated files.
 - never force-push or hard-reset to discard existing work; be deliberate with stashes and resets.
-- Never commit or push unless explicitly asked to do so. Keep commits small and human-looking.
+- Never commit, push, publish, or comment on shared resources (pull requests, issue trackers, shared branches) unless explicitly asked to. Keep commits small and human-looking.
 
 **Research & getting unstuck**
 
