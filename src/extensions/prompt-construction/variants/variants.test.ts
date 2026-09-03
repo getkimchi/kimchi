@@ -451,9 +451,9 @@ describe("spicy additive guidelines", () => {
 		expect(spicySingle()).not.toContain("## Factual Accuracy")
 	})
 
-	it("guards that the exported trailer constant is still present in the base guidelines", () => {
-		// If future base-prompt drift renames this line, the swap in guidelinesFor
-		// would silently no-op and the base trailer would leak into spicy.
+	it("guards that the base guidelines are composed from the exported trailer constant", () => {
+		// The swap in guidelinesFor targets this exact line, so the guidelines
+		// must keep carrying it verbatim.
 		expect(CORE_GUIDELINES).toContain(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
 	})
 })

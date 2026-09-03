@@ -268,6 +268,15 @@ You are running in single-model mode.${modelClause} All work in this session run
 export const DOCUMENTS_SECTION =
 	"The Documents directory is shown in the Environment section. Use it for transient working documents: research notes, findings, verification reports, or any file passed between agents. Final plans and specs go to the canonical plan location (.kimchi/plans/<slug>.md). Never write working documents to the project directory or a temporary directory."
 
+/**
+ * The exact commit-trailer bullet inside CORE_GUIDELINES. Exported so a variant
+ * can target that single line precisely (for example to swap it for its own
+ * attribution rule) without re-authoring the whole guidelines block. It is
+ * interpolated into CORE_GUIDELINES below, so the two cannot drift apart.
+ */
+export const CORE_GUIDELINES_COMMIT_TRAILER_LINE =
+	"- **Git commits**: end every commit message with a blank line, then `Co-Authored-By: Kimchi <noreply@kimchi.dev>`."
+
 export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Before starting any task, gather all necessary context: understand the requirements, naming conventions, frameworks and libraries already in use, and how to run and test the code. Use your tools to read existing code rather than assuming.
 - Adhere to existing code conventions and patterns. Use only libraries and frameworks confirmed to be present in the codebase. Never introduce new dependencies without explicit instruction.
@@ -279,17 +288,7 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
 - Always bound shell commands with the bash tool's \`timeout\` parameter (default 60s) to prevent hangs — never wrap commands in the GNU \`timeout\` binary (missing on macOS and Windows).
 - Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
-- **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
-
-/**
- * The exact commit-trailer bullet inside CORE_GUIDELINES. Exported so a variant
- * can target that single line precisely (for example to swap it for its own
- * attribution rule) without re-authoring the whole guidelines block. A guard
- * test asserts this literal still appears in CORE_GUIDELINES so the swap can
- * never silently no-op if the guidelines text drifts.
- */
-export const CORE_GUIDELINES_COMMIT_TRAILER_LINE =
-	"- **Git commits**: end every commit message with a blank line, then `Co-Authored-By: Kimchi <noreply@kimchi.dev>`."
+${CORE_GUIDELINES_COMMIT_TRAILER_LINE}`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
