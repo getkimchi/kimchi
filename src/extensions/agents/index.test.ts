@@ -639,7 +639,9 @@ describe("Agent tool multi-mode model guard", () => {
 		const registry = makeMockModelRegistry([
 			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
 		])
-		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		// Simulate an interactive session: background-by-default only applies
+		// when there is a UI loop to consume completion notifications.
+		const ctx = { ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), hasUI: true }
 		const tool = getRegisteredAgentTool(pi)
 
 		const result = await tool.execute(

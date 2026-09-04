@@ -179,7 +179,7 @@ function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSi
 }
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Launch agents in the background by default (run_in_background defaults to true). Only set run_in_background: false when the next step in your workflow cannot proceed without the agent's result.
+- Launch agents in the background by default in interactive sessions (run_in_background defaults to true; headless runs default to foreground). Only set run_in_background: false when the next step in your workflow cannot proceed without the agent's result.
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
 - One call per task, detailed prompt; run_in_background for parallelism.
 - Follow-ups: resume_subagent (continue), get_subagent_result (status check), steer_subagent (redirect).
@@ -1381,7 +1381,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				run_in_background: Type.Optional(
 					Type.Boolean({
 						description:
-							"Default: true. Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+							"Default: true in interactive sessions (false in headless runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
 					}),
 				),
 				isolated: Type.Optional(
@@ -1517,9 +1517,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const customConfig = getAgentConfig(subagentType)
 
+				// Background-by-default only applies with a UI loop that can consume
+				// completion notifications; headless/one-shot runs keep foreground so
+				// spawned work cannot outlive the process.
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
+					ctx.hasUI,
 				)
 
 				let model = ctx.model
