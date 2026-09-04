@@ -9,9 +9,8 @@
 //      notifications only reach the session whose bus carries the ferment
 //      events (the one that owned it when activation fired).
 //
-// Seeding approach: ACP (`--mode acp`) has no interactive path from draft to
-// planned (promptPlanReview is TUI-only), so the fixture pre-seeds
-// `workDir/.kimchi/ferments/<id>.json` with a planned ferment and sets
+// Seeding approach for lifecycle tests: pre-seed
+// `workDir/.kimchi/ferments/<id>.json` with a planned ferment and set
 // KIMCHI_ACTIVE_FERMENT before spawn. Kimchi's env-var resume path shows an
 // elicitation ("Resume?") which the test answers with "Resume".
 
@@ -24,11 +23,16 @@ import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
 const FERMENT_ID = "ferment-plan-e2e"
+const REVIEW_FERMENT_ID = "ferment-review-e2e"
 const PHASE_ID = "phase-1"
 const STEP_1_ID = "step-1"
 const STEP_2_ID = "step-2"
 const STEP_1_DESC = "Write unit tests"
 const STEP_2_DESC = "Wire the cache"
+const ADHOC_TODO = "Implement approved plan"
+const FERMENT_PHASE_NAME = "ACP Review Slice"
+const FERMENT_STEP_DESC = "Verify ACP review selection"
+const FERMENT_FEEDBACK = "Tighten the ACP plan before execution."
 
 const PROMPT_TIMEOUT_LONG_MS = 90_000
 const TEST_TIMEOUT_MS = 180_000
@@ -39,6 +43,12 @@ function toolCall(name: string, args: Record<string, unknown>) {
 	return {
 		function: { name, arguments: JSON.stringify(args) },
 	} as const
+}
+
+function todoToolCall(content: string) {
+	return toolCall("create_todos", {
+		todos: [{ id: 1, content, status: "pending" }],
+	})
 }
 
 const FERMENT_IDS = { ferment_id: FERMENT_ID, phase_id: PHASE_ID }
@@ -97,6 +107,83 @@ function lifecycleScripts() {
 	]
 }
 
+function submitPlanScripts() {
+	const plan = [
+		"# Plan",
+		"",
+		"## Goal",
+		"Ship ACP plan updates.",
+		"",
+		"## Chunks",
+		"",
+		"### Chunk 1: Build UI snapshots",
+		"Files Changed: src/modes/acp/plans.ts",
+		"Depends On: none",
+		"Accept When: proposal clears after approval",
+		"Test Coverage: ACP E2E",
+		"Open Questions: none",
+		"",
+		"## Verification Strategy",
+		"Run ACP E2E.",
+		"",
+		"## Decision Log",
+		"Use plan snapshots.",
+		"",
+		"## Risks",
+		"None.",
+	].join("\n")
+	return [
+		{
+			stream: ["Submitting the plan."],
+			toolCalls: [toolCall("submit_plan", { plan })],
+		},
+		{
+			stream: ["Creating execution todos."],
+			toolCalls: [todoToolCall(ADHOC_TODO)],
+		},
+		{ stream: ["Execution todo created."] },
+		{ stream: ["Understood."] },
+	]
+}
+
+function passingPlanGates() {
+	return [
+		{ id: "P1", verdict: "pass", rationale: "Steps have verification", evidence: "ACP E2E script" },
+		{ id: "P2", verdict: "pass", rationale: "Single phase has no ordering risk", evidence: "One phase" },
+		{ id: "P3", verdict: "pass", rationale: "No blocked questions remain", evidence: "questions=[]" },
+	]
+}
+
+function proposeFermentScopingScripts() {
+	return [
+		{
+			stream: ["Proposing ferment scoping."],
+			toolCalls: [
+				toolCall("propose_ferment_scoping", {
+					ferment_id: REVIEW_FERMENT_ID,
+					title: "ACP Review Ferment",
+					goal: "Verify ACP ferment plan review.",
+					success_criteria: ["Plan review is visible in ACP"],
+					constraints: ["Keep the test hermetic"],
+					assumptions: "Fake model drives the proposal.",
+					phases: [
+						{
+							name: FERMENT_PHASE_NAME,
+							goal: "Exercise ACP review approval.",
+							steps: [{ description: FERMENT_STEP_DESC }],
+						},
+					],
+					questions: [],
+					gates: passingPlanGates(),
+				}),
+			],
+		},
+		{ stream: ["Waiting for review."] },
+		{ stream: ["Continuing after review."] },
+		{ stream: ["Understood."] },
+	]
+}
+
 // ─── Plan helpers ────────────────────────────────────────────────────────────
 
 type PlanEntry = Extract<acp.SessionUpdate, { sessionUpdate: "plan" }>["entries"][number]
@@ -133,6 +220,22 @@ async function waitForSnapshotWith(
 	}
 	const seen = JSON.stringify(planSnapshots(fixture, sessionId), null, 1)
 	throw new Error(`waitForSnapshotWith timed out (${context}) after ${timeoutMs}ms. Snapshots seen: ${seen}`)
+}
+
+async function waitForElicitationWith(
+	fixture: AcpFixture,
+	predicate: (params: unknown) => boolean,
+	timeoutMs = PROMPT_TIMEOUT_LONG_MS,
+	context = "",
+): Promise<unknown> {
+	const start = Date.now()
+	while (Date.now() - start < timeoutMs) {
+		const hit = fixture.client.elicitationRequests.find((request) => predicate(request.params))
+		if (hit) return hit.params
+		await delay(100)
+	}
+	const seen = JSON.stringify(fixture.client.elicitationRequests, null, 1)
+	throw new Error(`waitForElicitationWith timed out (${context}) after ${timeoutMs}ms. Requests seen: ${seen}`)
 }
 
 // ─── Seeding ─────────────────────────────────────────────────────────────────
@@ -177,6 +280,46 @@ function buildSeedState(workDir: string) {
 function seedPlannedFerment(workDir: string): void {
 	const ferment = buildSeedState(workDir)
 	writeFermentSeed(workDir, ferment)
+}
+
+function seedDraftFerment(workDir: string): void {
+	const now = new Date().toISOString()
+	const ferment = {
+		id: REVIEW_FERMENT_ID,
+		name: "ACP Review Ferment",
+		status: "draft",
+		goal: "Verify ACP ferment plan review.",
+		successCriteria: [] as string[],
+		constraints: [] as string[],
+		assumptions: "",
+		worktree: { path: workDir },
+		scoping: {},
+		phases: [] as unknown[],
+		decisions: [] as unknown[],
+		memories: [] as unknown[],
+		createdAt: now,
+		updatedAt: now,
+	}
+	mkdirSync(join(workDir, ".kimchi", "ferments"), { recursive: true })
+	const fermentsDir = join(workDir, ".kimchi", "ferments")
+	writeFileSync(join(fermentsDir, `${ferment.id}.json`), JSON.stringify(ferment, null, "\t"), "utf-8")
+	writeFileSync(
+		join(fermentsDir, `${ferment.id}.events.jsonl`),
+		`${JSON.stringify({
+			id: `${ferment.id}-e1`,
+			timestamp: now,
+			type: "ferment_created",
+			preStateHash: "0",
+			postStateHash: "0",
+			payload: {
+				id: ferment.id,
+				name: ferment.name,
+				createdAt: ferment.createdAt,
+				worktree: ferment.worktree,
+			},
+		})}\n`,
+		"utf-8",
+	)
 }
 
 function writeFermentSeed(dir: string, ferment: ReturnType<typeof buildSeedState>): void {
@@ -244,8 +387,166 @@ function writeFermentSeed(dir: string, ferment: ReturnType<typeof buildSeedState
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
+describe("ACP integration — plan proposal review lifecycle", () => {
+	let fixture: AcpFixture | undefined
+	let previousEnv: string | undefined
+
+	beforeEach(() => {
+		previousEnv = process.env.KIMCHI_ACTIVE_FERMENT
+	})
+
+	afterEach(async () => {
+		if (previousEnv === undefined) delete process.env.KIMCHI_ACTIVE_FERMENT
+		else process.env.KIMCHI_ACTIVE_FERMENT = previousEnv
+		await fixture?.stop()
+		fixture = undefined
+	})
+
+	it("ad-hoc approval emits proposal, clears at the approval boundary, then emits execution todos", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-adhoc-review",
+			responses: submitPlanScripts(),
+			extraArgs: ["--plan"],
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Execute the plan" } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const turn = await prompt(activeFixture, sessionId, "Plan and then execute ACP plan updates")
+		expect(turn.stopReason, "plan submission turn stop reason").toBe("end_turn")
+
+		const proposal = await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) =>
+				entries.length > 0 &&
+				entries.every((entry) => entry.status === "pending") &&
+				entries.some((entry) => entry.content === "Chunk 1: Build UI snapshots"),
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc proposal snapshot",
+		)
+		expect(proposal.map((entry) => entry.content)).toContain("Chunk 1: Build UI snapshots")
+
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.length === 0,
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc approval clear",
+		)
+
+		const executionTodos = await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.some((entry) => entry.content === ADHOC_TODO),
+			PROMPT_TIMEOUT_LONG_MS,
+			"post-approval execution todos",
+		)
+		expect(executionTodos).toEqual([
+			expect.objectContaining({
+				content: ADHOC_TODO,
+				status: "pending",
+			}),
+		])
+	})
+
+	it("Ferment ACP select approval emits proposal and clears only after confirmation succeeds", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = REVIEW_FERMENT_ID
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-ferment-review-approval",
+			responses: proposeFermentScopingScripts(),
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		seedDraftFerment(fixture.workDir)
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Start execution" } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const turn = await prompt(activeFixture, sessionId, "Scope a ferment for ACP review")
+		expect(turn.stopReason, "ferment scoping turn stop reason").toBe("end_turn")
+
+		const proposal = await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) =>
+				entries.length >= 2 &&
+				entries.every((entry) => entry.status === "pending") &&
+				entries.some((entry) => entry.content === `[Phase 1] ${FERMENT_PHASE_NAME}`) &&
+				entries.some((entry) => entry.content === `↳ ${FERMENT_STEP_DESC}`),
+			PROMPT_TIMEOUT_LONG_MS,
+			"ferment proposal snapshot",
+		)
+		expect(proposal.map((entry) => entry.content)).toContain(`[Phase 1] ${FERMENT_PHASE_NAME}`)
+
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.length === 0,
+			PROMPT_TIMEOUT_LONG_MS,
+			"ferment approval clear",
+		)
+	})
+
+	it("Ferment ACP feedback emits proposal, collects input, and clears for rework", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = REVIEW_FERMENT_ID
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-ferment-review-feedback",
+			responses: proposeFermentScopingScripts(),
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		seedDraftFerment(fixture.workDir)
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Let me say something" } })
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: FERMENT_FEEDBACK } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const promptPromise = prompt(activeFixture, sessionId, "Scope a ferment and request feedback")
+
+		await waitForElicitationWith(
+			activeFixture,
+			(params) => (params as { message?: string }).message === "Plan ready for review. How would you like to proceed?",
+			PROMPT_TIMEOUT_LONG_MS,
+			"ferment review select",
+		)
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: FERMENT_FEEDBACK } })
+
+		const turn = await promptPromise
+		expect(turn.stopReason, "ferment feedback turn stop reason").toBe("end_turn")
+
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.some((entry) => entry.content === `[Phase 1] ${FERMENT_PHASE_NAME}`),
+			PROMPT_TIMEOUT_LONG_MS,
+			"ferment proposal before feedback",
+		)
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.length === 0,
+			PROMPT_TIMEOUT_LONG_MS,
+			"ferment feedback clear",
+		)
+		await waitForElicitationWith(
+			activeFixture,
+			(params) => (params as { message?: string }).message === "Your direction:",
+			PROMPT_TIMEOUT_LONG_MS,
+			"ferment feedback input",
+		)
+	})
+})
+
 describe("ACP integration — plan sessionUpdates from ferment lifecycle", () => {
-	let fixture: AcpFixture
+	let fixture: AcpFixture | undefined
 	let previousEnv: string | undefined
 
 	beforeEach(async () => {
@@ -265,7 +566,8 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 	afterEach(async () => {
 		if (previousEnv === undefined) delete process.env.KIMCHI_ACTIVE_FERMENT
 		else process.env.KIMCHI_ACTIVE_FERMENT = previousEnv
-		await fixture.stop()
+		await fixture?.stop()
+		fixture = undefined
 	})
 
 	it("create/update/clear lifecycle emits plan snapshots with correct statuses", {
@@ -275,7 +577,8 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// Answer it before newSession blocks on the selection.
 		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
 
-		const sessionId = await newSession(fixture, fixture.workDir)
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
 
 		// The resume path may fire a wake turn on its own (consume the first two
 		// scripted responses, including activate_ferment_phase → initial plan),
@@ -285,9 +588,9 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// Under manual continuation policy the wake path never fires, so
 		// prompt immediately instead of waiting 15s (which races with the
 		// resume path's model turn on slow CI runners).
-		await prompt(fixture, sessionId, "continue the ferment")
+		await prompt(activeFixture, sessionId, "continue the ferment")
 		const initial = await waitForSnapshotWith(
-			fixture,
+			activeFixture,
 			sessionId,
 			(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
 			PROMPT_TIMEOUT_LONG_MS,
@@ -306,9 +609,9 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// Start step 1 → an in_progress entry appears in the snapshot history
 		// (the bridge seeds the step-scope anchor; exact content is bridge-
 		// shaped so assert on status. Content shape is covered by unit tests).
-		await prompt(fixture, sessionId, "start step 1")
+		await prompt(activeFixture, sessionId, "start step 1")
 		await waitForSnapshotWith(
-			fixture,
+			activeFixture,
 			sessionId,
 			(entries) => entries.some((e) => e.status === "in_progress"),
 			PROMPT_TIMEOUT_LONG_MS,
@@ -320,9 +623,9 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// complete_ferment_phase from the scripted queue), superseding the
 		// "step completed" snapshot — so accept either the completed snapshot
 		// or an already-empty plan from the snapshot history.
-		await prompt(fixture, sessionId, "complete step 1")
+		await prompt(activeFixture, sessionId, "complete step 1")
 		const afterStep = await waitForSnapshotWith(
-			fixture,
+			activeFixture,
 			sessionId,
 			(entries) =>
 				entries.some((e) => e.status === "completed" && e.content.includes(STEP_1_DESC)) || entries.length === 0,
@@ -344,30 +647,31 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// bridge clears the ferment-scope todos and the plan shrinks to an
 		// empty list — the "clear" half of the lifecycle. A prompt here just
 		// drains a benign text response if the phase is already complete.
-		await prompt(fixture, sessionId, "complete the phase")
+		await prompt(activeFixture, sessionId, "complete the phase")
 		await waitForSnapshotWith(
-			fixture,
+			activeFixture,
 			sessionId,
 			(entries) => entries.length === 0,
 			PROMPT_TIMEOUT_LONG_MS,
 			"plan cleared after phase completion",
 		)
-		expect(latestPlan(fixture, sessionId), "latest plan is the cleared state").toEqual([])
+		expect(latestPlan(activeFixture, sessionId), "latest plan is the cleared state").toEqual([])
 	})
 
 	it("plan notifications are session-scoped — a second session sees none", { timeout: TEST_TIMEOUT_MS }, async () => {
 		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
 
-		const sessionA = await newSession(fixture, fixture.workDir)
+		const activeFixture = fixture
+		const sessionA = await newSession(activeFixture, activeFixture.workDir)
 
 		// Under manual continuation policy the wake path never fires, so
 		// prompt immediately instead of waiting 15s (which races with the
 		// resume path's model turn on slow CI runners — the resume turn
 		// consumes the first scripted response, leaving the prompt with a
 		// no-tool-call response and no plan snapshot).
-		await prompt(fixture, sessionA, "continue the ferment")
+		await prompt(activeFixture, sessionA, "continue the ferment")
 		await waitForSnapshotWith(
-			fixture,
+			activeFixture,
 			sessionA,
 			(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
 			PROMPT_TIMEOUT_LONG_MS,
@@ -378,10 +682,10 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		// the ferment events are emitted on session A's bus and the todo bridge
 		// wrote session A's bucket, so session B's tracker has nothing to
 		// correlate and emits nothing.
-		const sessionB = await newSession(fixture, fixture.workDir)
+		const sessionB = await newSession(activeFixture, activeFixture.workDir)
 		await delay(2_000) // give B's tracker a chance to misfire if it would
 
-		expect(planSnapshots(fixture, sessionA).length, "session A received plan snapshots").toBeGreaterThan(0)
-		expect(planSnapshots(fixture, sessionB), "session B received no plan snapshots").toHaveLength(0)
+		expect(planSnapshots(activeFixture, sessionA).length, "session A received plan snapshots").toBeGreaterThan(0)
+		expect(planSnapshots(activeFixture, sessionB), "session B received no plan snapshots").toHaveLength(0)
 	})
 })

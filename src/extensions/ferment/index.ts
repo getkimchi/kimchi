@@ -15,13 +15,17 @@ import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import {
+	appendPlanReviewResolvedEntry,
+	clearPlanReviewState,
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
 	emitPlanReviewRequest,
+	emitPlanReviewResolved,
 	onPlanReviewDecision,
 	onPlanReviewRequest,
 	type PlanReviewDecisionPayload,
 	type PlanReviewRequestPayload,
+	type PlanReviewResolvedOutcome,
 } from "../../shared/planning/plan-review-bus.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -168,30 +172,28 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		if (!isCurrentPendingReview(review)) return
 
 		planReviewRunning = true
+		const sessionId = ctx.sessionManager.getSessionId()
 		// Unsubscribed when this review resolves; otherwise one listener would
 		// accumulate on the shared event bus for every review ever presented.
 		// `dismissReview` is assigned lazily by the prompt via onDismissRegister.
 		let dismissReview: (() => void) | undefined
 		const unsubscribeDismiss = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+			if (payload.sessionId !== sessionId) return
 			if (payload.planReviewSource !== "ferment") return
 			if (payload.source !== "plannotator") return
 			dismissReview?.()
 		})
 		try {
-			// promptPlanReview is TUI-only and returns undefined without prompting
-			// in other modes — only activate the herdr blocked pair when it will
-			// actually wait on the user (see herdr-events.ts PROTOCOL).
-			const reviewPromise =
-				ctx.mode === "tui"
-					? withBlocked(pi.events, "Ferment plan review", () =>
-							promptPlanReview(ctx, {
-								planMarkdown: review.planMarkdown,
-								onDismissRegister: (dismiss) => {
-									dismissReview = dismiss
-								},
-							}),
-						)
-					: promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
+			// Only activate the herdr blocked pair when a user-facing review UI
+			// can actually wait for a decision (see herdr-events.ts PROTOCOL).
+			const reviewPrompt = () =>
+				promptPlanReview(ctx, {
+					planMarkdown: review.planMarkdown,
+					onDismissRegister: (dismiss) => {
+						dismissReview = dismiss
+					},
+				})
+			const reviewPromise = ctx.hasUI ? withBlocked(pi.events, "Ferment plan review", reviewPrompt) : reviewPrompt()
 
 			// Fire-and-forget: emit a decision when the TUI resolves.
 			// The decision handler below acts on whichever surface decides first.
@@ -211,6 +213,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 					}
 					if (outcome.kind === "cancelled") {
 						emitPlanReviewDecision(pi, {
+							sessionId,
 							decision: "rework",
 							source: "kimchi-tui",
 							planReviewSource: "ferment",
@@ -220,6 +223,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 					}
 					if (outcome.kind === "start" || outcome.kind === "start_auto") {
 						emitPlanReviewDecision(pi, {
+							sessionId,
 							decision: "execute",
 							source: "kimchi-tui",
 							planReviewSource: "ferment",
@@ -228,6 +232,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 						})
 					} else if (outcome.kind === "start_cloud") {
 						emitPlanReviewDecision(pi, {
+							sessionId,
 							decision: "start_cloud",
 							source: "kimchi-tui",
 							planReviewSource: "ferment",
@@ -235,6 +240,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 						})
 					} else if (outcome.kind === "feedback") {
 						emitPlanReviewDecision(pi, {
+							sessionId,
 							decision: "feedback",
 							feedback: outcome.text,
 							source: "kimchi-tui",
@@ -261,10 +267,21 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// the TUI review component and plannotator's browser UI (first decision wins).
 	onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
 		if (payload.planReviewSource !== "ferment") return
-		const reviewCtx = consumePlanReviewContext()
+		const reviewCtx = consumePlanReviewContext(payload.sessionId)
 		if (!reviewCtx) return
 		const fermentId = payload.fermentId ?? reviewCtx.fermentId
 		if (!fermentId) return
+		const resolveReview = (outcome: PlanReviewResolvedOutcome) => {
+			const resolved = {
+				sessionId: payload.sessionId,
+				decision: payload.decision,
+				planReviewSource: "ferment" as const,
+				outcome,
+				fermentId,
+			}
+			appendPlanReviewResolvedEntry(reviewCtx.ctx, resolved)
+			emitPlanReviewResolved(pi, resolved)
+		}
 
 		planReviewRunning = false
 
@@ -285,6 +302,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				fermentId,
 				tag: "Plan review start",
 			})
+			resolveReview("accepted")
 		} else if (payload.decision === "start_cloud") {
 			// Confirm pending scope so the ferment is saved locally, then spawn
 			// a remote agent to execute the plan in a cloud sandbox. The local
@@ -305,6 +323,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			if (pauseOutcome.ok) {
 				runtime.setActive(pauseOutcome.ferment)
 			}
+			resolveReview("accepted")
 			const planMarkdown = reviewCtx.planText
 			const cloudPrompt = buildRemotePlanPrompt(planMarkdown, { origin: "ferment" })
 			const cloudDescription = `cloud: ${planMarkdown.slice(0, 60)}${planMarkdown.length > 60 ? "..." : ""}`
@@ -342,6 +361,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				},
 				{ triggerTurn: true, deliverAs: "followUp" },
 			)
+			resolveReview("feedback")
 		} else {
 			// rework / cancel — delete the persisted proposal and clear the
 			// in-memory pending review, then restore the planning-ferment tool
@@ -351,6 +371,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			deletePendingProposal(fermentId)
 			runtime.clearPendingPlanReview(fermentId)
 			applyFermentRuntimeToolProfile(pi, runtime)
+			resolveReview("rework")
 		}
 	})
 
@@ -365,7 +386,12 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			// restores tools without deleting the persisted proposal.
 			emitPlanReviewRequest(
 				pi,
-				{ planContent: review.planMarkdown, source: "ferment", fermentId: review.fermentId },
+				{
+					sessionId: triggerCtx.sessionManager.getSessionId(),
+					planContent: review.planMarkdown,
+					source: "ferment",
+					fermentId: review.fermentId,
+				},
 				{ ctx: triggerCtx, planText: review.planMarkdown, fermentId: review.fermentId },
 			)
 		}
@@ -378,6 +404,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		if (payload.source !== "ferment") return
 		const sessionCtx = ctx
 		if (!sessionCtx) return
+		if (payload.sessionId !== sessionCtx.sessionManager.getSessionId()) return
 		const review = runtime.getCurrentPendingPlanReview()
 		if (!review || planReviewRunning) return
 		clearPlanReviewTimer()
@@ -405,6 +432,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_shutdown", () => {
 		clearPlanReviewTimer()
+		if (ctx) clearPlanReviewState(ctx.sessionManager.getSessionId())
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
 		unregisterFermentTodoSync?.()
@@ -423,7 +451,12 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		if (!planReviewRunning && !planReviewTimer && review) {
 			emitPlanReviewRequest(
 				pi,
-				{ planContent: review.planMarkdown, source: "ferment", fermentId: review.fermentId },
+				{
+					sessionId: ctx.sessionManager.getSessionId(),
+					planContent: review.planMarkdown,
+					source: "ferment",
+					fermentId: review.fermentId,
+				},
 				{ ctx, planText: review.planMarkdown, fermentId: review.fermentId },
 			)
 			clearPlanReviewTimer()

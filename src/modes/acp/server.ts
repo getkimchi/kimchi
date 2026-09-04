@@ -589,6 +589,12 @@ export class KimchiAcpAgent implements Agent {
 			unregisterAcpPrompter(session.sessionId)
 			unregisterSessionPermissionFlagController(session.sessionId)
 			clearPermissionModeEnv(session.sessionId)
+			const existing = this.sessions.get(session.sessionId)
+			if (existing) {
+				this.sessions.delete(session.sessionId)
+				existing.planTracker?.stop()
+				existing.unsubscribe()
+			}
 			session.dispose()
 			throw err
 		}
@@ -639,6 +645,8 @@ export class KimchiAcpAgent implements Agent {
 			sessionId,
 			events: defaultFermentRuntime.events,
 			send: (params) => this.send(params),
+			getPermissionMode: () => getPermissionMode(sessionId)?.mode,
+			getSessionEntries: () => record.session.sessionManager.getBranch(),
 			onActivePlanChanged: (plan) => {
 				record.activePlan = plan
 			},

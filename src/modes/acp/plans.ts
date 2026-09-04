@@ -26,18 +26,29 @@
 // the identifier ready.
 
 import type { PlanEntry, PlanEntryStatus, SessionNotification } from "@agentclientprotocol/sdk"
-import type { EventBus } from "@earendil-works/pi-coding-agent"
+import type { EventBus, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
+import { getPendingScope, type PendingScope } from "../../extensions/ferment/scoping.js"
 import { getActive } from "../../extensions/ferment/state.js"
-import { PERMISSION_EVENTS } from "../../extensions/permissions/permissions-events.js"
 import { getTodoScopeKey } from "../../extensions/todos/scope.js"
+import { getWriteTodosDetails } from "../../extensions/todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodoState, getTodosForScope, subscribeTodoStore } from "../../extensions/todos/store.js"
 import type { TodoItem, TodoStatus, TodosSliceState } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
+import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
+import { derivePlanTitle } from "../../shared/planning/plan-markdown.js"
+import {
+	PLAN_REVIEW_REQUEST_CHANNEL,
+	PLAN_REVIEW_RESOLVED_CHANNEL,
+	PLAN_REVIEW_RESOLVED_CUSTOM_TYPE,
+	type PlanReviewRequestPayload,
+	type PlanReviewResolvedPayload,
+} from "../../shared/planning/plan-review-bus.js"
 
 /** planId for non-ferment plans. Matches the ACP v2 migration recommendation
  *  for adapting v1 single-plan updates to v2 (`id: "main"`). */
 const PLAN_MODE_PLAN_ID = "main"
+const PENDING_REVIEW_PLAN_ID = "pending-review"
 
 export interface ActivePlan {
 	/** V2-ready identifier. For ferments this is `ferment.id`. */
@@ -54,6 +65,12 @@ export interface AcpPlanTrackerOptions {
 	send: (notification: SessionNotification) => void
 	/** Injectable for tests. Defaults to the process-level ferment state. */
 	getActiveFerment?: () => Ferment | undefined
+	/** Current permission mode for this session. Defaults to direct/global todos. */
+	getPermissionMode?: () => string | undefined
+	/** Session branch provider used for restore ordering. */
+	getSessionEntries?: () => readonly SessionEntry[]
+	/** Injectable for tests. Defaults to Ferment's pending scope buffer. */
+	getPendingFermentScope?: (fermentId: string) => PendingScope | undefined
 	/** Mirror hook so the ACP server can keep the active plan on its
 	 *  SessionRecord (v2-ready storage). */
 	onActivePlanChanged?: (plan: ActivePlan | undefined) => void
@@ -101,6 +118,65 @@ export function createInitialPlanEntries(ferment: Ferment): PlanEntry[] {
 export function globalTodosToPlanEntries(state: TodosSliceState): PlanEntry[] {
 	const globalKey = getTodoScopeKey(GLOBAL_TODO_SCOPE)
 	return (state.byScope[globalKey]?.todos ?? []).map(todoToPlanEntry)
+}
+
+function pendingEntry(content: string): PlanEntry {
+	return { content, priority: "medium", status: "pending" }
+}
+
+function fallbackPlanTitle(markdown: string): string {
+	return (
+		derivePlanTitle(markdown) ||
+		markdown
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.find(Boolean) ||
+		"untitled-plan"
+	)
+}
+
+export function proposalRequestToPlanEntries(
+	payload: PlanReviewRequestPayload,
+	getPendingFermentScope: (fermentId: string) => PendingScope | undefined = getPendingScope,
+): PlanEntry[] {
+	if (payload.source === "ferment" && payload.fermentId) {
+		const pending = getPendingFermentScope(payload.fermentId)
+		if (pending?.phases?.length) {
+			const entries: PlanEntry[] = []
+			pending.phases.forEach((phase, index) => {
+				entries.push(pendingEntry(`[Phase ${index + 1}] ${phase.name}`))
+				for (const step of phase.steps ?? []) {
+					entries.push(pendingEntry(`↳ ${step.description}`))
+				}
+			})
+			return entries
+		}
+	}
+
+	const parsed = parseSharedPlan(payload.planContent)
+	if (parsed.chunks.length > 0) {
+		return parsed.chunks.map((chunk) => pendingEntry(chunk.title))
+	}
+	return [pendingEntry(fallbackPlanTitle(payload.planContent))]
+}
+
+function isResolvedEntry(entry: SessionEntry): boolean {
+	return entry.type === "custom" && entry.customType === PLAN_REVIEW_RESOLVED_CUSTOM_TYPE
+}
+
+function isGlobalTodoEntry(entry: SessionEntry): boolean {
+	const details = getWriteTodosDetails(entry)
+	return details?.scope.kind === GLOBAL_TODO_SCOPE.kind
+}
+
+function hasGlobalTodoAfterLatestReviewResolution(entries: readonly SessionEntry[]): boolean {
+	let latestResolvedIndex = -1
+	let latestGlobalTodoIndex = -1
+	entries.forEach((entry, index) => {
+		if (isResolvedEntry(entry)) latestResolvedIndex = index
+		if (isGlobalTodoEntry(entry)) latestGlobalTodoIndex = index
+	})
+	return latestResolvedIndex < 0 || latestGlobalTodoIndex > latestResolvedIndex
 }
 
 /** Flatten ferment-scoped todos into plan entries, ordered by phase then
@@ -213,19 +289,22 @@ export class AcpPlanTracker {
 	private activePlan: ActivePlan | undefined
 	private unsubscribeEvents: (() => void) | undefined
 	private unsubscribeTodos: (() => void) | undefined
-	private unsubscribePlanApproved: (() => void) | undefined
+	private unsubscribePlanReviewRequest: (() => void) | undefined
+	private unsubscribePlanReviewResolved: (() => void) | undefined
 	private lastEmittedKey = ""
 	private started = false
-	/** Gates the plan-mode path: stays false until the user approves a plan
-	 *  (PERMISSION_EVENTS.PLAN_APPROVED). Planning-phase and ad-hoc todos
-	 *  would otherwise pollute the client's plan panel. Persisted for the
-	 *  tracker's lifetime, so resumed sessions that load a fresh tracker
-	 *  skip the plan-mode snapshot until approval fires again. */
-	private planExecutionApproved = false
+	private pendingReview:
+		| {
+				fermentId?: string
+				source: "adhoc" | "ferment"
+		  }
+		| undefined
 	private readonly getActiveFerment: () => Ferment | undefined
+	private readonly getPendingFermentScope: (fermentId: string) => PendingScope | undefined
 
 	constructor(private readonly options: AcpPlanTrackerOptions) {
 		this.getActiveFerment = options.getActiveFerment ?? getActive
+		this.getPendingFermentScope = options.getPendingFermentScope ?? getPendingScope
 	}
 
 	start(): void {
@@ -241,8 +320,11 @@ export class AcpPlanTracker {
 		// all-pending emission as the first plan the client sees.
 		if (this.options.events) {
 			this.unsubscribeEvents = this.options.events.on(FERMENT_EVENTS.PHASE_STARTED, (raw) => this.onPhaseStarted(raw))
-			this.unsubscribePlanApproved = this.options.events.on(PERMISSION_EVENTS.PLAN_APPROVED, () =>
-				this.onPlanApproved(),
+			this.unsubscribePlanReviewRequest = this.options.events.on(PLAN_REVIEW_REQUEST_CHANNEL, (raw) =>
+				this.onPlanReviewRequest(raw),
+			)
+			this.unsubscribePlanReviewResolved = this.options.events.on(PLAN_REVIEW_RESOLVED_CHANNEL, (raw) =>
+				this.onPlanReviewResolved(raw),
 			)
 		}
 		this.unsubscribeTodos = subscribeTodoStore((_details, emitterSessionId) =>
@@ -255,13 +337,16 @@ export class AcpPlanTracker {
 		this.started = false
 		this.unsubscribeEvents?.()
 		this.unsubscribeEvents = undefined
-		this.unsubscribePlanApproved?.()
-		this.unsubscribePlanApproved = undefined
+		this.unsubscribePlanReviewRequest?.()
+		this.unsubscribePlanReviewRequest = undefined
+		this.unsubscribePlanReviewResolved?.()
+		this.unsubscribePlanReviewResolved = undefined
 		this.unsubscribeTodos?.()
 		this.unsubscribeTodos = undefined
 		// Reset the dedupe cache so a tracker accidentally restarted emits the
 		// current state instead of being suppressed by the stale key.
 		this.lastEmittedKey = ""
+		this.pendingReview = undefined
 		this.setActivePlan(undefined)
 	}
 
@@ -291,17 +376,17 @@ export class AcpPlanTracker {
 		const ferment = this.getActiveFerment()
 		if (ferment) {
 			const entries = todoStoreToPlanEntries(getTodoState(this.options.sessionId), ferment)
-			if (entries.length === 0) return
-			const plan: ActivePlan = { planId: ferment.id, entries }
-			this.setActivePlan(plan)
-			this.emit(plan.entries)
-			return
+			if (entries.length > 0) {
+				const plan: ActivePlan = { planId: ferment.id, entries }
+				this.setActivePlan(plan)
+				this.emit(plan.entries)
+				return
+			}
 		}
-		// No ferment — resume from global-scope todos (plan-mode path).
-		// Gated on approval: a fresh tracker after `loadSession` never replays
-		// the pre-restart scratchpad, since the approval event fired before
-		// this tracker existed.
-		if (!this.planExecutionApproved) return
+		// No ferment — resume from global-scope todos only when they are visible
+		// for this permission mode and are newer than any review-resolution marker.
+		if (!this.shouldShowGlobalTodos()) return
+		if (!this.hasRestorableGlobalTodos()) return
 		const entries = globalTodosToPlanEntries(getTodoState(this.options.sessionId))
 		if (entries.length === 0) return
 		const plan: ActivePlan = { planId: PLAN_MODE_PLAN_ID, entries }
@@ -309,10 +394,38 @@ export class AcpPlanTracker {
 		this.emit(plan.entries)
 	}
 
-	private onPlanApproved(): void {
-		// The payload (plan path) is informational; the approval event itself
-		// is the signal, so there is nothing to validate here.
-		this.planExecutionApproved = true
+	private shouldShowGlobalTodos(): boolean {
+		return this.options.getPermissionMode?.() !== "plan"
+	}
+
+	private hasRestorableGlobalTodos(): boolean {
+		const entries = this.options.getSessionEntries?.()
+		return entries ? hasGlobalTodoAfterLatestReviewResolution(entries) : true
+	}
+
+	private onPlanReviewRequest(raw: unknown): void {
+		const payload = raw as PlanReviewRequestPayload
+		if (payload.sessionId !== this.options.sessionId) return
+		const entries = proposalRequestToPlanEntries(payload, this.getPendingFermentScope)
+		this.pendingReview = { source: payload.source, fermentId: payload.fermentId }
+		const plan: ActivePlan = { planId: PENDING_REVIEW_PLAN_ID, entries }
+		this.setActivePlan(plan)
+		this.emit(plan.entries)
+	}
+
+	private onPlanReviewResolved(raw: unknown): void {
+		const payload = raw as PlanReviewResolvedPayload
+		if (payload.sessionId !== this.options.sessionId) return
+		this.pendingReview = undefined
+		if (
+			payload.outcome === "replaced_by_ferment" &&
+			payload.fermentId &&
+			this.activePlan?.planId === payload.fermentId
+		) {
+			return
+		}
+		this.setActivePlan(undefined)
+		this.emit([])
 	}
 
 	private onPhaseStarted(raw: unknown): void {
@@ -334,12 +447,14 @@ export class AcpPlanTracker {
 			return
 		}
 		const plan: ActivePlan = { planId: ferment.id, entries: createInitialPlanEntries(ferment) }
+		this.pendingReview = undefined
 		this.setActivePlan(plan)
 		this.emit(plan.entries)
 	}
 
 	private onTodoStoreChanged(emitterSessionId: string): void {
 		if (emitterSessionId !== this.options.sessionId) return
+		if (this.pendingReview) return
 		const ferment = this.getActiveFerment()
 
 		// Ferment path: if a ferment is active and we already have a ferment
@@ -354,14 +469,10 @@ export class AcpPlanTracker {
 			return
 		}
 
-		// Plan-mode path: no ferment active — emit from global-scope todos, but
-		// only after the user approved a plan-mode plan. Pre-approval todos are
-		// the agent's planning scratchpad (research steps, open questions), and
-		// ad-hoc todos from unrelated work are noise — neither belongs in the
-		// client's plan panel. If a ferment just started, the PHASE_STARTED
-		// handler will have already set activePlan to the ferment plan, and the
-		// guard above routes updates to the ferment path.
-		if (!ferment && this.planExecutionApproved) {
+		// Global todo path: visible outside plan/review mode. A process-global
+		// ferment owned by another session must not suppress this session's direct
+		// todos; only an owned ferment plan does that.
+		if (this.shouldShowGlobalTodos()) {
 			const entries = globalTodosToPlanEntries(getTodoState(this.options.sessionId))
 			// Only emit when we have global todos OR when clearing a previously
 			// active plan-mode plan (entries went from non-empty to empty).

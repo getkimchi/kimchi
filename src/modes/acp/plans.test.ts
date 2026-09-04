@@ -2,14 +2,19 @@
 // `plan` sessionUpdates, todos → PlanEntry translation, and scope filtering.
 
 import type { PlanEntry, SessionNotification } from "@agentclientprotocol/sdk"
-import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent"
+import { createEventBus, type EventBus, type SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
+import { clearAllPendingScopes, setPendingScope } from "../../extensions/ferment/scoping.js"
 import { getActive, setActive } from "../../extensions/ferment/state.js"
-import { PERMISSION_EVENTS } from "../../extensions/permissions/permissions-events.js"
 import { __resetTodoStore, applyWriteTodos } from "../../extensions/todos/store.js"
 import type { TodoDraft } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
+import {
+	PLAN_REVIEW_REQUEST_CHANNEL,
+	PLAN_REVIEW_RESOLVED_CHANNEL,
+	PLAN_REVIEW_RESOLVED_CUSTOM_TYPE,
+} from "../../shared/planning/plan-review-bus.js"
 import { AcpPlanTracker, type ActivePlan } from "./plans.js"
 
 const TEST_SESSION_ID = "acp-session"
@@ -62,20 +67,24 @@ interface Harness {
 	bus: EventBus
 	emitted: SessionNotification[]
 	planChanges: (ActivePlan | undefined)[]
+	setPermissionMode: (mode: string) => void
 	tracker: AcpPlanTracker
 }
 
-function makeHarness(sessionId = TEST_SESSION_ID): Harness {
+function makeHarness(sessionId = TEST_SESSION_ID, entries: SessionEntry[] = []): Harness {
 	const bus = createEventBus()
 	const emitted: SessionNotification[] = []
 	const planChanges: (ActivePlan | undefined)[] = []
+	let permissionMode = "default"
 	const tracker = new AcpPlanTracker({
 		sessionId,
 		events: bus,
 		send: (n) => emitted.push(n),
+		getPermissionMode: () => permissionMode,
+		getSessionEntries: () => entries,
 		onActivePlanChanged: (plan) => planChanges.push(plan),
 	})
-	return { bus, emitted, planChanges, tracker }
+	return { bus, emitted, planChanges, setPermissionMode: (mode) => (permissionMode = mode), tracker }
 }
 
 function planEntries(emitted: SessionNotification[], index: number): PlanEntry[] {
@@ -99,11 +108,33 @@ function simulateBridgePhaseWrite(phaseId: string, sessionId = TEST_SESSION_ID):
 	writePhaseTodos(phaseId, [{ content: `[bridge] ${phaseId}`, status: "in_progress" }], sessionId)
 }
 
-/** Simulate the user approving a plan-mode plan (the "Execute the plan"
- *  path): the permissions extension emits PLAN_APPROVED on the bus, and the
- *  tracker un-gates its global-scope emission. */
-function simulatePlanApproval(bus: EventBus): void {
-	bus.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath: undefined })
+function customEntry(customType: string, data?: unknown): SessionEntry {
+	return { type: "custom", customType, data } as SessionEntry
+}
+
+function globalTodoEntry(content: string): SessionEntry {
+	return customEntry("kimchi.todos", {
+		schemaVersion: 1,
+		scope: { kind: "global" },
+		todos: [{ id: "todo-1", content, status: "pending" }],
+	})
+}
+
+function emitAdhocPlanReview(bus: EventBus): void {
+	bus.emit(PLAN_REVIEW_REQUEST_CHANNEL, {
+		sessionId: TEST_SESSION_ID,
+		planContent: "## Goal\nShip it\n\n## Chunks\n\n### Chunk 1: Build\nDo it",
+		source: "adhoc",
+	})
+}
+
+function emitResolved(bus: EventBus): void {
+	bus.emit(PLAN_REVIEW_RESOLVED_CHANNEL, {
+		sessionId: TEST_SESSION_ID,
+		decision: "execute",
+		planReviewSource: "adhoc",
+		outcome: "accepted",
+	})
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -116,6 +147,7 @@ describe("AcpPlanTracker", () => {
 
 	afterEach(() => {
 		setActive(undefined)
+		clearAllPendingScopes()
 		__resetTodoStore()
 	})
 
@@ -180,6 +212,25 @@ describe("AcpPlanTracker", () => {
 			simulateBridgePhaseWrite("phase-1", "other-session")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("does not let another session's active ferment suppress global todos", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1", "other-session")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "session-local todo", status: "pending" }] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0)[0].content).toBe("session-local todo")
 		} finally {
 			tracker.stop()
 		}
@@ -341,24 +392,50 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("resume snapshot skips global-scope todos without approval in this tracker lifetime", () => {
-		// A fresh tracker after `loadSession` must not replay the pre-restart
-		// scratchpad: PLAN_APPROVED fired before this tracker existed.
+	it("resume snapshot skips global-scope todos written before the latest review resolution", () => {
 		applyWriteTodos(
 			{ scope: { kind: "global" }, todos: [{ content: "restored task", status: "in_progress" }] },
 			TEST_SESSION_ID,
 		)
-		const { bus, emitted, tracker } = makeHarness()
+		const branch = [
+			globalTodoEntry("restored task"),
+			customEntry(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
+				sessionId: TEST_SESSION_ID,
+				source: "adhoc",
+				decision: "execute",
+				outcome: "accepted",
+			}),
+		]
+		const { emitted, tracker } = makeHarness(TEST_SESSION_ID, branch)
 		tracker.start()
 		try {
 			tracker.emitRestoredSnapshot()
 			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
 
-			// Once approval fires (same tracker lifetime), a snapshot emits.
-			simulatePlanApproval(bus)
+	it("resume snapshot restores global-scope todos written after the latest review resolution", () => {
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "execution task", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		const branch = [
+			customEntry(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
+				sessionId: TEST_SESSION_ID,
+				source: "adhoc",
+				decision: "execute",
+				outcome: "accepted",
+			}),
+			globalTodoEntry("execution task"),
+		]
+		const { emitted, tracker } = makeHarness(TEST_SESSION_ID, branch)
+		tracker.start()
+		try {
 			tracker.emitRestoredSnapshot()
 			expect(emitted).toHaveLength(1)
-			expect(planEntries(emitted, 0)[0].content).toBe("restored task")
+			expect(planEntries(emitted, 0)[0].content).toBe("execution task")
 		} finally {
 			tracker.stop()
 		}
@@ -501,21 +578,65 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("emits global-scope todos only after plan approval (no ferment)", () => {
+	it("emits a pending ad-hoc proposal and clears it when the review resolves", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
-			// Planning-phase scratchpad todos: the agent researching the plan.
-			// These must NOT enter the client's plan panel.
+			emitAdhocPlanReview(bus)
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0)).toEqual([{ content: "Chunk 1: Build", priority: "medium", status: "pending" }])
+
+			emitResolved(bus)
+			expect(emitted).toHaveLength(2)
+			expect(planEntries(emitted, 1)).toEqual([])
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("emits a pending ferment proposal from the pending scope buffer", () => {
+		setPendingScope("ferment-pending", {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "Scoping", goal: "Build", steps: [{ description: "Wire ACP review" }] }],
+		})
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			bus.emit(PLAN_REVIEW_REQUEST_CHANNEL, {
+				sessionId: TEST_SESSION_ID,
+				planContent: "# Plan fallback",
+				source: "ferment",
+				fermentId: "ferment-pending",
+			})
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0).map((entry) => entry.content)).toEqual(["[Phase 1] Scoping", "↳ Wire ACP review"])
+			expect(planEntries(emitted, 0).every((entry) => entry.status === "pending")).toBe(true)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("keeps planning scratchpad global todos hidden while permission mode is plan", () => {
+		const { emitted, setPermissionMode, tracker } = makeHarness()
+		tracker.start()
+		try {
+			setPermissionMode("plan")
 			applyWriteTodos(
 				{ scope: { kind: "global" }, todos: [{ content: "research the codebase", status: "in_progress" }] },
 				TEST_SESSION_ID,
 			)
 			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
 
-			// User approves the plan → execution begins. The next todo write
-			// (the model replacing its scratchpad with execution steps) emits.
-			simulatePlanApproval(bus)
+	it("emits global-scope todos outside plan/review mode", () => {
+		const { emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
 			applyWriteTodos(
 				{ scope: { kind: "global" }, todos: [{ content: "write tests", status: "pending" }] },
 				TEST_SESSION_ID,
@@ -530,11 +651,10 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("updates plan-mode statuses on global todo changes", () => {
-		const { bus, emitted, tracker } = makeHarness()
+	it("updates global todo statuses", () => {
+		const { emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
-			simulatePlanApproval(bus)
 			applyWriteTodos(
 				{
 					scope: { kind: "global" },
@@ -567,10 +687,9 @@ describe("AcpPlanTracker", () => {
 	})
 
 	it("emits empty entries when all global todos are cleared", () => {
-		const { bus, emitted, tracker } = makeHarness()
+		const { emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
-			simulatePlanApproval(bus)
 			applyWriteTodos({ scope: { kind: "global" }, todos: [{ content: "task", status: "pending" }] }, TEST_SESSION_ID)
 			expect(emitted).toHaveLength(1)
 
@@ -582,11 +701,10 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("uses activeForm for plan-mode in_progress entries", () => {
-		const { bus, emitted, tracker } = makeHarness()
+	it("uses activeForm for global in_progress entries", () => {
+		const { emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
-			simulatePlanApproval(bus)
 			applyWriteTodos(
 				{
 					scope: { kind: "global" },
@@ -605,8 +723,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
-			// Plan-mode writes first.
-			simulatePlanApproval(bus)
+			// Global todo writes first.
 			applyWriteTodos(
 				{ scope: { kind: "global" }, todos: [{ content: "ad-hoc task", status: "pending" }] },
 				TEST_SESSION_ID,
