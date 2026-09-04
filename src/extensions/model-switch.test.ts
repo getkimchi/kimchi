@@ -1,3 +1,4 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
@@ -12,6 +13,7 @@ import modelSwitchExtension, {
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
 import { getMultiModelEnabled, resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type RegisteredTool = {
 	name: string
@@ -1154,6 +1156,52 @@ describe("modelSwitchExtension", () => {
 				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
+		})
+
+		it("does not revert an Auto switch when the resolved target fits the context", async () => {
+			// Regression (PR #1137 comment): Auto's catalog descriptor reports a 128K
+			// floor, but the routed concrete target is 1M. ~200K of context exceeds the
+			// 128K descriptor yet fits the 1M target, so the guard must validate against
+			// the effective (resolved) window and must NOT revert the Auto switch.
+			const autoDescriptor = {
+				id: "auto",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+				contextWindow: 128_000,
+			}
+			const resolvedTarget = {
+				id: "nemotron-3-ultra-fp4",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 1_000_000,
+			}
+			clearAutoRoutingState("test-session")
+			setAutoRoutingState("test-session", { status: "resolved", model: { ...resolvedTarget } as Model<string> })
+			try {
+				const { pi, trigger } = createHarnessWithTrigger()
+				modelSwitchExtension(pi)
+				const setModel = pi.setModel as ReturnType<typeof vi.fn>
+				await trigger(
+					"model_select",
+					{
+						type: "model_select",
+						model: autoDescriptor,
+						previousModel: {
+							id: "kimi-k2.6",
+							provider: "kimchi-dev",
+							input: ["text", "image"],
+							contextWindow: 200_000,
+						},
+						source: "set",
+					},
+					createContext({ tokens: 200_000 }),
+				)
+
+				// 200K fits the 1M effective window: no revert, no setModel call.
+				expect(setModel).not.toHaveBeenCalled()
+			} finally {
+				clearAutoRoutingState("test-session")
+			}
 		})
 
 		it("reverts when session has images and target lacks vision", async () => {

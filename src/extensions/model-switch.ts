@@ -15,6 +15,7 @@ import { setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
+import { resolveEffectiveModel } from "./router/state.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
@@ -137,6 +138,11 @@ export default function modelSwitchExtension(
 				}
 			}
 
+			// When switching TO Auto, resolve the effective (routed) concrete model so
+			// the guards validate against the real window/modalities, not Auto's
+			// conservative catalog floor. Keep pi.setModel(target) so Auto stays selected.
+			const effectiveTarget = resolveEffectiveModel(target, sessionId) ?? target
+
 			const usage = ctx.getContextUsage()
 			// getLatestMessages() returns the most recent context from model-guard's
 			// "context" handler. It is updated on every LLM call, so data is fresh
@@ -148,12 +154,12 @@ export default function modelSwitchExtension(
 				console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
 			}
 			const tokens = resolveContextTokens(usage, messages)
-			if (tokens != null && !contextFitsModel(tokens, target.contextWindow)) {
+			if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(target.contextWindow)} of ${target.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
+							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(effectiveTarget.contextWindow)} of ${effectiveTarget.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
 						},
 					],
 					details: null,
@@ -161,7 +167,7 @@ export default function modelSwitchExtension(
 			}
 
 			// Vision compatibility guard
-			if (sessionHasImages() && !target.input.includes("image") && ctx.model?.input.includes("image")) {
+			if (sessionHasImages() && !effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
 				return {
 					content: [
 						{
@@ -216,13 +222,14 @@ export default function modelSwitchExtension(
 		if (!event.previousModel) return
 
 		const sessionId = ctx.sessionManager.getSessionId()
+		const effectiveTarget = resolveEffectiveModel(event.model, sessionId) ?? event.model
 		const usage = ctx.getContextUsage?.()
 
 		// Context window guard — block if current tokens exceed target safe context window.
 		// Falls back to local estimate when upstream tokens are null (post-compaction).
 		const messages = getLatestMessages()
 		const tokens = resolveContextTokens(usage, messages)
-		if (tokens != null && !contextFitsModel(tokens, event.model.contextWindow)) {
+		if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
 			isRevertingModel = true
 			try {
 				await pi.setModel(event.previousModel)
@@ -230,11 +237,11 @@ export default function modelSwitchExtension(
 				isRevertingModel = false
 			}
 
-			const limit = getSafeContextWindow(event.model.contextWindow)
+			const limit = getSafeContextWindow(effectiveTarget.contextWindow)
 			const excess = tokens - limit
 			if (!ctx.hasUI) {
 				ctx.ui.notify(
-					`Current context (${tokens.toLocaleString()} tokens) exceeds the ${event.model.id} safe context limit (${limit.toLocaleString()} of ${event.model.contextWindow.toLocaleString()} tokens) by ${excess.toLocaleString()} tokens. Start a new session or compact before switching.`,
+					`Current context (${tokens.toLocaleString()} tokens) exceeds the ${event.model.id} safe context limit (${limit.toLocaleString()} of ${effectiveTarget.contextWindow.toLocaleString()} tokens) by ${excess.toLocaleString()} tokens. Start a new session or compact before switching.`,
 					"error",
 				)
 				return
@@ -272,7 +279,11 @@ export default function modelSwitchExtension(
 		}
 
 		// Vision guard — block if session has images but target lacks vision support
-		if (sessionHasImages() && !event.model.input.includes("image") && event.previousModel?.input.includes("image")) {
+		if (
+			sessionHasImages() &&
+			!effectiveTarget.input.includes("image") &&
+			event.previousModel?.input.includes("image")
+		) {
 			isRevertingModel = true
 			await pi.setModel(event.previousModel)
 			isRevertingModel = false
