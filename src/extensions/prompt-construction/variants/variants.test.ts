@@ -566,6 +566,23 @@ describe("guidelinesFor", () => {
 		expect(guidelinesFor("orchestrator")).toContain("After every tool result, ALWAYS produce text")
 	})
 
+	it("orchestrator mode states the hands-on rules as the bar for delegated work", () => {
+		const orchestrator = guidelinesFor("orchestrator")
+		expect(orchestrator).toContain("Require every delegated chunk to run its tests after each change")
+		expect(orchestrator).toContain("Require untracked files to be backed up before they are edited")
+		expect(orchestrator).toContain("Require debug output, dead code, and leftover scaffolding to be removed")
+		expect(orchestrator).not.toContain("Run tests after every change")
+		expect(orchestrator).not.toContain("Back up untracked files before editing them")
+		expect(orchestrator).not.toContain("Stage changes explicitly by path")
+	})
+
+	it("single mode keeps the hands-on rules in direct form", () => {
+		const single = guidelinesFor("single")
+		expect(single).toContain("Run tests after every change")
+		expect(single).toContain("Back up untracked files before editing them")
+		expect(single).toContain("Stage changes explicitly by path")
+	})
+
 	it("both single and orchestrator contain '### Working discipline'", () => {
 		expect(guidelinesFor("single")).toContain("### Working discipline")
 		expect(guidelinesFor("orchestrator")).toContain("### Working discipline")
@@ -614,6 +631,7 @@ describe("rulesBlockFor", () => {
 		const block = rulesBlockFor("single")
 		expect(block).toMatch(new RegExp(`^${RULES_BLOCK_HEADER}`))
 		expect(block).toContain("- Delegate implementation, testing, and review to focused subagents")
+		expect(block).toContain("Test and validate after every change")
 	})
 
 	it("orchestrator mode drops the delegation bullet and names the review personas", () => {
@@ -625,9 +643,17 @@ describe("rulesBlockFor", () => {
 
 	it("both modes carry the shared rules", () => {
 		for (const mode of ["single", "orchestrator"] as const) {
-			expect(rulesBlockFor(mode)).toContain("Never delete a failing test")
+			expect(rulesBlockFor(mode)).toContain("Lead with the answer or deliverable")
 			expect(rulesBlockFor(mode)).toContain("Never commit or push unless asked.")
 		}
+	})
+
+	it("orchestrator mode states the testing rules as delegation policy", () => {
+		const block = rulesBlockFor("orchestrator")
+		expect(block).toContain("Require every delegated chunk to test and validate after each change")
+		expect(block).toContain("Never accept a deleted failing test")
+		expect(block).not.toContain("Test and validate after every change")
+		expect(block).not.toContain("back them up before modifying them")
 	})
 
 	it("subagent mode gets no rules block", () => {

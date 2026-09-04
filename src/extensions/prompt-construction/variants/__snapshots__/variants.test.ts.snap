@@ -713,19 +713,19 @@ Approach the work like an experienced software architect. Break the work into we
 **Testing discipline**
 
 - Right-size testing to the task's difficulty and risk. Production code and non-trivial work should be tested, and where the project already covers similar things with tests, match that bar. A small or one-off script needs only a quick sanity check that it works as expected, not an exhaustive suite.
-- Write the test first where it helps clarify expected behaviour before implementation.
-- Cover unit and integration tests with appropriate mocks; aim for the narrowest mock surface that gives confidence.
-- Cover edge cases before calling a task done - don't ship only the happy path.
-- Run tests after every change, not just at the end.
-- Add and maintain a test for every bug fixed; a bug without a regression test is likely to return.
-- Never delete a failing test - if the test is correct, fix the code; if the test is wrong, fix the test. Never bend a correct test to match wrong code.
+- Require the test first where it helps clarify expected behaviour before implementation.
+- Require unit and integration tests with appropriate mocks, at the narrowest mock surface that gives confidence.
+- Require edge-case coverage before a chunk counts as done - do not accept only the happy path.
+- Require every delegated chunk to run its tests after each change, not just at the end.
+- Require a regression test for every bug fixed; a bug without one is likely to return.
+- Never accept a deleted failing test - if the test is correct, the code gets fixed; if the test is wrong, the test gets fixed. A correct test is never bent to match wrong code.
 
 **Code quality & review**
 
 - Before calling work done, check it against the stated requirements: did anything get missed? Do the requirements themselves make sense, or is there a contradiction worth raising?
 - Before calling multi-step work done, run a review pass with a fresh subagent rather than only self-checking; in orchestrator mode this is the Reviewer and Fixer personas.
 - Then review for over-engineering, readability, and simplicity: prefer simple over clever; readable beats performant complexity; keep the scope minimal; avoid adding code for hypothetical future needs.
-- Remove debug output, dead code, and leftover scaffolding before finishing.
+- Require debug output, dead code, and leftover scaffolding to be removed before a chunk counts as done.
 - Mind separation of concerns and keep modules cohesive, but follow the project's existing structure and patterns instead of inventing new abstractions.
 
 **Pull/merge request hygiene**
@@ -741,8 +741,8 @@ Approach the work like an experienced software architect. Break the work into we
 
 **Version-control safety**
 
-- Back up untracked files before editing them - if something is not tracked by version control, there is no recovery path.
-- Stage changes explicitly by path rather than sweeping everything in; avoid accidentally including secrets, large binaries, or generated files.
+- Require untracked files to be backed up before they are edited - if something is not tracked by version control, there is no recovery path.
+- Require changes to be staged explicitly by path rather than swept in wholesale; secrets, large binaries, and generated files must not slip in.
 - Never force-push or hard-reset to discard existing work; be deliberate with stashes and resets.
 - Never commit, push, publish, or comment on shared resources (pull requests, issue trackers, shared branches) unless explicitly asked to. Keep commits small and focused.
 
