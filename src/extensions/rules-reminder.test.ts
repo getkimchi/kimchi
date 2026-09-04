@@ -212,6 +212,20 @@ describe("rulesReminderExtension message content", () => {
 		)
 	})
 
+	// A draft ferment counts as in progress here, even though the planner rules
+	// only reach a draft in one-shot mode.
+	it("leaves the delegation bullet out while a ferment is still a draft", async () => {
+		await recordPromptMode("rules-ferment-draft", "single")
+		mockActiveFerment.mockReturnValue({ status: "draft" })
+		const { handlers, sendMessage } = await loadExtension()
+
+		firePrompt(handlers, "rules-ferment-draft")
+
+		expect(deliveredText(sendMessage)).not.toContain(
+			"- Delegate implementation, testing, and review to focused subagents",
+		)
+	})
+
 	it("sends the delegation bullet again once the ferment is finished", async () => {
 		await recordPromptMode("rules-ferment-done", "single")
 		mockActiveFerment.mockReturnValue({ status: "complete" })
@@ -267,6 +281,21 @@ describe("rulesReminderExtension quiet cases", () => {
 		const { handlers, sendMessage } = await loadExtension()
 
 		fire(handlers, "input", { type: "input", text: "hi", source: "extension" }, sessionCtx("rules-ext-input"))
+
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("sends nothing when the session's recorded prompt mode is subagent", async () => {
+		// A variant whose rules text is non-empty for every mode, so the message
+		// staying unsent proves the subagent check is what stopped it.
+		mockResolvePromptVariant.mockReturnValue({
+			name: "spicy",
+			rulesReminder: { text: () => "Working rules, always follow:", intervalMs: INTERVAL_MS },
+		})
+		await recordPromptMode("rules-subagent-mode", "subagent")
+		const { handlers, sendMessage } = await loadExtension()
+
+		firePrompt(handlers, "rules-subagent-mode")
 
 		expect(sendMessage).not.toHaveBeenCalled()
 	})

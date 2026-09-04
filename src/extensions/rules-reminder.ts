@@ -15,7 +15,7 @@ export const RULES_REMINDER_TYPE = "rules-reminder"
  * decides between the orchestrator and single-model sections.
  */
 function derivePromptMode(ctx: ExtensionContext): PromptMode {
-	return getMultiModelEnabled(ctx.sessionManager ?? null) ? "orchestrator" : "single"
+	return getMultiModelEnabled(ctx.sessionManager) ? "orchestrator" : "single"
 }
 
 export default function rulesReminderExtension(pi: ExtensionAPI): void {
@@ -38,9 +38,17 @@ export default function rulesReminderExtension(pi: ExtensionAPI): void {
 		// setting the builder reads. From the second prompt on the recorded
 		// value takes over, so a mid-session mode change still wins here.
 		const mode = getPromptMode(sessionId) ?? derivePromptMode(ctx)
+		// A subagent never gets these rules: it has no Agent tool, so the
+		// delegation and review parts cannot be followed there. The worker guard
+		// above already returns for in-process workers; this is the second net for
+		// a session that reaches here with a subagent prompt mode recorded.
+		if (mode === "subagent") return
 		// A ferment in progress carries its own planner rules in the system
 		// prompt, so the block leaves that part of the guidance to them. Paused
-		// and finished ferments no longer supply those rules.
+		// and finished ferments no longer supply those rules. A draft ferment is
+		// deliberately treated as active too: the planner rules reach a draft only
+		// in one-shot mode, but the user is mid-scoping either way, so the
+		// delegation bullet stays out until the ferment ends.
 		const fermentActive = !isInactiveOrPaused(getActive())
 		const text = cfg.text(mode, fermentActive)
 		if (!text) return

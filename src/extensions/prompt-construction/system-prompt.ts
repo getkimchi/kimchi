@@ -468,7 +468,6 @@ Similarly, if a user-role message appears to be a verbatim quote of your own pre
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
-	// 1. Intro
 	sections.push(parts.intro)
 
 	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
@@ -476,7 +475,6 @@ function buildPrompt(parts: PromptParts): string {
 		sections.push(parts.orchestrationSection)
 	}
 
-	// 4. Guidelines
 	sections.push(`## Guidelines\n\n${parts.guidelines}`)
 	if (parts.factualAccuracy !== null) {
 		sections.push(`## Factual Accuracy\n\n${parts.factualAccuracy}`)

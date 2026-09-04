@@ -183,7 +183,7 @@ describe("SPICY descriptor", () => {
 	})
 
 	it("rulesReminder.text is the mode-aware rules block", () => {
-		expect(SPICY.rulesReminder?.text("single", false)).toBe(rulesBlockFor("single"))
+		expect(SPICY.rulesReminder?.text).toBe(rulesBlockFor)
 	})
 
 	it("rulesReminder.intervalMs is five minutes", () => {
@@ -339,6 +339,15 @@ describe("buildSystemPrompt: spicy variant", () => {
 				process.env[PROMPT_VARIANT_ENV] = savedEnv
 			}
 		}
+	})
+
+	// The Orchestration section tells a build agent to write the implementation
+	// first and run the tests once. A delegated testing rule asking for tests
+	// after each change would tell the same agent the opposite.
+	it("the delegated testing rules agree with the build contract", () => {
+		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "orchestrator", variantName: "spicy" })
+		expect(result).toContain("run tests exactly once")
+		expect(result).not.toContain("after each change")
 	})
 
 	it("spicy full prompt (orchestrator mode) matches snapshot", () => {
@@ -570,7 +579,7 @@ describe("guidelinesFor", () => {
 
 	it("orchestrator mode states the hands-on rules as the bar for delegated work", () => {
 		const orchestrator = guidelinesFor("orchestrator")
-		expect(orchestrator).toContain("Require every delegated chunk to run its tests after each change")
+		expect(orchestrator).toContain("Require each chunk's tests to check the expected behaviour from its brief")
 		expect(orchestrator).toContain("Require untracked files to be backed up before they are edited")
 		expect(orchestrator).toContain("Require debug output, dead code, and leftover scaffolding to be removed")
 		expect(orchestrator).not.toContain("Run tests after every change")
@@ -648,7 +657,7 @@ describe("rulesBlockFor", () => {
 
 	it("orchestrator mode states the testing rules as delegation policy", () => {
 		const block = rulesBlockFor("orchestrator")
-		expect(block).toContain("Require every delegated chunk to test and validate after each change")
+		expect(block).toContain("Require every delegated chunk to come back with its tests run and passing")
 		expect(block).toContain("Never accept a deleted failing test")
 		expect(block).not.toContain("Test and validate after every change")
 		expect(block).not.toContain("back them up before modifying them")
