@@ -4,13 +4,14 @@ import { resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
-import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
-import type { McpConfig, McpSettings, OAuthConfig, ServerEntry } from "../../../../src/extensions/mcp-adapter/types.js"
+import type { CallToolResult, ReadResourceResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
+import type { McpConfig, McpSettings, OAuthConfig, ServerEntry } from "pi-mcp-adapter/types"
 
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
 	: fileURLToPath(new URL("../../../../", import.meta.url))
 const FIXTURE_SERVER_PATH = resolve(REPO_ROOT, "tests/e2e/mcp/fixture-server.mjs")
+export const MCP_FIXTURE_OAUTH_ACCESS_TOKEN = "kimchi-e2e-oauth-access-token"
 
 interface McpFixtureEventBase {
 	at: string
@@ -111,6 +112,13 @@ export interface McpFixtureBehavior {
 	startup?: { type: "exit"; code: number }
 	/** MCP call outcomes declared by the test that exercises them. */
 	tools?: McpFixtureToolBehavior[]
+	/** Additional advertised tools used by tool-surface policy scenarios. */
+	catalogTools?: Array<{
+		name: string
+		description?: string
+		inputSchema: { type: "object"; properties?: Record<string, unknown>; additionalProperties?: boolean }
+		annotations?: ToolAnnotations
+	}>
 	/** MCP resource-read outcomes declared by the test that exercises them. */
 	resources?: McpFixtureResourceBehavior[]
 }
@@ -139,6 +147,7 @@ export interface McpServerFixtureOptions {
 	idleTimeout?: number
 	toolPrefix?: McpSettings["toolPrefix"]
 	autoAuth?: boolean
+	oauthPreauthorized?: boolean
 	behavior?: McpFixtureBehavior
 }
 
@@ -374,13 +383,14 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 			KIMCHI_MCP_FIXTURE_TRANSPORT: transport,
 			...fixtureBehaviorEnv(options.behavior),
 			...(oauth ? { KIMCHI_MCP_FIXTURE_OAUTH: "1" } : {}),
+			...(oauth && options.oauthPreauthorized ? { KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED: "1" } : {}),
 			...(oauth && options.oauth?.grantType ? { KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE: options.oauth.grantType } : {}),
 			...(oauth && options.oauth?.clientId ? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID: options.oauth.clientId } : {}),
 			...(oauth && options.oauth?.clientSecret
 				? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET: options.oauth.clientSecret }
 				: {}),
 			...(oauth
-				? { KIMCHI_MCP_FIXTURE_BEARER_TOKEN: "kimchi-e2e-oauth-access-token" }
+				? { KIMCHI_MCP_FIXTURE_BEARER_TOKEN: MCP_FIXTURE_OAUTH_ACCESS_TOKEN }
 				: options.bearerToken
 					? { KIMCHI_MCP_FIXTURE_BEARER_TOKEN: options.bearerToken }
 					: {}),
@@ -401,13 +411,14 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 		}
 		const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
 		const browserEnv = oauth ? createOAuthBrowserDriver(agentDir, eventPath) : {}
+		const authStoreEnv = oauth ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 		const serverFixture: McpServerFixture = { serverName, serverDefinition, configPath, eventPath, ...eventReader }
 
 		return {
 			...serverFixture,
 			transport: oauth ? "oauth" : transport,
 			url: listening.url,
-			env: browserEnv,
+			env: { ...browserEnv, ...authStoreEnv },
 			servers: { [serverName]: serverFixture },
 			server(name) {
 				if (name !== serverName) throw new Error(`MCP fixture server ${name} is not configured`)
@@ -437,6 +448,8 @@ function seedExternalHttpFixture(agentDir: string, options: McpFixtureOptions): 
 	}
 	const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
 	const browserEnv = options.transport === "oauth" ? createOAuthBrowserDriver(agentDir, eventPath) : {}
+	const authStoreEnv =
+		options.transport === "oauth" ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 	const serverFixture: McpServerFixture = {
 		serverName,
 		serverDefinition,
@@ -448,7 +461,7 @@ function seedExternalHttpFixture(agentDir: string, options: McpFixtureOptions): 
 		...serverFixture,
 		transport: options.transport === "oauth" ? "oauth" : "http",
 		url: options.externalUrl,
-		env: browserEnv,
+		env: { ...browserEnv, ...authStoreEnv },
 		servers: { [serverName]: serverFixture },
 		server(name) {
 			if (name !== serverName) throw new Error(`MCP fixture server ${name} is not configured`)

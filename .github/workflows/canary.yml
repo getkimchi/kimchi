@@ -13,6 +13,7 @@ on:
       - 'biome.json'
       - 'scripts/**'
       - 'tools/proxy-helper/**'
+      - '.github/workflows/**'
   workflow_dispatch:
     inputs:
       force:
@@ -151,6 +152,29 @@ jobs:
       - name: Build Windows binary
         if: ${{ matrix.os == 'windows' }}
         run: node scripts/build-binary.js --target ${{ matrix.target }}
+
+      - name: Install Linux credential-store service
+        if: ${{ matrix.os == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring
+
+      - name: Verify MCP native keyring
+        if: ${{ matrix.os == 'darwin' }}
+        run: ./dist/bin/kimchi mcp keyring-check --json
+
+      - name: Verify MCP native keyring on Linux
+        if: ${{ matrix.os == 'linux' }}
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            printf "\n" | gnome-keyring-daemon --unlock --components=secrets
+            ./dist/bin/kimchi mcp keyring-check --json
+          '
+
+      - name: Verify MCP native keyring on Windows
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: .\dist\bin\kimchi.exe mcp keyring-check --json
 
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}

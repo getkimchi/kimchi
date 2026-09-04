@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { getReadOnlyToolNames, registerReadOnlyToolProvider } from "./read-only-tool-registry.js"
 
 /**
@@ -8,17 +9,12 @@ import { getReadOnlyToolNames, registerReadOnlyToolProvider } from "./read-only-
  * WeakMap keys are distinct per test — providers registered in one test never
  * leak into another, even without an explicit clear().
  */
-const makeMockPi = (): ExtensionAPI => {
+const makeMockPi = (events = createMiniEventBus().events): ExtensionAPI => {
 	const on = vi.fn()
-	return { on } as unknown as ExtensionAPI
+	return { events, on } as unknown as ExtensionAPI
 }
 
 describe("read-only-tool-registry", () => {
-	beforeEach(() => {
-		// Each test constructs its own mock pi, so the WeakMap starts empty for
-		// that key. No module-level reset is required.
-	})
-
 	it("returns an empty array when no providers are registered", () => {
 		const pi = makeMockPi()
 
@@ -66,6 +62,15 @@ describe("read-only-tool-registry", () => {
 
 		// piB has no providers — must return empty even though piA has one.
 		expect(getReadOnlyToolNames(piB)).toEqual([])
+	})
+
+	it("shares providers across extension wrappers in the same session", () => {
+		const events = createMiniEventBus().events
+		const providerApi = makeMockPi(events)
+		const consumerApi = makeMockPi(events)
+		registerReadOnlyToolProvider(providerApi, () => ["server_get_record"])
+
+		expect(getReadOnlyToolNames(consumerApi)).toEqual(["server_get_record"])
 	})
 
 	it("registers a session_shutdown listener on first registration", () => {

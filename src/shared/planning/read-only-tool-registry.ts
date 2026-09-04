@@ -7,24 +7,25 @@
  * to union these names into the active set during scoping — the only profile
  * where write tools are blocked by default.
  *
- * The registry is keyed on the pi-mono `ExtensionAPI` instance via a WeakMap,
- * mirroring the pattern in `tool-visibility.ts`. Providers are cleared
- * automatically when the session shuts down (the `pi` reference is GC'd).
+ * The registry is keyed on a session identity shared through pi-mono's event
+ * bus. Each extension receives a distinct `ExtensionAPI` wrapper, so the
+ * wrapper itself cannot be used for cross-extension state.
  *
  * ## Why a registry?
  *
- * The shared/planning layer must not import from `src/extensions/mcp-adapter`
- * directly (that would invert the dependency). Instead, the mcp-adapter
- * extension registers a provider at init time; `applyCore` calls
+ * The shared/planning layer must not import from `src/extensions/mcp`
+ * directly (that would invert the dependency). Instead, the MCP adapter
+ * wrapper registers a provider at init time; `applyCore` calls
  * `getReadOnlyToolNames` without knowing which extensions contributed.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getToolSessionScope } from "./tool-session-scope.js"
 
 /** A function that returns the current set of read-only-qualified tool names. */
 export type ReadOnlyToolProvider = () => string[]
 
-let providersByPi = new WeakMap<ExtensionAPI, ReadOnlyToolProvider[]>()
+let providersByScope = new WeakMap<object, ReadOnlyToolProvider[]>()
 
 /**
  * Register a read-only-tool provider for the given session.
@@ -39,14 +40,15 @@ let providersByPi = new WeakMap<ExtensionAPI, ReadOnlyToolProvider[]>()
  *                   it always reflects the current tool-metadata state.
  */
 export function registerReadOnlyToolProvider(pi: ExtensionAPI, provider: ReadOnlyToolProvider): void {
-	let providers = providersByPi.get(pi)
+	const scope = getToolSessionScope(pi)
+	let providers = providersByScope.get(scope)
 	if (!providers) {
 		providers = []
-		providersByPi.set(pi, providers)
+		providersByScope.set(scope, providers)
 		// Clean up on session shutdown. We never touch `pi` from inside the
 		// handler — pi-mono marks the runtime stale at this point.
 		pi.on("session_shutdown", () => {
-			providersByPi.delete(pi)
+			providersByScope.delete(scope)
 		})
 	}
 	if (providers.includes(provider)) return
@@ -61,7 +63,7 @@ export function registerReadOnlyToolProvider(pi: ExtensionAPI, provider: ReadOnl
  * @param pi - The pi-mono `ExtensionAPI` instance for this session.
  */
 export function getReadOnlyToolNames(pi: ExtensionAPI): string[] {
-	const providers = providersByPi.get(pi)
+	const providers = providersByScope.get(getToolSessionScope(pi))
 	if (!providers || providers.length === 0) return []
 	const seen = new Set<string>()
 	const result: string[] = []
@@ -94,5 +96,5 @@ export function getReadOnlyToolNames(pi: ExtensionAPI): string[] {
  * @internal — test-only.
  */
 export function resetReadOnlyToolRegistry(): void {
-	providersByPi = new WeakMap()
+	providersByScope = new WeakMap()
 }

@@ -184,6 +184,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Replace the merged permissions config with this file",
 		placeholder: "<path>",
 	},
+	"mcp-config": {
+		type: "string",
+		description: "Use a specific MCP configuration file",
+		placeholder: "<path>",
+	},
 	verbose: {
 		type: "boolean",
 		description: "Force verbose startup (overrides quietStartup)",
@@ -221,6 +226,7 @@ export interface SessionCliArgs {
 		auto?: boolean
 		yolo?: boolean
 		"permissions-config"?: string
+		"mcp-config"?: string
 		verbose?: boolean
 	}
 	positionals: string[]
@@ -264,6 +270,7 @@ const CACHEABLE_OPTION_NAMES = [
 	"auto",
 	"yolo",
 	"permissions-config",
+	"mcp-config",
 	"verbose",
 ] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
 

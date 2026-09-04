@@ -20,6 +20,7 @@ const scenario = process.env.KIMCHI_MCP_FIXTURE_SCENARIO ?? "basic"
 const transportKind = process.env.KIMCHI_MCP_FIXTURE_TRANSPORT ?? "stdio"
 const expectedBearerToken = process.env.KIMCHI_MCP_FIXTURE_BEARER_TOKEN
 const oauthEnabled = process.env.KIMCHI_MCP_FIXTURE_OAUTH === "1"
+const oauthPreauthorized = process.env.KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED === "1"
 const oauthGrantType = process.env.KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE ?? "authorization_code"
 const oauthClientId = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID ?? "kimchi-e2e-client"
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
@@ -102,6 +103,7 @@ function createFixtureServer() {
 					description: "Wait for cancellation or a bounded delay",
 					inputSchema: { type: "object", properties: {}, additionalProperties: false },
 				},
+				...(fixtureBehavior.catalogTools ?? []),
 				...uiTools,
 			],
 		}
@@ -207,7 +209,7 @@ function sendJson(response, statusCode, body) {
 async function runHttpFixture() {
 	const sessions = new Map()
 	const authorizationCodes = new Map()
-	let oauthAccessTokenExpiresAt = 0
+	let oauthAccessTokenExpiresAt = oauthPreauthorized ? Date.now() + 3_600_000 : 0
 	let origin = ""
 	const httpServer = createServer(async (request, response) => {
 		try {

@@ -38,7 +38,7 @@ test("persists a direct-tool choice from the MCP panel and applies it after rest
 			terminal.keyDown()
 			terminal.keyPress(" ")
 			terminal.keyPress("s", { ctrl: true })
-			await waitForText(terminal, "Saved", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Direct tools updated for this session.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("echo toggled to direct and saved")
 
 			const saved = JSON.parse(readFileSync(fixture.mcp.configPath, "utf-8")) as {
@@ -46,7 +46,6 @@ test("persists a direct-tool choice from the MCP panel and applies it after rest
 			}
 			expect(saved.mcpServers?.fixture?.directTools).toEqual(["echo"])
 
-			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
 			await session.restart()
 			await session.turn(

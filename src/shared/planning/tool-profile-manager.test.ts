@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { createToolVisibility } from "../../extensions/prompt-construction/tool-visibility.js"
 import { registerReadOnlyToolProvider, resetReadOnlyToolRegistry } from "./read-only-tool-registry.js"
 import { getToolsForProfile } from "./tool-catalog.js"
@@ -35,7 +35,7 @@ const makeMockPi = (
 		on,
 		getAllTools,
 		getActiveTools,
-		events: overrides.events,
+		events: overrides.events ?? createMiniEventBus().events,
 	} as unknown as ExtensionAPI
 }
 
@@ -370,11 +370,10 @@ describe("reapplyCurrentProfile", () => {
 describe("read-only MCP filter integration (planning-ferment vs implementation-ferment)", () => {
 	// These tests verify the registry + profile-manager behaviour (union,
 	// inclusion, exclusion) using pre-filtered fixture arrays. They do NOT
-	// exercise `isReadOnlyMcpTool` — that predicate lives in
-	// src/extensions/mcp-adapter/tool-metadata.ts and is covered by
-	// src/extensions/mcp-adapter/tool-metadata.test.ts. Coupling to it here
-	// would invert the dependency direction (shared/planning must not import
-	// from src/extensions/mcp-adapter).
+	// exercise protocol-annotation capture — that policy lives in
+	// src/extensions/mcp/annotation-catalog.ts and is covered by its co-located
+	// tests. Coupling to it here would invert the dependency direction
+	// (shared/planning must not import from src/extensions/mcp).
 	//
 	// Fixture: three MCP tools behind a server. Only `server_get_record` is
 	// read-only-qualified (annotated with readOnlyHint:true).

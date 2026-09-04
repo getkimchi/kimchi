@@ -598,6 +598,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// only written to the session log when the next agent run starts.
 	pi.on("before_agent_start", (_event, ctx) => {
 		maybePersistPermissionMode(ctx)
+		if (getRuntimePermissionMode().mode === "plan") {
+			// MCP direct tools can finish registering after session_start. Rebuild
+			// the snapshot immediately before every model request so protocol
+			// annotation policy, rather than registration timing, decides exposure.
+			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
+		}
 	})
 
 	// Plan-mode stall recovery: when the model made tool calls in plan mode and

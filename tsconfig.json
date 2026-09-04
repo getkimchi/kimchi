@@ -3,6 +3,7 @@
 		"target": "ES2023",
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
+		"allowImportingTsExtensions": true,
 		"lib": ["ES2023", "DOM", "DOM.Iterable"],
 		"noEmit": true,
 		"rootDir": ".",

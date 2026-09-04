@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
@@ -58,11 +60,7 @@ test("calls a stdio MCP tool through the real Kimchi session", async ({ terminal
 	)
 })
 
-// Known product bug: asynchronous MCP bootstrap exposes a configured direct tool only after
-// the first model request has already been built, so that request rejects the tool as unavailable.
-// Fixed upstream in pi-mcp-adapter v2.26.1 by PR #374's pre-input initialization barrier;
-// remove test.fail once the bundled adapter includes that fix.
-test.fail("registers and calls a direct MCP tool on the first session", async ({ terminal }) => {
+test("registers and calls a direct MCP tool on the first session", async ({ terminal }) => {
 	const echo = directMcpCall("echo", { message: "direct-first-session" })
 	await runMcpKimchiSession(
 		terminal,
@@ -99,6 +97,46 @@ test.fail("registers and calls a direct MCP tool on the first session", async ({
 	)
 })
 
+test("uses MCP read-only annotations in plan mode and fails closed for explicit false", async ({ terminal }) => {
+	const dangerousGatewayCall = gatewayMcpCall("get_danger")
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-annotations",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				directTools: ["echo", "get_danger"],
+				behavior: {
+					catalogTools: [
+						{
+							name: "get_danger",
+							description: "Mutating tool with a read-looking name",
+							inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							annotations: { readOnlyHint: false },
+						},
+					],
+				},
+			},
+			responses: [dangerousGatewayCall.response, modelReply("Planning MCP annotations were applied.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Inspect the available planning tools")
+			await waitForText(terminal, "Planning MCP annotations were applied.", { timeoutMs: STREAM_TIMEOUT_MS })
+
+			const annotationCache = JSON.parse(readFileSync(join(fixture.agentDir, "mcp-annotations.json"), "utf8")) as {
+				tools: Record<string, string>
+			}
+			expect(Object.values(annotationCache.tools)).toContain("not-read-only")
+			const request = requireRequestAdvertisingTool(fixture.fake.requests, "fixture_echo")
+			const tools = (request.body as { tools?: Array<{ function?: { name?: string } }> }).tools ?? []
+			expect(tools.some((tool) => tool.function?.name === "fixture_get_danger")).toBe(false)
+			expect(toolResultText(fixture.fake.requests, dangerousGatewayCall)).toContain("unavailable in plan mode")
+			expect(fixture.mcp.hasEvent("tool_called", { name: "get_danger" })).toBe(false)
+			trace.step("plan profile and gateway both rejected explicit readOnlyHint false")
+		},
+	)
+})
+
 test("delivers an MCP isError result to the next model turn", async ({ terminal }) => {
 	const failure = gatewayMcpCall("fail")
 	await runMcpKimchiSession(
@@ -131,7 +169,7 @@ test("delivers an MCP isError result to the next model turn", async ({ terminal 
 })
 
 test("reads an MCP resource through the gateway", async ({ terminal }) => {
-	const resource = gatewayMcpCall("get_fixture_note")
+	const resource = gatewayMcpCall("read_fixture_note")
 	await runMcpKimchiSession(
 		terminal,
 		{
@@ -207,41 +245,37 @@ test("preserves MCP text and safely represents image content for a text-only mod
 	)
 })
 
-test("injects the correctly named direct tool after MCP gateway search", async ({ terminal }) => {
+test("calls a discovered tool through the MCP gateway after search", async ({ terminal }) => {
 	const search = searchMcpTools("fixture echo")
-	const echo = directMcpCall("echo", { message: "search-injected-direct-tool" })
+	const echo = gatewayMcpCall("echo", { message: "search-then-gateway-call" })
 	await runMcpKimchiSession(
 		terminal,
 		{
-			artifactName: "mcp-search-direct-injection",
+			artifactName: "mcp-search-gateway-call",
 			mcp: {
 				behavior: {
 					tools: [
 						mcpToolResult(
 							"echo",
-							{ content: [{ type: "text", text: "fixture echo: search-injected-direct-tool" }] },
-							{ message: "search-injected-direct-tool" },
+							{ content: [{ type: "text", text: "fixture echo: search-then-gateway-call" }] },
+							{ message: "search-then-gateway-call" },
 						),
 					],
 				},
 			},
-			responses: [
-				search.response,
-				echo.response,
-				modelReply("The MCP search-injected tool used the correct original name."),
-			],
+			responses: [search.response, echo.response, modelReply("The MCP gateway called the discovered tool.")],
 		},
 		async (fixture, trace) => {
 			terminal.submit("Search MCP and then call the discovered echo tool")
-			await waitForText(terminal, "The MCP search-injected tool used the correct original name.", {
+			await waitForText(terminal, "The MCP gateway called the discovered tool.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
 			await fixture.mcp.waitForEvent("tool_called", {
-				where: { name: "echo", arguments: { message: "search-injected-direct-tool" } },
+				where: { name: "echo", arguments: { message: "search-then-gateway-call" } },
 			})
 			requireRequestAdvertisingTool(fixture.fake.requests, echo.modelToolName)
-			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: search-injected-direct-tool")
-			trace.step("search injection, direct name mapping, and invocation verified")
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: search-then-gateway-call")
+			trace.step("search followed by a gateway invocation of the discovered tool")
 		},
 	)
 })

@@ -6,11 +6,8 @@
 // suitable for the ACP wire.
 
 import { RequestError } from "@agentclientprotocol/sdk"
-import { removeAuthEntry } from "../../../extensions/mcp-adapter/mcp-auth.js"
-import { authenticate, getAuthStatus, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
-import { resolveProbeName } from "../../../extensions/mcp-adapter/resolve-probe-name.js"
-import type { McpServerManager } from "../../../extensions/mcp-adapter/server-manager.js"
-import type { ProbeResult, ServerEntry } from "../../../extensions/mcp-adapter/types.js"
+import type { ServerEntry } from "pi-mcp-adapter/types"
+import type { McpProbe, ProbeResult } from "../../../extensions/mcp/probe.js"
 
 /**
  * Runtime validation for ServerEntry received over the ACP wire.
@@ -87,57 +84,13 @@ export function validateServerEntry(raw: unknown): ServerEntry {
  * requests (HTTP servers) based on the ServerEntry provided by the client.
  */
 export async function handleProbeMcpServer(
-	mcpServerManager: McpServerManager | undefined,
+	mcpProbe: McpProbe | undefined,
 	params: Record<string, unknown>,
 ): Promise<ProbeResult> {
-	if (!mcpServerManager) {
-		throw RequestError.invalidParams(undefined, "MCP server manager is not available")
+	if (!mcpProbe) {
+		throw RequestError.invalidParams(undefined, "MCP probe is not available")
 	}
 	const server = validateServerEntry(params.server)
-	// serverName is passed separately from the ServerEntry because ServerEntry
-	// itself has no name field — the name is the config key under
-	// `mcpServers` in the user's config. Desktop knows the key it's probing;
-	// we default to "probe" for ad-hoc calls.
 	const serverName = (params.serverName as string | undefined) ?? "probe"
-
-	// Resolve the OAuth token-store key. If an auth entry already exists
-	// under `serverName` for a *different* URL (e.g. the user edited the
-	// URL but kept the name), use a throwaway name so the real server's
-	// stored tokens are never overwritten. See `resolveProbeName` below.
-	const probeName = resolveProbeName(serverName, server)
-	const usedThrowaway = probeName !== serverName
-	const skipAuth = params.skipAuth === true
-
-	try {
-		// For OAuth-capable URL servers, authenticate FIRST before probing.
-		// probeTools creates its own transport internally, which triggers the
-		// SDK's auth flow — if it runs before authenticate(), the state gets
-		// overwritten and the callback fails. By authenticating first, the
-		// stored tokens are available when probeTools connects, so it skips
-		// auth entirely.
-		//
-		// When skipAuth is true, skip the explicit authenticate() call and
-		// let probeTools() handle it: stored access tokens or refresh tokens
-		// are tried by the SDK internally; if both fail, probeTools() returns
-		// { needsAuth: true } without opening a browser.
-		if (!skipAuth && supportsOAuth(server) && server.url) {
-			const authStatus = await getAuthStatus(probeName, server.url)
-			if (authStatus !== "authenticated") {
-				try {
-					await authenticate(probeName, server.url, server)
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err)
-					return { tools: [], needsAuth: true, error: message }
-				}
-			}
-		}
-
-		return await mcpServerManager.probeTools(probeName, server)
-	} finally {
-		// Clean up throwaway probe credentials so the token store never
-		// accumulates `__probe_*` entries.
-		if (usedThrowaway) {
-			removeAuthEntry(probeName)
-		}
-	}
+	return mcpProbe.probeTools(serverName, server, { authenticate: params.skipAuth !== true })
 }

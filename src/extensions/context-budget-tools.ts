@@ -105,6 +105,7 @@ function createCaptureApi(): CaptureApi {
 		{
 			get: (_target, prop) => {
 				if (prop === "registerTool") return (tool: AnyToolDef) => tools.set(tool.name, tool)
+				if (prop === "getFlag") return () => undefined
 				if (prop === "on") {
 					return (event: string, handler: (payload: unknown) => unknown) => {
 						const list = handlers.get(event) ?? []
@@ -149,7 +150,7 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	// With zero configured MCP servers, the adapter registers no tools at all.
 	// context-budget.test.ts mocks this state, so this module contributes
 	// nothing to the canonical measurement.
-	{ module: "./mcp-adapter/index.js", source: "mcp-adapter" },
+	{ module: "./mcp/index.js", source: "mcp-adapter" },
 	{ module: "./tags.js", source: "tags(set_phase)" },
 	{ module: "./claude-code-skills/index.js", source: "claude-code-skills(skill)" },
 ]
@@ -192,7 +193,10 @@ async function measureExtensionTools(
 			if (typeof imported.default !== "function") throw new Error("no default factory export")
 			const { api, tools, fire } = createCaptureApi()
 			await imported.default(api)
-			await fire("session_start")
+			// The upstream MCP adapter registers its zero-server tool surface at
+			// extension load. Starting its async runtime would require a complete
+			// session context and cannot add tools for this fixture.
+			if (source !== "mcp-adapter") await fire("session_start")
 			for (const tool of tools.values()) out.set(tool.name, entry(`extension:${source}`, tool))
 		} catch (error) {
 			exclusions.push({

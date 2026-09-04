@@ -38,6 +38,7 @@ import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
 import { getReadOnlyToolNames } from "./read-only-tool-registry.js"
 import { getToolsForProfile, isAdhocOnlyToolName, type ToolProfile } from "./tool-catalog.js"
+import { getToolSessionScope } from "./tool-session-scope.js"
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -66,7 +67,7 @@ let turnListenerInstalled = false
  * after registration, and the snapshot itself was computed before init
  * finished so `getReadOnlyToolNames` returned `[]`.
  */
-let lastProfileByPi = new WeakMap<ExtensionAPI, ToolProfile>()
+let lastProfileByScope = new WeakMap<object, ToolProfile>()
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -153,7 +154,7 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 
 	pi.setActiveTools(allowedNames)
 	snapshotAppliedThisTurn = true
-	lastProfileByPi.set(pi, profile)
+	lastProfileByScope.set(getToolSessionScope(pi), profile)
 }
 
 /**
@@ -210,7 +211,7 @@ export function resetSnapshotFlag(): void {
 export function resetAll(): void {
 	snapshotAppliedThisTurn = false
 	turnListenerInstalled = false
-	lastProfileByPi = new WeakMap()
+	lastProfileByScope = new WeakMap()
 }
 
 /**
@@ -278,8 +279,13 @@ export function installTurnBoundaryReset(pi: ExtensionAPI): void {
  *          stored for this session.
  */
 export function reapplyCurrentProfile(pi: ExtensionAPI): boolean {
-	const profile = lastProfileByPi.get(pi)
+	const profile = lastProfileByScope.get(getToolSessionScope(pi))
 	if (!profile) return false
 	applyCore(profile, pi)
 	return true
+}
+
+/** Return the active snapshot profile for extension-level policy checks. */
+export function getCurrentProfile(pi: ExtensionAPI): ToolProfile | undefined {
+	return lastProfileByScope.get(getToolSessionScope(pi))
 }

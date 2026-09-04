@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import type { MetadataCache } from "../../../src/extensions/mcp-adapter/metadata-cache.js"
-import type { McpConfig } from "../../../src/extensions/mcp-adapter/types.js"
+import type { MetadataCache } from "pi-mcp-adapter/metadata-cache"
+import type { McpConfig } from "pi-mcp-adapter/types"
 import { runRestartableMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpToolResult } from "./support/mcp-fixture.js"
 import {
@@ -106,6 +106,11 @@ test("invalidates cached MCP metadata when the server config changes", async ({ 
 				where: { name: "echo", arguments: { message: "warm-config-cache" } },
 			})
 
+			const cachePath = join(fixture.agentDir, "mcp-cache.json")
+			const cacheBeforeChange = JSON.parse(readFileSync(cachePath, "utf-8")) as MetadataCache
+			const hashBeforeChange = cacheBeforeChange.servers.fixture?.configHash
+			expect(hashBeforeChange).toBeDefined()
+
 			const config = JSON.parse(readFileSync(fixture.mcp.configPath, "utf-8")) as McpConfig
 			const definition = config.mcpServers.fixture
 			if (!definition) throw new Error("Fixture MCP server is missing from its config")
@@ -125,9 +130,9 @@ test("invalidates cached MCP metadata when the server config changes", async ({ 
 					.slice(afterRestart)
 					.some((event) => event.type === "process_started"),
 			).toBe(false)
-			const cache = JSON.parse(readFileSync(join(fixture.agentDir, "mcp-cache.json"), "utf-8")) as MetadataCache
-			expect(cache.servers.fixture).toBeUndefined()
-			trace.step("stale metadata disappeared without starting the lazy server")
+			const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as MetadataCache
+			expect(cache.servers.fixture?.configHash).toBe(hashBeforeChange)
+			trace.step("stale metadata was ignored without starting the lazy server or rewriting its cache")
 		},
 	)
 })
