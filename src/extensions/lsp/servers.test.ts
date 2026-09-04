@@ -15,7 +15,13 @@ vi.mock("node:child_process", () => ({
 	spawnSync: vi.fn(),
 }))
 
-import { detectMissingCandidates, detectServers, findMainRepoRoot, resolveTsserverPath } from "./servers.js"
+import {
+	detectMissingCandidates,
+	detectServers,
+	findMainRepoRoot,
+	resolveTsNativeServerPath,
+	resolveTsserverPath,
+} from "./servers.js"
 
 const mockExistsSync = vi.mocked(fs.existsSync)
 const mockSpawnSync = vi.mocked(spawnSync)
@@ -223,5 +229,86 @@ describe("resolveTsserverPath", () => {
 		const dotGit = "/cwd/.git"
 		mockExistsSync.mockImplementation((p: unknown) => p === localTsserver || p === dotGit || p === mainTsserver)
 		expect(resolveTsserverPath("/cwd")).toBe(localTsserver)
+	})
+})
+
+describe("resolveTsNativeServerPath", () => {
+	const localNativeBin = "/cwd/node_modules/typescript/bin/tsc"
+	const localTsserverJs = "/cwd/node_modules/typescript/lib/tsserver.js"
+	const mainNativeBin = "/main-repo/node_modules/typescript/bin/tsc"
+
+	beforeEach(() => {
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: /main-repo/.git/worktrees/cwd\n")
+	})
+
+	it("returns own bin/tsc when the package has no tsserver.js (TS7 signature)", () => {
+		mockExistsSync.mockImplementation((p: unknown) => p === localNativeBin)
+		expect(resolveTsNativeServerPath("/cwd")).toBe(localNativeBin)
+	})
+
+	it("returns own bin/tsc even when the main repo has classic TypeScript", () => {
+		const mainTsserverJs = "/main-repo/node_modules/typescript/lib/tsserver.js"
+		mockExistsSync.mockImplementation((p: unknown) => p === localNativeBin || p === mainTsserverJs)
+		expect(resolveTsNativeServerPath("/cwd")).toBe(localNativeBin)
+	})
+
+	it("returns undefined when cwd's own package is classic even if the main repo is native", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === localTsserverJs || p === dotGit || p === mainNativeBin)
+		expect(resolveTsNativeServerPath("/cwd")).toBeUndefined()
+	})
+
+	it("falls back to the main-repo bin when cwd is a worktree without its own typescript", () => {
+		const dotGit = "/cwd/.git"
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit || p === mainNativeBin)
+		expect(resolveTsNativeServerPath("/cwd")).toBe(mainNativeBin)
+	})
+
+	it("returns undefined when no resolvable typescript exists anywhere", () => {
+		mockExistsSync.mockReturnValue(false)
+		expect(resolveTsNativeServerPath("/cwd")).toBeUndefined()
+	})
+})
+
+describe("TypeScript 7 native server detection", () => {
+	const nativeBin = "/project/node_modules/typescript/bin/tsc"
+
+	it("activates the native server in a TS7 workspace without typescript-language-server installed", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries([])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0]).toMatchObject({
+			name: "typescript-native",
+			command: nativeBin,
+			args: ["--lsp", "--stdio"],
+			skipProjectLoadWait: true,
+			pullDiagnostics: true,
+		})
+		expect(result[0].extensions).toContain("ts")
+	})
+
+	it("prefers the native server over an installed typescript-language-server in a TS7 workspace", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-native")
+	})
+
+	it("keeps typescript-language-server in a classic TS5 workspace", () => {
+		setFiles(["package.json", "node_modules/typescript/lib/tsserver.js"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServers("/project")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("typescript-language-server")
+	})
+
+	it("does not report TypeScript as missing when the native server is active", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries([])
+		const result = detectMissingCandidates("/project")
+		expect(result.find((s) => s.name === "typescript-language-server")).toBeUndefined()
 	})
 })

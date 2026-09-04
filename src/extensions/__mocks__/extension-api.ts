@@ -7,6 +7,7 @@ export function createExtensionApi(): {
 	api: ExtensionAPI
 	getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R>
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
+	getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
@@ -46,6 +47,11 @@ export function createExtensionApi(): {
 		},
 		getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[] {
 			return (handlers.get(event) ?? []) as ExtensionHandler<E, R>[]
+		},
+		getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0] {
+			const call = registerTool.mock.calls.find(([tool]) => tool.name === name)
+			if (!call) throw new Error(`Tool ${name} was not registered`)
+			return call[0]
 		},
 		sendMessage,
 		setModel,

@@ -4,14 +4,21 @@ import fs from "node:fs"
 import path from "node:path"
 import type { ServerConfig } from "./types.js"
 
+const TS_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
+
+// The classic TypeScript server gets used from several detection branches —
+// reference it by identity instead of repeating the name string (and without
+// a non-null `as` on a SERVERS.find()).
+const TYPESCRIPT_LANGUAGE_SERVER: ServerConfig = {
+	name: "typescript-language-server",
+	command: "typescript-language-server",
+	args: ["--stdio"],
+	extensions: TS_EXTENSIONS,
+	installHint: "npm i -g typescript-language-server typescript",
+}
+
 const SERVERS: ServerConfig[] = [
-	{
-		name: "typescript-language-server",
-		command: "typescript-language-server",
-		args: ["--stdio"],
-		extensions: ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
-		installHint: "npm i -g typescript-language-server typescript",
-	},
+	TYPESCRIPT_LANGUAGE_SERVER,
 	{
 		name: "gopls",
 		command: "gopls",
@@ -54,17 +61,39 @@ function exists(cmd: string): boolean {
 }
 
 /**
- * Returns LSP servers whose binary is available on PATH AND whose project
- * marker (go.mod, tsconfig.json, package.json) exists in cwd or a parent
- * directory. This ensures only servers relevant to the current project are
- * activated — e.g. a Go project won't activate typescript-language-server
- * even if it's on PATH.
+ * Returns LSP servers relevant to the current project. Servers are
+ * activated when their binary is on PATH AND their project marker (go.mod,
+ * tsconfig.json, package.json) exists in cwd or a parent directory — e.g. a
+ * Go project won't activate typescript-language-server even if it's on PATH.
+ * TypeScript additionally activates the workspace's own TypeScript 7 native
+ * server when present (no global install needed).
  */
 export function detectServers(cwd: string): ServerConfig[] {
-	return SERVERS.filter((s) => {
+	const servers: ServerConfig[] = []
+	for (const s of SERVERS) {
+		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
+			servers.push(...detectTsServers(cwd))
+			continue
+		}
 		const markers = ROOT_MARKERS[s.name] ?? []
-		return findMarkerUp(cwd, markers) && exists(s.command)
-	})
+		if (findMarkerUp(cwd, markers) && exists(s.command)) servers.push(s)
+	}
+	return servers
+}
+
+/**
+ * Pick the TypeScript server for cwd. A TypeScript 7 workspace gets its own
+ * native server even when typescript-language-server is installed — the
+ * workspace's compiler is the right language-service semantics, and no
+ * global install is needed. Otherwise the classic server is kept whenever
+ * its binary is on PATH; when tsserver is unresolvable the failure then
+ * lands on the clean failed-to-start path rather than going silent.
+ */
+function detectTsServers(cwd: string): ServerConfig[] {
+	if (!findMarkerUp(cwd, ROOT_MARKERS["typescript-language-server"])) return []
+	const nativePath = resolveTsNativeServerPath(cwd)
+	if (nativePath) return [tsNativeConfig(nativePath)]
+	return exists(TYPESCRIPT_LANGUAGE_SERVER.command) ? [TYPESCRIPT_LANGUAGE_SERVER] : []
 }
 
 /**
@@ -76,11 +105,19 @@ export function detectServers(cwd: string): ServerConfig[] {
  * where the marker lives in a parent are detected.
  */
 export function detectMissingCandidates(cwd: string): ServerConfig[] {
-	return SERVERS.filter((s) => {
+	const missing: ServerConfig[] = []
+	for (const s of SERVERS) {
 		const markers = ROOT_MARKERS[s.name] ?? []
-		const hasMarker = findMarkerUp(cwd, markers)
-		return hasMarker && !exists(s.command)
-	})
+		if (!findMarkerUp(cwd, markers)) continue
+		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
+			// TypeScript is only "missing" when neither the classic server nor
+			// the TypeScript 7 native fallback could be activated.
+			if (detectTsServers(cwd).length === 0) missing.push(s)
+			continue
+		}
+		if (!exists(s.command)) missing.push(s)
+	}
+	return missing
 }
 
 /** Get the server config for a specific file path, or null if no server applies. */
@@ -133,9 +170,54 @@ export function resolveTsserverPath(cwd: string): string | undefined {
 	return undefined
 }
 
+/**
+ * Signature of the TypeScript 7 native package: it ships `bin/tsc` (the
+ * launcher for the native compiler) but no `lib/tsserver.js` — the language
+ * service lives inside the native binary and is exposed as a plain LSP
+ * server via `tsc --lsp --stdio`.
+ */
+function tsNativeBinAt(dir: string): string | undefined {
+	const bin = path.join(dir, "node_modules/typescript/bin/tsc")
+	const tsserver = path.join(dir, "node_modules/typescript/lib/tsserver.js")
+	return fs.existsSync(bin) && !fs.existsSync(tsserver) ? bin : undefined
+}
+
+/**
+ * Resolve the TypeScript 7 native server's tsc launcher for the given cwd.
+ * The workspace's own typescript package decides the flavor: when cwd's own
+ * package is classic (tsserver.js present) the native server is NOT used,
+ * even if the main repo is native — the workspace's compiler semantics win.
+ * Only when cwd has no resolvable typescript package at all does the
+ * main-repo fallback (git worktrees) apply.
+ */
+export function resolveTsNativeServerPath(cwd: string): string | undefined {
+	const ownNative = tsNativeBinAt(cwd)
+	if (ownNative) return ownNative
+	if (fs.existsSync(path.join(cwd, "node_modules/typescript/lib/tsserver.js"))) return undefined
+	const mainRepo = findMainRepoRoot(cwd)
+	if (mainRepo) return tsNativeBinAt(mainRepo)
+	return undefined
+}
+
+/** Build the ServerConfig for a TypeScript 7 native server at tscPath. */
+function tsNativeConfig(tscPath: string): ServerConfig {
+	return {
+		name: "typescript-native",
+		command: tscPath,
+		args: ["--lsp", "--stdio"],
+		extensions: TS_EXTENSIONS,
+		// The native server emits no $/progress startup cycles (so progress
+		// waiting would stall on the fixed timeout), and it has no push
+		// diagnostics — diagnostics are pulled via textDocument/diagnostic.
+		skipProjectLoadWait: true,
+		pullDiagnostics: true,
+	}
+}
+
 const ROOT_MARKERS: Record<string, string[]> = {
 	gopls: ["go.mod"],
 	"typescript-language-server": ["tsconfig.json", "package.json"],
+	"typescript-native": ["tsconfig.json", "package.json"],
 }
 
 /**

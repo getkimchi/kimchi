@@ -2,6 +2,7 @@
 import { resolveTsserverPath } from "./servers.js"
 import type {
 	BunProcess,
+	Diagnostic,
 	DiagnosticWaiter,
 	LspClient,
 	LspJsonRpcNotification,
@@ -302,7 +303,10 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 				workspaceFolders: [{ uri: fileToUri(cwd), name: cwd.split("/").pop() ?? "workspace" }],
 			})
 			await sendNotification(client, "initialized", {})
-			await client.projectLoaded
+			// Servers that never emit $/progress cycles (e.g. the TypeScript 7
+			// native server) never satisfy projectLoaded's token tracking, so
+			// the wait would stall on the fixed timeout at every startup.
+			if (!config.skipProjectLoadWait) await client.projectLoaded
 			return client
 		} catch (err) {
 			clients.delete(key)
@@ -369,6 +373,24 @@ export async function sendNotification(client: LspClient, method: string, params
 	const notification: LspJsonRpcNotification = { jsonrpc: "2.0", method, params }
 	client.lastActivity = Date.now()
 	await writeMessage(client.proc, notification)
+}
+
+/**
+ * Fetch diagnostics via the LSP 3.17 pull model (textDocument/diagnostic)
+ * for servers without publishDiagnostics push support (e.g. the TypeScript 7
+ * native server). Stores the result in client.diagnostics exactly like a
+ * push notification would, so downstream readers don't care which model
+ * served it.
+ */
+export async function pullDiagnostics(client: LspClient, uri: string): Promise<Diagnostic[]> {
+	const result = await sendRequest(client, "textDocument/diagnostic", {
+		textDocument: { uri },
+	})
+	const items = (result as { items?: Diagnostic[] } | null)?.items
+	const diagnostics = Array.isArray(items) ? items : []
+	client.diagnostics.set(uri, { diagnostics, version: client.openFiles.get(uri)?.version ?? null })
+	client.diagnosticsVersion++
+	return diagnostics
 }
 
 // =============================================================================

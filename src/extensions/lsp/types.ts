@@ -165,4 +165,12 @@ export interface ServerConfig {
 	initOptions?: Record<string, unknown>
 	/** Install command shown in the degraded-state warning when the binary is not on PATH. */
 	installHint?: string
+	/** Server never emits `$/progress` startup cycles, so skip waiting for
+	 *  projectLoaded (otherwise startup stalls on the fixed progress timeout).
+	 *  Used by the TypeScript 7 native server. */
+	skipProjectLoadWait?: boolean
+	/** Server does not push `textDocument/publishDiagnostics`; fetch diagnostics
+	 *  via the LSP 3.17 pull model (`textDocument/diagnostic`) instead. Used by
+	 *  the TypeScript 7 native server. */
+	pullDiagnostics?: boolean
 }
