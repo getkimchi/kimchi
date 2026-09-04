@@ -1,8 +1,9 @@
 /**
  * Mirrors todo-store writes to ACP's stable-v1 `plan` session update.
  *
- * ACP plans are full-list replacements. Kimchi therefore publishes the exact
- * list written to the store, independent of permission mode or Ferment state.
+ * ACP plans are full-list replacements. Kimchi therefore publishes the most
+ * specific non-empty Todo scope, independent of permission mode or Ferment
+ * state, and falls back when a narrower scope is cleared.
  */
 
 import type { Plan, PlanEntry, SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk"
@@ -51,8 +52,8 @@ export function buildPlanUpdate(details: TodoPlanSnapshot): SessionUpdate {
 	return { ...plan, sessionUpdate: "plan" }
 }
 
-/** Pick one useful Todo list when a restored session has multiple scopes. */
-function restoredPlanSnapshot(sessionId: string): TodoPlanSnapshot | undefined {
+/** Pick the Todo list ACP should currently display for this session. */
+function currentPlanSnapshot(sessionId: string): TodoPlanSnapshot | undefined {
 	const candidates = Object.entries(getTodoState(sessionId).byScope).filter(([, state]) => state.todos.length > 0)
 	if (candidates.length === 0) return undefined
 	candidates.sort(
@@ -70,6 +71,7 @@ export interface AcpPlanTrackerOptions {
 
 /** Session-scoped Todo subscription used by the ACP server. */
 export class AcpPlanTracker {
+	private lastUpdateJson: string | undefined
 	private unsubscribe: (() => void) | undefined
 
 	constructor(private readonly options: AcpPlanTrackerOptions) {}
@@ -77,23 +79,29 @@ export class AcpPlanTracker {
 	start(): void {
 		if (this.unsubscribe) return
 		this.unsubscribe = subscribeTodoStore((details, sessionId) => {
-			if (sessionId === this.options.sessionId) this.send(details)
+			if (sessionId !== this.options.sessionId) return
+			this.send(currentPlanSnapshot(sessionId) ?? { scope: details.scope, todos: [] })
 		})
 	}
 
 	stop(): void {
 		this.unsubscribe?.()
 		this.unsubscribe = undefined
+		this.lastUpdateJson = undefined
 	}
 
 	emitRestoredSnapshot(): void {
-		const snapshot = restoredPlanSnapshot(this.options.sessionId)
+		const snapshot = currentPlanSnapshot(this.options.sessionId)
 		if (snapshot) this.send(snapshot)
 	}
 
 	private send(details: TodoPlanSnapshot): void {
+		const update = buildPlanUpdate(details)
+		const updateJson = JSON.stringify(update)
+		if (updateJson === this.lastUpdateJson) return
 		try {
-			this.options.send({ sessionId: this.options.sessionId, update: buildPlanUpdate(details) })
+			this.options.send({ sessionId: this.options.sessionId, update })
+			this.lastUpdateJson = updateJson
 		} catch (err) {
 			console.error("[acp-plan] plan sessionUpdate send failed:", err)
 		}

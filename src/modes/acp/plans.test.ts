@@ -117,7 +117,7 @@ describe("AcpPlanTracker", () => {
 		])
 	})
 
-	it("does not inspect or dedupe Todo writes", () => {
+	it("dedupes consecutive writes that produce the same visible plan", () => {
 		const { notifications, tracker } = makeTracker()
 		tracker.start()
 		tracker.start()
@@ -126,7 +126,34 @@ describe("AcpPlanTracker", () => {
 		applyWriteTodos(write, "session-a")
 		applyWriteTodos(write, "session-a")
 
-		expect(notifications).toHaveLength(2)
+		expect(notifications).toHaveLength(1)
+	})
+
+	it("falls back to a populated broader scope when a step scope clears", () => {
+		const { notifications, tracker } = makeTracker()
+		tracker.start()
+
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [{ content: "phase work", status: "pending" }],
+			},
+			"session-a",
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "step work", status: "in_progress" }],
+			},
+			"session-a",
+		)
+		applyWriteTodos({ scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, todos: [] }, "session-a")
+
+		expect(planUpdates(notifications).at(-1)).toEqual({
+			sessionUpdate: "plan",
+			entries: [{ content: "phase work", priority: "medium", status: "pending" }],
+			_meta: { "kimchi.dev": { scope: { kind: "ferment", phaseId: "phase-1" } } },
+		})
 	})
 
 	it("ignores other sessions and unsubscribes on stop", () => {
@@ -140,7 +167,7 @@ describe("AcpPlanTracker", () => {
 		expect(notifications).toHaveLength(0)
 	})
 
-	it("restores the most specific non-empty Todo scope", () => {
+	it("keeps a restored specific scope visible across broader-scope writes", () => {
 		restoreTodoStoreFromDetails(
 			[
 				{
@@ -162,6 +189,10 @@ describe("AcpPlanTracker", () => {
 		tracker.start()
 
 		tracker.emitRestoredSnapshot()
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "new global", status: "in_progress" }] },
+			"session-a",
+		)
 
 		expect(planUpdates(notifications)).toEqual([
 			{
