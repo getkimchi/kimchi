@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from harbor.models.agent.context import AgentContext
+from pier.agents.installed.base import NonZeroAgentExitCodeError
 
 from kimchi_agent.agent import (
     BINARY_PATH,
@@ -17,6 +18,8 @@ from kimchi_agent.agent import (
     KIMCHI_INFRA_BREAKER_THRESHOLD_ENV,
     Kimchi,
     KimchiExitError,
+    RetryableApiError,
+    _retryable_api_error_from_session_stream,
 )
 
 
@@ -34,6 +37,66 @@ class RecordingKimchi(Kimchi):
 
     async def exec_as_root(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
         self.root_commands.append(command)
+
+
+class FailingKimchi(Kimchi):
+    def __init__(self, *args, failure: NonZeroAgentExitCodeError, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.failure = failure
+
+    async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
+        raise self.failure
+
+
+class FakeEnvironment:
+    def __init__(self, stream: str, return_code: int = 0):
+        self.stream = stream
+        self.return_code = return_code
+        self.commands: list[str] = []
+
+    async def exec(self, command: str, timeout_sec=None):
+        self.commands.append(command)
+        return SimpleNamespace(return_code=self.return_code, stdout=self.stream)
+
+
+def _classification_entry(
+    raw_message: str = "Moonshot quota exceeded; please retry later.",
+    *,
+    entry_id: str = "classification-1",
+    retryable: bool = True,
+    is_infrastructure: bool = True,
+    exit_code: int | None = 74,
+    http_status_code: int | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "type": "custom",
+            "id": entry_id,
+            "customType": "kimchi_error_classification",
+            "data": {
+                "rawMessage": raw_message,
+                "reason": "rate_limit",
+                "retryable": retryable,
+                "isInfrastructure": is_infrastructure,
+                "exitCode": exit_code,
+                "httpStatusCode": http_status_code,
+            },
+        }
+    )
+
+
+def _assistant_entry(*, parent_id: str = "classification-1", stop_reason: str = "error") -> str:
+    return json.dumps(
+        {
+            "type": "message",
+            "parentId": parent_id,
+            "message": {
+                "role": "assistant",
+                "stopReason": stop_reason,
+                "errorMessage": "Moonshot quota exceeded; please retry later.",
+            },
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -133,6 +196,42 @@ async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None
     assert (
         '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
         '"compaction":{"enabled":false}}' in command
+    )
+
+
+async def test_ferment_v2_kwarg_enables_resource_and_prepends_command(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"ferment-v2": True},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "printf '%s' '/ferment-v2 implement the task'" in command
+    assert "--ferment-v2" not in command
+    assert (
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
+        '"resources":{"extensions.ferment-v2":true}}' in command
+    )
+
+
+async def test_ferment_v2_kwarg_shares_harness_settings_write(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"disable-compaction": "true", "ferment-v2": "true"},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert (
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
+        '"compaction":{"enabled":false},"resources":{"extensions.ferment-v2":true}}' in command
     )
 
 
@@ -359,6 +458,92 @@ def test_kimchi_exit_error_has_structured_exit_code_and_output_tails(tmp_path: P
     assert "stderr line 0" not in error.stderr
     assert f"stderr line {KIMCHI_EXIT_OUTPUT_TAIL_LINES + 4}" in error.stderr
     assert f"Kimchi exited with code {os.EX_IOERR}" in str(error)
+
+
+async def test_retryable_provider_error_in_session_reclassifies_wrapped_kimchi_exit(tmp_path: Path) -> None:
+    stream = "\n".join([_classification_entry(), _assistant_entry()])
+    agent = FailingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        failure=NonZeroAgentExitCodeError("kimchi exited 1"),
+    )
+    environment = FakeEnvironment(stream)
+
+    with pytest.raises(RetryableApiError) as raised:
+        await agent.run("solve it", environment, AgentContext())
+
+    assert raised.value.status is None
+    assert "quota exceeded" in str(raised.value)
+    assert "cat /logs/agent/sessions/main.jsonl" in environment.commands
+
+
+def test_retryable_provider_error_uses_parent_id_linkage() -> None:
+    stream = "\n".join(
+        [
+            _classification_entry(),
+            json.dumps({"type": "custom", "id": "intervening", "customType": "other", "data": {}}),
+            _assistant_entry(),
+        ]
+    )
+
+    linked_error = _retryable_api_error_from_session_stream(stream)
+    assert linked_error is not None
+    assert linked_error.status is None
+    assert _retryable_api_error_from_session_stream(
+        "\n".join([_classification_entry(), _assistant_entry(parent_id="other")])
+    ) is None
+
+
+def test_retryable_session_error_is_cleared_by_later_non_error_assistant() -> None:
+    stream = "\n".join(
+        [
+            _classification_entry(),
+            _assistant_entry(),
+            _assistant_entry(parent_id="later", stop_reason="stop"),
+        ]
+    )
+
+    assert _retryable_api_error_from_session_stream(stream) is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "not json",
+        json.dumps({"type": "custom", "customType": "kimchi_error_classification", "data": "bad"}),
+        _classification_entry(retryable=False),
+        _classification_entry(is_infrastructure=False),
+        _classification_entry(exit_code=None, http_status_code=None),
+        _classification_entry(exit_code=1),
+    ],
+)
+def test_malformed_or_non_infra_classification_fails_closed(entry: str) -> None:
+    stream = "\n".join([entry, _assistant_entry()])
+
+    assert _retryable_api_error_from_session_stream(stream) is None
+
+
+def test_populate_context_bills_evaluator_child_session(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
+    sessions_dir = logs_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "main.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","usage":'
+        '{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
+    )
+    (sessions_dir / "evaluator.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","usage":'
+        '{"input":8,"output":1,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.8}}}}\n'
+    )
+
+    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+
+    assert context.n_input_tokens == 21  # 10 + 2 + 1 assistant, plus 8 evaluator
+    assert context.n_output_tokens == 4
+    assert context.n_cache_tokens == 2
+    assert context.cost_usd == 1.3
 
 
 def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None:

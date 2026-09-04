@@ -67,6 +67,8 @@ import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
+import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -668,6 +670,9 @@ try {
 				{ id: "extensions.agents", factory: agentsExtension },
 				{ id: "extensions.workflows", factory: piWorkflowsExtension },
 			] satisfies ManagedExtensionFactory[]),
+			...enabledExtensionFactories([
+				{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
+			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,
 			customizeStatusLineExtension,
@@ -718,11 +723,11 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
-		// Only reclassify runs that already failed (print mode sets exitCode 1);
-		// a clean interactive quit after a transient error stays a success.
-		if (process.exitCode) {
-			applyPostMainInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
-		}
+		applyPostMainInfrastructureExitPolicy(
+			infrastructureErrorTracker.getFailure(),
+			process.exit,
+			Boolean(process.exitCode) || hasPrintFlag(rawArgs),
+		)
 	}
 } catch (err) {
 	await drainPreSessionTelemetry()

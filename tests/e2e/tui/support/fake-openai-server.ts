@@ -221,7 +221,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = pickResponseScript(body, mainQueue, subagentQueue)
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -474,20 +474,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * A chat-completion request is treated as a subagent turn when any system
- * message carries a spawned-subagent marker. Two shapes exist in the
- * product: append-mode personas wrap the parent prompt in
- * `<inherited_system_prompt>`, while replace-mode personas (all default
- * agents) open with the canonical sub-agent header. Matching only one makes
- * queue routing depend on streaming-poll timing — the parent's next turn
- * then deterministically consumes the subagent script. This lets the fake
- * server route scripted responses to the correct queue even when subagent
- * and orchestrator turns interleave.
+ * Route explicit child-session requests and legacy prompt-marked subagents
+ * to the subagent response queue.
  */
 const REPLACE_MODE_SUBAGENT_HEADER = "You are a kimchi coding agent sub-agent."
 
-function isSubagentRequest(body: unknown): boolean {
-	const messages = asRecord(body).messages
+function isSubagentRequest(request: FakeResponseRequest): boolean {
+	if (request.headers["x-parent-session-id"] !== undefined) return true
+	const messages = asRecord(request.body).messages
 	if (!Array.isArray(messages)) return false
 	return messages.some((message) => {
 		const record = asRecord(message)
@@ -505,17 +499,20 @@ function isSubagentRequest(body: unknown): boolean {
  * single-queue behaviour.
  */
 function pickResponseScript(
-	body: unknown,
+	request: FakeResponseRequest,
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
-	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request)
 	const primary = useSubagent ? subagentQueue : mainQueue
-	if (primary.length > 0) {
-		return primary.shift() ?? { stream: ["fake response"] }
-	}
 	const fallback = useSubagent ? mainQueue : subagentQueue
-	return fallback.shift() ?? { stream: ["fake response"] }
+	return takeResponseScript(primary, request) ?? takeResponseScript(fallback, request) ?? { stream: ["fake response"] }
+}
+
+function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRequest): FakeResponseScript | undefined {
+	const matched = queue.findIndex((script) => script.match?.(request))
+	const index = matched >= 0 ? matched : queue.findIndex((script) => !script.match)
+	return index >= 0 ? queue.splice(index, 1)[0] : undefined
 }
 
 function unixNow(): number {

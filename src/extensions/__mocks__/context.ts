@@ -48,6 +48,8 @@ export function createContext(
 		} as unknown as ExtensionUIContext,
 		sessionManager: {
 			getSessionId: () => "test-session",
+			getSessionDir: () => "",
+			getSessionFile: () => undefined,
 			getEntries: () => [],
 			getHeader: () => null,
 			...overrides?.sessionManager,

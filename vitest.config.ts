@@ -1,5 +1,5 @@
-import { defineConfig } from "vitest/config"
 import { fileURLToPath, URL } from "node:url"
+import { defineConfig } from "vitest/config"
 
 const stubPath = fileURLToPath(new URL("./src/__mocks__/earendil-clipboard-image.js", import.meta.url))
 
@@ -13,6 +13,7 @@ export default defineConfig({
 			"**/cypress/**",
 			"**/.{idea,git,github,output,temp}/**",
 			"**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*",
+			"**/.tui-test/**",
 			".worktrees/**",
 		],
 		env: {

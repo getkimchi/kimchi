@@ -25,6 +25,7 @@ import {
 	type FermentStepStartedPayload,
 	type UserUnblockedPayload,
 } from "../ferment/domain-events.js"
+import { FERMENT_V2_EVENTS, type FermentV2EvaluatedPayload } from "../ferment-v2/domain-events.js"
 import {
 	LOOP_GUARD_EVENTS,
 	type LoopGuardSubagentAbortPayload,
@@ -327,6 +328,27 @@ function onFermentStarted(raw: unknown): void {
 		ferment_name: payload.name,
 		phase_count: payload.phaseCount,
 		model: ctx.currentModel,
+	})
+}
+
+function fermentV2EvaluatedTelemetryHandler(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const payload = raw as Partial<FermentV2EvaluatedPayload> | undefined
+	if (!payload?.fermentV2Id || !payload.verdict) return
+	const usage = payload.usage
+	ctx.emit("ferment_v2.evaluated", {
+		ferment_v2_id: payload.fermentV2Id,
+		verdict: payload.verdict,
+		count: payload.count ?? 1,
+		evaluator_model: payload.model ?? "unknown",
+		input_tokens: usage?.input ?? 0,
+		output_tokens: usage?.output ?? 0,
+		cache_read_tokens: usage?.cacheRead ?? 0,
+		cache_write_tokens: usage?.cacheWrite ?? 0,
+		total_tokens: usage?.totalTokens ?? 0,
+		cost: usage?.costUsd ?? 0,
 	})
 }
 
@@ -721,6 +743,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, onStepCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
+		pi.events.on(FERMENT_V2_EVENTS.EVALUATED, fermentV2EvaluatedTelemetryHandler)
 		pi.events.on(FERMENT_EVENTS.SCOPING_RESUMED, onFermentScopingResumed)
 		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)
 		pi.events.on(FERMENT_EVENTS.USER_UNBLOCKED, onUserUnblocked)

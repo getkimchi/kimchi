@@ -2125,6 +2125,147 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 	})
 })
 
+// ACP is the only transport that reads assistant text solely from
+// message_update's text_delta stream — the TUI, the session journal, and
+// --print / --mode json all re-read message_end's returned message instead.
+// That makes ACP miss text an extension suppresses during streaming and
+// restores only in message_end (Ferment V2 does this for any message that
+// isn't an unaccepted completion candidate), and text from a provider that
+// skips incremental deltas entirely. onSessionEvent's message_end handler
+// closes that gap by checking each final text block against what
+// message_update already streamed for its contentIndex and sending only a
+// matching un-streamed tail — so a normal fully-streamed turn emits nothing extra.
+describe("KimchiAcpAgent message_end text reconciliation", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-msgend-text")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function emitTextDelta(contentIndex: number, delta: string): void {
+		fake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "text_delta",
+				delta,
+				contentIndex,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		})
+	}
+
+	// Builds the message_end event pi-mono emits after an LLM response,
+	// carrying only what this suite exercises: the final content blocks.
+	// Usage is zeroed out — the usage-accounting path is covered separately
+	// in "KimchiAcpAgent usage reporting".
+	function messageEndEvent(content: AssistantMessage["content"]): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	const chunks = () =>
+		updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+
+	it("emits no extra chunk when a text block was already fully streamed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "hello world")
+			fake.emit(messageEndEvent([{ type: "text", text: "hello world" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["hello world"])
+	})
+
+	it("emits the full text as one chunk with a stable messageId when no deltas streamed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(messageEndEvent([{ type: "text", text: "restored text" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		const chunkUpdates = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+		expect(chunkUpdates).toHaveLength(1)
+		const update = chunkUpdates[0].update as { content: { text: string }; messageId?: string }
+		expect(update.content.text).toBe("restored text")
+		expect(update.messageId).toBe("km.0")
+	})
+
+	it("emits only the un-streamed tail of a partially streamed block", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "hello ")
+			fake.emit(messageEndEvent([{ type: "text", text: "hello world" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["hello ", "world"])
+	})
+
+	it("does not append a bogus tail when message_end text rewrites the streamed prefix", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "streamed text")
+			fake.emit(messageEndEvent([{ type: "text", text: "rewritten final text" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["streamed text"])
+	})
+
+	it("emits nothing extra for a thinking block present at message_end", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(messageEndEvent([{ type: "thinking", thinking: "internal reasoning" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBe(false)
+	})
+})
+
 // Streaming tools (bash in particular) emit tool_execution_update with a
 // partialResult payload for every output chunk. The ACP server translates each
 // of these into a tool_call_update with status="in_progress" and content carrying

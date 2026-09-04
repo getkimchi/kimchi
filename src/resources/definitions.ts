@@ -1,5 +1,6 @@
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-timeout-constants.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
+import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
@@ -107,6 +108,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "MCP apps",
 		description: "Enable MCP/app connector tools.",
 		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: FERMENT_V2_RESOURCE_ID,
+		kind: "extensions",
+		experimental: true,
+		label: "Ferment V2",
+		description: "Enable persistent objectives with guarded automatic continuation.",
+		defaultEnabled: false,
 		restartRequired: true,
 	},
 ]

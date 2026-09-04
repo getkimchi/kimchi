@@ -575,6 +575,42 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
+	it("emits privacy-safe Ferment V2 evaluator totals without the reason", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			fermentV2Id: "fv2-001",
+			verdict: "continue",
+			count: 2,
+			model: "test/judge",
+			reason: "private evaluator rationale",
+			usage: {
+				input: 20,
+				output: 10,
+				cacheRead: 4,
+				cacheWrite: 2,
+				totalTokens: 36,
+				costUsd: 0.66,
+			},
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.evaluated")
+		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
+			ferment_v2_id: "fv2-001",
+			verdict: "continue",
+			count: "2",
+			evaluator_model: "test/judge",
+			input_tokens: "20",
+			output_tokens: "10",
+			cache_read_tokens: "4",
+			cache_write_tokens: "2",
+			total_tokens: "36",
+			cost: "0.66",
+		})
+		expect(attrsOf(rec as NonNullable<typeof rec>).reason).toBeUndefined()
+	})
+
 	it("ferment:started → ferment.started OTLP record with ferment_id, name, model", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")

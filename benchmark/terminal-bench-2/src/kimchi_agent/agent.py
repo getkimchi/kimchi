@@ -80,6 +80,62 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
+FERMENT_V2_RESOURCE_ID = "extensions.ferment-v2"
+FERMENT_V2_SLASH_COMMAND = "/ferment-v2"
+KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
+KIMCHI_INFRA_ERROR_EXIT_CODE = 74
+RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
+
+
+class RetryableApiError(RuntimeError):
+    def __init__(self, status: int | None, detail: str) -> None:
+        self.status = status
+        detail = detail.strip()
+        suffix = f": {detail}" if detail else ""
+        code = f" {status}" if status is not None else ""
+        super().__init__(f"Retryable provider error{code}{suffix}")
+
+
+def _retryable_api_error_from_classification(data: object) -> RetryableApiError | None:
+    if not isinstance(data, dict):
+        return None
+    if data.get("retryable") is not True or data.get("isInfrastructure") is not True:
+        return None
+    exit_code = data.get("exitCode")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != KIMCHI_INFRA_ERROR_EXIT_CODE:
+        return None
+
+    detail = data.get("rawMessage") if isinstance(data.get("rawMessage"), str) else ""
+    if len(detail) > RETRYABLE_API_ERROR_MESSAGE_LIMIT:
+        detail = f"{detail[:RETRYABLE_API_ERROR_MESSAGE_LIMIT]}..."
+    return RetryableApiError(None, detail)
+
+
+def _retryable_api_error_from_session_stream(stream: str) -> RetryableApiError | None:
+    classified_errors: dict[str, RetryableApiError] = {}
+    terminal_error: RetryableApiError | None = None
+    for line in stream.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "custom" and entry.get("customType") == KIMCHI_ERROR_CLASSIFICATION_TYPE:
+            entry_id = entry.get("id")
+            error = _retryable_api_error_from_classification(entry.get("data"))
+            if isinstance(entry_id, str) and error is not None:
+                classified_errors[entry_id] = error
+            continue
+        message = entry.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            parent_id = entry.get("parentId")
+            linked_error = classified_errors.get(parent_id) if isinstance(parent_id, str) else None
+            terminal_error = linked_error if message.get("stopReason") == "error" else None
+    return terminal_error
 
 # Benchmark-only extension for injecting LLM sampling parameters.
 # It lives in the benchmarks branch and is installed into the container's
@@ -250,7 +306,9 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         disable_multi_model = _coerce_bool_kwarg(kwargs.pop("disable-multi-model", False), "disable-multi-model")
         # Compaction follows kimchi's default (on) unless explicitly disabled.
         disable_compaction = _coerce_bool_kwarg(kwargs.pop("disable-compaction", False), "disable-compaction")
-
+        ferment_v2_enabled = _coerce_bool_kwarg(
+            kwargs.pop("ferment-v2", False), "ferment-v2"
+        )
         llm_params = _decode_agent_kwarg(kwargs.pop("llm-params", None))
         llm_per_model_params = _decode_agent_kwarg(kwargs.pop("llm-per-model-params", None))
 
@@ -265,6 +323,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             raise ValueError("multi-model selection conflicts with legacy 'disable-multi-model=true'")
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
+        self._ferment_v2_enabled = ferment_v2_enabled
         self._llm_params = llm_params
         self._llm_per_model_params = llm_per_model_params
         self._config = KimchiAgentConfig()
@@ -651,6 +710,11 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         except asyncio.CancelledError:
             await self._terminate_kimchi_process_group(environment)
             raise
+        except NonZeroAgentExitCodeError as exc:
+            retryable_error = await self._retryable_api_error_from_remote_session(environment)
+            if retryable_error is not None:
+                raise retryable_error from exc
+            raise
 
     def _extension_paths(self) -> list[str]:
         """Paths/specs to load with ``-e``. Empty means no ``-e`` flag at all.
@@ -666,7 +730,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
     def _stdin_payload(self, instruction: str) -> str:
         """What to pipe to kimchi, when it is not the instruction verbatim."""
-        return instruction
+        return f"{FERMENT_V2_SLASH_COMMAND} {instruction}" if self._ferment_v2_enabled else instruction
 
     def _pre_launch_commands(self, instruction: str) -> list[str]:
         """Shell commands to run in the launch pipeline, before kimchi starts."""
@@ -774,6 +838,8 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # Read by kimchi through pi's SettingsManager: disables upstream
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
+        if self._ferment_v2_enabled:
+            settings["resources"] = {FERMENT_V2_RESOURCE_ID: True}
 
         settings_json = json.dumps(settings, separators=(",", ":"))
         return (
@@ -911,6 +977,19 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 extra={"error": str(exc)},
             )
 
+    async def _retryable_api_error_from_remote_session(
+        self,
+        environment: BaseEnvironment,
+    ) -> RetryableApiError | None:
+        try:
+            result = await environment.exec(f"cat {shlex.quote(CONTAINER_MAIN_SESSION)}", timeout_sec=10)
+        except Exception:
+            self.logger.debug("Failed to read Kimchi session for API error classification", exc_info=True)
+            return None
+        if result.return_code != 0 or not result.stdout:
+            return None
+        return _retryable_api_error_from_session_stream(result.stdout)
+
     def _auto_tags(self) -> dict[str, str]:
         # logs_dir is expected to be jobs/<run>/<task>__<trial>/agent. Derive
         # run / task / trial from that ancestry so they're injected automatically
@@ -964,7 +1043,6 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
-
         # rglob, not glob: an extension may nest per-step sessions under
         # sessions/<subdir>/, and a flat glob silently under-reports those
         # as zero tokens for work that really happened.

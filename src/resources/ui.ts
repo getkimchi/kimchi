@@ -7,9 +7,9 @@ import type { ResourceDefinition, ResourceKind } from "./types.js"
 const VALUE_ENABLED = "enabled"
 const VALUE_DISABLED = "disabled"
 
-type ResourceTab = ResourceKind | "all"
+type ResourceTab = ResourceKind | "all" | "experimental"
 
-const TABS: readonly ResourceTab[] = ["all", ...RESOURCE_KINDS]
+const TABS: readonly ResourceTab[] = ["all", ...RESOURCE_KINDS, "experimental"]
 
 export class ResourceManagerComponent {
 	private list: SettingsList
@@ -118,21 +118,25 @@ export function createResourceManager(
 }
 
 function resourceItems(tab: ResourceTab): SettingItem[] {
-	return getResourceDefinitions()
-		.filter((resource) => tab === "all" || resource.kind === tab)
-		.map((resource) => ({
-			id: resource.id,
-			label: resourceLabel(resource, tab),
-			description: resourceDescription(resource),
-			currentValue: isResourceEnabled(resource.id) ? VALUE_ENABLED : VALUE_DISABLED,
-			values: [VALUE_ENABLED, VALUE_DISABLED],
-		}))
+	return resourcesForTab(tab).map((resource) => ({
+		id: resource.id,
+		label: resourceLabel(resource, tab),
+		description: resourceDescription(resource),
+		currentValue: isResourceEnabled(resource.id) ? VALUE_ENABLED : VALUE_DISABLED,
+		values: [VALUE_ENABLED, VALUE_DISABLED],
+	}))
 }
 
 function enabledCount(tab: ResourceTab): string {
-	const resources = tab === "all" ? getResourceDefinitions() : getResourcesByKind(tab)
+	const resources = resourcesForTab(tab)
 	const enabled = resources.filter((resource) => isResourceEnabled(resource.id)).length
 	return `${enabled}/${resources.length}`
+}
+
+function resourcesForTab(tab: ResourceTab): ResourceDefinition[] {
+	if (tab === "all") return getResourceDefinitions()
+	if (tab === "experimental") return getResourceDefinitions().filter((resource) => resource.experimental)
+	return getResourcesByKind(tab).filter((resource) => !resource.experimental)
 }
 
 function kindPrefix(kind: ResourceKind, tab: ResourceTab): string {
@@ -157,6 +161,8 @@ function tabIcon(tab: ResourceTab): string {
 			return "▣"
 		case "plugins":
 			return "◈"
+		case "experimental":
+			return "✦"
 	}
 }
 
@@ -172,6 +178,8 @@ function tabDescription(tab: ResourceTab): string {
 			return "Built-in Kimchi feature modules."
 		case "plugins":
 			return "External connector and package surfaces."
+		case "experimental":
+			return "Opt-in Kimchi features that are still experimental."
 	}
 }
 

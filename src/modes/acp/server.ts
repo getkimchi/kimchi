@@ -288,6 +288,17 @@ type SessionRecord = {
 	 */
 	contentIndexToBlockId: Map<number, string>
 	/**
+	 * Per-assistant-message map from pi-mono's contentIndex → text already
+	 * streamed to the client
+	 * via text_delta. message_end reads this to send only the un-streamed
+	 * tail of each text block — covering extensions that suppress deltas
+	 * while streaming and restore the text in message_end's returned
+	 * message, and providers that skip incremental deltas entirely. Cleared
+	 * everywhere contentIndexToBlockId is cleared, so it shares the same
+	 * per-message lifetime.
+	 */
+	streamedText: Map<number, string>
+	/**
 	 * Session-wide monotonic counter for ACP toolCallIds.
 	 *
 	 * toolCall.id comes straight from the model provider and carries no
@@ -548,6 +559,7 @@ export class KimchiAcpAgent implements Agent {
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
@@ -808,6 +820,7 @@ export class KimchiAcpAgent implements Agent {
 				cwd: loadedSession.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(discoverAcpSkillCommands(loadedSession.resourceLoader).map((s) => [s.name, s])),
@@ -1079,14 +1092,17 @@ export class KimchiAcpAgent implements Agent {
 				// ended or were orphaned). Wipe both maps so fresh allocations
 				// don't reuse old ids.
 				entry.contentIndexToBlockId.clear()
+				entry.streamedText.clear()
 				entry.toolCallIdMap.clear()
 				return
 			}
 			case "message_start": {
 				// New assistant message → contentIndex restarts from 0. Wipe the
-				// per-message map so a fresh block at index 0 gets a fresh id
-				// instead of inheriting the previous message's assignment.
+				// per-message maps so a fresh block at index 0 gets a fresh id
+				// (and no streamed prefix) instead of inheriting the previous
+				// message's assignment.
 				entry.contentIndexToBlockId.clear()
+				entry.streamedText.clear()
 				return
 			}
 			case "message_update": {
@@ -1106,6 +1122,12 @@ export class KimchiAcpAgent implements Agent {
 							messageId,
 						},
 					})
+					// Track streamed text length only — thinking is not restored at
+					// message_end and must not be re-emitted from that path.
+					if (ame.type === "text_delta") {
+						const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
+						entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
+					}
 				}
 
 				// Tool call argument generation started — emit pending tool_call so
@@ -1171,6 +1193,36 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) return
 				const msg = event.message
 				if (msg.role !== "assistant") return
+				// Emit whatever text a block carries that streaming never sent —
+				// an extension can zero text_delta while streaming and restore the
+				// text only in message_end's returned message (Ferment V2 does
+				// this for any message that isn't an unaccepted completion
+				// candidate), and a provider can emit a text block with no
+				// incremental deltas at all. In the normal fully-streamed case
+				// sent === block.text.length for every block, so nothing extra
+				// goes out here. Emitted before usage accounting so ordering
+				// relative to emitUsageUpdate is unchanged.
+				if (Array.isArray(msg.content)) {
+					msg.content.forEach((block, index) => {
+						if (block.type !== "text") return
+						const streamed = entry.streamedText.get(index) ?? ""
+						if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
+						let messageId = entry.contentIndexToBlockId.get(index)
+						if (messageId === undefined) {
+							messageId = `km.${entry.nextBlockId++}`
+							entry.contentIndexToBlockId.set(index, messageId)
+						}
+						this.send({
+							sessionId,
+							update: {
+								sessionUpdate: "agent_message_chunk",
+								content: { type: "text", text: block.text.slice(streamed.length) },
+								messageId,
+							},
+						})
+						entry.streamedText.set(index, block.text)
+					})
+				}
 				const usage = msg.usage
 				if (usage) {
 					// `|| 0` guards against providers emitting undefined/NaN for a

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import promptSummaryExtension from "./prompt-summary.js"
+import promptSummaryExtension, { holdPromptSummary } from "./prompt-summary.js"
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
 
@@ -107,6 +107,7 @@ describe("prompt summary Agent token accounting", () => {
 			details: { agentId: "agent-1", tokenUsage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } },
 		})
 		await expect(harness.emit("agent_end", {}, staleCtx)).resolves.toBeUndefined()
+		await new Promise((resolve) => setTimeout(resolve, 0))
 
 		expect(staleCtx.isIdle).toHaveBeenCalledOnce()
 		expect(harness.sent).toEqual([])
@@ -227,5 +228,90 @@ describe("prompt summary stale-ctx crash prevention", () => {
 		expect(idleCalls).toBe(3)
 		const message = harness.sent[0] as { customType: string }
 		expect(message.customType).toBe("prompt-summary")
+	})
+
+	it("does not turn a slow post-run hook into a queued model steer", async () => {
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi)
+		let idle = false
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => idle })
+
+		await vi.advanceTimersByTimeAsync(6_000)
+		expect(harness.sent).toHaveLength(0)
+
+		idle = true
+		await vi.advanceTimersByTimeAsync(50)
+		expect(harness.sent).toHaveLength(1)
+	})
+
+	it("waits for an explicit post-run hold before sending", async () => {
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi)
+		const release = holdPromptSummary()
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => true })
+
+		await vi.advanceTimersByTimeAsync(500)
+		expect(harness.sent).toHaveLength(0)
+
+		release()
+		await vi.advanceTimersByTimeAsync(50)
+		expect(harness.sent).toHaveLength(1)
+	})
+
+	it("drops a pending summary when a continuation starts before the session becomes idle", async () => {
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi)
+		let idle = false
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => idle })
+		await vi.advanceTimersByTimeAsync(50)
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => idle })
+
+		idle = true
+		await vi.advanceTimersByTimeAsync(50)
+
+		expect(harness.sent).toHaveLength(1)
+		expect(harness.sent[0]).toMatchObject({ details: { total: { input: 120, output: 60 } } })
+	})
+
+	it("does not send before later agent_end hooks can start a continuation", async () => {
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi)
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => true })
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => true })
+
+		await vi.advanceTimersByTimeAsync(0)
+
+		expect(harness.sent).toHaveLength(1)
+		expect(harness.sent[0]).toMatchObject({ details: { total: { input: 120, output: 60 } } })
 	})
 })

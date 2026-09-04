@@ -722,7 +722,6 @@ def detect_turn_patterns(turns: list[TurnRecord]) -> list[str]:
                 f"tool-loop: turns {best_run_start + 1}\u2013{best_run_start + best_run_len} "
                 f"repeated the same tool sequence "
                 f"({', '.join(sig)}) {best_run_len} times"
-                f"({', '.join(sig)}) {best_run_len} times"
             )
 
     # API errors mid-session — turns with non-2xx HTTP status or an error field.
