@@ -19,7 +19,8 @@ import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { holdWorkingIndicator } from "../ui.js"
+import { holdWorkedDuration } from "../tool-rendering.js"
+import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
 import {
 	FERMENT_V2_COMMAND_NAME,
@@ -164,6 +165,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let preparedEvaluation: PreparedFermentV2Evaluation | undefined
 	let releaseEvaluationWorkingIndicator: (() => void) | undefined
 	let releasePromptSummaryHold: (() => void) | undefined
+	let releaseWorkedForMessageHold: (() => void) | undefined
+	let releaseWorkedDurationHold: ((attachToCurrentMessage?: boolean) => void) | undefined
 	let unregisterTodoCommandMutationHandler: (() => void) | undefined
 	const fermentV2Waiters = new Map<string, { promise: Promise<void>; resolve: () => void }>()
 
@@ -179,6 +182,24 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function releaseFermentV2PromptSummary(): void {
 		releasePromptSummaryHold?.()
 		releasePromptSummaryHold = undefined
+	}
+
+	function holdFermentV2WorkedDuration(): void {
+		releaseWorkedDurationHold ??= holdWorkedDuration()
+	}
+
+	function holdFermentV2WorkedForMessage(): void {
+		releaseWorkedForMessageHold ??= holdWorkedForMessage()
+	}
+
+	function releaseFermentV2WorkedForMessage(): void {
+		releaseWorkedForMessageHold?.()
+		releaseWorkedForMessageHold = undefined
+	}
+
+	function releaseFermentV2WorkedDuration(attachToCurrentMessage = false): void {
+		releaseWorkedDurationHold?.(attachToCurrentMessage)
+		releaseWorkedDurationHold = undefined
 	}
 
 	function emitFermentV2Lifecycle(
@@ -260,6 +281,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function resetFermentV2Runtime(): void {
 		releaseEvaluationIndicator()
 		releaseFermentV2PromptSummary()
+		releaseFermentV2WorkedForMessage()
+		releaseFermentV2WorkedDuration()
 		pendingContinuation = undefined
 		pendingTerminalFeedback = undefined
 		pendingBudgetLimitedOutput = undefined
@@ -355,12 +378,18 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			throw error
 		}
 		if (previous && previous.id !== fermentV2.id) resolveFermentV2Waiter(currentSessionId, previous.id)
+		if (fermentV2.status !== "active") {
+			releaseFermentV2WorkedForMessage()
+			releaseFermentV2WorkedDuration()
+		}
 		if (resolveTerminalWaiter && fermentV2.status !== "active") resolveFermentV2Waiter(currentSessionId, fermentV2.id)
 	}
 
 	function commitClear(fermentV2: SessionFermentV2): void {
 		pi.appendEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, clearFermentV2Entry(fermentV2, timestamp()))
 		currentFermentV2 = clearFermentV2(fermentV2, fermentV2.id, fermentV2.revision)
+		releaseFermentV2WorkedForMessage()
+		releaseFermentV2WorkedDuration()
 		resolveFermentV2Waiter(currentSessionId, fermentV2.id)
 	}
 
@@ -1318,6 +1347,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				.join("")
 				.trim()
 			finalAnswerText = deliveredText
+			releaseFermentV2WorkedDuration(true)
 			let emittedText = false
 			const content = event.message.content.map((block) => {
 				if (block.type !== "text") return block
@@ -1361,7 +1391,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				message: { ...event.message, content: restoredContent },
 				withheld: withholdCandidate,
 			}
-			if (ctx.hasUI) releaseEvaluationWorkingIndicator ??= holdWorkingIndicator(ctx)
+			if (ctx.hasUI) {
+				releaseEvaluationWorkingIndicator ??= holdWorkingIndicator(ctx)
+				holdFermentV2WorkedDuration()
+			}
+			if (!withholdCandidate) releaseFermentV2WorkedDuration(true)
 		}
 		const accepted = acceptedFinalAnswerFor(fermentV2, currentSessionId)
 		const statusOnlyBookkeeping =
@@ -1489,6 +1523,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			pendingContinuation = undefined
 		}
 		const fermentV2 = currentFermentV2
+		if (ctx.hasUI && fermentV2?.status === "active") {
+			holdFermentV2WorkedForMessage()
+			holdFermentV2WorkedDuration()
+		}
 		const finalAnswer = matchesFermentV2(activeFinalAnswer, fermentV2, currentSessionId)
 			? activeFinalAnswer
 			: matchesFermentV2(pendingFinalAnswer, fermentV2, currentSessionId)
@@ -1496,6 +1534,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				: undefined
 		finalAnswerText = undefined
 		finalAnswerInterruption = undefined
+		if (ctx.hasUI && finalAnswer) holdFermentV2WorkedDuration()
 		if (finalAnswer) {
 			activeTurn = undefined
 			activeFinalAnswer = finalAnswer

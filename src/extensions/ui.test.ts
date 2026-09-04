@@ -1,7 +1,15 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { __setWorkingAnimatorForTest, ctrlCCascadeDecision, findNextCompatibleModel, withWorkingHidden } from "./ui.js"
+import uiExtension, {
+	__setWorkingAnimatorForTest,
+	ctrlCCascadeDecision,
+	findNextCompatibleModel,
+	holdWorkedForMessage,
+	withWorkingHidden,
+} from "./ui.js"
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
@@ -83,6 +91,40 @@ describe("Ctrl+C abort key matching", () => {
 	it("matchesKey recognizes Escape separately from Ctrl+C", () => {
 		expect(matchesKey("\x1b", Key.escape)).toBe(true)
 		expect(matchesKey("\x03", Key.escape)).toBe(false)
+	})
+})
+
+describe("worked-for message hold", () => {
+	afterEach(() => {
+		__setWorkingAnimatorForTest(undefined)
+		vi.useRealTimers()
+	})
+
+	it("suppresses the transient per-turn duration until released", async () => {
+		vi.useFakeTimers()
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const setWorkingMessage = vi.fn()
+		const ctx = {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_name: string, value: string) => value, getFgAnsi: () => "" },
+				setStatus: vi.fn(),
+				setWorkingIndicator: vi.fn(),
+				setWorkingMessage,
+				setWorkingVisible: vi.fn(),
+			},
+		} as unknown as ExtensionContext
+
+		await harness.getHandler("turn_start")({ type: "turn_start" } as never, ctx)
+		setWorkingMessage.mockClear()
+		const release = holdWorkedForMessage()
+		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
+		expect(setWorkingMessage).not.toHaveBeenCalled()
+
+		release()
+		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
+		expect(setWorkingMessage.mock.lastCall?.[0]).toContain("Worked for")
 	})
 })
 

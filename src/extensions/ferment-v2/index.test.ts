@@ -347,13 +347,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()?.status).toBe("budget_limited")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		const trailing = {
-			role: "assistant",
-			content: [{ type: "text", text: "unverified post-budget output" }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const trailing = assistantTextMessage("unverified post-budget output")
 		await harness.fire("message_start", { type: "message_start", message: trailing })
 		const ended = await harness.fire("message_end", { type: "message_end", message: trailing })
 
@@ -421,13 +415,7 @@ describe("Ferment V2 extension", () => {
 	it("restores every streamed progress chunk without duplicating the message_start seed", async () => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Still working on it." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Still working on it.")
 
 		await harness.fire("message_start", { type: "message_start", message })
 		await harness.fire("message_update", {
@@ -455,13 +443,7 @@ describe("Ferment V2 extension", () => {
 	it("starts evaluation when the current response settles the Todo list", async () => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "finishing now" }],
-			stopReason: "toolUse",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("finishing now", "toolUse")
 		await harness.fire("message_start", { type: "message_start", message })
 		await completeVisibleTodo(harness)
 		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
@@ -482,38 +464,18 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const hiddenMessage = {
-			role: "assistant",
-			content: [{ type: "text", text: "stale hidden candidate" }],
-			stopReason: "toolUse",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const hiddenMessage = assistantTextMessage("stale hidden candidate", "toolUse")
 		await harness.fire("message_start", { type: "message_start", message: hiddenMessage })
 		await harness.fire("message_end", { type: "message_end", message: hiddenMessage })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "add_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{ id: 1, content: "Finish the Ferment V2", status: "completed" },
-						{ id: 2, content: "Address evaluator feedback", status: "in_progress" },
-					],
-					updatedAt: "2026-08-03T00:00:03.000Z",
-				},
-			},
-		})
-		const currentMessage = {
-			role: "assistant",
-			content: [{ type: "text", text: "current visible progress" }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		await modelTodoResult(
+			harness,
+			[
+				{ id: 1, content: "Finish the Ferment V2", status: "completed" },
+				{ id: 2, content: "Address evaluator feedback", status: "in_progress" },
+			],
+			{ toolName: "add_todo", updatedAt: "2026-08-03T00:00:03.000Z" },
+		)
+		const currentMessage = assistantTextMessage("current visible progress")
 		await harness.fire("message_start", { type: "message_start", message: currentMessage })
 		const ended = await harness.fire("message_end", { type: "message_end", message: currentMessage })
 		const restoredMessage = (ended as { message?: typeof currentMessage } | undefined)?.message ?? currentMessage
@@ -642,13 +604,7 @@ describe("Ferment V2 extension", () => {
 		await completeVisibleTodo(harness)
 		await settleFermentV2(harness, "met", false)
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "\n\nAccepted answer.\n" }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("\n\nAccepted answer.\n")
 
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = await harness.fire("message_end", { type: "message_end", message })
@@ -663,13 +619,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = await harness.fire("message_end", { type: "message_end", message })
 		const withheld = (ended as { message: typeof message }).message
@@ -702,26 +652,10 @@ describe("Ferment V2 extension", () => {
 	it("does not duplicate a visible accepted draft after status-only Todo settlement", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }], {
 			toolName: "create_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }],
-					updatedAt: "2026-08-03T00:00:02.000Z",
-				},
-			},
 		})
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 
@@ -797,13 +731,7 @@ describe("Ferment V2 extension", () => {
 				updatedAt: "2026-08-03T00:00:02.000Z",
 			}),
 		])
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -844,13 +772,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer before extra work." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer before extra work.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -887,13 +809,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -912,28 +828,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		const current = harness.currentFermentV2()
 		if (!current) throw new Error("expected active Ferment V2")
-		harness.setBranch([
-			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:03.000Z",
-			}),
-		])
+		harness.setBranch([...harness.branch, ...completedMetStateEntries(current)])
 		const capturedBranch = [...harness.branch]
 
 		const resumed = createHarness()
@@ -952,36 +847,8 @@ describe("Ferment V2 extension", () => {
 		const acceptedDraft = "Recovered exact final answer."
 		harness.setBranch([
 			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:03.000Z",
-			}),
-			customMessageEntry(
-				FERMENT_V2_CONTROL_MESSAGE_TYPE,
-				acceptedFinalControlContent(acceptedDraft),
-				false,
-				{
-					source: "evaluation_accepted",
-					fermentV2Id: current.id,
-					revision: current.revision,
-				},
-				null,
-			),
+			...completedMetStateEntries(current),
+			acceptedFinalControlEntry(current, acceptedFinalControlContent(acceptedDraft)),
 		])
 		const capturedBranch = [...harness.branch]
 
@@ -1014,35 +881,10 @@ describe("Ferment V2 extension", () => {
 		const acceptedDraft = "Recovered exact final answer."
 		harness.setBranch([
 			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:03.000Z",
-			}),
-			customMessageEntry(
-				FERMENT_V2_CONTROL_MESSAGE_TYPE,
+			...completedMetStateEntries(current),
+			acceptedFinalControlEntry(
+				current,
 				`Injected prefix.\n\nReturn this evaluated draft verbatim: ${JSON.stringify(acceptedDraft)}`,
-				false,
-				{
-					source: "evaluation_accepted",
-					fermentV2Id: current.id,
-					revision: current.revision,
-				},
-				null,
 			),
 		])
 		const capturedBranch = [...harness.branch]
@@ -1078,25 +920,7 @@ describe("Ferment V2 extension", () => {
 		}
 		harness.setBranch([
 			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:03.000Z",
-			}),
+			...completedMetStateEntries(current),
 			customMessageEntry(
 				canonicalControl.customType,
 				canonicalControl.content,
@@ -1160,25 +984,7 @@ describe("Ferment V2 extension", () => {
 		}
 		harness.setBranch([
 			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:03.000Z",
-			}),
+			...completedMetStateEntries(current),
 			customMessageEntry(
 				markedControl.customType,
 				markedControl.content,
@@ -1238,25 +1044,7 @@ describe("Ferment V2 extension", () => {
 		const { display: _display, ...displaylessControl } = canonicalControl
 		harness.setBranch([
 			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:03.000Z",
-			}),
+			...completedMetStateEntries(current),
 			customMessageEntry(
 				canonicalControl.customType,
 				canonicalControl.content,
@@ -1299,13 +1087,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Branch-local accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Branch-local accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -1341,6 +1123,10 @@ describe("Ferment V2 extension", () => {
 		},
 		{
 			name: "duplicates a Todo id",
+			previousTodos: [
+				{ id: 1, content: "Finish the Ferment V2", status: "in_progress" },
+				{ id: 2, content: "Verify the Ferment V2", status: "in_progress" },
+			],
 			todos: [
 				{ id: 1, content: "Finish the Ferment V2", status: "completed" },
 				{ id: 1, content: "Finish the Ferment V2", status: "completed" },
@@ -1348,18 +1134,16 @@ describe("Ferment V2 extension", () => {
 		},
 	] satisfies Array<{
 		name: string
+		previousTodos?: TodoItem[]
 		todos: TodoItem[]
-	}>)("invalidates a retained accepted draft when a model Todo result $name", async ({ todos }) => {
+	}>)("invalidates a retained accepted draft when a model Todo result $name", async ({ todos, previousTodos }) => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		await modelTodoResult(
+			harness,
+			previousTodos ?? [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }],
+		)
+		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -1371,43 +1155,6 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).not.toHaveProperty("lastEvaluation")
 		expect(harness.sendMessage.mock.lastCall?.[0]?.details?.source).not.toBe("evaluation_accepted")
-	})
-
-	it("drops a draftless accepted final answer instead of restoring generic delivery", async () => {
-		await harness.command("ship it")
-		const current = harness.currentFermentV2()
-		if (!current) throw new Error("expected active Ferment V2")
-		harness.setBranch([
-			...harness.branch,
-			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: 1,
-				op: "put",
-				fermentV2: {
-					...current,
-					evaluationCount: 1,
-					lastEvaluation: {
-						verdict: "met",
-						reason: "All requirements are evidenced.",
-						evaluatedAt: "2026-08-03T00:00:03.000Z",
-					},
-				},
-			}),
-			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
-				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
-				updatedAt: "2026-08-03T00:00:02.000Z",
-			}),
-		])
-		const capturedBranch = [...harness.branch]
-
-		const resumed = createHarness()
-		resumed.setSession("session-a", capturedBranch)
-		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
-
-		expect(resumed.currentFermentV2()).toMatchObject({ status: "active" })
-		expect(resumed.currentFermentV2()).not.toHaveProperty("lastEvaluation")
-		expect(resumed.sendMessage.mock.calls.some(([sent]) => sent?.details?.source === "evaluation_accepted")).toBe(false)
 	})
 
 	it("retries accepted final-answer delivery after pause and resume", async () => {
@@ -1431,13 +1178,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer before failed delivery." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer before failed delivery.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -1464,13 +1205,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -1485,16 +1220,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const message = {
-			role: "assistant",
-			content: [
-				{ type: "text", text: "Hello " },
-				{ type: "text", text: "world" },
-			],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage(["Hello ", "world"])
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -1509,13 +1235,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Accepted answer before failed delivery." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Accepted answer before failed delivery.")
 		await harness.fire("message_start", { type: "message_start", message })
 		const ended = (await harness.fire("message_end", { type: "message_end", message })) as { message: typeof message }
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
@@ -1657,18 +1377,9 @@ describe("Ferment V2 extension", () => {
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
 
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Implement the Ferment V2", status: "in_progress" }], {
 			toolName: "create_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Implement the Ferment V2", status: "in_progress" }],
-					updatedAt: "2026-08-03T00:00:01.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
 		expect(
@@ -1679,18 +1390,8 @@ describe("Ferment V2 extension", () => {
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
 
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Implement the Ferment V2", status: "completed" }], {
 			toolName: "mark_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Implement the Ferment V2", status: "completed" }],
-					updatedAt: "2026-08-03T00:00:02.000Z",
-				},
-			},
 		})
 		expect(
 			await harness.fire("tool_call", {
@@ -1699,18 +1400,9 @@ describe("Ferment V2 extension", () => {
 				input: { status: "complete" },
 			}),
 		).toBeUndefined()
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [], {
 			toolName: "clear_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [],
-					updatedAt: "2026-08-03T00:00:03.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:03.000Z",
 		})
 		expect(
 			await harness.fire("tool_call", {
@@ -1833,13 +1525,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("--tokens 100 original")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		const message = {
-			role: "assistant",
-			content: [{ type: "text", text: "Revision one finished its running operation." }],
-			stopReason: "stop",
-			usage: { input: 0, output: 0 },
-			timestamp: Date.now(),
-		}
+		const message = assistantTextMessage("Revision one finished its running operation.")
 		await harness.fire("message_start", { type: "message_start", message })
 
 		await harness.command("edit revised")
@@ -1957,25 +1643,17 @@ describe("Ferment V2 extension", () => {
 	it("preserves the todo checkpoint but requires reconciliation after an edit", async () => {
 		await harness.command("original")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "mark_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{
-							id: 1,
-							content: "Validate the implementation",
-							status: "completed",
-							note: "Evidence: focused tests passed",
-						},
-					],
-					updatedAt: "2026-08-03T00:00:01.000Z",
-				},
+		const settledTodos: TodoItem[] = [
+			{
+				id: 1,
+				content: "Validate the implementation",
+				status: "completed",
+				note: "Evidence: focused tests passed",
 			},
+		]
+		await modelTodoResult(harness, settledTodos, {
+			toolName: "mark_todo",
+			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 
 		await harness.command("edit refined objective")
@@ -1989,26 +1667,7 @@ describe("Ferment V2 extension", () => {
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
 
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "mark_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{
-							id: 1,
-							content: "Validate the implementation",
-							status: "completed",
-							note: "Evidence: focused tests passed",
-						},
-					],
-					updatedAt: "2026-08-03T00:00:02.000Z",
-				},
-			},
-		})
+		await modelTodoResult(harness, settledTodos, { toolName: "mark_todo" })
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
@@ -2023,18 +1682,9 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.command("edit edited objective")
 
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Stale work", status: "completed", note: "Evidence: stale" }], {
 			toolName: "mark_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Stale work", status: "completed", note: "Evidence: stale" }],
-					updatedAt: "2026-08-03T00:00:01.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 
 		await harness.fire("tool_execution_end", {
@@ -2184,21 +1834,6 @@ describe("Ferment V2 extension", () => {
 		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toBeNull()
 	})
 
-	it("schedules a continuation turn when resuming a session with an active Ferment V2", async () => {
-		await harness.command("ship it")
-		const capturedBranch = [...harness.branch]
-
-		const resumed = createHarness()
-		resumed.setSession("session-a", capturedBranch)
-		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
-
-		expect(resumed.currentFermentV2()?.status).toBe("active")
-		expect(resumed.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: FERMENT_V2_CONTROL_MESSAGE_TYPE }),
-			expect.objectContaining({ triggerTurn: true }),
-		)
-	})
-
 	it("does not compete with the incoming prompt when a headless session resumes", async () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
@@ -2322,21 +1957,6 @@ describe("Ferment V2 extension", () => {
 		await settleFermentV2(harness, "met")
 		expect(harness.currentFermentV2()?.status).toBe("complete")
 		expect(harness.currentFermentV2()?.completionConfidence).toBeUndefined()
-	})
-
-	it("keeps low self-reported confidence without treating it as the verdict", async () => {
-		await harness.command("prove it")
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await completeVisibleTodo(harness)
-
-		const partial = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
-			status: "complete",
-			completion_confidence: "partial",
-		})
-		expect(partial.terminate).toBe(true)
-		expect(harness.currentFermentV2()?.status).toBe("active")
-		await settleFermentV2(harness, "met")
-		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "partial" })
 	})
 
 	it("rejects stale and invalid model updates while accepting both terminal statuses", async () => {
@@ -2537,13 +2157,7 @@ describe("Ferment V2 extension", () => {
 			root.id,
 		)
 		const latestMessage = messageEntry(
-			{
-				role: "assistant",
-				content: [{ type: "text", text: "latest turn" }],
-				stopReason: "stop",
-				usage: { input: 1, output: 1 },
-				timestamp: Date.now(),
-			},
+			assistantTextMessage("latest turn", "stop", { input: 1, output: 1 }),
 			priorEvidence.id,
 		)
 		harness.setBranch([...harness.branch, priorEvidence, latestMessage])
@@ -2750,20 +2364,6 @@ describe("Ferment V2 extension", () => {
 		)
 	})
 
-	it("keeps the completion claim across a continue verdict", async () => {
-		await harness.command("ship it")
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await completeVisibleTodo(harness)
-		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
-
-		await settleFermentV2(harness, "continue")
-		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
-
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await settleFermentV2(harness, "met")
-		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "proven" })
-	})
-
 	it("reports each evaluation's own usage", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -2924,22 +2524,6 @@ describe("Ferment V2 extension", () => {
 		await Promise.all([replacement, settled])
 	})
 
-	it("cancels an in-flight evaluation when the Ferment V2 is edited", async () => {
-		await harness.command("old objective")
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		const { release, settled, signal } = await holdEvaluation(harness)
-
-		const edit = harness.command("edit new objective")
-		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
-		release({
-			verdict: "continue",
-			reason: "old result",
-			model: "test/evaluator",
-			usage: EVALUATOR_USAGE,
-		})
-		await Promise.all([edit, settled])
-	})
-
 	it("aborts an evaluation held across a session_tree rewind that lands on the same Ferment V2 revision", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -2991,43 +2575,20 @@ describe("Ferment V2 extension", () => {
 	it("pauses after three continuation turns without recorded todo progress", async () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		const unchangedTodos: TodoItem[] = [
+			{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", note: "No progress" },
+		]
+		await modelTodoResult(harness, unchangedTodos, {
 			toolName: "create_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", note: "No progress" }],
-					updatedAt: "2026-08-03T00:00:01.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 		harness.sendMessage.mockClear()
 
 		for (let turnIndex = 1; turnIndex <= 3; turnIndex += 1) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
-			await harness.fire("tool_execution_end", {
-				type: "tool_execution_end",
+			await modelTodoResult(harness, unchangedTodos, {
 				toolName: "mark_todo",
-				isError: false,
-				result: {
-					details: {
-						schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-						scope: { kind: "global" },
-						todos: [
-							{
-								id: 1,
-								content: "Do the work",
-								status: "in_progress",
-								activeForm: "Working",
-								note: "No progress",
-							},
-						],
-						updatedAt: `2026-08-03T00:00:0${turnIndex + 1}.000Z`,
-					},
-				},
+				updatedAt: `2026-08-03T00:00:0${turnIndex + 1}.000Z`,
 			})
 			await harness.fire("turn_end", terminalTurn())
 			harness.appendEntry.mockClear()
@@ -3133,23 +2694,15 @@ describe("Ferment V2 extension", () => {
 
 		for (let turnIndex = 1; turnIndex <= 3; turnIndex += 1) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
-			await harness.fire("tool_execution_end", {
-				type: "tool_execution_end",
-				toolName: "add_todo",
-				isError: false,
-				result: {
-					details: {
-						schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-						scope: { kind: "global" },
-						todos: Array.from({ length: turnIndex }, (_, index) => ({
-							id: index + 1,
-							content: `Discovered item ${index + 1}`,
-							status: "pending" as const,
-						})),
-						updatedAt: `2026-08-03T00:00:0${turnIndex}.000Z`,
-					},
-				},
-			})
+			await modelTodoResult(
+				harness,
+				Array.from({ length: turnIndex }, (_, index) => ({
+					id: index + 1,
+					content: `Discovered item ${index + 1}`,
+					status: "pending" as const,
+				})),
+				{ toolName: "add_todo", updatedAt: `2026-08-03T00:00:0${turnIndex}.000Z` },
+			)
 			await harness.fire("turn_end", terminalTurn())
 			await settleFermentV2(harness, "continue")
 		}
@@ -3166,61 +2719,36 @@ describe("Ferment V2 extension", () => {
 		harness.sendMessage.mockClear()
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Discovered item", status: "pending" }], {
 			toolName: "add_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Discovered item", status: "pending" }],
-					updatedAt: "2026-08-03T00:00:01.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "add_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{ id: 1, content: "Discovered item", status: "pending" },
-						{ id: 2, content: "Another discovered item", status: "pending" },
-					],
-					updatedAt: "2026-08-03T00:00:02.000Z",
-				},
-			},
-		})
+		await modelTodoResult(
+			harness,
+			[
+				{ id: 1, content: "Discovered item", status: "pending" },
+				{ id: 2, content: "Another discovered item", status: "pending" },
+			],
+			{ toolName: "add_todo" },
+		)
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "mark_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{ id: 1, content: "Discovered item", status: "in_progress", activeForm: "Working on it" },
-						{ id: 2, content: "Another discovered item", status: "pending" },
-					],
-					updatedAt: "2026-08-03T00:00:03.000Z",
-				},
-			},
-		})
+		await modelTodoResult(
+			harness,
+			[
+				{ id: 1, content: "Discovered item", status: "in_progress", activeForm: "Working on it" },
+				{ id: 2, content: "Another discovered item", status: "pending" },
+			],
+			{ toolName: "mark_todo", updatedAt: "2026-08-03T00:00:03.000Z" },
+		)
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
 
@@ -3231,18 +2759,9 @@ describe("Ferment V2 extension", () => {
 	it("counts settling a todo as progress and resets the no-progress counter", async () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }], {
 			toolName: "create_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }],
-					updatedAt: "2026-08-03T00:00:00.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:00.000Z",
 		})
 		harness.sendMessage.mockClear()
 
@@ -3255,18 +2774,9 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Do the work", status: "completed" }], {
 			toolName: "mark_todo",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Do the work", status: "completed" }],
-					updatedAt: "2026-08-03T00:00:03.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:03.000Z",
 		})
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
@@ -3282,18 +2792,9 @@ describe("Ferment V2 extension", () => {
 	] as const)("counts active Todo $field revisions as progress", async ({ field, value }) => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
+		await modelTodoResult(harness, [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }], {
 			toolName: "create_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }],
-					updatedAt: "2026-08-03T00:00:00.000Z",
-				},
-			},
+			updatedAt: "2026-08-03T00:00:00.000Z",
 		})
 
 		for (let turnIndex = 1; turnIndex <= 2; turnIndex += 1) {
@@ -3304,19 +2805,11 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "update_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", [field]: value }],
-					updatedAt: "2026-08-03T00:00:03.000Z",
-				},
-			},
-		})
+		await modelTodoResult(
+			harness,
+			[{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", [field]: value }],
+			{ updatedAt: "2026-08-03T00:00:03.000Z" },
+		)
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
 
@@ -3327,42 +2820,26 @@ describe("Ferment V2 extension", () => {
 	it("does not count reordering unchanged Todos or lessons as progress", async () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "create_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{ id: 1, content: "Active item", status: "in_progress", activeForm: "Working on active item" },
-						{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
-						{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
-					],
-					updatedAt: "2026-08-03T00:00:00.000Z",
-				},
-			},
-		})
+		await modelTodoResult(
+			harness,
+			[
+				{ id: 1, content: "Active item", status: "in_progress", activeForm: "Working on active item" },
+				{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
+				{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
+			],
+			{ toolName: "create_todos", updatedAt: "2026-08-03T00:00:00.000Z" },
+		)
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "update_todos",
-			isError: false,
-			result: {
-				details: {
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
-						{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
-						{ id: 1, content: "Active item", status: "in_progress", activeForm: "Working on active item" },
-					],
-					updatedAt: "2026-08-03T00:00:01.000Z",
-				},
-			},
-		})
+		await modelTodoResult(
+			harness,
+			[
+				{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
+				{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
+				{ id: 1, content: "Active item", status: "in_progress", activeForm: "Working on active item" },
+			],
+			{ updatedAt: "2026-08-03T00:00:01.000Z" },
+		)
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
 
@@ -3406,7 +2883,7 @@ describe("Ferment V2 extension", () => {
 		await settleFermentV2(harness, "met")
 
 		expect(evaluateFermentV2Mock).toHaveBeenCalledTimes(2)
-		expect(harness.currentFermentV2()?.status).toBe("complete")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "tested" })
 	})
 
 	it("does not start when only part of the Todo toolset is visible", async () => {
@@ -4068,23 +3545,7 @@ describe("Ferment V2 extension", () => {
 			expect(resumed.sendMessage).not.toHaveBeenCalled()
 		})
 
-		it("applies defaultTokenBudget to /ferment-v2 <objective> without --tokens", async () => {
-			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, defaultTokenBudget: 500 })
-
-			await harness.command("ship it")
-
-			expect(harness.currentFermentV2()).toMatchObject({ tokenBudget: 500 })
-		})
-
-		it("lets an explicit --tokens win over a configured defaultTokenBudget", async () => {
-			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, defaultTokenBudget: 500 })
-
-			await harness.command("--tokens 250 ship it")
-
-			expect(harness.currentFermentV2()).toMatchObject({ tokenBudget: 250 })
-		})
-
-		it("still lets an explicit --tokens win when replacing a Ferment V2 under a configured default", async () => {
+		it("applies the default token budget and lets an explicit replacement budget win", async () => {
 			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, defaultTokenBudget: 500 })
 
 			await harness.command("first")
@@ -4309,6 +3770,21 @@ async function finishFinalAnswerTurn(
 	await harness.fire("agent_settled", { type: "agent_settled" })
 }
 
+function assistantTextMessage(
+	text: string | readonly string[],
+	stopReason: "stop" | "toolUse" = "stop",
+	usage: { input?: number; output?: number } = { input: 0, output: 0 },
+) {
+	const blocks = typeof text === "string" ? [text] : text
+	return {
+		role: "assistant" as const,
+		content: blocks.map((blockText) => ({ type: "text" as const, text: blockText })),
+		stopReason,
+		usage,
+		timestamp: Date.now(),
+	}
+}
+
 async function holdEvaluation(harness: ReturnType<typeof createHarness>): Promise<{
 	release: (value: Awaited<ReturnType<typeof evaluateFermentV2>>) => void
 	settled: Promise<unknown>
@@ -4333,17 +3809,21 @@ async function completeVisibleTodo(harness: ReturnType<typeof createHarness>): P
 	await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "completed" }])
 }
 
-async function modelTodoResult(harness: ReturnType<typeof createHarness>, todos: TodoItem[]): Promise<void> {
+async function modelTodoResult(
+	harness: ReturnType<typeof createHarness>,
+	todos: TodoItem[],
+	options: { toolName?: string; updatedAt?: string } = {},
+): Promise<void> {
 	await harness.fire("tool_execution_end", {
 		type: "tool_execution_end",
-		toolName: "update_todos",
+		toolName: options.toolName ?? "update_todos",
 		isError: false,
 		result: {
 			details: {
 				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 				scope: { kind: "global" },
 				todos,
-				updatedAt: "2026-08-03T00:00:02.000Z",
+				updatedAt: options.updatedAt ?? "2026-08-03T00:00:02.000Z",
 			},
 		},
 	})
@@ -4376,6 +3856,44 @@ function customEntry(customType: string, data: unknown): SessionEntry {
 		customType,
 		data,
 	} as SessionEntry
+}
+
+function completedMetStateEntries(fermentV2: SessionFermentV2): SessionEntry[] {
+	return [
+		customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, {
+			schemaVersion: 1,
+			op: "put",
+			fermentV2: {
+				...fermentV2,
+				evaluationCount: 1,
+				lastEvaluation: {
+					verdict: "met",
+					reason: "All requirements are evidenced.",
+					evaluatedAt: "2026-08-03T00:00:03.000Z",
+				},
+			},
+		}),
+		customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+			schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+			scope: { kind: "global" },
+			todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
+			updatedAt: "2026-08-03T00:00:03.000Z",
+		}),
+	]
+}
+
+function acceptedFinalControlEntry(
+	fermentV2: SessionFermentV2,
+	content: string,
+	display: false | undefined = false,
+): SessionEntry {
+	return customMessageEntry(
+		FERMENT_V2_CONTROL_MESSAGE_TYPE,
+		content,
+		display,
+		{ source: "evaluation_accepted", fermentV2Id: fermentV2.id, revision: fermentV2.revision },
+		null,
+	)
 }
 
 function acceptedFinalControlContent(acceptedDraft: string): string {

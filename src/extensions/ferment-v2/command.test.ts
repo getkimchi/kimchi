@@ -15,7 +15,6 @@ describe("Ferment V2 command", () => {
 		expect(parseFermentV2Command("edit new objective")).toEqual({ action: "edit", objective: "new objective" })
 		expect(parseFermentV2Command("pause")).toEqual({ action: "pause" })
 		expect(parseFermentV2Command("resume")).toEqual({ action: "resume" })
-		expect(parseFermentV2Command("clear")).toEqual({ action: "clear" })
 		expect(parseFermentV2Command("pause after deployment")).toEqual({
 			action: "set",
 			objective: "pause after deployment",

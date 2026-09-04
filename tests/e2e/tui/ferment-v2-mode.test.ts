@@ -366,6 +366,8 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 		{
 			artifactName: "ferment-v2-mode-gated-text-only-completion",
 			seedHome: enableFermentV2Mode,
+			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true }],
+			extraArgs: ["--model", "thinking-model"],
 			responses: [
 				{
 					match: isFermentV2EvaluatorRequest,
@@ -408,9 +410,21 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 						},
 					],
 				},
-				{ stream: [firstHiddenCandidate], usage: { prompt_tokens: 100, completion_tokens: 10 } },
-				{ stream: [secondHiddenCandidate], usage: { prompt_tokens: 20, completion_tokens: 5 } },
-				{ stream: [acceptedFinal], usage: { prompt_tokens: 30, completion_tokens: 8 } },
+				{
+					thinking: ["Reviewing the first completion candidate."],
+					stream: [firstHiddenCandidate],
+					usage: { prompt_tokens: 100, completion_tokens: 10 },
+				},
+				{
+					thinking: ["Reviewing the revised completion candidate."],
+					stream: [secondHiddenCandidate],
+					usage: { prompt_tokens: 20, completion_tokens: 5 },
+				},
+				{
+					thinking: ["Returning the accepted final answer."],
+					stream: [acceptedFinal],
+					usage: { prompt_tokens: 30, completion_tokens: 8 },
+				},
 			],
 		},
 		async (fixture, trace) => {
@@ -429,6 +443,7 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
 			expect(fullText(terminal)).not.toContain(secondHiddenCandidate)
 			expect(fullText(terminal).match(/Prompt summary/g)).toHaveLength(1)
+			expect(fullText(terminal).match(/Worked for/g)).toHaveLength(1)
 			trace.step("settled Todos reached evaluation without a completion-tool turn or empty-turn nudge")
 		},
 	)
@@ -612,6 +627,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			expect(JSON.stringify(chatRequests(fixture.fake.requests).at(-1)?.body)).toContain(
 				"If the original objective requires exact output, return exactly that output with no preface or summary.",
 			)
+			expect(fullText(terminal).match(/Worked for/g)).toHaveLength(1)
 			trace.step("accepted final answer appeared only after the evaluator returned met")
 		},
 	)

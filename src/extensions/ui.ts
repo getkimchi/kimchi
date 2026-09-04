@@ -130,6 +130,7 @@ const CTRL_C_EXIT_WINDOW_MS = 500
 let workingAnimator: WorkingAnimator | undefined
 let workingAnimationPauseDepth = 0
 const workingIndicatorHolds = new Set<symbol>()
+const workedForMessageHolds = new Set<symbol>()
 
 // Module-level so `holdWorkingIndicator` can re-arm the animator itself when it
 // isn't already running — extension handler order relative to this file's
@@ -166,6 +167,14 @@ export function holdWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): () => v
 	}
 }
 
+export function holdWorkedForMessage(): () => void {
+	const hold = Symbol("worked-for-message-hold")
+	workedForMessageHolds.add(hold)
+	return () => {
+		workedForMessageHolds.delete(hold)
+	}
+}
+
 export function pauseWorkingAnimation(): void {
 	if (workingAnimationPauseDepth === 0) {
 		workingAnimator?.pause()
@@ -189,6 +198,7 @@ export function resumeWorkingAnimation(): void {
 export function __setWorkingAnimatorForTest(controller: WorkingAnimator | undefined): void {
 	workingAnimator = controller
 	workingIndicatorHolds.clear()
+	workedForMessageHolds.clear()
 }
 
 /** Cascade: text → clear, streaming → abort, otherwise → exit. */
@@ -383,6 +393,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		setSessionModeOnboardingStatusLineSuppressed(false)
 		workingIndicatorHolds.clear()
+		workedForMessageHolds.clear()
 		workingAnimator?.stop()
 		workingAnimator = undefined
 		resetState()
@@ -621,6 +632,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		workingIndicatorHolds.clear()
+		workedForMessageHolds.clear()
 		workingAnimator?.stop()
 		workingAnimator = undefined
 		currentCtx = null
@@ -708,7 +720,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		// so the cascade's "press again to abort" guidance is stale.
 		if (ctx.hasUI) ctx.ui.setStatus("__ctrl_c_hint", undefined)
 		refresh("idle")
-		if (ctx.hasUI && turnStartMs > 0 && workingIndicatorHolds.size === 0) {
+		if (ctx.hasUI && turnStartMs > 0 && workingIndicatorHolds.size === 0 && workedForMessageHolds.size === 0) {
 			clearTimeout(workedForTimer)
 			const elapsed = Date.now() - turnStartMs
 			ctx.ui.setWorkingVisible(true)

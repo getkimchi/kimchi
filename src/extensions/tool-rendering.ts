@@ -396,6 +396,25 @@ const OSC133_ZONE_SUFFIX = OSC133_ZONE_END + OSC133_ZONE_FINAL
 let WORKED_LINE_FG = "\x1b[38;2;140;140;140m"
 let currentAgentWorkStartMs: number | undefined
 let currentAssistantMessageStartMs: number | undefined
+const workedDurationHolds = new Set<symbol>()
+
+export function holdWorkedDuration(): (attachToCurrentMessage?: boolean) => void {
+	const hold = Symbol("worked-duration-hold")
+	workedDurationHolds.add(hold)
+	currentAgentWorkStartMs ??= Date.now()
+	return (attachToCurrentMessage = false) => {
+		if (!workedDurationHolds.delete(hold) || workedDurationHolds.size > 0) return
+		if (attachToCurrentMessage) return
+		currentAgentWorkStartMs = undefined
+		currentAssistantMessageStartMs = undefined
+	}
+}
+
+function resetWorkedDuration(): void {
+	workedDurationHolds.clear()
+	currentAgentWorkStartMs = undefined
+	currentAssistantMessageStartMs = undefined
+}
 
 function formatWorkedDuration(ms: number): string {
 	const safeMs = Math.max(0, Number.isFinite(ms) ? ms : 0)
@@ -2678,7 +2697,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 						? (message as PatchedAssistantMessage)[WORKED_START_KEY]
 						: currentAssistantMessageStartMs
 			const isFinalAssistantMessage = message.stopReason !== "toolUse"
-			if (started !== undefined && isFinalAssistantMessage) {
+			if (started !== undefined && isFinalAssistantMessage && workedDurationHolds.size === 0) {
 				const durationMs = Date.now() - started
 				// Store duration as metadata on the message object. The patched
 				// AssistantMessageComponent.render() reads it and appends the widget
@@ -2694,9 +2713,10 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		patchMessage(event, ctx.ui?.theme)
 	})
 	pi.on("agent_end", async () => {
-		currentAgentWorkStartMs = undefined
-		currentAssistantMessageStartMs = undefined
+		if (workedDurationHolds.size === 0) resetWorkedDuration()
 	})
+	pi.on("session_start", async () => resetWorkedDuration())
+	pi.on("session_shutdown", async () => resetWorkedDuration())
 	pi.on("context", async (event) => {
 		if (!Array.isArray(event.messages)) return
 		for (const msg of event.messages) {

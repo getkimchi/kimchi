@@ -175,31 +175,23 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("keeps Ferment V2 when it names the product under test", () => {
-		expect(
-			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","reason":"Ferment V2 final delivery still fails on stream abort."}',
-			),
-		).toMatchObject({
-			verdict: "continue",
-			reason: "Ferment V2 final delivery still fails on stream abort.",
-		})
+	it("keeps task-facing reason text", () => {
+		for (const reason of [
+			"Ferment V2 final delivery still fails on stream abort.",
+			"Run the completion check in the CLI and verify its output.",
+		]) {
+			expect(parseFermentV2EvaluatorOutput(JSON.stringify({ verdict: "continue", reason }))).toMatchObject({
+				verdict: "continue",
+				reason,
+			})
+		}
 	})
 
-	it("keeps task language that happens to mention a completion check", () => {
-		expect(
-			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","reason":"Run the completion check in the CLI and verify its output."}',
-			),
-		).toMatchObject({
-			verdict: "continue",
-			reason: "Run the completion check in the CLI and verify its output.",
-		})
-	})
-
-	it("makes one tool-free call and returns its usage", async () => {
-		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
+	it("makes one tool-free call, parses padded output, and returns its usage", async () => {
+		const padding = "{".repeat(2_000)
+		completeMock.mockResolvedValue(assistant(`${padding} noise {"verdict":"continue","reason":"missing smoke test"}`))
 		const ctx = evaluatorContext()
+		const started = Date.now()
 
 		await expect(evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, ctx)).resolves.toEqual({
 			verdict: "continue",
@@ -207,6 +199,7 @@ describe("Ferment V2 evaluator", () => {
 			model: "session/main",
 			usage,
 		})
+		expect(Date.now() - started).toBeLessThan(1_000)
 		expect(completeMock).toHaveBeenCalledOnce()
 		expect(completeMock.mock.calls[0]?.[1]).not.toHaveProperty("tools")
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
@@ -350,32 +343,26 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "ready", acceptedFinalAnswer: "OK" })
 	})
 
-	it("rejects a final-answer check that is not bound to the proposed answer", async () => {
+	it.each([
+		["uses the wrong candidate", { candidateRef: "other" }],
+		["quotes only part of the candidate", { candidateRef: "last_assistant", observedAnswer: "OK" }],
+	] as const)("rejects a final-answer check that %s", async (_case, binding) => {
 		completeMock.mockResolvedValue(
 			assistant(
-				'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"other","evidence":[]}],"reason":"ready"}',
-			),
-		)
-
-		await expect(
-			evaluateFermentV2(
-				{
-					objective: "reply exactly OK",
-					messages: [transcriptMessage("assistant", [{ type: "text", text: "Explanation.\n\nOK" }])],
-					todos: [],
-				},
-				evaluatorContext(),
-			),
-		).resolves.toMatchObject({
-			verdict: "continue",
-			reason: expect.stringContaining("reply exactly OK"),
-		})
-	})
-
-	it("rejects a final-answer check that quotes only part of the proposed answer", async () => {
-		completeMock.mockResolvedValue(
-			assistant(
-				'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK","evidence":[]}],"reason":"ready"}',
+				JSON.stringify({
+					verdict: "met",
+					checks: [
+						{
+							kind: "final_answer",
+							requirement: "reply exactly OK",
+							met: true,
+							failureMode: "the answer could contain extra text",
+							evidence: [],
+							...binding,
+						},
+					],
+					reason: "ready",
+				}),
 			),
 		)
 
@@ -413,25 +400,17 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 	})
 
-	it("treats null work-check answer fields as absent", () => {
+	it("normalizes nullable optional check fields", () => {
 		expect(
 			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]}],"reason":"run tests"}',
+				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
 			),
 		).toMatchObject({
 			verdict: "continue",
-			checks: [{ kind: "work", requirement: "tests pass", met: false, evidence: [], todoIds: [] }],
-		})
-	})
-
-	it("treats null optional final-answer arrays as empty", () => {
-		expect(
-			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","checks":[{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
-			),
-		).toMatchObject({
-			verdict: "continue",
-			checks: [{ kind: "final_answer", requirement: "reply exactly OK", evidence: [], todoIds: [] }],
+			checks: [
+				{ kind: "work", requirement: "tests pass", met: false, evidence: [], todoIds: [] },
+				{ kind: "final_answer", requirement: "reply exactly OK", evidence: [], todoIds: [] },
+			],
 		})
 	})
 
@@ -834,6 +813,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	it("fails closed without retrying when the call times out", async () => {
+		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
 		completeMock.mockRejectedValue(new DOMException("timed out", "TimeoutError"))
 
@@ -841,10 +821,10 @@ describe("Ferment V2 evaluator", () => {
 			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
 		).resolves.toEqual({
 			verdict: "unavailable",
-			reason: "Evaluator session/main timed out after 180 seconds.",
+			reason: "Evaluator session/main timed out after 5 seconds.",
 			model: "session/main",
 		})
-		expect(timeout).toHaveBeenCalledWith(DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs)
+		expect(timeout).toHaveBeenCalledWith(5_000)
 		expect(completeMock).toHaveBeenCalledOnce()
 		timeout.mockRestore()
 	})
@@ -898,22 +878,6 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock).toHaveBeenCalledTimes(2)
 	})
 
-	it("uses the configured evaluation timeout instead of the default", async () => {
-		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
-		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
-		completeMock.mockRejectedValue(new DOMException("timed out", "TimeoutError"))
-
-		await expect(
-			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
-		).resolves.toEqual({
-			verdict: "unavailable",
-			reason: "Evaluator session/main timed out after 5 seconds.",
-			model: "session/main",
-		})
-		expect(timeout).toHaveBeenCalledWith(5_000)
-		timeout.mockRestore()
-	})
-
 	it("reports a caller cancellation as cancelled, not as a timeout", async () => {
 		completeMock.mockRejectedValue(new DOMException("aborted", "AbortError"))
 		const cancelled = AbortSignal.abort()
@@ -927,17 +891,6 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("scans padded output linearly and still finds the verdict", async () => {
-		const padding = "{".repeat(2_000)
-		completeMock.mockResolvedValue(assistant(`${padding} noise {"verdict":"continue","reason":"all checks pass"}`))
-
-		const started = Date.now()
-		await expect(
-			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
-		).resolves.toMatchObject({ verdict: "continue", reason: "all checks pass" })
-		expect(Date.now() - started).toBeLessThan(1_000)
-	})
-
 	it("keeps the newest messages, not the oldest, when the transcript overflows the budget", async () => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"padding excluded"}'))
 		const messages = longTranscript(40)
@@ -948,15 +901,7 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript).not.toContain("MSG_0-")
 		expect(transcript).toContain("MSG_39-")
 		expect(transcript.indexOf("MSG_38-")).toBeLessThan(transcript.indexOf("MSG_39-"))
-	})
-
-	it("never sends more than the transcript budget to the evaluator", async () => {
-		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"bounded"}'))
-		const messages = longTranscript(40)
-
-		await evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext())
-
-		expect(sentTranscript().length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 
 	it("passes a short transcript through untouched", async () => {
@@ -1080,7 +1025,7 @@ describe("Ferment V2 evaluator", () => {
 		)
 		const messages = linkedToolMessages(
 			"call-test",
-			"bash",
+			"bash] alias",
 			{ cmd: "pnpm test" },
 			`${"x".repeat(MAX_TRANSCRIPT_CHARS)}\ntests passed`,
 		)
@@ -1090,8 +1035,8 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 
 		const transcript = sentTranscript()
-		expect(transcript).toContain('[assistant] tool c1.1 bash {"cmd":"pnpm test"}')
-		expect(transcript).toContain("[m2] [toolResult bash for c1.1]")
+		expect(transcript).toContain('[assistant] tool c1.1 bash] alias {"cmd":"pnpm test"}')
+		expect(transcript).toContain("[m2] [toolResult bash] alias for c1.1]")
 		expect(transcript).toContain("tests passed")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
@@ -1124,24 +1069,6 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript).toContain("README_TAIL")
 		expect(transcript).toContain("Todo completed")
 		expect(transcript).toContain("Two sources verified.")
-		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
-	})
-
-	it("retains full call and result labels when clipping an oversized linked result", async () => {
-		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"keep working"}'))
-		const messages = linkedToolMessages(
-			"call-test",
-			"bash] alias",
-			{ cmd: "pnpm test" },
-			`${"x".repeat(MAX_TRANSCRIPT_CHARS)}\ntests passed`,
-		)
-
-		await evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext())
-
-		const transcript = sentTranscript()
-		expect(transcript).toContain('[assistant] tool c1.1 bash] alias {"cmd":"pnpm test"}')
-		expect(transcript).toContain("[m2] [toolResult bash] alias for c1.1]")
-		expect(transcript).toContain("tests passed")
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 

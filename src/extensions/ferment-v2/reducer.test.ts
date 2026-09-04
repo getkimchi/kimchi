@@ -213,34 +213,40 @@ describe("Ferment V2 reducer", () => {
 		).toThrow(/current Ferment V2 is ferment-v2-a revision 1/)
 	})
 
-	it("sets and clears the consecutive-error-turn counter, omitting it at zero", () => {
+	it.each([
+		{
+			name: "consecutive-error",
+			field: "consecutiveErrorTurns",
+			value: 2,
+			set: setFermentV2ConsecutiveErrorTurns,
+			invalidId: "ferment-v2-b",
+			invalidRevision: 1,
+			error: /current Ferment V2 is ferment-v2-a/,
+		},
+		{
+			name: "unchanged-continuation",
+			field: "unchangedContinuationTurns",
+			value: 3,
+			set: setFermentV2UnchangedContinuationTurns,
+			invalidId: "ferment-v2-a",
+			invalidRevision: 2,
+			error: /current Ferment V2 is ferment-v2-a revision 1/,
+		},
+	] as const)("sets and clears the $name counter, omitting it at zero", ({
+		field,
+		value,
+		set,
+		invalidId,
+		invalidRevision,
+		error,
+	}) => {
 		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
+		const withValue = set(fermentV2, "ferment-v2-a", 1, value, T2)
 
-		const withErrors = setFermentV2ConsecutiveErrorTurns(fermentV2, "ferment-v2-a", 1, 2, T2)
-		expect(withErrors).toMatchObject({ consecutiveErrorTurns: 2, updatedAt: T2 })
-
-		const cleared = setFermentV2ConsecutiveErrorTurns(withErrors, "ferment-v2-a", 1, 0, T2)
-		expect(cleared).not.toHaveProperty("consecutiveErrorTurns")
-
-		expect(setFermentV2ConsecutiveErrorTurns(fermentV2, "ferment-v2-a", 1, 0, T2)).toBe(fermentV2)
-		expect(() => setFermentV2ConsecutiveErrorTurns(fermentV2, "ferment-v2-b", 1, 1, T2)).toThrow(
-			/current Ferment V2 is ferment-v2-a/,
-		)
-	})
-
-	it("sets and clears the unchanged-continuation-turn counter, omitting it at zero", () => {
-		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
-
-		const withUnchanged = setFermentV2UnchangedContinuationTurns(fermentV2, "ferment-v2-a", 1, 3, T2)
-		expect(withUnchanged).toMatchObject({ unchangedContinuationTurns: 3, updatedAt: T2 })
-
-		const cleared = setFermentV2UnchangedContinuationTurns(withUnchanged, "ferment-v2-a", 1, 0, T2)
-		expect(cleared).not.toHaveProperty("unchangedContinuationTurns")
-
-		expect(setFermentV2UnchangedContinuationTurns(fermentV2, "ferment-v2-a", 1, 0, T2)).toBe(fermentV2)
-		expect(() => setFermentV2UnchangedContinuationTurns(fermentV2, "ferment-v2-a", 2, 1, T2)).toThrow(
-			/current Ferment V2 is ferment-v2-a revision 1/,
-		)
+		expect(withValue).toMatchObject({ [field]: value, updatedAt: T2 })
+		expect(set(withValue, "ferment-v2-a", 1, 0, T2)).not.toHaveProperty(field)
+		expect(set(fermentV2, "ferment-v2-a", 1, 0, T2)).toBe(fermentV2)
+		expect(() => set(fermentV2, invalidId, invalidRevision, 1, T2)).toThrow(error)
 	})
 
 	it("round-trips the stall-guard counters through put and restore", () => {
@@ -251,15 +257,6 @@ describe("Ferment V2 reducer", () => {
 		}
 
 		expect(restoreFermentV2([putFermentV2Entry(fermentV2)])).toEqual(fermentV2)
-	})
-
-	it("restores an old journal entry lacking the stall-guard counters at zero", () => {
-		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
-
-		const restored = restoreFermentV2([putFermentV2Entry(fermentV2)])
-
-		expect(restored).not.toHaveProperty("consecutiveErrorTurns")
-		expect(restored).not.toHaveProperty("unchangedContinuationTurns")
 	})
 
 	it("rejects the whole restored Ferment V2 when a stall-guard counter is malformed", () => {

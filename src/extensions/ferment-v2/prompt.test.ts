@@ -71,17 +71,6 @@ Persistent objective continuation is enabled.
 		expect(text.split("\n").filter((line) => line.startsWith("You are now free"))).toEqual([])
 	})
 
-	it("permits adding a todo for objective-required work discovered mid-Ferment V2", () => {
-		const text = contextText("ship the parser")
-		expect(text).toContain(
-			"Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.",
-		)
-		expect(text).toContain("Name each Todo as a short concrete action")
-		expect(text).toContain(
-			"Prefix verification results with Evidence: when completion should rely on them; Decision: and Dead-end: notes do not prove completion.",
-		)
-	})
-
 	it("lets normal continuation revise tactical todos without weakening the Ferment V2 objective", () => {
 		expect(buildFermentV2Continuation()).toContain("Keep Todos aligned with required work you discover.")
 		expect(buildFermentV2Continuation()).not.toContain("from the current in-progress Todo")

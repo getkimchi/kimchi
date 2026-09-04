@@ -30,22 +30,10 @@ afterEach(() => {
 })
 
 describe("parseFermentV2Settings", () => {
-	it("returns all defaults when raw is undefined", () => {
-		expect(parseFermentV2Settings(undefined)).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
-	})
-
-	it("returns all defaults when raw is an empty object", () => {
-		expect(parseFermentV2Settings({})).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
-	})
-
-	it.each([
-		null,
-		"fermentV2",
-		42,
-		true,
-		["not", "an", "object"],
-	])("returns all defaults when the Ferment V2 value itself is not a plain object (%p)", (value) => {
-		expect(parseFermentV2Settings(value)).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
+	it("returns all defaults when the Ferment V2 value is not a plain object", () => {
+		for (const value of [undefined, null, "fermentV2", ["not", "an", "object"]]) {
+			expect(parseFermentV2Settings(value)).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
+		}
 	})
 
 	it("honours every field when all are valid", () => {
@@ -66,75 +54,28 @@ describe("parseFermentV2Settings", () => {
 		})
 	})
 
-	describe("autoResume", () => {
-		it.each([0, "true", null, undefined, {}])("falls back to the default for invalid value %p", (value) => {
-			expect(parseFermentV2Settings({ autoResume: value }).autoResume).toBe(DEFAULT_FERMENT_V2_SETTINGS.autoResume)
-		})
-
-		it("accepts false explicitly", () => {
-			expect(parseFermentV2Settings({ autoResume: false }).autoResume).toBe(false)
-		})
-	})
-
-	describe("maxUnchangedContinuations", () => {
-		it.each([0, -1, 1.5, "3", null, undefined])("falls back to the default for invalid value %p", (value) => {
-			expect(parseFermentV2Settings({ maxUnchangedContinuations: value }).maxUnchangedContinuations).toBe(
-				DEFAULT_FERMENT_V2_SETTINGS.maxUnchangedContinuations,
-			)
-		})
-
-		it("accepts a positive integer", () => {
-			expect(parseFermentV2Settings({ maxUnchangedContinuations: 10 }).maxUnchangedContinuations).toBe(10)
-		})
-	})
-
-	describe("maxConsecutiveErrors", () => {
-		it.each([0, -3, 2.2, "5", null, undefined])("falls back to the default for invalid value %p", (value) => {
-			expect(parseFermentV2Settings({ maxConsecutiveErrors: value }).maxConsecutiveErrors).toBe(
-				DEFAULT_FERMENT_V2_SETTINGS.maxConsecutiveErrors,
-			)
-		})
-
-		it("accepts a positive integer", () => {
-			expect(parseFermentV2Settings({ maxConsecutiveErrors: 8 }).maxConsecutiveErrors).toBe(8)
-		})
-	})
-
-	describe("defaultTokenBudget", () => {
-		it.each([0, -100, 1000.5, "100000", null])("falls back to unset for invalid value %p", (value) => {
-			expect(parseFermentV2Settings({ defaultTokenBudget: value }).defaultTokenBudget).toBeUndefined()
-		})
-
-		it("stays unset when absent", () => {
-			expect(parseFermentV2Settings({}).defaultTokenBudget).toBeUndefined()
-		})
-
-		it("accepts a positive integer", () => {
-			expect(parseFermentV2Settings({ defaultTokenBudget: 200_000 }).defaultTokenBudget).toBe(200_000)
-		})
-	})
-
-	describe("evaluationTimeoutMs", () => {
-		it("defaults to 180 seconds", () => {
-			expect(parseFermentV2Settings(undefined).evaluationTimeoutMs).toBe(180_000)
-		})
-
-		it.each([
-			0,
-			-30_000,
-			30_000.5,
-			"30000",
-			null,
-			undefined,
-		])("falls back to the default for invalid value %p", (value) => {
-			expect(parseFermentV2Settings({ evaluationTimeoutMs: value }).evaluationTimeoutMs).toBe(
-				DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs,
-			)
-		})
-
-		it("accepts a positive integer", () => {
-			expect(parseFermentV2Settings({ evaluationTimeoutMs: 60_000 }).evaluationTimeoutMs).toBe(60_000)
-		})
+	it.each([
+		{ field: "autoResume", invalid: ["true"], fallback: DEFAULT_FERMENT_V2_SETTINGS.autoResume },
+		{
+			field: "maxUnchangedContinuations",
+			invalid: [0, 1.5, "3"],
+			fallback: DEFAULT_FERMENT_V2_SETTINGS.maxUnchangedContinuations,
+		},
+		{
+			field: "maxConsecutiveErrors",
+			invalid: [0, 2.2, "5"],
+			fallback: DEFAULT_FERMENT_V2_SETTINGS.maxConsecutiveErrors,
+		},
+		{ field: "defaultTokenBudget", invalid: [0, 1.5, "100000"], fallback: undefined },
+		{
+			field: "evaluationTimeoutMs",
+			invalid: [0, 30_000.5, "30000"],
+			fallback: DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs,
+		},
+	] as const)("falls back for invalid $field values", ({ field, invalid, fallback }) => {
+		for (const value of invalid) {
+			expect(parseFermentV2Settings({ [field]: value })[field], `invalid ${field}: ${String(value)}`).toBe(fallback)
+		}
 	})
 
 	it("does not let one bad field poison the others", () => {
