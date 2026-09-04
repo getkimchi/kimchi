@@ -7,6 +7,7 @@ import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { IMAGE_EXT_TO_MIME } from "../utils/image-utils.js"
+import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
 import { isAutoModel } from "./router/constants.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
@@ -15,6 +16,39 @@ let currentCtx: ExtensionContext | null = null
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
 let imageCounter = 0
+// Tracks whether the current editor content was introduced by a paste (or
+// drag-and-drop, which most terminals deliver as a bracketed paste). Set when
+// we observe a bracketed-paste start sequence in the raw terminal input; the
+// input handler consumes and clears it. This keeps typed image-path mentions
+// from being auto-attached while still giving pasted/dropped paths paste parity.
+let lastInputWasPaste = false
+let inBracketedPaste = false
+let unsubscribeTerminalInput: (() => void) | null = null
+
+function teardownTerminalInput(): void {
+	if (unsubscribeTerminalInput) {
+		unsubscribeTerminalInput()
+		unsubscribeTerminalInput = null
+	}
+	lastInputWasPaste = false
+	inBracketedPaste = false
+}
+
+// Strip CSI escape sequences (arrow keys, Home/End, etc.) and carriage returns,
+// then check whether any printable content remains. This distinguishes real
+// typed characters from control keys like Enter (\r) and escape sequences,
+// so that pressing Enter to submit a pasted prompt doesn't clear the paste flag.
+// Built via String.fromCharCode to avoid a control-character literal in the regex.
+const _ESC = String.fromCharCode(0x1b)
+const _CSI_RE = new RegExp(`${_ESC}\\[[0-9;]*[A-Za-z]`, "g")
+function hasTypedContent(data: string): boolean {
+	return (
+		data
+			.replace(_CSI_RE, "")
+			.replace(/[\r\n\t]/g, "")
+			.trim().length > 0
+	)
+}
 
 const CLIPBOARD_POLL_INTERVAL_MS = 1000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
@@ -217,6 +251,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		teardownTerminalInput()
 		sessionGeneration++
 		isCheckingFinder = false
 		currentCtx = ctx
@@ -229,9 +264,33 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		updateIndicator()
 		// Linux clipboard detection shells out to wl-paste/xclip, so keep it on-demand.
 		// Polling wl-paste can create transient surfaces that steal focus on Wayland.
-		if (process.platform === "linux") return
-		checkClipboard()
-		clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
+		if (process.platform !== "linux") {
+			checkClipboard()
+			clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
+		}
+
+		// Watch raw terminal input for bracketed-paste sequences so we can tell
+		// pasted/dropped text apart from typed text. The editor strips these
+		// markers, but they still flow through the raw input listeners.
+		unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
+			if (inBracketedPaste) {
+				if (data.includes("\x1b[201~")) {
+					inBracketedPaste = false
+				}
+				return undefined
+			}
+			if (data.includes("\x1b[200~")) {
+				lastInputWasPaste = true
+				inBracketedPaste = !data.includes("\x1b[201~")
+			} else if (hasTypedContent(data)) {
+				// Real keystrokes (letters, digits, punctuation) clear the paste flag
+				// so paste-then-type doesn't wrongly attach image paths. Control keys
+				// like Enter (\r) and escape sequences (arrow keys) are ignored — they
+				// don't represent typed content and must not clobber a just-set flag.
+				lastInputWasPaste = false
+			}
+			return undefined
+		})
 	})
 
 	pi.on("session_shutdown", () => {
@@ -239,6 +298,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		teardownTerminalInput()
 		// Increment the generation so any in-flight Finder file-type probe
 		// from the dying session is treated as stale when its callback lands.
 		sessionGeneration++
@@ -247,11 +307,27 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 	pi.on("input", (event) => {
 		const incoming = event.images ?? []
-		const totalImages = incoming.length + pendingImages.length
+		// Typed image paths get paste parity only for pasted or dropped text.
+		// We detect paste/drop by watching for bracketed-paste sequences in the
+		// raw terminal input; this covers Ctrl+V and most drag-and-drop cases.
+		// Vision-less models keep the text untouched so the read tool remains the
+		// fallback (and errors loudly there). Path images are appended after
+		// pasted/attached ones so existing marker numbering is unchanged.
+		const shouldAttachPaths = lastInputWasPaste
+		lastInputWasPaste = false
+		const fromPaths: ImageContent[] =
+			shouldAttachPaths && modelSupportsImages(currentCtx?.model)
+				? extractTypedImagePaths(event.text, currentCtx?.cwd ?? process.cwd()).map((match) => ({
+						type: "image" as const,
+						data: Buffer.from(match.image.bytes).toString("base64"),
+						mimeType: match.image.mimeType,
+					}))
+				: []
+		const totalImages = incoming.length + pendingImages.length + fromPaths.length
 
 		if (totalImages === 0) return
 
-		const images = [...incoming, ...pendingImages]
+		const images = [...incoming, ...pendingImages, ...fromPaths]
 		pendingImages = []
 		updateIndicator()
 
