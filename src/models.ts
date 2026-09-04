@@ -1,8 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import type { ThinkingLevel } from "./extensions/agents/personas/types.js"
+import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
 import { getVersion } from "./utils.js"
+
+// Upstream catalog keyed by exact model id, used to inherit anthropic-messages
+// compat flags (adaptive thinking, strict tools) and effort-level maps.
+const ANTHROPIC_MODELS_BY_ID = ANTHROPIC_MODELS as Record<string, Model<"anthropic-messages">>
 
 const KIMCHI_API = "https://llm.kimchi.dev"
 const FETCH_TIMEOUT_MS = 20000
@@ -22,6 +27,10 @@ function modelsMetadataApi(endpoint?: string): string {
 
 export function chatCompletionsApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
+}
+
+export function anthropicMessagesApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/anthropic`
 }
 
 // HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
@@ -172,13 +181,9 @@ export interface PiModelConfig {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
-	compat?: {
-		supportsReasoningEffort?: boolean
-		cacheControlFormat?: "anthropic"
-		supportsUsageInStreaming?: boolean
-	}
+	compat?: OpenAICompletionsCompat | AnthropicMessagesCompat
 	/** Maps thinking levels to provider-specific values. `off: "none"` sends `reasoning_effort: "none"`. */
-	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>
+	thinkingLevelMap?: ThinkingLevelMap
 	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
@@ -209,22 +214,24 @@ function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
-	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
-	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
+	// Anthropic models are routed through the native `/v1/messages` API. Inherit
+	// the upstream catalog's compat flags (adaptive thinking, strict tools) and
+	// thinking-level map so Pi picks the correct thinking mode and effort names
+	// per model. Models missing from the catalog get no compat, as before.
 	//
-	// Claude models routed through openai-completions need:
-	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
-	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
+	// claude-* models from non-anthropic providers still use openai-completions,
+	// so they keep the openai-completions compat flags.
 	//
 	// ai-enabler models don't support chat_template_kwargs, so we rely on the
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
-	const compat =
-		m.provider === "anthropic" || m.slug.startsWith("claude-")
+	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
+	const compat = upstream
+		? upstream.compat
+		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
-	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
-		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
+	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
@@ -270,10 +277,11 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 
 	for (const [upstreamProvider, group] of byProvider) {
 		const subProviderId = `kimchi-dev/${upstreamProvider}`
+		const isAnthropic = upstreamProvider === "anthropic"
 		providers[subProviderId] = {
-			baseUrl: chatCompletionsApi(endpoint),
+			baseUrl: isAnthropic ? anthropicMessagesApi(endpoint) : chatCompletionsApi(endpoint),
 			apiKey: "$KIMCHI_API_KEY",
-			api: "openai-completions",
+			api: isAnthropic ? "anthropic-messages" : "openai-completions",
 			authHeader: true,
 			headers: providerHeaders(upstreamProvider),
 			models: group.map(metadataToModel),

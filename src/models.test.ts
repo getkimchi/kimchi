@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	injectAutoModel,
@@ -104,7 +105,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0].input).toEqual(["text"])
 	})
 
-	it("sets Anthropic compat flags for anthropic models", async () => {
+	it("routes Anthropic models through the native messages API", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [SONNET_46] }),
@@ -114,13 +115,39 @@ describe("updateModelsConfig", () => {
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev/anthropic"]).toBeDefined()
-		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
-		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
-		expect(config.providers["kimchi-dev/anthropic"].models[0].compat).toEqual({
-			supportsReasoningEffort: false,
-			cacheControlFormat: "anthropic",
-			supportsUsageInStreaming: true,
-		})
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("anthropic-messages")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/anthropic")
+
+		const model = config.providers["kimchi-dev/anthropic"].models[0]
+		const upstream = ANTHROPIC_MODELS["claude-sonnet-4-6"]
+		expect(model.compat).toEqual(upstream.compat)
+		expect(model.thinkingLevelMap).toEqual(upstream.thinkingLevelMap)
+	})
+
+	it("leaves compat unset for anthropic models not in the upstream catalog", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{
+						slug: "claude-unknown-9",
+						display_name: "Claude Unknown 9",
+						provider: "anthropic",
+						reasoning: true,
+						input_modalities: ["text", "image"],
+						is_serverless: false,
+						limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+					},
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const model = config.providers["kimchi-dev/anthropic"].models[0]
+		expect(model).not.toHaveProperty("compat")
+		expect(model).not.toHaveProperty("thinkingLevelMap")
 	})
 
 	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
@@ -168,7 +195,7 @@ describe("updateModelsConfig", () => {
 		expect(getSupportedThinkingLevels(model)).toContain("max")
 	})
 
-	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {
+	it("routes claude-* models from non-anthropic providers through openai-completions with compat flags", async () => {
 		const CLAUDE_ON_AZURE: unknown = {
 			slug: "claude-sonnet-4-6",
 			display_name: "",
@@ -187,6 +214,8 @@ describe("updateModelsConfig", () => {
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev/azure_ai"]).toBeDefined()
+		expect(config.providers["kimchi-dev/azure_ai"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/azure_ai"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
 		expect(config.providers["kimchi-dev/azure_ai"].models[0].compat).toEqual({
 			supportsReasoningEffort: false,
 			cacheControlFormat: "anthropic",
@@ -213,9 +242,10 @@ describe("updateModelsConfig", () => {
 		const anthropicIds = config.providers["kimchi-dev/anthropic"].models.map((m: { id: string }) => m.id)
 		expect(anthropicIds).toEqual(["claude-opus-4-6", "claude-sonnet-4-6"])
 
-		// All providers use openai-completions
+		// kimchi-dev stays on openai-completions; anthropic moves to messages
 		expect(config.providers["kimchi-dev"].api).toBe("openai-completions")
-		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("anthropic-messages")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/anthropic")
 	})
 
 	it("uses correct URL, Authorization header, and timeout", async () => {
