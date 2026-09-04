@@ -20,8 +20,17 @@ const TODO_SCOPE_SPECIFICITY: Record<TodoScope["kind"], number> = {
 
 function todoToPlanEntry(todo: TodoItem): PlanEntry {
 	if (todo.status === "blocked") {
-		const note = todo.note ? ` — ${todo.note}` : ""
-		return { content: `[blocked] ${todo.content}${note}`, priority: "medium", status: "pending" }
+		return {
+			content: todo.content,
+			priority: "medium",
+			status: "pending",
+			_meta: {
+				"kimchi.dev": {
+					todoStatus: "blocked",
+					...(todo.note ? { note: todo.note } : {}),
+				},
+			},
+		}
 	}
 	return {
 		content: todo.status === "in_progress" ? (todo.activeForm ?? todo.content) : todo.content,

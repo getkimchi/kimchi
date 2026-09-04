@@ -4,7 +4,7 @@
 // This test drives create_todos / update_todos / clear_todos tool calls via a
 // scripted model and asserts the plan snapshots the client receives: full-
 // replacement semantics, the mapped entry lifecycle (incl. activeForm content
-// and the [blocked] marker), scope metadata under Plan._meta, empty entries
+// and blocked Todo metadata), scope metadata under Plan._meta, empty entries
 // on clear, and per-session isolation of the notification stream.
 
 import type { ClientCapabilities } from "@agentclientprotocol/sdk"
@@ -32,6 +32,7 @@ function todoToolCall(name: string, args: Record<string, unknown>) {
 }
 
 interface PlanEntryLike {
+	_meta?: unknown
 	content: string
 	status: string
 }
@@ -89,7 +90,12 @@ describe("ACP integration — plan updates from todo writes", () => {
 		expect(afterCreate).toHaveLength(1)
 		expect(afterCreate[0].entries).toEqual([
 			{ content: "wiring emission", priority: "medium", status: "in_progress" },
-			{ content: "[blocked] deploy — waiting on ops", priority: "medium", status: "pending" },
+			{
+				content: "deploy",
+				priority: "medium",
+				status: "pending",
+				_meta: { "kimchi.dev": { todoStatus: "blocked", note: "waiting on ops" } },
+			},
 		])
 		// Scope metadata rides Plan._meta; spec-compliant clients ignore it.
 		expect(afterCreate[0]._meta).toEqual({ "kimchi.dev": { scope: { kind: "global" } } })

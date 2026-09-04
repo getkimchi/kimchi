@@ -20,12 +20,17 @@ describe("ACP plan mapping", () => {
 		expect(buildPlanEntries(todos)).toEqual([
 			{ content: "later", priority: "medium", status: "pending" },
 			{ content: "writing tests", priority: "medium", status: "in_progress" },
-			{ content: "[blocked] deploy — waiting on ops", priority: "medium", status: "pending" },
+			{
+				content: "deploy",
+				priority: "medium",
+				status: "pending",
+				_meta: { "kimchi.dev": { todoStatus: "blocked", note: "waiting on ops" } },
+			},
 			{ content: "done", priority: "medium", status: "completed" },
 		])
 	})
 
-	it("falls back to content for active and blocked Todos without optional text", () => {
+	it("falls back to content and omits an absent blocked note", () => {
 		expect(
 			buildPlanEntries([
 				{ id: 1, content: "active", status: "in_progress" },
@@ -33,7 +38,12 @@ describe("ACP plan mapping", () => {
 			]),
 		).toEqual([
 			{ content: "active", priority: "medium", status: "in_progress" },
-			{ content: "[blocked] blocked", priority: "medium", status: "pending" },
+			{
+				content: "blocked",
+				priority: "medium",
+				status: "pending",
+				_meta: { "kimchi.dev": { todoStatus: "blocked" } },
+			},
 		])
 	})
 
