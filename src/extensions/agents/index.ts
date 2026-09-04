@@ -96,6 +96,7 @@ import {
 	formatMs,
 	formatTokens,
 	formatTurns,
+	getAgentSpinnerFrames,
 	getDisplayName,
 	SPINNER,
 	type Theme,
@@ -157,6 +158,7 @@ interface GetSubagentResultDetails {
 	agentId: string
 	displayName: string
 	description: string
+	subagentType?: string
 	status: string
 	visibility?: AgentVisibility
 	abortReason?: AgentAbortReason
@@ -180,11 +182,13 @@ function formatAgentBodyForDisplay(raw: string): string {
 	return cleaned.replace(/\n{3,}/g, "\n\n").trimEnd()
 }
 
-function getSubagentResultIcon(status: string, theme: Theme): string {
+function getSubagentResultIcon(status: string, theme: Theme, subagentType?: string): string {
 	switch (status) {
 		case "running":
-		case "queued":
-			return theme.fg("accent", SPINNER[0])
+		case "queued": {
+			const frames = subagentType ? getAgentSpinnerFrames(subagentType) : SPINNER
+			return theme.fg("accent", frames[0])
+		}
 		case "error":
 		case "aborted":
 			return theme.fg("error", "✗")
@@ -1408,7 +1412,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}
 
 				if (isPartial || details.status === "running") {
-					const frame = SPINNER[details.spinnerFrame ?? 0]
+					const frames = getAgentSpinnerFrames(details.subagentType)
+					const frame = frames[(details.spinnerFrame ?? 0) % frames.length]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
 					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+b to run in background)")}`
@@ -1709,7 +1714,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						durationMs: Date.now() - startedAt,
 						status: "running",
 						activity: describeActivity(fgState.activeTools, fgState.responseText),
-						spinnerFrame: spinnerFrame % SPINNER.length,
+						spinnerFrame: spinnerFrame % getAgentSpinnerFrames(subagentType).length,
 					}
 					onUpdate?.({
 						content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
@@ -2012,7 +2017,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)
 				}
 
-				const icon = getSubagentResultIcon(details.status, theme)
+				const icon = getSubagentResultIcon(details.status, theme, details.subagentType)
 
 				const headerName = theme.fg("toolTitle", theme.bold("Get Agent Result"))
 				const headerDesc = details.description ? `  ${theme.fg("muted", details.description)}` : ""
@@ -2107,6 +2112,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					agentId: record.id,
 					displayName,
 					description: record.description,
+					subagentType: record.type,
 					status: record.status,
 					visibility: record.visibility,
 					abortReason: record.abortReason,

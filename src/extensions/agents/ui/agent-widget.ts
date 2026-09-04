@@ -13,6 +13,24 @@ const MAX_WIDGET_LINES = 12
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+/**
+ * Cloud Agent animation — a cloud glyph (☁) with a loading arc (◜◝◞◟)
+ * tracing around it, completing in a full circle (◯) before restarting.
+ * Used instead of SPINNER for the Remote-Runner (Cloud Agent) subagent type.
+ */
+export const CLOUD = ["☁◜", "☁◝", "☁◞", "☁◟", "☁◯", "☁◯"]
+
+/** Type identifier for the Cloud Agent (remote sandbox runner via ACP). */
+const CLOUD_AGENT_TYPE = "Remote-Runner"
+
+/**
+ * Returns the animation frames for a given agent type.
+ * Cloud Agent (Remote-Runner) gets the cloud animation; everything else gets the braille spinner.
+ */
+export function getAgentSpinnerFrames(type: string): string[] {
+	return type === CLOUD_AGENT_TYPE ? CLOUD : SPINNER
+}
+
 export const ERROR_STATUSES = new Set(["error", "aborted", "steered", "stopped"])
 
 const TOOL_DISPLAY: Record<string, string> = {
@@ -263,7 +281,6 @@ export class AgentWidget {
 		const truncate = (line: string) => truncateToWidth(line, width)
 		const headingColor = hasActive ? "accent" : "dim"
 		const headingIcon = hasActive ? "●" : "○"
-		const frame = SPINNER[this.widgetFrame % SPINNER.length]
 
 		const finishedLines: string[] = []
 		for (const a of finished) {
@@ -276,6 +293,8 @@ export class AgentWidget {
 		for (const a of running) {
 			const name = getDisplayName(a.type)
 			const elapsed = formatMs(Date.now() - a.startedAt)
+			const frames = getAgentSpinnerFrames(a.type)
+			const frame = frames[this.widgetFrame % frames.length]
 
 			const bg = this.agentActivity.get(a.id)
 			const toolUses = bg?.toolUses ?? a.toolUses
