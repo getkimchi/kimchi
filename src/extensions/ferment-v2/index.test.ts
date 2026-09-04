@@ -11,7 +11,7 @@ import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "../todos/command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
-import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../todos/types.js"
 import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
@@ -380,7 +380,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.sendMessage.mock.lastCall?.[0].content).toContain("visible answer text")
 	})
 
-	it("keeps progress visible when settled Todos precede an ordinary tool call", async () => {
+	it("keeps progress visible when a completed Todo is reopened", async () => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
@@ -390,9 +390,9 @@ describe("Ferment V2 extension", () => {
 				{ type: "text", text: "Reopening tactical work." },
 				{
 					type: "toolCall",
-					id: "add-follow-up",
-					name: "add_todo",
-					arguments: { content: "Verify the remaining concern", status: "in_progress" },
+					id: "reopen-todo",
+					name: MARK_TODO_TOOL_NAME,
+					arguments: { id: 1, status: "in_progress" },
 				},
 			],
 			stopReason: "toolUse",
@@ -458,6 +458,89 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 
 		expect(evaluateFermentV2Mock).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		{
+			toolName: MARK_TODO_TOOL_NAME,
+			arguments: { id: 1, status: "completed" },
+		},
+		{
+			toolName: UPDATE_TODOS_TOOL_NAME,
+			arguments: { todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }] },
+		},
+	])("validates before exposing prose emitted with the $toolName write that completes the list", async (todoCall) => {
+		await harness.command("ship feature A")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
+		const candidate = {
+			role: "assistant" as const,
+			content: [
+				{ type: "text" as const, text: "Accepted answer." },
+				{
+					type: "toolCall" as const,
+					id: "complete-final-todo",
+					name: todoCall.toolName,
+					arguments: todoCall.arguments,
+				},
+			],
+			stopReason: "toolUse" as const,
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+
+		await harness.fire("message_start", { type: "message_start", message: candidate })
+		const candidateEnded = (await harness.fire("message_end", {
+			type: "message_end",
+			message: candidate,
+		})) as { message: typeof candidate }
+		expect(candidateEnded.message.content).toEqual([candidate.content[1]])
+		harness.setBranch([...harness.branch, messageEntry(candidateEnded.message, null)])
+
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "completed" }], {
+			toolName: todoCall.toolName,
+		})
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		const claim = {
+			role: "assistant" as const,
+			content: [
+				{
+					type: "toolCall" as const,
+					id: "claim-complete",
+					name: UPDATE_FERMENT_V2_TOOL_NAME,
+					arguments: { status: "complete", completion_confidence: "tested" },
+				},
+			],
+			stopReason: "toolUse" as const,
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+		await harness.fire("message_start", { type: "message_start", message: claim })
+		const claimEnded = (await harness.fire("message_end", { type: "message_end", message: claim })) as {
+			message: typeof claim
+		}
+		harness.setBranch([...harness.branch, messageEntry(claimEnded.message, null)])
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
+			status: "complete",
+			completion_confidence: "tested",
+		})
+		evaluateFermentV2Mock.mockResolvedValueOnce({
+			verdict: "met",
+			reason: "All requirements are evidenced.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			acceptedFinalAnswer: "Accepted answer.",
+		})
+
+		await harness.fire("agent_end", { type: "agent_end", messages: [claimEnded.message] })
+		await harness.fire("agent_settled", { type: "agent_settled" })
+
+		expect(JSON.stringify(evaluateFermentV2Mock.mock.calls[0]?.[0].messages)).toContain("Accepted answer.")
+		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
+			details: expect.objectContaining({ source: "evaluation_accepted" }),
+		})
+		await finishFinalAnswerTurn(harness, "Accepted answer.")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "complete" })
 	})
 
 	it("does not evaluate a stale hidden candidate after a later active assistant message", async () => {

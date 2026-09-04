@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import type { ToolCall } from "@earendil-works/pi-ai"
 import type {
 	AgentEndEvent,
 	ExtensionAPI,
@@ -15,10 +16,10 @@ import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.j
 import { holdPromptSummary } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js"
-import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
+import { getTodoScopeKey, normalizeTodoScope, validateExplicitTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
-import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
@@ -125,6 +126,55 @@ const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
+}
+
+function completesCurrentTodoList(
+	message: CompletionCandidate["message"],
+	todoState: FermentV2TodoState | undefined,
+	currentScopeKey: string,
+): boolean {
+	if (!todoState?.total) return false
+	const calls: ToolCall[] = []
+	for (const block of message.content) {
+		if (block.type === "toolCall" && isTodoWriteToolName(block.name)) calls.push(block)
+	}
+	if (!calls.length) return false
+	const argumentsFor = (call: (typeof calls)[number]): Record<string, unknown> | undefined =>
+		isRecord(call.arguments) ? call.arguments : undefined
+	const targetsCurrentScope = (args: Record<string, unknown>): boolean => {
+		const explicit = validateExplicitTodoScope(args.scope)
+		if (explicit.error) return false
+		return getTodoScopeKey(explicit.scope ?? resolveTodoScope()) === currentScopeKey
+	}
+	if (calls.every((call) => call.name === MARK_TODO_TOOL_NAME)) {
+		const completedIds = new Set<number>()
+		const todoIds = new Set(todoState.todos.map((todo) => todo.id))
+		for (const call of calls) {
+			const args = argumentsFor(call)
+			if (
+				!args ||
+				!targetsCurrentScope(args) ||
+				typeof args.id !== "number" ||
+				!todoIds.has(args.id) ||
+				args.status !== "completed"
+			)
+				return false
+			completedIds.add(args.id)
+		}
+		return todoState.todos.every((todo) => todo.status === "completed" || completedIds.has(todo.id))
+	}
+	if (calls.length !== 1 || calls[0].name !== UPDATE_TODOS_TOOL_NAME) return false
+	const args = argumentsFor(calls[0])
+	return Boolean(
+		args &&
+			targetsCurrentScope(args) &&
+			Array.isArray(args.todos) &&
+			args.todos.length > 0 &&
+			args.todos.every(
+				(todo) =>
+					isRecord(todo) && typeof todo.content === "string" && todo.content.trim() && todo.status === "completed",
+			),
+	)
 }
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
@@ -1299,7 +1349,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	pi.on("message_start", (event, ctx) => {
 		bindSession(ctx)
 		if (event.message.role !== "assistant") return
-		completionCandidate = undefined
 		const fermentV2 = currentFermentV2
 		const budgetLimitedTurn = matchesFermentV2(pendingBudgetLimitedOutput, fermentV2, currentSessionId)
 			? pendingBudgetLimitedOutput
@@ -1380,16 +1429,31 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			block.type === "text" ? { ...block, text: bufferedAssistantText?.get(index) ?? block.text } : block,
 		)
 		const hasText = restoredContent.some((block) => block.type === "text" && block.text.trim().length > 0)
+		const completesTodos =
+			hasText &&
+			Boolean(todoState) &&
+			completesCurrentTodoList(
+				{ ...event.message, content: restoredContent },
+				todoState,
+				getTodoScopeKey(resolveTodoScope()),
+			)
 		const isCandidate =
-			currentTurn?.status === "active" && (claimedComplete || (!hasToolCalls && hasText && Boolean(todoState?.total)))
-		const withholdCandidate = claimedComplete || todoState?.settledStatus === "complete"
+			currentTurn?.status === "active" &&
+			(claimedComplete || completesTodos || (!hasToolCalls && hasText && Boolean(todoState?.total)))
+		const withholdCandidate = claimedComplete || completesTodos || todoState?.settledStatus === "complete"
 		if (isCandidate && currentTurn && currentSessionId) {
-			completionCandidate = {
-				sessionId: currentSessionId,
-				fermentV2Id: currentTurn.id,
-				revision: currentTurn.revision,
-				message: { ...event.message, content: restoredContent },
-				withheld: withholdCandidate,
+			const retainedCandidate = matchesFermentV2(completionCandidate, currentTurn, currentSessionId)
+			if (hasText || !retainedCandidate) {
+				completionCandidate = {
+					sessionId: currentSessionId,
+					fermentV2Id: currentTurn.id,
+					revision: currentTurn.revision,
+					message: {
+						...event.message,
+						content: completesTodos ? restoredContent.filter((block) => block.type !== "toolCall") : restoredContent,
+					},
+					withheld: withholdCandidate,
+				}
 			}
 			if (ctx.hasUI) {
 				releaseEvaluationWorkingIndicator ??= holdWorkingIndicator(ctx)
@@ -1517,7 +1581,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		bufferedAssistantText = undefined
 		streamedAssistantTextIndices = undefined
 		assistantMessageTurn = undefined
-		completionCandidate = undefined
 		failedTurn = undefined
 		if (pendingContinuation?.sessionId === ctx.sessionManager.getSessionId()) {
 			pendingContinuation = undefined

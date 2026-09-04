@@ -6,6 +6,7 @@ import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestrat
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
+import { latestFinalAnswerDraft } from "./final-answer.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { isRecord } from "./reducer.js"
 import { getFermentV2Settings } from "./settings.js"
@@ -331,7 +332,7 @@ export async function evaluateFermentV2(
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }
-			const proposedAnswer = latestFinalAnswerCandidate(input.messages)
+			const proposedAnswer = latestFinalAnswerDraft(input.messages)
 			const unsupportedReason =
 				parsed.verdict === "met"
 					? unsupportedMetReason(parsed.checks, evidenceIds, input.todos, proposedAnswer)
@@ -419,19 +420,6 @@ function unsupportedMetReason(
 		const unknownTodoId = check.todoIds.find((todoId) => !todoIds.has(todoId))
 		if (unknownTodoId !== undefined)
 			return `Requirement ${requirement} cites Todo ${unknownTodoId}, which is not in the current list; reconcile the requirement with the current Todos.`
-	}
-	return undefined
-}
-
-function latestFinalAnswerCandidate(messages: FermentV2EvaluationInput["messages"]): string | undefined {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index]
-		if (message?.role !== "assistant" || message.content.some((block) => block.type === "toolCall")) continue
-		const text = message.content
-			.filter((block) => block.type === "text")
-			.map((block) => block.text)
-			.join("")
-		if (text) return text
 	}
 	return undefined
 }

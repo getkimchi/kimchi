@@ -334,7 +334,7 @@ describe("Ferment V2 evaluator", () => {
 					objective: "run tests, then reply exactly OK",
 					messages: [
 						...linkedToolMessages("call-test", "bash", { cmd: "pnpm test" }, "tests passed"),
-						transcriptMessage("assistant", [{ type: "text", text: "OK" }]),
+						transcriptMessage("assistant", [{ type: "text", text: "\nOK\n" }]),
 					],
 					todos: [],
 				},

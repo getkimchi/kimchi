@@ -109,7 +109,6 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			await waitForText(terminal, "Implement feature A", { timeoutMs: 5_000 })
 			await waitForText(terminal, "The plan is ready; implementation still remains.", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
-			await waitForText(terminal, "Working toward the session objective.", { timeoutMs: 5_000 })
 
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			terminal.submit("/ferment-v2")
@@ -207,7 +206,6 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			terminal.submit("/compact")
 			await waitForText(terminal, "Work is underway before manual compaction.", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
-			await waitForText(terminal, "Resumed after manual compaction.", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 
 			terminal.submit("/ferment-v2")
@@ -507,7 +505,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
-					stream: ["Verified the requested result."],
+					stream: [firstHiddenCandidate],
 					toolCalls: [
 						{
 							id: "finish-gated-completion-todo",
@@ -523,7 +521,6 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
-					stream: [firstHiddenCandidate],
 					toolCalls: [
 						{
 							id: "claim-gated-completion",
@@ -550,7 +547,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
-					stream: ["Verified the remaining concern."],
+					stream: [secondHiddenCandidate],
 					toolCalls: [
 						{
 							id: "finish-remaining-gated-todo",
@@ -566,7 +563,6 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
-					stream: [secondHiddenCandidate],
 					toolCalls: [
 						{
 							id: "reclaim-gated-completion",
