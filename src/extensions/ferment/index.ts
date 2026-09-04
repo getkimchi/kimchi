@@ -279,7 +279,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				outcome,
 				fermentId,
 			}
-			appendPlanReviewResolvedEntry(reviewCtx.ctx, resolved)
+			appendPlanReviewResolvedEntry(pi, resolved)
 			emitPlanReviewResolved(pi, resolved)
 		}
 

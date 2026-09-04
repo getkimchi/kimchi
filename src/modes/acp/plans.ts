@@ -30,6 +30,7 @@ import type { EventBus, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
 import { getPendingScope, type PendingScope } from "../../extensions/ferment/scoping.js"
 import { getActive } from "../../extensions/ferment/state.js"
+import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
 import { getTodoScopeKey } from "../../extensions/todos/scope.js"
 import { getWriteTodosDetails } from "../../extensions/todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodoState, getTodosForScope, subscribeTodoStore } from "../../extensions/todos/store.js"
@@ -164,19 +165,42 @@ function isResolvedEntry(entry: SessionEntry): boolean {
 	return entry.type === "custom" && entry.customType === PLAN_REVIEW_RESOLVED_CUSTOM_TYPE
 }
 
+function isAcceptedResolution(entry: SessionEntry): boolean {
+	if (entry.type !== "custom" || entry.customType !== PLAN_REVIEW_RESOLVED_CUSTOM_TYPE) return false
+	const data = entry.data
+	return typeof data === "object" && data !== null && "outcome" in data && data.outcome === "accepted"
+}
+
+function isPlanModeEntry(entry: SessionEntry): boolean {
+	if (entry.type !== "custom" || entry.customType !== PERMISSION_MODE_SESSION_ENTRY_TYPE) return false
+	const data = entry.data
+	return typeof data === "object" && data !== null && "mode" in data && data.mode === "plan"
+}
+
 function isGlobalTodoEntry(entry: SessionEntry): boolean {
 	const details = getWriteTodosDetails(entry)
 	return details?.scope.kind === GLOBAL_TODO_SCOPE.kind
 }
 
-function hasGlobalTodoAfterLatestReviewResolution(entries: readonly SessionEntry[]): boolean {
+function hasGlobalTodoAfterLatestReviewResolution(
+	entries: readonly SessionEntry[],
+	allowWithoutResolution: boolean,
+): boolean {
 	let latestResolvedIndex = -1
+	let latestResolutionAccepted = false
+	let latestPlanModeIndex = -1
 	let latestGlobalTodoIndex = -1
 	entries.forEach((entry, index) => {
-		if (isResolvedEntry(entry)) latestResolvedIndex = index
+		if (isResolvedEntry(entry)) {
+			latestResolvedIndex = index
+			latestResolutionAccepted = isAcceptedResolution(entry)
+		}
+		if (isPlanModeEntry(entry)) latestPlanModeIndex = index
 		if (isGlobalTodoEntry(entry)) latestGlobalTodoIndex = index
 	})
-	return latestResolvedIndex < 0 || latestGlobalTodoIndex > latestResolvedIndex
+	if (latestResolvedIndex < 0) return allowWithoutResolution && latestGlobalTodoIndex >= 0
+	if (!allowWithoutResolution && (!latestResolutionAccepted || latestResolvedIndex < latestPlanModeIndex)) return false
+	return latestGlobalTodoIndex > latestResolvedIndex
 }
 
 /** Flatten ferment-scoped todos into plan entries, ordered by phase then
@@ -383,9 +407,11 @@ export class AcpPlanTracker {
 				return
 			}
 		}
-		// No ferment — resume from global-scope todos only when they are visible
-		// for this permission mode and are newer than any review-resolution marker.
-		if (!this.shouldShowGlobalTodos()) return
+		// No ferment — resume from global-scope todos only when they are newer
+		// than any review-resolution marker. Do not gate resume on the live
+		// permission mode: loadSession may initially resolve to plan mode from
+		// CLI/config even though the persisted marker proves execution already
+		// crossed the approval boundary.
 		if (!this.hasRestorableGlobalTodos()) return
 		const entries = globalTodosToPlanEntries(getTodoState(this.options.sessionId))
 		if (entries.length === 0) return
@@ -400,7 +426,8 @@ export class AcpPlanTracker {
 
 	private hasRestorableGlobalTodos(): boolean {
 		const entries = this.options.getSessionEntries?.()
-		return entries ? hasGlobalTodoAfterLatestReviewResolution(entries) : true
+		const allowWithoutResolution = this.shouldShowGlobalTodos()
+		return entries ? hasGlobalTodoAfterLatestReviewResolution(entries, allowWithoutResolution) : allowWithoutResolution
 	}
 
 	private onPlanReviewRequest(raw: unknown): void {

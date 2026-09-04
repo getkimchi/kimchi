@@ -113,11 +113,8 @@ export function emitPlanReviewResolved(pi: ExtensionAPI, payload: PlanReviewReso
 	pi.events.emit(PLAN_REVIEW_RESOLVED_CHANNEL, payload)
 }
 
-export function appendPlanReviewResolvedEntry(ctx: ExtensionContext, payload: PlanReviewResolvedPayload): void {
-	const sessionManager = ctx.sessionManager as unknown as {
-		appendCustomEntry?: (customType: string, data?: unknown) => unknown
-	}
-	sessionManager.appendCustomEntry?.(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
+export function appendPlanReviewResolvedEntry(pi: ExtensionAPI, payload: PlanReviewResolvedPayload): void {
+	pi.appendEntry(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
 		sessionId: payload.sessionId,
 		source: payload.planReviewSource,
 		decision: payload.decision,

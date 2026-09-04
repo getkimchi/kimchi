@@ -841,7 +841,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				outcome,
 				fermentId,
 			}
-			appendPlanReviewResolvedEntry(ctx, resolved)
+			appendPlanReviewResolvedEntry(pi, resolved)
 			emitPlanReviewResolved(pi, resolved)
 		}
 

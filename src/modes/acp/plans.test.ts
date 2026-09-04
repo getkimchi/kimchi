@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
 import { clearAllPendingScopes, setPendingScope } from "../../extensions/ferment/scoping.js"
 import { getActive, setActive } from "../../extensions/ferment/state.js"
+import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
 import { __resetTodoStore, applyWriteTodos } from "../../extensions/todos/store.js"
 import type { TodoDraft } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
@@ -118,6 +119,10 @@ function globalTodoEntry(content: string): SessionEntry {
 		scope: { kind: "global" },
 		todos: [{ id: "todo-1", content, status: "pending" }],
 	})
+}
+
+function permissionModeEntry(mode: string): SessionEntry {
+	return customEntry(PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode, initiatedBy: "user", source: "runtime" })
 }
 
 function emitAdhocPlanReview(bus: EventBus): void {
@@ -436,6 +441,102 @@ describe("AcpPlanTracker", () => {
 			tracker.emitRestoredSnapshot()
 			expect(emitted).toHaveLength(1)
 			expect(planEntries(emitted, 0)[0].content).toBe("execution task")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("resume snapshot restores post-approval global todos even when the loaded permission mode is plan", () => {
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "execution task", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		const branch = [
+			customEntry(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
+				sessionId: TEST_SESSION_ID,
+				source: "adhoc",
+				decision: "execute",
+				outcome: "accepted",
+			}),
+			globalTodoEntry("execution task"),
+		]
+		const { emitted, setPermissionMode, tracker } = makeHarness(TEST_SESSION_ID, branch)
+		tracker.start()
+		try {
+			setPermissionMode("plan")
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0)[0].content).toBe("execution task")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("resume snapshot hides plan-mode global todos before any review has resolved", () => {
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "planning scratchpad", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		const { emitted, setPermissionMode, tracker } = makeHarness(TEST_SESSION_ID, [
+			globalTodoEntry("planning scratchpad"),
+		])
+		tracker.start()
+		try {
+			setPermissionMode("plan")
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("resume snapshot hides plan-mode scratchpad todos written after rework", () => {
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "revision scratchpad", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		const branch = [
+			customEntry(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
+				sessionId: TEST_SESSION_ID,
+				source: "adhoc",
+				decision: "rework",
+				outcome: "rework",
+			}),
+			globalTodoEntry("revision scratchpad"),
+		]
+		const { emitted, setPermissionMode, tracker } = makeHarness(TEST_SESSION_ID, branch)
+		tracker.start()
+		try {
+			setPermissionMode("plan")
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("resume snapshot hides a new plan's scratchpad after an older plan was accepted", () => {
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "second plan scratchpad", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		const branch = [
+			customEntry(PLAN_REVIEW_RESOLVED_CUSTOM_TYPE, {
+				sessionId: TEST_SESSION_ID,
+				source: "adhoc",
+				decision: "execute",
+				outcome: "accepted",
+			}),
+			globalTodoEntry("first plan execution"),
+			permissionModeEntry("plan"),
+			globalTodoEntry("second plan scratchpad"),
+		]
+		const { emitted, setPermissionMode, tracker } = makeHarness(TEST_SESSION_ID, branch)
+		tracker.start()
+		try {
+			setPermissionMode("plan")
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(0)
 		} finally {
 			tracker.stop()
 		}

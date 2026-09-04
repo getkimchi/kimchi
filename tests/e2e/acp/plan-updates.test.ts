@@ -33,6 +33,7 @@ const ADHOC_TODO = "Implement approved plan"
 const FERMENT_PHASE_NAME = "ACP Review Slice"
 const FERMENT_STEP_DESC = "Verify ACP review selection"
 const FERMENT_FEEDBACK = "Tighten the ACP plan before execution."
+const PLANNING_SCRATCHPAD_TODO = "Draft internal planning notes"
 
 const PROMPT_TIMEOUT_LONG_MS = 90_000
 const TEST_TIMEOUT_MS = 180_000
@@ -146,6 +147,42 @@ function submitPlanScripts() {
 	]
 }
 
+function submitPlanWithScratchpadOnlyScripts() {
+	const [submitPlan] = submitPlanScripts()
+	return [
+		{
+			stream: ["Drafting private planning todos."],
+			toolCalls: [todoToolCall(PLANNING_SCRATCHPAD_TODO)],
+		},
+		{ stream: ["Scratchpad todo recorded."] },
+		{
+			stream: ["Submitting the plan."],
+			toolCalls: submitPlan?.toolCalls ?? [],
+		},
+		{ stream: ["Approved without execution todos."] },
+		{ stream: ["Understood."] },
+	]
+}
+
+function submitPlanThenRevisionScratchpadScripts() {
+	const scripts = submitPlanScripts()
+	scripts.splice(1, 1, {
+		stream: ["Drafting revised private planning todos."],
+		toolCalls: [todoToolCall(PLANNING_SCRATCHPAD_TODO)],
+	})
+	return scripts
+}
+
+function submitPlanThenNewPlanningScratchpadScripts() {
+	const scripts = submitPlanScripts()
+	scripts.splice(3, 1, {
+		stream: ["Drafting a second private plan."],
+		toolCalls: [todoToolCall(PLANNING_SCRATCHPAD_TODO)],
+	})
+	scripts.push({ stream: ["Second planning scratchpad recorded."] })
+	return scripts
+}
+
 function passingPlanGates() {
 	return [
 		{ id: "P1", verdict: "pass", rationale: "Steps have verification", evidence: "ACP E2E script" },
@@ -194,6 +231,14 @@ function planSnapshots(fixture: AcpFixture, sessionId: string): PlanEntry[][] {
 		.map((u) => (u.update as Extract<acp.SessionUpdate, { sessionUpdate: "plan" }>).entries)
 }
 
+function planSnapshotCount(fixture: AcpFixture, sessionId: string): number {
+	return planSnapshots(fixture, sessionId).length
+}
+
+function planSnapshotsAfter(fixture: AcpFixture, sessionId: string, afterCount: number): PlanEntry[][] {
+	return planSnapshots(fixture, sessionId).slice(afterCount)
+}
+
 function latestPlan(fixture: AcpFixture, sessionId: string): PlanEntry[] | undefined {
 	const snaps = planSnapshots(fixture, sessionId)
 	return snaps[snaps.length - 1]
@@ -220,6 +265,24 @@ async function waitForSnapshotWith(
 	}
 	const seen = JSON.stringify(planSnapshots(fixture, sessionId), null, 1)
 	throw new Error(`waitForSnapshotWith timed out (${context}) after ${timeoutMs}ms. Snapshots seen: ${seen}`)
+}
+
+async function waitForSnapshotAfter(
+	fixture: AcpFixture,
+	sessionId: string,
+	afterCount: number,
+	predicate: (entries: PlanEntry[]) => boolean,
+	timeoutMs = PROMPT_TIMEOUT_LONG_MS,
+	context = "",
+): Promise<PlanEntry[]> {
+	const start = Date.now()
+	while (Date.now() - start < timeoutMs) {
+		const hit = planSnapshotsAfter(fixture, sessionId, afterCount).find((entries) => predicate(entries))
+		if (hit) return hit
+		await delay(100)
+	}
+	const seen = JSON.stringify(planSnapshotsAfter(fixture, sessionId, afterCount), null, 1)
+	throw new Error(`waitForSnapshotAfter timed out (${context}) after ${timeoutMs}ms. Snapshots seen: ${seen}`)
 }
 
 async function waitForElicitationWith(
@@ -446,6 +509,236 @@ describe("ACP integration — plan proposal review lifecycle", () => {
 			"post-approval execution todos",
 		)
 		expect(executionTodos).toEqual([
+			expect.objectContaining({
+				content: ADHOC_TODO,
+				status: "pending",
+			}),
+		])
+	})
+
+	it("ad-hoc resume after approval does not restore pre-approval scratchpad todos", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-adhoc-resume-before-todo",
+			responses: submitPlanWithScratchpadOnlyScripts(),
+			extraArgs: ["--plan"],
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Execute the plan" } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const scratchpadTurn = await prompt(activeFixture, sessionId, "Draft private planning todos")
+		expect(scratchpadTurn.stopReason, "scratchpad turn stop reason").toBe("end_turn")
+		expect(planSnapshots(activeFixture, sessionId), "scratchpad todos stay hidden in plan mode").toHaveLength(0)
+
+		const turn = await prompt(activeFixture, sessionId, "Submit the plan for approval")
+		expect(turn.stopReason, "plan submission turn stop reason").toBe("end_turn")
+
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.some((entry) => entry.content === "Chunk 1: Build UI snapshots"),
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc proposal snapshot",
+		)
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.length === 0,
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc approval clear",
+		)
+
+		await activeFixture.conn.unstable_closeSession({ sessionId })
+		const beforeLoad = planSnapshotCount(activeFixture, sessionId)
+		await activeFixture.conn.loadSession({ sessionId, cwd: activeFixture.workDir, mcpServers: [] })
+		await delay(2_000)
+
+		const restored = planSnapshotsAfter(activeFixture, sessionId, beforeLoad)
+		expect(
+			restored.some((entries) => entries.some((entry) => entry.content === PLANNING_SCRATCHPAD_TODO)),
+			"pre-approval scratchpad todo must not resurrect on resume",
+		).toBe(false)
+		expect(
+			restored.some((entries) => entries.length > 0),
+			"resume before first execution todo must not restore a non-empty plan",
+		).toBe(false)
+	})
+
+	it("ad-hoc resume before approval does not restore planning scratchpad todos", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-adhoc-resume-before-approval",
+			responses: submitPlanWithScratchpadOnlyScripts(),
+			extraArgs: ["--plan"],
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const scratchpadTurn = await prompt(activeFixture, sessionId, "Draft private planning todos")
+		expect(scratchpadTurn.stopReason, "scratchpad turn stop reason").toBe("end_turn")
+		expect(planSnapshots(activeFixture, sessionId), "scratchpad todos stay hidden in plan mode").toHaveLength(0)
+
+		await activeFixture.conn.unstable_closeSession({ sessionId })
+		const beforeLoad = planSnapshotCount(activeFixture, sessionId)
+		await activeFixture.conn.loadSession({ sessionId, cwd: activeFixture.workDir, mcpServers: [] })
+		await delay(2_000)
+
+		const restored = planSnapshotsAfter(activeFixture, sessionId, beforeLoad)
+		expect(
+			restored.some((entries) => entries.length > 0),
+			"pre-approval resume must not restore a planning scratchpad",
+		).toBe(false)
+	})
+
+	it("ad-hoc resume after rework does not restore revision scratchpad todos", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-adhoc-resume-after-rework",
+			responses: submitPlanThenRevisionScratchpadScripts(),
+			extraArgs: ["--plan"],
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Rework the plan" } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const planTurn = await prompt(activeFixture, sessionId, "Submit a plan for rework")
+		expect(planTurn.stopReason, "plan submission turn stop reason").toBe("end_turn")
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.some((entry) => entry.content === "Chunk 1: Build UI snapshots"),
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc proposal snapshot",
+		)
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.length === 0,
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc rework clear",
+		)
+
+		const beforeRevision = planSnapshotCount(activeFixture, sessionId)
+		const revisionTurn = await prompt(activeFixture, sessionId, "Revise the plan with private planning todos")
+		expect(revisionTurn.stopReason, "revision turn stop reason").toBe("end_turn")
+		expect(
+			planSnapshotsAfter(activeFixture, sessionId, beforeRevision).some((entries) => entries.length > 0),
+			"revision scratchpad stays hidden in plan mode",
+		).toBe(false)
+
+		await activeFixture.conn.unstable_closeSession({ sessionId })
+		const beforeLoad = planSnapshotCount(activeFixture, sessionId)
+		await activeFixture.conn.loadSession({ sessionId, cwd: activeFixture.workDir, mcpServers: [] })
+		await delay(2_000)
+
+		expect(
+			planSnapshotsAfter(activeFixture, sessionId, beforeLoad).some((entries) => entries.length > 0),
+			"post-rework resume must not restore revision scratchpad todos",
+		).toBe(false)
+	})
+
+	it("ad-hoc resume after re-entering plan mode does not use an older approval for scratchpad todos", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-adhoc-resume-after-plan-reentry",
+			responses: submitPlanThenNewPlanningScratchpadScripts(),
+			extraArgs: ["--plan"],
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Execute the plan" } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const firstPlanTurn = await prompt(activeFixture, sessionId, "Approve and execute the first plan")
+		expect(firstPlanTurn.stopReason, "first plan turn stop reason").toBe("end_turn")
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.some((entry) => entry.content === ADHOC_TODO),
+			PROMPT_TIMEOUT_LONG_MS,
+			"first plan execution todos",
+		)
+
+		await activeFixture.conn.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+		const beforeSecondPlan = planSnapshotCount(activeFixture, sessionId)
+		const secondPlanTurn = await prompt(activeFixture, sessionId, "Draft a second private plan")
+		expect(secondPlanTurn.stopReason, "second plan turn stop reason").toBe("end_turn")
+		expect(
+			planSnapshotsAfter(activeFixture, sessionId, beforeSecondPlan).some((entries) =>
+				entries.some((entry) => entry.content === PLANNING_SCRATCHPAD_TODO),
+			),
+			"second plan scratchpad stays hidden",
+		).toBe(false)
+
+		await activeFixture.conn.unstable_closeSession({ sessionId })
+		const beforeLoad = planSnapshotCount(activeFixture, sessionId)
+		await activeFixture.conn.loadSession({ sessionId, cwd: activeFixture.workDir, mcpServers: [] })
+		await delay(2_000)
+
+		expect(
+			planSnapshotsAfter(activeFixture, sessionId, beforeLoad).some((entries) =>
+				entries.some((entry) => entry.content === PLANNING_SCRATCHPAD_TODO),
+			),
+			"older approval must not restore a newer plan's scratchpad",
+		).toBe(false)
+	})
+
+	it("ad-hoc resume after the first execution todo restores the execution plan snapshot", {
+		timeout: TEST_TIMEOUT_MS,
+	}, async () => {
+		fixture = await startAcpFixture({
+			artifactName: "plan-updates-adhoc-resume-after-todo",
+			responses: submitPlanScripts(),
+			extraArgs: ["--plan"],
+			clientCapabilities: { elicitation: { form: {} } },
+		})
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Execute the plan" } })
+
+		const activeFixture = fixture
+		const sessionId = await newSession(activeFixture, activeFixture.workDir)
+		const turn = await prompt(activeFixture, sessionId, "Plan and resume ACP execution todos")
+		expect(turn.stopReason, "plan submission turn stop reason").toBe("end_turn")
+
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.length === 0,
+			PROMPT_TIMEOUT_LONG_MS,
+			"ad-hoc approval clear",
+		)
+		await waitForSnapshotWith(
+			activeFixture,
+			sessionId,
+			(entries) => entries.some((entry) => entry.content === ADHOC_TODO),
+			PROMPT_TIMEOUT_LONG_MS,
+			"post-approval execution todos",
+		)
+
+		await activeFixture.conn.unstable_closeSession({ sessionId })
+		const beforeLoad = planSnapshotCount(activeFixture, sessionId)
+		await activeFixture.conn.loadSession({ sessionId, cwd: activeFixture.workDir, mcpServers: [] })
+
+		const restored = await waitForSnapshotAfter(
+			activeFixture,
+			sessionId,
+			beforeLoad,
+			(entries) => entries.some((entry) => entry.content === ADHOC_TODO),
+			PROMPT_TIMEOUT_LONG_MS,
+			"restored post-approval execution todos",
+		)
+		expect(restored).toEqual([
 			expect.objectContaining({
 				content: ADHOC_TODO,
 				status: "pending",
