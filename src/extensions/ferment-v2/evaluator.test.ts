@@ -716,11 +716,11 @@ describe("Ferment V2 evaluator", () => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"met","reason":"all checks pass"}'))
 
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
-		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 1_024 })
+		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 2_048 })
 
 		completeMock.mockClear()
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext(undefined, true))
-		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 12_288 })
+		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 24_576 })
 	})
 
 	it("fails closed when only thinking is emitted", async () => {
@@ -807,7 +807,7 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock).toHaveBeenCalledTimes(2)
 		expect(completeMock.mock.calls[1]?.[2]).toMatchObject({
 			reasoning: "minimal",
-			maxTokens: 12_288,
+			maxTokens: 24_576,
 			thinkingBudgets: { minimal: 0 },
 		})
 	})
@@ -837,7 +837,7 @@ describe("Ferment V2 evaluator", () => {
 			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
 		).resolves.toEqual({
 			verdict: "unavailable",
-			reason: "Evaluator session/main timed out after 180 seconds.",
+			reason: "Evaluator session/main timed out after 300 seconds.",
 			model: "session/main",
 		})
 		timeout.mockRestore()

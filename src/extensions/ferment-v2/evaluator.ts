@@ -32,8 +32,8 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
  * Reasoning models spend this budget on thinking before they emit an answer, so
  * a budget sized for the verdict alone returns nothing at all on those models.
  */
-const REASONING_MAX_TOKENS = 12_288
-const PLAIN_MAX_TOKENS = 1_024
+const REASONING_MAX_TOKENS = 24_576
+const PLAIN_MAX_TOKENS = 2_048
 const INVALID_JSON_RETRY_PROMPT =
 	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and include observedAnswer only for final_answer checks."
 
