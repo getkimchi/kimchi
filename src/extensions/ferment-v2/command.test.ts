@@ -55,6 +55,18 @@ describe("Ferment V2 command", () => {
 		}
 	})
 
+	it("uses a neutral summary for an automatic approved plan while preserving manual branding", () => {
+		const manual = formatFermentV2Summary(fermentV2("active"))
+		const automatic = formatFermentV2Summary({
+			...fermentV2("active"),
+			presentation: { kind: "approved-plan", title: "Cache Layer", planPath: "/tmp/cache-layer.md" },
+		})
+
+		expect(manual.startsWith("Ferment V2\n")).toBe(true)
+		expect(automatic).toContain("Plan: Cache Layer")
+		expect(automatic).not.toMatch(/ferment[- ]v2/i)
+	})
+
 	it("shows evaluation details only in the full command summary", () => {
 		const evaluated = {
 			...fermentV2("active"),

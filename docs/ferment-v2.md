@@ -36,6 +36,8 @@ Objectives are trimmed. Mutations are fenced by both ID and revision, so a stale
 
 Management mutations are serialized per session. Edit commits the next revision immediately, aborts only a running evaluator, and queues its steer behind the operation already in flight. Revision fencing prevents the old turn from evaluating or mutating the new revision. Other state and Todo mutations wait for active agent work to settle; V2 then reads an updated Todo list before continuing. Read-only commands remain immediate.
 
+Creating or explicitly resuming a V2 run from Plan mode switches the session to Auto so the run can use write tools. Entering Plan mode while V2 is active pauses the run; `/ferment-v2 resume` switches back to Auto and continues it.
+
 ## Settings
 
 Under the `fermentV2` key in `~/.config/kimchi/harness/settings.json`, the defaults are `autoResume: true`, `maxUnchangedContinuations: 3`, `maxConsecutiveErrors: 3`, `defaultTokenBudget: unset`, and `evaluationTimeoutMs: 600000`. `autoResume` affects only the interactive session-start kick; invalid or missing values fall back to these defaults. An explicit command-line `--tokens` value overrides `defaultTokenBudget`; a positive `evaluationTimeoutMs` overrides the deadline for each evaluator attempt.

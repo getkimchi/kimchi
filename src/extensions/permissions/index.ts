@@ -1,4 +1,4 @@
-import { resolve } from "node:path"
+import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
@@ -7,6 +7,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
@@ -37,7 +38,8 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
-import { FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
+import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
+import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -128,6 +130,7 @@ const PLAN_MODE_TOOLS = [
 	"submit_plan",
 	"bash",
 	...TODO_TOOL_NAMES,
+	...FERMENT_V2_TOOL_NAMES,
 	// DAP debugger tools — available in plan mode by product decision: the
 	// debugger is the fastest way to investigate an issue the user is asking
 	// to plan a fix for. NOTE: this is NOT a read-only allowance —
@@ -257,6 +260,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let currentCtx: ExtensionContext | undefined
+	let appliedPermissionMode: PermissionModeState | undefined
+	let applyingPermissionMode = false
 	let preFermentMode: PermissionModeState | undefined
 	let cliMode: PermissionMode | undefined
 	// Session-held slug of the plan currently being drafted. Kept across rework
@@ -395,8 +400,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		reason: ModeChangeReason,
 		skipNotify?: boolean,
 	): void {
-		const from = getRuntimePermissionMode()
-		setRuntimePermissionMode(ctx, next, skipNotify)
+		const from = appliedPermissionMode ?? getRuntimePermissionMode()
+		applyingPermissionMode = true
+		try {
+			setRuntimePermissionMode(ctx, next, skipNotify)
+		} finally {
+			applyingPermissionMode = false
+		}
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
 			activePlanSlug = undefined
@@ -408,6 +418,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activeAbortControllers.clear()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
+		appliedPermissionMode = next
 		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
 	}
 
@@ -470,11 +481,44 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return { errors }
 	}
 
-	function executePlan(planPath: string | undefined, planText: string): void {
+	function approvedPlanTitle(planText: string, planPath: string | undefined, planSlug: string | undefined): string {
+		const title = derivePlanTitle(planText)
+		if (title !== "untitled-plan") return title
+		if (planPath) return basename(planPath, extname(planPath))
+		return planSlug ?? "Plan"
+	}
+
+	async function executePlan(
+		ctx: ExtensionContext,
+		planPath: string | undefined,
+		planText: string,
+		planSlug: string | undefined,
+	): Promise<void> {
 		// Notify subscribers (e.g. the ACP plan tracker) that planning ended and
 		// the approved plan is now executing — pre-approval planning todos must
 		// not be reported as plan progress.
 		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+		if (isResourceEnabled(FERMENT_V2_RESOURCE_ID)) {
+			const executor = getFermentV2PlanExecutor(pi)
+			if (!executor) {
+				ctx.ui.notify("Could not start the approved plan automatically.", "error")
+				return
+			}
+			try {
+				await executor(
+					{
+						objective: buildApprovedPlanObjective(planPath, planText),
+						title: approvedPlanTitle(planText, planPath, planSlug),
+						planText,
+						...(planPath ? { planPath } : {}),
+					},
+					ctx,
+				)
+			} catch {
+				ctx.ui.notify("Could not start the approved plan automatically.", "error")
+			}
+			return
+		}
 		// Send the approved plan as the execution trigger. No compaction needed —
 		// the plan text is already in context from the planning conversation.
 		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
@@ -490,6 +534,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx
+		appliedPermissionMode = undefined
+		applyingPermissionMode = false
 		cliMode = undefined
 		activePlanSlug = undefined
 		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
@@ -548,10 +594,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
-			if (!next) return
+			if (!next || applyingPermissionMode) return
 
-			const current = getRuntimePermissionMode()
-			if (current.mode === next.mode) return
+			const current = appliedPermissionMode
+			if (!current || current.mode === next.mode) {
+				appliedPermissionMode = next
+				return
+			}
 
 			// ACP already emitted the config update from controller.setMode().
 			// This call is only for local transition side effects.
@@ -563,6 +612,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
 		currentCtx = undefined
+		appliedPermissionMode = undefined
+		applyingPermissionMode = false
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
@@ -818,11 +869,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (payload.planReviewSource !== "adhoc") return
 		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
-		const { ctx, planPath, planText, rawText } = reviewCtx
+		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
 
 		if (payload.decision === "execute") {
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-			executePlan(planPath, planText)
+			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
 			activePlanSlug = undefined
 		} else if (payload.decision === "start_ferment") {
 			// Converted into a ferment — same release as the execute path.

@@ -10,6 +10,28 @@ const PLACEHOLDER_TEXT = "ask anything or type / for commands"
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escapes
 const ANSI_RE = /\x1b\[[^m]*m/g
 const SCROLL_INDICATOR_RE = /^─── ([↑↓] \d+ more )/
+const ACTIVE_PLAN_BORDER_COLORS = [
+	[178, 129, 214],
+	[215, 135, 175],
+	[254, 188, 56],
+] as const
+
+function gradientBorder(s: string): string {
+	const chars = Array.from(s)
+	const midpoint = Math.floor(chars.length / 2)
+	return `${chars
+		.map((char, index) => {
+			const start = index <= midpoint ? ACTIVE_PLAN_BORDER_COLORS[0] : ACTIVE_PLAN_BORDER_COLORS[1]
+			const end = index <= midpoint ? ACTIVE_PLAN_BORDER_COLORS[1] : ACTIVE_PLAN_BORDER_COLORS[2]
+			const offset = index <= midpoint ? index : index - midpoint
+			const span = Math.max(1, index <= midpoint ? midpoint : chars.length - 1 - midpoint)
+			const color = start.map((channel, channelIndex) =>
+				Math.round(channel + (end[channelIndex] - channel) * (offset / span)),
+			)
+			return `\x1b[38;2;${color.join(";")}m${char}`
+		})
+		.join("")}${RST_FG}`
+}
 
 function rebuildBorder(baseLine: string, targetWidth: number, borderFn: (s: string) => string): string {
 	const raw = baseLine.replace(ANSI_RE, "")
@@ -28,6 +50,7 @@ export class PromptEditor extends CustomEditor {
 	private _pendingImageIndicator: string | null = null
 	private _sessionIndicator: string | null = null
 	private _ideSelectionIndicator: string | null = null
+	private _activePlanTitle: string | null = null
 
 	constructor(tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager, appTheme: Theme) {
 		super(tui, editorTheme, keybindings)
@@ -72,12 +95,21 @@ export class PromptEditor extends CustomEditor {
 		this.tui.requestRender()
 	}
 
+	setActivePlanTitle(title: string | null) {
+		if (this._activePlanTitle === title) return
+		this._activePlanTitle = title
+		this.tui.requestRender()
+	}
+
 	/**
 	 * Compose the current session + pending-image + ide-selection indicators
 	 * into a single raw string, or null if none is set.
 	 */
 	private combinedIndicator(): string | null {
 		const parts: string[] = []
+		if (this._activePlanTitle) {
+			parts.push(this._activePlanTitle.startsWith("Plan:") ? this._activePlanTitle : `Plan: ${this._activePlanTitle}`)
+		}
 		if (this._sessionIndicator) parts.push(this._sessionIndicator)
 		if (this._pendingImageIndicator) parts.push(this._pendingImageIndicator)
 		if (this._ideSelectionIndicator) parts.push(this._ideSelectionIndicator)
@@ -122,7 +154,8 @@ export class PromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
-		const border = (s: string) => (this.borderColor ? this.borderColor(s) : s)
+		const border = (s: string) =>
+			this._activePlanTitle ? gradientBorder(s) : this.borderColor ? this.borderColor(s) : s
 		const chevronColor = this.appTheme.getFgAnsi("accent")
 		const textColor = this.appTheme.getFgAnsi("text")
 		const muted = this.appTheme.getFgAnsi("muted")

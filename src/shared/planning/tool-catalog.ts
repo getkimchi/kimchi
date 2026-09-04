@@ -51,6 +51,8 @@
  * duplicating the set logic inline.
  */
 
+import { FERMENT_V2_TOOL_NAMES } from "../../extensions/ferment-v2/constants.js"
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -138,6 +140,7 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "add_todo", modes: ["shared"] },
 	{ name: "mark_todo", modes: ["shared"] },
 	{ name: "clear_todos", modes: ["shared"] },
+	...FERMENT_V2_TOOL_NAMES.map<ToolEntry>((name) => ({ name, modes: ["shared"] })),
 ]
 
 /** Tools gated behind `--plan` (adhoc planning mode). */

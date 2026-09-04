@@ -1,7 +1,7 @@
 /**
  * E2E TUI test: plan-to-ferment promotion flow.
  *
- * This file has two test cases:
+ * This file has four test cases:
  *
  * 1. "plan-to-ferment promotion — dropdown UI":
  *    Exercises the START_AS_FERMENT dropdown path end-to-end.
@@ -14,12 +14,16 @@
  *    the model calls submit_plan. No dropdown UI assertions.
  *    The tool-swap from questionnaire → ask_user is also confirmed via the
  *    recorded request bodies (proxied by the TUI's tool-list rendering).
+ *
+ * 3. Normal Execute routes an approved plan through the neutral automatic run.
+ * 4. Enabling that route does not affect ordinary no-plan work.
  */
 
-import { readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { fullText, INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import type { FakeResponseRequest } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -213,3 +217,135 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 		},
 	)
 })
+
+test("approved plan Execute starts a neutral named Ferment V2 run when enabled", async ({ terminal }) => {
+	const planText =
+		"## Goal\nImplement a streaming think parser.\n\n" +
+		"## Constraints\n- Preserve the existing parser API\n\n" +
+		"## Verification Strategy\nRun the parser tests.\n"
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "approved-plan-execute-ferment-v2",
+			gitInit: true,
+			seedHome: enableFermentV2Mode,
+			responses: [
+				{
+					stream: [planText],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({ plan: planText }),
+							},
+						},
+					],
+				},
+				{
+					stream: ["Working from the approved plan."],
+					textDelayMs: 1_000,
+					toolCalls: [
+						{
+							id: "call_block_approved_plan",
+							type: "function",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "blocked", reason: "Waiting for user input." }),
+							},
+						},
+					],
+				},
+			],
+			extraArgs: ["--plan=true"],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("status line confirms plan mode")
+
+			terminal.submit("Implement a streaming think parser")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("submit_plan opened the approval menu")
+
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "Approved plan started.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Plan: Implement a streaming think parser.", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("execute selected and neutral approved-plan run started")
+
+			const snapshot = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 2))
+			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "implement-a-streaming-think-parser.md")
+			expect(snapshot).toMatchObject({
+				objective: `Read the approved plan at "${planPath}" before continuing.\nExecute and verify every requirement in that plan.`,
+				status: "active",
+			})
+			expect(readFileSync(planPath, "utf-8")).toBe(planText)
+			await waitForText(terminal, "Approved plan blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fullText(terminal)).not.toMatch(/ferment[- ]v2/i)
+			trace.step("model request carried the saved-plan objective and the terminal stayed neutral")
+		},
+	)
+})
+
+test("enabling automatic plan execution leaves ordinary no-plan work untouched", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-no-approved-plan",
+			seedHome: enableFermentV2Mode,
+			responses: [{ stream: ["This small request is complete without a plan."] }],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit("Answer this small request directly")
+			await waitForText(terminal, "This small request is complete without a plan.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			expect(fullText(terminal)).not.toContain("Approved plan started.")
+			expect(existsSync(join(fixture.workDir, ".kimchi", "plans"))).toBe(false)
+			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
+			expect(JSON.stringify(chatRequests(fixture.fake.requests)[0]?.body)).not.toContain("<kimchi_session_ferment_v2>")
+			trace.step("resource opt-in did not synthesize a plan or automatic run")
+		},
+	)
+})
+
+function enableFermentV2Mode(homeDir: string): void {
+	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+	settings.resources = { "extensions.ferment-v2": true }
+	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
+}
+
+async function waitForChatRequest(requests: FakeResponseRequest[], count: number): Promise<FakeResponseRequest> {
+	const deadline = Date.now() + 5_000
+	while (Date.now() < deadline) {
+		const request = chatRequests(requests)[count - 1]
+		if (request) return request
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(`Timed out waiting for chat request ${count}.`)
+}
+
+function chatRequests(requests: FakeResponseRequest[]): FakeResponseRequest[] {
+	return requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+}
+
+function fermentV2Snapshot(request: FakeResponseRequest): {
+	objective: string
+	status: string
+} {
+	const context = collectStrings(request.body).find((value) => value.includes("<kimchi_session_ferment_v2>"))
+	const match = context?.match(/<kimchi_session_ferment_v2>\s*(\{[\s\S]*?\})\s*Persistent objective continuation/)
+	if (!match) throw new Error(`No canonical Ferment V2 context found in request: ${JSON.stringify(request.body)}`)
+	return JSON.parse(match[1])
+}
+
+function collectStrings(value: unknown): string[] {
+	if (typeof value === "string") return [value]
+	if (Array.isArray(value)) return value.flatMap(collectStrings)
+	if (value && typeof value === "object") return Object.values(value).flatMap(collectStrings)
+	return []
+}

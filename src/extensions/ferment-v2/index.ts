@@ -13,6 +13,8 @@ import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount } from "../format.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
+import { getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
+import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
 import { holdPromptSummary } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js"
@@ -21,7 +23,7 @@ import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
-import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
+import { holdWorkedForMessage, holdWorkingIndicator, setActivePlanTitle } from "../ui.js"
 import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
 import {
 	FERMENT_V2_COMMAND_NAME,
@@ -44,6 +46,11 @@ import {
 	recoverAcceptedFinalAnswerDraft,
 } from "./final-answer.js"
 import { type FermentV2Lesson, updateFermentV2Lessons } from "./lessons.js"
+import {
+	composeApprovedPlanEditObjective,
+	type FermentV2PlanExecutorResult,
+	registerFermentV2PlanExecutor,
+} from "./plan-executor.js"
 import {
 	buildFermentV2Continuation,
 	buildFermentV2EditSteer,
@@ -87,6 +94,8 @@ import {
 	type PendingFermentV2Continuation,
 	type SessionFermentV2,
 } from "./types.js"
+
+type FermentV2MutationContext = ExtensionContext & Partial<Pick<ExtensionCommandContext, "waitForIdle">>
 
 const UPDATE_FERMENT_V2_PARAMETERS = Type.Object({
 	status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")]),
@@ -183,6 +192,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let currentFermentV2: FermentV2State
 	const mutationTails = new Map<string, Promise<void>>()
 	let currentSessionId: string | undefined
+	let currentContext: ExtensionContext | undefined
 	let pendingContinuation: PendingFermentV2Continuation | undefined
 	let pendingTerminalFeedback: PendingFermentV2Continuation | undefined
 	let pendingBudgetLimitedOutput: PendingFermentV2Continuation | undefined
@@ -359,11 +369,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	function bindSession(ctx: ExtensionContext): string {
 		const sessionId = ctx.sessionManager.getSessionId()
+		currentContext = ctx
 		if (currentSessionId !== sessionId) replaySession(ctx)
+		else pauseActiveFermentV2ForPlanMode(ctx, sessionId)
 		return sessionId
 	}
 
 	function replaySession(ctx: ExtensionContext): void {
+		currentContext = ctx
 		// Abort before replay rebuilds state: a rewind can reuse the same Ferment V2 id/revision.
 		void abortEvaluation()
 		const previousSessionId = currentSessionId
@@ -385,6 +398,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const branch = ctx.sessionManager.getBranch()
 		const restored = restoreFermentV2Runtime(branch, currentSessionId, getTodoScopeKey(resolveTodoScope()))
 		currentFermentV2 = restored.fermentV2
+		syncActivePlanIndicator(currentFermentV2)
 		resetFermentV2Runtime()
 		todoStateFor = restored.todoState
 		fermentV2Lessons = restored.lessons
@@ -410,6 +424,34 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const cleared = clearCompletionDecision(currentFermentV2)
 			if (cleared !== currentFermentV2) commitFermentV2(cleared)
 		}
+		pauseActiveFermentV2ForPlanMode(ctx, currentSessionId)
+	}
+
+	function ensureFermentV2ExecutionMode(sessionId: string): void {
+		if (getPermissionMode(sessionId)?.mode !== "plan") return
+		setPermissionMode(sessionId, { mode: "auto", initiatedBy: "user", source: "runtime" })
+	}
+
+	function pauseActiveFermentV2ForPlanMode(ctx: ExtensionContext, sessionId: string | undefined): void {
+		const current = currentFermentV2
+		if (!sessionId || current?.status !== "active" || getPermissionMode(sessionId)?.mode !== "plan") return
+
+		void abortEvaluation()
+		const nowMs = Date.now()
+		const accounted = checkpointFermentV2(current, 0, nowMs)
+		const paused = setFermentV2Status(accounted, current.id, current.revision, "paused", timestamp(nowMs))
+		commitFermentV2(paused)
+		emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, paused, { reason: "user" })
+		activeSinceMs = undefined
+		capturedConversation = undefined
+		preparedEvaluation = undefined
+		invalidateContinuation()
+		releaseEvaluationIndicator()
+		releaseFermentV2PromptSummary()
+		ctx.ui.notify(
+			`${displayName(paused)} paused because Plan mode is read-only. Resume it to continue in Auto mode.`,
+			"info",
+		)
 	}
 
 	function assertCurrentSession(ctx: ExtensionContext, expectedSessionId: string): void {
@@ -421,10 +463,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function commitFermentV2(fermentV2: SessionFermentV2, resolveTerminalWaiter = true): void {
 		const previous = currentFermentV2
 		currentFermentV2 = fermentV2
+		syncActivePlanIndicator(fermentV2)
 		try {
 			pi.appendEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry(fermentV2))
 		} catch (error) {
 			currentFermentV2 = previous
+			syncActivePlanIndicator(previous)
 			throw error
 		}
 		if (previous && previous.id !== fermentV2.id) resolveFermentV2Waiter(currentSessionId, previous.id)
@@ -438,9 +482,23 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function commitClear(fermentV2: SessionFermentV2): void {
 		pi.appendEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, clearFermentV2Entry(fermentV2, timestamp()))
 		currentFermentV2 = clearFermentV2(fermentV2, fermentV2.id, fermentV2.revision)
+		syncActivePlanIndicator(currentFermentV2)
 		releaseFermentV2WorkedForMessage()
 		releaseFermentV2WorkedDuration()
 		resolveFermentV2Waiter(currentSessionId, fermentV2.id)
+	}
+
+	function syncActivePlanIndicator(fermentV2: FermentV2State): void {
+		const presentation = fermentV2?.status === "active" ? fermentV2.presentation : undefined
+		setActivePlanTitle(presentation?.kind === "approved-plan" ? presentation.title : null)
+	}
+
+	function displayName(fermentV2: SessionFermentV2 | undefined): string {
+		return fermentV2?.presentation?.kind === "approved-plan" ? "Approved plan" : "Ferment V2"
+	}
+
+	function displayObjectName(fermentV2: SessionFermentV2 | undefined): string {
+		return fermentV2?.presentation?.kind === "approved-plan" ? "approved plan run" : "Ferment V2"
 	}
 
 	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = [UPDATE_FERMENT_V2_TOOL_NAME]): boolean {
@@ -452,8 +510,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function notifyFermentV2ToolsUnavailable(ctx: ExtensionCommandContext): void {
-		ctx.ui.notify("Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.", "warning")
+	function notifyFermentV2ToolsUnavailable(ctx: ExtensionContext, fermentV2?: SessionFermentV2): void {
+		ctx.ui.notify(
+			fermentV2?.presentation?.kind === "approved-plan"
+				? "The approved plan requires its execution and Todo tools to be enabled before it can run."
+				: "Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"warning",
+		)
 	}
 
 	function safeSendControl(
@@ -627,7 +690,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		capturedConversation = undefined
 		preparedEvaluation = undefined
 		invalidateContinuation()
-		ctx.ui.notify("Ferment V2 paused because its final answer could not be delivered.", "warning")
+		ctx.ui.notify(`${displayName(paused)} paused because its final answer could not be delivered.`, "warning")
 		releaseEvaluationIndicator()
 		releaseFermentV2PromptSummary()
 	}
@@ -639,7 +702,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		clearFinalAnswerDelivery()
 		acceptedFinalAnswerDraft = undefined
 		capturedConversation = undefined
-		ctx.ui.notify("Ferment V2 complete.", "info")
+		ctx.ui.notify(`${displayName(completed)} complete.`, "info")
 		resolveFermentV2Waiter(sessionId, fermentV2.id)
 		releaseEvaluationIndicator()
 		releaseFermentV2PromptSummary()
@@ -809,7 +872,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	async function serializeUserMutation<T>(
 		sessionId: string,
 		captured: SessionFermentV2 | undefined,
-		ctx: ExtensionCommandContext,
+		ctx: FermentV2MutationContext,
 		source: string,
 		operation: () => Promise<T> | T,
 		settleBeforeMutation = true,
@@ -831,6 +894,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					"The user is changing the active Ferment V2 or its Todo list. Finish the operation already running, then stop before starting more work.",
 					{ source, fermentV2Id: marker.fermentV2Id, revision: marker.revision },
 				)
+				if (!ctx.waitForIdle) throw new Error("Cannot settle the active turn from this context.")
 				await ctx.waitForIdle()
 			}
 			if (settleBeforeMutation) await settled
@@ -901,56 +965,82 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	async function handleSetFermentV2(
 		objective: string,
 		tokenBudget: number | undefined,
-		ctx: ExtensionCommandContext,
-	): Promise<void> {
+		ctx: FermentV2MutationContext,
+		source = "command",
+		presentation?: SessionFermentV2["presentation"],
+		settleBeforeMutation = true,
+	): Promise<FermentV2PlanExecutorResult | "unavailable"> {
 		const sessionId = bindSession(ctx)
 		const captured = currentFermentV2
 		let terminalWaiter: Promise<void> | undefined
+		const approvedPlan = presentation?.kind === "approved-plan"
 		if (!fermentV2ToolsAvailable()) {
-			notifyFermentV2ToolsUnavailable(ctx)
-			return
+			if (!approvedPlan) notifyFermentV2ToolsUnavailable(ctx)
+			return "unavailable"
 		}
 		if (captured && captured.status !== "complete") {
 			if (!ctx.hasUI) {
 				ctx.ui.notify(
-					"A Ferment V2 is already in progress. Replace it from an interactive session or clear it first.",
+					approvedPlan
+						? "A run is already in progress. Replace it from an interactive session or clear it first."
+						: "A Ferment V2 is already in progress. Replace it from an interactive session or clear it first.",
 					"warning",
 				)
-				return
+				return "kept-existing"
 			}
 			const confirmed = await ctx.ui.confirm(
-				"Replace current Ferment V2?",
-				`Replace Ferment V2 revision ${captured.revision}? This starts a new Ferment V2.`,
+				approvedPlan ? "Replace current run?" : "Replace current Ferment V2?",
+				approvedPlan
+					? `Replace current run revision ${captured.revision}? This starts the approved plan.`
+					: `Replace Ferment V2 revision ${captured.revision}? This starts a new Ferment V2.`,
 			)
 			if (!confirmed) {
-				ctx.ui.notify(`Ferment V2 kept: ${captured.objective}`, "info")
-				return
+				ctx.ui.notify(approvedPlan ? "Current run kept." : `Ferment V2 kept: ${captured.objective}`, "info")
+				return "kept-existing"
 			}
 		}
 
-		await serializeUserMutation(sessionId, captured, ctx, "command", () => {
-			assertCurrentSession(ctx, sessionId)
-			assertUnchanged(captured)
-			const nowMs = Date.now()
-			const now = timestamp(nowMs)
-			const effectiveTokenBudget = tokenBudget ?? getFermentV2Settings().defaultTokenBudget
-			const next = captured
-				? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget)
-				: createFermentV2(undefined, objective, randomUUID(), now, effectiveTokenBudget)
-			commitFermentV2(next)
-			emitFermentV2Lifecycle(captured ? FERMENT_V2_EVENTS.REPLACED : FERMENT_V2_EVENTS.STARTED, next)
-			resetFermentV2Runtime()
-			// Only block a headless command when a turn is actually running, or
-			// nothing would ever resolve the waiter.
-			if (
-				queueFermentV2Turn(ctx, next, buildFermentV2StartSteer(captured ? "replaced" : "created"), "command") &&
-				!ctx.hasUI
-			) {
-				terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
-			}
-			ctx.ui.notify(captured ? "Ferment V2 replaced." : "Ferment V2 created.", "info")
-		})
+		await serializeUserMutation(
+			sessionId,
+			captured,
+			ctx,
+			source,
+			() => {
+				assertCurrentSession(ctx, sessionId)
+				assertUnchanged(captured)
+				ensureFermentV2ExecutionMode(sessionId)
+				const nowMs = Date.now()
+				const now = timestamp(nowMs)
+				const effectiveTokenBudget = tokenBudget ?? getFermentV2Settings().defaultTokenBudget
+				const next = captured
+					? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget, presentation)
+					: createFermentV2(undefined, objective, randomUUID(), now, effectiveTokenBudget, presentation)
+				commitFermentV2(next)
+				emitFermentV2Lifecycle(captured ? FERMENT_V2_EVENTS.REPLACED : FERMENT_V2_EVENTS.STARTED, next)
+				resetFermentV2Runtime()
+				// Only block a headless command when a turn is actually running, or
+				// nothing would ever resolve the waiter.
+				if (
+					queueFermentV2Turn(ctx, next, buildFermentV2StartSteer(captured ? "replaced" : "created"), source) &&
+					!ctx.hasUI
+				) {
+					terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
+				}
+				ctx.ui.notify(
+					approvedPlan
+						? captured
+							? "Approved plan replaced."
+							: "Approved plan started."
+						: captured
+							? "Ferment V2 replaced."
+							: "Ferment V2 created.",
+					"info",
+				)
+			},
+			settleBeforeMutation,
+		)
 		await terminalWaiter
+		return "started"
 	}
 
 	async function handleEditFermentV2(objective: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
@@ -968,7 +1058,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Use /${FERMENT_V2_COMMAND_NAME} edit <objective> outside the interactive TUI.`, "warning")
 				return
 			}
-			editedObjective = await ctx.ui.editor("Edit Ferment V2", captured.objective)
+			editedObjective = await ctx.ui.editor(`Edit ${displayName(captured)}`, captured.objective)
 			if (editedObjective === undefined) return
 		}
 
@@ -988,7 +1078,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					const nowMs = Date.now()
 					const now = timestamp(nowMs)
 					const accounted = checkpointFermentV2(current, 0, nowMs)
-					const edited = editFermentV2(accounted, current.id, current.revision, editedObjective, now)
+					const edited = editFermentV2(
+						accounted,
+						current.id,
+						current.revision,
+						composeApprovedPlanEditObjective(editedObjective, current.presentation),
+						now,
+					)
 					// Reset both guard counters in the committed revision so a later restart
 					// doesn't restore a streak that belonged to a superseded objective.
 					const next = setFermentV2UnchangedContinuationTurns(
@@ -1020,14 +1116,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					) {
 						terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
 					}
-					ctx.ui.notify(`Ferment V2 updated to revision ${next.revision}.`, "info")
+					ctx.ui.notify(`${displayName(next)} updated to revision ${next.revision}.`, "info")
 				},
 				false,
 			)
 		} catch (error) {
 			if (error instanceof StaleFermentV2CommandError) {
 				ctx.ui.notify(
-					`The Ferment V2 changed while the editor was open. Reopen /${FERMENT_V2_COMMAND_NAME} edit to edit the current revision.`,
+					`The ${displayObjectName(captured)} changed while the editor was open. Reopen /${FERMENT_V2_COMMAND_NAME} edit to edit the current revision.`,
 					"warning",
 				)
 				return
@@ -1045,14 +1141,15 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
-			if (current.status === "paused") return ctx.ui.notify("Ferment V2 is already paused.", "info")
+			if (current.status === "paused") return ctx.ui.notify(`${displayName(current)} is already paused.`, "info")
 			if (current.status === "budget_limited") {
 				return ctx.ui.notify(
-					"Ferment V2 already stopped at its token budget. Start a replacement Ferment V2 to continue.",
+					`${displayName(current)} already stopped at its token budget. Start a replacement ${displayObjectName(current)} to continue.`,
 					"warning",
 				)
 			}
-			if (current.status === "complete") return ctx.ui.notify("A completed Ferment V2 cannot be paused.", "warning")
+			if (current.status === "complete")
+				return ctx.ui.notify(`A completed ${displayObjectName(current)} cannot be paused.`, "warning")
 			const nowMs = Date.now()
 			const accounted = checkpointFermentV2(current, 0, nowMs)
 			const next = setFermentV2Status(accounted, current.id, current.revision, "paused", timestamp(nowMs))
@@ -1060,7 +1157,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, next, { reason: "user" })
 			activeSinceMs = undefined
 			invalidateContinuation()
-			ctx.ui.notify("Ferment V2 paused.", "info")
+			ctx.ui.notify(`${displayName(next)} paused.`, "info")
 		})
 	}
 
@@ -1074,32 +1171,35 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
 			if (isReadyForFinalAnswer(current, todoStateFor, sessionId, ctx.hasUI)) {
+				ensureFermentV2ExecutionMode(sessionId)
 				invalidateContinuation()
 				if (queueFinalAnswerTurn(ctx, current, "steer") && !ctx.hasUI) {
 					terminalWaiter = ensureFermentV2Waiter(sessionId, current.id)
 				}
-				ctx.ui.notify("Ferment V2 resumed.", "info")
+				ctx.ui.notify(`${displayName(current)} resumed.`, "info")
 				return
 			}
-			if (current.status === "active") return ctx.ui.notify("Ferment V2 is already active.", "info")
+			if (current.status === "active") return ctx.ui.notify(`${displayName(current)} is already active.`, "info")
 			if (current.status === "budget_limited") {
 				return ctx.ui.notify(
-					"Ferment V2 token budget is exhausted. Start a replacement Ferment V2 with a new budget.",
+					`${displayName(current)} token budget is exhausted. Start a replacement ${displayObjectName(current)} with a new budget.`,
 					"warning",
 				)
 			}
-			if (current.status === "complete") return ctx.ui.notify("A completed Ferment V2 cannot be resumed.", "warning")
+			if (current.status === "complete")
+				return ctx.ui.notify(`A completed ${displayObjectName(current)} cannot be resumed.`, "warning")
 			if (!fermentV2ToolsAvailable()) {
-				notifyFermentV2ToolsUnavailable(ctx)
+				notifyFermentV2ToolsUnavailable(ctx, current)
 				return
 			}
+			ensureFermentV2ExecutionMode(sessionId)
 			const nowMs = Date.now()
 			const now = timestamp(nowMs)
 			const activated = setFermentV2Status(current, current.id, current.revision, "active", now)
 			if (activated.status !== "active") {
 				commitFermentV2(activated)
 				ctx.ui.notify(
-					"Ferment V2 token budget is exhausted. Start a replacement Ferment V2 with a new budget.",
+					`${displayName(activated)} token budget is exhausted. Start a replacement ${displayObjectName(activated)} with a new budget.`,
 					"warning",
 				)
 				return
@@ -1117,7 +1217,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (queueFermentV2Turn(ctx, next, buildFermentV2StartSteer("resumed"), "resume") && !ctx.hasUI) {
 				terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
 			}
-			ctx.ui.notify("Ferment V2 resumed.", "info")
+			ctx.ui.notify(`${displayName(next)} resumed.`, "info")
 		})
 		await terminalWaiter
 	}
@@ -1135,9 +1235,32 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			todoStateFor = undefined
 			fermentV2Lessons = []
 			activeSinceMs = undefined
-			ctx.ui.notify("Ferment V2 cleared.", "info")
+			ctx.ui.notify(`${displayName(current)} cleared.`, "info")
 		})
 	}
+
+	pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, (event) => {
+		if (!isRecord(event) || !isRecord(event.to) || event.to.mode !== "plan") return
+		if (currentContext) pauseActiveFermentV2ForPlanMode(currentContext, currentSessionId)
+	})
+
+	registerFermentV2PlanExecutor(pi, async (execution, ctx) => {
+		const result = await handleSetFermentV2(
+			execution.objective,
+			undefined,
+			ctx,
+			"approved_plan",
+			{
+				kind: "approved-plan",
+				title: execution.title,
+				...(execution.planPath ? { planPath: execution.planPath } : {}),
+				...(!execution.planPath ? { planText: execution.planText } : {}),
+			},
+			false,
+		)
+		if (result === "unavailable") throw new Error("The approved plan execution tools are unavailable.")
+		return result
+	})
 
 	pi.registerTool({
 		name: GET_FERMENT_V2_TOOL_NAME,
@@ -1308,7 +1431,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (resumed.status !== "active") {
 				invalidateContinuation()
 				ctx.ui.notify(
-					`Ferment V2 stopped after reaching its ${formatCount(resumed.tokenBudget ?? 0)} token budget.`,
+					`${displayName(resumed)} stopped after reaching its ${formatCount(resumed.tokenBudget ?? 0)} token budget.`,
 					"warning",
 				)
 				return
@@ -1651,7 +1774,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					}
 					invalidateContinuation()
 					ctx.ui.notify(
-						`Ferment V2 stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
+						`${displayName(accounted)} stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
 						"warning",
 					)
 				}
@@ -1687,7 +1810,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				if (aborted) {
 					emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, next, { reason: "agent_aborted" })
 					invalidateContinuation()
-					ctx.ui.notify("Ferment V2 paused because the agent turn was cancelled.", "warning")
+					ctx.ui.notify(`${displayName(next)} paused because the agent turn was cancelled.`, "warning")
 				} else if (reachedBudget) {
 					pendingBudgetLimitedOutput = {
 						sessionId,
@@ -1696,14 +1819,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					}
 					invalidateContinuation()
 					ctx.ui.notify(
-						`Ferment V2 stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
+						`${displayName(accounted)} stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
 						"warning",
 					)
 				}
 			}
 
 			if (pendingFeedback && matchesFermentV2(pendingFeedback, currentFermentV2, sessionId)) {
-				ctx.ui.notify("Ferment V2 blocked.", "warning")
+				ctx.ui.notify(`${displayName(currentFermentV2)} blocked.`, "warning")
 				pendingTerminalFeedback = undefined
 			}
 		})
@@ -1783,7 +1906,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				recordTerminalOutcome(
 					paused,
 					FERMENT_V2_EVENTS.PAUSED,
-					{ message: `Ferment V2 paused: ${result.reason}`, level: "warning" },
+					{ message: `${displayName(paused)} paused: ${result.reason}`, level: "warning" },
 					{ details: { reason: "evaluator_unavailable" }, skipEvaluationEvent: true },
 				)
 				return
@@ -1792,7 +1915,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (result.verdict === "impossible") {
 				const blocked = setFermentV2Status(evaluated, evaluated.id, evaluated.revision, "blocked", now, result.reason)
 				recordTerminalOutcome(blocked, FERMENT_V2_EVENTS.BLOCKED, {
-					message: `Ferment V2 blocked: ${result.reason}`,
+					message: `${displayName(blocked)} blocked: ${result.reason}`,
 					level: "warning",
 				})
 				return
@@ -1868,7 +1991,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					paused,
 					FERMENT_V2_EVENTS.STALLED,
 					{
-						message: `Ferment V2 paused after ${maxUnchangedContinuations} stalled continuation turns.`,
+						message: `${displayName(paused)} paused after ${maxUnchangedContinuations} stalled continuation turns.`,
 						level: "warning",
 					},
 					{
@@ -2050,7 +2173,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				commitFermentV2(paused)
 				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, paused, { reason: "agent_errors" })
 				invalidateContinuation()
-				ctx.ui.notify(`Ferment V2 paused after ${maxConsecutiveErrors} consecutive agent errors.`, "warning")
+				ctx.ui.notify(
+					`${displayName(paused)} paused after ${maxConsecutiveErrors} consecutive agent errors.`,
+					"warning",
+				)
 				return
 			}
 			commitFermentV2(withErrorTurns)
@@ -2071,8 +2197,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		void abortEvaluation()
 		resolveSessionWaiters(currentSessionId)
 		currentSessionId = undefined
+		currentContext = undefined
 		resetFermentV2Runtime()
 		currentFermentV2 = undefined
+		syncActivePlanIndicator(undefined)
 	})
 }
 

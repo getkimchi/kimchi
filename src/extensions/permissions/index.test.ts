@@ -11,12 +11,15 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { isResourceEnabled } from "../../resources/store.js"
+import { PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
-import { FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
+import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
+import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -24,8 +27,9 @@ import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
-import { getPermissionMode } from "./mode-controller.js"
+import { getPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { PERMISSION_EVENTS } from "./permissions-events.js"
 import { SessionMemory } from "./session-memory.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
@@ -48,6 +52,16 @@ vi.mock("./classifier.js", async () => {
 	}
 })
 
+vi.mock("../../resources/store.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../resources/store.js")>()
+	return {
+		...actual,
+		isResourceEnabled: vi.fn(() => false),
+	}
+})
+
+const isResourceEnabledMock = vi.mocked(isResourceEnabled)
+
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 	Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
@@ -60,6 +74,9 @@ function cleanPermissionEnv(): void {
 }
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => {
+	isResourceEnabledMock.mockReturnValue(false)
+})
 afterEach(cleanPermissionEnv)
 
 vi.mock("../ide-adapter/index.js", () => ({
@@ -244,6 +261,23 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
+	it("applies tool and status side effects for session-controller mode changes", async () => {
+		const ctx = createMockContext([])
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"], { plan: true })
+		await harness.fire("session_start", {}, ctx)
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+
+		setPermissionMode(TEST_SESSION_ID, { mode: "auto", initiatedBy: "user", source: "runtime" })
+
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("permissions-mode", expect.stringMatching(/^auto.*→ shift\+tab$/))
+		expect(harness.pi.events.emit).toHaveBeenLastCalledWith(PERMISSION_EVENTS.MODE_CHANGED, {
+			from: { mode: "plan", initiatedBy: "user", source: "flag" },
+			to: { mode: "auto", initiatedBy: "user", source: "runtime" },
+			reason: "controller",
+		})
+	})
+
 	it("hides and blocks propose_ferment_scoping under explicit --plan", async () => {
 		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.PROPOSE_SCOPING], { plan: true })
 
@@ -274,6 +308,19 @@ describe("permissions plan-mode tool visibility", () => {
 					createMockContext([]),
 				),
 			).resolves.toBeUndefined()
+		}
+	})
+
+	it("keeps Ferment V2 state tools visible under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", ...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES], {
+			plan: true,
+		})
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES].sort())
+		for (const toolName of [FERMENT_TOOLS.PROPOSE_SCOPING, "edit", "write"]) {
+			expect(harness.activeTools()).not.toContain(toolName)
 		}
 	})
 
@@ -629,6 +676,7 @@ describe("plan mode assumption detection", () => {
 		})
 
 		it("execute references the saved plan path and a new planning round gets a fresh file", async () => {
+			isResourceEnabledMock.mockReturnValue(false)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-execute-"))
@@ -662,6 +710,150 @@ describe("plan mode assumption detection", () => {
 			} finally {
 				rmSync(tmpDir, { recursive: true, force: true })
 			}
+		})
+
+		it("Execute routes through Ferment V2 when the experiment is enabled", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			const calls: string[] = []
+			registerFermentV2PlanExecutor(harness.pi, async (execution) => {
+				calls.push("executor")
+				expect(execution).toMatchObject({
+					title: "Plan: Cache Layer",
+					planText: PLAN_V1,
+				})
+				expect(execution.objective).toBe(
+					`Read the approved plan at "${execution.planPath}" before continuing.\nExecute and verify every requirement in that plan.`,
+				)
+				return "started"
+			})
+			harness.pi.events.on(PERMISSION_EVENTS.PLAN_APPROVED, () => calls.push("approved"))
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-execute-"))
+			try {
+				const ctx = createMockContext(["Execute the plan"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				const planFile = join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md")
+				expect(calls).toEqual(["approved", "executor"])
+				expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute" }),
+					expect.anything(),
+				)
+				expect(isResourceEnabledMock).toHaveBeenCalledWith(FERMENT_V2_RESOURCE_ID)
+				expect(existsSync(planFile)).toBe(true)
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("Execute fails closed when the experiment is enabled but the Ferment V2 executor is absent", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan"])
+
+			await submitPlan(harness, PLAN_V1, ctx)
+
+			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+			expect(ctx.ui.notify).toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+		})
+
+		it("Execute uses inline approved Markdown when the plan file is unavailable", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			const executions: Array<{ objective: string; planPath?: string }> = []
+			registerFermentV2PlanExecutor(harness.pi, async (execution) => {
+				executions.push({ objective: execution.objective, planPath: execution.planPath })
+				return "started"
+			})
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-inline-"))
+			try {
+				writeFileSync(join(tmpDir, ".kimchi"), "not a directory")
+				const ctx = createMockContext(["Execute the plan"])
+				ctx.cwd = tmpDir
+
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				expect(executions).toEqual([
+					{
+						objective: `Execute and verify the approved plan below.\n\n${PLAN_V1.trim()}`,
+						planPath: undefined,
+					},
+				])
+				expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute" }),
+					expect.anything(),
+				)
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("Execute does not start legacy execution when the Ferment V2 executor keeps the existing run", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			registerFermentV2PlanExecutor(harness.pi, async () => "kept-existing")
+			await harness.fire("session_start", {}, createMockContext([]))
+
+			await submitPlan(harness, PLAN_V1, createMockContext(["Execute the plan"]))
+
+			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+		})
+
+		it("Execute shows only neutral failure copy when the Ferment V2 executor rejects", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			registerFermentV2PlanExecutor(harness.pi, async () => {
+				throw new Error("boom")
+			})
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-reject-"))
+			const ctx = createMockContext(["Execute the plan"])
+			ctx.cwd = tmpDir
+
+			try {
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute" }),
+					expect.anything(),
+				)
+				expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+				expect(ctx.ui.notify).toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("ignores an execute decision when no approved-plan review context is active", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			const executor = vi.fn(async () => "started" as const)
+			registerFermentV2PlanExecutor(harness.pi, executor)
+			await harness.fire("session_start", {}, createMockContext([]))
+
+			harness.pi.events.emit(PLAN_REVIEW_DECISION_CHANNEL, {
+				decision: "execute",
+				source: "kimchi-tui",
+				planReviewSource: "adhoc",
+			})
+			await Promise.resolve()
+
+			expect(executor).not.toHaveBeenCalled()
+			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
 		})
 
 		it("Start as ferment handoff references the saved plan path", async () => {
