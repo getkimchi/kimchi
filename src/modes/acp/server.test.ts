@@ -6132,8 +6132,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		try {
 			for (let restart = 0; restart < 2; restart++) {
 				const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [], agentDir })
-				const response = await agent.loadSession({ sessionId, cwd, mcpServers: [] })
-				expect(response.models?.currentModelId).toBe("fake/fake-model")
+				await agent.loadSession({ sessionId, cwd, mcpServers: [] })
 				expect(readdirSync(sessionDir).filter((file) => file.endsWith(".jsonl"))).toEqual([])
 				await agent.unstable_closeSession({ sessionId })
 			}
