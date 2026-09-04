@@ -28,12 +28,6 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
 		provider === "kimchi-experimental"
 	)
 }
-/**
- * Reasoning models spend this budget on thinking before they emit an answer, so
- * a budget sized for the verdict alone returns nothing at all on those models.
- */
-const REASONING_MAX_TOKENS = 12_288
-const PLAIN_MAX_TOKENS = 1_024
 const INVALID_JSON_RETRY_PROMPT =
 	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and include observedAnswer only for final_answer checks."
 
@@ -285,28 +279,39 @@ export async function evaluateFermentV2(
 		evaluatorSession.appendModelChange(model.provider, model.id)
 		evaluatorSession.appendMessage(context.messages[0])
 
-		// Keep the deadline separate so a timeout is distinguishable from caller cancellation.
-		evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
-		deadline = AbortSignal.timeout(evaluationTimeoutMs)
-		const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
-		const request = (requestContext = context, correcting = false) =>
-			completeSimple(model, requestContext, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				reasoning: "minimal",
-				maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
-				thinkingBudgets: correcting ? { minimal: 0 } : undefined,
-				samplingParams: isKimchiManagedJsonModeProvider(model.provider)
-					? { response_format: { type: "json_object" } }
-					: undefined,
-				signal,
-			})
+		const timeoutMs = getFermentV2Settings().evaluationTimeoutMs
+		evaluationTimeoutMs = timeoutMs
+		const request = async (requestContext = context, correcting = false) => {
+			const requestOnce = async () => {
+				deadline = AbortSignal.timeout(timeoutMs)
+				const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
+				const response = await completeSimple(model, requestContext, {
+					apiKey: auth.apiKey,
+					headers: auth.headers,
+					reasoning: "minimal",
+					thinkingBudgets: correcting ? { minimal: 0 } : undefined,
+					samplingParams: isKimchiManagedJsonModeProvider(model.provider)
+						? { response_format: { type: "json_object" } }
+						: undefined,
+					signal,
+				})
+				if (signal.aborted) throw signal.reason
+				deadline = undefined
+				return response
+			}
+			try {
+				return await requestOnce()
+			} catch (error) {
+				if (!deadline?.aborted || input.signal?.aborted) throw error
+				return requestOnce()
+			}
+		}
 		let response = await request()
 		evaluatorSession.appendMessage(response)
 		let usage = toFermentV2EvaluatorUsage(response.usage)
 		const responseText = contentParts(response.content)
 		if (
-			!signal.aborted &&
+			!input.signal?.aborted &&
 			!parseFermentV2EvaluatorOutput(responseText) &&
 			(response.stopReason === "aborted" || response.stopReason === "length" || responseText.includes("{"))
 		) {
@@ -328,7 +333,7 @@ export async function evaluateFermentV2(
 				costUsd: usage.costUsd + retriedUsage.costUsd,
 			}
 		}
-		if (signal.aborted) throw signal.reason
+		if (input.signal?.aborted) throw input.signal.reason
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }
@@ -358,10 +363,10 @@ export async function evaluateFermentV2(
 	} catch (error) {
 		return {
 			verdict: "unavailable",
-			reason: deadline?.aborted
-				? `Evaluator ${modelRef ?? "session model"} timed out after ${(evaluationTimeoutMs ?? 0) / 1_000} seconds.`
-				: input.signal?.aborted
-					? `Evaluator ${modelRef ?? "session model"} was cancelled.`
+			reason: input.signal?.aborted
+				? `Evaluator ${modelRef ?? "session model"} was cancelled.`
+				: deadline?.aborted
+					? `Evaluator ${modelRef ?? "session model"} timed out after ${(evaluationTimeoutMs ?? 0) / 1_000} seconds.`
 					: `Evaluator ${modelRef ?? "session model"} call failed: ${errorMessage(error)}`,
 			...(modelRef ? { model: modelRef } : {}),
 		}
