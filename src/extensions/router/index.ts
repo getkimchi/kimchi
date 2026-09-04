@@ -34,26 +34,33 @@ function routeFailureReason(reason: "cancelled" | "timeout" | "network" | "http"
 	return reason === "http" ? "router_http" : reason
 }
 
-type ReasoningCapabilities = Pick<Model<Api>, "reasoning" | "thinkingLevelMap">
+type ModelCapabilities = Pick<Model<Api>, "reasoning" | "thinkingLevelMap" | "contextWindow" | "maxTokens">
 
-function hasTargetReasoningCapabilities(autoModel: ReasoningCapabilities, target: ReasoningCapabilities): boolean {
-	return autoModel.reasoning === target.reasoning && autoModel.thinkingLevelMap === target.thinkingLevelMap
+function hasTargetCapabilities(autoModel: ModelCapabilities, target: ModelCapabilities): boolean {
+	return (
+		autoModel.reasoning === target.reasoning &&
+		autoModel.thinkingLevelMap === target.thinkingLevelMap &&
+		autoModel.contextWindow === target.contextWindow &&
+		autoModel.maxTokens === target.maxTokens
+	)
 }
 
-function autoModelForTarget<TApi extends Api>(autoModel: Model<TApi>, target: ReasoningCapabilities): Model<TApi> {
+function autoModelForTarget<TApi extends Api>(autoModel: Model<TApi>, target: ModelCapabilities): Model<TApi> {
 	return {
 		...autoModel,
 		reasoning: target.reasoning,
 		thinkingLevelMap: target.thinkingLevelMap,
+		contextWindow: target.contextWindow,
+		maxTokens: target.maxTokens,
 	}
 }
 
-async function syncAutoReasoningCapabilities<TApi extends Api>(
+async function syncAutoCapabilities<TApi extends Api>(
 	pi: ExtensionAPI,
 	autoModel: Model<TApi>,
-	target: ReasoningCapabilities,
+	target: ModelCapabilities,
 ): Promise<boolean> {
-	if (hasTargetReasoningCapabilities(autoModel, target)) return true
+	if (hasTargetCapabilities(autoModel, target)) return true
 	return pi.setModel(autoModelForTarget(autoModel, target))
 }
 
@@ -107,7 +114,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			if (
 				!currentModel ||
 				!isAutoModel(currentModel) ||
-				(state.status === "resolved" && !hasTargetReasoningCapabilities(currentModel, state.model))
+				(state.status === "resolved" && !hasTargetCapabilities(currentModel, state.model))
 			) {
 				await pi.setModel(sessionAutoModel)
 			}
@@ -121,7 +128,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				state = hydrateAutoRoutingState(sessionId, ctx.sessionManager.getEntries(), ctx.modelRegistry)
 			}
 			if (state.status !== "resolved") return
-			await syncAutoReasoningCapabilities(pi, event.model, state.model)
+			await syncAutoCapabilities(pi, event.model, state.model)
 		})
 
 		pi.on("input", (event, ctx) => {
@@ -173,7 +180,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 
 				const resolution = resolveRecommendation(route.recommendation, ctx, requiresVision)
 				if (!resolution.ok) return fail(resolution.reason)
-				if (!(await syncAutoReasoningCapabilities(pi, autoModel, resolution.model))) {
+				if (!(await syncAutoCapabilities(pi, autoModel, resolution.model))) {
 					return fail("model_update_failed")
 				}
 
