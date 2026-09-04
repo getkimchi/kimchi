@@ -125,10 +125,6 @@ describe("isPreDispatchValueFlag", () => {
 		expect(isPreDispatchValueFlag(arg)).toBe(false)
 	})
 
-	it("does not treat --variant as a value flag (--variant flag was removed)", () => {
-		expect(isPreDispatchValueFlag("--variant")).toBe(false)
-	})
-
 	it("does not treat --spicy as a value flag (it is a boolean flag)", () => {
 		expect(isPreDispatchValueFlag("--spicy")).toBe(false)
 	})

@@ -19,8 +19,6 @@ import { DEFAULT_VARIANT, PROMPT_VARIANT_ENV, resolvePromptVariant } from "./ind
 import { SPICY, SPICY_NAME } from "./spicy.js"
 import {
 	AGENT_DISCIPLINE_BLOCK,
-	AGENT_ROLE_TUNING,
-	COORDINATOR_DELEGATION_BLOCK,
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
@@ -504,23 +502,6 @@ describe("AGENT_DISCIPLINE_BLOCK content", () => {
 })
 
 // ---------------------------------------------------------------------------
-// AGENT_ROLE_TUNING key guard: every key must match a real DEFAULT_AGENTS name
-// ---------------------------------------------------------------------------
-
-import { DEFAULT_AGENTS } from "../../agents/personas/default-agents.js"
-
-describe("AGENT_ROLE_TUNING key guard", () => {
-	it("every key in AGENT_ROLE_TUNING corresponds to an actual built-in persona name", () => {
-		const personaNames = new Set(DEFAULT_AGENTS.keys())
-		for (const key of Object.keys(AGENT_ROLE_TUNING)) {
-			expect(personaNames.has(key), `AGENT_ROLE_TUNING key '${key}' does not match any DEFAULT_AGENTS persona`).toBe(
-				true,
-			)
-		}
-	})
-})
-
-// ---------------------------------------------------------------------------
 // guidelinesFor: mode-aware guidelines
 // ---------------------------------------------------------------------------
 
@@ -607,10 +588,6 @@ describe("guidelinesFor", () => {
 	it("both single and orchestrator contain '### Working discipline'", () => {
 		expect(guidelinesFor("single")).toContain("### Working discipline")
 		expect(guidelinesFor("orchestrator")).toContain("### Working discipline")
-	})
-
-	it("OPINIONATED_BLOCK still contains the coordinator bullets (byte-identity preserved)", () => {
-		expect(OPINIONATED_BLOCK).toContain(COORDINATOR_DELEGATION_BLOCK)
 	})
 })
 

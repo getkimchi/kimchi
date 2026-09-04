@@ -4,6 +4,7 @@ import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
+import { useDefaultPromptVariant } from "../prompt-construction/test-utils.js"
 import { PROMPT_VARIANT_ENV, resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { SPICY } from "../prompt-construction/variants/spicy.js"
 import {
@@ -635,14 +636,11 @@ describe("buildFermentPromptBlock", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildFermentPromptBlock: variant ferment steer", () => {
-	let savedEnv: string | undefined
+	// Each case picks its variant through the environment; this restores the
+	// developer's own value afterwards.
+	useDefaultPromptVariant()
 
 	afterEach(() => {
-		if (savedEnv === undefined) {
-			delete process.env[PROMPT_VARIANT_ENV]
-		} else {
-			process.env[PROMPT_VARIANT_ENV] = savedEnv
-		}
 		registerAgents(new Map())
 	})
 
@@ -651,7 +649,6 @@ describe("buildFermentPromptBlock: variant ferment steer", () => {
 	})
 
 	it("prepends the active variant's steer to the planner supplement", () => {
-		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		process.env[PROMPT_VARIANT_ENV] = "spicy"
 		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
 		expect(out).toContain(SPICY_FERMENT_STEER)
@@ -661,7 +658,6 @@ describe("buildFermentPromptBlock: variant ferment steer", () => {
 	// to run the steps itself. The steer states which one wins so the assembled
 	// prompt has one execution stance instead of two.
 	it("single-model planner: the steer defers to the planner's direct-execution stance", () => {
-		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		process.env[PROMPT_VARIANT_ENV] = "spicy"
 		getMultiModelEnabledMock.mockReturnValue(false)
 		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
@@ -672,7 +668,6 @@ describe("buildFermentPromptBlock: variant ferment steer", () => {
 	})
 
 	it("orchestrator planner: the steer leaves the delegate-every-step stance alone", () => {
-		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		process.env[PROMPT_VARIANT_ENV] = "spicy"
 		getMultiModelEnabledMock.mockReturnValue(true)
 		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
@@ -681,15 +676,12 @@ describe("buildFermentPromptBlock: variant ferment steer", () => {
 	})
 
 	it("omits the steer when the active variant declares none", () => {
-		savedEnv = process.env[PROMPT_VARIANT_ENV]
-		delete process.env[PROMPT_VARIANT_ENV]
 		expect(resolvePromptVariant().fermentSteer).toBeUndefined()
 		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
 		expect(out).not.toContain(SPICY_FERMENT_STEER)
 	})
 
 	it("includes the steer for planned and running status", () => {
-		savedEnv = process.env[PROMPT_VARIANT_ENV]
 		process.env[PROMPT_VARIANT_ENV] = "spicy"
 		for (const status of ["planned", "running"] as const) {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status })) ?? ""

@@ -125,9 +125,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 - Measured rationale: direct execution completed 28 steps in 109 min at A/B grades (run 019ff530); forced delegation was slower per step at bench scale — workers re-establish context (~14 reads each) and hit budget caps on real builds.
 - If a worker aborts mid-step, resume it with resume_subagent, or finish directly when you already hold the context — do not spawn a duplicate that re-discovers the same work.`
 
-	return `${steer}
-
-## Ferment Planner Role
+	return `${steer}## Ferment Planner Role
 
 You are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers. ${delegationCheckpoint}
 

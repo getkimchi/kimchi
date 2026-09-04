@@ -166,7 +166,7 @@ Approach the work like an experienced software architect. Break the work into we
 const CONFIRM_SCOPE_BULLET = `
 - Confirm the scope and the design with the requester before implementing. Do not start building unprompted or before the direction is confirmed.`
 
-export const COORDINATOR_DELEGATION_BLOCK = `
+const COORDINATOR_DELEGATION_BLOCK = `
 
 **Coordinator and delegation**
 

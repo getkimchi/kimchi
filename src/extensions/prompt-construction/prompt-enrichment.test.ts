@@ -1598,7 +1598,6 @@ describe("continuation nudge turn_end handler", () => {
 			kimiCtx,
 		)
 
-		// Kimi ctx: nudge must fire.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain(
@@ -1620,7 +1619,6 @@ describe("continuation nudge turn_end handler", () => {
 			ineligibleCtx,
 		)
 
-		// Ineligible model (no narrate-then-stop quirk): the continuation nudge gate must suppress the nudge entirely.
 		const nudgeCalls = sendMessageCalls.filter(
 			(c) =>
 				(c.message as { customType?: string }).customType === "nudge" &&

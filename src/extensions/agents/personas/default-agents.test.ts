@@ -378,7 +378,6 @@ describe("per-role agent tuning (spicy variant)", () => {
 		expect(rolePos).toBeGreaterThan(disciplinePos)
 	})
 
-	// Guard: AGENT_ROLE_TUNING keys must match actual DEFAULT_AGENTS persona names
 	it("every key in AGENT_ROLE_TUNING corresponds to an actual built-in persona name", () => {
 		const personaNames = new Set(DEFAULT_AGENTS.keys())
 		for (const key of Object.keys(AGENT_ROLE_TUNING)) {
