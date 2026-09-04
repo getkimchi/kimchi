@@ -725,14 +725,14 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock.mock.calls[0]?.[2]).not.toHaveProperty("maxTokens")
 	})
 
-	it("does not impose a total evaluator deadline by default", async () => {
+	it("gives each evaluator attempt a ten-minute deadline", async () => {
 		const timeout = vi.spyOn(AbortSignal, "timeout")
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"keep working"}'))
 
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
 
-		expect(timeout).not.toHaveBeenCalled()
-		expect(completeMock.mock.calls[0]?.[2]?.signal).toBeUndefined()
+		expect(timeout).toHaveBeenCalledWith(600_000)
+		expect(completeMock.mock.calls[0]?.[2]?.signal).toBeInstanceOf(AbortSignal)
 		timeout.mockRestore()
 	})
 
@@ -825,24 +825,32 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock.mock.calls[1]?.[2]).not.toHaveProperty("maxTokens")
 	})
 
-	it("fails closed without retrying when the call times out", async () => {
+	it("retries once with a fresh deadline when the call times out", async () => {
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
-		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
-		completeMock.mockRejectedValue(new DOMException("timed out", "TimeoutError"))
+		const timeout = vi
+			.spyOn(AbortSignal, "timeout")
+			.mockReturnValueOnce(AbortSignal.abort())
+			.mockReturnValueOnce(new AbortController().signal)
+		completeMock
+			.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"))
+			.mockResolvedValueOnce(assistant('{"verdict":"continue","reason":"keep working"}'))
 
 		await expect(
 			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
 		).resolves.toEqual({
-			verdict: "unavailable",
-			reason: "Evaluator session/main timed out after 5 seconds.",
+			verdict: "continue",
+			reason: "keep working",
 			model: "session/main",
+			usage,
 		})
-		expect(timeout).toHaveBeenCalledWith(5_000)
-		expect(completeMock).toHaveBeenCalledOnce()
+		expect(timeout).toHaveBeenCalledTimes(2)
+		expect(timeout).toHaveBeenNthCalledWith(1, 5_000)
+		expect(timeout).toHaveBeenNthCalledWith(2, 5_000)
+		expect(completeMock).toHaveBeenCalledTimes(2)
 		timeout.mockRestore()
 	})
 
-	it("reports a timeout when the provider resolves with an aborted response", async () => {
+	it("fails closed when both timeout attempts resolve aborted", async () => {
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
 		completeMock.mockResolvedValue(assistant("", { stopReason: "aborted" }))
@@ -854,7 +862,8 @@ describe("Ferment V2 evaluator", () => {
 			reason: "Evaluator session/main timed out after 5 seconds.",
 			model: "session/main",
 		})
-		expect(timeout).toHaveBeenCalledWith(5_000)
+		expect(timeout).toHaveBeenCalledTimes(2)
+		expect(completeMock).toHaveBeenCalledTimes(2)
 		timeout.mockRestore()
 	})
 
@@ -904,6 +913,7 @@ describe("Ferment V2 evaluator", () => {
 			reason: "Evaluator session/main was cancelled.",
 			model: "session/main",
 		})
+		expect(completeMock).toHaveBeenCalledOnce()
 	})
 
 	it("keeps the newest messages, not the oldest, when the transcript overflows the budget", async () => {
