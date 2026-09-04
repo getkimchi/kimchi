@@ -12,6 +12,7 @@ const upstream = vi.hoisted(() => ({
 const configState = vi.hoisted(() => ({
 	config: { mcpServers: {} } as McpConfig,
 	configPath: undefined as string | undefined,
+	useProgrammaticConfig: false,
 	warnings: [] as string[],
 }))
 const cliState = vi.hoisted(() => ({ mcpConfig: undefined as string | undefined }))
@@ -42,6 +43,7 @@ vi.mock("./config.js", () => ({
 	loadKimchiMcpConfig: () => ({
 		config: configState.config,
 		configPath: configState.configPath,
+		...(configState.useProgrammaticConfig ? { useProgrammaticConfig: true } : {}),
 		warnings: configState.warnings,
 	}),
 }))
@@ -76,6 +78,10 @@ vi.mock("./annotation-catalog.js", () => ({
 		isReadOnlyByName(originalName: string): boolean {
 			return annotations.readOnly.has(originalName)
 		}
+		isReadOnlyGatewayTool(toolName: string, serverName: string | undefined): boolean {
+			const originalName = serverName ? toolName.replace(`${serverName}_`, "") : toolName
+			return annotations.readOnly.has(originalName)
+		}
 	},
 }))
 
@@ -97,6 +103,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.options = undefined
 		configState.config = { mcpServers: {} }
 		configState.configPath = undefined
+		configState.useProgrammaticConfig = false
 		configState.warnings = []
 		oauthMigration.warnings = []
 		annotations.readOnly.clear()
@@ -120,6 +127,17 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 		expect(upstream.api).toBeDefined()
+	})
+
+	it("uses the resolved config when selected-file precedence requires an overlay", () => {
+		configState.config = { mcpServers: { docs: { command: "selected-server" } } }
+		configState.configPath = "/tmp/mcp.json"
+		configState.useProgrammaticConfig = true
+		const { api } = createExtensionApi()
+
+		mcpAdapterExtension(api)
+
+		expect(upstream.options).toEqual({ config: configState.config })
 	})
 
 	it("suppresses all model-facing MCP tools for an empty configuration", () => {
@@ -186,6 +204,28 @@ describe("upstream MCP adapter facade", () => {
 		expect(gatewayExecute).not.toHaveBeenCalled()
 		expect(directResult).toMatchObject({ isError: true, details: { error: "plan_mode_write_blocked" } })
 		expect(gatewayResult).toMatchObject({ isError: true, details: { error: "plan_mode_write_blocked" } })
+	})
+
+	it("allows a server-prefixed read-only gateway call in planning profiles", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		planning.currentProfile = "planning-adhoc"
+		annotations.readOnly.add("get_issue")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+
+		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
+		const result = await gateway?.execute(
+			"gateway",
+			{ tool: "docs_get_issue", server: "docs", args: {} },
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		expect(gatewayExecute).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
 	})
 
 	it("creates an isolated caller-wins configuration for ACP sessions", () => {

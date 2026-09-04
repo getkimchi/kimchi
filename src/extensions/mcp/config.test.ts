@@ -51,6 +51,33 @@ describe("loadKimchiMcpConfig", () => {
 		expect(upstream.load).toHaveBeenCalledWith(legacyPath, cwd)
 	})
 
+	it("restores legacy precedence when a standard project source overrides the same server", () => {
+		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
+		mkdirSync(dirname(legacyPath), { recursive: true })
+		writeFileSync(legacyPath, JSON.stringify({ mcpServers: { shared: { command: "legacy-server" } } }))
+		const discovered: McpConfig = {
+			mcpServers: {
+				shared: { command: "standard-project-server" },
+				standardOnly: { command: "standard-only-server" },
+			},
+		}
+		upstream.load.mockReturnValue(discovered)
+
+		const result = loadKimchiMcpConfig({ cwd })
+
+		expect(result).toEqual({
+			config: {
+				mcpServers: {
+					shared: { command: "legacy-server" },
+					standardOnly: { command: "standard-only-server" },
+				},
+			},
+			configPath: legacyPath,
+			useProgrammaticConfig: true,
+			warnings: [],
+		})
+	})
+
 	it("prefers an explicit config path over the legacy project file", () => {
 		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
 		mkdirSync(dirname(legacyPath), { recursive: true })

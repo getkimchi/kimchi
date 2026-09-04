@@ -87,6 +87,24 @@ describe("McpAnnotationCatalog", () => {
 		expect(catalog.isReadOnlyByName("unknown")).toBe(false)
 	})
 
+	it("recognizes a server-prefixed read-only tool at the gateway boundary", () => {
+		const { catalog } = createCatalog()
+		catalog.record([
+			{
+				name: "get_safe",
+				description: "Read a safe value",
+				inputSchema: { type: "object" },
+				annotations: { readOnlyHint: true },
+			},
+		])
+
+		expect(
+			catalog.isReadOnlyGatewayTool("fixture_get_safe", "fixture", {
+				mcpServers: { fixture: { command: "fixture-server" } },
+			}),
+		).toBe(true)
+	})
+
 	it("persists observations with private file permissions", () => {
 		const changed = vi.fn()
 		const { catalog, cachePath } = createCatalog(changed)

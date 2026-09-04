@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createMcpAdapter, MCP_STATUS_EVENT } from "pi-mcp-adapter"
-import type { ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/read-only-tool-registry.js"
 import {
@@ -25,18 +25,20 @@ const MCP_DIRECT_TOOL_LABEL_PREFIX = "MCP: "
 
 interface McpToolSurfacePolicy {
 	annotationCatalog: McpAnnotationCatalog
+	config: McpConfig
 	directTools: Map<string, { originalName: string; description: string }>
 	suppressedToolNames: Set<string>
 }
 
-function createMcpToolSurfacePolicy(
-	hasConfiguredServers: boolean,
-	annotationCatalog: McpAnnotationCatalog,
-): McpToolSurfacePolicy {
+function createMcpToolSurfacePolicy(config: McpConfig, annotationCatalog: McpAnnotationCatalog): McpToolSurfacePolicy {
 	return {
 		annotationCatalog,
+		config,
 		directTools: new Map(),
-		suppressedToolNames: new Set([MCP_SCRIPT_TOOL, ...(!hasConfiguredServers ? [MCP_PROXY_TOOL] : [])]),
+		suppressedToolNames: new Set([
+			MCP_SCRIPT_TOOL,
+			...(Object.keys(config.mcpServers).length === 0 ? [MCP_PROXY_TOOL] : []),
+		]),
 	}
 }
 
@@ -79,9 +81,13 @@ function blockedMcpToolInPlanning(
 			: originalName
 	if (registeredName !== MCP_PROXY_TOOL || !params || typeof params !== "object" || Array.isArray(params))
 		return undefined
-	const gatewayTool = (params as { tool?: unknown }).tool
+	const gatewayParams = params as { server?: unknown; tool?: unknown }
+	const gatewayTool = gatewayParams.tool
 	if (typeof gatewayTool !== "string") return undefined
-	return policy.annotationCatalog.isReadOnlyByName(gatewayTool) ? undefined : gatewayTool
+	const gatewayServer = typeof gatewayParams.server === "string" ? gatewayParams.server : undefined
+	return policy.annotationCatalog.isReadOnlyGatewayTool(gatewayTool, gatewayServer, policy.config)
+		? undefined
+		: gatewayTool
 }
 
 function createUpstreamApi(pi: ExtensionAPI, policy: McpToolSurfacePolicy): ExtensionAPI {
@@ -143,6 +149,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	const {
 		config: fileConfig,
 		configPath,
+		useProgrammaticConfig,
 		warnings: configWarnings,
 	} = loadKimchiMcpConfig({
 		cwd: options.cwd,
@@ -153,12 +160,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		: fileConfig
 	const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config)
 	const warnings = [...configWarnings, ...oauthWarnings]
-	const hasConfiguredServers = Object.keys(config.mcpServers).length > 0
 	const annotationCatalog = new McpAnnotationCatalog({
 		sourceHash: mcpAnnotationSourceHash(config),
 		onChanged: () => reapplyCurrentProfile(pi),
 	})
-	const policy = createMcpToolSurfacePolicy(hasConfiguredServers, annotationCatalog)
+	const policy = createMcpToolSurfacePolicy(config, annotationCatalog)
 
 	registerReadOnlyToolProvider(pi, () =>
 		[...policy.directTools]
@@ -177,7 +183,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		reapplyCurrentProfile(pi)
 	})
 
-	const adapterOptions = options.callerServers ? { config } : configPath ? { configPath } : {}
+	const adapterOptions: McpAdapterOptions =
+		options.callerServers || useProgrammaticConfig ? { config } : configPath ? { configPath } : {}
 	runWithMcpAnnotationCatalog(policy.annotationCatalog, () => {
 		createMcpAdapter(adapterOptions)(createUpstreamApi(pi, policy))
 	})

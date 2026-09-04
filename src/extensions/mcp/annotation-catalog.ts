@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path"
 import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
 import { computeServerHash, getMetadataCachePath } from "pi-mcp-adapter/metadata-cache"
-import type { McpConfig } from "pi-mcp-adapter/types"
+import { getToolNameCandidates, type McpConfig, resolveToolPrefix, type ServerEntry } from "pi-mcp-adapter/types"
 import { isReadOnlyMcpToolName } from "./read-only-tools.js"
 
 type ListedTool = ListToolsResult["tools"][number]
@@ -90,6 +90,26 @@ export class McpAnnotationCatalog {
 		const prefix = `${originalName}\0`
 		const states = [...this.tools].filter(([key]) => key.startsWith(prefix)).map(([, state]) => state)
 		return states.length > 0 && states.every((state) => this.isReadOnlyState(originalName, state))
+	}
+
+	isReadOnlyGatewayTool(gatewayName: string, serverName: string | undefined, config: McpConfig): boolean {
+		const servers: Array<[string, ServerEntry]> = serverName
+			? config.mcpServers[serverName]
+				? [[serverName, config.mcpServers[serverName]]]
+				: []
+			: Object.entries(config.mcpServers)
+		const matches: Array<{ originalName: string; state: AnnotationState }> = []
+		for (const [key, state] of this.tools) {
+			const originalName = key.slice(0, key.indexOf("\0"))
+			for (const [configuredServerName, definition] of servers) {
+				const prefix = resolveToolPrefix(definition, config.settings?.toolPrefix)
+				if (getToolNameCandidates(originalName, configuredServerName, prefix).has(gatewayName)) {
+					matches.push({ originalName, state })
+					break
+				}
+			}
+		}
+		return matches.length > 0 && matches.every(({ originalName, state }) => this.isReadOnlyState(originalName, state))
 	}
 
 	private isReadOnlyState(originalName: string, state: AnnotationState | undefined): boolean {

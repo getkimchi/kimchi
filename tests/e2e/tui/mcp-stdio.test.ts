@@ -137,6 +137,44 @@ test("uses MCP read-only annotations in plan mode and fails closed for explicit 
 	)
 })
 
+test("calls a server-prefixed read-only MCP tool through the gateway in plan mode", async ({ terminal }) => {
+	const safeGatewayCall = gatewayMcpCall("get_safe")
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-read-only-gateway",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "get_safe",
+							description: "Read a safe fixture value",
+							inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							annotations: { readOnlyHint: true },
+						},
+					],
+					tools: [
+						mcpToolResult("get_safe", {
+							content: [{ type: "text", text: "fixture safe value" }],
+						}),
+					],
+				},
+			},
+			responses: [safeGatewayCall.response, modelReply("The read-only MCP gateway call succeeded in plan mode.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Read the safe MCP fixture value")
+			await waitForText(terminal, "The read-only MCP gateway call succeeded in plan mode.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			await fixture.mcp.waitForEvent("tool_called", { where: { name: "get_safe", arguments: {} } })
+			expect(toolResultText(fixture.fake.requests, safeGatewayCall)).toContain("fixture safe value")
+			trace.step("prefixed gateway name was matched to its read-only protocol annotation")
+		},
+	)
+})
+
 test("delivers an MCP isError result to the next model turn", async ({ terminal }) => {
 	const failure = gatewayMcpCall("fail")
 	await runMcpKimchiSession(
