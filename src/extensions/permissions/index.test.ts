@@ -1171,6 +1171,36 @@ describe("permissions internal tool classification", () => {
 		expect(bashResult).toBeUndefined()
 		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
+
+	it("allows bash_control in default mode without a prompt (bash was already approved)", async () => {
+		const harness = createPermissionsHarness(["bash", "bash_control"])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: "bash_control", input: { handle: "h1", action: "continue" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("allows bash_control in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(["bash", "bash_control"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: "bash_control", input: { handle: "h1", action: "stop" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
 })
 
 describe("permissions workflow output tool classification", () => {
