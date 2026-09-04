@@ -66,16 +66,7 @@ export async function promptPlanReview(
 	ctx: ExtensionContext,
 	opts: { planMarkdown: string; onDismissRegister?: (dismiss: () => void) => void },
 ): Promise<PlanReviewOutcome | undefined> {
-	if (ctx.mode !== "tui") {
-		if (!ctx.hasUI) return undefined
-		const choice = await ctx.ui.select("Plan ready for review. How would you like to proceed?", getDecisionOptions())
-		if (choice === undefined) return undefined
-		if (choice === BASE_DECISION_OPTIONS[0]) return { kind: "start" }
-		if (choice === BASE_DECISION_OPTIONS[1]) return { kind: "start_auto" }
-		if (choice === CLOUD_DECISION_OPTION) return { kind: "start_cloud" }
-		const text = (await ctx.ui.input("Your direction:", "What should change in the plan?"))?.trim()
-		return text ? { kind: "feedback", text } : { kind: "cancelled", reason: "empty_feedback" }
-	}
+	if (ctx.mode !== "tui") return undefined
 	const ui = ctx.ui
 	return withWorkingHidden(
 		ui,

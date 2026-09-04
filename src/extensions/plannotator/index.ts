@@ -27,7 +27,6 @@ import {
 	getActivePlanReviewSource,
 	onPlanReviewRequest,
 	type PlanReviewRequestPayload,
-	type PlanReviewSource,
 } from "../../shared/planning/plan-review-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 
@@ -45,16 +44,10 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 		// there. Future integrations (logging, alternative reviewers) can
 		// subscribe independently.
 		if (!ctx.hasUI || pi.getFlag("ferment-oneshot") === true) return
-		const reviewsByRequestId = new Map<string, { fermentId?: string; sessionId: string; source: PlanReviewSource }>()
 
 		// kimchi:plan-review-request → plannotator:request plan-review (browser UI)
 		onPlanReviewRequest(pi, (payload: PlanReviewRequestPayload) => {
 			const requestId = `kimchi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-			reviewsByRequestId.set(requestId, {
-				fermentId: payload.fermentId,
-				sessionId: payload.sessionId,
-				source: payload.source,
-			})
 
 			pi.events.emit(PLANNOTATOR_REQUEST_CHANNEL, {
 				requestId,
@@ -63,7 +56,6 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 					planContent: payload.planContent,
 					planFilePath: payload.planFilePath,
 					origin: payload.source,
-					sessionId: payload.sessionId,
 				},
 				respond: () => {
 					// Fire-and-forget — we don't need the reviewId.
@@ -77,18 +69,11 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 			const result = data as {
 				approved?: boolean
 				feedback?: string
-				requestId?: string
 			}
 			if (typeof result?.approved !== "boolean") return
 
-			const activeReview =
-				(result.requestId ? reviewsByRequestId.get(result.requestId) : undefined) ??
-				(reviewsByRequestId.size === 1 ? [...reviewsByRequestId.values()][0] : undefined)
-			if (!activeReview) return
-			if (result.requestId) reviewsByRequestId.delete(result.requestId)
-
-			// Determine which review surface this result belongs to.
-			const planReviewSource = getActivePlanReviewSource(activeReview.sessionId)
+			// Determine which review surface this result belongs to
+			const planReviewSource = getActivePlanReviewSource()
 			if (!planReviewSource) return
 
 			// Deny with a comment maps to "feedback" (model revises with direction).
@@ -96,12 +81,10 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 			// text would trigger a directionless revision turn.
 			const feedback = result.feedback?.trim() || undefined
 			emitPlanReviewDecision(pi, {
-				sessionId: activeReview.sessionId,
 				decision: result.approved ? "execute" : feedback ? "feedback" : "rework",
 				feedback,
 				source: "plannotator",
 				planReviewSource,
-				fermentId: activeReview.fermentId,
 			})
 		})
 	})

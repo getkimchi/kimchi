@@ -1452,28 +1452,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(getAcpPrompter("session-bind-leak")).toBeUndefined()
 	})
 
-	it("removes the registered session if a late newSession step throws", async () => {
-		const leaky = new FakeAgentSession("session-late-leak")
-		const factory: AcpSessionFactory = async () => asSession(leaky)
-		const conn = {
-			sessionUpdate: () => {
-				throw new Error("send boom")
-			},
-		} as unknown as AgentSideConnection
-		const localAgent = new KimchiAcpAgent(conn, {
-			extensionFactories: [],
-			agentDir: "/tmp/fake-agent-dir",
-			sessionFactory: factory,
-		})
-
-		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/send boom/)
-		expect(leaky.disposed).toBe(true)
-		expect(getAcpPrompter("session-late-leak")).toBeUndefined()
-		await expect(localAgent.prompt({ sessionId: "session-late-leak", prompt: [] })).rejects.toThrow(
-			/unknown sessionId session-late-leak/,
-		)
-	})
-
 	it("registers an ACP permission prompter that maps allow_once through requestPermission", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {

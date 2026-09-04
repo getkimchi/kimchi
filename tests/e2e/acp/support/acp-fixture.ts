@@ -104,7 +104,8 @@ export class RecordingClient {
 	readonly elicitationRequests: Array<{ method: string; params: unknown }> = []
 
 	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
-	private elicitationResolvers: Array<(response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse> = []
+	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
+		null
 
 	async sessionUpdate(params: acp.SessionNotification): Promise<void> {
 		this.sessionUpdates.push({ sessionId: params.sessionId, update: params.update })
@@ -149,16 +150,17 @@ export class RecordingClient {
 	 */
 	async unstable_createElicitation(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> {
 		this.elicitationRequests.push({ method: "elicitation/create", params })
-		const resolver = this.elicitationResolvers.shift()
-		if (resolver) {
+		if (this.elicitationResolver) {
+			const resolver = this.elicitationResolver
+			this.elicitationResolver = null
 			return resolver({ action: "accept", content: {} })
 		}
 		return { action: "accept", content: {} }
 	}
 
-	/** Queue an elicitation answer. Multiple calls resolve subsequent requests in order. */
+	/** Hook the next elicitation request to resolve with the given answer. */
 	answerNextElicitationWith(response: acp.CreateElicitationResponse): void {
-		this.elicitationResolvers.push(() => response)
+		this.elicitationResolver = () => response
 	}
 
 	/**

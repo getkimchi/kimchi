@@ -1,4 +1,4 @@
-import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
+import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -69,7 +69,6 @@ import {
 	clearAllPendingPlanReviews,
 	createPlanReviewComponent,
 	getCurrentPendingPlanReview,
-	promptPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
 
@@ -216,38 +215,5 @@ describe("PlanReviewComponent", () => {
 		const { component } = createComponent()
 		const lines = component.render(80).join("\n")
 		expect(lines).not.toContain("Start execution in cloud")
-	})
-})
-
-describe("promptPlanReview in RPC mode", () => {
-	it("uses select for ACP/RPC review approval", async () => {
-		const ctx = {
-			hasUI: true,
-			mode: "rpc",
-			ui: {
-				select: vi.fn().mockResolvedValue("Start execution"),
-				input: vi.fn(),
-			},
-		} as unknown as ExtensionContext
-
-		await expect(promptPlanReview(ctx, { planMarkdown: "# Plan" })).resolves.toEqual({ kind: "start" })
-		expect(ctx.ui.select).toHaveBeenCalled()
-		expect(ctx.ui.input).not.toHaveBeenCalled()
-	})
-
-	it("uses input for ACP/RPC review feedback", async () => {
-		const ctx = {
-			hasUI: true,
-			mode: "rpc",
-			ui: {
-				select: vi.fn().mockResolvedValue("Let me say something"),
-				input: vi.fn().mockResolvedValue("split phase 2"),
-			},
-		} as unknown as ExtensionContext
-
-		await expect(promptPlanReview(ctx, { planMarkdown: "# Plan" })).resolves.toEqual({
-			kind: "feedback",
-			text: "split phase 2",
-		})
 	})
 })

@@ -1218,8 +1218,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			// agent turn ends, so terminal scrollback is not fighting active-turn
 			// progress writes.
 			if (questions.length === 0) {
-				if (!ctx.hasUI) {
-					// True headless hosts cannot answer select/input review prompts.
+				if (ctx.mode !== "tui") {
+					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
 					return planToolOk(
@@ -1259,7 +1259,6 @@ ${renderGateGuidance("scope_ferment")}`,
 				emitPlanReviewRequest(
 					pi,
 					{
-						sessionId: ctx.sessionManager.getSessionId(),
 						planContent: planEntry,
 						planFilePath: planPath,
 						source: "ferment",

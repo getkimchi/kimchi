@@ -11,15 +11,11 @@ import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-regis
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
-	appendPlanReviewResolvedEntry,
-	clearPlanReviewState,
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
 	emitPlanReviewRequest,
-	emitPlanReviewResolved,
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
-	type PlanReviewResolvedOutcome,
 } from "../../shared/planning/plan-review-bus.js"
 import {
 	contentHasToolCall,
@@ -475,8 +471,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function executePlan(planPath: string | undefined, planText: string): void {
-		// Notify legacy subscribers that planning ended. ACP plan snapshots clear
-		// through the plan-review resolved marker emitted by the approval path.
+		// Notify subscribers (e.g. the ACP plan tracker) that planning ended and
+		// the approved plan is now executing — pre-approval planning todos must
+		// not be reported as plan progress.
 		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 		// Send the approved plan as the execution trigger. No compaction needed —
 		// the plan text is already in context from the planning conversation.
@@ -565,7 +562,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
-		if (currentCtx) clearPlanReviewState(currentCtx.sessionManager.getSessionId())
 		currentCtx = undefined
 	})
 
@@ -730,12 +726,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// self-select: the plannotator adapter skips non-interactive sessions.
 			emitPlanReviewRequest(
 				pi,
-				{
-					sessionId: ctx.sessionManager.getSessionId(),
-					planContent: planText,
-					planFilePath: planPath,
-					source: "adhoc",
-				},
+				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
 				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
 			)
 
@@ -756,7 +747,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// per-review and must not accumulate on the shared event bus.
 			const planMenuAbort = new AbortController()
 			const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
-				if (payload.sessionId !== ctx.sessionManager.getSessionId()) return
 				if (payload.planReviewSource !== "adhoc") return
 				if (payload.source !== "plannotator") return
 				planMenuAbort.abort()
@@ -783,28 +773,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (choice === undefined) return
 					if (choice === EXECUTE) {
 						emitPlanReviewDecision(pi, {
-							sessionId: ctx.sessionManager.getSessionId(),
 							decision: "execute",
 							source: "kimchi-tui",
 							planReviewSource: "adhoc",
 						})
 					} else if (choice === START_AS_FERMENT) {
 						emitPlanReviewDecision(pi, {
-							sessionId: ctx.sessionManager.getSessionId(),
 							decision: "start_ferment",
 							source: "kimchi-tui",
 							planReviewSource: "adhoc",
 						})
 					} else if (choice === START_IN_CLOUD) {
 						emitPlanReviewDecision(pi, {
-							sessionId: ctx.sessionManager.getSessionId(),
 							decision: "start_cloud",
 							source: "kimchi-tui",
 							planReviewSource: "adhoc",
 						})
 					} else {
 						emitPlanReviewDecision(pi, {
-							sessionId: ctx.sessionManager.getSessionId(),
 							decision: "rework",
 							source: "kimchi-tui",
 							planReviewSource: "adhoc",
@@ -830,25 +816,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// the TUI menu and plannotator's browser UI (first decision wins).
 	onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
 		if (payload.planReviewSource !== "adhoc") return
-		const reviewCtx = consumePlanReviewContext(payload.sessionId)
+		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
 		const { ctx, planPath, planText, rawText } = reviewCtx
-		const resolveReview = (outcome: PlanReviewResolvedOutcome, fermentId?: string) => {
-			const resolved = {
-				sessionId: payload.sessionId,
-				decision: payload.decision,
-				planReviewSource: "adhoc" as const,
-				outcome,
-				fermentId,
-			}
-			appendPlanReviewResolvedEntry(pi, resolved)
-			emitPlanReviewResolved(pi, resolved)
-		}
 
 		if (payload.decision === "execute") {
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			executePlan(planPath, planText)
-			resolveReview("accepted")
 			activePlanSlug = undefined
 		} else if (payload.decision === "start_ferment") {
 			// Converted into a ferment — same release as the execute path.
@@ -923,7 +897,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
-					resolveReview("accepted", draft.id)
 					return
 				}
 
@@ -1006,7 +979,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					{ triggerTurn: true },
 				)
 				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-				resolveReview("replaced_by_ferment", activated.ferment.id)
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear
 				// the half-set runtime state, and tell the user that they can retry.
@@ -1028,7 +1000,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
-				resolveReview("accepted")
 			} catch (err) {
 				// Spawn failed — otherwise the user is stranded in auto mode with
 				// no active plan and no visible error. Surface the error and
@@ -1048,10 +1019,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				},
 				{ triggerTurn: true },
 			)
-			resolveReview("feedback")
-		} else {
-			resolveReview("rework")
 		}
+		// "rework" = stay in plan mode, no action needed
 	})
 
 	pi.on("tool_call", async (event, ctx) => {

@@ -1,11 +1,11 @@
 /**
- * End-to-end integration test: runScopingFlow → propose_ferment_scoping → review.
+ * End-to-end integration test: runScopingFlow → propose_ferment_scoping → planned.
  *
  * Exercises the full single-input scoping handshake:
  *   1. runScopingFlow(ferment, pi, ctx) with a mocked ctx.ui.input returning intent.
  *   2. Agent calls propose_ferment_scoping via the registered tool with a full payload.
- *   3. UI-capable hosts hold a pending review instead of auto-confirming.
- *   4. Assert ferment.status === "draft", pending scope/review/sidecar remain.
+ *   3. ctx.ui.select returns "Start execution  ✓".
+ *   4. Assert ferment.status === "planned", phases populated, pendingScope cleared.
  */
 
 import { mkdtempSync } from "node:fs"
@@ -17,7 +17,6 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
-import { loadPendingProposal } from "./pending-proposal-store.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, runScopingFlow } from "./scoping.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
@@ -38,7 +37,6 @@ interface ToolResult {
 
 function createHarness() {
 	const tempDir = mkdtempSync(join(tmpdir(), "ferment-scoping-flow-int-test-"))
-	vi.stubEnv("KIMCHI_FERMENTS_DIR", tempDir)
 	const eventStorage = new FermentEventStore(tempDir)
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
@@ -83,7 +81,6 @@ beforeEach(() => {
 	clearAllStepStarts()
 	clearAllScopingGates()
 	clearAllPendingScopes()
-	h.runtime.clearAllPendingPlanReviews()
 	setActive(undefined)
 })
 
@@ -92,9 +89,7 @@ afterEach(() => {
 	clearAllStepStarts()
 	clearAllScopingGates()
 	clearAllPendingScopes()
-	h.runtime.clearAllPendingPlanReviews()
 	setActive(undefined)
-	vi.unstubAllEnvs()
 })
 
 const passingPlanGates = () => [
@@ -196,7 +191,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		expect(result.content.at(0)?.text).toContain("Plan ready for review")
 	})
 
-	it("headless mode with UI: single input → sendMessage with intent; propose_ferment_scoping → pending review", async () => {
+	it("headless mode with UI: single input → sendMessage with intent; propose_ferment_scoping → planned with one phase", async () => {
 		// Setup
 		const ferment = h.eventStorage.create("OAuth Integration")
 		h.runtime.setActive(ferment)
@@ -286,35 +281,17 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			throw new Error(`propose_ferment_scoping returned error: ${result.content[0]?.text}`)
 		}
 
-		// Step 3: assert UI-capable non-TUI holds for ACP/RPC review instead of
-		// auto-confirming into planned state.
+		// Step 3: assert ferment is now planned
 		clearFermentCache()
-		const draft = h.eventStorage.get(ferment.id)
-		if (!draft) throw new Error("Ferment not found after propose_ferment_scoping")
+		const planned = h.eventStorage.get(ferment.id)
+		if (!planned) throw new Error("Ferment not found after propose_ferment_scoping")
 
-		expect(draft.status).toBe("draft")
-		expect(draft.name).toBe("OAuth Integration")
-		expect(draft.phases).toHaveLength(0)
-		expect(draft.scoping.assumptions).toBeUndefined()
+		expect(planned.status).toBe("planned")
+		expect(planned.name).toBe("Google OAuth Login")
+		expect(planned.phases).toHaveLength(1)
+		expect(planned.scoping.assumptions?.answer).toBe("Google API credentials are already provisioned")
 
-		const pendingScope = getPendingScope(ferment.id)
-		expect(pendingScope).toMatchObject({
-			title: "Google OAuth Login",
-			goal: "Users can sign in with Google OAuth",
-			assumptions: "Google API credentials are already provisioned",
-		})
-		expect(pendingScope?.phases).toHaveLength(1)
-
-		expect(h.runtime.getPendingPlanReview(ferment.id)).toMatchObject({
-			fermentId: ferment.id,
-			planMarkdown: expect.stringContaining("Google OAuth Vertical Slice"),
-		})
-		expect(loadPendingProposal(ferment.id)).toMatchObject({
-			fermentId: ferment.id,
-			title: "Google OAuth Login",
-			goal: "Users can sign in with Google OAuth",
-			phases: expect.arrayContaining([expect.objectContaining({ name: "Google OAuth Vertical Slice" })]),
-		})
-		expect(selectMock).not.toHaveBeenCalled()
+		// Pending scope should be cleared
+		expect(getPendingScope(ferment.id)).toBeUndefined()
 	})
 })
