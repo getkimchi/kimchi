@@ -30,6 +30,10 @@ afterEach(() => {
 })
 
 describe("parseFermentV2Settings", () => {
+	it("uses a ten-minute evaluator deadline by default", () => {
+		expect(parseFermentV2Settings(undefined).evaluationTimeoutMs).toBe(600_000)
+	})
+
 	it("returns all defaults when the Ferment V2 value is not a plain object", () => {
 		for (const value of [undefined, null, "fermentV2", ["not", "an", "object"]]) {
 			expect(parseFermentV2Settings(value)).toEqual(DEFAULT_FERMENT_V2_SETTINGS)

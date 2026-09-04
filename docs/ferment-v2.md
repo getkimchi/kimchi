@@ -38,7 +38,7 @@ Management mutations are serialized per session. Edit commits the next revision 
 
 ## Settings
 
-Under the `fermentV2` key in `~/.config/kimchi/harness/settings.json`, the defaults are `autoResume: true`, `maxUnchangedContinuations: 3`, `maxConsecutiveErrors: 3`, `defaultTokenBudget: unset`, and `evaluationTimeoutMs: 180000`. `autoResume` affects only the interactive session-start kick; invalid or missing values fall back to these defaults. An explicit command-line `--tokens` value overrides `defaultTokenBudget`.
+Under the `fermentV2` key in `~/.config/kimchi/harness/settings.json`, the defaults are `autoResume: true`, `maxUnchangedContinuations: 3`, `maxConsecutiveErrors: 3`, `defaultTokenBudget: unset`, and `evaluationTimeoutMs: 600000`. `autoResume` affects only the interactive session-start kick; invalid or missing values fall back to these defaults. An explicit command-line `--tokens` value overrides `defaultTokenBudget`; a positive `evaluationTimeoutMs` overrides the deadline for each evaluator attempt.
 
 ## Runtime flow
 
@@ -89,7 +89,7 @@ Terminal Todo notes become at most five bounded durable lessons. Only lessons pr
 
 ## Settled evaluation
 
-The evaluator uses the session model in single-model mode. With multi-model enabled, it resolves the first configured `judge` role and falls back to the session model if that lookup fails. It makes one tool-free `completeSimple` call with a 180-second default timeout (`fermentV2.evaluationTimeoutMs` is configurable), a reasoning-aware token limit, and provider JSON mode for Moonshot and Kimchi-managed evaluators. When PII redaction is enabled, the complete rendered evaluator prompt is redacted before it is recorded or sent; a redaction failure makes evaluation unavailable instead of sending raw input. When an interactive turn produced a hidden candidate, the evaluator runs inside the awaited `agent_end` hook and holds Kimchi's existing cooking animation for the call; every other turn evaluates at `agent_settled`, so automatic compaction between those hooks is never blocked. Each call is recorded as a child Pi session linked to the working session, so its prompt, response, model, activity, and usage stay out of the working journal.
+The evaluator uses the session model in single-model mode. With multi-model enabled, it resolves the first configured `judge` role and falls back to the session model if that lookup fails. Each tool-free `completeSimple` attempt has a ten-minute default deadline and uses the evaluator model's native response limit, with provider JSON mode for Moonshot and Kimchi-managed evaluators. A timed-out attempt is retried once with a fresh deadline; if both attempts time out, evaluation becomes unavailable and the Ferment pauses. Caller cancellation is never retried. When PII redaction is enabled, the complete rendered evaluator prompt is redacted before it is recorded or sent; a redaction failure makes evaluation unavailable instead of sending raw input. When an interactive turn produced a hidden candidate, the evaluator runs inside the awaited `agent_end` hook and holds Kimchi's existing cooking animation for the call; every other turn evaluates at `agent_settled`, so automatic compaction between those hooks is never blocked. Each call is recorded as a child Pi session linked to the working session, so its prompt, response, model, activity, and usage stay out of the working journal.
 
 Its input is the objective, bounded Todo state (8,000 characters), at most five lessons, and bounded transcript units (16,000 characters). Tool calls stay paired with linked results where possible; oversized non-evidence chatter is skipped so older linked results can remain, and thinking is removed. A `met` verdict is accepted only when every objective check is met, names a plausible failure mode, cites at least one retained authoritative item, and uses only known Todo IDs. Extra context citations do not invalidate an otherwise evidenced check. Todos remain a tactical completeness gate, but incidental settled Todos do not need artificial evaluator checks. Only linked tool results and `Evidence:` lessons receive citation IDs and count as authoritative evidence. Claims, plans, tool calls, file edits, decisions, dead ends, and exit status alone do not.
 
@@ -100,7 +100,7 @@ Verdicts have these effects:
 - `continue`: persist the evaluation and queue one hidden `followUp` continuation while all gates still pass. A reason is included in the hidden checkpoint steer.
 - `met`: in interactive mode, request the final answer only when the current revision has a non-empty visible Todo list whose items are all completed; headless mode may proceed without an invisible Todo list. Mark complete only after that answer is delivered successfully, otherwise pause.
 - `impossible`: persist `blocked` with the evaluator reason.
-- `unavailable`: persist the evaluation and pause. Missing model/authentication, timeout, cancellation, call failure, malformed output, and truncated output all fail closed after that single call.
+- `unavailable`: persist the evaluation and pause. Timeouts receive the one retry described above; malformed or truncated JSON receives one correction attempt; other failures pause immediately.
 
 ## Gates and stop conditions
 
