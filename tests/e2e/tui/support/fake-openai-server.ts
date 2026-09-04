@@ -354,10 +354,12 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	// Substitute dynamic ids from previous tool results into scripted tool args.
 	const fermentId = extractFermentId(body)
 	const agentId = extractAgentId(body)
+	const firstMcpTool = extractFirstMcpTool(body)
 	for (const toolCall of script.toolCalls ?? []) {
 		const fn = { ...toolCall.function }
 		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
 		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
+		if (firstMcpTool) fn.arguments = fn.arguments.replaceAll("__MCP_FIRST_TOOL__", firstMcpTool)
 		chunk([
 			{
 				index: 0,
@@ -431,6 +433,11 @@ function extractAgentId(body: unknown): string | undefined {
 		}
 	}
 	return extractAgentIdFromText(JSON.stringify(body ?? ""))
+}
+
+/** Pull the first namespaced MCP tool from a prior gateway connect/list result. */
+function extractFirstMcpTool(body: unknown): string | undefined {
+	return JSON.stringify(body ?? "").match(/-\s*(conformance_[A-Za-z0-9_.-]+)/)?.[1]
 }
 
 function extractAgentIdFromValue(value: unknown): string | undefined {

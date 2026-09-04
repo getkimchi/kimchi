@@ -5,7 +5,7 @@ import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
-import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./assertions.js"
 import { type StartFakeOllamaServerOptions, startFakeOllamaServer } from "./fake-ollama-server.js"
 import {
 	DEFAULT_MODEL,
@@ -16,6 +16,7 @@ import {
 	resolveModels,
 	startFakeOpenAiServer,
 } from "./fake-openai-server.js"
+import { createMcpFixture, type McpFixture, type McpFixtureOptions } from "./mcp-fixture.js"
 
 /** Shared terminal geometry/shell for every TUI e2e test. */
 export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as const
@@ -44,6 +45,8 @@ export interface KimchiFixture {
 	agentDir: string
 	fake: FakeOpenAiServer
 	ollama?: { baseUrl: string; requests: RecordedRequest[] }
+	/** Repository-owned MCP server configured for this session, when requested. */
+	mcp?: McpFixture
 	/** Value returned by the `seedHome` option, if used; else undefined. */
 	seedResult?: unknown
 	/** Env vars returned by `seedHome`, merged into the launched process env. */
@@ -51,6 +54,10 @@ export interface KimchiFixture {
 	providerId: string
 	initialModel: string | false
 	stop(): Promise<void>
+}
+
+export interface McpKimchiFixture extends KimchiFixture {
+	mcp: McpFixture
 }
 
 export interface LaunchKimchiOptions {
@@ -76,7 +83,7 @@ export interface SeedHomeResult {
 	data?: unknown
 }
 
-interface CreateKimchiFixtureOptions {
+export interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	routerResponses?: unknown[]
@@ -118,6 +125,19 @@ interface CreateKimchiFixtureOptions {
 	 *  completions (/v1/chat/completions) so the TUI E2E can run without a real
 	 *  `ollama serve` running. */
 	ollama?: StartFakeOllamaServerOptions
+	/** Seed the isolated Kimchi home with a repository-owned MCP server. */
+	mcp?: McpFixtureOptions
+}
+
+export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
+	artifactName: string
+	/**
+	 * Optional hook that runs AFTER launch but BEFORE the PROMPT_READY wait.
+	 * Use to dismiss startup dialogs (e.g. a ferment resume dialog triggered
+	 * by KIMCHI_ACTIVE_FERMENT) that would otherwise block PROMPT_READY.
+	 * The hook receives the terminal so it can interact with the UI.
+	 */
+	beforeReady?: (terminal: Terminal) => Promise<void>
 }
 
 export async function createKimchiFixture(options: CreateKimchiFixtureOptions): Promise<KimchiFixture> {
@@ -127,6 +147,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-tui-work-"))
 	const providerId = options.providerId ?? FAKE_PROVIDER
 	const initialModel = options.initialModel ?? DEFAULT_MODEL.slug
+	let mcp: McpFixture | undefined
 	// Tear down server + temp dirs if any setup step throws.
 	try {
 		if (options.gitInit) execFileSync("git", ["init", "-q"], { cwd: workDir })
@@ -162,6 +183,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		)
 
 		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models, providerId)
+		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
 
 		const rawSeed = options.seedHome?.(homeDir, workDir)
 		const seedIsResult =
@@ -170,6 +192,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
 		const seedEnv = {
 			KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
+			...(mcp?.env ?? {}),
 			...(seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}),
 		}
 		const seedResult = seedIsResult ? (rawSeed as SeedHomeResult).data : rawSeed
@@ -180,17 +203,18 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			agentDir,
 			fake,
 			ollama: ollama ? { baseUrl: ollama.baseUrl, requests: ollama.requests } : undefined,
+			mcp,
 			seedResult,
 			seedEnv,
 			providerId,
 			initialModel,
 			async stop() {
-				// Run both server stops even if one throws, so a failing OpenAI
-				// fake doesn't leak an Ollama fake listening on a port.
+				// Run all server stops even if one throws so no fixture process leaks.
 				await fake.stop().catch(() => {})
 				if (ollama) {
 					await ollama.stop().catch(() => {})
 				}
+				await mcp?.stop().catch(() => {})
 				rmSync(homeDir, { recursive: true, force: true })
 				rmSync(workDir, { recursive: true, force: true })
 			},
@@ -200,10 +224,19 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		if (ollama) {
 			await ollama.stop().catch(() => {})
 		}
+		await mcp?.stop().catch(() => {})
 		rmSync(homeDir, { recursive: true, force: true })
 		rmSync(workDir, { recursive: true, force: true })
 		throw error
 	}
+}
+
+export async function createMcpKimchiFixture(
+	options: Omit<CreateKimchiFixtureOptions, "mcp"> & { mcp: McpFixtureOptions },
+): Promise<McpKimchiFixture> {
+	const fixture = await createKimchiFixture(options)
+	assertMcpFixture(fixture)
+	return fixture
 }
 
 export function launchKimchi(
@@ -243,6 +276,57 @@ export function launchKimchi(
 	terminal.submit(`${command}${exitMarker}`)
 }
 
+export interface KimchiSessionController {
+	start(): Promise<void>
+	turn(prompt: string, expectedText: string, options?: { timeoutMs?: number }): Promise<void>
+	restart(): Promise<void>
+	quit(): Promise<void>
+}
+
+export function createKimchiSessionController(
+	terminal: Terminal,
+	fixture: KimchiFixture,
+	options: { extraArgs?: string[]; extraEnv?: Record<string, string> } = {},
+): KimchiSessionController {
+	let running = false
+	let exitMarker = ""
+	let launchNumber = 0
+	const extraArgs = options.extraArgs ?? []
+	const extraEnv = options.extraEnv ?? fixture.seedEnv
+
+	const start = async () => {
+		if (running) throw new Error("Kimchi session is already running")
+		launchNumber += 1
+		exitMarker = `KIMCHI_E2E_EXIT_${process.pid}_${launchNumber}`
+		launchKimchi(terminal, fixture, extraArgs, extraEnv, { exitMarker })
+		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		running = true
+	}
+
+	const quit = async () => {
+		if (!running) return
+		terminal.submit("/quit")
+		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		running = false
+	}
+
+	return {
+		start,
+		async turn(prompt, expectedText, turnOptions = {}) {
+			if (!running) throw new Error("Kimchi session is not running")
+			terminal.submit(prompt)
+			await waitForText(terminal, expectedText, {
+				timeoutMs: turnOptions.timeoutMs ?? STREAM_TIMEOUT_MS,
+			})
+		},
+		async restart() {
+			await quit()
+			await start()
+		},
+		quit,
+	}
+}
+
 export async function stopKimchi(terminal: Terminal): Promise<void> {
 	const exit = new Promise<{ exitCode: number; signal?: number }>((resolveExit) => terminal.onExit(resolveExit))
 	terminal.keyCtrlC(2)
@@ -254,16 +338,7 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 /** Create fixture, launch kimchi, wait for ready, run `body`, always tear down (artifact on throw). */
 export async function runKimchiSession(
 	terminal: Terminal,
-	options: CreateKimchiFixtureOptions & {
-		artifactName: string
-		/**
-		 * Optional hook that runs AFTER launch but BEFORE the PROMPT_READY wait.
-		 * Use to dismiss startup dialogs (e.g. a ferment resume dialog triggered
-		 * by KIMCHI_ACTIVE_FERMENT) that would otherwise block PROMPT_READY.
-		 * The hook receives the terminal so it can interact with the UI.
-		 */
-		beforeReady?: (terminal: Terminal) => Promise<void>
-	},
+	options: RunKimchiSessionOptions,
 	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
 	const { artifactName, beforeReady, ...fixtureOptions } = options
@@ -311,6 +386,65 @@ export async function runKimchiSession(
 		} catch (stopError) {
 			process.stderr.write(`[tui-e2e] fixture.stop failed: ${String(stopError)}\n`)
 		}
+	}
+}
+
+function assertMcpFixture(fixture: KimchiFixture): asserts fixture is McpKimchiFixture {
+	if (!fixture.mcp) throw new Error("MCP test fixture was requested but not created")
+}
+
+export async function runMcpKimchiSession(
+	terminal: Terminal,
+	options: Omit<RunKimchiSessionOptions, "mcp"> & { mcp: McpFixtureOptions },
+	body: (fixture: McpKimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
+): Promise<void> {
+	await runKimchiSession(terminal, options, async (fixture, trace) => {
+		assertMcpFixture(fixture)
+		await body(fixture, trace)
+	})
+}
+
+export async function runRestartableMcpKimchiSession(
+	terminal: Terminal,
+	options: Omit<RunKimchiSessionOptions, "beforeReady" | "mcp"> & { mcp: McpFixtureOptions },
+	body: (fixture: McpKimchiFixture, session: KimchiSessionController, trace: TuiScenarioTrace) => Promise<void>,
+): Promise<void> {
+	const { artifactName, ...fixtureOptions } = options
+	const fixture = await createMcpKimchiFixture(fixtureOptions)
+	const session = createKimchiSessionController(terminal, fixture, {
+		extraArgs: fixtureOptions.extraArgs,
+		extraEnv: { ...fixtureOptions.env, ...fixture.seedEnv },
+	})
+	let artifactWritten = false
+	const steps: TuiStepSnapshot[] = []
+	const trace: TuiScenarioTrace = {
+		step(label) {
+			steps.push({ label, at: new Date().toISOString(), view: viewText(terminal) })
+		},
+	}
+
+	try {
+		await session.start()
+		trace.step("ready prompt visible")
+		await body(fixture, session, trace)
+		trace.step("scenario body completed")
+	} catch (error) {
+		artifactWritten = true
+		try {
+			await writeTuiArtifact({ name: artifactName, outcome: "fail", terminal, fixture, steps, error })
+		} catch (writeError) {
+			process.stderr.write(`[tui-e2e] failed to write fail artifact: ${String(writeError)}\n`)
+		}
+		throw error
+	} finally {
+		if (DEBUG_ARTIFACTS && !artifactWritten) {
+			await writeTuiArtifact({ name: artifactName, outcome: "pass", terminal, fixture, steps }).catch((writeError) => {
+				process.stderr.write(`[tui-e2e] failed to write pass artifact: ${String(writeError)}\n`)
+			})
+		}
+		await session.quit().catch(() => {})
+		await stopKimchi(terminal).catch(() => {})
+		await fixture.stop().catch(() => {})
 	}
 }
 
