@@ -27,6 +27,7 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
@@ -158,6 +159,9 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
 // the other two are read-only/control-plane operations on already-approved spawns.
+// `bash_control` is the control-plane companion of a background `bash` call: the
+// originating command already passed the permission gate (prompt/classifier), so
+// checking its state or stopping it needs no second approval.
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
@@ -166,6 +170,7 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
+	BASH_CONTROL_TOOL_NAME,
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
 ]
