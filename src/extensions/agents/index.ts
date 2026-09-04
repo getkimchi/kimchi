@@ -141,10 +141,49 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
+// Hard cap for get_subagent_result(wait: true). A backgrounded agent should
+// never block the caller's run indefinitely — results arrive via the
+// completion notification; the wait is only a bounded join for real
+// dependencies (e.g. ferment worker handoff).
+const GET_SUBAGENT_RESULT_WAIT_CAP_MS = 60_000
+
+type AgentWaitOutcome = "completed" | "timed_out" | "aborted"
+
+/**
+ * Bounded, interruptible wait on an agent's run promise.
+ * Resolves "completed" when the agent settles (success or failure), or early
+ * on cap timeout / abort signal. Never rejects.
+ */
+function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSignal): Promise<AgentWaitOutcome> {
+	return new Promise((resolve) => {
+		let done = false
+		const onAbort = () => finish("aborted")
+		const timer = setTimeout(() => finish("timed_out"), GET_SUBAGENT_RESULT_WAIT_CAP_MS)
+		function finish(outcome: AgentWaitOutcome) {
+			if (done) return
+			done = true
+			clearTimeout(timer)
+			signal?.removeEventListener("abort", onAbort)
+			resolve(outcome)
+		}
+		if (signal?.aborted) {
+			finish("aborted")
+			return
+		}
+		signal?.addEventListener("abort", onAbort)
+		agentPromise.then(
+			() => finish("completed"),
+			() => finish("completed"),
+		)
+	})
+}
+
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
+- Launch agents in the background by default in interactive sessions (run_in_background defaults to true; headless runs default to foreground). Only set run_in_background: false when the next step in your workflow cannot proceed without the agent's result.
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
 - One call per task, detailed prompt; run_in_background for parallelism.
-- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check), steer_subagent (redirect).
+- On a backgrounded agent, do NOT call get_subagent_result with wait: true — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user. You will be notified when the agent completes; the notification contains the results.`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
 	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
@@ -1342,7 +1381,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				run_in_background: Type.Optional(
 					Type.Boolean({
 						description:
-							"Set to true to run in background. Returns agent ID immediately. You will be notified on completion.",
+							"Default: true in interactive sessions (false in headless runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
 					}),
 				),
 				isolated: Type.Optional(
@@ -1478,9 +1517,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const customConfig = getAgentConfig(subagentType)
 
+				// Background-by-default only applies with a UI loop that can consume
+				// completion notifications; headless/one-shot runs keep foreground so
+				// spawned work cannot outlive the process.
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
+					ctx.hasUI,
 				)
 
 				let model = ctx.model
@@ -1687,7 +1730,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 					const isQueued = record?.status === "queued"
 					return textResult(
-						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
+						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes — the completion notification will contain the results.\nDo NOT call get_subagent_result with wait: true just to wait for it — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user.\nUse steer_subagent to send it messages. Do not duplicate this agent's work.`,
 						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
 					)
 				}
@@ -1978,7 +2021,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}),
 				wait: Type.Optional(
 					Type.Boolean({
-						description: "If true, wait for the agent to complete before returning. Default: false.",
+						description:
+							"If true, block until the agent completes (capped at 60s). Do NOT use right after backgrounding an agent — you will be notified when it completes, and blocking queues user input. Only for true dependencies. Default: false.",
 					}),
 				),
 				verbose: Type.Optional(
@@ -2042,16 +2086,23 @@ ${AGENT_TOOL_GUIDELINES}`,
 				return new Text(line, 0, 0)
 			},
 
-			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+			execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
 
+				let waitOutcome: AgentWaitOutcome | undefined
 				if (params.wait && record.status === "running" && record.promise) {
-					record.resultConsumed = true
-					cancelNudge(params.agent_id as string)
-					await record.promise
+					// Bounded, interruptible join: honor the tool's abort signal and
+					// the wait cap instead of blocking the caller's run indefinitely.
+					// On timeout/abort the result stays unconsumed and the completion
+					// nudge stays armed, so the notification still delivers the result.
+					waitOutcome = await waitForAgentCompletion(record.promise, signal)
+					if (waitOutcome === "completed") {
+						record.resultConsumed = true
+						cancelNudge(params.agent_id as string)
+					}
 				}
 
 				const displayName = getDisplayName(record.type)
@@ -2070,8 +2121,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 					`Description: ${record.description}\n\n`
 
 				let bodyForDisplay: string
-				if (record.status === "running") {
-					bodyForDisplay = "Agent is still running. Use wait: true or check back later."
+				if (record.status === "queued") {
+					bodyForDisplay = `Agent is queued behind the background-agent concurrency cap (max ${manager.getMaxConcurrent()} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`
+					output += bodyForDisplay
+				} else if (record.status === "running") {
+					if (waitOutcome === "timed_out") {
+						bodyForDisplay = `Waited ${GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`
+					} else if (waitOutcome === "aborted") {
+						bodyForDisplay =
+							"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification."
+					} else {
+						bodyForDisplay =
+							"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results."
+					}
 					output += bodyForDisplay
 				} else if (record.status === "error") {
 					bodyForDisplay = `Error: ${record.error}`
@@ -2576,7 +2638,7 @@ extensions: <true (inherit all MCP/extension tools), false (none), or comma-sepa
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
 disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
 inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
-run_in_background: <true to run in background by default. Default: false>
+run_in_background: <true to run in background by default. Default: true; set false only when the next step depends on the result>
 isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 ---

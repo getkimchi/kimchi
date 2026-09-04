@@ -62,6 +62,13 @@ describe("AGENT_TOOL_GUIDELINES", () => {
 		expect(AGENT_TOOL_GUIDELINES).toContain("get_subagent_result")
 		expect(AGENT_TOOL_GUIDELINES).toContain("steer_subagent")
 	})
+	it("steers orchestrators away from blocking on backgrounded agents", () => {
+		// Backgrounding regression guard: results arrive via completion
+		// notification, so the guidelines must not endorse polling/blocking.
+		expect(AGENT_TOOL_GUIDELINES).not.toContain("(poll)")
+		expect(AGENT_TOOL_GUIDELINES).toContain("do NOT call get_subagent_result with wait: true")
+		expect(AGENT_TOOL_GUIDELINES).toContain("notified when the agent completes")
+	})
 })
 
 describe("AGENT_MODEL_PARAMETER_DESCRIPTION", () => {
@@ -621,6 +628,41 @@ describe("Agent tool multi-mode model guard", () => {
 			expect.objectContaining({ requiresVision: true }),
 		)
 	})
+
+	it("defaults to background when run_in_background is omitted", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		// Simulate an interactive session: background-by-default only applies
+		// when there is a UI loop to consume completion notifications.
+		const ctx = { ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), hasUI: true }
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-default-bg",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose" },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"General-Purpose",
+			expect.any(String),
+			expect.objectContaining({ isBackground: true }),
+		)
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("background")
+	})
 })
 
 describe("resolveRoleModelRef", () => {
@@ -762,5 +804,250 @@ describe("spawnGraderAgent", () => {
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
+	})
+})
+
+// ---- get_subagent_result: bounded, interruptible wait ----
+//
+// Regression coverage for background agents blocking the caller: `wait: true`
+// used to await the agent's run promise indefinitely with no timeout and no
+// abort handling, which froze the caller's turn and queued user input. The
+// wait is now capped and abortable, and a capped/aborted wait must NOT consume
+// the result (the completion notification still has to deliver it later).
+
+/** Retrieve any registered tool from pi.registerTool mock calls by name. */
+function getRegisteredTool(
+	pi: ReturnType<typeof makeMockPi>,
+	name: string,
+): {
+	execute: (
+		id: string,
+		params: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		onUpdate: unknown,
+		ctx: unknown,
+	) => Promise<{ content: { type: string; text: string }[] }>
+} {
+	const calls = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
+	const tool = calls.map((c: unknown[]) => c[0]).find((t: unknown) => (t as { name?: string }).name === name)
+	expect(tool).toBeDefined()
+	return tool as unknown as {
+		execute: (
+			id: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: unknown,
+			ctx: unknown,
+		) => Promise<{ content: { type: string; text: string }[] }>
+	}
+}
+
+type MockManagerInstance = {
+	_records: Map<string, Record<string, unknown>>
+	onComplete: (record: Record<string, unknown>) => void
+}
+
+function latestManagerInstance(): MockManagerInstance {
+	const instance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value as
+		| MockManagerInstance
+		| undefined
+	expect(instance).toBeDefined()
+	return instance as MockManagerInstance
+}
+
+function makeRunningRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		id: "agent-1",
+		type: "general-purpose",
+		description: "test agent",
+		visibility: "user",
+		status: "running",
+		toolUses: 0,
+		startedAt: Date.now(),
+		lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		...overrides,
+	}
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((res) => {
+		resolve = res
+	})
+	return { promise, resolve }
+}
+
+describe("get_subagent_result wait contract", () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+		vi.clearAllMocks()
+	})
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	function setupRunningAgent(): {
+		pi: ReturnType<typeof makeMockPi>
+		manager: MockManagerInstance
+		record: Record<string, unknown>
+		run: { promise: Promise<string>; resolve: (value: string) => void }
+		tool: ReturnType<typeof getRegisteredTool>
+	} {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = latestManagerInstance()
+		const run = deferred<string>()
+		const record = makeRunningRecord({ promise: run.promise })
+		manager._records.set(record.id as string, record)
+		const tool = getRegisteredTool(pi, "get_subagent_result")
+		return { pi, manager, record, run, tool }
+	}
+
+	it("caps wait: true at 60s, keeps the result unconsumed, and the completion notification still fires", async () => {
+		const { pi, manager, record, run, tool } = setupRunningAgent()
+
+		const execPromise = tool.execute("call-w1", { agent_id: record.id, wait: true }, undefined, undefined, undefined)
+		let settled = false
+		void execPromise.then(() => {
+			settled = true
+		})
+
+		// Still blocked before the cap...
+		await vi.advanceTimersByTimeAsync(30_000)
+		expect(settled).toBe(false)
+
+		// ...released by the 60s cap with a timeout-specific report that
+		// distinguishes "join expired" from a plain status check and points
+		// hard-dependency callers (e.g. ferment) at re-joining.
+		await vi.advanceTimersByTimeAsync(31_000)
+		const result = await execPromise
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("still running")
+		expect(text).toContain("60s (cap)")
+		expect(text).toContain("wait: true again to re-join")
+		expect(record.resultConsumed).not.toBe(true)
+
+		// Because the result was not consumed, completing the agent afterwards
+		// still emits the completion notification (200ms nudge hold).
+		record.status = "completed"
+		record.result = "finished later"
+		record.completedAt = Date.now()
+		run.resolve("finished later")
+		manager.onComplete(record)
+		await vi.advanceTimersByTimeAsync(500)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "subagent-notification" }),
+			expect.objectContaining({ triggerTurn: true }),
+		)
+	})
+
+	it("wait: true returns promptly when the tool's abort signal fires mid-wait", async () => {
+		const { record, tool } = setupRunningAgent()
+		const controller = new AbortController()
+
+		const execPromise = tool.execute(
+			"call-w2",
+			{ agent_id: record.id, wait: true },
+			controller.signal,
+			undefined,
+			undefined,
+		)
+		// The wait registers its abort listener synchronously, so aborting
+		// immediately interrupts the wait without touching the 60s timer.
+		controller.abort()
+		const result = await execPromise
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("Wait cancelled")
+		expect(text).not.toContain("still running")
+		expect(record.resultConsumed).not.toBe(true)
+	})
+
+	it("wait: true returns the result and consumes it when the agent completes during the wait", async () => {
+		const { record, run, tool } = setupRunningAgent()
+
+		const execPromise = tool.execute("call-w3", { agent_id: record.id, wait: true }, undefined, undefined, undefined)
+		// Mirror the manager's completion ordering: status flips before the
+		// run promise settles.
+		record.status = "completed"
+		record.result = "all done"
+		record.completedAt = Date.now()
+		run.resolve("all done")
+
+		const result = await execPromise
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("all done")
+		expect(record.resultConsumed).toBe(true)
+	})
+
+	it("still-running report points at the completion notification instead of wait/poll", async () => {
+		const { record, tool } = setupRunningAgent()
+
+		const result = await tool.execute("call-w4", { agent_id: record.id }, undefined, undefined, undefined)
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("still running")
+		expect(text).toContain("notified")
+		expect(text).not.toContain("wait: true")
+		expect(text).not.toContain("check back later")
+	})
+
+	it('reports queued agents as queued (not "No output."), with and without wait: true', async () => {
+		// Background-by-default makes the queued state common (3-concurrent
+		// cap). A queued worker has no run promise yet, so the join guard
+		// skips it — the body must say queued, not "No output.".
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = latestManagerInstance()
+		const record = makeRunningRecord({ status: "queued" })
+		manager._records.set(record.id as string, record)
+		const tool = getRegisteredTool(pi, "get_subagent_result")
+
+		for (const wait of [undefined, true]) {
+			const result = await tool.execute(
+				`call-q-${wait}`,
+				{ agent_id: record.id, wait },
+				undefined,
+				undefined,
+				undefined,
+			)
+			const text = result.content[0]?.text ?? ""
+			expect(text).toContain("queued")
+			expect(text).toContain("notified")
+			expect(text).not.toBe("No output.")
+			expect(record.resultConsumed).not.toBe(true)
+		}
+	})
+})
+
+describe("Agent tool background spawn result contract", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+	})
+
+	it("tells the caller it will be notified and must not block on the backgrounded agent", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-bg-contract",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("notified when this agent completes")
+		expect(text).toContain("Do NOT call get_subagent_result with wait: true")
+		expect(text).not.toContain("Use get_subagent_result to retrieve full results")
 	})
 })
