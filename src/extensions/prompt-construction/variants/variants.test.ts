@@ -545,8 +545,29 @@ describe("guidelinesFor", () => {
 	it("subagent mode keeps the shared working-discipline sections", () => {
 		const subagent = guidelinesFor("subagent")
 		expect(subagent).toContain("### Working discipline")
+		expect(subagent).toContain("**Planning & architecture**")
 		expect(subagent).toContain("**Testing discipline**")
+		expect(subagent).toContain("**Code quality & review**")
 		expect(subagent).toContain("**Version-control safety**")
+		expect(subagent).toContain("**Research & getting unstuck**")
+		expect(subagent).toContain("**Truthfulness, communication, and security**")
+	})
+
+	// A subagent is handed its scope with the task, reports back to the thread
+	// that spawned it, and never opens the pull request or owns the project docs.
+	it("subagent mode drops the rules that belong to the spawning thread", () => {
+		const subagent = guidelinesFor("subagent")
+		expect(subagent).not.toContain("Confirm the scope and the design with the requester")
+		expect(subagent).not.toContain("**Pull/merge request hygiene**")
+		expect(subagent).not.toContain("**Docs & continuity**")
+	})
+
+	it("single and orchestrator mode keep those rules", () => {
+		for (const mode of ["single", "orchestrator"] as const) {
+			expect(guidelinesFor(mode)).toContain("Confirm the scope and the design with the requester")
+			expect(guidelinesFor(mode)).toContain("**Pull/merge request hygiene**")
+			expect(guidelinesFor(mode)).toContain("**Docs & continuity**")
+		}
 	})
 
 	it("orchestrator mode does NOT contain '**Coordinator and delegation**'", () => {
