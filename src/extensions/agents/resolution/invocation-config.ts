@@ -58,7 +58,7 @@ export function resolveAgentInvocationConfig(
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		maxDuration: params.max_duration ?? agentConfig?.maxDuration,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
-		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
+		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? true,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,
 		isolation: agentConfig?.isolation ?? params.isolation,
 	}

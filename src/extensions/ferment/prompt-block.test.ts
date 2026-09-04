@@ -379,7 +379,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("spawn Explore subagents instead of reading files yourself")
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
-			expect(out).toContain("run_in_background: true")
+			expect(out).toContain("run in the background")
 			expect(out).toContain("Skip entirely if you have enough context from Steps 1-3")
 			expect(out).toContain("P1/P2/P3")
 		})

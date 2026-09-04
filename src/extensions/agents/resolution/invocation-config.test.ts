@@ -84,3 +84,20 @@ describe("resolveAgentInvocationConfig — persona policy precedence", () => {
 		expect(result.maxTurns).toBe(3)
 	})
 })
+
+describe("resolveAgentInvocationConfig — runInBackground default", () => {
+	it("defaults to background when neither persona nor params specify a value", () => {
+		const result = resolveAgentInvocationConfig(agent, {})
+		expect(result.runInBackground).toBe(true)
+	})
+
+	it("caller can opt out of background with run_in_background: false", () => {
+		const result = resolveAgentInvocationConfig(agent, { run_in_background: false })
+		expect(result.runInBackground).toBe(false)
+	})
+
+	it("persona policy overrides the default", () => {
+		const result = resolveAgentInvocationConfig({ ...agent, runInBackground: false }, {})
+		expect(result.runInBackground).toBe(false)
+	})
+})

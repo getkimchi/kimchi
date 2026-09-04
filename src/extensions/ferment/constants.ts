@@ -20,7 +20,7 @@ and Changes is empty.
 STEP 4 — spawn Explore subagents instead of reading files yourself:
   • subagent_type: "Explore" (or closest available)
   • token_budget: ${SCOPING_EXPLORE_TOKEN_BUDGET}
-  • run_in_background: true when multiple independent unknowns exist
+  • run in the background when multiple independent unknowns exist (the default; use run_in_background: false only for hard dependencies)
   • Prefer several narrow probes over one broad "understand everything" scan
 
 STEP 5 — call propose_ferment_scoping with the plan payload. The tool fields map to the

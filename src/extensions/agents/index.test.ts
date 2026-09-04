@@ -628,6 +628,39 @@ describe("Agent tool multi-mode model guard", () => {
 			expect.objectContaining({ requiresVision: true }),
 		)
 	})
+
+	it("defaults to background when run_in_background is omitted", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-default-bg",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose" },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"General-Purpose",
+			expect.any(String),
+			expect.objectContaining({ isBackground: true }),
+		)
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("background")
+	})
 })
 
 describe("resolveRoleModelRef", () => {
