@@ -28,12 +28,6 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
 		provider === "kimchi-experimental"
 	)
 }
-/**
- * Reasoning models spend this budget on thinking before they emit an answer, so
- * a budget sized for the verdict alone returns nothing at all on those models.
- */
-const REASONING_MAX_TOKENS = 24_576
-const PLAIN_MAX_TOKENS = 2_048
 const INVALID_JSON_RETRY_PROMPT =
 	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and include observedAnswer only for final_answer checks."
 
@@ -285,16 +279,14 @@ export async function evaluateFermentV2(
 		evaluatorSession.appendModelChange(model.provider, model.id)
 		evaluatorSession.appendMessage(context.messages[0])
 
-		// Keep the deadline separate so a timeout is distinguishable from caller cancellation.
 		evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
-		deadline = AbortSignal.timeout(evaluationTimeoutMs)
-		const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
+		deadline = evaluationTimeoutMs === undefined ? undefined : AbortSignal.timeout(evaluationTimeoutMs)
+		const signal = deadline ? (input.signal ? AbortSignal.any([deadline, input.signal]) : deadline) : input.signal
 		const request = (requestContext = context, correcting = false) =>
 			completeSimple(model, requestContext, {
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				reasoning: "minimal",
-				maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
 				thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 				samplingParams: isKimchiManagedJsonModeProvider(model.provider)
 					? { response_format: { type: "json_object" } }
@@ -306,7 +298,7 @@ export async function evaluateFermentV2(
 		let usage = toFermentV2EvaluatorUsage(response.usage)
 		const responseText = contentParts(response.content)
 		if (
-			!signal.aborted &&
+			!signal?.aborted &&
 			!parseFermentV2EvaluatorOutput(responseText) &&
 			(response.stopReason === "aborted" || response.stopReason === "length" || responseText.includes("{"))
 		) {
@@ -328,7 +320,7 @@ export async function evaluateFermentV2(
 				costUsd: usage.costUsd + retriedUsage.costUsd,
 			}
 		}
-		if (signal.aborted) throw signal.reason
+		if (signal?.aborted) throw signal.reason
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }

@@ -712,15 +712,28 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("gives a reasoning model room for thinking and the verdict", async () => {
+	it("uses the evaluator model's output limit", async () => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"met","reason":"all checks pass"}'))
 
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
-		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 2_048 })
+		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal" })
+		expect(completeMock.mock.calls[0]?.[2]).not.toHaveProperty("maxTokens")
 
 		completeMock.mockClear()
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext(undefined, true))
-		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal", maxTokens: 24_576 })
+		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal" })
+		expect(completeMock.mock.calls[0]?.[2]).not.toHaveProperty("maxTokens")
+	})
+
+	it("does not impose a total evaluator deadline by default", async () => {
+		const timeout = vi.spyOn(AbortSignal, "timeout")
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"keep working"}'))
+
+		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
+
+		expect(timeout).not.toHaveBeenCalled()
+		expect(completeMock.mock.calls[0]?.[2]?.signal).toBeUndefined()
+		timeout.mockRestore()
 	})
 
 	it("fails closed when only thinking is emitted", async () => {
@@ -785,7 +798,7 @@ describe("Ferment V2 evaluator", () => {
 		})
 	})
 
-	it("keeps the reasoning-model response budget on a truncated retry", async () => {
+	it("keeps the evaluator model's output limit on a truncated retry", async () => {
 		completeMock
 			.mockResolvedValueOnce(assistant("", { stopReason: "length", kind: "thinking" }))
 			.mockResolvedValueOnce(assistant('{"verdict":"continue","reason":"keep working"}'))
@@ -807,9 +820,9 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock).toHaveBeenCalledTimes(2)
 		expect(completeMock.mock.calls[1]?.[2]).toMatchObject({
 			reasoning: "minimal",
-			maxTokens: 24_576,
 			thinkingBudgets: { minimal: 0 },
 		})
+		expect(completeMock.mock.calls[1]?.[2]).not.toHaveProperty("maxTokens")
 	})
 
 	it("fails closed without retrying when the call times out", async () => {
@@ -830,6 +843,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	it("reports a timeout when the provider resolves with an aborted response", async () => {
+		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
 		completeMock.mockResolvedValue(assistant("", { stopReason: "aborted" }))
 
@@ -837,9 +851,10 @@ describe("Ferment V2 evaluator", () => {
 			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
 		).resolves.toEqual({
 			verdict: "unavailable",
-			reason: "Evaluator session/main timed out after 300 seconds.",
+			reason: "Evaluator session/main timed out after 5 seconds.",
 			model: "session/main",
 		})
+		expect(timeout).toHaveBeenCalledWith(5_000)
 		timeout.mockRestore()
 	})
 
