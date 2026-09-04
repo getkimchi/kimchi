@@ -62,7 +62,6 @@ import {
 import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
-import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
 import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
@@ -102,7 +101,7 @@ import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
-import { AcpPlanTracker, type ActivePlan } from "./plans.js"
+import { AcpPlanTracker } from "./plans.js"
 import {
 	type AcpSkillInfo,
 	buildSkillAvailableCommands,
@@ -324,19 +323,7 @@ type SessionRecord = {
 	 * resolved and skill content injected when the user invokes one.
 	 */
 	skillCommands: Map<string, AcpSkillInfo>
-	/**
-	 * The plan currently being advertised via ACP `plan` sessionUpdates, if
-	 * any. Only set while a ferment is driving structured plan progress —
-	 * the execute path (plan approved without a ferment) deliberately emits
-	 * nothing. `planId` is the ferment id, kept for ACP v2 (`plan_update`
-	 * with `PlanItems`) readiness.
-	 */
-	activePlan?: ActivePlan
-	/**
-	 * Tracks ferment lifecycle events + ferment-scoped todo store changes and
-	 * emits `plan` sessionUpdates for this session. Started after extensions
-	 * are bound, stopped in disposeSessionRecord.
-	 */
+	/** Mirrors this session's Todo store writes to ACP `plan` updates. */
 	planTracker?: AcpPlanTracker
 }
 
@@ -625,23 +612,11 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	/**
-	 * Start emitting ACP `plan` sessionUpdates driven by the ferment
-	 * lifecycle. The tracker subscribes to FERMENT_EVENTS.PHASE_STARTED on the
-	 * same pi.events bus the ferment todo-sync bridge uses (exposed via
-	 * defaultFermentRuntime.events after bindExtensions), and to the process-
-	 * level todo store. Sessions without a running ferment never emit a plan.
-	 * Called after the record is registered so a tracker start failure can't
-	 * leave a half-registered session.
-	 */
+	/** Start forwarding this session's Todo store writes to the ACP client. */
 	private startPlanTracker(record: SessionRecord, sessionId: string): void {
 		const tracker = new AcpPlanTracker({
 			sessionId,
-			events: defaultFermentRuntime.events,
 			send: (params) => this.send(params),
-			onActivePlanChanged: (plan) => {
-				record.activePlan = plan
-			},
 		})
 		tracker.start()
 		record.planTracker = tracker
@@ -836,10 +811,8 @@ export class KimchiAcpAgent implements Agent {
 			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
 			this.startPlanTracker(record, sessionId)
-			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
-			// already-active phase, so the tracker also snapshots from the
-			// restored todo store (gated on an active ferment — emits nothing
-			// when there is none or only global-scope todos survived).
+			// Restoring the Todo store bypasses its listeners, so publish one
+			// current non-empty list explicitly for the resumed client.
 			record.planTracker?.emitRestoredSnapshot()
 
 			// Seed the block counter from the persisted branch so replay emits the
@@ -2021,11 +1994,27 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to read session directory: ${msg}`)
 		}
-		// Map "session not found" to invalidParams — SessionManager.open would
-		// silently start a fresh session on a missing file (and rewrite it with
-		// a new id), which is destructive and not what loadSession should do.
 		if (!sessionPath) {
-			throw RequestError.invalidParams(undefined, `session ${params.sessionId} not found`)
+			// Pi intentionally delays writing a new session until its first
+			// assistant response. If the ACP process restarts before that, Zed
+			// reloads a valid id with no file. Recreate the empty manager with the
+			// same id; it remains lazy, so abandoned empty threads leave no files.
+			let sessionManager: SessionManager
+			try {
+				sessionManager = SessionManager.create(cwd, sessionDir, { id: params.sessionId })
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err)
+				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
+			}
+			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir: options.agentDir,
+				settingsManager,
+				resourceLoader,
+				sessionManager,
+			})
+			return session
 		}
 		let header: Pick<SessionHeader, "id" | "cwd"> | null
 		try {

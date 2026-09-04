@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
@@ -6095,6 +6095,62 @@ describe("KimchiAcpAgent loadSession", () => {
 		await expect(agent.loadSession({ sessionId: "missing", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
 			/session not found/,
 		)
+	})
+
+	it("recreates an unpersisted empty session after restart without writing a session file", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-empty-load-"))
+		const cwd = join(agentDir, "work")
+		mkdirSync(cwd)
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					fake: {
+						api: "openai-completions",
+						apiKey: "fake",
+						baseUrl: "http://127.0.0.1:1/v1",
+						models: [
+							{
+								id: "fake-model",
+								name: "Fake Model",
+								input: ["text"],
+								contextWindow: 64_000,
+								maxTokens: 1024,
+							},
+						],
+					},
+				},
+			}),
+		)
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ defaultProvider: "fake", defaultModel: "fake-model" }),
+		)
+		const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+		const sessionDir = join(agentDir, "sessions", testEncodeCwdDir(cwd))
+
+		try {
+			for (let restart = 0; restart < 2; restart++) {
+				const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [], agentDir })
+				await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+				expect(readdirSync(sessionDir).filter((file) => file.endsWith(".jsonl"))).toEqual([])
+				await agent.unstable_closeSession({ sessionId })
+			}
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("rejects an invalid missing session id instead of recreating it", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-invalid-load-"))
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [], agentDir })
+			await expect(agent.loadSession({ sessionId: "../escape", cwd: agentDir, mcpServers: [] })).rejects.toMatchObject({
+				code: -32602,
+			})
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("rejects default-loaded sessions whose header cwd disagrees before opening", async () => {
