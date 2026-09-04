@@ -695,6 +695,34 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
+	it("keeps the review proposal authoritative until global todos change after approval", () => {
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			emitAdhocPlanReview(bus)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "planning scratchpad", status: "pending" }] },
+				TEST_SESSION_ID,
+			)
+
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0)).toEqual([{ content: "Chunk 1: Build", priority: "medium", status: "pending" }])
+
+			emitResolved(bus)
+			expect(planEntries(emitted, 1)).toEqual([])
+
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "execute approved plan", status: "in_progress" }] },
+				TEST_SESSION_ID,
+			)
+			expect(planEntries(emitted, 2)).toEqual([
+				{ content: "execute approved plan", priority: "medium", status: "in_progress" },
+			])
+		} finally {
+			tracker.stop()
+		}
+	})
+
 	it("emits a pending ferment proposal from the pending scope buffer", () => {
 		setPendingScope("ferment-pending", {
 			goal: "Goal",
