@@ -9,11 +9,11 @@
 //      `pending`. Subsequent todo store changes translate ferment-scoped
 //      TodoItem[] → PlanEntry[] (phases + steps, ordered).
 //
-//   2. Plan-mode path (flat): after the user approves a plan-mode plan
-//      (PERMISSION_EVENTS.PLAN_APPROVED), emit from the session's
-//      global-scope todos. Pre-approval todos are the agent's planning
-//      scratchpad, and ad-hoc todos from unrelated work are noise — both
-//      stay out of the client's plan panel.
+//   2. Review/global Todo path (flat): plan-review requests emit pending
+//      proposal entries, review resolution clears them, and later global-scope
+//      todos render as execution progress outside plan mode. Pre-approval
+//      todos are the agent's planning scratchpad and stay out of the client's
+//      plan panel.
 //
 // When a ferment starts, the ferment path takes over and the global-scope
 // todos are excluded. When the ferment completes, the tracker clears the
