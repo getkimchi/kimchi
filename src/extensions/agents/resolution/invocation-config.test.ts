@@ -100,4 +100,14 @@ describe("resolveAgentInvocationConfig — runInBackground default", () => {
 		const result = resolveAgentInvocationConfig({ ...agent, runInBackground: false }, {})
 		expect(result.runInBackground).toBe(false)
 	})
+
+	it("headless callers can pass a foreground fallback", () => {
+		const result = resolveAgentInvocationConfig(agent, {}, false)
+		expect(result.runInBackground).toBe(false)
+	})
+
+	it("explicit param and persona policy still override a foreground fallback", () => {
+		expect(resolveAgentInvocationConfig(agent, { run_in_background: true }, false).runInBackground).toBe(true)
+		expect(resolveAgentInvocationConfig({ ...agent, runInBackground: true }, {}, false).runInBackground).toBe(true)
+	})
 })
