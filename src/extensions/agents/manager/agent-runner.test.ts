@@ -1,4 +1,9 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import dapExtension from "../../dap.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
@@ -107,6 +112,10 @@ vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", 
 	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
+vi.mock("../../router/index.js", () => ({
+	createAutoModelExtension: vi.fn(() => () => {}),
+}))
+
 import {
 	type AgentSession,
 	type CreateAgentSessionResult,
@@ -120,6 +129,7 @@ import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { createAutoModelExtension } from "../../router/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -134,6 +144,7 @@ const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
+const mockCreateAutoModelExtension = vi.mocked(createAutoModelExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -149,6 +160,19 @@ function runInlineExtension(extension: InlineExtension | undefined, pi: Extensio
 }
 
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+
+const AUTO_MODEL: Model<Api> = {
+	id: "auto",
+	name: "Auto (Kimchi Router)",
+	api: "kimchi-auto",
+	provider: "kimchi-dev",
+	baseUrl: "https://llm.kimchi.dev/openai/v1",
+	reasoning: true,
+	input: ["text", "image"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128_000,
+	maxTokens: 16_384,
+}
 
 function makeFakeSession({
 	promptTokens = 0,
@@ -346,9 +370,92 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
 		expect(ctorArg?.extensionFactories).toHaveLength(4)
+		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(ctorArg?.extensionFactories).toContain(omitKimchiMaxTokensExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("registers Auto routing only for children that use Auto", async () => {
+		const concreteSession = makeFakeSession({})
+		const autoSession = makeFakeSession({})
+		mockCreateAgentSession
+			.mockResolvedValueOnce({
+				session: concreteSession as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+			.mockResolvedValueOnce({
+				session: autoSession as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+		const autoRoutingExtension: InlineExtension = () => {}
+		mockCreateAutoModelExtension.mockReturnValueOnce(autoRoutingExtension)
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "concrete work", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			model: AUTO_MODEL,
+		})
+
+		const concreteFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
+		const autoFactories = mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories ?? []
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: undefined })
+		expect(concreteFactories).not.toContain(autoRoutingExtension)
+		expect(autoFactories).toContain(autoRoutingExtension)
+	})
+
+	it("passes forwarded-image vision requirements to the child Auto extension", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "inspect the image", {
+			pi: pi as unknown as RunOptions["pi"],
+			model: AUTO_MODEL,
+			requiresVision: true,
+		})
+
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: true })
+	})
+
+	it("adds the dap extension when the persona requests debug tools", async () => {
+		// Debugger persona: extensions:false + builtinToolNames with debug_*/step_* names.
+		// The child loader cannot discover repo-native extensions, so the runner must
+		// inject dapExtension inline or the persona would have no debug tools at all.
+		mockGetToolNamesForType.mockReturnValue(["read", "grep", "find", "ls", "debug_state_at", "debug_launch", "step_in"])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Debugger", "inspect runtime state", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).toHaveLength(5)
+		expect(ctorArg?.extensionFactories).toContain(dapExtension)
+		// The debug tool names must flow into the child session's tool allowlist so the
+		// SDK activates them once the dap extension registers them on session_start.
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				tools: expect.arrayContaining(["debug_state_at", "debug_launch", "step_in"]),
+			}),
+		)
 	})
 
 	it("fails before creating a child session when Pi's model runtime is unavailable", async () => {
@@ -488,6 +595,106 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" })
+	})
+})
+
+describe("runAgent — Plan agent plan persistence", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+	let tempCwd: string
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockDefaultResourceLoader.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+		tempCwd = mkdtempSync(join(tmpdir(), "plan-agent-test-"))
+		ctx.cwd = tempCwd
+	})
+
+	afterEach(() => {
+		rmSync(tempCwd, { recursive: true, force: true })
+		vi.clearAllMocks()
+	})
+
+	function makePlanToolsSession(planText: string, planPath: string) {
+		// Closure body runs after makeFakeSession returns (during prompt()), so
+		// `session` is defined by then. Pushes the worker's submit_plan tool
+		// result onto session messages — this is what extractSubmitPlanPath reads.
+		const session = makeFakeSession({
+			promptAction: async (emit) => {
+				;(session.messages as unknown[]).push({
+					role: "toolResult",
+					toolName: "submit_plan",
+					content: [{ type: "text", text: `Plan submitted and saved to ${planPath}.` }],
+					details: { submitted: true, planPath },
+				})
+				emit({ type: "message_start" })
+				emit({
+					type: "message_update",
+					assistantMessageEvent: { type: "text_delta", delta: planText },
+				})
+				emit({ type: "turn_end" })
+			},
+		})
+		return session
+	}
+
+	function mockSession(session: unknown) {
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+	}
+
+	it("surfaces planPath when the Plan agent submitted via submit_plan", async () => {
+		const planText = "# My Plan\n\nDo the thing.\n"
+		const savedPath = join(tempCwd, ".kimchi", "plans", "plan-my-plan.md")
+		mkdirSync(dirname(savedPath), { recursive: true })
+		writeFileSync(savedPath, planText, "utf-8")
+		const session = makePlanToolsSession(planText, savedPath)
+		mockSession(session)
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBe(savedPath)
+		expect(existsSync(result.planPath as string)).toBe(true)
+	})
+
+	it("returns undefined planPath when the Plan agent made no submit_plan call", async () => {
+		const session = makeFakeSession({
+			promptAction: async (emit) => {
+				emit({ type: "message_start" })
+				emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "# Draft plan\n" } })
+				emit({ type: "turn_end" })
+			},
+		})
+		mockSession(session)
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBeUndefined()
+	})
+
+	it("does not surface planPath for a non-Plan agent even if it calls submit_plan", async () => {
+		const savedPath = join(tempCwd, ".kimchi", "plans", "plan-gp.md")
+		const session = makePlanToolsSession("# My Plan\n\nDo the thing.\n", savedPath)
+		mockSession(session)
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBeUndefined()
 	})
 })
 
@@ -780,7 +987,7 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 
 	it("runAgent: skips tool calls from over-budget message (not mid-stream abort)", async () => {
 		const abortSpy = vi.fn()
-		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const toolActivities: Array<{ status: string; toolName: string }> = []
 		const session = makeFakeSession({
 			abortSpy,
 			promptAction: async (emit) => {
@@ -819,7 +1026,7 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 
 	it("resumeAgent: skips tool calls from over-budget message", async () => {
 		const abortSpy = vi.fn()
-		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const toolActivities: Array<{ status: string; toolName: string }> = []
 		const subscribers: Subscriber[] = []
 		const session = {
 			subscribe: vi.fn((cb: Subscriber) => {
@@ -1065,7 +1272,7 @@ describe("runAgent — budget awareness steers", () => {
 				maxTurns: 10,
 				turns: 5,
 				expectedSteerCount: 1,
-				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*50% of your turn budget./,
+				pattern: /<system-reminder>[\s\S]*50% of your turn budget./,
 			},
 			"does not steer between 50% and 75%": {
 				maxTurns: 10,
@@ -1076,13 +1283,13 @@ describe("runAgent — budget awareness steers", () => {
 				maxTurns: 10,
 				turns: 8,
 				expectedSteerCount: 2,
-				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*75% of your turn budget./,
+				pattern: /<system-reminder>[\s\S]*75% of your turn budget./,
 			},
 			"steers at 90% of turn budget": {
 				maxTurns: 10,
 				turns: 9,
 				expectedSteerCount: 3,
-				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*90% of your turn budget./,
+				pattern: /<system-reminder>[\s\S]*90% of your turn budget./,
 			},
 		}
 
@@ -1998,7 +2205,7 @@ describe("steerAgent — explicit steering", () => {
 		const session = makeFakeSession()
 		await steerAgent(session as unknown as AgentSession, "custom user steer")
 		expect(session.steer).toHaveBeenCalledWith("custom user steer")
-		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("[Orchestrator"))
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("<system-reminder>"))
 	})
 })
 
@@ -2097,9 +2304,7 @@ describe("resumeAgent — inactivity steering", () => {
 
 		await promise
 
-		expect(session.steer).toHaveBeenCalledWith(
-			expect.stringMatching(/\[Orchestrator — automated system instruction, not a user message\]/),
-		)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringMatching(/<system-reminder>/))
 		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("You appear to be stalled"))
 
 		vi.useRealTimers()

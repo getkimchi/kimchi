@@ -4,14 +4,19 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
 	getCliModeArg,
+	getParsedCliArgs,
+	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
+	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
@@ -216,6 +221,30 @@ describe("isExperimentalFeaturesArg", () => {
 	})
 })
 
+describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
+	it("returns true for the bare flag", () => {
+		expect(hasFermentOneshotArg(["--ferment-oneshot"])).toBe(true)
+	})
+
+	it("returns true for the kwarg form", () => {
+		expect(hasFermentOneshotArg(["ferment-oneshot=true"])).toBe(true)
+		expect(hasFermentOneshotArg(["--print", "ferment-oneshot=true"])).toBe(true)
+	})
+
+	it("returns true when mixed with other args", () => {
+		expect(hasFermentOneshotArg(["--model", "foo", "--print", "--ferment-oneshot"])).toBe(true)
+	})
+
+	it("returns false when absent", () => {
+		expect(hasFermentOneshotArg(["--print"])).toBe(false)
+		expect(hasFermentOneshotArg([])).toBe(false)
+	})
+
+	it("returns false when the suffix appears inside an unrelated flag", () => {
+		expect(hasFermentOneshotArg(["--foo-ferment-oneshot=true"])).toBe(false)
+	})
+})
+
 describe("stripExperimentalFeaturesArg", () => {
 	it("removes the flag from the array", () => {
 		expect(stripExperimentalFeaturesArg(["--enable-experimental-features", "--model", "foo"])).toEqual([
@@ -236,5 +265,97 @@ describe("stripExperimentalFeaturesArg", () => {
 
 	it("returns empty array for empty input", () => {
 		expect(stripExperimentalFeaturesArg([])).toEqual([])
+	})
+})
+
+describe("stripMultiModelArgs", () => {
+	it("strips --multi-model", () => {
+		expect(stripMultiModelArgs(["--multi-model"])).toEqual([])
+	})
+
+	it("strips --model multi-model", () => {
+		expect(stripMultiModelArgs(["--model", "multi-model"])).toEqual([])
+	})
+
+	it("strips --model=multi-model", () => {
+		expect(stripMultiModelArgs(["--model=multi-model"])).toEqual([])
+	})
+
+	it("preserves real --model values", () => {
+		expect(stripMultiModelArgs(["--model", "kimchi-dev/kimi-k2.7"])).toEqual(["--model", "kimchi-dev/kimi-k2.7"])
+		expect(stripMultiModelArgs(["--model=kimchi-dev/kimi-k2.7"])).toEqual(["--model=kimchi-dev/kimi-k2.7"])
+	})
+
+	it("preserves surrounding args", () => {
+		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])).toEqual([
+			"--provider",
+			"kimchi-dev",
+			"fix tests",
+		])
+	})
+
+	it("returns the array unchanged when no multi-model flags are present", () => {
+		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"])).toEqual([
+			"--provider",
+			"kimchi-dev",
+			"--model",
+			"kimi-k2.7",
+			"fix tests",
+		])
+	})
+
+	it("strips --multi-model when combined with a real --model value", () => {
+		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
+		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	})
+})
+
+describe("populateCliArgs / getParsedCliArgs", () => {
+	it("parses --model multi-model", () => {
+		populateCliArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({
+			options: { provider: "kimchi-dev", model: "multi-model" },
+			positionals: ["fix tests"],
+		})
+	})
+
+	it("parses --multi-model", () => {
+		populateCliArgs(["--multi-model", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({
+			options: { "multi-model": true },
+			positionals: ["fix tests"],
+		})
+	})
+
+	it("parses real --model values", () => {
+		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({ options: { model: "kimchi-dev/kimi-k2.7" }, positionals: ["fix tests"] })
+	})
+
+	it("reports no model option when --model is absent", () => {
+		populateCliArgs(["--provider", "kimchi-dev", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({ options: { provider: "kimchi-dev" }, positionals: ["fix tests"] })
+	})
+
+	it("reuses the cached parse across calls", () => {
+		populateCliArgs(["--multi-model"])
+		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+		// Subsequent calls return the same cached result without re-parsing.
+		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+	})
+
+	it.each([
+		["canonical", ["--model", "kimchi-dev/auto"]],
+		["provider and id", ["--provider", "kimchi-dev", "--model", "auto"]],
+		["bare id", ["--model", "auto"]],
+		["thinking suffix", ["--model", "kimchi-dev/auto:high"]],
+	] as const)("recognizes an explicit Auto selection in %s form", (_label, args) => {
+		populateCliArgs([...args])
+		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(true)
+	})
+
+	it("does not mistake another provider's auto model for kimchi-dev/auto", () => {
+		populateCliArgs(["--provider", "custom", "--model", "auto"])
+		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
 	})
 })

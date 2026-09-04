@@ -49,6 +49,24 @@ describe("runPreflight", () => {
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("--allow-dirty"), "error")
 	})
 
+	it("passes a dirty tree when --fast is set (rsync still checked)", () => {
+		const { ctx, ui } = wrap()
+		const rsync = vi.fn().mockReturnValue(true)
+		expect(() =>
+			runPreflight(ctx, { fast: true }, makeDeps({ whichRsync: rsync, gitWorkingTreeDirty: () => true })),
+		).not.toThrow()
+		expect(rsync).toHaveBeenCalled()
+		expect(ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("still refuses on missing rsync when --fast is set", () => {
+		const { ctx, ui } = wrap()
+		expect(() =>
+			runPreflight(ctx, { fast: true }, makeDeps({ whichRsync: () => false, rsyncInstallHint: () => "install hint" })),
+		).toThrow(TeleportRefusal)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("rsync"), "error")
+	})
+
 	it("passes a dirty tree when --allow-dirty is set", () => {
 		const { ctx, ui } = wrap()
 		expect(() => runPreflight(ctx, { allowDirty: true }, makeDeps({ gitWorkingTreeDirty: () => true }))).not.toThrow()

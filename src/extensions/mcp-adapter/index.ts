@@ -99,10 +99,16 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 						.filter(Boolean),
 				)
 	const missingConfiguredDirectToolServers = getMissingConfiguredDirectToolServers(earlyConfig, earlyCache)
+	// With zero MCP servers configured
+	// the proxy gateway has nothing to connect to, so don't advertise `mcp` at
+	// all (~450 est off the surface). Static at registration: adding a server
+	// requires a restart to take effect (the config file is re-read on startup).
+	const hasAnyConfiguredServer = Object.keys(earlyConfig.mcpServers).length > 0
 	const shouldRegisterProxyTool =
-		earlyConfig.settings?.disableProxyTool !== true ||
-		directSpecs.length === 0 ||
-		missingConfiguredDirectToolServers.length > 0
+		hasAnyConfiguredServer &&
+		(earlyConfig.settings?.disableProxyTool !== true ||
+			directSpecs.length === 0 ||
+			missingConfiguredDirectToolServers.length > 0)
 
 	// Track all registered tool names to avoid double-registration
 	const registeredToolNames = new Set<string>()

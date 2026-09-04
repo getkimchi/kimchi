@@ -97,9 +97,10 @@ const externalFlags = externals.map((name) => `--external ${name}`).join(" ")
 // Trust the OS certificate store in addition to Bun's bundled roots so users behind
 // TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
+// `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig` disable loading `.env` and `bunfig.toml` files.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
+	`bun build src/entry.ts --compile${targetFlag} --no-compile-autoload-dotenv --no-compile-autoload-bunfig --compile-exec-argv="--use-system-ca" --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.

@@ -30,12 +30,52 @@ Every in-session payload includes:
 
 | Attribute | Value |
 |-----------|-------|
-| `session.id` | Shared root UUID across all agents in the process |
+| `session.id` | Per-process telemetry session id — shared by the main agent and in-process subagents, so events roll up under one backend session; not a per-agent id, and out-of-process agents (remote, session-review subprocesses) have their own |
+| `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
 | `mode` | `"coding"` or `"ferment"` |
 
 Pre-session payloads use the **device ID** (from PostHog) as `session.id`.
+
+### Subagent identification
+
+`session.parent_id` is the marker for events raised inside a subagent run. It
+is emitted only when the process is inside an Agent-subagent execution
+(`isAgentWorker()` — the Agent-worker async context, or `KIMCHI_SUBAGENT=1`)
+*and* the runner has recorded the spawning session (`KIMCHI_PARENT_SESSION_ID`,
+set for the whole subagent run by `withParentSessionEnv` in
+`extensions/agents/manager/agent-runner.ts`). Its value is the **parent**
+session's pi session id; the emitting session's own id is `pi_session_id`.
+Combine the two to reconstruct the spawn tree:
+
+| Attribute | Main agent event | In-process subagent event |
+|-----------|------------------|---------------------------|
+| `session.id` | process telemetryId `T` | `T` (shared — same process) |
+| `pi_session_id` | parent session id `P` | subagent session id `S` |
+| `session.parent_id` | *(absent)* | `P` |
+
+An event with `session.parent_id != ""` whose `session.id` equals the
+parent's is from an **in-process** subagent (same process — the main agent and
+its in-process subagents share the module-level telemetryId). Two caveats:
+
+- The **curator session-review subprocess** also sets `KIMCHI_SUBAGENT=1` and
+  `KIMCHI_PARENT_SESSION_ID`, so its events carry `session.parent_id` too. It
+  is a separate process, so it is distinguished by its own `session.id`
+  (different from the parent's telemetryId).
+- **Remote sandbox agents** never receive the env var, so their events carry
+  no `session.parent_id`.
+
+`subagent.spawned` (raised by the *parent*) additionally declares the
+subagent's `agent_type` and `reason`, so spawning events can be paired with
+the subagent's own events via `session.parent_id`.
+
+Provider requests issued inside a subagent run also carry an
+`X-Parent-Session-Id` header (same value and gating as `session.parent_id`) so
+the proxy can record the parent session on `chat_completions` rows, mirroring
+how it already records `X-Session-Id` / `X-Turn-Index`. When Auto routing is
+active, its `/v1/route` request receives the same telemetry correlation headers
+as the concrete model request; unrelated provider headers are not forwarded.
 
 ## Pre-Session Events
 
@@ -68,6 +108,20 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
 | `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)* |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
+| `remote_execution.started` | Remote cloud agent successfully spawned | `origin` |
+| `remote_execution.completed` | Remote cloud agent finished successfully | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
+| `remote_execution.failed` | Remote cloud agent errored / was stopped | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
+| `remote_execution.sync.started` | User chose "Sync" in the post-completion dropdown; rsync begins | `origin` |
+| `remote_execution.sync.completed` | Sync rsync succeeded | `origin` |
+| `remote_execution.sync.failed` | Sync failed (missing session metadata, no API key, or rsync error) | `origin` |
+| `remote_execution.viewed` | User chose "Review/continue locally" in the post-completion dropdown | `origin` |
+| `remote_execution.custom_action` | User chose "Give a custom instruction" and confirmed a non-empty action | `origin` |
+| `remote_execution.done` | User chose "Done" in the post-completion dropdown | `origin` |
+
+> **Privacy:** `remote_execution.*` events carry only the `origin` enum
+> (`"plan"` / `"plan-mode"` / `"ferment plan"`) plus numeric aggregates
+> (durations, counts, token totals). Plan text, prompts, results,
+> and file paths are never emitted.
 | `loop_guard.warn` | Loop-guard issues a steer | `model`, `detector`, `count`, `is_subagent` |
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 

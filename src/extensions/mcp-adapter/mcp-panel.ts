@@ -1,5 +1,6 @@
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { fg } from "../../ansi.js"
+import { truncateLinesToWidth } from "../../truncate-lines.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js"
@@ -609,7 +610,7 @@ class McpPanel {
 	}
 
 	render(width: number): string[] {
-		const innerW = width - 2
+		const innerW = Math.max(1, width - 2)
 		const lines: string[] = []
 		const t = this.t
 		const bold = (s: string) => `\x1b[1m${s}\x1b[22m`
@@ -622,7 +623,7 @@ class McpPanel {
 		const divider = () => fg(t.border, `├${"─".repeat(innerW)}┤`)
 
 		const titleText = " MCP Servers "
-		const borderLen = innerW - visibleWidth(titleText)
+		const borderLen = Math.max(0, innerW - visibleWidth(titleText))
 		const leftB = Math.floor(borderLen / 2)
 		const rightB = borderLen - leftB
 		lines.push(fg(t.border, `╭${"─".repeat(leftB)}`) + fg(t.title, titleText) + fg(t.border, `${"─".repeat(rightB)}╮`))
@@ -750,7 +751,7 @@ class McpPanel {
 
 		lines.push(fg(t.border, `╰${"─".repeat(innerW)}╯`))
 
-		return lines
+		return truncateLinesToWidth(lines, width)
 	}
 
 	private renderServerRow(server: ServerState, isCursor: boolean): string {

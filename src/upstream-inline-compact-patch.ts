@@ -29,6 +29,12 @@ type PatchableSession = Pick<AgentSession, "abort" | "sessionManager" | "setting
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
 	_kimchiInlineCompactInFlight?: boolean
+	/** Set after a successful inline (suppress-abort) compaction: the session's
+	 *  agent.state.messages was replaced with the compacted array while the run
+	 *  loop keeps streaming from its run-start snapshot. emitContext substitutes
+	 *  the live array from then on so the wire actually shrinks (see runner patch). */
+	_kimchiInlineResync?: boolean
+	agent?: AgentSession["agent"]
 	_disconnectFromAgent?: () => void
 	inlineCompact?(options?: InlineCompactOptions): Promise<CompactionResult>
 }
@@ -38,7 +44,11 @@ type UpstreamCompact = AgentSession["compact"]
 type PatchableSessionPrototype = {
 	_kimchiInlineCompactPatch?: boolean
 	inlineCompact?: (this: PatchableSession, options?: InlineCompactOptions) => Promise<CompactionResult>
-	compact?: (this: PatchableSession, customInstructions?: Parameters<UpstreamCompact>[0]) => ReturnType<UpstreamCompact>
+	compact?: (
+		this: PatchableSession,
+		customInstructions?: Parameters<UpstreamCompact>[0],
+		force?: boolean,
+	) => ReturnType<UpstreamCompact>
 	_bindExtensionCore?: (this: PatchableSession, runner: PatchableRunnerInstance) => unknown
 }
 
@@ -48,12 +58,15 @@ type PatchableSessionClass = {
 
 type PatchableRunnerInstance = {
 	_kimchiInlineCompact?: (options?: InlineCompactOptions) => Promise<CompactionResult>
+	_kimchiInlineSession?: PatchableSession
 	assertActive?: () => void
 }
 
 type PatchableRunnerPrototype = {
 	_kimchiInlineCompactContextPatch?: boolean
+	_kimchiInlineResyncEmitContextPatch?: boolean
 	createContext?: (this: PatchableRunnerInstance) => object
+	emitContext?: (this: PatchableRunnerInstance, messages: unknown[]) => Promise<unknown[]>
 }
 
 type PatchableRunnerClass = {
@@ -177,7 +190,16 @@ async function runInlineCompact(
 			restores.push(shadowProperty(session, "thinkingLevel", options.thinkingLevel))
 		}
 
-		return await originalCompact.call(session, options.customInstructions)
+		const result = await originalCompact.call(session, options.customInstructions, options.force ?? false)
+		// compact() replaced agent.state.messages with the compacted array, but
+		// the live run loop keeps streaming from its run-start snapshot — the
+		// proven wire no-op (019ffb83: 9 fires, context kept climbing). Flag the
+		// session so the runner's emitContext patch substitutes the canonical
+		// compacted array for every subsequent LLM call in this run. Both arrays
+		// receive identical appends per turn (loop pushes + message_end), so
+		// following state.messages stays correct for the remainder of the run.
+		session._kimchiInlineResync = true
+		return result
 	} finally {
 		session._kimchiInlineCompactInFlight = false
 		for (const restore of restores.reverse()) {
@@ -213,6 +235,7 @@ export function installInlineCompactPatch(options: InlineCompactPatchOptions = {
 		sessionProto._bindExtensionCore = function patchedBindExtensionCore(runner: PatchableRunnerInstance) {
 			runner._kimchiInlineCompact = (inlineOptions?: InlineCompactOptions) =>
 				this.inlineCompact?.(inlineOptions) ?? Promise.reject(new Error("inlineCompact is not available"))
+			runner._kimchiInlineSession = this
 			return originalBindExtensionCore.call(this, runner)
 		}
 
@@ -225,6 +248,35 @@ export function installInlineCompactPatch(options: InlineCompactPatchOptions = {
 			"pi-coding-agent ExtensionRunner internals are incompatible with Kimchi inline compaction " +
 				"(missing ExtensionRunner.createContext() — upstream internals changed)",
 		)
+	}
+
+	if (!runnerProto.emitContext) {
+		throw new Error(
+			"pi-coding-agent ExtensionRunner internals are incompatible with Kimchi inline compaction " +
+				"(missing ExtensionRunner.emitContext() — upstream internals changed)",
+		)
+	}
+
+	// Wire-resync patch: after a successful inline compaction, agent.state.messages
+	// is the compacted canonical array, but the run loop keeps streaming from its
+	// run-start snapshot. Substitute the live array so every subsequent LLM call
+	// carries the compacted context. emitContext runs per turn (agent-loop
+	// streamAssistantResponse → sdk transformContext → runner.emitContext),
+	// structuredClones its input, and returns the array used for convertToLlm,
+	// so pointing it at state.messages is both safe and sufficient.
+	if (!runnerProto._kimchiInlineResyncEmitContextPatch) {
+		const originalEmitContext = runnerProto.emitContext
+		runnerProto.emitContext = function patchedEmitContext(this: PatchableRunnerInstance, messages: unknown[]) {
+			const session = this._kimchiInlineSession
+			if (session?._kimchiInlineResync) {
+				const liveMessages = session.agent?.state?.messages
+				if (Array.isArray(liveMessages)) {
+					return originalEmitContext.call(this, liveMessages)
+				}
+			}
+			return originalEmitContext.call(this, messages)
+		}
+		runnerProto._kimchiInlineResyncEmitContextPatch = true
 	}
 
 	if (!runnerProto._kimchiInlineCompactContextPatch) {

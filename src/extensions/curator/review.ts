@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
 import { spawnKimchiSubprocess } from "../../utils/spawn-kimchi-subprocess.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import type { SkillManager } from "../skills-manager/skill-manager.js"
 import { agentCreatedReport } from "../skills-manager/usage.js"
 import { loadState, saveState } from "./state.js"
@@ -119,6 +120,8 @@ export interface RunCuratorReviewOptions {
 	skillsDir: string
 	manager: SkillManager
 	background?: boolean
+	/** Spawning session's pi session id — forwarded to the review subprocess env. */
+	parentSessionId?: string
 }
 
 function collectExtensionArgs(): string[] {
@@ -167,7 +170,12 @@ function spawnReviewAgent(
 	provider: string,
 	model: string,
 	prompt: string,
-	opts?: { detached?: boolean; stdout?: "pipe" | "ignore" | number; stderr?: "pipe" | "ignore" | number },
+	opts?: {
+		detached?: boolean
+		stdout?: "pipe" | "ignore" | number
+		stderr?: "pipe" | "ignore" | number
+		parentSessionId?: string
+	},
 ) {
 	const args = buildReviewAgentArgs(provider, model, prompt)
 	debugLog(`spawning review agent with args: ${args.slice(0, 6).join(" ")} ...`)
@@ -176,7 +184,11 @@ function spawnReviewAgent(
 		stdout: opts?.stdout,
 		stderr: opts?.stderr,
 		detached: opts?.detached,
-		env: { KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
+		env: {
+			KIMCHI_SUBAGENT: "1",
+			KIMCHI_SESSION_REVIEW: "1",
+			...(opts?.parentSessionId ? { [PARENT_SESSION_ID_ENV_KEY]: opts.parentSessionId } : {}),
+		},
 	})
 }
 
@@ -188,9 +200,9 @@ function spawnReviewAgent(
 const REVIEW_TIMEOUT_MS = 30 * 60 * 1000
 const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000
 
-function runReviewAgent(provider: string, model: string, prompt: string): Promise<string> {
+function runReviewAgent(provider: string, model: string, prompt: string, parentSessionId?: string): Promise<string> {
 	return new Promise((resolvePromise, reject) => {
-		const proc = spawnReviewAgent(provider, model, prompt)
+		const proc = spawnReviewAgent(provider, model, prompt, { parentSessionId })
 		let output = ""
 		let stderr = ""
 		let buffer = ""
@@ -287,7 +299,11 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 	}
 
 	if (background) {
-		const proc = spawnReviewAgent(provider, model, prompt, { detached: true, stderr: "ignore" })
+		const proc = spawnReviewAgent(provider, model, prompt, {
+			detached: true,
+			stderr: "ignore",
+			parentSessionId: opts.parentSessionId,
+		})
 		proc.unref()
 		let output = ""
 		let buffer = ""
@@ -308,7 +324,7 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 	}
 
 	try {
-		const output = await runReviewAgent(provider, model, prompt)
+		const output = await runReviewAgent(provider, model, prompt, opts.parentSessionId)
 		return finalize(output)
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err)
@@ -392,6 +408,8 @@ export interface RunSessionReviewOptions {
 	skillsDir: string
 	// biome-ignore lint/suspicious/noExplicitAny: messages type not exported from pi-coding-agent
 	messages: any[]
+	/** Spawning session's pi session id — forwarded to the review subprocess env. */
+	parentSessionId?: string
 }
 
 export function debugLog(msg: string): void {
@@ -401,8 +419,7 @@ export function debugLog(msg: string): void {
 }
 
 export function spawnSessionReview(opts: RunSessionReviewOptions): void {
-	const { provider, model, messages } = opts
-
+	const { provider, model, messages, parentSessionId } = opts
 	debugLog(`spawnSessionReview called: provider=${provider} model=${model} messages=${messages.length}`)
 
 	const transcript = serializeTranscript(messages)
@@ -423,7 +440,12 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 		stdoutOption = logFd
 	}
 
-	const proc = spawnReviewAgent(provider, model, prompt, { detached: true, stdout: stdoutOption, stderr: "ignore" })
+	const proc = spawnReviewAgent(provider, model, prompt, {
+		detached: true,
+		stdout: stdoutOption,
+		stderr: "ignore",
+		parentSessionId,
+	})
 
 	if (logFd !== undefined) {
 		closeSync(logFd)

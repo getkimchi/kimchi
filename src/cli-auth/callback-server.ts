@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js"
+import { oauthErrorHtml, oauthSuccessHtml } from "../utils/oauth-page.js"
 
 const CALLBACK_PATH = "/callback"
 const CALLBACK_TIMEOUT_MS = 300_000 // 5 minutes

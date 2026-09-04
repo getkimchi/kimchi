@@ -1,8 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { askJudgeForm, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "./ask-user.js"
+import { judgeApiCall } from "./judge.js"
+
+vi.mock("./judge.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./judge.js")>()
+	return { ...actual, judgeApiCall: vi.fn() }
+})
+const mockedJudgeApiCall = vi.mocked(judgeApiCall)
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 	return {
@@ -125,6 +132,83 @@ describe("askUserForm routing", () => {
 		expect(result.failed).toBe(true)
 		expect((result as { failed: true; reason: string }).reason).toBe("user_cancelled")
 		expect(pi.events.emit).not.toHaveBeenCalledWith("ferment:user_unblocked", expect.anything())
+	})
+
+	it("emits a balanced herdr:blocked pair around a successful interactive form", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => "safe"),
+				input: vi.fn(async () => ""),
+			},
+		})
+		await askUserForm(
+			"Clarify plan",
+			"Desc",
+			[{ id: "q1", type: "single", prompt: "Which?", options: [{ id: "safe", label: "Safe" }] }],
+			{ ferment: makeFerment(), pi, ctx },
+		)
+
+		const blocked = vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")
+		expect(blocked[0]).toEqual(["herdr:blocked", { active: true, label: "Ferment question" }])
+		expect(blocked[blocked.length - 1]).toEqual(["herdr:blocked", { active: false }])
+	})
+
+	it("deactivates herdr:blocked when the user cancels", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => undefined),
+				input: vi.fn(async () => ""),
+			},
+		})
+		await askUserForm("Title", "Desc", [{ id: "q1", type: "text", prompt: "Question?" }], {
+			ferment: makeFerment(),
+			pi,
+			ctx,
+		})
+
+		expect(vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Ferment question" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("deactivates herdr:blocked when the prompt throws", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => {
+					throw new Error("select blew up")
+				}),
+				input: vi.fn(async () => ""),
+			},
+		})
+
+		await expect(
+			askUserForm("Title", "Desc", [{ id: "q1", type: "single", prompt: "Q?", options: [{ id: "a", label: "A" }] }], {
+				ferment: makeFerment(),
+				pi,
+				ctx,
+			}),
+		).rejects.toThrow("select blew up")
+
+		expect(vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Ferment question" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("emits no herdr:blocked events when no UI is attached (no prompt shown)", async () => {
+		const pi = makePi()
+		const result = await askUserForm("Title", "Desc", [{ id: "q1", type: "text", prompt: "Question?" }], {
+			ferment: makeFerment(),
+			pi,
+			ctx: createContext({ hasUI: false }),
+		})
+
+		expect(result.failed).toBe(true)
+		expect(pi.events.emit).not.toHaveBeenCalledWith("herdr:blocked", expect.anything())
 	})
 })
 
@@ -266,6 +350,79 @@ describe("normalizeAskUserQuestions", () => {
 		expect(result.ok).toBe(false)
 		if (result.ok) return
 		expect(result.error).toContain('Question id "dup" is duplicated')
+	})
+})
+
+describe("one-shot judge decision audit", () => {
+	type Recorder = (fermentId: string, prompt: string, answerLabel: string, rationale: string | undefined) => void
+
+	beforeEach(() => {
+		mockedJudgeApiCall.mockReset()
+	})
+
+	const scopeQuestion = [
+		{ id: "choice", type: "single" as const, prompt: "Broad or narrow?", options: [{ id: "broad", label: "Broad" }] },
+	]
+
+	it("records each judge-answered question with prompt, choice label and rationale", async () => {
+		mockedJudgeApiCall.mockResolvedValue({
+			ok: true,
+			text: '{"answers":[{"id":"choice","value":"broad"}],"rationale":"Faster to ship"}',
+		})
+		const recordJudgeDecision = vi.fn<Recorder>()
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi({ "ferment-oneshot": true }),
+			ctx: createContext(),
+			recordJudgeDecision,
+		})
+		expect(result.failed).toBeFalsy()
+		expect(recordJudgeDecision).toHaveBeenCalledTimes(1)
+		expect(recordJudgeDecision).toHaveBeenCalledWith("ferment-1", "Broad or narrow?", "Broad", "Faster to ship")
+	})
+
+	it("records judge-unavailable fallback defaults with their rationale", async () => {
+		mockedJudgeApiCall.mockResolvedValue({ ok: false, reason: "no_registry" })
+		const recordJudgeDecision = vi.fn<Recorder>()
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi({ "ferment-oneshot": true }),
+			ctx: createContext(),
+			recordJudgeDecision,
+		})
+		expect(result.failed).toBeFalsy()
+		expect(recordJudgeDecision).toHaveBeenCalledTimes(1)
+		const rationale = recordJudgeDecision.mock.calls[0]?.[3]
+		expect(rationale).toContain("Judge was unavailable")
+	})
+
+	it("does not record interactive user answers", async () => {
+		const recordJudgeDecision = vi.fn<Recorder>()
+		const ctx = createContext({ ui: { select: vi.fn(async () => "broad"), input: vi.fn(async () => "") } })
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi(),
+			ctx,
+			recordJudgeDecision,
+		})
+		expect(result.failed).toBeFalsy()
+		expect(recordJudgeDecision).not.toHaveBeenCalled()
+		expect(mockedJudgeApiCall).not.toHaveBeenCalled()
+	})
+
+	it("works without a recorder (backwards compatible)", async () => {
+		mockedJudgeApiCall.mockResolvedValue({
+			ok: true,
+			text: '{"answers":[{"id":"choice","value":"broad"}],"rationale":"x"}',
+		})
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi({ "ferment-oneshot": true }),
+			ctx: createContext(),
+		})
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.value).toBe("broad")
 	})
 })
 

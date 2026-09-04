@@ -165,7 +165,12 @@ export const PhaseProposalSchema = Type.Object({
 		Type.Array(
 			Type.Object({
 				description: Type.String(),
-				verify: Type.Optional(Type.String({ description: "bash command that exits 0 on success" })),
+				verify: Type.Optional(
+					Type.String({
+						description:
+							"Bash command that exits 0 on success. Runtime-claim steps need BEHAVIORAL verification (run the artifact, assert its behavior — tests, smoke runs, curl the server); existence/grep checks (test -f, grep -q) only suit scaffolding steps. echo-only 'manual inspection' commands are banned. complete_ferment_phase re-runs every declared verify deterministically before grading.",
+					}),
+				),
 				parallel_group: Type.Optional(
 					Type.Number({
 						description:
@@ -324,7 +329,8 @@ export const RefineParams = Type.Object({
 			description: Type.String(),
 			verify: Type.Optional(
 				Type.String({
-					description: "Bash command that exits 0 on success. Run automatically after complete_ferment_step.",
+					description:
+						"Bash command that exits 0 on success. Run automatically after complete_ferment_step, and re-run deterministically at complete_ferment_phase before grading. Runtime-claim steps need BEHAVIORAL verification (run the artifact, assert its behavior); existence/grep checks (test -f, grep -q) only suit scaffolding steps. echo-only 'manual inspection' commands are banned.",
 				}),
 			),
 			parallel_group: Type.Optional(
@@ -363,6 +369,18 @@ export const CompleteStepParams = Type.Object({
 		}),
 	),
 	summary: Type.Optional(Type.String()),
+	subsumed: Type.Optional(
+		Type.Boolean({
+			description:
+				"True when this step's work was already performed by another step in the same phase (set absorbed_by). The step's verification command is re-run to confirm the claim; on failure the subsumption is refused and the step must be done normally. Avoids re-doing or mock-completing already-finished work.",
+		}),
+	),
+	absorbed_by: Type.Optional(
+		Type.String({
+			description:
+				"Step ID (same phase, must be done/verified) whose work already covered this step. Required when subsumed=true.",
+		}),
+	),
 	gates: Type.Array(StepGateVerdictSchema, {
 		description:
 			'Step-scope gate verdicts. Required ids: S1 (summary matches diff), S2 (verify command honesty), S3 (edge case awareness). A \'flag\' verdict blocks step completion. Example: [{"id":"S1","verdict":"pass","rationale":"Summary cites file paths and functions from the diff","evidence":"src/foo.ts:42"}, {"id":"S2","verdict":"pass","rationale":"Verify command is a real test, not just grep","evidence":"pnpm test -- src/foo.test.ts"}, {"id":"S3","verdict":"pass","rationale":"Handles empty input gracefully","evidence":"Tested with empty string; returns early"}]',

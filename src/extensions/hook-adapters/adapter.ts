@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookEventName,
@@ -125,7 +126,18 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			if (stopHookActive) stopHookFollowUpPending = false
 			if (result?.block && result.reason && !stopHookActive) {
 				stopHookFollowUpPending = true
-				pi.sendUserMessage(result.reason, { deliverAs: "followUp" })
+				// Deliver hook-authored continuation reasons as a branded custom
+				// message, not via sendUserMessage — hook text is neither the user's
+				// words nor harness-core prose, and user-role delivery makes it
+				// indistinguishable from genuine user input.
+				pi.sendMessage(
+					{
+						customType: "hook_stop_reason",
+						content: [{ type: "text", text: markHarnessSteer(result.reason) }],
+						display: false,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
 			}
 		})
 		pi.on("message_start", async (event, ctx) => {
@@ -199,6 +211,10 @@ export async function runCommandHook(
 			timeout.unref?.()
 			child.once("exit", clearKillTimer)
 			child.once("close", clearKillTimer)
+			// A hook that ignores its stdin and exits makes the write fail with a
+			// broken pipe (EPIPE). That is benign here, so swallow it rather than
+			// letting it surface as an unhandled stream error that crashes the process.
+			child.stdin.on("error", () => {})
 			child.stdin.end(input)
 			child.unref()
 		} catch {
@@ -261,6 +277,10 @@ function runBlockingCommandHook(
 				child.kill()
 				settle({})
 			}, hook.timeoutMs)
+			// A hook that ignores its stdin and exits makes the write fail with a
+			// broken pipe (EPIPE). That is benign here, so swallow it rather than
+			// letting it surface as an unhandled stream error that crashes the process.
+			child.stdin.on("error", () => {})
 			child.stdin.end(input)
 		} catch {
 			settle({})
@@ -342,7 +362,7 @@ async function runPostToolUse(
 	if (event.isError) {
 		result = mergeOptionalResults(
 			result,
-			await runMatchingHooks(definition, "PostToolUseFail", ctx, matcherCandidates(event.toolName), basePayload),
+			await runMatchingHooks(definition, "PostToolUseFailure", ctx, matcherCandidates(event.toolName), basePayload),
 		)
 	}
 	const skillName = skillNameFromReadPath(event)
@@ -611,7 +631,7 @@ function sendAdditionalContext(
 	pi.sendMessage(
 		{
 			customType: definition.customType,
-			content,
+			content: deliverAs === "steer" ? markHarnessSteer(content) : content,
 			display: false,
 			details: { source: definition.id },
 		},

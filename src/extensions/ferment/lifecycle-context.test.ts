@@ -240,8 +240,8 @@ describe("registerFermentLifecycleContext", () => {
 
 		const result = await fireContext([])
 		const lifecycle = extractLifecycleMessage(result)
-		// In single-model mode, the next-action suffix tells the planner it may
+		// In single-model mode, the next-action suffix tells the planner it should
 		// execute the step directly instead of always spawning a subagent.
-		expect(lifecycle?.content).toContain("or execute the step directly")
+		expect(lifecycle?.content).toContain("Then execute the step directly")
 	})
 })

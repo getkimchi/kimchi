@@ -19,7 +19,7 @@ export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
 
 export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
-- Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
+- Final plans and specs belong at the canonical plan location \`.kimchi/plans/<slug>.md\` — one file per plan, updated in place. The Documents directory stays for research notes, review findings, and verification reports; do not put final plans or specs there.
 - List every file that will be created, modified, or deleted, with concrete paths.
 - Identify test files that need creation or update. State the testing strategy.
 - Call out non-obvious decisions and the alternatives you rejected — one line each.
@@ -38,10 +38,8 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
-- Always wrap shell commands with a timeout to prevent hanging. Use language-native timeouts where available (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`) and \`timeout <seconds> <command>\` for everything else (e.g. \`timeout 30 go run .\`, \`timeout 60 ./server\`). Default to 60 seconds unless the task explicitly requires longer.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
-- Keep diffs minimal and reviewable.
-- **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
+- Keep diffs minimal and reviewable.`
 
 export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Read the diff or changed files first; then read the surrounding context for any touched function.

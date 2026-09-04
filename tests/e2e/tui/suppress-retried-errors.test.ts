@@ -276,9 +276,7 @@ test("ferment pause on error surfaces sanitized message with /ferment resume hin
 						},
 					],
 				},
-				// Turn 2: tools suppressed → text-only response (plan review).
-				{ stream: ["I've submitted the plan for your review."] },
-				// Turn 3: post-confirmation, model starts working but hits an error.
+				// Turn 2: post-confirmation, model starts working but hits an error.
 				{ status: 500, body: VLLM_ERROR_BODY },
 				{ status: 500, body: VLLM_ERROR_BODY },
 				{ status: 500, body: VLLM_ERROR_BODY },

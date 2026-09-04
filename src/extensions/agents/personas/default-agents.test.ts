@@ -23,10 +23,10 @@ describe("DEFAULT_AGENTS", () => {
 		}
 	})
 
-	it("Plan agent includes write and edit in builtinToolNames", () => {
+	it("Plan agent does not include write or edit in builtinToolNames", () => {
 		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(plan.builtinToolNames).toContain("write")
-		expect(plan.builtinToolNames).toContain("edit")
+		expect(plan.builtinToolNames).not.toContain("write")
+		expect(plan.builtinToolNames).not.toContain("edit")
 	})
 
 	it("Plan agent has roles set to plan", () => {

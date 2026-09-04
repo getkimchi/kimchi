@@ -1,6 +1,11 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("../remote-run/runner.js", () => ({
+	isRemoteRunEnabled: vi.fn(() => false),
+	runCloudAgent: vi.fn(),
+}))
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
@@ -59,6 +64,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 	}
 })
 
+import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import {
 	clearAllPendingPlanReviews,
 	createPlanReviewComponent,
@@ -168,15 +174,46 @@ describe("PlanReviewComponent", () => {
 		expect(done).toHaveBeenCalledWith({ kind: "cancelled", reason: "feedback_cancelled" })
 	})
 
-	it("submits non-empty feedback text", () => {
-		const { component, done } = createComponent()
+	describe("with cloud option enabled", () => {
+		beforeEach(() => {
+			vi.mocked(isRemoteRunEnabled).mockReturnValue(true)
+		})
+		afterEach(() => {
+			vi.mocked(isRemoteRunEnabled).mockReturnValue(false)
+		})
 
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\r")
-		component.handleInput?.("drop phase 2")
-		component.handleInput?.("\r")
+		it("includes the cloud execution option after auto mode", () => {
+			const { component } = createComponent()
+			const lines = component.render(80).join("\n")
+			expect(lines).toContain("Start execution in cloud")
+			expect(lines).toContain("Let me say something")
+		})
 
-		expect(done).toHaveBeenCalledWith({ kind: "feedback", text: "drop phase 2" })
+		it("submits start_cloud from the third decision option", () => {
+			const { component, done } = createComponent()
+
+			component.handleInput?.("\x1b[B") // auto mode
+			component.handleInput?.("\x1b[B") // cloud
+			component.handleInput?.("\r")
+
+			expect(done).toHaveBeenCalledWith({ kind: "start_cloud" })
+		})
+
+		it("keeps feedback as the last option when cloud is enabled", () => {
+			const { component } = createComponent()
+
+			component.handleInput?.("\x1b[B") // auto
+			component.handleInput?.("\x1b[B") // cloud
+			component.handleInput?.("\x1b[B") // feedback
+
+			expect(component.render(80).join("\n")).toContain("> Let me say something")
+		})
+	})
+
+	it("does not include cloud option when remote run is disabled", () => {
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(false)
+		const { component } = createComponent()
+		const lines = component.render(80).join("\n")
+		expect(lines).not.toContain("Start execution in cloud")
 	})
 })

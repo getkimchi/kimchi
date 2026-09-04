@@ -175,6 +175,56 @@ Two tags are added automatically to every request and do not count toward the 10
 
 User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tags.json` and survive across sessions. Static tags from `KIMCHI_TAGS` must be set each session.
 
+## Ferment V2
+
+Ferment V2 is an experimental, branch-scoped objective controller. It keeps one objective active across turns, uses the normal Todo tools for tactical work, and does not create Ferment phases, workers, or worktrees. See the [Ferment V2 runtime guide](docs/ferment-v2.md) for the lifecycle and persistence contract.
+
+Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default.
+
+| Command | Description |
+|---------|-------------|
+| `/ferment-v2 <objective>` | Create an objective, or confirm replacement of an unfinished Ferment V2 run |
+| `/ferment-v2 --tokens <n\|k\|m> <objective>` | Create an objective with a token budget, such as `--tokens 50k` |
+| `/ferment-v2` | Show the current objective, status, revision, and latest completion evaluation |
+| `/ferment-v2 edit [objective]` | Edit in place and redirect work to the new revision |
+| `/ferment-v2 pause` | Stop automatic continuation without aborting a running tool |
+| `/ferment-v2 resume` | Reactivate the current run |
+| `/ferment-v2 clear` | Clear the run from the current session branch |
+
+Ferment V2 state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
+
+At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an independent tool-free evaluator returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
+
+Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+
+Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled, and records each check in a child session. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
+
+### Settings
+
+Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `fermentV2` key:
+
+```json
+{
+  "fermentV2": {
+    "autoResume": true,
+    "maxUnchangedContinuations": 3,
+    "maxConsecutiveErrors": 3,
+    "defaultTokenBudget": 200000,
+    "evaluationTimeoutMs": 180000
+  }
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active Ferment V2 run on session start. |
+| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
+| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
+| `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
+| `evaluationTimeoutMs` | `180000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
+
+Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles). The full evaluator evidence and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
+
 ## Ferment -- cross-session project management
 
 Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) as a JSON state file.
@@ -402,23 +452,6 @@ kimchi update --canary              # install the latest canary build from maste
 ### HTTP proxy
 
 Kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
-
-### Token optimization (RTK)
-
-Kimchi installs [RTK](https://github.com/rtk-ai/rtk) during setup and keeps the `rtk` command available on startup. When enabled, kimchi rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, reducing LLM context usage.
-
-Before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead.
-
-```bash
-brew install rtk    # macOS / Linux
-```
-
-RTK rewrite is managed from resources:
-
-```bash
-kimchi resources disable hooks.rtk-rewrite
-kimchi resources enable hooks.rtk-rewrite
-```
 
 ### Hooks
 

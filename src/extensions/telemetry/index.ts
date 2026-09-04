@@ -1,3 +1,5 @@
+import { randomBytes, randomUUID } from "node:crypto"
+
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
@@ -23,6 +25,7 @@ import {
 	type FermentStepStartedPayload,
 	type UserUnblockedPayload,
 } from "../ferment/domain-events.js"
+import { FERMENT_V2_EVENTS, type FermentV2EvaluatedPayload } from "../ferment-v2/domain-events.js"
 import {
 	LOOP_GUARD_EVENTS,
 	type LoopGuardSubagentAbortPayload,
@@ -38,6 +41,7 @@ import {
 } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
+import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
 import { startSettingsChangeWatcher } from "./settings-change-emitter.js"
 import {
@@ -242,6 +246,45 @@ export function trackSurveyDismissed(args: SurveyDismissedTelemetry): void {
 }
 
 // ---------------------------------------------------------------------------
+// Remote (cloud sandbox) execution tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle stages of a remote cloud-agent execution.
+ */
+export type RemoteExecutionStage =
+	| "started"
+	| "completed"
+	| "failed"
+	| "sync.started"
+	| "sync.completed"
+	| "sync.failed"
+	| "viewed"
+	| "custom_action"
+	| "done"
+
+/** Execution stats for `completed`/`failed` lifecycle events. All numeric
+ *  aggregates — no plan text, prompts, results, or file paths (privacy). */
+export interface RemoteExecutionStats {
+	duration_ms: number
+	tool_calls: number
+	turns?: number
+	input_tokens: number
+	output_tokens: number
+}
+
+/**
+ * @param origin where the remote run originated, e.g. "plan", "plan-mode", "ferment plan"
+ * @param stats numeric run stats — only meaningful for "completed"/"failed"
+ */
+export function trackRemoteExecution(stage: RemoteExecutionStage, origin: string, stats?: RemoteExecutionStats): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	ctx.emit(`remote_execution.${stage}`, { origin, ...stats })
+}
+
+// ---------------------------------------------------------------------------
 // Ferment domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 
@@ -285,6 +328,27 @@ function onFermentStarted(raw: unknown): void {
 		ferment_name: payload.name,
 		phase_count: payload.phaseCount,
 		model: ctx.currentModel,
+	})
+}
+
+function fermentV2EvaluatedTelemetryHandler(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const payload = raw as Partial<FermentV2EvaluatedPayload> | undefined
+	if (!payload?.fermentV2Id || !payload.verdict) return
+	const usage = payload.usage
+	ctx.emit("ferment_v2.evaluated", {
+		ferment_v2_id: payload.fermentV2Id,
+		verdict: payload.verdict,
+		count: payload.count ?? 1,
+		evaluator_model: payload.model ?? "unknown",
+		input_tokens: usage?.input ?? 0,
+		output_tokens: usage?.output ?? 0,
+		cache_read_tokens: usage?.cacheRead ?? 0,
+		cache_write_tokens: usage?.cacheWrite ?? 0,
+		total_tokens: usage?.totalTokens ?? 0,
+		cost: usage?.costUsd ?? 0,
 	})
 }
 
@@ -655,6 +719,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		const telemetryCtx = new TelemetryContext(config)
 		_telemetryCtx = telemetryCtx
 
+		// Per-session conversation id. Each extension instance belongs to one
+		// AgentSession, so this closure variable is naturally scoped to that
+		// session — including subagents, which get their own extension instance.
+		let conversationId = randomUUID()
+
 		// Watch the settings file for changes and emit telemetry on modification.
 		// Bound to ctx.emit so changes flow through the same OTLP pipeline. The
 		// returned stop fn is invoked on session_shutdown to close the fs.watch
@@ -674,6 +743,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, onStepCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
+		pi.events.on(FERMENT_V2_EVENTS.EVALUATED, fermentV2EvaluatedTelemetryHandler)
 		pi.events.on(FERMENT_EVENTS.SCOPING_RESUMED, onFermentScopingResumed)
 		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)
 		pi.events.on(FERMENT_EVENTS.USER_UNBLOCKED, onUserUnblocked)
@@ -694,6 +764,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("session_start", async (_event, ctx) => {
 			resetBashGuardCounts()
+			conversationId = randomUUID()
 			handleSessionStart(telemetryCtx, ctx)
 		})
 		pi.on("session_shutdown", async (event, ctx) => {
@@ -737,9 +808,37 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 		})
 		pi.on("before_provider_headers", (event) => {
-			event.headers["X-Session-Id"] = telemetryCtx.telemetryId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.telemetryId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.conversationId] = conversationId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
-			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex] = String(telemetryCtx.turnIndex)
+
+			// Requests issued from inside a subagent run carry the parent session's
+			// pi session id so the proxy can record it on chat_completions rows
+			// (same gating/value as the session.parent_id telemetry attribute).
+			const parentSessionId = telemetryCtx.getParentSessionId()
+			if (parentSessionId) {
+				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId] = parentSessionId
+			}
+
+			// Inject W3C Trace Context (if not already present) derived from
+			// the session id so that downstream distributed tracing spans
+			// join the same trace. Header names are case-insensitive, so
+			// check all keys rather than a single property name.
+			// Example:
+			//   session id: 85a2d4f5-9f9f-49fb-890e-522a10e4a1e8
+			//   trace id:   85a2d4f59f9f49fb890e522a10e4a1e8
+			//   span id:    <new random 16-hex value per request>
+			const hasTraceparent = Object.keys(event.headers).some(
+				(name) => name.toLowerCase() === TELEMETRY_PROVIDER_HEADER_NAMES.traceparent,
+			)
+			if (!hasTraceparent) {
+				const traceId = telemetryCtx.telemetryId.replace(/-/g, "").toLowerCase()
+				if (traceId.length === 32) {
+					const spanId = randomBytes(8).toString("hex")
+					event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.traceparent] = `00-${traceId}-${spanId}-01`
+				}
+			}
 		})
 	}
 }

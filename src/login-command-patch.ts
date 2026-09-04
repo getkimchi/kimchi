@@ -7,47 +7,45 @@
  */
 
 import {
+	CredentialSynchronizationError,
 	InteractiveMode,
+	ModelRegistry,
+	type ModelRuntime,
 	OAuthSelectorComponent,
-	type ModelRegistry as PiModelRegistry,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
+import { clearApiKey } from "./config.js"
+import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
 	createLoginChoiceSelector,
 	formatBrowserLoginMessage,
+	isKimchiProvider,
 	KIMCHI_DEFAULT_ENDPOINT,
 	KIMCHI_PROVIDER_ID,
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
+	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice
 // ---------------------------------------------------------------------------
 
-interface AuthStorage {
-	set(provider: string, credential: unknown): void
-	get(provider: string): unknown
-}
-
 interface ModelLike {
 	id: string
 	provider: string
 }
 
-interface ModelRegistry {
-	authStorage: AuthStorage
-	refresh(): Promise<unknown>
-	getAll(): ModelLike[]
-	getAvailable(): ModelLike[]
-	getModelById(id: string): ModelLike | undefined
-	getProviderAuthStatus(providerId: string): AuthStatus
+interface SessionLike {
+	modelRuntime: ModelRuntime
+	setModel(model: ModelLike): Promise<void>
 }
 
-interface SessionLike {
-	modelRegistry: ModelRegistry
-	setModel(model: ModelLike): Promise<void>
+/** Wraps `session.modelRuntime` (a `ModelRuntime`) in a `ModelRegistry` so the login
+ * flow can use the public extension-facing registry API. */
+function asLoginRegistry(runtime: ModelRuntime): ModelRegistry {
+	return new ModelRegistry(runtime)
 }
 
 type ChatContainerLike = {
@@ -61,7 +59,6 @@ type UiLike = {
 type SelectorResult = { component: unknown; focus?: unknown }
 type ShowSelector = (build: (done: () => void) => SelectorResult) => void
 type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
-type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
 
 type LoginModeLike = {
 	showSelector?: ShowSelector
@@ -69,6 +66,8 @@ type LoginModeLike = {
 	showLoginDialog?: (providerId: string, providerName: string) => Promise<void>
 	showExtensionInput?: (title: string, placeholder?: string) => Promise<string | undefined>
 	getLoginProviderOptions?: (authType: "oauth" | "api_key") => AuthSelectorProvider[]
+	getLogoutProviderOptions?: () => Promise<AuthSelectorProvider[]>
+	updateAvailableProviderCount?: () => Promise<void>
 	session: SessionLike
 	ui?: UiLike
 }
@@ -97,6 +96,16 @@ function addLoginFeedback(im: InteractiveMode, text: string): void {
 // biome-ignore lint/suspicious/noExplicitAny: private upstream prototype mutation
 const imProto = InteractiveMode.prototype as any
 
+const originalGetLoginProviderOptions = imProto.getLoginProviderOptions as (
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	this: any,
+	authType?: "oauth" | "api_key",
+) => AuthSelectorProvider[]
+const originalGetLogoutProviderOptions = imProto.getLogoutProviderOptions as (
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	this: any,
+) => Promise<AuthSelectorProvider[]>
+
 /**
  * Mutable delegate for the original upstream showOAuthSelector.
  * Exposed as a writable object property so tests can stub the logout
@@ -113,15 +122,29 @@ export const loginDelegate = {
 }
 
 export const warningDelegate = {
-	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown`
 	original: imProto.showWarning as (this: any, warningMessage: string) => void,
 }
 
 /** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
 export function applyLoginCommandPatch(): void {
+	imProto.getLoginProviderOptions = patchedGetLoginProviderOptions
+	imProto.getLogoutProviderOptions = patchedGetLogoutProviderOptions
 	imProto.handleLoginCommand = patchedHandleLoginCommand
 	imProto.showOAuthSelector = patchedShowOAuthSelector
 	imProto.showWarning = patchedShowWarning
+}
+
+function visibleAuthProviders(providers: AuthSelectorProvider[]): AuthSelectorProvider[] {
+	return providers.filter((provider) => provider.id === KIMCHI_PROVIDER_ID || !isKimchiProvider(provider.id))
+}
+
+function patchedGetLoginProviderOptions(this: InteractiveMode, authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
+	return visibleAuthProviders(originalGetLoginProviderOptions.call(this, authType))
+}
+
+async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<AuthSelectorProvider[]> {
+	return visibleAuthProviders(await originalGetLogoutProviderOptions.call(this))
 }
 
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
@@ -129,14 +152,14 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
-	const registry = session?.modelRegistry
-	if (!registry) {
+	const runtime = session?.modelRuntime
+	if (!runtime) {
 		showError("Kimchi login failed: model registry is unavailable")
 		return
 	}
 
 	await performKimchiBrowserLogin({
-		modelRegistry: registry,
+		modelRegistry: asLoginRegistry(runtime),
 		setModel: (model) => session.setModel(model),
 		showStatus,
 		showError,
@@ -153,8 +176,8 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
-	const registry = session?.modelRegistry
-	if (!registry) {
+	const runtime = session?.modelRuntime
+	if (!runtime) {
 		showError("Kimchi API-key login failed: model registry is unavailable")
 		return
 	}
@@ -162,6 +185,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 		showError("Kimchi API-key login failed: text input is unavailable")
 		return
 	}
+	const registry = asLoginRegistry(runtime)
 
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
 	if (apiKey === undefined) return
@@ -192,15 +216,13 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 		!modeLike.showSelector ||
 		!modeLike.getLoginProviderOptions ||
 		!modeLike.showLoginDialog ||
-		!modeLike.session?.modelRegistry
+		!modeLike.session?.modelRuntime
 	) {
 		void oauthDelegate.original.call(im, "login")
 		return
 	}
 
-	const providerOptions = modeLike
-		.getLoginProviderOptions("oauth")
-		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
+	const providerOptions = modeLike.getLoginProviderOptions("oauth").filter((provider) => !isKimchiProvider(provider.id))
 	if (providerOptions.length === 0) {
 		modeLike.showStatus?.("No subscription providers available.")
 		return
@@ -225,7 +247,7 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 
 					// After upstream login returns, refresh the registry so the models
 					// from models.json become available without requiring a manual /reload.
-					const registry = modeLike.session?.modelRegistry
+					const registry = modeLike.session?.modelRuntime
 					if (registry && typeof registry.refresh === "function") {
 						try {
 							await registry.refresh()
@@ -281,7 +303,72 @@ async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "
 		showLoginChoiceSelector(this)
 		return
 	}
-	return oauthDelegate.original.call(this, mode)
+	return showLogoutSelector(this)
+}
+
+async function showLogoutSelector(im: InteractiveMode): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
+	if (!modeLike.showSelector || !modeLike.getLogoutProviderOptions || !modeLike.session?.modelRuntime) {
+		await oauthDelegate.original.call(im, "logout")
+		return
+	}
+
+	let providerOptions: AuthSelectorProvider[]
+	try {
+		providerOptions = await modeLike.getLogoutProviderOptions()
+	} catch (error) {
+		im.showError(`Could not read stored credentials: ${error instanceof Error ? error.message : String(error)}`)
+		return
+	}
+	if (providerOptions.length === 0) {
+		modeLike.showStatus?.("No stored credentials to remove.")
+		return
+	}
+
+	modeLike.showSelector((done) => {
+		const selector = new OAuthSelectorComponent(
+			"logout",
+			providerOptions,
+			async (providerId) => {
+				done()
+				const providerOption = providerOptions.find((provider) => provider.id === providerId)
+				if (!providerOption) return
+
+				try {
+					if (isKimchiProvider(providerOption.id)) {
+						clearApiKey()
+						await syncKimchiAuth(asLoginRegistry(modeLike.session.modelRuntime), "")
+						void refreshBillingStatusFromConfig({ mode: "forced" })
+						await modeLike.updateAvailableProviderCount?.()
+						modeLike.showStatus?.("Logged out of Kimchi")
+						return
+					}
+
+					await modeLike.session.modelRuntime.logout(providerOption.id, {
+						signal: AbortSignal.timeout(15_000),
+					})
+					await modeLike.updateAvailableProviderCount?.()
+					const message =
+						providerOption.authType === "oauth"
+							? `Logged out of ${providerOption.name}`
+							: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`
+					modeLike.showStatus?.(message)
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error)
+					im.showError(
+						error instanceof CredentialSynchronizationError
+							? `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
+							: `Logout failed: ${message}`,
+					)
+				}
+			},
+			() => {
+				done()
+				modeLike.ui?.requestRender()
+			},
+		)
+		return { component: selector, focus: selector }
+	})
 }
 
 async function patchedHandleLoginCommand(this: InteractiveMode, providerRef?: string) {
@@ -301,11 +388,11 @@ function patchedShowWarning(this: InteractiveMode, warningMessage: string): void
 
 function hasModelsAfterStartupAuth(im: InteractiveMode): boolean {
 	const modeLike = im as unknown as {
-		session?: { model?: unknown; modelRegistry?: { getAvailable?: () => unknown[] } }
+		session?: { model?: unknown; modelRuntime?: { getAvailable?: () => unknown[] } }
 	}
 	if (modeLike.session?.model) return true
 	try {
-		return (modeLike.session?.modelRegistry?.getAvailable?.().length ?? 0) > 0
+		return (modeLike.session?.modelRuntime?.getAvailable?.().length ?? 0) > 0
 	} catch {
 		return false
 	}

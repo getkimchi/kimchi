@@ -7,6 +7,7 @@ import { Readable } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	buildIncludeList,
+	buildWorkingTreeList,
 	excludesBaseFilePattern,
 	listGitDeletedFiles,
 	listGitTrackedFiles,
@@ -153,6 +154,17 @@ describe("walkGitDir", () => {
 	})
 })
 
+// Dispatch fake-spawner based on which `git ls-files` mode flag is
+// in the argv — the list builders fire several calls and we want
+// distinct stdout for each. `deleted` defaults to "" so existing
+// cases (which don't exercise the deleted filter) are unaffected.
+function spawnDispatch(cached: string, others: string, deleted = ""): typeof spawn {
+	return ((_cmd: string, args?: readonly string[]) => {
+		const stdout = args?.includes("--cached") ? cached : args?.includes("--deleted") ? deleted : others
+		return makeFakeChild({ stdout, exitCode: 0 })
+	}) as unknown as typeof spawn
+}
+
 describe("buildIncludeList", () => {
 	let root: string
 
@@ -163,17 +175,6 @@ describe("buildIncludeList", () => {
 	afterEach(async () => {
 		await rm(root, { recursive: true, force: true })
 	})
-
-	// Dispatch fake-spawner based on which `git ls-files` mode flag is
-	// in the argv — buildIncludeList fires several calls and we want
-	// distinct stdout for each. `deleted` defaults to "" so existing
-	// cases (which don't exercise the deleted filter) are unaffected.
-	function spawnDispatch(cached: string, others: string, deleted = ""): typeof spawn {
-		return ((_cmd: string, args?: readonly string[]) => {
-			const stdout = args?.includes("--cached") ? cached : args?.includes("--deleted") ? deleted : others
-			return makeFakeChild({ stdout, exitCode: 0 })
-		}) as unknown as typeof spawn
-	}
 
 	it("composes tracked + untracked + .git walk and applies the base-pattern filter only to untracked", async () => {
 		await mkdir(join(root, ".git"), { recursive: true })
@@ -218,5 +219,45 @@ describe("buildIncludeList", () => {
 		const fakeSpawn: typeof spawn = (() => makeFakeChild({ exitCode: 128 })) as unknown as typeof spawn
 		const list = await buildIncludeList(root, undefined, fakeSpawn)
 		expect(list).toEqual([])
+	})
+})
+
+describe("buildWorkingTreeList", () => {
+	let root: string
+
+	beforeEach(async () => {
+		root = await mkdtemp(join(tmpdir(), "kimchi-worktree-"))
+	})
+
+	afterEach(async () => {
+		await rm(root, { recursive: true, force: true })
+	})
+
+	it("equals buildIncludeList minus the .git/ entries", async () => {
+		await mkdir(join(root, ".git", "objects"), { recursive: true })
+		await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n")
+		await writeFile(join(root, ".git", "objects", "pack-junk"), "x")
+		const fakeSpawn = spawnDispatch("src/index.ts\0README.md\0", "extra/notes.md\0")
+		const [include, workingTree] = await Promise.all([
+			buildIncludeList(root, undefined, fakeSpawn),
+			buildWorkingTreeList(root, undefined, fakeSpawn),
+		])
+		expect(workingTree.sort()).toEqual(["src/index.ts", "README.md", "extra/notes.md"].sort())
+		expect(workingTree.some((p) => p.startsWith(".git/"))).toBe(false)
+		expect(include.sort()).toEqual([...workingTree, ".git/HEAD", ".git/objects/pack-junk"].sort())
+	})
+
+	it("applies the same tracked-minus-deleted and untracked filters as buildIncludeList", async () => {
+		const fakeSpawn = spawnDispatch("src/a.ts\0src/gone.ts\0", "scratch/.env\0scratch/keep.md\0", "src/gone.ts\0")
+		const list = await buildWorkingTreeList(root, undefined, fakeSpawn)
+		expect(list.sort()).toEqual(["src/a.ts", "scratch/keep.md"].sort())
+	})
+
+	it("does not read the .git dir (no walk on missing .git)", async () => {
+		// No .git created at all — buildIncludeList would swallow that too,
+		// but here the list must contain ONLY git-sourced entries.
+		const fakeSpawn = spawnDispatch("src/a.ts\0", "")
+		const list = await buildWorkingTreeList(root, undefined, fakeSpawn)
+		expect(list).toEqual(["src/a.ts"])
 	})
 })

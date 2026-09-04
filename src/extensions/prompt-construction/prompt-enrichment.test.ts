@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
@@ -6,16 +6,17 @@ import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
-import { setResourceOverride } from "../../resources/store.js"
+import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
 import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
-import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
+import { toolNamesFromSection } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
@@ -210,8 +211,8 @@ describe("prompt enrichment tool visibility", () => {
 		try {
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(result.systemPrompt).toContain('<tool name="read">')
-			expect(result.systemPrompt).not.toContain('<tool name="bash">')
+			expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
+			expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
 		} finally {
 			visibility.enable(["bash"])
 		}
@@ -242,8 +243,8 @@ describe("prompt enrichment tool visibility", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain('<tool name="read">')
-		expect(result.systemPrompt).not.toContain('<tool name="bash">')
+		expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
+		expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
 	})
 })
 
@@ -263,7 +264,7 @@ describe("prompt enrichment environment context", () => {
 
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
+			expect(result.systemPrompt).not.toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
 			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
 			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
@@ -278,7 +279,7 @@ describe("prompt enrichment environment context", () => {
 	})
 })
 
-describe("prompt enrichment Claude Code skills", () => {
+describe("prompt enrichment skills", () => {
 	let dir: string
 	let oldAgentDir: string | undefined
 	let oldHome: string | undefined
@@ -286,7 +287,7 @@ describe("prompt enrichment Claude Code skills", () => {
 
 	beforeEach(() => {
 		vi.restoreAllMocks()
-		dir = mkdtempSync(join(tmpdir(), "kimchi-prompt-claude-skills-"))
+		dir = mkdtempSync(join(tmpdir(), "kimchi-prompt-skills-"))
 		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		oldHome = process.env.HOME
 		oldXdgCacheHome = process.env.XDG_CACHE_HOME
@@ -316,153 +317,140 @@ describe("prompt enrichment Claude Code skills", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("injects current-project Claude Code skills when the extension is enabled", async () => {
+	it("renders skills from pi's resolved inventory in the rebuilt prompt", async () => {
 		const cwd = join(dir, "project")
-		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use safe TypeScript patterns before editing TypeScript files.",
-		})
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+		const result = (await beforeAgentStart(
+			{
+				systemPromptOptions: {
+					skills: [
+						{
+							name: "typescript-safety",
+							description: "Use safe TypeScript patterns before editing TypeScript files.",
+							filePath: join(cwd, "SKILL.md"),
+						},
+					],
+				},
+			},
+			createContext({ cwd, hasUI: false }),
+		)) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
+		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
 	})
 
-	it("contributes Kimchi project skills through resources_discover", async () => {
-		const cwd = join(dir, "project", "src")
-		const projectSkillPath = join(dir, "project", ".kimchi", "skills")
-		writeSkill(join(projectSkillPath, "typescript-safety", "SKILL.md"), {
-			description: "Use Kimchi project TypeScript patterns.",
-		})
-		const { resourcesDiscover } = buildPromptExtensionWithHandlers()
-		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
-
-		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
-
-		expect(result).toEqual({ skillPaths: [projectSkillPath] })
-	})
-
-	it("injects Kimchi project skills without configured paths", async () => {
-		const cwd = join(dir, "project", "src")
-		writeSkill(join(dir, "project", ".kimchi", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use Kimchi project TypeScript patterns.",
+	it("no longer discovers skills itself when systemPromptOptions.skills is absent", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use safe TypeScript patterns before editing TypeScript files.",
 		})
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use Kimchi project TypeScript patterns")
+		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
 	})
 
-	it("keeps configured skill paths in the prompt", async () => {
+	it("contributes ancestor .kimchi/skills through resources_discover", async () => {
+		const cwd = join(dir, "project", "src")
+		const projectSkillPath = join(dir, "project", ".kimchi", "skills")
+		writeSkill(join(projectSkillPath, "typescript-safety", "SKILL.md"), {
+			description: "Use Kimchi project TypeScript patterns.",
+		})
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+
+		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([projectSkillPath]) }))
+	})
+
+	it("contributes new bundled skills through resources_discover", async () => {
+		const cwd = join(dir, "project")
+		mkdirSync(cwd, { recursive: true })
+		const bundledDir = resolveBundledSkillsDir()
+		if (!bundledDir) {
+			throw new Error("expected bundled skills dir to be resolvable in this test environment")
+		}
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
+
+		// Bundled skills not already in the harness dir are contributed via a
+		// filtered temp copy (e.g. dap-debugging). Skills already in the harness
+		// dir (e.g. improve if previously deployed) are silently skipped.
+		const paths = result?.skillPaths ?? []
+		expect(paths.length).toBeGreaterThan(0)
+		// At least one contributed path should contain a bundled skill dir.
+		expect(paths.some((p) => existsSync(join(p, "dap-debugging")) || existsSync(join(p, "improve")))).toBe(true)
+	})
+
+	it("contributes configured native skill paths through resources_discover", async () => {
 		const cwd = join(dir, "project")
 		const configuredSkills = join(dir, "configured", "skills")
-		writeSkill(join(configuredSkills, "typescript-safety", "SKILL.md"), {
-			description: "Use configured TypeScript patterns.",
-		})
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+		mkdirSync(configuredSkills, { recursive: true })
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use configured TypeScript patterns")
+		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([configuredSkills]) }))
 	})
 
-	it("keeps home-relative configured skill paths in the prompt", async () => {
+	it("does not contribute the harness dir (pi loads it via includeDefaults)", async () => {
 		const cwd = join(dir, "project")
 		const configuredSkills = ".config/kimchi/harness/skills"
-		writeSkill(join(dir, "home", configuredSkills, "typescript-safety", "SKILL.md"), {
-			description: "Use home configured TypeScript patterns.",
-		})
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+		const expanded = join(dir, "home", configuredSkills)
+		mkdirSync(expanded, { recursive: true })
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use home configured TypeScript patterns")
+		const paths = result?.skillPaths ?? []
+		expect(paths).not.toContain(expanded)
 	})
 
-	it("sanitizes configured Claude Code skill paths before injecting them", async () => {
+	it("sanitizes configured Claude Code skill paths through resources_discover", async () => {
 		const cwd = join(dir, "project")
 		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
+		const paths = result?.skillPaths ?? []
+		expect(paths.length).toBeGreaterThan(0)
+		expect(paths.some((p) => p.includes(".claude"))).toBe(false)
+		expect(paths.some((p) => existsSync(join(p, "SKILL.md")))).toBe(true)
 	})
 
-	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
+	it("does not contribute ancestor Claude Code skills through resources_discover", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")
 		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"), {
 			description: "Use safe TypeScript patterns before editing TypeScript files.",
 		})
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
 
-		expect(result.systemPrompt).not.toContain("<available_skills>")
-		expect(result.systemPrompt).not.toContain("typescript-safety")
-	})
-
-	it("injects sanitized Claude Code skills when the extension is enabled", async () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use: generated API types",
-		})
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
-
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use: generated API types")
-	})
-
-	it("injects Claude Code skills without descriptions through the sanitized cache", async () => {
-		const cwd = join(dir, "project")
-		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
-
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
-	})
-
-	it("does not inject Claude Code skills when the extension is disabled", async () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use safe TypeScript patterns before editing TypeScript files.",
-		})
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
-
-		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
+		const paths = result?.skillPaths ?? []
+		expect(paths.some((p) => p.includes(".claude"))).toBe(false)
 	})
 })
 
@@ -905,7 +893,9 @@ describe("continuation nudge turn_end handler", () => {
 		const fire = async (event: string, payload: unknown) => {
 			const handlers = handlerMap.get(event) ?? []
 			const ctx = createContext({ model: { provider: "test", id: "test-model" } })
-			for (const h of handlers) await h(payload, ctx)
+			let result: unknown
+			for (const h of handlers) result = await h(payload, ctx)
+			return result
 		}
 
 		return { fire, sendMessageCalls }
@@ -1018,5 +1008,186 @@ describe("continuation nudge turn_end handler", () => {
 		// might be stuck.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
+	})
+
+	it("does not nudge after a model switch when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User switches models (e.g. via the UI model picker).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "set",
+		})
+
+		// New user input after the switch.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// No nudge should fire — the model switch reset the session-level
+		// tool latch, so the new model's orientation turn is treated like a
+		// fresh session.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("does not nudge after a model cycle when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User cycles models (e.g. via the keyboard shortcut).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "cycle",
+		})
+
+		// New user input after the cycle.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Cycling is a user-initiated switch and must also reset the latch.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("still nudges after a model restore when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// Session restore is not a user-initiated switch; the conversation
+		// continues and the session-level tool latch must stay true.
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "restore",
+		})
+
+		// New user input after restore.
+		await fire("input", { source: "user" })
+
+		// Model responds with text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Nudge should fire because restore must not reset the latch.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
+
+	it("brands unbranded custom messages in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const unbranded = {
+			role: "custom",
+			customType: "exploration-guard-steer",
+			content: "Act on your hypothesis now.",
+			display: false,
+			timestamp: 1,
+		}
+
+		const result = (await fire("context", { messages: [unbranded] })) as
+			| { messages: Array<{ content: string }> }
+			| undefined
+
+		expect(result).toBeDefined()
+		expect(isHarnessSteer(result?.messages[0]?.content ?? "")).toBe(true)
+		expect(result?.messages[0]?.content).toContain("Act on your hypothesis now.")
+	})
+
+	it("leaves already-branded custom messages byte-identical in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const branded = {
+			role: "custom",
+			customType: "nudge",
+			content: "<system-reminder>\nYou ended your turn without calling a tool.\n</system-reminder>",
+			display: false,
+			timestamp: 1,
+		}
+
+		// No transform applies: the handler returns undefined, leaving the
+		// runtime's message array untouched.
+		const result = await fire("context", { messages: [branded] })
+		expect(result).toBeUndefined()
+	})
+})
+
+describe("debug prompts cleanup", () => {
+	beforeEach(() => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	})
+
+	afterEach(() => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	})
+
+	function buildExtensionWithDebugFlag(debugPrompts: boolean) {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const pi = {
+			appendEntry: vi.fn(),
+			registerFlag: () => {},
+			registerCommand: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: (name: string) => (name === "debug-prompts" ? debugPrompts : undefined),
+		} as unknown as ExtensionAPI
+		promptEnrichmentExtension([])(pi)
+		return {
+			beforeAgentStart: handlers.get("before_agent_start"),
+		}
+	}
+
+	it("does not re-enable debug mode on a second turn when the flag is off", async () => {
+		const { beforeAgentStart } = buildExtensionWithDebugFlag(false)
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const ctx = createContext({ hasUI: false })
+
+		// First turn: flag is off, env vars are unset.
+		await beforeAgentStart({}, ctx)
+
+		// Second turn: flag is still off. With the buggy cleanup, the first
+		// turn would have left KIMCHI_DEBUG_SESSION as the string "undefined",
+		// which is truthy and would re-enable debug mode here.
+		await beforeAgentStart({}, ctx)
+
+		expect(process.env.KIMCHI_DEBUG_PROMPTS).toBeUndefined()
+		expect(process.env.KIMCHI_DEBUG_SESSION).toBeUndefined()
+	})
+
+	it("writes debug files and sets env vars when the flag is on", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-debug-prompts-"))
+		try {
+			const { beforeAgentStart } = buildExtensionWithDebugFlag(true)
+			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+			const ctx = createContext({ cwd: dir, hasUI: false })
+			await beforeAgentStart({}, ctx)
+
+			expect(process.env.KIMCHI_DEBUG_PROMPTS).toBe("1")
+			expect(process.env.KIMCHI_DEBUG_SESSION).toBeDefined()
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
 	})
 })

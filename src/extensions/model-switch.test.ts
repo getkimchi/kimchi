@@ -27,6 +27,11 @@ type RegisteredTool = {
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
 
+// Production compaction-trigger value: the final pre-compaction assistant's
+// usage.totalTokens at the moment turn-end auto-compaction fired. Named fixture
+// so the summary's tokensBefore and kept-tail usage cannot diverge.
+const COMPACTION_TRIGGER_TOKENS = 270_274
+
 type ModelEntry = { id: string; provider: string; name: string; input?: ("text" | "image")[]; contextWindow?: number }
 
 interface Harness {
@@ -591,7 +596,7 @@ describe("modelSwitchExtension", () => {
 			)
 			// Guard is active → revert was called
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
-			expect(notify).toHaveBeenCalledWith(expect.stringContaining("context"), "error")
+			expect(notify).toHaveBeenCalledWith("Model switch cancelled.", "info")
 		})
 
 		it("after reset, model_select guard is skipped when suppressModelSelectGuard is set via set_model", async () => {
@@ -796,6 +801,125 @@ describe("modelSwitchExtension", () => {
 				expect(textOf(result)).toBe("Switched to model kimchi-dev/kimi-k2.6 (Kimi K2.6)")
 			})
 		})
+
+		describe("post-compaction model switch", () => {
+			beforeEach(() => {
+				__resetImagesDetectedForTest()
+				__resetModelSwitchStateForTest()
+			})
+
+			it("allows switch to smaller model after compaction reduced context", async () => {
+				// Reproduces the exact production bug: turn-end auto-compaction fires,
+				// and the kept tail (spliced after the summary by buildContextEntries)
+				// includes the final pre-compaction assistant response with
+				// usage.totalTokens = 270_274. Upstream getContextUsage() reports
+				// tokens: null in this window (Pi >= 0.84.1), so the guard falls back
+				// to the local estimate — which must reject the stale kept-tail
+				// baseline and resolve the real post-compaction size instead.
+				__setLatestMessagesForTest([
+					{
+						role: "compactionSummary" as const,
+						summary: "Summary of prior conversation.",
+						tokensBefore: COMPACTION_TRIGGER_TOKENS,
+						timestamp: 1_000,
+					},
+					{
+						role: "assistant" as const,
+						content: [{ type: "text" as const, text: "done" }],
+						usage: {
+							input: COMPACTION_TRIGGER_TOKENS,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: COMPACTION_TRIGGER_TOKENS,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						api: "openai-responses" as const,
+						provider: "kimchi-dev",
+						stopReason: "stop" as const,
+						model: "kimi-k2.6",
+						timestamp: 900,
+					},
+					{ role: "user" as const, content: [{ type: "text" as const, text: "continue" }], timestamp: 0 as const },
+				])
+
+				// Self-contained mock — no dependency on createHarness/find/getAvailable
+				const setModel = vi.fn(async () => true)
+				let registered: RegisteredTool | undefined
+				const pi = {
+					on: vi.fn(),
+					registerTool: (t: RegisteredTool) => {
+						registered = t
+					},
+					setModel,
+					registerCommand: vi.fn(),
+				} as unknown as ExtensionAPI
+				modelSwitchExtension(pi)
+				if (!registered) throw new Error("set_model not registered")
+				const ctx = createContext({
+					modelRegistry: {
+						find: (_p: string, id: string) => MODELS.find((m) => m.id === id),
+						getAvailable: () => MODELS,
+					} as unknown as ModelRegistry,
+					getContextUsage: () => ({ tokens: null }),
+					model: { id: "nemotron-3-ultra-fp4", provider: "kimchi-dev", input: ["text", "image"] },
+				})
+				const result = await registered.execute("test", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
+
+				// Should switch successfully — post-compaction content estimate (~15 tokens)
+				// fits well within the 190k safe window of the 200k model.
+				expect(setModel).toHaveBeenCalledTimes(1)
+				expect(textOf(result)).toContain("Switched to model")
+				expect(textOf(result)).not.toContain("Switch rejected")
+				expect(textOf(result)).not.toContain("270274")
+			})
+
+			it("still rejects when post-compaction context still exceeds target", async () => {
+				// Even after compaction, the compacted context might still be too large.
+				// With usage.tokens null (upstream post-compaction contract) the guard
+				// should fire using the local estimate.
+				// Large post-compaction messages: 30 messages × 2000 chars → ~15,000 tokens
+				__setLatestMessagesForTest(
+					Array.from({ length: 30 }, () => ({
+						role: "user" as const,
+						content: [{ type: "text" as const, text: "x".repeat(2000) }],
+						timestamp: 0 as const,
+					})),
+				)
+
+				// Self-contained mock — return kimi with a small context window.
+				const smallKimi = { ...MODELS[0], contextWindow: 10_000 }
+				const setModel = vi.fn(async () => true)
+				let registered: RegisteredTool | undefined
+				const pi = {
+					on: vi.fn(),
+					registerTool: (t: RegisteredTool) => {
+						registered = t
+					},
+					setModel,
+					registerCommand: vi.fn(),
+				} as unknown as ExtensionAPI
+				modelSwitchExtension(pi)
+				if (!registered) throw new Error("set_model not registered")
+				const ctx = createContext({
+					modelRegistry: {
+						find: (_p: string, id: string) => (id === "kimi-k2.6" ? smallKimi : MODELS.find((m) => m.id === id)),
+						getAvailable: () => [
+							...MODELS.filter((m) => !(m.id === "kimi-k2.6" && m.provider === "kimchi-dev")),
+							smallKimi,
+						],
+					} as unknown as ModelRegistry,
+					getContextUsage: () => ({ tokens: null }),
+					model: { id: "nemotron-3-ultra-fp4", provider: "kimchi-dev", input: ["text", "image"] },
+				})
+				const result = await registered.execute("test", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
+
+				// Should reject — local estimate (15,000) exceeds safe window (9,500)
+				expect(setModel).not.toHaveBeenCalled()
+				expect(textOf(result)).toContain("Switch rejected")
+				expect(textOf(result)).toContain("Use /compact")
+			})
+		})
 	})
 
 	describe("model_select handler", () => {
@@ -806,6 +930,8 @@ describe("modelSwitchExtension", () => {
 				modelId: string
 				modelProvider: string
 				hasUI: boolean
+				mode: ExtensionContext["mode"]
+				compact: ExtensionContext["compact"]
 				ui: {
 					notify: (...args: unknown[]) => unknown
 					select?: (...args: unknown[]) => unknown
@@ -878,7 +1004,7 @@ describe("modelSwitchExtension", () => {
 			expect(setModel).not.toHaveBeenCalled()
 		})
 
-		it("skips when source is cycle", async () => {
+		it("allows source=cycle when tokens fit", async () => {
 			const { pi, trigger } = createHarnessWithTrigger()
 			modelSwitchExtension(pi)
 			const setModel = pi.setModel as ReturnType<typeof vi.fn>
@@ -947,6 +1073,70 @@ describe("modelSwitchExtension", () => {
 			// Reverted back to previousModel
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
 			expect(notify).toHaveBeenCalledWith(expect.stringContaining("context"), "error")
+		})
+
+		it("force-compacts with the previous model before completing an oversized cycle switch", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const notify = vi.fn()
+			const select = vi.fn().mockResolvedValue("Compact conversation and switch")
+			const compact = vi.fn((options: Parameters<ExtensionContext["compact"]>[0]) => {
+				options?.onComplete?.({} as never)
+			})
+			const target = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+			} as const
+
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: target,
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "cycle",
+				},
+				createContext({ tokens: 150_000, hasUI: true, mode: "tui", compact, ui: { notify, select } }),
+			)
+
+			expect(setModel).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "kimi-k2.6" }))
+			expect(select).toHaveBeenCalledWith(expect.stringContaining("55,000 tokens over"), [
+				"Compact conversation and switch",
+				"Start a new session",
+			])
+			expect(compact).toHaveBeenCalledWith(expect.objectContaining({ force: true }))
+			expect(setModel).toHaveBeenNthCalledWith(2, target)
+			expect(notify).toHaveBeenCalledWith("Compacted context and switched to kimchi-dev/minimax-m2.7.", "info")
+		})
+
+		it("starts a fresh session on the requested model when the user declines compaction", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			const startNewSession = vi.fn(async () => true)
+			modelSwitchExtension(pi, startNewSession)
+			const select = vi.fn().mockResolvedValue("Start a new session")
+			const target = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+			} as const
+			const ctx = createContext({ tokens: 150_000, hasUI: true, mode: "tui", ui: { notify: vi.fn(), select } })
+
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: target,
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				ctx,
+			)
+
+			expect(setModel).toHaveBeenCalledTimes(1)
+			expect(startNewSession).toHaveBeenCalledWith(ctx.sessionManager, target)
 		})
 
 		it("allows when tokens fit within target context window", async () => {

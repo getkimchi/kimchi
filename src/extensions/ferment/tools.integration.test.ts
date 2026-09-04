@@ -10,7 +10,7 @@
  * that the state machine extraction will formalize.
  */
 
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -1510,6 +1510,64 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("## Assumptions")
 		expect(result).toContain("Browser-based web app")
 		expect(result).toContain("Standard TODO UX is acceptable")
+	})
+
+	describe("plan markdown persistence", () => {
+		it("saves the canonical plan file in headless mode and references the path", async () => {
+			const id = await createFerment("Headless Save")
+			seedPending(id)
+			const ctx = createContext({ hasUI: false, cwd: h.tempDir })
+
+			const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-headless-save-${id.slice(0, 12)}.md`)
+			expect(existsSync(planFile)).toBe(true)
+			const saved = readFileSync(planFile, "utf-8")
+			expect(saved).toContain("# Plan: Proposed Ferment")
+			expect(saved).toContain("## Goal")
+			// Tool result is plan + message; file equals the leading plan portion.
+			const planPortion = result.split("\n\nPlan saved.")[0]
+			expect(saved).toBe(planPortion)
+			expect(result).toContain(`Plan file: ${planFile}`)
+		})
+
+		it("overwrites the same plan file on re-propose", async () => {
+			const id = await createFerment("Overwrite")
+			seedPending(id)
+			// Use interactive UI mode so the ferment stays in draft status and
+			// a second propose is not treated as a duplicate no-op.
+			const ctx = createContext({ cwd: h.tempDir })
+
+			ok(await h.call("propose_ferment_scoping", basePayload(id, { title: "First Draft" }), ctx))
+			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-overwrite-${id.slice(0, 12)}.md`)
+			expect(existsSync(planFile)).toBe(true)
+
+			// Re-propose with the same ferment id overwrites the same file slot.
+			const second = ok(await h.call("propose_ferment_scoping", basePayload(id, { goal: "Build a better thing" }), ctx))
+
+			const plansDir = join(h.tempDir, ".kimchi", "plans")
+			expect(readdirSync(plansDir)).toEqual([`ferment-overwrite-${id.slice(0, 12)}.md`])
+			const saved = readFileSync(planFile, "utf-8")
+			expect(saved).toContain("Build a better thing")
+			expect(second).toContain(`Plan file: ${planFile}`)
+		})
+
+		it("keeps the plan file after confirmPendingScope in headless mode", async () => {
+			const id = await createFerment("Survive Confirm")
+			seedPending(id)
+			const ctx = createContext({ hasUI: false, cwd: h.tempDir })
+
+			ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-survive-confirm-${id.slice(0, 12)}.md`)
+			expect(existsSync(planFile)).toBe(true)
+			const savedBefore = readFileSync(planFile, "utf-8")
+
+			const f = loadFerment(id)
+			expect(f.status).toBe("planned")
+			expect(existsSync(planFile)).toBe(true)
+			expect(readFileSync(planFile, "utf-8")).toBe(savedBefore)
+		})
 	})
 
 	it("headless mode: treats duplicate propose_ferment_scoping after plan save as a no-op", async () => {

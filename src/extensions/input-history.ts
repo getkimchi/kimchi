@@ -8,6 +8,7 @@
 
 import type { Message, TextContent } from "@earendil-works/pi-ai"
 import { CustomEditor, type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent"
+import { isHarnessSteer } from "./steer-marker.js"
 
 const MAX_MESSAGES = 100
 
@@ -56,7 +57,7 @@ async function loadRecentPrompts(
 				if (allMessages.length >= maxMessages) break
 
 				const trimmed = msg.trim()
-				if (trimmed && !seen.has(trimmed) && !isSystemAnnotation(trimmed) && !isOrchestratorMessage(trimmed)) {
+				if (trimmed && !seen.has(trimmed) && !isSystemAnnotation(trimmed) && !isHarnessSteer(trimmed)) {
 					seen.add(trimmed)
 					allMessages.push(trimmed)
 				}
@@ -92,11 +93,6 @@ function extractUserMessages(sessionPath: string): string[] {
 /** Matches the <system-annotation> format produced by src/extensions/prompt-summary.ts. */
 function isSystemAnnotation(text: string): boolean {
 	return text.startsWith("<system-annotation>") && text.endsWith("</system-annotation>")
-}
-
-/** Matches the [Orchestrator… prefix defined in src/extensions/agents/manager/agent-runner.ts. */
-function isOrchestratorMessage(text: string): boolean {
-	return text.startsWith("[Orchestrator — automated system instruction, not a user message]")
 }
 
 function extractText(content: Message["content"]): string | null {

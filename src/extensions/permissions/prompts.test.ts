@@ -68,34 +68,6 @@ describe("promptForApproval — withWorkingHidden", () => {
 	})
 })
 
-describe("promptForCompoundApproval", () => {
-	it("stores program wildcards without the RTK wrapper", async () => {
-		const ctx = {
-			hasUI: true,
-			ui: {
-				select: vi.fn(async () => "Allow all from now on"),
-				setWorkingVisible: vi.fn(),
-				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
-			},
-			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
-		} as any
-
-		const result = await promptForCompoundApproval({
-			toolName: "bash",
-			commands: [{ command: "rtk git status" }, { command: "rtk kubectl get pods" }],
-			ctx,
-		})
-
-		expect(result).toEqual({
-			kind: "allow-all-remember",
-			rules: [
-				{ toolName: "bash", content: "git *", behavior: "allow", source: "session" },
-				{ toolName: "bash", content: "kubectl *", behavior: "allow", source: "session" },
-			],
-		})
-	})
-})
-
 describe("formatRiskBadge", () => {
 	it("formats low risk with success (green) color", () => {
 		const result = formatRiskBadge("low")
@@ -116,6 +88,60 @@ describe("formatRiskBadge", () => {
 		expect(result).toContain("high risk")
 		expect(result).toContain(ERROR_FG)
 		expect(result).toContain(RST_FG)
+	})
+})
+
+describe("promptForCompoundApproval", () => {
+	function fakeCtx(selectValue: string) {
+		return {
+			hasUI: true,
+			ui: {
+				select: vi.fn(async () => selectValue),
+				input: vi.fn(async () => "be more careful"),
+				setWorkingVisible: vi.fn(),
+				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
+		} as any
+	}
+
+	const commands = [{ command: "git status" }, { command: "ls -la" }]
+
+	it("returns deny when ctx.hasUI is false", async () => {
+		const ctx = { hasUI: false } as any
+		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		expect(result).toEqual({ kind: "deny" })
+	})
+
+	it("returns allow-all-once when user selects Run all (once)", async () => {
+		const ctx = fakeCtx("Run all (once)")
+		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		expect(result).toEqual({ kind: "allow-all-once" })
+	})
+
+	it("returns allow-all-remember with correct wildcard rules when user selects Allow all from now on", async () => {
+		const ctx = fakeCtx("Allow all from now on")
+		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		expect(result).toEqual({
+			kind: "allow-all-remember",
+			rules: [
+				{ toolName: "bash", content: "git *", behavior: "allow", source: "session" },
+				{ toolName: "bash", content: "ls *", behavior: "allow", source: "session" },
+			],
+		})
+	})
+
+	it("returns deny-with-feedback when user selects deny and provides feedback", async () => {
+		const ctx = fakeCtx("No — tell the assistant what to do differently")
+		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		expect(result).toEqual({ kind: "deny-with-feedback", feedback: "be more careful" })
+	})
+
+	it("returns deny when user selects deny but provides no feedback", async () => {
+		const ctx = fakeCtx("No — tell the assistant what to do differently")
+		ctx.ui.input = vi.fn(async () => "")
+		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		expect(result).toEqual({ kind: "deny" })
 	})
 })
 

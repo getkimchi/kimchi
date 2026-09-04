@@ -108,9 +108,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 						},
 					],
 				},
-				// Turn 2: tools suppressed → model produces text-only response (no tool calls).
-				{ stream: ["I've submitted the plan for your review."] },
-				// Turn 3: post-confirmation, keeps session alive.
+				// Turn 2: post-confirmation, keeps session alive.
 				{ stream: ["Starting execution now."] },
 			],
 		},
@@ -197,9 +195,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 						},
 					],
 				},
-				// Turn 2: tools suppressed → text-only response.
-				{ stream: ["Plan is ready for review."] },
-				// Turn 3: after cancel, tools restored → model calls propose_ferment_scoping again.
+				// Turn 2: after cancel, tools restored → model calls propose_ferment_scoping again.
 				{
 					toolCalls: [
 						{
@@ -274,8 +270,8 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			// Find the first chat request after the 2nd one that has a tools array
 			// (skip compaction requests which have no tools field).
 			const chatRequests = fixture.fake.requests.filter((req) => req.url.startsWith("/openai/v1/chat/completions"))
-			expect(chatRequests.length).toBeGreaterThanOrEqual(3)
-			const revisionReq = chatRequests.slice(2).find((req) => {
+			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+			const revisionReq = chatRequests.slice(1).find((req) => {
 				const body = req.body as Record<string, unknown>
 				return Array.isArray(body.tools) && body.tools.length > 0
 			})
@@ -302,6 +298,8 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
+				// terminate:true ends the turn; the review dialog appears via
+				// the onPlanReviewRequest listener's setTimeout(0).
 				{
 					toolCalls: [
 						{
@@ -312,9 +310,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 						},
 					],
 				},
-				// Turn 2: tools suppressed → text-only response (proves suppression works).
-				{ stream: ["I've outlined the scope for the test feature."] },
-				// Turn 3: post-confirmation.
+				// Turn 2: post-confirmation.
 				{ stream: ["Proceeding with execution."] },
 			],
 		},
@@ -359,24 +355,10 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 			expect(phases[0].name).toBe("Implement")
 			trace.step("ferment artifact verified — planned, 1 phase, correct structure")
 
-			// Stage 8: verify at least 2 HTTP requests were made.
+			// Stage 8: verify at least 2 HTTP requests were made (propose + post-confirm).
 			const chatRequests = fixture.fake.requests.filter((req) => req.url.startsWith("/openai/v1/chat/completions"))
 			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
 			trace.step(`${chatRequests.length} chat requests recorded`)
-
-			// Stage 9: verify the 2nd request (after tool result) had no tool calls
-			// in the response (proving tool suppression worked — model produced text-only).
-			// The 2nd request is the one where the model should have had no tools.
-			// We can verify this by checking the `tools` array in the request body.
-			// After propose_ferment_scoping returns "Plan ready for review",
-			// tools are suppressed. The 2nd request should have an empty `tools` array.
-			if (chatRequests.length >= 2) {
-				const body = chatRequests[1].body as Record<string, unknown>
-				const tools = body.tools as unknown[]
-				expect(Array.isArray(tools)).toBe(true)
-				expect(tools.length).toBe(0)
-				trace.step("2nd request has empty tools[] — tools were suppressed after propose_ferment_scoping")
-			}
 		},
 	)
 })

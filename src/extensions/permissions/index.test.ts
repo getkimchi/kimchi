@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -11,9 +11,12 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
+import { FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -68,7 +71,6 @@ const testEnv: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -79,6 +81,7 @@ const testEnv: EnvironmentInfo = {
 }
 
 const TEST_SESSION_ID = "test-session"
+const WORKFLOW_OUTPUT_TOOLS = ["workflow_submit_result", "workflow_submit_questions"]
 
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
@@ -168,6 +171,8 @@ function createPermissionsHarness(
 ) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, RegisteredCommand>()
+	const registeredTools = new Map<string, { name: string; execute: unknown }>()
+	const { events } = createMiniEventBus()
 	const tools = toolNames.map((name) => ({ name, description: `${name} tool` }) as ToolInfo)
 	let activeTools = [...initialActiveTools]
 
@@ -188,9 +193,12 @@ function createPermissionsHarness(
 			const known = new Set(toolNames)
 			activeTools = names.filter((name) => known.has(name))
 		}),
+		registerTool: vi.fn((tool: { name: string } & Record<string, unknown>) => {
+			registeredTools.set(tool.name, tool as { name: string; execute: unknown })
+		}),
 		sendMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		events: { emit: vi.fn() },
+		events,
 	} as unknown as ExtensionAPI
 
 	permissionsExtension(pi)
@@ -198,6 +206,7 @@ function createPermissionsHarness(
 	return {
 		pi,
 		commands,
+		registeredTools,
 		activeTools: () => activeTools,
 		async fire(event: string, payload: unknown, ctx: ExtensionContext = createMockContext([])) {
 			let result: unknown
@@ -265,6 +274,17 @@ describe("permissions plan-mode tool visibility", () => {
 					createMockContext([]),
 				),
 			).resolves.toBeUndefined()
+		}
+	})
+
+	it("keeps workflow output tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", ...WORKFLOW_OUTPUT_TOOLS], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["read", ...WORKFLOW_OUTPUT_TOOLS].sort())
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, createMockContext([]))).resolves.toBeUndefined()
 		}
 	})
 
@@ -342,16 +362,31 @@ describe("plan mode assumption detection", () => {
 
 	// --- Integration tests for turn_end handler ---
 
-	function makeAssistantMessage(text: string): unknown {
-		return { role: "assistant", content: [{ type: "text", text }] }
+	type SubmitPlanToolDef = {
+		execute: (
+			toolCallId: string,
+			params: { plan: string },
+			signal: AbortSignal | undefined,
+			onUpdate: undefined,
+			ctx: ExtensionContext,
+		) => Promise<unknown>
 	}
 
-	async function fireTurnEnd(
+	// Drive the submit_plan flow: invoke the captured tool's execute with the
+	// plan text (no completion markers — that protocol is gone), then flush
+	// the task queue so the TUI decision callback (`void .then(...)`) and any
+	// review-decision side effects (mode changes, sendMessage, ferment
+	// artefacts) have run before assertions.
+	async function submitPlan(
 		harness: ReturnType<typeof createPermissionsHarness>,
-		text: string,
+		plan: string,
 		ctx: ExtensionContext,
-	) {
-		return harness.fire("turn_end", { message: makeAssistantMessage(text) }, ctx)
+	): Promise<unknown> {
+		const tool = harness.registeredTools.get("submit_plan") as SubmitPlanToolDef | undefined
+		if (!tool) throw new Error("submit_plan tool was not registered with pi")
+		const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+		return result
 	}
 
 	it("shows approval menu when plan is clean", async () => {
@@ -362,9 +397,9 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
+		await submitPlan(
 			harness,
-			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.\n\n<!-- PLAN_COMPLETE -->\n",
+			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.",
 			ctx,
 		)
 
@@ -377,11 +412,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
-			harness,
-			"# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
-			ctx,
-		)
+		await submitPlan(harness, "# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -392,9 +423,9 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
+		await submitPlan(
 			harness,
-			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1",
 			ctx,
 		)
 
@@ -407,9 +438,9 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
+		await submitPlan(
 			harness,
-			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
+			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.",
 			ctx,
 		)
 
@@ -422,22 +453,22 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
+		await submitPlan(
 			harness,
-			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
+			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.",
 			ctx,
 		)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("shows menu for plan with assumptions (PLAN_COMPLETE is the gate)", async () => {
+	it("shows menu for plan with assumptions (submit_plan is the gate)", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(harness, "## ASSUMPTIONS\n- Schema TBD\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+		await submitPlan(harness, "## ASSUMPTIONS\n- Schema TBD", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -448,7 +479,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(harness, "## Assumptions\n\n- Database schema may differ\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+		await submitPlan(harness, "## Assumptions\n\n- Database schema may differ", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -459,9 +490,9 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
+		await submitPlan(
 			harness,
-			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.\n\n<!-- PLAN_COMPLETE -->\n",
+			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.",
 			ctx,
 		)
 
@@ -472,15 +503,15 @@ describe("plan mode assumption detection", () => {
 		)
 	})
 
-	it("review gate: menu shows for any plan with PLAN_COMPLETE marker", async () => {
+	it("review gate: menu shows for any plan submitted via submit_plan", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(
+		await submitPlan(
 			harness,
-			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n",
+			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.",
 			ctx,
 		)
 
@@ -493,7 +524,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await fireTurnEnd(harness, "## Chunk 1\nJust one chunk.\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+		await submitPlan(harness, "## Chunk 1\nJust one chunk.", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -503,15 +534,15 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		const planText =
-			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests.\n\n<!-- PLAN_COMPLETE -->"
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests."
 		const ctx = createMockContext(["Rework the plan"])
-		await fireTurnEnd(harness, planText, ctx)
+		await submitPlan(harness, planText, ctx)
 
-		expect(ctx.ui.select).toHaveBeenCalledWith("Plan complete. How would you like to proceed?", [
-			"Execute the plan",
-			"Rework the plan",
-			"Start as ferment",
-		])
+		expect(ctx.ui.select).toHaveBeenCalledWith(
+			"Plan complete. How would you like to proceed?",
+			["Execute the plan", "Rework the plan", "Start as ferment"],
+			expect.anything(),
+		)
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
 	})
@@ -523,13 +554,160 @@ describe("plan mode assumption detection", () => {
 			n === "ferment-oneshot" ? true : undefined
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		const planText =
-			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n<!-- PLAN_COMPLETE -->"
+		const planText = "# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache."
 		const ctx = createMockContext([])
-		await fireTurnEnd(harness, planText, ctx)
+		await submitPlan(harness, planText, ctx)
 
 		// The dropdown must NOT have been shown — oneshot sessions bypass it.
 		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	describe("plan file persistence", () => {
+		const PLAN_V1 =
+			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+		const PLAN_V2 =
+			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer with TTL.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+
+		it("saves the plan file when the plan is produced, before the approval choice", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-"))
+			try {
+				const ctx = createMockContext(["Rework the plan"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				const plansDir = join(tmpDir, ".kimchi", "plans")
+				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
+				const saved = readFileSync(join(plansDir, "plan-cache-layer.md"), "utf-8")
+				expect(saved).not.toContain("PLAN_COMPLETE")
+				expect(saved).toContain("## Goal\nAdd caching layer.")
+				// The approval dropdown is still shown after the save.
+				expect(ctx.ui.select).toHaveBeenCalled()
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("saves the plan file in headless sessions without showing the dropdown", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-headless-"))
+			try {
+				const ctx = createMockContext([])
+				Object.assign(ctx, { hasUI: false })
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				const plansDir = join(tmpDir, ".kimchi", "plans")
+				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
+				expect(ctx.ui.select).not.toHaveBeenCalled()
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("overwrites the same file on rework instead of creating a new one", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-rework-"))
+			try {
+				const ctx1 = createMockContext(["Rework the plan"])
+				ctx1.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx1)
+				const ctx2 = createMockContext(["Rework the plan"])
+				ctx2.cwd = tmpDir
+				await submitPlan(harness, PLAN_V2, ctx2)
+
+				const plansDir = join(tmpDir, ".kimchi", "plans")
+				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
+				const saved = readFileSync(join(plansDir, "plan-cache-layer.md"), "utf-8")
+				expect(saved).toContain("Add caching layer with TTL.")
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("execute references the saved plan path and a new planning round gets a fresh file", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-execute-"))
+			try {
+				const ctx = createMockContext(["Execute the plan"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				const planFile = join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md")
+				expect(existsSync(planFile)).toBe(true)
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						customType: "plan-execute",
+						content: expect.stringContaining(`Approved plan saved to: ${planFile}`),
+					}),
+					expect.anything(),
+				)
+
+				// After execute the session slug is released; switch back to plan
+				// mode and emit a differently titled plan to verify a fresh file.
+				const command = harness.commands.get("permissions")
+				await command?.handler("mode plan", createMockContext([]))
+				const OTHER_PLAN = "# Plan: Rate Limits\n\n## Goal\nAdd rate limits."
+				const ctx2 = createMockContext(["Rework the plan"])
+				ctx2.cwd = tmpDir
+				await submitPlan(harness, OTHER_PLAN, ctx2)
+				expect(readdirSync(join(tmpDir, ".kimchi", "plans")).sort()).toEqual([
+					"plan-cache-layer.md",
+					"plan-rate-limits.md",
+				])
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("Start as ferment handoff references the saved plan path", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-ferment-"))
+			try {
+				const ctx = createMockContext(["Start as ferment"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+
+				const planFile = join(tmpDir, ".kimchi", "plans", "plan.md")
+				expect(existsSync(planFile)).toBe(true)
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						customType: "ferment_handoff",
+						content: expect.arrayContaining([
+							expect.objectContaining({
+								text: expect.stringContaining(`Approved plan saved to: ${planFile}`),
+							}),
+						]),
+					}),
+					expect.anything(),
+				)
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("warns but continues when the plan file cannot be saved", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-fail-"))
+			try {
+				// .kimchi exists as a regular file → recursive mkdir of .kimchi/plans fails.
+				writeFileSync(join(tmpDir, ".kimchi"), "not a directory")
+				const ctx = createMockContext(["Rework the plan"])
+				ctx.cwd = tmpDir
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("failed to save plan file"), "warning")
+				expect(ctx.ui.select).toHaveBeenCalled()
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
 	})
 
 	// Shared-plan fixture following the planning-process structure (Goal /
@@ -546,8 +724,7 @@ describe("plan mode assumption detection", () => {
 		"### Chunk 1: Add cache primitive\n- **Files Changed**: src/api/cache.ts\n- **Accept When**: cache.get/set round-trip works\n\n" +
 		"### Chunk 2: Wire cache into client\n- **Files Changed**: src/api/client.ts\n- **Accept When**: repeat GET hits the cache\n\n" +
 		"## Verification Strategy\nRun pnpm test src/api after each chunk.\n\n" +
-		"## Risks\nCache staleness: short default TTL.\n\n" +
-		"<!-- PLAN_COMPLETE -->"
+		"## Risks\nCache staleness: short default TTL.\n"
 
 	it("Start as ferment persists a ferment artifact under .kimchi/ferments", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
@@ -558,7 +735,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
 			expect(existsSync(fermentsDir)).toBe(true)
@@ -592,7 +769,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			// Find the implementation-ferment apply call by selecting the largest
 			// setActiveTools call — the planning-adhoc profile produces a 12-tool set
@@ -632,7 +809,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
 			const implementationFermentCall = calls.reduce<{ size: number; arr: string[] | undefined }>(
@@ -673,7 +850,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			// After 'Start as ferment', the ferment runtime must know the active ferment.
 			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
@@ -697,7 +874,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			// appendRefEntry calls pi.sendMessage with customType 'ferment_reference'.
 			// safeSendMessage passes (message, options) — options may be undefined.
@@ -730,7 +907,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const handoffCall = vi
 				.mocked(harness.pi.sendMessage)
@@ -772,7 +949,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["Start as ferment"])
 		ctx.cwd = "/dev/null/nonexistent-path-that-cannot-be-created"
 
-		await fireTurnEnd(harness, planText, ctx)
+		await submitPlan(harness, planText, ctx)
 
 		// 1) No setActiveTools call should include implementation-ferment-only tools
 		//    like edit/write/Agent (the implementation profile signature).
@@ -809,7 +986,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			expect(harness.activeTools()).toEqual(planningTools)
 			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
@@ -832,13 +1009,12 @@ describe("plan mode assumption detection", () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		const PLAN_WITHOUT_CHUNKS =
-			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Constraints\n- No new dependencies\n\n<!-- PLAN_COMPLETE -->"
+		const PLAN_WITHOUT_CHUNKS = "# Plan\n\n## Goal\nAdd caching layer.\n\n## Constraints\n- No new dependencies"
 		const tmpDir = mkdtempSync(join(tmpdir(), "draft-only-"))
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await fireTurnEnd(harness, PLAN_WITHOUT_CHUNKS, ctx)
+			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -896,7 +1072,7 @@ describe("permissions prompt inheritance", () => {
 	})
 })
 
-describe("permissions ferment tool classification", () => {
+describe("permissions internal tool classification", () => {
 	beforeEach(() => {
 		vi.mocked(classifyToolCall).mockClear()
 	})
@@ -905,6 +1081,17 @@ describe("permissions ferment tool classification", () => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
+	})
+
+	it("allows Ferment V2 state tools without permission prompts", async () => {
+		const harness = createPermissionsHarness([...FERMENT_V2_TOOL_NAMES])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of FERMENT_V2_TOOL_NAMES) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 	})
 
 	it("allows ferment tools in auto mode without invoking the classifier", async () => {
@@ -986,6 +1173,41 @@ describe("permissions ferment tool classification", () => {
 	})
 })
 
+describe("permissions workflow output tool classification", () => {
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
+	it("allows workflow output tools in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS, { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("allows workflow output tools in default mode without prompting", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS)
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
 describe("permissions notification emission", () => {
 	afterEach(() => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
@@ -1011,6 +1233,13 @@ describe("permissions notification emission", () => {
 				tool_use_id: "tc-write-1",
 			},
 		)
+
+		const emitMock = (harness.pi as unknown as { events: { emit: ReturnType<typeof vi.fn> } }).events.emit
+		const blocked = emitMock.mock.calls as [string, { active: boolean; label?: string }][]
+		expect(blocked.filter(([channel]) => channel === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Permission: write" }],
+			["herdr:blocked", { active: false }],
+		])
 	})
 })
 
@@ -1054,23 +1283,6 @@ describe("permissions TUI allow-remember", () => {
 
 		const second = await harness.fire("tool_call", event, ctx)
 		expect(second).toBeUndefined() // remembered — no prompt
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-	})
-
-	it("does not re-prompt for an env-prefixed + rtk-wrapped command", async () => {
-		const harness = createPermissionsHarness(["bash"])
-		const ctx = rememberingContext()
-		await harness.fire("session_start", {}, ctx)
-
-		const event = {
-			toolName: "bash",
-			input: { command: "GOWORK=off rtk go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1" },
-		}
-
-		await harness.fire("tool_call", event, ctx)
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-
-		await harness.fire("tool_call", event, ctx)
 		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
 	})
 
@@ -1470,11 +1682,13 @@ describe("compound command with session rules", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let pi: ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		pi = createExtensionApi().api
 	})
 
 	it("returns undefined for allow-all-once", async () => {
@@ -1484,6 +1698,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
 		})
@@ -1498,6 +1713,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
 		})
@@ -1516,6 +1732,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a"],
 		})
@@ -1534,6 +1751,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
 		})
@@ -1552,6 +1770,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
 		})
@@ -1570,6 +1789,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
 		})
@@ -1586,6 +1806,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
 		})
@@ -1602,6 +1823,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
 		})
@@ -1624,6 +1846,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
 		})
@@ -1638,6 +1861,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: [],
 		})
@@ -1654,6 +1878,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo hello"],
 		})
@@ -1673,6 +1898,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
 		})
@@ -1701,6 +1927,7 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo hello", "whoami"],
 		})
@@ -1718,11 +1945,130 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
 			subcommands: ["echo a"],
 		})
 
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
+	})
+})
+
+describe("herdr:blocked signaling", () => {
+	let session: SessionMemory
+	let activeAborts: Set<AbortController>
+	let pi: ExtensionAPI
+	let emitEvent: ReturnType<typeof vi.fn>
+
+	function blockedCalls(): [string, { active: boolean; label?: string }][] {
+		return (emitEvent.mock.calls as [string, { active: boolean; label?: string }][]).filter(
+			([channel]) => channel === "herdr:blocked",
+		)
+	}
+
+	beforeEach(() => {
+		session = new SessionMemory()
+		session.clear()
+		activeAborts = new Set()
+		const mock = createExtensionApi()
+		pi = mock.api
+		emitEvent = mock.emitEvent
+	})
+
+	it("keeps blocked active while a compound prompt is pending and clears it on resolution", async () => {
+		const ctx = createMockContext([])
+		let resolvePrompt!: (value: string) => void
+		ctx.ui.select = vi.fn(
+			() =>
+				new Promise<string>((resolve) => {
+					resolvePrompt = resolve
+				}),
+		)
+
+		const pending = handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a", "echo b"],
+		})
+
+		// The compound prompt reaches ui.select after an async hop; wait for the
+		// prompt to actually be on screen before asserting the pending state.
+		await vi.waitFor(() => {
+			expect(ctx.ui.select).toHaveBeenCalled()
+		})
+		expect(blockedCalls()).toEqual([["herdr:blocked", { active: true, label: "Permission: bash (compound)" }]])
+
+		resolvePrompt("Run all (once)")
+		await expect(pending).resolves.toBeUndefined()
+
+		expect(blockedCalls()).toEqual([
+			["herdr:blocked", { active: true, label: "Permission: bash (compound)" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("balances activations across nested pick-per-subcommand prompts", async () => {
+		const ctx = createMockContext(["Pick permissions per subcommand", "Yes — just this call", "Yes — just this call"])
+
+		const result = await handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a", "whoami"],
+		})
+		expect(result).toBeUndefined()
+
+		const calls = blockedCalls()
+		expect(calls[0]).toEqual(["herdr:blocked", { active: true, label: "Permission: bash (compound)" }])
+		expect(calls).toHaveLength(6)
+		let depth = 0
+		let minDepth = 0
+		for (const [, payload] of calls) {
+			depth += payload.active ? 1 : -1
+			minDepth = Math.min(minDepth, depth)
+		}
+		expect(depth).toBe(0)
+		expect(minDepth).toBe(0)
+	})
+
+	it("emits deactivation when the prompt rejects", async () => {
+		const ctx = createMockContext([])
+		ctx.ui.select = vi.fn(async () => {
+			throw new Error("select blew up")
+		})
+
+		await expect(
+			handleCompoundConfirm(createMockEvent(), {
+				ctx,
+				pi,
+				session,
+				activeAborts,
+				subcommands: ["echo a"],
+			}),
+		).rejects.toThrow("select blew up")
+
+		expect(blockedCalls()).toEqual([
+			["herdr:blocked", { active: true, label: "Permission: bash (compound)" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("emits nothing when no prompter is available (no UI)", async () => {
+		const ctx: ExtensionContext = { ...createMockContext([]), hasUI: false, mode: "print" }
+
+		const result = await handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a"],
+		})
+
+		expect(result).toEqual({ block: true, reason: "No UI to confirm permission" })
+		expect(blockedCalls()).toEqual([])
 	})
 })
 

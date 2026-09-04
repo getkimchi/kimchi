@@ -88,14 +88,14 @@ class KimchiGatewayMixin:
 
     def _split_model(self, model_name: str | None) -> tuple[str, str]:
         if not model_name or "/" not in model_name:
-            raise ValueError("--model is required and must use provider/model format, e.g. kimchi-dev/kimi-k2.5")
+            raise ValueError("--model is required and must use provider/model format, e.g. kimchi-dev/kimi-k2.7")
         provider, model_id = model_name.split("/", 1)
         if provider != KIMCHI_PROVIDER:
             raise ValueError(
                 f"{type(self).__name__} only supports {KIMCHI_PROVIDER}/<model-id> models; got {model_name!r}"
             )
         if not model_id:
-            raise ValueError("--model must include a model id after kimchi-dev/")
+            raise ValueError(f"--model must include a model id after {provider}/")
         return provider, model_id
 
     def _required_kimchi_api_key(self) -> str:

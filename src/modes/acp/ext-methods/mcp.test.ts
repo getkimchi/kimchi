@@ -270,6 +270,21 @@ describe("handleProbeMcpServer", () => {
 		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
 	})
 
+	it("uses the real serverName when the auth entry is from an incomplete OAuth flow", async () => {
+		const manager = makeManager()
+		mockSupportsOAuth.mockReturnValue(false)
+		mockProbeTools.mockResolvedValue({ tools: [], needsAuth: false, error: null })
+		// Incomplete OAuth flow residue: only oauthState/codeVerifier were
+		// saved — no serverUrl. The real name must be reused so the flow can
+		// complete and save tokens to the correct entry.
+		mockGetAuthEntry.mockReturnValue({ oauthState: "state-123", codeVerifier: "verifier-456" })
+
+		await handleProbeMcpServer(manager, { server: urlServer, serverName: "my-server" })
+
+		expect(mockProbeTools).toHaveBeenCalledWith("my-server", urlServer)
+		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
+	})
+
 	it("cleans up throwaway auth entries even when probeTools throws", async () => {
 		const manager = makeManager()
 		mockSupportsOAuth.mockReturnValue(false)

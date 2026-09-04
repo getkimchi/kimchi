@@ -41,6 +41,19 @@ describe("teleportExtension", () => {
 		expect(pi.registerCommand).toHaveBeenCalledTimes(5)
 	})
 
+	it("registers the teleport command with flag completions and an enriched description", () => {
+		const pi = makePi()
+		teleportExtension(pi)
+		const calls = (pi.registerCommand as ReturnType<typeof vi.fn>).mock.calls
+		const teleportCall = calls.find(([name]) => name === "teleport")
+		expect(teleportCall).toBeDefined()
+		const config = teleportCall?.[1] as { description: string; getArgumentCompletions: unknown; handler: unknown }
+		expect(typeof config.getArgumentCompletions).toBe("function")
+		expect(config.description).toContain("--allow-dirty")
+		expect(config.description).toContain("--force")
+		expect(config.description).toContain("[name]")
+	})
+
 	it("registers commands on macOS", () => {
 		osTypeMock.mockReturnValue("Darwin")
 		const pi = makePi()

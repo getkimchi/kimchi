@@ -17,7 +17,9 @@ import type {
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionInfo as PiSessionInfo,
+	ResourceLoader,
 	SessionManager,
+	Skill,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -27,23 +29,41 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("../../cli-auth/index.js", () => ({
 	authenticateViaBrowser: vi.fn(),
 }))
-// Mock config writes so tests don't touch the real config file.
-vi.mock("../../config.js", () => ({
-	writeApiKey: vi.fn(),
-	clearApiKey: vi.fn(),
-}))
+// Mock config writes so tests don't touch the real config file, but keep
+// DEFAULT_SKILL_PATHS so skill discovery in the ACP server works.
+vi.mock("../../config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../config.js")>()
+	return {
+		...actual,
+		writeApiKey: vi.fn(),
+		clearApiKey: vi.fn(),
+	}
+})
 // Mock the model cache refresh so tests don't hit the network.
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
 }))
+// Pin getVersion() so initialize() agentInfo assertions are deterministic
+// and don't depend on the repo's package.json.
+const getVersionMock = vi.fn(() => "1.2.3-test")
+vi.mock("../../utils.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../utils.js")>()
+	return {
+		...actual,
+		getVersion: () => getVersionMock(),
+	}
+})
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -52,8 +72,6 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
-import { __resetTodoStore, applyWriteTodos, restoreTodoStoreFromDetails } from "../../extensions/todos/store.js"
-import { TODO_TOOL_RESULT_SCHEMA_VERSION } from "../../extensions/todos/types.js"
 import { updateModelsConfig } from "../../models.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -62,6 +80,7 @@ import {
 	type AcpSessionLoader,
 	assertSessionHasModel,
 	buildSessionModelState,
+	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	KimchiAcpAgent,
 	stripAnsi,
@@ -69,6 +88,7 @@ import {
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
+import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -78,10 +98,61 @@ function cleanPermissionEnv(): void {
 			Reflect.deleteProperty(process.env, key)
 		}
 	}
+	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
+	// set by one test don't leak into another via the module-level cache.
+	populateCliArgs([])
+	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => {
+	getVersionMock.mockReturnValue("1.2.3-test")
+})
 afterEach(cleanPermissionEnv)
+
+/** Model shape used by FakeAgentSession's model registry. */
+interface FakeModel {
+	provider: string
+	id: string
+	name?: string
+	input?: string[]
+	contextWindow?: number
+}
+
+/** Options passed through `AgentSession.prompt()` to the fake. */
+interface PromptOpts {
+	images?: unknown[]
+}
+
+/** Record of one prompt call captured by FakeAgentSession. */
+interface PromptCall {
+	prompt: string
+	opts?: PromptOpts
+}
+
+/** Context-usage stats surfaced to emitUsageUpdate. */
+interface ContextUsage {
+	tokens: number | null
+	contextWindow: number
+	percent: number | null
+}
+
+/** Token and cost stats returned by `AgentSession.getSessionStats()`. */
+interface SessionStats {
+	tokens: {
+		input: number
+		output: number
+		cacheRead: number
+		cacheWrite: number
+		total: number
+	}
+	cost: number
+}
+
+/** One option entry inside a config option returned by the ACP server. */
+interface SelectOptionItem {
+	value: string
+}
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
 // means we only need to stand in for the methods the ACP server actually calls:
@@ -93,11 +164,21 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model: { provider: string; id: string; name?: string; input?: string[] } | undefined = {
+	clearQueueCalls = 0
+	clearQueueReturn = { steering: [] as string[], followUp: [] as string[] }
+	// Steering-seam state for the cancel-ordering regression: steer() records
+	// as pending, clearQueue() drops what was never delivered, and `order`
+	// pins the clear-before-abort sequence. `emulatedHistory` receives
+	// whatever an abort's wait lets pi-mono's steering chain deliver.
+	pendingSteers: string[] = []
+	emulatedHistory: string[] = []
+	order: string[] = []
+	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
 		name: "Test Model",
 		input: ["text"],
+		contextWindow: 200_000,
 	}
 	modelRegistry = {
 		getAvailable: () =>
@@ -113,11 +194,38 @@ class FakeAgentSession {
 		find: (provider: string, id: string) =>
 			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
 	}
-	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
+	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
+	// Captures tool registration and activation state for parity assertions.
+	registeredTools: Map<string, unknown> = new Map()
+	activeToolNames: string[] = []
 	lastPromptImages?: unknown[]
-	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
+	promptCalls: PromptCall[] = []
+	// Context-usage stats surfaced to emitUsageUpdate. Tests override these
+	// to simulate provider-reported usage or the null/empty no-op path.
+	contextUsage: ContextUsage | undefined = {
+		tokens: 50_000,
+		contextWindow: 200_000,
+		percent: 25,
+	}
+	sessionStats: SessionStats = {
+		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		cost: 0,
+	}
+	resourceLoader = {
+		getSkills: () => ({ skills: [] as Skill[], diagnostics: [] }),
+		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
+		getPrompts: () => ({ prompts: [], diagnostics: [] }),
+		getThemes: () => ({ themes: [], diagnostics: [] }),
+		getAgentsFiles: () => ({ agentsFiles: [] }),
+		getSystemPrompt: () => undefined,
+		getSystemPromptSource: () => undefined,
+		getAppendSystemPrompt: () => [],
+		getAppendSystemPromptSources: () => [],
+		extendResources: () => {},
+		reload: async () => {},
+	} as unknown as ResourceLoader
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -180,11 +288,46 @@ class FakeAgentSession {
 
 	async abort(): Promise<void> {
 		this.aborted = true
+		this.order.push("abort")
 		await this.abortImpl()
+	}
+
+	async steer(text: string, _images?: unknown[]): Promise<void> {
+		this.pendingSteers.push(text)
+	}
+
+	clearQueue(): { steering: string[]; followUp: string[] } {
+		this.clearQueueCalls++
+		this.order.push("clearQueue")
+		this.pendingSteers = []
+		return this.clearQueueReturn
 	}
 
 	async bindExtensions(bindings: unknown): Promise<void> {
 		await this.bindExtensionsImpl(bindings)
+	}
+
+	getToolDefinition(name: string): unknown {
+		return this.registeredTools.get(name)
+	}
+
+	getActiveToolNames(): string[] {
+		return [...this.activeToolNames]
+	}
+
+	setActiveToolsByName(names: string[]): void {
+		this.activeToolNames = [...names]
+	}
+
+	getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined {
+		return this.contextUsage
+	}
+
+	getSessionStats(): {
+		tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
+		cost: number
+	} {
+		return this.sessionStats
 	}
 
 	dispose(): void {
@@ -280,13 +423,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
 
 			try {
+				// pi-mono auth resolution reads the stored credentials file, not the
+				// OPENAI_API_KEY env var — availability requires a real auth entry
+				// on disk (probe: env stub alone leaves auth configured: false).
+				writeFileSync(
+					resolve(tempAgentDir, "auth.json"),
+					JSON.stringify({ openai: { type: "api_key", key: "fake-key" } }),
+				)
 				const modelsJson = {
 					providers: {
 						openai: {
+							baseUrl: "https://api.openai.com/v1",
 							models: [
 								{
 									id: "gpt-4o",
 									name: "GPT-4o",
+									api: "openai-responses",
 									input: ["text", "image"],
 								},
 							],
@@ -417,6 +569,36 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			expect(response.agentCapabilities?.auth?.logout).toEqual({})
+		})
+
+		it("includes agentInfo with name kimchi and current version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("9.8.7-test")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo).toEqual({
+				name: "kimchi",
+				version: "9.8.7-test",
+			})
+		})
+
+		it("reflects the live getVersion() value in agentInfo.version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("0.0.0-canary.42")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo?.name).toBe("kimchi")
+			expect(response.agentInfo?.version).toBe("0.0.0-canary.42")
 		})
 	})
 
@@ -780,6 +962,110 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.aborted).toBe(true)
 	})
 
+	// cancel() must drain the steer/follow-up queue so queued text doesn't
+	// leak into the next prompt — mirrors the TUI's Escape → clearAllQueues().
+	it("drains the steer queue when cancel arrives mid-turn", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+
+		await promptP
+		expect(fake.aborted).toBe(true)
+		expect(fake.clearQueueCalls).toBe(1)
+	})
+
+	// Arms a turn that hangs until abort() runs — emulating a still-running
+	// turn when session/cancel arrives. onAbort runs inside abortImpl after
+	// the hang flag flips, while prompt() is still parked.
+	function armHangingTurn(onAbort?: () => void): void {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+			onAbort?.()
+		}
+	}
+
+	// Regression: cancel() must drain the queue BEFORE awaiting the abort.
+	// pi-mono chains queued steering messages into the running prompt —
+	// session.prompt() resolves only after all chained calls — so awaiting
+	// abort() first lets every queued steer self-deliver into history one
+	// reply at a time (observed in dogfooding: steers landing +3.7s/+10.9s
+	// after the abort, each with a full reply). The fake's abortImpl
+	// emulates that chaining by delivering whatever is still pending.
+	it("never delivers queued steers after cancel", async () => {
+		// Emulate pi-mono's steering chain: a waiting abort() gives every
+		// still-queued steer time to deliver into the session's history.
+		armHangingTurn(() => {
+			for (const text of fake.pendingSteers) {
+				fake.emulatedHistory.push(text)
+			}
+		})
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+		await fake.steer("t2")
+		await fake.steer("t3")
+
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.emulatedHistory).toEqual([])
+		expect(fake.order).toEqual(["clearQueue", "abort"])
+	})
+
+	// clearQueue() throwing must not skip the abort — the turn is already
+	// marked cancelled, and leaving the agent running would burn tokens
+	// until the LLM responds. try/finally guarantees abort runs regardless.
+	it("still aborts when clearQueue throws", async () => {
+		armHangingTurn()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
+			throw new Error("clearQueue boom")
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+
+		// cancel() must resolve — clearQueue's error is caught so abort still runs.
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.aborted).toBe(true)
+		// The drain failure is logged, not silently swallowed — a recurring
+		// clearQueue failure must be observable, not re-leak steers quietly.
+		expect(errorSpy).toHaveBeenCalledWith(
+			"kimchi acp: clearQueue() failed during cancel; aborting anyway",
+			expect.any(Error),
+		)
+		errorSpy.mockRestore()
+	})
+
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
 	// outer RPC promise must reject — not hang — regardless of whether any
 	// events were emitted before the throw.
@@ -1028,6 +1314,106 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		// Stray agent_end arrives later (shouldn't happen in production, but
 		// the guard in onSessionEvent must keep us safe either way).
 		expect(() => fake.emit(agentEnd())).not.toThrow()
+	})
+
+	it("emits a usage_update notification with used/size after a turn resolves", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const localFake = new FakeAgentSession("session-usage")
+		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 200_000 }
+		localFake.contextUsage = { tokens: 50_000, contextWindow: 200_000, percent: 25 }
+		localFake.sessionStats = {
+			tokens: { input: 10_000, output: 5_000, cacheRead: 0, cacheWrite: 0, total: 15_000 },
+			cost: 0,
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		localFake.promptImpl = async () => {
+			localFake.emit({ type: "agent_start" })
+			localFake.emit(agentEnd())
+		}
+		const result = await localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "hi" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+
+		const usageUpdates = updates.filter(
+			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+		)
+		expect(usageUpdates).toHaveLength(1)
+		expect(usageUpdates[0].sessionId).toBe(sid)
+		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(50_000)
+		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(200_000)
+	})
+
+	it("does not emit usage_update when getContextUsage tokens is null (post-compaction)", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const localFake = new FakeAgentSession("session-usage-fallback")
+		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
+		localFake.contextUsage = { tokens: null, contextWindow: 128_000, percent: null }
+		localFake.sessionStats = {
+			tokens: { input: 8_000, output: 2_000, cacheRead: 0, cacheWrite: 0, total: 10_000 },
+			cost: 0,
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		localFake.promptImpl = async () => {
+			localFake.emit({ type: "agent_start" })
+			localFake.emit(agentEnd())
+		}
+		const result = await localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "hi" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+
+		const usageUpdates = updates.filter(
+			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+		)
+		// Per the issue doc: skip when tokens is null — no fallback to getSessionStats.
+		expect(usageUpdates).toHaveLength(0)
+	})
+
+	it("does not emit usage_update when size is unavailable (no contextWindow)", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const localFake = new FakeAgentSession("session-usage-no-size")
+		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"] }
+		localFake.contextUsage = undefined
+		localFake.sessionStats = {
+			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			cost: 0,
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		localFake.promptImpl = async () => {
+			localFake.emit({ type: "agent_start" })
+			localFake.emit(agentEnd())
+		}
+		const result = await localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "hi" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+
+		const usageUpdates = updates.filter(
+			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+		)
+		expect(usageUpdates).toHaveLength(0)
 	})
 
 	// Resource safety on the newSession error path: if subscribe (or any step
@@ -1283,29 +1669,34 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is declared in the ACP request shape but kimchi has no hook to
-	// wire them into a live session — pi-coding-agent loads MCP servers from its
-	// own config. Silently dropping them would leave the client believing those
-	// servers are available; reject up-front with invalidParams instead.
-	it("rejects newSession when mcpServers is non-empty", async () => {
+	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
+	// servers are pushed onto the caller-servers registry and consumed by
+	// initializeMcp during session_start. This test verifies the session is
+	// created successfully (factory called) and the servers land in the registry.
+	it("accepts newSession with non-empty mcpServers and registers them", async () => {
 		const factoryCalled = { count: 0 }
 		const factory: AcpSessionFactory = async () => {
 			factoryCalled.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(
-			localAgent.newSession({
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(factoryCalled.count).toBe(0)
+		// Clear any stale entries from beforeEach's newSession call so peek
+		// returns only this test's entry.
+		clearCallerMcpServers()
+		const res = await localAgent.newSession({
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(res.sessionId).toBe("with-mcp")
+		expect(factoryCalled.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -1377,6 +1768,235 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		])
 		expect(resA.stopReason).toBe("end_turn")
 		expect(resB.stopReason).toBe("end_turn")
+	})
+})
+
+// Usage reporting (issue #03): the ACP server accumulates pi-ai Usage across
+// pi-mono's chained prompt/continue calls — each chain step emits its own
+// assistant message_end with its own usage object — folds the sum into the
+// (experimental) PromptResponse.usage, and pairs assistant message_end
+// events with usage_update sessionUpdates mapped from
+// session.getContextUsage(). Both pieces are gated: PromptResponse.usage is
+// omitted when the turn collected no usage, and usage_update is skipped when
+// the estimate is undefined or its token count is null (post-compaction).
+describe("KimchiAcpAgent usage reporting", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-usage")
+		const { conn, updates: rec } = makeRecordingConn()
+		updates = rec
+		agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
+
+	// Builds the assistant message_end event pi-mono emits after an LLM
+	// response. totalTokens is computed the way providers do (pi-ai 0.84
+	// Usage docs): input + output + cacheRead + cacheWrite, where `reasoning`
+	// is a subset of `output` and must never be re-added.
+	function assistantUsageEvent(usage: {
+		input: number
+		output: number
+		cacheRead?: number
+		cacheWrite?: number
+		reasoning?: number
+	}): AgentSessionEvent {
+		const cacheRead = usage.cacheRead ?? 0
+		const cacheWrite = usage.cacheWrite ?? 0
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: usage.input,
+				output: usage.output,
+				cacheRead,
+				cacheWrite,
+				...(usage.reasoning !== undefined ? { reasoning: usage.reasoning } : {}),
+				totalTokens: usage.input + usage.output + cacheRead + cacheWrite,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	it("sums pi-ai usage across chained assistant messages into PromptResponse.usage", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3, reasoning: 7 }))
+			// Second chain step (e.g. agent.continue after a tool call or follow-up).
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1, reasoning: 3 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.usage).toEqual({
+			inputTokens: 150,
+			outputTokens: 30,
+			cachedReadTokens: 7,
+			cachedWriteTokens: 4,
+			thoughtTokens: 10,
+			// msg1: 100+20+5+3=128, msg2: 50+10+2+1=63 — reasoning (7, 3) is a
+			// subset of output and must not be double-counted.
+			totalTokens: 191,
+		})
+	})
+
+	it("omits thoughtTokens when no provider reported a reasoning count", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.usage?.inputTokens).toBe(100)
+		expect(result.usage?.outputTokens).toBe(20)
+		expect(result.usage).not.toHaveProperty("thoughtTokens")
+	})
+
+	it("emits usage_update with size/used on assistant message_end and again at turn end", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		// One live update on the assistant message_end, one final update at
+		// finalizeTurn — both reflect the same getContextUsage() snapshot here.
+		expect(usage).toHaveLength(2)
+		expect(usage[0].sessionId).toBe(sessionId)
+		expect(usage[1].sessionId).toBe(sessionId)
+		for (const u of usage) {
+			expect(u.update).toMatchObject({ sessionUpdate: "usage_update", size: 200000, used: 1234 })
+		}
+		// PromptResponse.usage is independent of the context-window estimate.
+		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("refreshes the context indicator after each chained assistant message", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3 }))
+			// Second chain step (e.g. agent.continue after a tool call).
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1 }))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// One usage_update per assistant message_end (2), plus the final
+		// turn-end emission — the indicator follows the turn live instead of
+		// updating only once at the end.
+		expect(usageUpdates()).toHaveLength(3)
+	})
+
+	it("skips usage_update when getContextUsage returns undefined", async () => {
+		fake.contextUsage = undefined
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(usageUpdates()).toHaveLength(0)
+		// Per-turn summing must not depend on the context-window estimate.
+		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("skips usage_update when the context estimate has null tokens (post-compaction)", async () => {
+		fake.contextUsage = { tokens: null, contextWindow: 200000, percent: null }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("never emits usage_update during streaming (message_update deltas)", async () => {
+		fake.contextUsage = { tokens: 500, contextWindow: 200000, percent: 0.25 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "streaming ",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "text",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// Streaming chunks arrived, but no assistant message_end with usage
+		// ever fired, so PromptResponse.usage is undefined. Exactly one
+		// usage_update fires — the final emitUsageUpdate at turn end
+		// (contextUsage is set); none in response to the deltas themselves.
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
+		expect(result.usage).toBeUndefined()
+		expect(usageUpdates()).toHaveLength(1)
+	})
+
+	it("omits PromptResponse.usage when the turn is cancelled before any assistant message", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			// Wait until cancel() runs so the turn context is marked cancelled
+			// before promptImpl resolves.
+			while (!cancelSeen) await delay(5)
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		await delay(10)
+		await agent.cancel({ sessionId })
+		const result = await pending
+
+		expect(result.stopReason).toBe("cancelled")
+		expect(result.usage).toBeUndefined()
 	})
 })
 
@@ -1502,6 +2122,147 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 		})
 		expect(result.stopReason).toBe("end_turn")
 		expect(messageIdsFor("agent_message_chunk")).toEqual(["km.0", "km.1"])
+	})
+})
+
+// ACP is the only transport that reads assistant text solely from
+// message_update's text_delta stream — the TUI, the session journal, and
+// --print / --mode json all re-read message_end's returned message instead.
+// That makes ACP miss text an extension suppresses during streaming and
+// restores only in message_end (Ferment V2 does this for any message that
+// isn't an unaccepted completion candidate), and text from a provider that
+// skips incremental deltas entirely. onSessionEvent's message_end handler
+// closes that gap by checking each final text block against what
+// message_update already streamed for its contentIndex and sending only a
+// matching un-streamed tail — so a normal fully-streamed turn emits nothing extra.
+describe("KimchiAcpAgent message_end text reconciliation", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-msgend-text")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function emitTextDelta(contentIndex: number, delta: string): void {
+		fake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "text_delta",
+				delta,
+				contentIndex,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		})
+	}
+
+	// Builds the message_end event pi-mono emits after an LLM response,
+	// carrying only what this suite exercises: the final content blocks.
+	// Usage is zeroed out — the usage-accounting path is covered separately
+	// in "KimchiAcpAgent usage reporting".
+	function messageEndEvent(content: AssistantMessage["content"]): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	const chunks = () =>
+		updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+
+	it("emits no extra chunk when a text block was already fully streamed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "hello world")
+			fake.emit(messageEndEvent([{ type: "text", text: "hello world" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["hello world"])
+	})
+
+	it("emits the full text as one chunk with a stable messageId when no deltas streamed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(messageEndEvent([{ type: "text", text: "restored text" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		const chunkUpdates = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+		expect(chunkUpdates).toHaveLength(1)
+		const update = chunkUpdates[0].update as { content: { text: string }; messageId?: string }
+		expect(update.content.text).toBe("restored text")
+		expect(update.messageId).toBe("km.0")
+	})
+
+	it("emits only the un-streamed tail of a partially streamed block", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "hello ")
+			fake.emit(messageEndEvent([{ type: "text", text: "hello world" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["hello ", "world"])
+	})
+
+	it("does not append a bogus tail when message_end text rewrites the streamed prefix", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "streamed text")
+			fake.emit(messageEndEvent([{ type: "text", text: "rewritten final text" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["streamed text"])
+	})
+
+	it("emits nothing extra for a thinking block present at message_end", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(messageEndEvent([{ type: "thinking", thinking: "internal reasoning" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBe(false)
 	})
 })
 
@@ -2813,6 +3574,358 @@ describe("KimchiAcpAgent tool execution stream", () => {
 	})
 })
 
+// Ticket #04 — Per-Turn Diffs. The edit and write tools carry the diff data in
+// their own arguments (edit: args.edits[]; write: args.content + pre-write file
+// content read at tool_execution_start). tool_execution_end for those tools
+// must attach ACP `diff` content blocks to the terminal tool_call_update — in
+// addition to the existing text/image content, never replacing it. Read-only
+// tools emit no diffs. Args only travel on tool_execution_start, so the server
+// captures FileChange data there and emits it at tool_execution_end.
+describe("KimchiAcpAgent per-turn diffs", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+	let tmpDir: string
+
+	beforeEach(async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-diff-"))
+		fake = new FakeAgentSession("session-diff", tmpDir)
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	// Upstream toolCallIds are rewritten to session-unique ACP ids (kt.<tool>.N)
+	// on the wire; the pi id survives in _meta.piToolCallId — key off that.
+	const terminalContent = (piToolCallId: string): unknown[] => {
+		const terminal = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { _meta?: { piToolCallId?: string } })._meta?.piToolCallId === piToolCallId &&
+				((u.update as { status?: string }).status === "completed" ||
+					(u.update as { status?: string }).status === "failed"),
+		)
+		expect(terminal).toBeDefined()
+		return (terminal?.update as { content: unknown[] }).content
+	}
+
+	it("emits one diff content block for an edit tool call with a single edit", async () => {
+		const target = join(tmpDir, "a.txt")
+		writeFileSync(target, "hello world")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-1",
+				toolName: "edit",
+				args: { path: target, edits: [{ oldText: "hello", newText: "goodbye" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-1",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited a.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// Existing text content preserved; the diff block is additional content.
+		expect(terminalContent("tc-edit-1")).toEqual([
+			{ type: "content", content: { type: "text", text: "Edited a.txt" } },
+			{ type: "diff", path: target, oldText: "hello", newText: "goodbye" },
+		])
+	})
+
+	// pi's edit tool accepts a legacy single-edit arg shape {path, oldText,
+	// newText} (no edits array) and normalizes it internally. A legacy-shape
+	// call must still emit its diff rather than silently producing none.
+	it("emits a diff for an edit tool call using the legacy single-edit arg shape", async () => {
+		const target = join(tmpDir, "legacy.txt")
+		writeFileSync(target, "old text")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-legacy",
+				toolName: "edit",
+				args: { path: target, oldText: "old text", newText: "new text" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-legacy",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited legacy.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-legacy") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "old text", newText: "new text" }])
+	})
+
+	it("emits one diff content block per edit for an edit tool call with multiple edits", async () => {
+		const target = join(tmpDir, "multi.txt")
+		writeFileSync(target, "one two")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-2",
+				toolName: "edit",
+				args: {
+					path: target,
+					edits: [
+						{ oldText: "one", newText: "1" },
+						{ oldText: "two", newText: "2" },
+					],
+				},
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-2",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited multi.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-2") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([
+			{ type: "diff", path: target, oldText: "one", newText: "1" },
+			{ type: "diff", path: target, oldText: "two", newText: "2" },
+		])
+		// Text content preserved alongside the diffs.
+		expect(content.some((b) => b.type === "content")).toBe(true)
+	})
+
+	// Relative path exercises the server-side cwd resolution for the pre-write
+	// read; the emitted diff path stays verbatim from args.path.
+	it("emits a diff with oldText null for a write tool call creating a new file", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-new",
+				toolName: "write",
+				args: { path: "brand-new.txt", content: "fresh content" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-new",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote brand-new.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-write-new") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: "brand-new.txt", newText: "fresh content", oldText: null }])
+	})
+
+	// Overwrite: tool_execution_start must read the existing file into
+	// TurnContext.preWriteContents so the diff carries it as oldText.
+	it("emits a diff with the previous content as oldText for a write tool call overwriting a file", async () => {
+		const target = join(tmpDir, "existing.txt")
+		writeFileSync(target, "before content")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-over",
+				toolName: "write",
+				args: { path: target, content: "after content" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-over",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote existing.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-write-over") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "before content", newText: "after content" }])
+	})
+
+	// pi's write tool resolves args.path with stripAtPrefix +
+	// normalizeUnicodeSpaces before touching disk. The pre-write read must
+	// match that resolution or an overwrite of "@notes.txt" / "a b.txt" (typed
+	// as "a\u00A0b.txt") would be misclassified as a new-file 'add'.
+	it("resolves @-prefixed and unicode-space write paths for the pre-write read", async () => {
+		const atTarget = join(tmpDir, "notes.txt")
+		writeFileSync(atTarget, "at before")
+		const spaceTarget = join(tmpDir, "my file.txt")
+		writeFileSync(spaceTarget, "space before")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-at",
+				toolName: "write",
+				args: { path: "@notes.txt", content: "at after" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-at",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-nbsp",
+				toolName: "write",
+				// No-break space as typed by an LLM mimicking the on-disk name.
+				args: { path: "my\u00A0file.txt", content: "space after" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-nbsp",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// Emitted diff paths stay verbatim from args.path; only the pre-write
+		// READ uses the normalized path.
+		const atDiffs = (terminalContent("tc-write-at") as Array<{ type: string }>).filter((b) => b.type === "diff")
+		expect(atDiffs).toEqual([{ type: "diff", path: "@notes.txt", oldText: "at before", newText: "at after" }])
+		const nbspDiffs = (terminalContent("tc-write-nbsp") as Array<{ type: string }>).filter((b) => b.type === "diff")
+		expect(nbspDiffs).toEqual([
+			{ type: "diff", path: "my\u00A0file.txt", oldText: "space before", newText: "space after" },
+		])
+	})
+
+	it("emits no diff content blocks for read-only tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			for (const [toolCallId, toolName, args] of [
+				["tc-bash", "bash", { command: "true" }],
+				["tc-read", "read", { path: join(tmpDir, "a.txt") }],
+				["tc-grep", "grep", { pattern: "foo" }],
+			] as const) {
+				fake.emit({ type: "tool_execution_start", toolCallId, toolName, args })
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId,
+					toolName,
+					result: { content: [{ type: "text", text: "ok" }] },
+					isError: false,
+				})
+			}
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		for (const toolCallId of ["tc-bash", "tc-read", "tc-grep"]) {
+			const content = terminalContent(toolCallId) as Array<{ type: string }>
+			expect(content.some((b) => b.type === "diff")).toBe(false)
+		}
+	})
+
+	// A failed mutation must not surface a diff — the client would otherwise
+	// render a change that never landed.
+	it("emits no diff content blocks when the edit/write tool call failed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-fail",
+				toolName: "edit",
+				args: { path: join(tmpDir, "a.txt"), edits: [{ oldText: "x", newText: "y" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-fail",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "boom" }] },
+				isError: true,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-fail") as Array<{ type: string }>
+		expect(content.some((b) => b.type === "diff")).toBe(false)
+	})
+})
+
+// Pure adapter coverage for the FileChange → v1 Diff mapping, including the
+// delete branch the edit/write tools never produce today.
+describe("fileChangeToDiffContent", () => {
+	it("maps add to a diff with oldText null", () => {
+		expect(fileChangeToDiffContent({ operation: "add", path: "/a.txt", newText: "new" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			newText: "new",
+			oldText: null,
+		})
+	})
+
+	it("maps modify to a diff carrying both texts", () => {
+		expect(fileChangeToDiffContent({ operation: "modify", path: "/a.txt", oldText: "old", newText: "new" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			oldText: "old",
+			newText: "new",
+		})
+	})
+
+	it("maps delete to a diff omitting newText", () => {
+		expect(fileChangeToDiffContent({ operation: "delete", path: "/a.txt", oldText: "gone" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			oldText: "gone",
+		})
+	})
+})
+
 // Coverage for assertSessionHasModel: ACP clients (Zed) should see authRequired
 // (-32000), not a generic internal error, when the model is unavailable — that
 // error code routes to the client's auth UI instead of an opaque failure toast.
@@ -3006,9 +4119,9 @@ describe("newSession available commands", () => {
 		const updatePayload = update?.update as {
 			availableCommands: Array<Record<string, unknown>>
 		}
-		expect(updatePayload.availableCommands).toHaveLength(1)
+		expect(updatePayload.availableCommands.length).toBeGreaterThanOrEqual(1)
 
-		const cmd = updatePayload.availableCommands[0]
+		const cmd = updatePayload.availableCommands.find((c) => c.name === "bug")
 		expect(cmd).toMatchObject({
 			name: "bug",
 			description: expect.any(String),
@@ -3040,6 +4153,140 @@ describe("loadSession available commands", () => {
 		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 		expect(cmdUpdate).toBeDefined()
 		expect(updates.find((u) => u.update.sessionUpdate === "user_message_chunk")).toBeDefined()
+	})
+})
+
+describe("newSession skill commands", () => {
+	function makeSkillDir(): { dir: string; skillName: string; skill: Skill } {
+		const dir = mkdtempSync(join(tmpdir(), "acp-server-skills-"))
+		const skillName = "acp-test-skill"
+		const skillDir = join(dir, ".pi", "agent", "skills", skillName)
+		mkdirSync(skillDir, { recursive: true })
+		const filePath = join(skillDir, "SKILL.md")
+		writeFileSync(
+			filePath,
+			`---\nname: ${skillName}\ndescription: ACP test skill\n---\nAlways use strict types.`,
+			"utf-8",
+		)
+		const skill = {
+			name: skillName,
+			description: "ACP test skill",
+			filePath,
+			baseDir: skillDir,
+			sourceInfo: { source: "test", path: skillDir, scope: "user", origin: "top-level" },
+		} as unknown as Skill
+		return { dir, skillName, skill }
+	}
+
+	function makeSkillLoader(skills: Skill[]): ResourceLoader {
+		return {
+			getSkills: () => ({ skills, diagnostics: [] }),
+			getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
+			getPrompts: () => ({ prompts: [], diagnostics: [] }),
+			getThemes: () => ({ themes: [], diagnostics: [] }),
+			getAgentsFiles: () => ({ agentsFiles: [] }),
+			getSystemPrompt: () => undefined,
+			getSystemPromptSource: () => undefined,
+			getAppendSystemPrompt: () => [],
+			getAppendSystemPromptSources: () => [],
+			extendResources: () => {},
+			reload: async () => {},
+		} as unknown as ResourceLoader
+	}
+
+	it("advertises discovered skills as available commands", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-cmd", dir)
+		fake.resourceLoader = makeSkillLoader([skill])
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(update).toBeDefined()
+		const availableCommands = (update?.update as { availableCommands: Array<Record<string, unknown>> })
+			.availableCommands
+		const skillCmd = availableCommands.find((c) => c.name === `skill:${skillName}`)
+		expect(skillCmd).toMatchObject({
+			name: `skill:${skillName}`,
+			description: "ACP test skill",
+			input: { hint: expect.any(String) },
+		})
+	})
+
+	it("rewrites a skill command prompt to inject skill content", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-invoke", dir)
+		fake.resourceLoader = makeSkillLoader([skill])
+		fake.promptImpl = async () => {
+			fake.emit(agentEnd())
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		await agent.prompt({
+			sessionId: "session-skill-invoke",
+			prompt: [{ type: "text", text: `/skill:${skillName} review this file` }],
+		})
+
+		expect(fake.promptCalls).toHaveLength(1)
+		const sentPrompt = fake.promptCalls[0]?.prompt
+		expect(sentPrompt).toContain("Invoking skill: acp-test-skill")
+		expect(sentPrompt).toContain("Always use strict types.")
+		expect(sentPrompt).toContain("review this file")
+		expect(sentPrompt).not.toContain("description: ACP test skill")
+		expect(sentPrompt).not.toContain("---")
+	})
+
+	it("leaves non-skill prompts unchanged", async () => {
+		const { dir } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-pass-through", dir)
+		fake.promptImpl = async () => {
+			fake.emit(agentEnd())
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		await agent.prompt({
+			sessionId: "session-skill-pass-through",
+			prompt: [{ type: "text", text: "hello world" }],
+		})
+
+		expect(fake.promptCalls).toHaveLength(1)
+		expect(fake.promptCalls[0]?.prompt).toBe("hello world")
+	})
+
+	it("activates the Skill tool when it is registered", async () => {
+		const { dir } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-tool", dir)
+		fake.registeredTools.set("Skill", { name: "Skill" })
+		fake.activeToolNames = ["read", "bash"]
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		expect(fake.activeToolNames).toContain("Skill")
+		expect(fake.activeToolNames).toContain("read")
+		expect(fake.activeToolNames).toContain("bash")
 	})
 })
 
@@ -3269,7 +4516,7 @@ describe("setSessionConfigOption", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 		const selectOption = res.configOptions[0] as any
 		expect(selectOption.options).toHaveLength(4)
-		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(PERMISSION_MODES)
+		expect(selectOption.options.map((o: SelectOptionItem) => o.value)).toEqual(PERMISSION_MODES)
 	})
 
 	describe("model config option", () => {
@@ -3783,8 +5030,10 @@ describe("ACP mode controller integration with permissions extension", () => {
 			},
 			getFlag: (name: string) => flags[name],
 			registerFlag: () => {},
+			registerTool: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
+			events: createMiniEventBus().events,
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),
@@ -4365,6 +5614,52 @@ describe("session mode controller lifecycle", () => {
 	})
 })
 
+describe("ACP newSession CLI permission mode flags", () => {
+	it("--yolo flag sets initial permission mode to yolo", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		const fake = new FakeAgentSession("cli-yolo-1")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(res.configOptions?.[0].currentValue).toBe("yolo")
+
+		const controller = getSessionPermissionFlagController(res.sessionId)
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+	})
+
+	it("CLI flag takes precedence over config defaultMode", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "acp-cli-flag-precedence-"))
+		const kimchiDir = join(tmpDir, ".kimchi")
+		mkdirSync(kimchiDir, { recursive: true })
+		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async (params) => asSession(new FakeAgentSession("cli-precedence-1", params.cwd)),
+			})
+
+			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+			// --yolo flag should win over config defaultMode "plan"
+			expect(res.configOptions?.[0].currentValue).toBe("yolo")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+})
+
 // Helper for the listSessions tests: builds a pi SessionInfo with sensible
 // defaults so each test only spells out the fields it cares about.
 function makePiSession(overrides: Partial<PiSessionInfo> = {}): PiSessionInfo {
@@ -4654,22 +5949,23 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
-	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
+	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
-		await expect(
-			agent.loadSession({
-				sessionId: "s1",
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(loaderCalls.count).toBe(0)
+		await agent.loadSession({
+			sessionId: "s1",
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(loaderCalls.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
@@ -6112,151 +7408,61 @@ describe("userMessageText", () => {
 	})
 })
 
-describe("ACP plan updates from todo writes", () => {
-	beforeEach(() => __resetTodoStore())
-	afterEach(() => __resetTodoStore())
+describe("resolveAcpAppendSystemPrompt", () => {
+	const noOptions = {}
 
-	function makeRecordingAgent(overrides?: { sessionLoader?: AcpSessionLoader }): {
-		agent: KimchiAcpAgent
-		updates: SessionNotification[]
-	} {
-		const { conn, updates } = makeRecordingConn()
-		const agent = new KimchiAcpAgent(conn, {
-			extensionFactories: [],
-			agentDir: "/tmp/fake-agent-dir",
-			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
-			...(overrides?.sessionLoader ? { sessionLoader: overrides.sessionLoader } : {}),
-		})
-		return { agent, updates }
-	}
-
-	function planNotifications(updates: SessionNotification[]): SessionNotification[] {
-		return updates.filter((u) => u.update.sessionUpdate === "plan")
-	}
-
-	it("emits a plan snapshot when todos are written in the session", async () => {
-		const { agent, updates } = makeRecordingAgent()
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-		applyWriteTodos(
-			{
-				todos: [
-					{ content: "write tests", status: "pending" },
-					{ content: "wire emission", status: "in_progress", activeForm: "wiring emission" },
-				],
-			},
-			res.sessionId,
-		)
-
-		const plans = planNotifications(updates)
-		expect(plans).toHaveLength(1)
-		expect(plans[0].update).toEqual({
-			sessionUpdate: "plan",
-			entries: [
-				{ content: "write tests", priority: "medium", status: "pending" },
-				{ content: "wiring emission", priority: "medium", status: "in_progress" },
-			],
-			_meta: { "kimchi.dev": { scope: { kind: "global" } } },
-		})
+	it("returns undefined when neither CLI flag nor ACP meta is present (backward compat)", () => {
+		expect(resolveAcpAppendSystemPrompt({}, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: {} }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": {} } }, noOptions)).toBeUndefined()
 	})
 
-	it("ignores todo writes belonging to other sessions", async () => {
-		const { agent, updates } = makeRecordingAgent()
-		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-		applyWriteTodos({ todos: [{ content: "foreign", status: "pending" }] }, "some-other-session")
-
-		expect(planNotifications(updates)).toHaveLength(0)
+	it("threads _meta['kimchi.dev'].appendSystemPrompt through for newSession", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } } }
+		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["You are a worker under AO supervision."])
 	})
 
-	it("stops emitting after the session is closed", async () => {
-		const { agent, updates } = makeRecordingAgent()
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await agent.unstable_closeSession({ sessionId: res.sessionId })
-
-		applyWriteTodos({ todos: [{ content: "after close", status: "pending" }] }, res.sessionId)
-
-		expect(planNotifications(updates)).toHaveLength(0)
+	it("threads _meta['kimchi.dev'].appendSystemPrompt through identically for loadSession", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } } }
+		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["Loaded sessions get the same prompt."])
 	})
 
-	it("emits one initial plan snapshot on loadSession when todos were restored", async () => {
-		restoreTodoStoreFromDetails(
-			[
-				{
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [
-						{ id: 1, content: "resumed task", status: "in_progress", activeForm: "resuming task" },
-						{ id: 2, content: "blocked task", status: "blocked", note: "waiting on ops" },
-					],
-					updatedAt: "2026-08-14T00:00:00.000Z",
-				},
-			],
-			"loaded-plan-todos",
-		)
-		const fake = new FakeAgentSession("loaded-plan-todos")
-		const { agent, updates } = makeRecordingAgent({ sessionLoader: async () => asSession(fake) })
-
-		await agent.loadSession({ sessionId: "loaded-plan-todos", cwd: "/tmp", mcpServers: [] })
-
-		const plans = planNotifications(updates)
-		expect(plans).toHaveLength(1)
-		expect(plans[0].update).toEqual({
-			sessionUpdate: "plan",
-			entries: [
-				{ content: "resuming task", priority: "medium", status: "in_progress" },
-				{ content: "[blocked] blocked task — waiting on ops", priority: "medium", status: "pending" },
-			],
-			_meta: { "kimchi.dev": { scope: { kind: "global" } } },
-		})
+	it("appends meta content after CLI flag content when both are present", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "meta prompt" } } }
+		expect(resolveAcpAppendSystemPrompt(params, { appendSystemPrompt: ["cli one", "cli two"] })).toEqual([
+			"cli one",
+			"cli two",
+			"meta prompt",
+		])
 	})
 
-	it("prefers the most specific non-empty scope for the initial snapshot", async () => {
-		restoreTodoStoreFromDetails(
-			[
-				{
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "global" },
-					todos: [{ id: 1, content: "global task", status: "pending" }],
-					updatedAt: "2026-08-14T00:00:00.000Z",
-				},
-				{
-					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-2" },
-					todos: [{ id: 1, content: "step task", status: "in_progress", activeForm: "doing step task" }],
-					updatedAt: "2026-08-14T00:00:01.000Z",
-				},
-			],
-			"loaded-plan-scopes",
-		)
-		const fake = new FakeAgentSession("loaded-plan-scopes")
-		const { agent, updates } = makeRecordingAgent({ sessionLoader: async () => asSession(fake) })
-
-		await agent.loadSession({ sessionId: "loaded-plan-scopes", cwd: "/tmp", mcpServers: [] })
-
-		const plans = planNotifications(updates)
-		expect(plans).toHaveLength(1)
-		expect(plans[0].update).toEqual({
-			sessionUpdate: "plan",
-			entries: [{ content: "doing step task", priority: "medium", status: "in_progress" }],
-			_meta: { "kimchi.dev": { scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-2" } } },
-		})
+	it("returns CLI flag content unchanged when no meta is present", () => {
+		expect(resolveAcpAppendSystemPrompt({}, { appendSystemPrompt: ["cli only"] })).toEqual(["cli only"])
 	})
 
-	it("emits no plan notifications when no todos are written", async () => {
-		const { agent, updates } = makeRecordingAgent()
-		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-		expect(planNotifications(updates)).toHaveLength(0)
+	it("ignores non-string, empty, and whitespace-only meta appendSystemPrompt values", () => {
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: 42 } } }, noOptions),
+		).toBeUndefined()
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "" } } }, noOptions),
+		).toBeUndefined()
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "   \n  " } } }, noOptions),
+		).toBeUndefined()
 	})
 
-	it("unsubscribes the plan listener on agent shutdown", async () => {
-		const { agent, updates } = makeRecordingAgent()
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await agent.shutdown()
+	it("ignores the plain systemPrompt key — the meta value appends, it never replaces", () => {
+		// The plain `systemPrompt` name is reserved: if a replace-the-system-prompt
+		// API is ever exposed over _meta, it gets its own distinctly named key.
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { systemPrompt: "ignored" } } }, noOptions),
+		).toBeUndefined()
+	})
 
-		applyWriteTodos({ todos: [{ content: "after shutdown", status: "pending" }] }, res.sessionId)
-
-		expect(planNotifications(updates)).toHaveLength(0)
+	it("tolerates non-object _meta and non-object kimchi.dev payloads", () => {
+		expect(resolveAcpAppendSystemPrompt({ _meta: "nope" }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": "nope" } }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: null }, noOptions)).toBeUndefined()
 	})
 })

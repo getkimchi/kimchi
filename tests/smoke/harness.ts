@@ -101,6 +101,7 @@ const DEFAULT_TIMEOUT_MS = 30_000
 
 interface RunBinaryOptions {
 	args?: string[]
+	cwd?: string
 	extraEnv?: Record<string, string>
 	timeoutMs?: number
 	/** When false, non-zero exit codes and signals don't throw. Useful for testing error paths. Defaults to true. */
@@ -108,9 +109,10 @@ interface RunBinaryOptions {
 }
 
 export function runBinary(opts: RunBinaryOptions = {}): SpawnSyncReturns<string> {
-	const { args = [], extraEnv = {}, timeoutMs = DEFAULT_TIMEOUT_MS, throwOnError = true } = opts
+	const { args = [], cwd, extraEnv = {}, timeoutMs = DEFAULT_TIMEOUT_MS, throwOnError = true } = opts
 	const home = getTempHome()
 	const result = spawnSync(BINARY_PATH, args, {
+		cwd,
 		encoding: "utf-8",
 		timeout: timeoutMs,
 		env: {

@@ -1,0 +1,52 @@
+name: MCP E2E
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-e2e-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+
+      - name: Run MCP end-to-end suite
+        run: |
+          test -x tools/proxy-helper/bin/proxy-helper
+          KIMCHI_PROXY_HELPER=$(pwd)/tools/proxy-helper/bin/proxy-helper pnpm run test:e2e:mcp
+
+      - name: Upload MCP E2E artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-e2e-artifacts-${{ github.run_attempt }}
+          path: |
+            mcp-*.tui-e2e.log
+            *mcp*.acp-e2e.log
+            .kimchi/mcp-conformance-results/**
+            **/tui-traces/**
+            **/acp-traces/**
+          if-no-files-found: ignore
+          retention-days: 14

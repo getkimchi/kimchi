@@ -357,6 +357,8 @@ export interface ProcessRegistry {
 	kill(handle: string, reason?: string): Promise<void>
 	/** Push the deadline out by `addSeconds` and re-arm the deadline timer. */
 	extend(handle: string, addSeconds: number): void
+	/** Change the checkin cadence for a running process (applies at the next re-arm). */
+	setIntervalSeconds(handle: string, seconds: number): void
 	/** Promise that resolves with the exit code when the process ends. */
 	whenExited(handle: string): Promise<{ exitCode: number | null }>
 	/** Read-only entry state, or undefined if unknown. */
@@ -509,6 +511,14 @@ export function createProcessRegistry(): ProcessRegistry {
 		armDeadline(entry)
 	}
 
+	function setIntervalSeconds(handle: string, seconds: number): void {
+		const entry = entries.get(handle)
+		if (!entry) return
+		if (entry.state !== "running") return
+		if (!Number.isFinite(seconds) || seconds <= 0) return
+		entry.intervalSeconds = seconds
+	}
+
 	function whenExited(handle: string): Promise<{ exitCode: number | null }> {
 		const entry = entries.get(handle)
 		if (!entry) return Promise.resolve({ exitCode: null })
@@ -562,6 +572,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		finalSnapshot,
 		kill,
 		extend,
+		setIntervalSeconds,
 		whenExited,
 		getEntry,
 		remove,

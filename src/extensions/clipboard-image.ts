@@ -7,6 +7,7 @@ import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { IMAGE_EXT_TO_MIME } from "../utils/image-utils.js"
+import { isAutoModel } from "./router/constants.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
 let pendingImages: ImageContent[] = []
@@ -24,10 +25,11 @@ let isCheckingFinder = false
 // preventing stale Finder checks from corrupting a newer session's state.
 let sessionGeneration = 0
 
-function modelSupportsImages(modelId: string | undefined): boolean {
-	if (!modelId) return false
+function modelSupportsImages(model: ExtensionContext["model"]): boolean {
+	if (!model) return false
+	if (isAutoModel(model)) return true
 	const models = getAvailableModels()
-	const meta = models.find((m) => m.slug === modelId)
+	const meta = models.find((m) => m.slug === model.id)
 	return meta?.input_modalities.includes("image") ?? false
 }
 
@@ -72,7 +74,7 @@ function checkClipboard(): void {
 	if (isCheckingFinder) return
 
 	try {
-		if (!modelSupportsImages(currentCtx.model?.id)) {
+		if (!modelSupportsImages(currentCtx.model)) {
 			if (clipboardHasImage) {
 				clipboardHasImage = false
 				updateIndicator()
@@ -160,7 +162,7 @@ setPasteImageHandler(() => {
 
 async function handlePaste(): Promise<void> {
 	const model = currentCtx?.model
-	if (!modelSupportsImages(model?.id)) {
+	if (!modelSupportsImages(model)) {
 		currentCtx?.ui?.notify(`${model?.id ?? "Current model"} does not support images`, "warning")
 		return
 	}

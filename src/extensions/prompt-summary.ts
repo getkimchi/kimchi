@@ -39,9 +39,20 @@ interface PromptSummaryData {
 }
 
 const pendingExtras: string[] = []
+let promptSummaryHolds = 0
 
 export function addPromptSummaryExtra(text: string): void {
 	pendingExtras.push(text)
+}
+
+export function holdPromptSummary(): () => void {
+	promptSummaryHolds++
+	let released = false
+	return () => {
+		if (released) return
+		released = true
+		promptSummaryHolds = Math.max(0, promptSummaryHolds - 1)
+	}
 }
 
 function emptyTotals(): UsageTotals {
@@ -154,13 +165,18 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	const subagents = emptyTotals()
 	const countedAgentUsage = new Map<string, UsageTotals>()
 	const subagentModelTotals = new Map<string, UsageTotals>()
+	const summaryExtras: string[] = []
 	let startedAt = Date.now()
+	let pendingSummary = false
+	let summaryVersion = 0
 
 	pi.on("agent_start", () => {
+		if (pendingSummary) return
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
 		countedAgentUsage.clear()
 		subagentModelTotals.clear()
+		summaryExtras.length = 0
 		startedAt = Date.now()
 	})
 
@@ -213,7 +229,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		}
 		if (grandTotal.input + grandTotal.output === 0) return
 
-		const extras = pendingExtras.splice(0)
+		summaryExtras.push(...pendingExtras.splice(0))
 
 		const subagentsByModel =
 			subagentModelTotals.size > 0
@@ -228,23 +244,30 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
 			subagentsByModel,
 			total: grandTotal,
-			extras: extras.length > 0 ? extras : undefined,
+			extras: summaryExtras.length > 0 ? [...summaryExtras] : undefined,
 		}
+		pendingSummary = true
+		const version = ++summaryVersion
 
 		// Poll until the agent is idle before sending — a plain setTimeout(0)
 		// is not enough because isStreaming can still be true when agent_end fires,
 		// causing sendMessage to take the steer path and trigger a new LLM turn.
+		// Never give up and send while busy: long post-run hooks (such as completion
+		// validation) can legitimately outlast an arbitrary retry window.
 		//
 		// The entire body is wrapped in try/catch because ctx.isIdle() can throw
 		// a stale-ctx error when the session is torn down between agent_end and
 		// the timer callback. Without this guard, the throw is an uncaught
 		// exception in a setTimeout callback that crashes the process.
-		let attempts = 0
-		const MAX_ATTEMPTS = 100 // 5s max
 		const trySend = () => {
 			try {
-				if (ctx?.isIdle() === false && attempts++ < MAX_ATTEMPTS) {
-					setTimeout(trySend, 50)
+				if (version !== summaryVersion) return
+				if (promptSummaryHolds > 0) {
+					setTimeout(trySend, 50).unref()
+					return
+				}
+				if (ctx.isIdle() === false) {
+					setTimeout(trySend, 50).unref()
 					return
 				}
 				pi.sendMessage(
@@ -258,11 +281,13 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 					},
 					{ triggerTurn: false },
 				)
+				pendingSummary = false
 			} catch (err) {
+				pendingSummary = false
 				if (isStaleCtxError(err)) return
 				console.error("[prompt-summary] Failed to send:", err)
 			}
 		}
-		trySend()
+		setTimeout(trySend, 0).unref()
 	})
 }

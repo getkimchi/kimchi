@@ -2,11 +2,44 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
+	buildAutoResumeNote,
 	resolveRoleModelRef,
 	setActiveManagerForTest,
+	shouldAutoResumeFermentWorker,
 	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
+
+describe("shouldAutoResumeFermentWorker", () => {
+	const base = {
+		status: "aborted",
+		abortReason: "max_turns" as const,
+		session: {},
+		taskRef: { kind: "ferment_step" },
+		resumeAttempts: [],
+	}
+	it("fires for a ferment step worker killed by turns or duration on first attempt", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base })).toBe(true)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "max_duration" as const })).toBe(true)
+	})
+	it("does NOT fire on second exhaustion, non-ferment agents, or non-budget aborts", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base, resumeAttempts: [{}] })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: { kind: "other" } })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: undefined })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "token_budget" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "inactivity" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, status: "completed" })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, session: null })).toBe(false)
+	})
+})
+
+describe("buildAutoResumeNote", () => {
+	it("labels the limit from the PRE-resume abort reason (review regression: resume clears abortReason)", () => {
+		expect(buildAutoResumeNote("max_turns")).toContain("hit the turn limit")
+		expect(buildAutoResumeNote("max_duration")).toContain("hit the duration limit")
+		expect(buildAutoResumeNote(undefined)).toBe("")
+	})
+})
 
 describe("summaryForStatus", () => {
 	it("labels token-budget aborts distinctly from max-turn aborts", () => {
@@ -21,6 +54,13 @@ describe("AGENT_TOOL_GUIDELINES", () => {
 		expect(AGENT_TOOL_GUIDELINES).toContain("Explore-agent prompt shaping")
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("Return decision-ready findings to the parent; do not write files.")
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("write a complete implementation spec")
+	})
+	it("keeps companion-tool references and parallel-work guidance after the Phase 1 diet", () => {
+		// Chunk 2 diet regression guard: these are the behavioral contracts a trim must not drop.
+		expect(AGENT_TOOL_GUIDELINES).toContain("run_in_background")
+		expect(AGENT_TOOL_GUIDELINES).toContain("resume_subagent")
+		expect(AGENT_TOOL_GUIDELINES).toContain("get_subagent_result")
+		expect(AGENT_TOOL_GUIDELINES).toContain("steer_subagent")
 	})
 })
 
@@ -116,6 +156,7 @@ vi.mock("../orchestration/model-roles.js", () => ({
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext } from "../__mocks__/context.js"
+import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
@@ -307,14 +348,14 @@ function makeMockModelRegistry(entries: MockModelEntry[]): unknown {
  * spinner/await-promise machinery which the AgentManager mock does not
  * fully satisfy.
  */
-function makeMockCtx(modelRegistry: unknown, parentModel?: unknown): unknown {
+function makeMockCtx(modelRegistry: unknown, parentModel?: unknown, branch: unknown[] = []): unknown {
 	return {
 		ui: undefined,
 		mode: "json",
 		hasUI: false,
 		cwd: "/tmp",
 		sessionManager: {
-			getBranch: () => [],
+			getBranch: () => branch,
 			getSessionDir: () => "/tmp",
 			getSessionFile: () => "/tmp/session.json",
 			getSessionId: () => "test-session",
@@ -385,6 +426,7 @@ describe("Agent tool multi-mode model guard", () => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
 		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
 		vi.mocked(getAllowedMultiModelRefs).mockReturnValue([
 			"kimchi-dev/kimi-k2.7",
 			"kimchi-dev/minimax-m3",
@@ -524,6 +566,60 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
 		const text = result.content[0]?.text ?? ""
 		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+
+	it("marks an Auto child as requiring vision when forwarding parent image paths", async () => {
+		vi.mocked(sessionHasImages).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "auto", name: "Auto (Kimchi Router)", provider: "kimchi-dev", input: ["text", "image"] },
+		])
+		const branch = [
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "read-image", name: "read", arguments: { path: "/tmp/reference.png" } }],
+				},
+			},
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolCallId: "read-image",
+					content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+				},
+			},
+		]
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }, branch)
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-with-image",
+			{
+				prompt: "inspect the reference",
+				description: "test",
+				subagent_type: "general-purpose",
+				model: "kimchi-dev/auto",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"General-Purpose",
+			expect.stringContaining("Context images from parent session: /tmp/reference.png"),
+			expect.objectContaining({ requiresVision: true }),
+		)
 	})
 })
 

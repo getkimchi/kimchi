@@ -56,6 +56,16 @@ vi.mock("./logger.js", () => ({
 	logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
+// Mock metadata-cache — capture calls to saveMetadataCache and computeServerHash
+const { mockSaveMetadataCache, mockComputeServerHash } = vi.hoisted(() => ({
+	mockSaveMetadataCache: vi.fn(),
+	mockComputeServerHash: vi.fn(),
+}))
+vi.mock("./metadata-cache.js", () => ({
+	saveMetadataCache: mockSaveMetadataCache,
+	computeServerHash: mockComputeServerHash,
+}))
+
 // Import after mocks
 import { supportsOAuth } from "./mcp-auth-flow.js"
 import { McpServerManager } from "./server-manager.js"
@@ -118,9 +128,8 @@ describe("McpServerManager.probeTools", () => {
 		expect(result.tools).toEqual([])
 		expect(result.needsAuth).toBe(true)
 		expect(result.error).toBeNull()
-		// client.close is NOT called here because the UnauthorizedError is thrown
-		// during createTransport (createHttpTransport's internal test client),
-		// before probeTools' own client is connected — so there's nothing to close.
+		// UnauthorizedError skips the SSE fallback and returns needsAuth directly.
+		// The finally block closes the client and transport.
 	})
 
 	it("returns error string when connect throws a non-OAuth error", async () => {
@@ -336,5 +345,174 @@ describe("withTimeout (indirectly via probeTools)", () => {
 
 		expect(result.error).toContain("timed out")
 		expect(mockClose).toHaveBeenCalled()
+	})
+})
+
+describe("McpServerManager.probeTools SSE fallback", () => {
+	beforeEach(() => {
+		mockConnect.mockReset()
+		mockListTools.mockReset()
+		mockClose.mockReset()
+		mockSetNotificationHandler.mockReset()
+		vi.mocked(supportsOAuth).mockReset()
+		vi.mocked(supportsOAuth).mockReturnValue(false)
+		mockClose.mockResolvedValue(undefined)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("falls back to SSE when StreamableHTTP connect fails with non-auth error", async () => {
+		// First connect (StreamableHTTP) fails, second (SSE) succeeds
+		mockConnect.mockRejectedValueOnce(new Error("Invalid content type")).mockResolvedValueOnce(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "sse_tool" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("sse-server", {
+			url: "https://mcp.example.com/sse",
+		})
+
+		expect(result.tools).toHaveLength(1)
+		expect(result.tools[0].name).toBe("sse_tool")
+		expect(result.needsAuth).toBe(false)
+		expect(mockConnect).toHaveBeenCalledTimes(2)
+	})
+
+	it("returns error when both StreamableHTTP and SSE fail", async () => {
+		mockConnect.mockRejectedValue(new Error("Connection refused"))
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("dual-fail", {
+			url: "https://mcp.example.com/sse",
+		})
+
+		expect(result.tools).toEqual([])
+		expect(result.needsAuth).toBe(false)
+		expect(result.error).toBe("Connection refused")
+		expect(mockConnect).toHaveBeenCalledTimes(2)
+	})
+
+	it("returns needsAuth when SSE fallback throws UnauthorizedError", async () => {
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		mockConnect
+			.mockRejectedValueOnce(new Error("Invalid content type"))
+			.mockRejectedValueOnce(new UnauthorizedError("Unauthorized"))
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("oauth-sse", {
+			url: "https://mcp.example.com/sse",
+			auth: "oauth",
+		})
+
+		expect(result.needsAuth).toBe(true)
+		expect(result.error).toBeNull()
+		expect(mockConnect).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not fall back to SSE for stdio servers", async () => {
+		mockConnect.mockRejectedValue(new Error("spawn failed"))
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("stdio-fail", {
+			command: "nonexistent-binary",
+		})
+
+		expect(result.tools).toEqual([])
+		expect(result.error).toBe("spawn failed")
+		expect(mockConnect).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("McpServerManager.probeTools cache writing", () => {
+	beforeEach(() => {
+		mockConnect.mockReset()
+		mockListTools.mockReset()
+		mockClose.mockReset()
+		mockSetNotificationHandler.mockReset()
+		mockSaveMetadataCache.mockReset()
+		mockComputeServerHash.mockReset()
+		vi.mocked(supportsOAuth).mockReset()
+		vi.mocked(supportsOAuth).mockReturnValue(false)
+		mockClose.mockResolvedValue(undefined)
+		mockComputeServerHash.mockReturnValue("test-hash")
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("writes probe results to metadata cache on successful probe", async () => {
+		mockConnect.mockResolvedValue(undefined)
+		mockListTools.mockResolvedValue({
+			tools: [
+				{ name: "tool_a", description: "Does A", inputSchema: { type: "object" } },
+				{ name: "tool_b", description: "Does B", annotations: { readOnlyHint: true } },
+			],
+			nextCursor: undefined,
+		})
+
+		const manager = new McpServerManager()
+		await manager.probeTools("cache-test", { command: "echo" })
+
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		const cacheArg = mockSaveMetadataCache.mock.calls[0][0]
+		expect(cacheArg.version).toBe(1)
+		expect(cacheArg.servers["cache-test"]).toBeDefined()
+		expect(cacheArg.servers["cache-test"].configHash).toBe("test-hash")
+		expect(cacheArg.servers["cache-test"].tools).toHaveLength(2)
+		expect(cacheArg.servers["cache-test"].tools[0]).toEqual({
+			name: "tool_a",
+			description: "Does A",
+			inputSchema: { type: "object" },
+			annotations: undefined,
+		})
+		expect(cacheArg.servers["cache-test"].resources).toEqual([])
+		expect(cacheArg.servers["cache-test"].cachedAt).toBeGreaterThan(0)
+	})
+
+	it("writes cache after SSE fallback succeeds", async () => {
+		mockConnect.mockRejectedValueOnce(new Error("Invalid content type")).mockResolvedValueOnce(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "sse_tool" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		await manager.probeTools("sse-cache-test", { url: "https://mcp.example.com/sse" })
+
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		expect(mockSaveMetadataCache.mock.calls[0][0].servers["sse-cache-test"]).toBeDefined()
+	})
+
+	it("does not write cache when probe returns needsAuth", async () => {
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		mockConnect.mockRejectedValue(new UnauthorizedError("Unauthorized"))
+
+		const manager = new McpServerManager()
+		await manager.probeTools("auth-test", { url: "https://mcp.example.com", auth: "oauth" })
+
+		expect(mockSaveMetadataCache).not.toHaveBeenCalled()
+	})
+
+	it("does not write cache when probe returns an error", async () => {
+		mockConnect.mockRejectedValue(new Error("Connection refused"))
+
+		const manager = new McpServerManager()
+		await manager.probeTools("err-test", { command: "echo" })
+
+		expect(mockSaveMetadataCache).not.toHaveBeenCalled()
+	})
+
+	it("saveMetadataCache merges with existing entries (does not overwrite)", async () => {
+		mockConnect.mockResolvedValue(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "tool_a" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		await manager.probeTools("new-server", { command: "echo" })
+
+		// saveMetadataCache already does a read-merge-write internally — verify
+		// it was called with only the new server, not a full cache overwrite.
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		const cacheArg = mockSaveMetadataCache.mock.calls[0][0]
+		expect(Object.keys(cacheArg.servers)).toEqual(["new-server"])
+		expect(cacheArg.servers["new-server"]).toBeDefined()
 	})
 })

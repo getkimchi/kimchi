@@ -8,11 +8,14 @@ import {
 	bumpStepStart,
 	clearAllScopingGates,
 	clearAllStepStarts,
+	clearBlockRetry,
 	clearFermentState,
 	getBlockRetry,
+	getLastPhaseRefusal,
 	getPhaseStartRef,
 	getStepStartRef,
 	recordBlockHashAndCheckRepeat,
+	setLastPhaseRefusal,
 	setPhaseStartRef,
 	setRuntimeStatePersistRoot,
 	setStepStartRef,
@@ -66,6 +69,35 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 
 		expect(getBlockRetry(fId, "phase-1")).toBe(2)
 		expect(bumpBlockRetry(fId, "phase-1")).toBe(3)
+	})
+
+	it("persists lastPhaseRefusals across a restart and retains them past the retry budget", () => {
+		const fId = "ferment-refusal-persist"
+		setLastPhaseRefusal(fId, "phase-1", {
+			grade: "C",
+			recommendations: ["Add edge-case test for empty input."],
+			at: "2026-08-11T12:00:00Z",
+		})
+		expect(getLastPhaseRefusal(fId, "phase-1")?.recommendations).toEqual(["Add edge-case test for empty input."])
+
+		simulateRestart()
+
+		const restored = getLastPhaseRefusal(fId, "phase-1")
+		expect(restored?.grade).toBe("C")
+		expect(restored?.recommendations).toEqual(["Add edge-case test for empty input."])
+
+		// Acceptance clears the retry budget but RETAINS the refusal record — the
+		// first journey attempt reads it as quality-momentum context (deleting it
+		// here made latestPhaseRefusal permanently dead). Ferment-level cleanup
+		// (clearFermentState) is the sole purge point.
+		clearBlockRetry(fId, "phase-1")
+		simulateRestart()
+		expect(getLastPhaseRefusal(fId, "phase-1")?.grade).toBe("C")
+		expect(getLastPhaseRefusal(fId, "phase-1")?.recommendations).toEqual(["Add edge-case test for empty input."])
+
+		clearFermentState(fId)
+		simulateRestart()
+		expect(getLastPhaseRefusal(fId, "phase-1")).toBeUndefined()
 	})
 
 	it("persists lastBlockHashes and detects repeats after restart", () => {

@@ -165,6 +165,9 @@ The script intentionally separates canonical benchmark fields from derived triag
 - LLM rounds are messages with a `usage` object. Token totals are summed from `usage.input`, `usage.output`, `usage.cacheRead`, and `usage.cacheWrite`. Model counts are counted per usage-bearing message, using message `provider/model` when present and falling back to the current `model_change` entry.
 - Worker output files under `agent/sessions/agent-outputs/.../*.output` often mirror subagent session JSONL content. They are useful evidence for cross-checking what a worker reported, but the script does not add them to total seconds, tokens, rounds, or models to avoid double counting.
 - Failure signals are regex-based triage labels over verifier/session text. Signal counts are computed independently from displayed excerpts, so `--max-notables` changes report verbosity but not the underlying counts. Treat signals as pointers to evidence, not canonical failure categories. Confirm root causes against verifier failures, session excerpts, and ferment events before drawing conclusions.
+- Timeout signals are refined into two categories: `agent-timeout-hung` (the last LLM round produced 0 output tokens — the API call never returned a usable response) and `agent-timeout-terminated` (the last LLM round produced >0 output tokens — the gateway was streaming when the wall-clock agent timeout killed the process). The classification uses the output token count of the most recent usage-bearing assistant message across all sessions.
+- `infrastructure-error` signals cover retryable API statuses (5xx, 524), connection resets (ECONNRESET, socket hang up), and gateway failures (RetryableApiError, origin_response_timeout). These are distinct from agent-logic failures.
+- Trace IDs are extracted from `trace_ids` custom entries in session JSONL files (emitted by kimchi's trace-id extension from the gateway's `x-trace-id` response header). They appear in the trial report's top-level signals, the session files table, the comparison table, and investigation hints. Use them to correlate benchmark failures with gateway and Cloudflare logs.
 - Durations are displayed as integer seconds, rounded down from timestamp differences.
 
 ## Reusable jq Snippets
@@ -230,4 +233,17 @@ jq '{id,name,status,mode,grade,
   the agent timed out before terminal-bench could run normal verification.
 - Timeout failures need both `exception.txt` and the final ferment event. The
   exception tells where Harbor stopped the process; the event log tells what the
-  ferment was trying to do at that moment.
+  ferment was trying to do at that moment. The `agent-timeout-hung` vs
+  `agent-timeout-terminated` signal distinguishes a hung API call (0 output
+  tokens on the last round) from a call that was actively streaming when killed
+  (>0 output tokens). Trace IDs from the session JSONL correlate the failing
+  request with gateway logs.
+- The **Turn Timeline** section in trial reports shows every LLM round with its
+  API duration (from `request_diagnostics` entries), token counts, thinking
+  block length, tool calls, HTTP status, and trace ID. It detects five patterns
+  that may have contributed to a timeout even if the final turn wasn't the
+  cause: `long-gap` (API calls >60s), `extended-thinking` (thinking blocks
+  >2000 chars), `token-concentration` (one turn consuming >25% of total output
+  tokens), `tool-loop` (the same tool sequence repeated 3+ consecutive times),
+  and `api-error` (mid-session HTTP errors or retryable failures). The run
+  summary surfaces these patterns under a dedicated section.

@@ -12,6 +12,13 @@ export interface PreflightArgs {
 	 * local-tree checks below apply.
 	 */
 	gitRepo?: string
+	/**
+	 * Clone + working-tree-diff provisioning (`/teleport --fast`). Shipping
+	 * uncommitted changes is the whole point of the fast path, so the
+	 * dirty-tree refusal is skipped — the rsync availability check still
+	 * runs (the diff rsync needs it).
+	 */
+	fast?: boolean
 }
 
 export interface PreflightDeps {
@@ -37,7 +44,7 @@ export function runPreflight(ctx: TeleportContext, args: PreflightArgs, deps: Pr
 		refuse(ctx, `rsync is not on PATH. ${installHint()}`)
 	}
 
-	if (!args.allowDirty && checkDirty(ctx.cwd)) {
+	if (!args.allowDirty && !args.fast && checkDirty(ctx.cwd)) {
 		refuse(ctx, "Working tree has uncommitted changes. Re-run with --allow-dirty to ship them.")
 	}
 }

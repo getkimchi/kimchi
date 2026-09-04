@@ -56,14 +56,35 @@ describe("ResourceManagerComponent", () => {
 	it("keeps the selected row after toggling a resource", () => {
 		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, {} as Theme, vi.fn(), "hooks")
 
-		component.handleInput("\x1b[B")
-		expect(selectedIndex(component)).toBe(1)
-		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(true)
+		expect(selectedIndex(component)).toBe(0)
+		expect(isResourceEnabled("hooks.bash")).toBe(true)
 
 		component.handleInput(" ")
 
-		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(false)
-		expect(selectedIndex(component)).toBe(1)
+		expect(isResourceEnabled("hooks.bash")).toBe(false)
+		expect(selectedIndex(component)).toBe(0)
+	})
+
+	it("shows experimental resources in their own tab without changing their persisted id", () => {
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "plugins")
+
+		component.handleInput("\t")
+		const experimentalTab = component.render(160).join("\n")
+
+		expect(experimentalTab).toContain("Experimental")
+		expect(experimentalTab).toContain("extensions.ferment-v2")
+		expect(isResourceEnabled("extensions.ferment-v2")).toBe(false)
+
+		component.handleInput(" ")
+
+		expect(isResourceEnabled("extensions.ferment-v2")).toBe(true)
+		const extensions = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "extensions")
+		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-v2")
 	})
 })
 

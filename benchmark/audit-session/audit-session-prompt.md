@@ -135,6 +135,7 @@ Use the following model pricing reference for all cost calculations. Prices are 
 | Qwen3-Coder-Next-FP8 | 5.0e-07 | 1.2e-06 | $0.50 | $1.20 |
 | Kimi-K2.5 | 6.0e-07 | 3.0e-06 | $0.60 | $3.00 |
 | Kimi-K2.6 | 1.2e-06 | 4.5e-06 | $1.20 | $4.50 |
+| Kimi-K2.7 | 9.5e-07 | 4.0e-06 | $0.95 | $4.00 |
 | Nemotron-3-Super-120B | 3.0e-07 | 7.5e-07 | $0.30 | $0.75 |
 
 **Anthropic model prices (for counterfactuals):**
@@ -464,6 +465,7 @@ Classify each model as OSS or non-OSS using this mapping:
 | qwen3-coder-next-fp8 | Qwen | Yes |
 | kimi-k2.5 | Kimi | No |
 | kimi-k2.6 | Kimi | No |
+| kimi-k2.7 | Kimi | No |
 | nemotron-3-super-120b | NVIDIA | Yes |
 | claude-opus-4-6 | Anthropic | No |
 | claude-sonnet-4-6 | Anthropic | No |

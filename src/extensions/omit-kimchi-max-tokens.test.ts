@@ -9,8 +9,8 @@ import { createExtensionApi } from "./__mocks__/extension-api.js"
 import omitKimchiMaxTokensExtension, { omitKimchiMaxTokens } from "./omit-kimchi-max-tokens.js"
 
 const KIMI_METADATA = {
-	slug: "kimi-k2.7",
-	display_name: "Kimi K2.7",
+	slug: "kimi-k3",
+	display_name: "Kimi K3",
 	provider: "ai-enabler",
 	reasoning: true,
 	input_modalities: ["text"],
@@ -23,7 +23,7 @@ function openAIStreamResponse(): Response {
 		id: "completion",
 		object: "chat.completion.chunk",
 		created: 0,
-		model: "kimi-k2.7",
+		model: "kimi-k3",
 		choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
 	}
 	return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
@@ -32,7 +32,7 @@ function openAIStreamResponse(): Response {
 	})
 }
 
-describe("Kimchi max token request invariant", () => {
+describe("Kimchi managed request invariants", () => {
 	let tempDir: string
 	let modelsJsonPath: string
 
@@ -91,22 +91,60 @@ describe("Kimchi max token request invariant", () => {
 		expect(sentPayload).not.toHaveProperty("max_tokens")
 	})
 
-	it.each([
-		"kimchi-dev/anthropic",
-		"kimchi-experimental",
-	])("omits token limits for the managed %s provider", (provider) => {
+	it("omits token limits only for kimchi-dev/kimi-k3", () => {
 		const result = omitKimchiMaxTokens(
 			{ type: "before_provider_request", payload: { max_completion_tokens: 10, max_tokens: 10 } },
-			{ model: { provider } },
+			{ model: { provider: "kimchi-dev", id: "kimi-k3" } },
 		)
 		expect(result).toEqual({})
 	})
 
+	it.each([
+		["other kimchi-dev models", { provider: "kimchi-dev", id: "kimi-k2.7" }],
+		["kimchi-dev sub-providers", { provider: "kimchi-dev/anthropic", id: "kimi-k3" }],
+		["kimchi-experimental", { provider: "kimchi-experimental", id: "kimi-k3" }],
+	])("keeps token limits for %s", (_label, model) => {
+		const payload = { max_completion_tokens: 10, max_tokens: 10 }
+		const result = omitKimchiMaxTokens({ type: "before_provider_request", payload }, { model })
+		expect(result).toBeUndefined()
+		expect(payload).toEqual({ max_completion_tokens: 10, max_tokens: 10 })
+	})
+
+	it("sends Max as reasoning_effort=max", async () => {
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const provider = config.providers["kimchi-dev"]
+		const model: Model<"openai-completions"> = {
+			...provider.models[0],
+			provider: "kimchi-dev",
+			api: "openai-completions",
+			baseUrl: provider.baseUrl,
+		}
+		let sentPayload: Record<string, unknown> | undefined
+		const requestFetch: typeof fetch = async (_input, init) => {
+			sentPayload = JSON.parse(String(init?.body))
+			return openAIStreamResponse()
+		}
+
+		await streamSimple(
+			model,
+			{ messages: [{ role: "user", content: "reason deeply", timestamp: Date.now() }] },
+			{
+				apiKey: "test",
+				fetch: requestFetch,
+				reasoning: "max",
+				onPayload: (payload) => omitKimchiMaxTokens({ type: "before_provider_request", payload }, { model }),
+			},
+		).result()
+
+		expect(sentPayload).toMatchObject({ reasoning_effort: "max" })
+	})
+
 	it("leaves non-Kimchi provider payloads unchanged", () => {
 		const payload = { max_completion_tokens: 10, messages: [] }
-		expect(omitKimchiMaxTokens({ type: "before_provider_request", payload }, { model: { provider: "openai" } })).toBe(
-			undefined,
-		)
+		expect(
+			omitKimchiMaxTokens({ type: "before_provider_request", payload }, { model: { provider: "openai", id: "gpt-5" } }),
+		).toBe(undefined)
 		expect(payload).toEqual({ max_completion_tokens: 10, messages: [] })
 	})
 })

@@ -34,9 +34,11 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
+import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackSubagentSpawned } from "../telemetry/index.js"
+import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -55,6 +57,7 @@ import {
 } from "./manager/budget-retry-guard.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
@@ -62,7 +65,6 @@ import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getAllTypes,
-	getAvailableTypes,
 	getDefaultAgentNames,
 	getUserAgentNames,
 	registerAgents,
@@ -140,19 +142,12 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
-- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
-- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
-- Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
-- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
-- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
-- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- One call per task, detailed prompt; run_in_background for parallelism.
+- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -278,8 +273,8 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	}
 
 	const callbacks = {
-		onToolActivity: (activity: { type: "start" | "end"; toolName: string }) => {
-			if (activity.type === "start") {
+		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
+			if (activity.status === "in_progress") {
 				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
 			} else {
 				for (const [key, name] of state.activeTools) {
@@ -357,6 +352,42 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	return ""
 }
 
+/** Continuation prompt used by the harness-side auto-resume for ferment step
+ * workers killed by their own budget. Bounded, finish-oriented, and bans
+ * re-reading (the worker already holds its context from attempt 1). */
+const FERMENT_WORKER_AUTO_RESUME_PROMPT =
+	"The harness resumed you with a fresh budget after your previous attempt was killed by its turn/duration limit mid-task. Continue the SAME assigned step immediately — do not restart, re-plan, or re-read files you already know. If the attempt stalled on a hanging or blocked command, avoid that specific operation and reach the goal differently. Finish the remaining work, run the declared verification, then call submit_agent_report and stop."
+
+export interface AutoResumeShape {
+	status: string
+	abortReason?: AgentAbortReason
+	session?: unknown
+	taskRef?: { kind: string }
+	resumeAttempts?: unknown[]
+}
+
+/** Builds the auto-resume note from the WORKER'S PRE-RESUME abort reason.
+ * The reason must be captured before `manager.resume` mutates the record
+ * (resume clears `abortReason` on success) — passing the post-resume reason
+ * yields `undefined` and silently drops the note. Exported for unit testing. */
+export function buildAutoResumeNote(beforeAbortReason: AgentAbortReason | undefined): string {
+	if (!beforeAbortReason) return ""
+	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
+}
+
+/** True when a ferment step worker was killed by its own budget on a first
+ * attempt and still holds a live session — the auto-resume gate. Exported for
+ * unit testing; the Agent tool handler uses it inline. */
+export function shouldAutoResumeFermentWorker(record: AutoResumeShape): boolean {
+	return (
+		record.status === "aborted" &&
+		(record.abortReason === "max_turns" || record.abortReason === "max_duration") &&
+		record.session != null &&
+		record.taskRef?.kind === "ferment_step" &&
+		(record.resumeAttempts ?? []).length === 0
+	)
+}
+
 function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
 		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
@@ -368,7 +399,7 @@ function getStatusInstruction(status: string, multiModelEnabled: boolean, abortR
 		const relaxed = !multiModelEnabled
 		return relaxed
 			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
-			: "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+			: '\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build. If this is a ferment step that simply needs more wall-clock for builds/tests, restart it at budget_tier="complex" (max_duration "900", max_turns "45") — full multi-file builds do not fit the standard duration tier.'
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
 		const relaxed = !multiModelEnabled
@@ -475,6 +506,60 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+
+/** Returns the active AgentManager (set during agents extension init). */
+export function getActiveManager(): AgentManager | undefined {
+	return activeManager
+}
+
+/** Options for spawnRemoteAgent. */
+export interface SpawnRemoteAgentOptions {
+	/** When true, spawn as a background agent — returns immediately with the agent ID.
+	 *  The caller will be notified on completion. Default: false (foreground). */
+	background?: boolean
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). Default: "plan". */
+	origin?: string
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on
+	 *  completion. */
+	fermentId?: string
+}
+
+/** Spawn function type — set during agents extension init. */
+let spawnRemoteAgentFn:
+	| ((
+			pi: ExtensionAPI,
+			ctx: ExtensionContext,
+			prompt: string,
+			description: string,
+			opts?: SpawnRemoteAgentOptions,
+	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
+	| undefined
+
+/** Build numeric stats for remote_execution.completed/failed telemetry from a finished record. */
+export function buildRemoteExecutionStats(record: AgentRecord): RemoteExecutionStats {
+	return {
+		duration_ms: record.completedAt != null ? record.completedAt - record.startedAt : 0,
+		tool_calls: record.toolUses,
+		turns: record.lastTurnCount,
+		input_tokens: record.lifetimeUsage.input,
+		output_tokens: record.lifetimeUsage.output,
+	}
+}
+
+/** Spawns a foreground remote agent with full UI streaming support.
+ *  Returns the agent id (for targeted abort) and the result text.
+ */
+export async function spawnRemoteAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	description: string,
+	opts?: SpawnRemoteAgentOptions,
+): Promise<{ id: string; result: string; backgrounded?: boolean }> {
+	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
+	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
+}
 
 /** Test seam: inject a fake manager so spawnGraderAgent can be unit-tested
  *  without booting the agents extension. */
@@ -900,6 +985,39 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
+			// Remote agents spawned as background get the post-completion dropdown
+			// (Review / Sync / Done) instead of the normal nudge path.
+			if (record.triggersRemoteCompletion) {
+				record.triggersRemoteCompletion = false
+				trackRemoteExecution(
+					isError ? "failed" : "completed",
+					record.remoteOrigin ?? "plan",
+					buildRemoteExecutionStats(record),
+				)
+				// spawnCtx is captured at spawn time and is always valid for this
+				// agent — don't fall back to a stale global context.
+				const completionCtx = record.spawnCtx
+				if (completionCtx) {
+					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
+						transcriptPath: record.outputFile,
+						agentId: record.id,
+						remoteSession: record.remoteSession,
+						fermentId: record.fermentId,
+					}).catch((err) => {
+						currentUi?.notify(
+							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
+					})
+				} else {
+					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				}
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
 			const result = groupJoin.onAgentComplete(record)
 			if (result === "pass") {
 				sendIndividualNudge(record)
@@ -950,6 +1068,104 @@ export default function (pi: ExtensionAPI) {
 
 	const widget = new AgentWidget(manager, agentActivity)
 	activeWidget = widget
+
+	spawnRemoteAgentFn = async (pi, ctx, promptText, desc, opts) => {
+		widget.setUICtx(ctx.ui as UICtx)
+		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+
+		// Build transcript-writing callbacks BEFORE spawn so they're captured
+		// in spawnOpts — no post-spawn mutation needed.
+		const {
+			callbacks: transcriptCallbacks,
+			setOutputPath,
+			flushRemaining,
+		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
+
+		const spawnOpts = {
+			description: desc,
+			isBackground: opts?.background ?? false,
+			remote: true,
+			maxTurns: 1,
+			...transcriptCallbacks,
+		}
+		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
+
+		const record = manager.getRecord(id)
+		if (record) {
+			record.spawnCtx = ctx
+			record.remoteOrigin = opts?.origin ?? "plan"
+			record.fermentId = opts?.fermentId
+			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
+			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
+			setOutputPath(record.outputFile, id)
+		}
+		agentActivity.set(id, bgState)
+		widget.ensureTimer()
+		widget.update()
+
+		// Background mode: return immediately — the caller will be notified on completion.
+		if (opts?.background) {
+			if (record) record.triggersRemoteCompletion = true
+			return { id, result: "", backgrounded: true }
+		}
+
+		// Set up detach resolver so Ctrl+B can background the remote agent mid-run.
+		let detachResolve!: () => void
+		const detachPromise = new Promise<void>((r) => {
+			detachResolve = r
+		})
+		if (record) record.detachResolver = detachResolve
+
+		const rec = manager.getRecord(id)
+		if (!rec?.promise) return { id, result: "" }
+		try {
+			const raceResult = await Promise.race([
+				rec.promise.then(() => "completed" as const),
+				detachPromise.then(() => "detached" as const),
+			])
+
+			if (raceResult === "detached") {
+				// Remote agent was backgrounded via Ctrl+B.
+				// _runRemote's promise is still in flight — it will resolve naturally
+				// and the completion path in startAgent handles cleanup + notification.
+				if (record) record.triggersRemoteCompletion = true
+				flushRemaining()
+				widget.ensureTimer()
+				widget.update()
+
+				pi.events.emit("subagents:backgrounded", {
+					id,
+					type: "Remote-Runner",
+					description: desc,
+					visibility: "user",
+				})
+
+				const outputFile = record?.outputFile ?? ""
+				return {
+					id,
+					backgrounded: true,
+					result:
+						`Agent sent to background by the user (Ctrl+B).\n` +
+						`Agent ID: ${id}\n` +
+						`Type: Remote-Runner\n` +
+						`Description: ${desc}\n` +
+						`${outputFile ? `Output file: ${outputFile}\n` : ""}` +
+						`The agent continues running in the background. You will be notified when it completes.`,
+				}
+			}
+
+			// Normal completion path
+			if (record) record.detachResolver = undefined
+			const result = await rec.promise
+			return { id, result, backgrounded: false }
+		} finally {
+			// Flush any buffered transcript entries on completion or error so
+			// nothing is lost if the remote run is aborted or fails mid-stream.
+			flushRemaining()
+		}
+	}
+
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {
@@ -1046,12 +1262,9 @@ export default function (pi: ExtensionAPI) {
 		})
 
 		return [
-			"Default agents:",
+			"Agent types:",
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
-			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
-			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
@@ -1079,11 +1292,8 @@ export default function (pi: ExtensionAPI) {
 		defineTool({
 			name: "Agent",
 			label: "Agent",
-			description: `Launch a new agent to handle complex, multi-step tasks autonomously.
+			description: `Launch an agent to run a complex multi-step task autonomously.
 
-The Agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
-
-Available agent types:
 ${typeListText}
 
 ${AGENT_TOOL_GUIDELINES}`,
@@ -1095,7 +1305,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					description: "A short (3-5 word) description of the task (shown in UI).",
 				}),
 				subagent_type: Type.String({
-					description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .kimchi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
+					description:
+						"Agent type (see list above); custom agents come from .kimchi/agents/*.md (project) or the global agents dir.",
 				}),
 				model: Type.Optional(
 					Type.String({
@@ -1105,7 +1316,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh, max. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
+							"Thinking effort: off, minimal, low, medium, high, xhigh, max. Overrides agent profile defaults.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -1357,18 +1568,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				// Image forwarding: when session has images and subagent model supports vision,
 				// extract image paths from read tool calls and prepend them to the prompt.
-				const effectivePrompt = (() => {
-					const base = params.prompt as string
-					if (!sessionHasImages()) return base
-					const modelInput = (model as { input?: string[] } | undefined)?.input
-					if (!modelInput?.includes("image")) return base
-
-					const imagePaths = extractImagePathsFromSession(ctx)
-					if (imagePaths.length === 0) return base
-
-					const pathList = imagePaths.join(", ")
-					return `Context images from parent session: ${pathList}. Read them if needed for your task.\n\n${base}`
-				})()
+				const modelInput = (model as { input?: string[] } | undefined)?.input
+				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
+				const requiresVision = imagePaths.length > 0 && isAutoModel(model)
+				const effectivePrompt =
+					imagePaths.length > 0
+						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
+						: (params.prompt as string)
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -1427,6 +1633,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
+							requiresVision,
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
 							taskRef,
@@ -1573,6 +1780,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
+						requiresVision,
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,
@@ -1678,13 +1886,39 @@ ${AGENT_TOOL_GUIDELINES}`,
 					widget.markFinished(fgId)
 				}
 
-				const tokenText = formatLifetimeTokens(fgState)
-
-				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
-
 				const fallbackNote = fellBack
 					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
 					: ""
+
+				// Ferment step worker killed by its OWN budget (turns/duration) on a
+				// first attempt: auto-resume once so the worker finishes instead of the
+				// orchestrator patching the remaining work on the main thread — the
+				// exact residue workers exist to keep out. Measured run 019ff5cc: 8/17
+				// Builders aborted at the hard cap with no report and every one was
+				// finished by main-thread edits. First abort only (resumeAttempts
+				// empty); a second exhaustion returns to the planner as before.
+				const autoResumeCandidate = shouldAutoResumeFermentWorker(record)
+				let autoResumedFromReason: AgentAbortReason | undefined
+				if (autoResumeCandidate) {
+					// Capture the pre-resume state — manager.resume mutates record in
+					// place (clears abortReason on success), so reading it after the call
+					// loses the reason the note exists to report.
+					const beforeAbortReason = record.abortReason
+					try {
+						await manager.resume(record.id, FERMENT_WORKER_AUTO_RESUME_PROMPT, {})
+						autoResumedFromReason = beforeAbortReason
+					} catch {
+						// Fall back to the normal aborted-agent summary/instruction below
+						// instead of surfacing an unhandled tool error.
+					}
+					// The summary note/instruction below reads record.status/abortReason,
+					// so it describes the post-resume state automatically.
+				}
+
+				// Built AFTER the auto-resume block so they reflect the post-resume
+				// state (resume mutates record/fgState: status, abortReason, counters).
+				const tokenText = formatLifetimeTokens(fgState)
+				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
@@ -1712,6 +1946,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				appendSubagentRecord(record)
 
 				const timeTaken = formatMs(durationMs)
+				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
 				const note = getStatusNote(record.status, record.abortReason)
 				const instruction = getStatusInstruction(
 					record.status,
@@ -1720,7 +1955,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
+					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
 					details,
 				)
 			},
@@ -1897,14 +2132,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 			name: "steer_subagent",
 			label: "Steer Agent",
 			description:
-				"Send a steering message to a running agent. The message will interrupt the agent after its current tool execution " +
-				"and be injected into its conversation, allowing you to redirect its work mid-run. Only works on running agents.",
+				"Send a steering message to a running agent; it is injected into the agent's conversation after the current tool completes.",
 			parameters: Type.Object({
 				agent_id: Type.String({
-					description: "The agent ID to steer (must be currently running).",
+					description: "The running agent's ID.",
 				}),
 				message: Type.String({
-					description: "The steering message to send. This will appear as a user message in the agent's conversation.",
+					description: "Steering message (appears as a user message in the agent's conversation).",
 				}),
 			}),
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {

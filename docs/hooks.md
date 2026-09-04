@@ -137,7 +137,7 @@ Supported events:
 
 - `PreToolUse`
 - `PostToolUse`
-- `PostToolUseFail` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
+- `PostToolUseFailure` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
 - `PostToolBatch` — synthesized once per turn after all tool executions in that turn finish
 - `SessionStart`
 - `PreCompact`
@@ -232,22 +232,6 @@ Then enable the project hook:
 
 ```bash
 kimchi resources enable hooks.bash.project.block-rm-root-sh
-```
-
-## RTK Hook
-
-Kimchi's built-in RTK integration is exposed as:
-
-```text
-hooks.rtk-rewrite
-```
-
-It runs before user Bash hooks. User hooks see the RTK-rewritten command when RTK changes it.
-
-Disable it with:
-
-```bash
-kimchi resources disable hooks.rtk-rewrite
 ```
 
 ## References

@@ -95,6 +95,10 @@ export interface FakeOpenAiServer {
 interface StartFakeOpenAiServerOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** JSON bodies returned by successive `/v1/route` calls. An empty queue returns 503. */
+	routerResponses?: unknown[]
+	/** Keep this one-based router request open until the client disconnects. Used to verify cancellation. */
+	stallRouterRequestNumber?: number
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
 }
@@ -142,6 +146,8 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 	}
 	const creditsQueue = [...(options.creditsResponses ?? [])]
 	const budgetQueue = [...(options.budgetResponses ?? [])]
+	const routerQueue = [...(options.routerResponses ?? [])]
+	let routerRequestCount = 0
 	let lastCreditsResponse: unknown
 	let lastBudgetResponse: unknown
 
@@ -160,9 +166,23 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		req.on("aborted", () => {
 			recorded.aborted = true
 		})
+		res.on("close", () => {
+			if (!res.writableEnded) recorded.aborted = true
+		})
 		requests.push(recorded)
 
 		try {
+			if (req.method === "POST" && req.url?.startsWith("/v1/route")) {
+				routerRequestCount += 1
+				const response = routerQueue.shift()
+				if (options.stallRouterRequestNumber === routerRequestCount) {
+					await new Promise<void>((resolve) => res.once("close", resolve))
+					return
+				}
+				writeJson(res, response === undefined ? 503 : 200, response ?? { error: "No scripted router response" })
+				return
+			}
+
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
 				writeJson(res, 200, {
 					models: models.map((model) => ({
@@ -201,7 +221,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = pickResponseScript(body, mainQueue, subagentQueue)
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -334,10 +354,12 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	// Substitute dynamic ids from previous tool results into scripted tool args.
 	const fermentId = extractFermentId(body)
 	const agentId = extractAgentId(body)
+	const firstMcpTool = extractFirstMcpTool(body)
 	for (const toolCall of script.toolCalls ?? []) {
 		const fn = { ...toolCall.function }
 		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
 		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
+		if (firstMcpTool) fn.arguments = fn.arguments.replaceAll("__MCP_FIRST_TOOL__", firstMcpTool)
 		chunk([
 			{
 				index: 0,
@@ -413,6 +435,11 @@ function extractAgentId(body: unknown): string | undefined {
 	return extractAgentIdFromText(JSON.stringify(body ?? ""))
 }
 
+/** Pull the first namespaced MCP tool from a prior gateway connect/list result. */
+function extractFirstMcpTool(body: unknown): string | undefined {
+	return JSON.stringify(body ?? "").match(/-\s*(conformance_[A-Za-z0-9_.-]+)/)?.[1]
+}
+
 function extractAgentIdFromValue(value: unknown): string | undefined {
 	if (Array.isArray(value)) {
 		for (const item of value) {
@@ -454,18 +481,20 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * A chat-completion request is treated as a subagent turn when any system
- * message carries the inherited-prompt marker the host injects for spawned
- * subagents. This lets the fake server route scripted responses to the
- * correct queue even when subagent and orchestrator turns interleave.
+ * Route explicit child-session requests and legacy prompt-marked subagents
+ * to the subagent response queue.
  */
-function isSubagentRequest(body: unknown): boolean {
-	const messages = asRecord(body).messages
+const REPLACE_MODE_SUBAGENT_HEADER = "You are a kimchi coding agent sub-agent."
+
+function isSubagentRequest(request: FakeResponseRequest): boolean {
+	if (request.headers["x-parent-session-id"] !== undefined) return true
+	const messages = asRecord(request.body).messages
 	if (!Array.isArray(messages)) return false
 	return messages.some((message) => {
 		const record = asRecord(message)
 		if (record.role !== "system") return false
-		return readMessageContent(record.content).includes("<inherited_system_prompt>")
+		const content = readMessageContent(record.content)
+		return content.includes("<inherited_system_prompt>") || content.includes(REPLACE_MODE_SUBAGENT_HEADER)
 	})
 }
 
@@ -477,17 +506,20 @@ function isSubagentRequest(body: unknown): boolean {
  * single-queue behaviour.
  */
 function pickResponseScript(
-	body: unknown,
+	request: FakeResponseRequest,
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
-	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request)
 	const primary = useSubagent ? subagentQueue : mainQueue
-	if (primary.length > 0) {
-		return primary.shift() ?? { stream: ["fake response"] }
-	}
 	const fallback = useSubagent ? mainQueue : subagentQueue
-	return fallback.shift() ?? { stream: ["fake response"] }
+	return takeResponseScript(primary, request) ?? takeResponseScript(fallback, request) ?? { stream: ["fake response"] }
+}
+
+function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRequest): FakeResponseScript | undefined {
+	const matched = queue.findIndex((script) => script.match?.(request))
+	const index = matched >= 0 ? matched : queue.findIndex((script) => !script.match)
+	return index >= 0 ? queue.splice(index, 1)[0] : undefined
 }
 
 function unixNow(): number {

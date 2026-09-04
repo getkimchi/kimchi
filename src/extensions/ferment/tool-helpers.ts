@@ -88,7 +88,7 @@ export function formatNextActionHint(ferment: Ferment, multiModelEnabled: boolea
 			const label = stepLabel ?? `step "${action.stepId}"`
 			const relaxed = !multiModelEnabled
 			const startStepSuffix = relaxed
-				? ". Then either spawn an Agent worker for the implementation, or execute the step directly - choose whichever is more efficient."
+				? ". Then execute the step directly — delegate to a linked Agent worker only for residue-heavy steps (long builds, big suites, many large reads, parallelizable work)."
 				: ", then immediately spawn an Agent worker for the implementation."
 			return `Next action: call \`${toolName}\` to begin ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}${startStepSuffix}`
 		}

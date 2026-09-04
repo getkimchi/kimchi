@@ -10,8 +10,8 @@ import {
 	isKimchiProvider,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
-	setKimchiAuthToken,
 	showSubscriptionLoginWithExtensionUI,
+	syncKimchiAuth,
 } from "./flow.js"
 
 const STARTUP_AUTH_OVERLAY_WAIT_KEY = "kimchi-startup-auth-overlay-wait"
@@ -55,22 +55,16 @@ export function shouldShowStartupAuthGate(input: {
 	return true
 }
 
-export function seedKimchiAuthFromConfig(ctx: ExtensionContext): void {
-	seedKimchiAuthFromConfigAndReturnKey(ctx)
-}
-
-function seedKimchiAuthFromConfigAndReturnKey(ctx: ExtensionContext): string {
-	const configKey = loadConfig().apiKey
-	if (configKey) {
-		setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
-	}
-	return configKey
-}
-
 export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
-	const configKey = seedKimchiAuthFromConfigAndReturnKey(ctx)
+	const configKey = loadConfig().apiKey
+	let kimchiAuthSynchronized = configKey.length === 0
 	try {
-		await ctx.modelRegistry.refresh()
+		if (configKey) {
+			await syncKimchiAuth(ctx.modelRegistry, configKey)
+			kimchiAuthSynchronized = true
+		} else {
+			await ctx.modelRegistry.refresh()
+		}
 	} catch {
 		// Broken models.json is reported by upstream startup warnings. Treat it
 		// as unauthenticated here so the user gets a login path instead of Ferment.
@@ -79,7 +73,7 @@ export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 		const availableModels = ctx.modelRegistry.getAvailable()
 		if (availableModels.length === 0) return false
 		if (availableModels.some((model) => !isKimchiProvider(model.provider))) return true
-		return configKey.length > 0
+		return configKey.length > 0 && kimchiAuthSynchronized
 	} catch {
 		return false
 	}

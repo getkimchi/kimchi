@@ -435,6 +435,11 @@ function handleStepStarted(raw: unknown, sessionId: string, appendEntry?: Append
 							content: `[Step ${stepForSeed.index}] ${stepForSeed.description}`,
 							status: "in_progress",
 							activeForm: stepForSeed.description,
+							// Tags the anchor with a reserved sync key so downstream
+							// consumers (ACP plan flattening) can correlate it to its
+							// step without content matching — step descriptions are
+							// multi-line, but the todo store collapses whitespace.
+							_syncKey: "anchor",
 						},
 					],
 				},

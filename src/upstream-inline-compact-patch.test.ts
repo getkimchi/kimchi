@@ -11,10 +11,19 @@ type EventRecord = Record<string, unknown>
 
 class FakeRunner {
 	_kimchiInlineCompact?: (options?: InlineCompactOptions) => Promise<CompactionResult>
+	_kimchiInlineSession?: FakeSession
 	assertActive = vi.fn()
+	/** Records the final message arrays handed to the wire (post-transform), mirroring
+	 *  upstream emitContext's role of returning what convertToLlm consumes. */
+	emitContextCalls: unknown[][] = []
 
 	createContext(): object {
 		return { existing: true }
+	}
+
+	async emitContext(messages: unknown[]): Promise<unknown[]> {
+		this.emitContextCalls.push(messages)
+		return messages
 	}
 }
 
@@ -36,6 +45,7 @@ class FakeSession {
 	}
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
+	_kimchiInlineResync?: boolean
 	events: EventRecord[] = []
 	disconnect = vi.fn()
 	reconnect = vi.fn()
@@ -91,7 +101,10 @@ class FakeSession {
 		this.boundRunner = runner
 	}
 
-	async compact(customInstructions?: string, _force = false): Promise<CompactionResult> {
+	compactReceivedForce: boolean | undefined
+
+	async compact(customInstructions?: string, force = false): Promise<CompactionResult> {
+		this.compactReceivedForce = force
 		this._disconnectFromAgent()
 		await this.abort()
 		this._compactionAbortController = new AbortController()
@@ -130,10 +143,12 @@ type MutableSessionPrototype = typeof FakeSession.prototype & {
 
 type MutableRunnerPrototype = typeof FakeRunner.prototype & {
 	_kimchiInlineCompactContextPatch?: boolean
+	_kimchiInlineResyncEmitContextPatch?: boolean
 }
 
 const originalSessionBindExtensionCore = FakeSession.prototype._bindExtensionCore
 const originalRunnerCreateContext = FakeRunner.prototype.createContext
+const originalRunnerEmitContext = FakeRunner.prototype.emitContext
 
 function inlineSession(session: FakeSession): FakeSession & {
 	inlineCompact(options?: InlineCompactOptions): Promise<CompactionResult>
@@ -171,7 +186,9 @@ describe("installInlineCompactPatch", () => {
 
 		const runnerProto = FakeRunner.prototype as MutableRunnerPrototype
 		runnerProto.createContext = originalRunnerCreateContext
+		runnerProto.emitContext = originalRunnerEmitContext
 		runnerProto._kimchiInlineCompactContextPatch = undefined
+		runnerProto._kimchiInlineResyncEmitContextPatch = undefined
 		vi.restoreAllMocks()
 	})
 
@@ -341,6 +358,20 @@ describe("installInlineCompactPatch", () => {
 		expect(session.preparedWithSettings).toEqual([{ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 }])
 	})
 
+	it("forwards the force flag to upstream compact()", async () => {
+		// Regression: the patch previously dropped options.force, so every
+		// ferment stage compaction (force: true) silently ran the non-forced
+		// "Nothing to compact (session too small)" path.
+		install()
+		const forced = new FakeSession()
+		await inlineSession(forced).inlineCompact({ force: true })
+		expect(forced.compactReceivedForce).toBe(true)
+
+		const unforced = new FakeSession()
+		await inlineSession(unforced).inlineCompact()
+		expect(unforced.compactReceivedForce).toBe(false)
+	})
+
 	it("routes options.model to auth and summarization, then restores the session model", async () => {
 		install()
 		const session = new FakeSession()
@@ -461,5 +492,84 @@ describe("installInlineCompactPatch", () => {
 		await expect(inlineSession(session).inlineCompact({ force: true })).resolves.toMatchObject({
 			summary: "summary",
 		})
+	})
+})
+
+describe("wire resync after inline compaction", () => {
+	beforeEach(() => {
+		const sessionProto = FakeSession.prototype as MutableSessionPrototype
+		sessionProto._bindExtensionCore = originalSessionBindExtensionCore
+		sessionProto._kimchiInlineCompactPatch = undefined
+		sessionProto.inlineCompact = undefined
+
+		const runnerProto = FakeRunner.prototype as MutableRunnerPrototype
+		runnerProto.createContext = originalRunnerCreateContext
+		runnerProto.emitContext = originalRunnerEmitContext
+		runnerProto._kimchiInlineCompactContextPatch = undefined
+		runnerProto._kimchiInlineResyncEmitContextPatch = undefined
+		vi.restoreAllMocks()
+	})
+
+	it("passes the run loop's snapshot through unchanged before any compaction", async () => {
+		install()
+		const runner = new FakeRunner()
+		const loopSnapshot = ["run-start-message-1", "run-start-message-2"]
+
+		const wire = await runner.emitContext(loopSnapshot)
+
+		expect(wire).toBe(loopSnapshot)
+	})
+
+	it("substitutes the compacted canonical array for the loop's stale snapshot after compaction", async () => {
+		// Regression for 019ffb83: the run loop snapshots messages at run start,
+		// so a mid-run suppress-abort compact() replaced state.messages where the
+		// loop never looked. The emitContext patch must route the wire to the
+		// compacted array for every subsequent turn in the run.
+		install()
+		const session = new FakeSession()
+		const runner = new FakeRunner()
+		session._bindExtensionCore(runner)
+		const loopSnapshot = ["run-start-message-1", "run-start-message-2"]
+
+		await inlineSession(session).inlineCompact()
+
+		// The loop re-presents its run-start snapshot on the next turn…
+		const wire = await runner.emitContext(loopSnapshot)
+		// …but the wire carries the compacted canonical array instead.
+		expect(wire).toBe(session.agent.state.messages)
+		expect(wire).toEqual(["compacted-message"])
+	})
+
+	it("keeps following state.messages as new turns append after the compaction", async () => {
+		install()
+		const session = new FakeSession()
+		const runner = new FakeRunner()
+		session._bindExtensionCore(runner)
+
+		await inlineSession(session).inlineCompact()
+		// The run continues: message_end pushes the next assistant/tool messages
+		// into the same canonical array (agent.js processEvents behavior).
+		session.agent.state.messages.push("next-turn-assistant")
+
+		const wire = await runner.emitContext(["stale-snapshot"])
+
+		expect(wire).toEqual(["compacted-message", "next-turn-assistant"])
+	})
+
+	it("does not set the resync flag when compaction throws", async () => {
+		install()
+		const session = new FakeSession()
+		const runner = new FakeRunner()
+		session._bindExtensionCore(runner)
+		session.summarize = async () => {
+			throw new Error("summarizer exploded")
+		}
+
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("summarizer exploded")
+
+		const loopSnapshot = ["unchanged"]
+		const wire = await runner.emitContext(loopSnapshot)
+		expect(wire).toBe(loopSnapshot)
+		expect(session._kimchiInlineResync).toBeUndefined()
 	})
 })

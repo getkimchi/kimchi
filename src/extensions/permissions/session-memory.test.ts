@@ -43,11 +43,6 @@ describe("suggestScope", () => {
 		expect(s.wildcardContent).toBe("GOWORK=off go *")
 	})
 
-	it("keeps env even for non-inert vars (no allowlist) and strips rtk", () => {
-		const s = suggestScope("bash", { command: "LD_PRELOAD=/tmp/x.so rtk go test" })
-		expect(s.content).toBe("LD_PRELOAD=/tmp/x.so go test:*")
-	})
-
 	it("is unchanged for commands with no env prefix", () => {
 		const s = suggestScope("bash", { command: "go test --short" })
 		expect(s.content).toBe("go test:*")

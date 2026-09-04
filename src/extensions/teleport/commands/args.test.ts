@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseSyncArgs, parseTeleportArgs } from "./args.js"
+import { getTeleportArgumentCompletions, parseSyncArgs, parseTeleportArgs } from "./args.js"
 
 describe("parseTeleportArgs", () => {
 	it("returns empty when no args are passed", () => {
@@ -48,6 +48,10 @@ describe("parseTeleportArgs", () => {
 		expect(parseTeleportArgs("--no-git-token")).toEqual({ noGitToken: true })
 	})
 
+	it("reads --no-compact-hint as a boolean", () => {
+		expect(parseTeleportArgs("--no-compact-hint")).toEqual({ noCompactHint: true })
+	})
+
 	it("rejects --no-shallow (removed in favor of worker-side clone)", () => {
 		expect(() => parseTeleportArgs("--no-shallow")).toThrow(/Unknown flag/)
 	})
@@ -55,6 +59,22 @@ describe("parseTeleportArgs", () => {
 	it("reads --skip-session as a boolean", () => {
 		expect(parseTeleportArgs("--skip-session")).toEqual({ skipSession: true })
 		expect(parseTeleportArgs("name --skip-session")).toEqual({ name: "name", skipSession: true })
+	})
+
+	it("reads --fast as a boolean", () => {
+		expect(parseTeleportArgs("--fast")).toEqual({ fast: true })
+	})
+
+	it("reads --git-repo with --fast together", () => {
+		expect(parseTeleportArgs("--git-repo https://x/y.git --fast")).toEqual({
+			gitRepo: "https://x/y.git",
+			fast: true,
+		})
+	})
+
+	it("leaves fast unset by default", () => {
+		expect(parseTeleportArgs("").fast).toBeUndefined()
+		expect(parseTeleportArgs("name --force").fast).toBeUndefined()
 	})
 
 	it("rejects unknown flags", () => {
@@ -69,6 +89,137 @@ describe("parseTeleportArgs", () => {
 
 	it("rejects a stray --", () => {
 		expect(() => parseTeleportArgs("name --")).toThrow(/Unexpected `--`/)
+	})
+})
+
+describe("getTeleportArgumentCompletions", () => {
+	it("returns all flags for a non-dash, non-empty prefix (discoverable while typing a name)", () => {
+		const result = getTeleportArgumentCompletions("my-session")
+		expect(result).not.toBeNull()
+		expect(result).toHaveLength(9)
+		const labels = result?.map((c) => c.label)
+		expect(labels).toContain("--workspace")
+		expect(labels).toContain("--git-repo")
+		expect(labels).toContain("--skip-session")
+	})
+
+	it("returns all flags for a non-dash partial like 'task-1'", () => {
+		const result = getTeleportArgumentCompletions("task-1")
+		expect(result).not.toBeNull()
+		expect(result).toHaveLength(9)
+	})
+
+	it("returns discovery items on an empty prefix", () => {
+		const result = getTeleportArgumentCompletions("")
+		expect(result).not.toBeNull()
+		expect(result).toHaveLength(3)
+		const labels = result?.map((c) => c.label)
+		expect(labels).toEqual(["my-feature", "--allow-dirty", "--force"])
+	})
+
+	it("returns discovery items on a whitespace-only prefix", () => {
+		const result = getTeleportArgumentCompletions("   ")
+		expect(result).not.toBeNull()
+		expect(result).toHaveLength(3)
+		const labels = result?.map((c) => c.label)
+		expect(labels).toEqual(["my-feature", "--allow-dirty", "--force"])
+	})
+
+	it("returns all flags when prefix is just --", () => {
+		const result = getTeleportArgumentCompletions("--")
+		expect(result).not.toBeNull()
+		expect(result).toHaveLength(9)
+		const labels = result?.map((c) => c.label)
+		expect(labels).toContain("--allow-dirty")
+		expect(labels).toContain("--force")
+		expect(labels).toContain("--workspace")
+		expect(labels).toContain("--git-repo")
+		expect(labels).toContain("--branch")
+		expect(labels).toContain("--no-git-token")
+		expect(labels).toContain("--no-compact-hint")
+		expect(labels).toContain("--skip-session")
+		expect(labels).toContain("--fast")
+	})
+
+	it("filters by --all to --allow-dirty", () => {
+		const result = getTeleportArgumentCompletions("--all")
+		expect(result).toEqual([
+			{ value: "--allow-dirty", label: "--allow-dirty", description: "Proceed with uncommitted changes" },
+		])
+	})
+
+	it("filters by --force to exactly --force", () => {
+		const result = getTeleportArgumentCompletions("--force")
+		expect(result).toEqual([
+			{ value: "--force", label: "--force", description: "Override the 5 GB workspace size limit" },
+		])
+	})
+
+	it("filters by --fast to exactly --fast", () => {
+		const result = getTeleportArgumentCompletions("--fast")
+		expect(result).toEqual([
+			{
+				value: "--fast",
+				label: "--fast",
+				description: "Clone server-side + rsync only local diff (faster for large repos)",
+			},
+		])
+	})
+
+	it("filters by --no to both --no-* flags", () => {
+		const result = getTeleportArgumentCompletions("--no")
+		expect(result).not.toBeNull()
+		const labels = result?.map((c) => c.label)
+		expect(labels).toContain("--no-git-token")
+		expect(labels).toContain("--no-compact-hint")
+	})
+
+	it("returns null when no flag matches", () => {
+		expect(getTeleportArgumentCompletions("--xyz")).toBeNull()
+		expect(getTeleportArgumentCompletions("--zzzz")).toBeNull()
+	})
+
+	it("is case-insensitive", () => {
+		const result = getTeleportArgumentCompletions("--FORCE")
+		expect(result).toEqual([
+			{ value: "--force", label: "--force", description: "Override the 5 GB workspace size limit" },
+		])
+	})
+
+	it("emits a trailing space for value flags", () => {
+		const result = getTeleportArgumentCompletions("--workspace")
+		expect(result).toEqual([
+			{ value: "--workspace ", label: "--workspace", description: "Reuse an existing workspace (id or name)" },
+		])
+	})
+
+	it("emits a trailing space for --git-repo", () => {
+		const result = getTeleportArgumentCompletions("--git-repo")
+		expect(result).toEqual([
+			{
+				value: "--git-repo ",
+				label: "--git-repo",
+				description: "Clone from a git URL instead of rsyncing local files",
+			},
+		])
+	})
+
+	it("emits a trailing space for --branch", () => {
+		const result = getTeleportArgumentCompletions("--branch")
+		expect(result).toEqual([
+			{ value: "--branch ", label: "--branch", description: "Branch to check out (requires --git-repo)" },
+		])
+	})
+
+	it("does not emit a trailing space for boolean flags", () => {
+		const result = getTeleportArgumentCompletions("--skip-session")
+		expect(result).toEqual([
+			{
+				value: "--skip-session",
+				label: "--skip-session",
+				description: "Start remote agent fresh without uploading session history",
+			},
+		])
 	})
 })
 

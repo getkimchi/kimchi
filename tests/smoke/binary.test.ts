@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -53,6 +54,7 @@ describe("binary smoke tests", () => {
 		expect(result.stdout).toContain("--mode")
 		expect(result.stdout).toContain("--continue")
 		expect(result.stdout).toContain("--resume, -r [id]")
+		expect(result.stdout).toContain("--enable-experimental-features")
 		// Kimchi-only env vars
 		expect(result.stdout).toContain("KIMCHI_API_KEY")
 		// Pi-internal extension management commands and provider-specific env
@@ -97,11 +99,12 @@ describe("binary smoke tests", () => {
 		expect(result.stdout + result.stderr).toContain(`No session found matching '${missingSessionId}'`)
 	})
 
-	it("prompt templates are embedded in binary (no extension errors on startup)", () => {
+	it("prompt templates are embedded in binary (no extension errors on startup)", { timeout: 35_000 }, () => {
 		const result = runBinary({
 			args: ["-p", "hello"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 			throwOnError: false,
+			timeoutMs: 25_000,
 		})
 		// The orchestration extension fires "input" and "before_agent_start" events, triggering template loading. If templates are missing from the compiled binary, the extension runner reports ENOENT via "Extension error" on stderr.
 		expect(result.stderr).not.toContain("Extension error")
@@ -122,6 +125,35 @@ describe("binary smoke tests", () => {
 			.flatMap(readSessionEntries)
 
 		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
+	})
+
+	describe("runtime config autoloading", () => {
+		let workDir: string
+
+		beforeEach(() => {
+			workDir = mkdtempSync(join(tmpdir(), "kimchi-smoke-runtime-config-"))
+		})
+
+		afterEach(() => {
+			rmSync(workDir, { recursive: true, force: true })
+		})
+
+		it("does not load .env from the working directory", () => {
+			writeFileSync(join(workDir, ".env"), "KIMCHI_TELEMETRY_ENABLED=0\n", "utf-8")
+
+			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
+
+			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
+
+		it("does not load bunfig.toml from the working directory", () => {
+			writeFileSync(join(workDir, "bunfig.toml"), 'preload = ["./disable-telemetry.js"]\n', "utf-8")
+			writeFileSync(join(workDir, "disable-telemetry.js"), 'process.env.KIMCHI_TELEMETRY_ENABLED = "0"\n', "utf-8")
+
+			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
+
+			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
 	})
 
 	describe("--export", () => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
+import { markHarnessSteer } from "../steer-marker.js"
 
 let dir: string
 let oldHome: string | undefined
@@ -64,7 +65,7 @@ console.log(JSON.stringify({
 		expect(event.input.command).toBe("git status --short")
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
-				content: "real hook saw PreToolUse for Bash",
+				content: markHarnessSteer("real hook saw PreToolUse for Bash"),
 				customType: "kimchi-claude-code-hook-context",
 				display: false,
 			}),

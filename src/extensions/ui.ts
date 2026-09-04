@@ -10,25 +10,29 @@ import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { LogoHeader } from "../components/logo.js"
-import { buildScriptPayload, readStatusLineCommand, StatusLine, StatusLineScript } from "../components/status-line.js"
+import {
+	buildControlsLineSegments,
+	buildScriptPayload,
+	readStatusLineCommand,
+	renderFittedLine,
+	StatusLine,
+	StatusLineScript,
+} from "../components/status-line.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
-import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
-import { formatBudgetStatusLine, formatCreditsStatusLine } from "./billing/status-line-format.js"
+import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
-import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
 	registerSharedStatusLineRenderer,
 	setSessionModeOnboardingStatusLineSuppressed,
 } from "./shared-status-line.js"
-import { createWorkingAnimator } from "./spinner.js"
+import { createWorkingAnimator, type WorkingAnimator } from "./spinner.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
 
 export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
@@ -119,6 +123,83 @@ let currentIdeSelectionIndicatorText: string | null = null
 // the abort stage consumes the event, so we can't rely on it.
 let lastCtrlCTime = 0
 const CTRL_C_EXIT_WINDOW_MS = 500
+
+// Working animation controller — replaced every turn_start. Module-level so
+// helpers outside `uiExtension` (e.g. `withWorkingHidden`) can pause/resume it
+// without owning it.
+let workingAnimator: WorkingAnimator | undefined
+let workingAnimationPauseDepth = 0
+const workingIndicatorHolds = new Set<symbol>()
+const workedForMessageHolds = new Set<symbol>()
+
+// Module-level so `holdWorkingIndicator` can re-arm the animator itself when it
+// isn't already running — extension handler order relative to this file's
+// `message_end` (which stops the animator) isn't guaranteed, so a caller taking
+// a hold can't assume the animator is still alive.
+function startWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): void {
+	ctx.ui.setWorkingVisible(true)
+	workingAnimator?.stop()
+	workingAnimationPauseDepth = 0
+	workingAnimator = createWorkingAnimator((char, message) => {
+		const accent = resolvedAccentFg(ctx.ui.theme)
+		ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
+		ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
+	})
+}
+
+function stopWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): void {
+	if (workingIndicatorHolds.size > 0) return
+	workingAnimator?.stop()
+	workingAnimator = undefined
+	workingAnimationPauseDepth = 0
+	ctx.ui.setWorkingVisible(false)
+}
+
+export function holdWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): () => void {
+	const hold = Symbol("working-indicator-hold")
+	workingIndicatorHolds.add(hold)
+	if (workingAnimator) ctx.ui.setWorkingVisible(true)
+	else startWorkingIndicator(ctx)
+	return () => {
+		if (!workingIndicatorHolds.delete(hold)) return
+		if (workingIndicatorHolds.size > 0) return
+		stopWorkingIndicator(ctx)
+	}
+}
+
+export function holdWorkedForMessage(): () => void {
+	const hold = Symbol("worked-for-message-hold")
+	workedForMessageHolds.add(hold)
+	return () => {
+		workedForMessageHolds.delete(hold)
+	}
+}
+
+export function pauseWorkingAnimation(): void {
+	if (workingAnimationPauseDepth === 0) {
+		workingAnimator?.pause()
+	}
+	workingAnimationPauseDepth++
+}
+
+export function resumeWorkingAnimation(): void {
+	if (workingAnimationPauseDepth === 0) return
+	workingAnimationPauseDepth--
+	if (workingAnimationPauseDepth === 0) {
+		workingAnimator?.resume()
+	}
+}
+
+/**
+ * @internal — test-only override for the working animation controller.
+ * Production callers must not touch this; `startWorkingIndicator` /
+ * `stopWorkingIndicator` own the controller lifecycle.
+ */
+export function __setWorkingAnimatorForTest(controller: WorkingAnimator | undefined): void {
+	workingAnimator = controller
+	workingIndicatorHolds.clear()
+	workedForMessageHolds.clear()
+}
 
 /** Cascade: text → clear, streaming → abort, otherwise → exit. */
 export type CtrlCAction = "clear" | "abort" | "exit"
@@ -214,6 +295,10 @@ function runScript(
 	child.stderr.on("data", (d: Buffer) => {
 		stderr += d.toString()
 	})
+	// A statusline script that ignores its stdin and exits makes the write fail
+	// with a broken pipe (EPIPE). That is benign here, so swallow it rather than
+	// letting it surface as an unhandled stream error that crashes the process.
+	child.stdin.on("error", () => {})
 	child.stdin.write(JSON.stringify(payload))
 	child.stdin.end()
 
@@ -249,18 +334,23 @@ function runScript(
  * permission prompts, ferment step recovery). Command handlers run when the
  * agent is idle and don't need this.
  *
- * Uses try/finally so the indicator is restored even if the prompt throws
- * or the user cancels.
+ * Pauses the cooking animator's timers so `setWorkingIndicator` /
+ * `setWorkingMessage` stop firing while the prompt has focus — otherwise
+ * upstream would call `requestRender()` every 40–200 ms, producing visible
+ * full-screen redraws behind a static prompt. Uses try/finally so the
+ * animator is restored even if the prompt throws or the user cancels.
  */
 export async function withWorkingHidden<T>(
 	ctx: Pick<ExtensionContext, "ui"> | { ui?: { setWorkingVisible?: (visible: boolean) => void } },
 	fn: () => Promise<T>,
 ): Promise<T> {
+	pauseWorkingAnimation()
 	ctx.ui?.setWorkingVisible?.(false)
 	try {
 		return await fn()
 	} finally {
 		ctx.ui?.setWorkingVisible?.(true)
+		resumeWorkingAnimation()
 	}
 }
 
@@ -302,8 +392,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		setSessionModeOnboardingStatusLineSuppressed(false)
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
+		workingIndicatorHolds.clear()
+		workedForMessageHolds.clear()
+		workingAnimator?.stop()
+		workingAnimator = undefined
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -342,23 +434,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 				return new SuppressibleStatusLine(new StatusLine(ctx, theme, statusLineData), tui)
 			}
 			scriptCmd = cmd
-			const getControlsLine = (): string | null => {
-				const parts: string[] = []
-				const ferment = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
-					dim: (s) => theme.fg("dim", s),
-					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
-				})
-				if (ferment) parts.push(ferment.text)
-				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
-				if (perm) parts.push(perm)
-				const billing = getBillingStatusLine()
-				if (billing?.amount) parts.push(formatCreditsStatusLine(billing.amount, theme))
-				if (billing?.budget) parts.push(formatBudgetStatusLine(billing.budget, theme))
-				const modelId = getMultiModelEnabled(ctx.sessionManager)
-					? `multi-model (${getOrchestratorModelId(sessionId)})`
-					: (ctx.model?.id ?? "n/a")
-				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
-				return parts.join(` ${theme.fg("dim", "·")} `)
+			// The controls line runs through the same segment pipeline as the
+			// built-in status line: permissions and model lead, the compaction
+			// ladder and priority shedding apply at narrow widths.
+			const getControlsLine = (width: number): string | null => {
+				const segments = buildControlsLineSegments({ ctx, theme, statusLineData })
+				if (segments.length === 0) return null
+				return renderFittedLine(segments, width, theme)
 			}
 			scriptStatusLine = new StatusLineScript(getControlsLine)
 			scriptTui = tui
@@ -549,8 +631,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
+		workingIndicatorHolds.clear()
+		workedForMessageHolds.clear()
+		workingAnimator?.stop()
+		workingAnimator = undefined
 		currentCtx = null
 		branchPoller.stop()
 	})
@@ -560,8 +644,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 			ctx.shutdown()
 		}
 	})
-
-	let stopWorkingAnimation: (() => void) | undefined
 
 	// ── Indicator lifecycle ──────────────────────────────────────────────────
 	//
@@ -574,8 +656,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 	// one exception: while they have keyboard focus the spinner must be hidden
 	// so it doesn't show behind the form. Each tool that shows an interactive
 	// prompt during a turn wraps the call in `withWorkingHidden(ctx, fn)`
-	// (exported below) — it calls setWorkingVisible(false), runs the prompt, then
-	// restores setWorkingVisible(true) in a finally block. Currently:
+	// (exported below) — it pauses the cooking animator AND calls
+	// setWorkingVisible(false), runs the prompt, then resumes the animator and
+	// restores setWorkingVisible(true) in a finally block. Pausing the animator
+	// (not just hiding the indicator) is required: the animator's onUpdate
+	// callback unconditionally calls setWorkingIndicator/setWorkingMessage, and
+	// upstream turns those into requestRender() — a hidden indicator that keeps
+	// firing still redraws the screen behind a static prompt. Currently:
 	//   - questionnaire       (questionnaire.ts)
 	//   - ask_user / confirm  (ferment/prompt-ui.ts)
 	//   - permission prompts   (permissions/prompts.ts)
@@ -583,22 +670,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	//   - phase boundary       (ferment/tools/phases.ts)
 	// Command handlers (/agents, /theme, /mcp, etc.) do NOT need this — they run
 	// when the agent is idle, so the indicator is already off.
-
-	const startIndicator = (ctx: ExtensionContext) => {
-		ctx.ui.setWorkingVisible(true)
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = createWorkingAnimator((char, message) => {
-			const accent = resolvedAccentFg(ctx.ui.theme)
-			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
-		})
-	}
-
-	const stopIndicator = (ctx: ExtensionContext) => {
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
-		ctx.ui.setWorkingVisible(false)
-	}
+	// Ferment V2 can hold this same indicator across its settled evaluator call;
+	// normal message_end / agent_end teardown resumes when that hold is released.
 
 	pi.on("turn_start", (_, ctx) => {
 		clearTimeout(workedForTimer)
@@ -606,14 +679,14 @@ export default function uiExtension(pi: ExtensionAPI) {
 		currentCtx = ctx
 		turnStartMs = Date.now()
 		refresh("generating")
-		startIndicator(ctx)
+		startWorkingIndicator(ctx)
 	})
 	pi.on("message_update", (event, ctx) => {
 		const evt = event.assistantMessageEvent as { type: string }
 		if (evt.type === "thinking_start" && ctx) {
 			// Re-arm: a permission prompt or tool result may have stopped the
 			// spinner. Reasoning is in flight — keep the cooking animation visible.
-			startIndicator(ctx)
+			startWorkingIndicator(ctx)
 		}
 	})
 	pi.on("message_start", (event, ctx) => {
@@ -624,18 +697,18 @@ export default function uiExtension(pi: ExtensionAPI) {
 		// no-op. This call triggers loader creation, making the cooking animation
 		// visible during the message_start → first-content-event gap.
 		// message_end stops it again once the assistant finishes.
-		startIndicator(ctx)
+		startWorkingIndicator(ctx)
 	})
 	pi.on("message_end", (event, ctx) => {
 		if (event.message.role !== "assistant") return
 		// Assistant finished its message. Stop the spinner so the response can
 		// render cleanly. turn_end will follow up with the "Worked for Xs" display.
-		stopIndicator(ctx)
+		stopWorkingIndicator(ctx)
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
 		// Re-arm: a permission prompt may have stopped the spinner during the
 		// tool's argument-collection phase. The turn is still in flight.
-		startIndicator(ctx)
+		startWorkingIndicator(ctx)
 	})
 	pi.on("tool_execution_end", () => {
 		// The turn is still active — keep the indicator running. It stops at the
@@ -647,7 +720,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		// so the cascade's "press again to abort" guidance is stale.
 		if (ctx.hasUI) ctx.ui.setStatus("__ctrl_c_hint", undefined)
 		refresh("idle")
-		if (ctx.hasUI && turnStartMs > 0) {
+		if (ctx.hasUI && turnStartMs > 0 && workingIndicatorHolds.size === 0 && workedForMessageHolds.size === 0) {
 			clearTimeout(workedForTimer)
 			const elapsed = Date.now() - turnStartMs
 			ctx.ui.setWorkingVisible(true)
@@ -661,7 +734,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("agent_end", (_, ctx) => {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
-		stopIndicator(ctx)
+		stopWorkingIndicator(ctx)
 	})
 	pi.on("model_select", (_, ctx) => {
 		currentCtx = ctx

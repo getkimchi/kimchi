@@ -31,21 +31,47 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
-const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>|<mm:think>[\s\S]*?<\/mm:think>/g
+interface ThinkTagVariant {
+	open: string
+	close: string
+}
 
-function containsThinkTags(text: string): boolean {
-	return (
-		(text.includes("<think>") && text.includes("</think>")) ||
-		(text.includes("<mm:think>") && text.includes("</mm:think>"))
-	)
+const THINK_TAG_VARIANTS: ThinkTagVariant[] = [
+	{ open: "<think>", close: "</think>" },
+	{ open: "<thinking>", close: "</thinking>" },
+	{ open: "<mm:think>", close: "</mm:think>" },
+]
+
+const THINK_TAG_PATTERN = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>|<mm:think>[\s\S]*?<\/mm:think>/g
+
+// Orphaned close tags: some models (observed with kimi-k2.x when thinking is
+// off) emit reasoning as plain text terminated by a close tag with no
+// matching open tag. After the closed-block replace pass has consumed all
+// balanced pairs, any remaining close tag is unmatched by definition and is
+// never meaningful prose, so it is safe to strip it for display.
+const ORPHAN_CLOSE_TAG_PATTERN = new RegExp(
+	`</(?:${THINK_TAG_VARIANTS.map((v) => v.close.slice(2, -1)).join("|")})>`,
+	"g",
+)
+
+function stripOrphanCloseTags(text: string): string {
+	return text.replace(ORPHAN_CLOSE_TAG_PATTERN, "")
+}
+
+function containsCloseTag(text: string): boolean {
+	return THINK_TAG_VARIANTS.some((v) => text.includes(v.close))
+}
+
+function containsAnyThinkTag(text: string): boolean {
+	return THINK_TAG_VARIANTS.some((v) => text.includes(v.open)) || containsCloseTag(text)
 }
 
 function getOpenTag(match: string): string {
-	return match.startsWith("<mm:think>") ? "<mm:think>" : "<think>"
+	return THINK_TAG_VARIANTS.find((v) => match.startsWith(v.open))?.open ?? "<think>"
 }
 
 function getCloseTag(match: string): string {
-	return match.startsWith("<mm:think>") ? "</mm:think>" : "</think>"
+	return THINK_TAG_VARIANTS.find((v) => match.endsWith(v.close))?.close ?? "</think>"
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +129,7 @@ function lastNLines(text: string, n: number): string {
 }
 
 function stripThinkingTags(text: string): string {
-	return text.replace(THINK_TAG_PATTERN, "")
+	return stripOrphanCloseTags(text.replace(THINK_TAG_PATTERN, ""))
 }
 
 /**
@@ -158,7 +184,7 @@ function stripMarkdownSyntax(text: string): string {
 }
 
 function replaceThinkingTagsWithDimmed(text: string): string {
-	return text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
+	const replaced = text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
 		const openTag = getOpenTag(match)
 		const closeTag = getCloseTag(match)
 		const content = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
@@ -168,6 +194,7 @@ function replaceThinkingTagsWithDimmed(text: string): string {
 		const separator = after.trimStart().length > 0 ? "\n\n" : ""
 		return dimThinkingContent(visible) + separator
 	})
+	return stripOrphanCloseTags(replaced)
 }
 
 /**
@@ -190,7 +217,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 		return dimThinkingContent(inner) + separator
 	})
 	// 2. Handle unclosed open tags (thinking content still streaming)
-	for (const openTag of ["<think>", "<mm:think>"]) {
+	for (const openTag of THINK_TAG_VARIANTS.map((v) => v.open)) {
 		const openIdx = result.indexOf(openTag)
 		if (openIdx !== -1) {
 			const before = result.slice(0, openIdx)
@@ -203,7 +230,8 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 			break
 		}
 	}
-	return result
+	// 3. Strip orphaned close tags (e.g. kimi-k2.x thinking=off fragments).
+	return stripOrphanCloseTags(result)
 }
 
 export function filterThinkingForDisplay(text: string): string {
@@ -288,8 +316,9 @@ export default function hideThinkingExtension(pi: ExtensionAPI): void {
 			if (!newContent) continue
 			state.original += newContent
 
-			// Only touch the block when there is (or might be) a think tag.
-			if (!state.original.includes("<think>") && !state.original.includes("<mm:think>")) {
+			// Only touch the block when there is (or might be) a think tag —
+			// including orphaned close tags emitted without an opener.
+			if (!containsAnyThinkTag(state.original)) {
 				state.lastDisplayLength = block.text.length
 				continue
 			}
@@ -320,10 +349,10 @@ export default function hideThinkingExtension(pi: ExtensionAPI): void {
 				// Capture any trailing content added after our last message_update.
 				const remaining = block.text.slice(streamState.lastDisplayLength)
 				const fullOriginal = streamState.original + remaining
-				if (containsThinkTags(fullOriginal)) {
+				if (containsAnyThinkTag(fullOriginal)) {
 					blockOriginals.set(i, fullOriginal)
 				}
-			} else if (containsThinkTags(block.text)) {
+			} else if (containsAnyThinkTag(block.text)) {
 				blockOriginals.set(i, block.text)
 			}
 		}

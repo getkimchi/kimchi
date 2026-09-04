@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { setIdeSelectionIndicator } from "../ui.js"
 import { formatAtMention } from "./at-mentions.js"
 import { applyEditInput } from "./edit-apply.js"
@@ -327,8 +328,9 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 						// Force an immediate TUI render so the pasted text appears
 						// without waiting for the next user input event.
 						currentCtx.ui.setStatus("ide-adapter-mention", undefined)
-					} catch {
+					} catch (err) {
 						// If paste fails (e.g. no active editor), fall back to queue
+						console.warn("[ide-adapter] pasteToEditor failed, falling back to queue:", err)
 						localQueueAtMention(mention)
 					}
 				} else {
@@ -452,7 +454,9 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `The user hand-edited your proposed change to ${proposed.filePath} in the IDE diff viewer before it was applied. The actual content written to disk differs from your original proposal — do not assume your proposed content was applied verbatim. If you need to reference the exact value, read the file from disk.`,
+								text: markHarnessSteer(
+									`The user hand-edited your proposed change to ${proposed.filePath} in the IDE diff viewer before it was applied. The actual content written to disk differs from your original proposal — do not assume your proposed content was applied verbatim. If you need to reference the exact value, read the file from disk.`,
+								),
 							},
 						],
 						display: false,

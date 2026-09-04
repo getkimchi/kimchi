@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto"
+import { basename } from "node:path"
+import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../../config.js"
+import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
+import { repoBasename } from "../../teleport/provisioning/paths.js"
+import { GitTokenPromptComponent, type GitTokenPromptResult } from "../../teleport/ui/git-token-prompt.js"
 import type {
 	AgentOutcome,
 	AgentRecord,
@@ -16,10 +24,13 @@ import type { WorkerReportSubmission } from "../worker-report.js"
 import {
 	MIN_FINALIZE_TOKEN_BUDGET,
 	MIN_TOKEN_BUDGET,
+	type RunResult,
 	resumeAgent,
 	runAgent,
 	type ToolActivity,
 } from "./agent-runner.js"
+import { runRemoteAgent } from "./remote-agent-runner.js"
+import { RemoteAgentSession } from "./remote-agent-session.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -33,6 +44,9 @@ const DEFAULT_MAX_CONTINUATION_RESUMES = 2
 const DEFAULT_MAX_REPORT_FINALIZERS = 1
 const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
 
+/** Result shape returned by `_runRemote()`, mirroring `RunResult` from agent-runner.ts. */
+type RemoteRunResult = Omit<RunResult, "session"> & { session: AgentSession }
+
 interface SpawnArgs {
 	pi: ExtensionAPI
 	ctx: ExtensionContext
@@ -45,11 +59,14 @@ interface SpawnOptions {
 	description: string
 	visibility?: AgentVisibility
 	model?: Model<Api>
+	requiresVision?: boolean
 	maxTurns?: number
 	isolated?: boolean
 	inheritContext?: boolean
 	thinkingLevel?: ThinkingLevel
 	isBackground?: boolean
+	/** When true, runs on a remote sandbox via ACP instead of locally. */
+	remote?: boolean
 	/**
 	 * Skip the maxConcurrent queue check for this spawn — start immediately even
 	 * if the configured concurrency limit would otherwise queue it.
@@ -68,6 +85,7 @@ interface SpawnOptions {
 	onSessionCreated?: (session: AgentSession) => void
 	onTurnEnd?: (turnCount: number) => void
 	onAssistantUsage?: (usage: LifetimeUsage) => void
+	onRawNotification?: (params: SessionNotification) => void
 	onCompaction?: (info: CompactionInfo) => void
 }
 
@@ -173,6 +191,7 @@ export class AgentManager {
 			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
+			remote: effectiveOptions.remote,
 		}
 		this.agents.set(id, record)
 
@@ -224,75 +243,83 @@ export class AgentManager {
 			record.detachFromParent = undefined
 		}
 
-		const promise = runAgent(ctx, type, prompt, {
-			pi,
-			model: options.model,
-			maxTurns: options.maxTurns,
-			tokenBudget: options.tokenBudget,
-			inactivityTimeout: options.inactivityTimeout,
-			maxDuration: options.maxDuration,
-			workerReport: record.taskRef
-				? {
-						isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
-						submit: (report) => {
-							const accepted = this.submitReport(id, report) != null
-							return {
-								accepted,
-								message: accepted
-									? "Agent report recorded. Worker run complete."
-									: "Agent report rejected because this worker is no longer active.",
-							}
+		const promise = (
+			record.remote
+				? this._runRemote(record, prompt, options, ctx)
+				: runAgent(ctx, type, prompt, {
+						pi,
+						model: options.model,
+						requiresVision: options.requiresVision,
+						maxTurns: options.maxTurns,
+						tokenBudget: options.tokenBudget,
+						inactivityTimeout: options.inactivityTimeout,
+						maxDuration: options.maxDuration,
+						workerReport: record.taskRef
+							? {
+									isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+									submit: (report) => {
+										const accepted = this.submitReport(id, report) != null
+										return {
+											accepted,
+											message: accepted
+												? "Agent report recorded. Worker run complete."
+												: "Agent report rejected because this worker is no longer active.",
+										}
+									},
+								}
+							: undefined,
+						hardTurnLimit: record.taskRef?.kind === "ferment_step",
+						isolated: options.isolated,
+						inheritContext: options.inheritContext,
+						thinkingLevel: options.thinkingLevel,
+						sessionFile: options.sessionFile,
+						sessionDir: options.sessionDir,
+						signal: record.abortController?.signal,
+						onToolActivity: (activity) => {
+							// Count only terminal statuses — a "pending" notification is
+							// not a completed tool use.
+							if (activity.status === "completed" || activity.status === "failed") record.toolUses++
+							options.onToolActivity?.(activity)
 						},
-					}
-				: undefined,
-			hardTurnLimit: record.taskRef?.kind === "ferment_step",
-			isolated: options.isolated,
-			inheritContext: options.inheritContext,
-			thinkingLevel: options.thinkingLevel,
-			sessionFile: options.sessionFile,
-			sessionDir: options.sessionDir,
-			signal: record.abortController?.signal,
-			onToolActivity: (activity) => {
-				if (activity.type === "end") record.toolUses++
-				options.onToolActivity?.(activity)
-			},
-			onTurnEnd: (turnCount) => {
-				record.lastTurnCount = turnCount
-				options.onTurnEnd?.(turnCount)
-			},
-			onTextDelta: options.onTextDelta,
-			onAssistantUsage: (usage) => {
-				addUsage(record.lifetimeUsage, usage)
-				options.onAssistantUsage?.(usage)
-			},
-			onCompaction: (info) => {
-				record.compactionCount++
-				this.onCompact?.(record, info)
-				options.onCompaction?.(info)
-			},
-			onRuntimeCleanupRegistered: (cleanup) => {
-				this.runtimeCleanups.set(record, cleanup)
-			},
-			onSessionCreated: (session) => {
-				record.session = session
-				if (record.pendingSteers?.length) {
-					for (const msg of record.pendingSteers) {
-						session.steer(msg).catch(() => {})
-					}
-					record.pendingSteers = undefined
-				}
-				options.onSessionCreated?.(session)
-			},
-			onSystemPrompt: (prompt) => {
-				record.systemPrompt = prompt
-			},
-		})
-			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
+						onTurnEnd: (turnCount) => {
+							record.lastTurnCount = turnCount
+							options.onTurnEnd?.(turnCount)
+						},
+						onTextDelta: options.onTextDelta,
+						onAssistantUsage: (usage) => {
+							addUsage(record.lifetimeUsage, usage)
+							options.onAssistantUsage?.(usage)
+						},
+						onCompaction: (info) => {
+							record.compactionCount++
+							this.onCompact?.(record, info)
+							options.onCompaction?.(info)
+						},
+						onRuntimeCleanupRegistered: (cleanup) => {
+							this.runtimeCleanups.set(record, cleanup)
+						},
+						onSessionCreated: (session) => {
+							record.session = session
+							if (record.pendingSteers?.length) {
+								for (const msg of record.pendingSteers) {
+									session.steer(msg).catch(() => {})
+								}
+								record.pendingSteers = undefined
+							}
+							options.onSessionCreated?.(session)
+						},
+						onSystemPrompt: (prompt) => {
+							record.systemPrompt = prompt
+						},
+					})
+		)
+			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
 				record.abortReason = abortReason
-				record.result = responseText
+				const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+				record.result = finalText
 				record.session = session
 				record.lastTurnCount = turnsUsed
 				// Preserve the effective, normalized turn cap returned by the runner.
@@ -305,7 +332,7 @@ export class AgentManager {
 					this.onComplete?.(record)
 					this.drainQueue()
 				}
-				return responseText
+				return finalText
 			})
 			.catch((err) => {
 				if (record.status !== "stopped") {
@@ -329,6 +356,128 @@ export class AgentManager {
 			})
 
 		record.promise = promise
+	}
+
+	/**
+	 * Runs a remote agent via ACP on a sandbox worker.
+	 *
+	 * v1 limitation: only a subset of SpawnOptions is honored — signal, callbacks, and
+	 * cwd are forwarded, but maxTurns, tokenBudget, inactivityTimeout, maxDuration,
+	 * model, isolated, inheritContext, and thinkingLevel are intentionally ignored.
+	 * Remote runs are single-turn (maxTurns: 1) with yolo: true. Multi-turn support,
+	 * budget enforcement, and timeout guards are planned for a follow-up PR.
+	 */
+	private async _runRemote(
+		record: AgentRecord,
+		prompt: string,
+		options: SpawnOptions,
+		ctx: ExtensionContext,
+	): Promise<RemoteRunResult> {
+		const apiKey = loadConfig().apiKey
+		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+
+		const workspaces = await listWorkspaces(apiKey, {
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+		})
+		// Match a workspace whose name matches the current repo dir (same convention
+		// as /teleport, which names workspaces by basename(cwd)). If no match is
+		// found, mint a new one rather than reusing an unrelated workspace.
+		const dirName = basename(ctx.cwd) || "kimchi"
+		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
+		const workspaceId = byName?.id ?? randomUUID()
+
+		// Resolve git clone plan from the local repo so the sandbox gets a
+		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
+		// If cwd isn't a git repo or has no origin, this is a no-op.
+		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
+		let gitCredential: { host: string; token: string } | undefined
+		try {
+			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
+			gitDetails = {
+				repo: clonePlan.httpsUrl,
+				branch: clonePlan.branch,
+				targetDirectory: repoBasename(clonePlan.url),
+				noHistory: true,
+			}
+			// Resolve git credential separately — a failure here (bad URL, prompt
+			// rejection) must not wipe the clone plan. The clone proceeds without
+			// creds; private repos fail, public repos still work.
+			try {
+				gitCredential = await resolveGitCredential(ctx, clonePlan)
+			} catch (err) {
+				gitCredential = undefined
+				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
+			}
+		} catch {
+			// Not a git repo or no origin — proceed without git details.
+			gitDetails = undefined
+			gitCredential = undefined
+		}
+
+		// Create the adapter before calling runRemoteAgent so it's available
+		// on record.session as soon as the prompt starts — enables steer_subagent
+		// and get_subagent_result to work mid-run.
+		const remoteSession = new RemoteAgentSession()
+		record.session = remoteSession as unknown as AgentSession
+
+		// Seed the transcript with the user prompt so ConversationViewer shows it
+		// immediately, before any assistant text arrives.
+		remoteSession.setUserPrompt(prompt)
+
+		const result = await runRemoteAgent(workspaceId, prompt, {
+			apiKey,
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+			gitDetails,
+			gitCredential,
+			localPath: ctx.cwd,
+			workspaceName: dirName,
+			onReady: (acpClient, meta) => {
+				remoteSession.bindClient(acpClient, meta)
+			},
+			callbacks: {
+				onTextDelta: (delta, fullText) => {
+					remoteSession.appendAssistantText(fullText)
+					options.onTextDelta?.(delta, fullText)
+				},
+				onToolActivity: (activity) => {
+					if (activity.status === "in_progress") {
+						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId)
+					} else {
+						const isError = activity.status === "failed"
+						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
+						record.toolUses++
+					}
+					options.onToolActivity?.(activity)
+				},
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
+					remoteSession.incrementTurnCount()
+					options.onTurnEnd?.(turnCount)
+				},
+				onAssistantUsage: (usage) => {
+					remoteSession.addUsage(usage)
+					addUsage(record.lifetimeUsage, usage)
+					options.onAssistantUsage?.(usage)
+				},
+				onRawNotification: (params) => {
+					options.onRawNotification?.(params)
+				},
+			},
+		})
+
+		record.remoteSession = result.remoteSession
+
+		return {
+			responseText: result.responseText,
+			session: remoteSession as unknown as AgentSession,
+			aborted: result.stopReason === "cancelled",
+			abortReason: undefined,
+			steered: false,
+			turnsUsed: remoteSession.turnCount,
+			maxTurns: undefined,
+		}
 	}
 
 	private drainQueue() {
@@ -451,7 +600,7 @@ export class AgentManager {
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
 		const resumePromise = resumeAgent(record.session, attemptPrompt, {
 			onToolActivity: (activity) => {
-				if (activity.type === "end") record.toolUses++
+				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 			},
 			onTurnEnd: (turnCount) => {
 				record.lastTurnCount = turnCount
@@ -715,6 +864,31 @@ export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abort
 		return "budget_exhausted"
 	}
 	return "failed"
+}
+
+/**
+ * Resolve a git credential for the sandbox clone. Checks for a cached token
+ * first (config.json), then prompts the user via the same PAT dialog
+ * teleport uses. Returns undefined when no token is available (e.g. user
+ * skipped or non-interactive mode) — the clone proceeds without creds and
+ * will succeed for public repos only.
+ */
+async function resolveGitCredential(
+	ctx: ExtensionContext,
+	clonePlan: ClonePlan,
+): Promise<{ host: string; token: string } | undefined> {
+	const host = new URL(clonePlan.httpsUrl).hostname
+	const prompt: () => Promise<GitTokenPromptResult> =
+		ctx.mode === "tui"
+			? () =>
+					ctx.ui.custom(
+						(tui, theme, _kb, done) => new GitTokenPromptComponent(theme, host, done, () => tui.requestRender()),
+					)
+			: async () => ({ outcome: "skipped" as const })
+	const token = await resolveGitToken(host, prompt, (err) =>
+		console.warn(`[agent-manager] could not save git token: ${err instanceof Error ? err.message : err}`),
+	)
+	return token ? { host, token } : undefined
 }
 
 function buildRemainingWorkGuidance(

@@ -13,10 +13,14 @@ import { fileURLToPath } from "node:url"
 import type { ClientSideConnection } from "@agentclientprotocol/sdk"
 import * as acp from "@agentclientprotocol/sdk"
 import {
+	DEFAULT_MODEL,
+	type FakeModel,
 	type FakeOpenAiServer,
 	type FakeResponseScript,
+	resolveModels,
 	startFakeOpenAiServer,
 } from "../../tui/support/fake-openai-server.js"
+import { createMcpFixture, type McpFixture, type McpFixtureOptions } from "../../tui/support/mcp-fixture.js"
 
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
@@ -42,6 +46,7 @@ export interface AcpFixture {
 	proc: ChildProcess
 	conn: ClientSideConnection
 	client: RecordingClient
+	mcp?: McpFixture
 	/**
 	 * Resolve on process exit. Pass `{ signal }` to abort the wait — used by
 	 * `stop()` so a SIGKILL doesn't hang the teardown on the exit promise.
@@ -50,8 +55,20 @@ export interface AcpFixture {
 	stop(): Promise<void>
 }
 
+export interface AcpMcpFixture extends AcpFixture {
+	mcp: McpFixture
+}
+
 export interface AcpFixtureOptions {
 	responses: FakeResponseScript[]
+	models?: FakeModel[]
+	routerResponses?: unknown[]
+	providerId?: string
+	defaultProvider?: string
+	defaultModel?: string
+	extraArgs?: string[]
+	/** Input modalities advertised by the default deterministic fake model. Ignored when `models` is provided. */
+	modelInput?: ("text" | "image")[]
 	/**
 	 * Extra capabilities merged on top of the always-present fs baseline.
 	 * Defaults to `{}` (just the fs baseline — matches `verify-acp.mjs`).
@@ -70,6 +87,8 @@ export interface AcpFixtureOptions {
 	 * a custom extension that exercises those calls.
 	 */
 	extensionPath?: string
+	/** Seed the isolated Kimchi config with the shared repository-owned MCP fixture. */
+	mcp?: McpFixtureOptions
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -200,12 +219,29 @@ function textOf(update: acp.SessionUpdate): string | undefined {
 }
 
 export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<AcpFixture> {
-	const { artifactName, responses, clientCapabilities, clientMeta, extensionPath } = options
-	const fake = await startFakeOpenAiServer({ responses })
+	const {
+		artifactName,
+		responses,
+		models,
+		modelInput,
+		routerResponses,
+		providerId = "fake",
+		defaultProvider,
+		defaultModel,
+		extraArgs = [],
+		clientCapabilities,
+		clientMeta,
+		extensionPath,
+	} = options
+	const configuredModels = models
+		? resolveModels(models)
+		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
+	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, routerResponses })
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
 
 	let proc: ChildProcess | null = null
+	let mcp: McpFixture | undefined
 	const abort = new AbortController()
 
 	const recordArtifact = (outcome: "pass" | "fail", error?: unknown) => {
@@ -241,6 +277,23 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 
 	let client: RecordingClient | null = null
 
+	// Dump the full client/server state on ANY test failure (not just fixture
+	// start failures) — scenario timeouts are otherwise invisible in CI logs.
+	// Registered as soon as the fixture exists so the artifact exists even if
+	// the failure happens mid-test; harmless when no test context is active
+	// (e.g. direct use outside vitest subscriptions).
+	if (process.env.VITEST) {
+		try {
+			const { onTestFailed } = await import("vitest")
+			onTestFailed((ctx) => {
+				recordArtifact("fail", ctx.task.result?.errors?.[0])
+			})
+		} catch (hookError) {
+			// Not inside a test context — artifacts still written on start failure.
+			process.stderr.write(`[acp-e2e] onTestFailed registration skipped: ${String(hookError).slice(0, 200)}\n`)
+		}
+	}
+
 	try {
 		const configDir = join(homeDir, ".config", "kimchi")
 		const agentDir = join(configDir, "harness")
@@ -267,24 +320,22 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			JSON.stringify(
 				{
 					providers: {
-						fake: {
+						[providerId]: {
 							baseUrl: `${fake.baseUrl}/openai/v1`,
 							apiKey: "fake",
 							api: "openai-completions",
 							authHeader: true,
 							headers: { "User-Agent": "kimchi/acp-e2e" },
-							models: [
-								{
-									id: "basic",
-									name: "Fake Basic",
-									reasoning: false,
-									input: ["text"],
-									contextWindow: 64_000,
-									maxTokens: 1024,
-									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-									provider: "openai",
-								},
-							],
+							models: configuredModels.map((model) => ({
+								id: model.slug,
+								name: model.displayName,
+								reasoning: model.reasoning,
+								input: model.input,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								provider: model.provider,
+							})),
 						},
 					},
 				},
@@ -293,13 +344,21 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
+		if (defaultProvider && defaultModel) {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ defaultProvider, defaultModel }, null, "\t"),
+				"utf-8",
+			)
+		}
+		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH
 		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
 
-		proc = spawn(BINARY_PATH, ["--mode", "acp"], {
+		proc = spawn(BINARY_PATH, ["--mode", "acp", ...extraArgs], {
 			stdio: ["pipe", "pipe", "inherit"],
 			env: {
 				...process.env,
@@ -307,12 +366,12 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				PI_PACKAGE_DIR: PACKAGE_DIR,
 				KIMCHI_DISABLE_BUILTIN_PROVIDERS: "1",
 				PI_SKIP_VERSION_CHECK: "1",
-				// Disable startup network hooks (self-update probe and RTK
-				// auto-install) so the session boots without background HTTP or
-				// synchronous tar/exec work. Keeps the ACP e2e hermetic and
-				// deterministic.
+				// Disable startup network hooks (self-update probe) so the
+				// session boots without background HTTP or synchronous tar/exec
+				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
-				KIMCHI_RTK_AUTO_INSTALL: "0",
+				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
+				...(mcp?.env ?? {}),
 			},
 			cwd: workDir,
 		})
@@ -362,6 +421,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			proc,
 			conn,
 			client,
+			mcp,
 			waitForExit,
 			async stop() {
 				abort.abort()
@@ -375,6 +435,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 					])
 				}
 				await fake.stop()
+				await mcp?.stop().catch(() => {})
 				rmSync(homeDir, { recursive: true, force: true })
 				rmSync(workDir, { recursive: true, force: true })
 			},
@@ -383,10 +444,28 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		recordArtifact("fail", error)
 		if (proc && proc.exitCode === null) proc.kill("SIGKILL")
 		await fake.stop().catch(() => {})
+		await mcp?.stop().catch(() => {})
 		rmSync(homeDir, { recursive: true, force: true })
 		rmSync(workDir, { recursive: true, force: true })
 		throw error
 	}
+}
+
+export async function startAcpMcpFixture(
+	options: StartAcpFixtureOptions & { mcp: McpFixtureOptions },
+): Promise<AcpMcpFixture> {
+	const fixture = await startAcpFixture(options)
+	try {
+		assertAcpMcpFixture(fixture)
+		return fixture
+	} catch (error) {
+		await fixture.stop().catch(() => {})
+		throw error
+	}
+}
+
+function assertAcpMcpFixture(fixture: AcpFixture): asserts fixture is AcpMcpFixture {
+	if (!fixture.mcp) throw new Error("MCP test fixture was requested but not created")
 }
 
 function mergeCapabilities(
@@ -413,7 +492,14 @@ function formatJson(value: unknown): string {
 
 function formatError(error: unknown): string {
 	if (error instanceof Error) return `${error.name}: ${error.message}\n\n${error.stack ?? "(no stack)"}`
-	return String(error)
+	// Vitest serializes runner errors to plain objects (no Error prototype),
+	// and some of those objects can throw on String() coercion — stringify
+	// defensively instead of relying on implicit conversion.
+	try {
+		return JSON.stringify(error, null, "\t")
+	} catch {
+		return Object.prototype.toString.call(error)
+	}
 }
 
 export { FAKE_TOOL_CALL_ID, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS }

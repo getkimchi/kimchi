@@ -32,7 +32,13 @@ import {
 } from "./auto-compaction.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { clearPendingCompaction, type PendingCompaction, setPendingCompaction } from "./state.js"
+import {
+	clearCompactionInFlight,
+	clearMidTurnCompactionTracking,
+	clearPendingCompaction,
+	type PendingCompaction,
+	setPendingCompaction,
+} from "./state.js"
 
 // Mock the settings-watcher so the /settings Auto-compact toggle can be
 // controlled per-test. Default factory returns `true` so every existing test
@@ -965,6 +971,87 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 	})
 
+	it("skips step compaction below the 60%-of-window gate but still delivers the handoff", async () => {
+		// Run 019ffa0b measured ~74s per step compaction at 50–80K contexts,
+		// far below any pressure level. Steps now need real window pressure.
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(ABOVE_GATE_TOKENS) // 60k < 60% of 200k window
+		ctx.model = { contextWindow: 200_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn()
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).not.toHaveBeenCalled()
+		expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining(
+				"below the step-compaction threshold (120,000 tokens, 60% of the 200,000-token window)",
+			),
+		})
+	})
+
+	it("fires step compaction at or above the 60%-of-window gate", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(130_000) // ≥ 120k = 60% of 200k window
+		ctx.model = { contextWindow: 200_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 130_000,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalled()
+	})
+
+	it("always fires phase compaction below the step gate (phase boundaries are exempt)", async () => {
+		const ferment = makeFermentWithPhase({ id: "phase-1", name: "Phase", goal: "Goal" })
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingPhase(ferment.id, "phase-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(ABOVE_GATE_TOKENS) // 60k < 120k step gate — but kind is phase
+		ctx.model = { contextWindow: 200_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({ summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 60_000 }))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalled()
+	})
+
+	it("falls back to firing when the context window is unknown", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(ABOVE_GATE_TOKENS)
+		// No ctx.model → gate cannot be computed → fire (previous behaviour).
+		ctx.inlineCompact = vi.fn(async () => ({ summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 60_000 }))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalled()
+	})
+
 	it("treats a session with no assistant usage as below the minimum-size gate", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
@@ -1004,6 +1091,9 @@ describe("maybeTriggerFermentCompaction", () => {
 			minContextTokens: 10_000,
 			minKeepRecentTokens: 1_000,
 			keepRecentWindowFraction: 0.5,
+			// Gate opt-out so this test (30k context, 100k window) exercises the
+			// keepRecent/thinking plumbing rather than the fraction gate.
+			stepContextGateFraction: 0,
 			thinkingLevel: "low",
 		})
 
@@ -1023,7 +1113,9 @@ describe("maybeTriggerFermentCompaction", () => {
 		)
 		storageMap.set(ferment.id, ferment)
 		runtime.setActive(ferment)
-		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		// Phase-kind pending so the 60%-of-window step gate (which would skip
+		// this 60k-on-a-1M-window context) does not shadow the keepRecent math.
+		setPendingCompaction(ferment.id, makePendingPhase(ferment.id, "phase-1"))
 		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
 		ctx.model = { contextWindow: 1_000_000 } as ExtensionContext["model"]
 		ctx.inlineCompact = vi.fn(async () => ({
@@ -1227,6 +1319,14 @@ describe("buildMidTurnCustomInstructions", () => {
 
 describe("maybeTriggerMidTurnFermentCompaction", () => {
 	const CONTEXT_WINDOW = 100_000
+
+	// The no-op detection tracker and the in-flight flag are module-scoped and
+	// keyed by ferment id; every test here uses "ferment-1", and mocked
+	// compaction paths don't always invoke their completion callbacks.
+	afterEach(() => {
+		clearMidTurnCompactionTracking()
+		clearCompactionInFlight("ferment-1")
+	})
 
 	it("no-ops when total tokens are below the threshold", () => {
 		const ferment = makeFermentWithPhase()
@@ -1445,21 +1545,89 @@ describe("maybeTriggerMidTurnFermentCompaction", () => {
 		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "warning")
 	})
 
-	it("clears in-flight without notifying when inlineCompact rejects with an expected error", async () => {
+	it("falls back to the aborting path when a successful inline fire never shrinks the context", async () => {
+		// Regression: run 019ffb83 storm — suppress-abort inlineCompaction returns
+		// success but the running loop keeps the snapshot captured at run start,
+		// so the next over-threshold trigger would fire another no-op.
 		const ferment = makeFermentWithPhase()
 		ferment.phases[0].status = "active"
 		ferment.phases[0].steps[0].status = "running"
 		const runtime = makeMidTurnRuntime(ferment)
 		const pi = makePi()
 		const ctx = makeMidTurnCtx()
-		ctx.inlineCompact = vi.fn(async () => {
-			throw new Error("no summarizable messages")
-		})
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: CONTEXT_WINDOW - 1,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+
+		// Next turn still over threshold, no below-threshold turn in between →
+		// no-op proven; suppress inline and use the aborting ctx.compact path.
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+		expect(ctx.compact).toHaveBeenCalledTimes(1)
+		expect(runtime.isMidTurnInlineSuppressed(ferment.id)).toBe(true)
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({ text: expect.stringContaining("Mid-turn inline compaction no-op") }),
+		)
+	})
+
+	it("does not fire inline again while suppressed, even after the in-flight flag clears", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: CONTEXT_WINDOW - 1,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		// Simulate the abort-fallback compaction completing.
+		runtime.clearCompactionInFlight(ferment.id)
 
 		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
 
-		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
-		expect(ctx.ui?.notify).not.toHaveBeenCalled()
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+		expect(ctx.compact).toHaveBeenCalledTimes(2)
+	})
+
+	it("re-enables the inline path once a below-threshold turn proves a real shrink", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: CONTEXT_WINDOW - 1,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+		expect(runtime.getLastMidTurnFireTokens(ferment.id)).toBe(CONTEXT_WINDOW - 1)
+
+		// A turn at/below the trigger threshold means the compacted wire context
+		// reached the model — the inline path works; clear the fire marker.
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, 1000)
+		expect(runtime.getLastMidTurnFireTokens(ferment.id)).toBeUndefined()
+
+		// A later legit re-crossing uses the inline path again.
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(2)
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(runtime.isMidTurnInlineSuppressed(ferment.id)).toBe(false)
 	})
 })
 

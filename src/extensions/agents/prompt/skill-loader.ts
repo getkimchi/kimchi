@@ -1,15 +1,16 @@
 /**
  * skill-loader.ts — Preload specific skill files and inject their content into the system prompt.
  *
- * Uses pi's official loadSkillsFromDir API to discover skills from kimchi's DEFAULT_SKILL_PATHS.
+ * Uses pi's official loadSkillsFromDir API to discover skills from the central
+ * skill-root resolver (src/shared/skill-discovery) — bundled (shipped with the
+ * harness), harness-home, config, and project (.kimchi/skills) roots, weakest first.
  */
 
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { isAbsolute, join } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
-import { DEFAULT_SKILL_PATHS } from "../../../config.js"
+import { resolveSkillRoots } from "../../../shared/skill-discovery/resolve-skill-roots.js"
 import { isUnsafeName } from "../memory/memory.js"
 
 export interface PreloadedSkill {
@@ -17,33 +18,45 @@ export interface PreloadedSkill {
 	content: string
 }
 
-/**
- * Discover all available skill names and descriptions from DEFAULT_SKILL_PATHS.
- * Returns a compact list of { name, description } pairs for injection into
- * sub-agent prompts when skills === true (the default).
- *
- * User custom skills (from .kimchi/skills/) are included since
- * DEFAULT_SKILL_PATHS scans all standard locations.
- */
-export function listAvailableSkillNames(cwd: string): { name: string; description: string }[] {
-	const resolvedPaths = DEFAULT_SKILL_PATHS.map((p) => {
-		if (isAbsolute(p)) {
-			return p
-		}
-		if (p.startsWith(".config/")) {
-			return join(homedir(), p)
-		}
-		return join(cwd, p)
-	})
+export interface ListAvailableSkillNamesOptions {
+	/** Override for os.homedir(), useful for tests. Defaults to homedir(). */
+	readonly homeDir?: string
+}
 
-	const allSkills = new Map<string, { name: string; description: string }>()
-	for (const dir of resolvedPaths) {
+/** One skill discovered by {@link listAvailableSkillNames}. */
+export interface SkillListEntry {
+	name: string
+	description: string
+	filePath: string
+}
+
+/**
+ * Resolve the ordered skill root directories for a cwd, weakest first
+ * (bundled, harness, config, project). Delegates to the central resolver in
+ * src/shared/skill-discovery so every consumer agrees on locations and
+ * precedence. Discovered skills are still loaded per-directory with
+ * loadSkillsFromDir; later dirs override earlier ones on name collisions.
+ */
+export function resolveSkillPaths(cwd: string, home = homedir()): string[] {
+	return resolveSkillRoots({ cwd, homeDir: home }).map((root) => root.dir)
+}
+
+/**
+ * Discover all available skill names and descriptions from the resolved skill
+ * roots (bundled, harness, config, and project `.kimchi/skills`).
+ * Returns a compact list of { name, description, filePath } pairs for injection
+ * into sub-agent prompts when skills === true (the default).
+ */
+export function listAvailableSkillNames(cwd: string, options: ListAvailableSkillNamesOptions = {}): SkillListEntry[] {
+	const allSkills = new Map<string, SkillListEntry>()
+	for (const dir of resolveSkillPaths(cwd, options.homeDir)) {
 		try {
 			const { skills } = loadSkillsFromDir({ dir, source: dir })
 			for (const skill of skills) {
 				allSkills.set(skill.name, {
 					name: skill.name,
 					description: skill.description ?? "",
+					filePath: skill.filePath,
 				})
 			}
 		} catch (err) {
@@ -56,9 +69,9 @@ export function listAvailableSkillNames(cwd: string): { name: string; descriptio
 }
 
 /**
- * Attempt to load named skills using pi's official loadSkillsFromDir for each path
- * in kimchi's DEFAULT_SKILL_PATHS. Project-level paths are resolved relative to cwd;
- * paths starting with ".config/" are resolved relative to homedir.
+ * Attempt to load named skills using pi's official loadSkillsFromDir across the
+ * resolved skill roots (bundled, harness, config, project); later roots
+ * override earlier ones on name collisions.
  *
  * @param skillNames  List of skill names to preload.
  * @param cwd         Working directory for relative path resolution.
@@ -67,16 +80,7 @@ export function listAvailableSkillNames(cwd: string): { name: string; descriptio
 export function preloadSkills(skillNames: string[], cwd: string): PreloadedSkill[] {
 	if (skillNames.length === 0) return []
 
-	// Build resolved absolute paths from DEFAULT_SKILL_PATHS
-	const resolvedPaths = DEFAULT_SKILL_PATHS.map((p) => {
-		if (isAbsolute(p)) {
-			return p
-		}
-		if (p.startsWith(".config/")) {
-			return join(homedir(), p)
-		}
-		return join(cwd, p)
-	})
+	const resolvedPaths = resolveSkillPaths(cwd)
 
 	// Collect all skills from all paths using pi's official loader
 	const allSkills = new Map<string, Skill>()

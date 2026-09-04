@@ -52,10 +52,10 @@ describe("bash hook discovery", () => {
 	it("parses Crush-style updated_input JSON", () => {
 		const output = JSON.stringify({
 			decision: "allow",
-			updated_input: JSON.stringify({ command: "rtk git status" }),
+			updated_input: JSON.stringify({ command: "git status" }),
 		})
 
-		expect(parseBashHookOutput(output, "git status")).toEqual({ command: "rtk git status" })
+		expect(parseBashHookOutput(output, "git status")).toEqual({ command: "git status" })
 	})
 
 	it("parses plain stdout as a command rewrite", () => {

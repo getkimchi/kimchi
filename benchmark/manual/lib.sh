@@ -145,7 +145,11 @@ DIR=\$(mktemp -d /private/tmp/${temp_prefix}-XXXXXX)
 echo \"Working directory: \$DIR\"
 echo \"Session file: \$SESSION_FILE\"
 cd \"\$DIR\"
-${setup_block}${binary} \\
+git init -q
+git config user.name "Benchmark"
+git config user.email "benchmark@local"
+${setup_block}git add -A && git commit -q -m 'baseline' --allow-empty
+${binary} \\
   --yolo \\
 ${model_flag_line}${extra_flags}  --session \"\$SESSION_FILE\" \\
   \"${prompt}\"
@@ -161,7 +165,11 @@ ${model_flag_line}${extra_flags}  --session \"\$SESSION_FILE\" \\
 DIR=\$(mktemp -d /private/tmp/${temp_prefix}-XXXXXX)
 echo \"Working directory: \$DIR\"
 cd \"\$DIR\"
-${setup_block}${binary} \\
+git init -q
+git config user.name "Benchmark"
+git config user.email "benchmark@local"
+${setup_block}git add -A && git commit -q -m 'baseline' --allow-empty
+${binary} \\
   --dangerously-skip-permissions \\
   --model opus \\
   \"${prompt}\"

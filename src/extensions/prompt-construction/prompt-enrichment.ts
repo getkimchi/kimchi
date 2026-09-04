@@ -25,33 +25,21 @@
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
-import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
+import { arch, homedir, version as osVersion, platform, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	getAgentDir,
-	loadSkills,
-	type Skill,
-} from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { isResourceEnabled } from "../../resources/store.js"
-import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
+import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
-import {
-	CLAUDE_CODE_SKILLS_RESOURCE_ID,
-	getClaudeCodeSkillResourcePaths,
-	getConfiguredNativeSkillNames,
-	getConfiguredSkillResourcePaths,
-} from "../claude-code-skills/definition.js"
+import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
+	brandUnmarkedSteers,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
@@ -59,6 +47,7 @@ import {
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
@@ -71,7 +60,9 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -210,7 +201,7 @@ export function isSubagent(): boolean {
 	return isAgentWorker()
 }
 
-export default function (skillPaths: string[]) {
+export default function (skillPathsFromConfig: string[]) {
 	return (pi: ExtensionAPI) => {
 		const subagentMode = isSubagent()
 
@@ -290,8 +281,23 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("model_select", async (_event, ctx) => {
+			pi.on("model_select", async (event, ctx) => {
 				notifyIfDeprecated(ctx)
+
+				// A user-initiated model switch (UI picker, /model, or cycling)
+				// is a fresh start for tool-calling behaviour from the new model's
+				// perspective. Reset the session-level latch so the first text-only
+				// turn after the switch is treated like the first turn of a new
+				// session (nudge suppressed until the new model calls a tool).
+				// Session restore is deliberately excluded: a restored session is
+				// continuing an existing conversation, not starting fresh.
+				if (event.source === "set" || event.source === "cycle") {
+					const sessionId = ctx.sessionManager.getSessionId()
+					const continuationNudge = getContinuationNudge(sessionId)
+					const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+					continuationNudge.resetForModelSwitch()
+					emptyTurnNudge.resetForModelSwitch()
+				}
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
@@ -430,10 +436,19 @@ export default function (skillPaths: string[]) {
 				)
 			})
 
-			pi.on("context", async (event) => {
+			pi.on("context", async (event, ctx) => {
+				const effectiveModel = getEffectiveModel(ctx)
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+				// kimi-k2.x stalls on historical tool calls whose IDs are not in
+				// Moonshot's canonical format (issue #1063) — normalize for those
+				// targets only.
+				if (isKimiK2Model(effectiveModel?.id)) {
+					messages = normalizeKimiToolCallIds(messages)
+				}
+				messages = tagSelfEchoes(messages)
+				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -444,8 +459,13 @@ export default function (skillPaths: string[]) {
 			// and MiniMax M2.7) emit empty tool calls after a real write/edit call,
 			// which the runtime rejects with a "Tool  not found" result that would
 			// otherwise accumulate in the subagent's context across turns.
-			pi.on("context", async (event) => {
-				const messages = stripEmptyToolCalls(event.messages)
+			pi.on("context", async (event, ctx) => {
+				const effectiveModel = getEffectiveModel(ctx)
+				let messages = stripEmptyToolCalls(event.messages)
+				if (isKimiK2Model(effectiveModel?.id)) {
+					messages = normalizeKimiToolCallIds(messages)
+				}
+				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -455,17 +475,20 @@ export default function (skillPaths: string[]) {
 		const cachedOs = platformNames[cachedRawPlatform] ?? cachedRawPlatform
 		const cachedCpuArchitecture = arch()
 		const cachedShell = process.env.SHELL ?? process.env.ComSpec ?? "unknown"
-		const cachedOsRelease = release()
 		const cachedOsVersion = osVersion()
 		const cachedUsername = safeUsername()
 		const cachedHomeDir = homedir()
 
 		let cachedContextFiles: ContextFile[] | undefined
-		let cachedSkills: Skill[] | undefined
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("resources_discover", (event) => {
-			const skillPaths = getKimchiProjectSkillPaths(event.cwd)
+			// Contribute Kimchi-only skill sources to pi's resource inventory so
+			// every downstream surface (base prompt skills section, /skill:<name>,
+			// autocomplete, /resources) sees them. All discovery, filtering, and
+			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig)
+			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
 			if (skillPaths.length === 0) return undefined
 			return { skillPaths }
 		})
@@ -474,29 +497,18 @@ export default function (skillPaths: string[]) {
 			syncSessionModelState(pi, ctx)
 
 			const sessionId = ctx.sessionManager.getSessionId()
+			const effectiveModel = getEffectiveModel(ctx)
 
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
-			if (cachedSkills === undefined) {
-				const configuredNativeSkillNames = getConfiguredNativeSkillNames(ctx.cwd, skillPaths)
-				const allSkillPaths = Array.from(
-					new Set([
-						...getKimchiProjectSkillPaths(ctx.cwd),
-						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
-						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillNames: configuredNativeSkillNames })
-							: []),
-						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
-					]),
-				)
-				cachedSkills = loadSkills({
-					cwd: ctx.cwd,
-					agentDir: getAgentDir(),
-					skillPaths: allSkillPaths,
-					includeDefaults: false,
-				}).skills
-			}
+			// Read skills from pi's resolved resource inventory (system prompt
+			// options) so the rebuilt prompt advertises exactly what pi
+			// loaded — honoring settings.json, --skill/--no-skills, trust,
+			// packages, precedence and collision rules — rather than a second,
+			// divergent view composed here. Kimchi-specific sources reach pi
+			// through resources_discover above.
+			const skills = event.systemPromptOptions?.skills ?? []
 
 			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))
@@ -508,7 +520,6 @@ export default function (skillPaths: string[]) {
 				rawPlatform: cachedRawPlatform,
 				cpuArchitecture: cachedCpuArchitecture,
 				shell: cachedShell,
-				osRelease: cachedOsRelease,
 				osVersion: cachedOsVersion,
 				username: cachedUsername,
 				homeDir: cachedHomeDir,
@@ -532,13 +543,13 @@ export default function (skillPaths: string[]) {
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
-				skills: cachedSkills,
-				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : ctx.model?.id,
+				skills: skills,
+				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
 				mode,
 				roles,
 				customConfigs,
-				sessionId: ctx.sessionManager.getSessionId(),
+				sessionId,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
@@ -569,8 +580,8 @@ export default function (skillPaths: string[]) {
 					ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
 				}
 			} else {
-				process.env.KIMCHI_DEBUG_PROMPTS = undefined
-				process.env.KIMCHI_DEBUG_SESSION = undefined
+				delete process.env.KIMCHI_DEBUG_PROMPTS
+				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
 			return { systemPrompt }

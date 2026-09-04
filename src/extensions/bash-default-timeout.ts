@@ -26,14 +26,14 @@
 
 import type { BashToolCallEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../resources/store.js"
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "./bash-timeout-constants.js"
 
 /** Resource id mirrored in `src/resources/definitions.ts`. */
 export const BASH_DEFAULT_TIMEOUT_RESOURCE_ID = "extensions.bash-default-timeout"
 
-/** Default applied when the bash tool is invoked without an explicit
- *  timeout. Kept as a named export so tests and tools can reference it
- *  without duplicating the literal. */
-export const DEFAULT_BASH_TIMEOUT_SECONDS = 120
+// Re-export so existing importers keep working; the canonical definition lives
+// in the import-free leaf module to avoid a definitions.ts <-> extension cycle.
+export { DEFAULT_BASH_TIMEOUT_SECONDS }
 
 /**
  * Pure helper: returns the timeout (in seconds) that should be used for a

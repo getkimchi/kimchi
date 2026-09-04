@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
+import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
@@ -283,6 +285,9 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 		// This also defers a pending subagent abort: the failed turn is retried upstream, and the
 		// retried turn is the one that produces the summary the orchestrator receives.
 		if (event.message.role === "assistant" && event.message.stopReason === "error") return
+		// Another extension deliberately withheld this output while it performs work
+		// at the settle boundary. Treat it as neutral instead of steering a new turn.
+		if (ASSISTANT_OUTPUT_WITHHELD in event.message) return
 
 		// If a subagent abort is pending, fire it NOW before processing the
 		// steer. The subagent already received the summary-request steer last
@@ -296,7 +301,7 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 			pi.sendMessage(
 				{
 					customType: STEER_MESSAGE_TYPE,
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: markHarnessSteer(text) }],
 					display: false,
 				},
 				{ deliverAs: "steer" },

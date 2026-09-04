@@ -20,7 +20,7 @@
  * handle. The registry is drained on `session_shutdown`.
  */
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { BASH_TOOL_DESCRIPTION } from "../bash-tool-guard.js"
+import { bashToolDescription } from "../bash-tool-guard.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
@@ -52,7 +52,7 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		})
 		const toolWithSteering = {
 			...tool,
-			description: BASH_TOOL_DESCRIPTION,
+			description: bashToolDescription(),
 			// The promptSnippet is the one-line "Execute bash commands..."
 			// summary used in the Available tools section. Keep the
 			// upstream/wrapped snippet so the system prompt still lists bash.

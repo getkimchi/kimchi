@@ -5,7 +5,7 @@ vi.mock("../provisioning/proxy-command.js", () => ({
 }))
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
-import { MANAGED_HEADER, renderSshConfig, slugify } from "./render.js"
+import { MANAGED_HEADER, renderSshConfig } from "./render.js"
 
 function ws(over: Partial<Workspace> & { id: string; name: string }): Workspace {
 	return {
@@ -18,25 +18,6 @@ function ws(over: Partial<Workspace> & { id: string; name: string }): Workspace 
 }
 
 const FIXED_NOW = new Date("2026-06-03T12:00:00Z")
-
-describe("slugify", () => {
-	it("lowercases and dash-separates", () => {
-		expect(slugify("My Project")).toBe("my-project")
-	})
-	it("collapses runs of non-alphanumerics", () => {
-		expect(slugify("a__b--c")).toBe("a-b-c")
-	})
-	it("trims leading and trailing dashes", () => {
-		expect(slugify("___foo___")).toBe("foo")
-	})
-	it("returns empty string for blank input", () => {
-		expect(slugify("   ")).toBe("")
-		expect(slugify("")).toBe("")
-	})
-	it("strips combining marks (NFKD)", () => {
-		expect(slugify("Café")).toBe("cafe")
-	})
-})
 
 describe("renderSshConfig", () => {
 	it("emits the managed header", () => {

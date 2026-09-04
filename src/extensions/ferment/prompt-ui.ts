@@ -3,6 +3,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
 import { type Answer, createQuestionForm, type Question, type QuestionType } from "../questionnaire/index.js"
 import { setTipWidgetLocation } from "../tips/index.js"
+import { pauseWorkingAnimation, resumeWorkingAnimation } from "../ui.js"
 
 type PromptUi = Pick<ExtensionUIContext, "select" | "input" | "editor" | "custom" | "setWorkingVisible">
 
@@ -51,6 +52,7 @@ export interface PromptFormResult {
 
 export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): Promise<T> {
 	const restoreTips = setTipWidgetLocation("hidden")
+	pauseWorkingAnimation()
 	try {
 		ui.setWorkingVisible?.(false)
 		return await fn()
@@ -58,6 +60,7 @@ export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): 
 		try {
 			ui.setWorkingVisible?.(true)
 		} finally {
+			resumeWorkingAnimation()
 			restoreTips()
 		}
 	}

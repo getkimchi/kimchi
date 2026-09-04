@@ -2,12 +2,18 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import loginExtension from "./index.js"
 
-const loadConfigMock = vi.hoisted(() => vi.fn())
+const { loadConfigMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
+	loadConfigMock: vi.fn(),
+	refreshBillingStatusFromConfigMock: vi.fn(),
+}))
 
 vi.mock("../../config.js", () => ({
-	clearApiKey: vi.fn(),
 	loadConfig: loadConfigMock,
 	writeApiKey: vi.fn(),
+}))
+
+vi.mock("../billing/status.js", () => ({
+	refreshBillingStatusFromConfig: refreshBillingStatusFromConfigMock,
 }))
 
 // Keep the real chatCompletionsApi (URL builder + scheme normalization) so baseUrl assertions
@@ -25,7 +31,7 @@ function providerConfigFor(customLlmEndpoint: string | undefined): ProviderConfi
 	loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint })
 	const registerProvider = vi.fn()
 	loginExtension({ on: vi.fn(), registerProvider } as unknown as ExtensionAPI)
-	const [providerId, providerConfig] = registerProvider.mock.calls[0]
+	const [providerId, providerConfig] = registerProvider.mock.calls.find(([provider]) => provider === "kimchi-dev") ?? []
 	expect(providerId).toBe("kimchi-dev")
 	return providerConfig
 }
@@ -58,5 +64,35 @@ describe("loginExtension", () => {
 		const config = providerConfigFor(undefined)
 		expect(config.baseUrl).toBeUndefined()
 		expect(config.oauth?.name).toBe("Kimchi")
+	})
+
+	it("restores OpenAI Codex subscription login while builtin API-key providers stay disabled", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const registerProvider = vi.fn()
+
+		loginExtension({
+			on: vi.fn(),
+			registerProvider,
+		} as unknown as ExtensionAPI)
+
+		expect(registerProvider.mock.calls[0]?.[0]).toMatchObject({
+			id: "openai-codex",
+			name: "OpenAI Codex",
+			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
+		})
+	})
+
+	it("refreshes billing when an authenticated session starts", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const on = vi.fn()
+
+		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
+		loadConfigMock.mockReturnValue({ apiKey: "configured-api-key", customLlmEndpoint: undefined })
+
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		sessionStart({}, { modelRegistry: { getAll: () => [] } })
+
+		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledOnce()
+		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledWith({ mode: "forced" })
 	})
 })

@@ -258,6 +258,23 @@ describe("clipboard-image extension", () => {
 			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
 		})
 
+		it("shows the image paste hint for the virtual Auto model", () => {
+			mockGetAvailableModels.mockReturnValue([])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => [] },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(
+				void 0,
+				makeMockCtx({ model: { provider: "kimchi-dev", id: "auto" } as ExtensionContext["model"] }),
+			)
+
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+		})
+
 		it("does not duplicate indicator on repeated polls", () => {
 			mockGetNativeClipboard.mockReturnValue({
 				clipboard: { hasImage: () => true, availableFormats: () => [] },

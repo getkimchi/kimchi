@@ -21,17 +21,26 @@ import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment
 import {
 	type CharterClauseVerdict,
 	DEFAULT_SCOPING_QUESTION_TYPE,
+	type Ferment,
 	type FermentCharter,
 	type Grade,
 	SCOPING_QUESTION_TYPES,
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { fermentPlanFileName, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
+import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
-import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import {
+	askUserForm,
+	createJudgeDecisionRecorder,
+	normalizeAskUserQuestions,
+	toScopingQuestionType,
+} from "../ask-user.js"
 import { renderCharterFull } from "../charter.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { createFerment } from "../create.js"
@@ -44,14 +53,14 @@ import { describeJudgeModel, type GraderSpawner, judgeJourneyGradeViaSubagent } 
 import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
 import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
-import { gatherPhaseEvidence } from "../phase-evidence.js"
+import { gatherPhaseEvidence, gatherStepVerifyEvidence } from "../phase-evidence.js"
 import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { MAX_BLOCK_RETRIES } from "../state.js"
+import { FIX_PROTOCOL, MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -681,6 +690,7 @@ async function confirmCompletionCriteria(
 		pi,
 		ctx,
 		runtime,
+		recordJudgeDecision: createJudgeDecisionRecorder(runtime),
 	}
 
 	const response = await askUserForm(
@@ -855,6 +865,21 @@ export function renderCharterAudit(verdicts: CharterClauseVerdict[]): string {
 	return lines.join("\n")
 }
 
+/** Quality-momentum input for the first journey grading attempt: the most
+ *  recent phase refusal, so the journey grader verifies those items stayed
+ *  fixed. Journey retries instead carry the journey's own refusal. */
+function latestPhaseRefusal(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+): { grade: string; recommendations: string[]; at: string } | undefined {
+	let latest: { grade: string; recommendations: string[]; at: string } | undefined
+	for (const phase of ferment.phases) {
+		const refusal = runtime.getLastPhaseRefusal(ferment.id, phase.id)
+		if (refusal && (!latest || refusal.at > latest.at)) latest = refusal
+	}
+	return latest
+}
+
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
@@ -900,6 +925,9 @@ export async function completeFerment(
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
+	// Hoisted before the judge input so the grader call below can include the
+	// journey's own prior refusal (retries carry it as delta context).
+	const FERMENT_GRADE_KEY = "__ferment__"
 	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
 		judgeJourneyGradeViaSubagent(
 			{
@@ -919,6 +947,7 @@ export async function completeFerment(
 							verdict: v.verdict,
 							rationale: v.rationale,
 						})),
+						...(p.grade ? { grade: { grade: p.grade.grade, recommendations: p.grade.recommendations } } : {}),
 					}
 				}),
 				fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
@@ -926,6 +955,9 @@ export async function completeFerment(
 					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
 					: { available: false },
 				evidence: params.evidence,
+				priorRefusal:
+					runtime.getLastPhaseRefusal(params.ferment_id, FERMENT_GRADE_KEY) ?? latestPhaseRefusal(runtime, ferment),
+				stepVerificationRuns: gatherStepVerifyEvidence(ferment.phases.flatMap((p) => p.steps)),
 			},
 			spawner,
 		),
@@ -936,7 +968,6 @@ export async function completeFerment(
 	// block-retry / escalation loop used at the phase level. A/B ships with
 	// recommendations persisted. Judge-unavailable outcomes remain advisory
 	// (do NOT refuse ship) — judge outages must not block the user.
-	const FERMENT_GRADE_KEY = "__ferment__"
 	// First attempt requires A; after rework B is also acceptable.
 	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
@@ -954,9 +985,16 @@ export async function completeFerment(
 		}
 		gradeRationale = journeyResult.rationale
 
-		// Below minimum grade — give the agent a bounded number of retries to fix
-		// the recommendations, then accept the grade and ship.
-		if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
+		if (journeyResult.graderSource === "fallback_single_shot") {
+			// The tool-equipped grader subagent was unusable — the blind fallback
+			// grade has no independent verification behind it, so it is
+			// advisory-only (same policy as judge-unavailable): the letter is
+			// persisted for the record, but it never refuses ship.
+			gradeRationale = `${gradeRationale} (advisory-only grade: grader subagent unusable — blind fallback judge without tool access)`
+			resolvedGrade.rationale = gradeRationale
+			// Below minimum grade — give the agent a bounded number of retries to
+			// fix the recommendations, then accept the grade and ship.
+		} else if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
 			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
 			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
@@ -966,8 +1004,15 @@ export async function completeFerment(
 				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 				// Fall through to the ship path below with the judge's grade + recs.
 			} else {
+				// Persist so the retry's grader receives the refusal as delta
+				// context instead of re-sweeping the whole ferment.
+				runtime.setLastPhaseRefusal(params.ferment_id, FERMENT_GRADE_KEY, {
+					grade: journeyResult.grade,
+					recommendations: journeyResult.recommendations,
+					at: runtime.nowIso(),
+				})
 				return toolErr(
-					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\n${FIX_PROTOCOL}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
 				)
 			}
 		}
@@ -992,6 +1037,7 @@ export async function completeFerment(
 						? { recommendations: resolvedGrade.recommendations }
 						: {}),
 					...(resolvedGrade.charterVerdicts ? { charterVerdicts: resolvedGrade.charterVerdicts } : {}),
+					...(journeyResult.ok && journeyResult.graderSource ? { graderSource: journeyResult.graderSource } : {}),
 					...(gradedBy ? { gradedBy } : {}),
 				}
 			: undefined,
@@ -1121,6 +1167,25 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// 4. Build clean markdown for final/headless tool output and local review UI.
 			const planEntry = buildPlanMarkdown(params)
+
+			// Persist the canonical plan file the moment it is produced. The
+			// filename is stable for this ferment so re-proposals overwrite the
+			// same file. Failures are non-fatal but warned so the review flow
+			// can continue without a path.
+			let planPath: string | undefined
+			try {
+				planPath = savePlanMarkdown({
+					cwd: ctx.cwd,
+					name: fermentPlanFileName(ferment.name, fermentId),
+					planText: planEntry,
+				})
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err)
+				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")
+				else console.error(`ferment: failed to save plan file: ${detail}`)
+			}
+			const savedPlanNote = planPath ? `\n\nPlan file: ${planPath}` : ""
+
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
@@ -1130,9 +1195,12 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (questions.length === 0) {
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
-					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment, multiModelEnabled), {
-						includePlan: true,
-					})
+					return planToolOk(
+						withNextActionHint(`Plan saved.${savedPlanNote}`, scopeOutcome.outcome.ferment, multiModelEnabled),
+						{
+							includePlan: true,
+						},
+					)
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -1156,7 +1224,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
 					return planToolOk(
 						withNextActionHint(
-							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							`Plan saved.${savedPlanNote}\n\nFerment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
 							scopeOutcome.outcome.ferment,
 							multiModelEnabled,
 						),
@@ -1184,7 +1252,23 @@ ${renderGateGuidance("scope_ferment")}`,
 					proposeIterations: nextIterations,
 					savedAt: new Date().toISOString(),
 				})
-				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
+
+				// Emit plan-review request — TUI popup and plannotator both listen.
+				// Fire-and-forget: first decision wins. The decision handler in
+				// index.ts acts on whichever surface decides first.
+				emitPlanReviewRequest(
+					pi,
+					{
+						planContent: planEntry,
+						planFilePath: planPath,
+						source: "ferment",
+						fermentId,
+					},
+					{ ctx, planPath, planText: planEntry, fermentId },
+				)
+
+				const result = planToolOk(`Plan ready for review.${savedPlanNote}`)
+				return { ...result, terminate: true }
 			}
 
 			// 7. Tabbed question form + review loop.
@@ -1286,7 +1370,7 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// Outer loop: supports "Restart questions".
 			while (true) {
-				const answersResult = await runQuestions()
+				const answersResult = await withBlocked(pi.events, "Ferment scoping questions", runQuestions)
 
 				if (answersResult === "cancelled") {
 					return planToolOk("Question flow cancelled. Waiting for your next instruction.")
@@ -1517,6 +1601,7 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				pi,
 				ctx,
 				runtime,
+				recordJudgeDecision: createJudgeDecisionRecorder(runtime),
 			}
 			const normalizeResult = normalizeAskUserQuestions(params.questions)
 			if (!normalizeResult.ok) return toolErr(normalizeResult.error)

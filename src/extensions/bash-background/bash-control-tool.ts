@@ -38,6 +38,12 @@ const bashControlSchema = Type.Object({
 				"Only valid with action 'continue'. Pushes the process deadline out by this many seconds before re-arming the checkin. Omit or use 0 to keep the existing deadline.",
 		}),
 	),
+	checkin_interval: Type.Optional(
+		Type.Number({
+			description:
+				"Only valid with action 'continue'. Changes the checkin cadence (seconds) for this and subsequent waits. Raise it (e.g. 60–300) for long-running processes to avoid polling every checkin; this is NOT the deadline — use extend_seconds to move the auto-kill time. Omit to keep the current cadence.",
+		}),
+	),
 })
 
 export type BashControlInput = Static<typeof bashControlSchema>
@@ -64,7 +70,7 @@ export const BASH_CONTROL_TOOL_DESCRIPTION = `Control a background bash process 
 
 After the \`bash\` tool spawns a long-running command in the background and returns a \`handle\` at a checkin, call this tool to decide what happens next:
 
-- action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill).
+- action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill), and/or \`checkin_interval\` to change how often you are woken with status updates — for long builds, prefer a longer interval (e.g. 60–300s) over polling every 15s.
 - action "stop": kill the process immediately and return its final tail-window of output plus exit code.
 
 Use this tool only when a \`bash\` result includes a \`handle\` in its details (i.e. the command is still running in the background). For commands that ran synchronously (timeout <= 5), there is no handle and no need to call this tool.`
@@ -87,7 +93,29 @@ export function createBashControlToolDefinition(
 		content: { type: "text"; text: string }[]
 		details: BashControlDetails
 	}> {
-		const { handle, action, extend_seconds } = params
+		const { handle, action, extend_seconds, checkin_interval } = params
+		if (action === "stop" && checkin_interval !== undefined) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "Error: checkin_interval is only valid with action 'continue'.",
+					},
+				],
+				details: { handle, exited: false, exitCode: null, action, reason: "invalid-params" },
+			}
+		}
+		if (checkin_interval !== undefined && (!Number.isFinite(checkin_interval) || checkin_interval <= 0)) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Error: checkin_interval must be a positive number of seconds (got ${checkin_interval}).`,
+					},
+				],
+				details: { handle, exited: false, exitCode: null, action, reason: "invalid-params" },
+			}
+		}
 		const registry = getRegistry()
 		if (!registry) {
 			return {
@@ -169,6 +197,13 @@ export function createBashControlToolDefinition(
 		// deadline auto-kill doesn't fire before the next checkin resolves.
 		if (extend_seconds !== undefined && extend_seconds > 0) {
 			registry.extend(handle, extend_seconds)
+		}
+
+		// Optionally change the checkin cadence for this and subsequent waits.
+		// entry.intervalSeconds is read fresh at each re-arm (see below), so the
+		// new cadence applies immediately.
+		if (checkin_interval !== undefined) {
+			registry.setIntervalSeconds(handle, checkin_interval)
 		}
 
 		// Turn abort (ESC) must kill the process, same as bash-background-tool.

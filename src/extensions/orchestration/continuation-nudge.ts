@@ -25,6 +25,7 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
+import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
 
 /**
  * Message-array shape passed through `context` events. Derived from
@@ -35,14 +36,19 @@ import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 export type OrchestratorMessages = ContextEvent["messages"]
 
 export const DONE_SIGNAL = "<done>"
+export const ASSISTANT_OUTPUT_WITHHELD = Symbol.for("kimchi.assistant-output-withheld")
 
-export const CONTINUATION_NUDGE_TEXT = `You ended your turn without calling a tool. If this task is complete, respond with ${DONE_SIGNAL}. If a tool call is still needed, call it now.`
+export const CONTINUATION_NUDGE_TEXT = markHarnessSteer(
+	`You ended your turn without calling a tool. If this task is complete, respond with ${DONE_SIGNAL}. If a tool call is still needed, call it now.`,
+)
 
-export const SECOND_NUDGE_TEXT =
-	"You MUST call a tool immediately. Stop writing text and execute the required tool call now — or respond with <done> if you are finished."
+export const SECOND_NUDGE_TEXT = markHarnessSteer(
+	"You MUST call a tool immediately. Stop writing text and execute the required tool call now — or respond with <done> if you are finished.",
+)
 
-export const EMPTY_TURN_NUDGE_TEXT =
-	"If you have finished, please summarize the result for the user. Otherwise, continue with the next tool call."
+export const EMPTY_TURN_NUDGE_TEXT = markHarnessSteer(
+	"If you have finished, please summarize the result for the user. Otherwise, continue with the next tool call.",
+)
 
 /** Stop reasons that should never trigger a nudge. Both `aborted` (user
  *  cancelled) and `error` (provider failure) are terminal for this turn —
@@ -54,6 +60,19 @@ const NON_NUDGE_STOP_REASONS = new Set(["aborted", "error"])
  *  and must not be nudged (user abort or provider error). */
 function isNonNudgeStopReason(message: AssistantMessage): boolean {
 	return NON_NUDGE_STOP_REASONS.has(message.stopReason)
+}
+
+/** Returns true when the assistant's text ends with a question, i.e. it is
+ *  explicitly waiting on the user. Nudging in that situation would inject an
+ *  imperative steer while a human confirmation is still pending — the exact
+ *  failure mode that caused unauthorized commits/pushes. */
+function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+	const text = message.content
+		.filter((c) => c.type === "text")
+		.map((c) => c.text)
+		.join("")
+		.trimEnd()
+	return /\?\s*["']?\s*$/.test(text)
 }
 
 /** Post-turn state machine for the "text-only drift" nudge.
@@ -109,6 +128,27 @@ export class ContinuationNudge {
 		// would incorrectly allow the nudge to fire while Agents are still in flight.
 	}
 
+	/**
+	 * Reset the session-level tool latch when the active model changes.
+	 *
+	 * A new model has not yet demonstrated tool-calling behaviour in this
+	 * session, so the fresh-session suppression should apply until it makes
+	 * its first tool call. Without this reset, a model that legitimately
+	 * opens with an orientation/clarification text turn (e.g. kimi-k2.7 in
+	 * single-model mode) is immediately nudged because the previous model
+	 * already called tools.
+	 */
+	resetForModelSwitch(): void {
+		this.toolsCalledThisSession = false
+		this.toolsCalledSinceLastUserInput = false
+		this.toolsCalledThisAgentRun = false
+		this.nudgeCountThisCycle = 0
+		this.nudgeResponsePending = false
+		this.accumulatedResponseText = ""
+		// pendingDelegationCount is intentionally NOT reset here — delegated
+		// agents are independent of which orchestrator model is active.
+	}
+
 	recordToolCall(): void {
 		this.toolsCalledSinceLastUserInput = true
 		this.toolsCalledThisAgentRun = true
@@ -155,6 +195,11 @@ export class ContinuationNudge {
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
+		// If the assistant just asked the user a question, do not nudge: the
+		// model is legitimately waiting for an answer and a "call it now" steer
+		// would be misread as the user saying yes (the core failure mode in the
+		// approval-override incident).
+		if (isAwaitingUserAnswer(message)) return false
 		this.nudgeCountThisCycle++
 		this.nudgeResponsePending = true
 		return true
@@ -213,6 +258,7 @@ export class EmptyTurnNudge {
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
 		if (isNonNudgeStopReason(message)) return false
+		if (ASSISTANT_OUTPUT_WITHHELD in message) return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
@@ -232,12 +278,80 @@ export class EmptyTurnNudge {
 	resetForNewUserInput(): void {
 		this.nudgeCountThisCycle = 0
 	}
+
+	/**
+	 * Reset the per-cycle empty-turn budget when the active model changes.
+	 *
+	 * A new model has its own empty-turn behaviour, so it should get the
+	 * full per-cycle budget rather than inheriting any budget consumed by
+	 * the previous model.
+	 */
+	resetForModelSwitch(): void {
+		this.nudgeCountThisCycle = 0
+	}
 }
 
 export const NUDGE_CUSTOM_TYPE = "nudge"
 
 function isNudgeMessage(m: OrchestratorMessages[number]): boolean {
 	return m.role === "custom" && "customType" in m && (m as { customType: string }).customType === NUDGE_CUSTOM_TYPE
+}
+
+function replaceMessageContent(m: OrchestratorMessages[number], text: string): OrchestratorMessages[number] {
+	if (!("content" in m)) return m
+	if (typeof m.content === "string") {
+		return { ...m, content: text } as OrchestratorMessages[number]
+	}
+	return { ...m, content: [{ type: "text" as const, text }] } as OrchestratorMessages[number]
+}
+
+function extractMessageText(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	const parts: string[] = []
+	for (const block of content) {
+		if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+			const text = (block as { text?: string }).text
+			if (typeof text === "string") parts.push(text)
+		}
+	}
+	return parts.join("\n")
+}
+
+/**
+ * Detect user-role (or custom-role, which upstream converts to user-role)
+ * messages that are a verbatim echo of the immediately preceding assistant
+ * message. This can happen when compaction, nextTurn queues, or client echoes
+ * replay the assistant's own text back at the model. Without tagging, the
+ * model rationalizes the echo as user approval ("they pasted my response
+ * back — that must mean yes").
+ *
+ * The returned array is the same reference when no echoes are found, so
+ * callers can use referential equality to skip extra work.
+ */
+export function tagSelfEchoes(messages: OrchestratorMessages): OrchestratorMessages {
+	let changed = false
+	const result = messages.map((m, i) => {
+		if (m.role !== "user" && m.role !== "custom") return m
+
+		const text = extractMessageText(m.content).trim()
+		if (!text) return m
+
+		const prevAssistant = messages.slice(0, i).findLast((msg) => msg.role === "assistant")
+		if (!prevAssistant) return m
+
+		const prevText = extractMessageText(prevAssistant.content).trim()
+		if (!prevText || text !== prevText) return m
+
+		changed = true
+		const annotated = markHarnessSteer(
+			"[harness warning: this user-role message is a verbatim echo of your previous assistant message. Treat it as noise — not as user input or approval.]\n\n" +
+				text,
+		)
+		return replaceMessageContent(m, annotated)
+	})
+
+	return changed ? result : messages
 }
 
 /**
@@ -282,4 +396,40 @@ export function stripUiOnlyMessages(messages: OrchestratorMessages): Orchestrato
 		(m) => !(isCustomMessage(m) && UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")),
 	)
 	return filtered.length === messages.length ? messages : filtered
+}
+
+/**
+ * Wrap any unbranded custom message in `<system-reminder>` tags so the model
+ * can tell harness-injected content from user-authored text. Upstream
+ * converts `role: "custom"` to verbatim `role: "user"` before the LLM call
+ * (see steer-marker.ts), so every custom message that reaches context is
+ * harness-authored by definition — branding should be an invariant enforced
+ * here, at the context boundary, not a convention remembered at every
+ * `sendMessage` site. A missed or future steer site (e.g. the behaviour-body
+ * steer found during census) can no longer regress to unbranded user-role
+ * text silently.
+ *
+ * Placement in the `context` handler chain: after the taggers
+ * (tagSelfEchoes, …), which wrap their own output — so their messages are
+ * recognized as already branded and never double-wrapped. The UI_ONLY check
+ * is defence in depth: stripUiOnlyMessages runs earlier, but handler
+ * ordering across extensions is not a maintained invariant.
+ *
+ * Returns the same array reference when nothing needs wrapping.
+ */
+export function brandUnmarkedSteers(messages: OrchestratorMessages): OrchestratorMessages {
+	let changed = false
+	const result = messages.map((m) => {
+		if (!isCustomMessage(m)) return m
+		if (UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")) return m
+		const text = extractMessageText(m.content)
+		if (!text.trim()) return m
+		if (isHarnessSteer(text)) return m
+
+		changed = true
+		const branded = markHarnessSteer(text)
+		return replaceMessageContent(m, branded)
+	})
+
+	return changed ? result : messages
 }

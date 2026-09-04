@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1.7
+# Runner image for Terminal Bench 2 chunks. Includes Kimchi binary, gcloud,
+# uv, docker compose, and a precached Harbor dataset.
+
+FROM mirror.gcr.io/library/node:22-bookworm AS builder
+
+ARG KIMCHI_DIST=dist
+ARG HARBOR_DATASET=terminal-bench/terminal-bench-2
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/go/bin:/root/.bun/bin:/root/.local/bin:${PATH}"
+
+# Base packages
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    bash ca-certificates curl docker.io file git gnupg jq python3 xz-utils build-essential
+
+# gcloud
+RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
+      gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+      > /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    apt-get update -qq && apt-get install -y --no-install-recommends google-cloud-cli
+
+# uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Go (for proxy-helper)
+ARG GO_VERSION=1.25.5
+RUN curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" && \
+    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+
+# Bun (for Kimchi build, also useful in chunks)
+RUN curl -fsSL https://bun.sh/install | bash
+
+# docker compose
+ARG COMPOSE_VERSION=v5.1.4
+RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSLo /usr/local/lib/docker/cli-plugins/docker-compose \
+      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# Ensure the cache dir exists even when the dataset isn't Harbor-hosted, so
+# the final-stage COPY of /root/.cache/harbor always has a source.
+RUN mkdir -p /root/.cache/harbor
+
+# Harbor dataset precache (uses uv; runs as part of build). Only
+# terminal-bench/* slugs live in the Harbor registry — deep-swe and
+# swebenchpro source their tasks elsewhere (git clone / Pier), so skip the
+# download for those instead of masking a guaranteed failure.
+RUN uv tool install harbor || true
+RUN case "${HARBOR_DATASET}" in \
+      terminal-bench/*) uv run --python 3.14 harbor dataset download "${HARBOR_DATASET}" --cache ;; \
+      *) echo "Skipping Harbor dataset download for '${HARBOR_DATASET}' (not a Harbor registry dataset)" ;; \
+    esac
+
+# Install Pier (Harbor fork for DeepSWE tasks with pre_artifacts.sh support)
+RUN uv tool install datacurve-pier || true
+
+# Precache DeepSWE tasks (cloned at runtime too, this is a fallback)
+RUN git clone --depth 1 https://github.com/datacurve-ai/deep-swe /tmp/deep-swe || true
+ENV DEEP_SWE_TASKS_PATH=/tmp/deep-swe/tasks
+
+# Pre-populate uv package cache for kimchi-agent dependencies so chunk jobs
+# install from local cache (no network download).
+COPY benchmark/terminal-bench-2 /tmp/tb2
+RUN uv sync --project /tmp/tb2 --python 3.14
+
+# Kimchi dist tree (bin/kimchi + share/kimchi/). The agent uploads the whole tree
+# into task containers, so bin/ and share/ must stay siblings under /opt/kimchi/.
+COPY ${KIMCHI_DIST}/bin/kimchi /opt/kimchi/bin/kimchi
+COPY ${KIMCHI_DIST}/share/kimchi /opt/kimchi/share/kimchi
+RUN chmod +x /opt/kimchi/bin/kimchi && ln -s /opt/kimchi/bin/kimchi /usr/local/bin/kimchi
+
+# Final image
+FROM mirror.gcr.io/library/node:22-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/go/bin:/root/.bun/bin:/root/.local/bin:${PATH}"
+ENV HARBOR_DATASET_CACHE=/root/.cache/harbor
+ENV KIMCHI_CODE_BINARY=/opt/kimchi/bin/kimchi
+ENV UV_LINK_MODE=copy
+
+COPY --from=builder /usr/local/go /usr/local/go
+COPY --from=builder /root/.bun /root/.bun
+COPY --from=builder /root/.local /root/.local
+COPY --from=builder /usr/local/lib/docker/cli-plugins /usr/local/lib/docker/cli-plugins
+COPY --from=builder /root/.cache/harbor /root/.cache/harbor
+COPY --from=builder /root/.cache/uv /root/.cache/uv
+COPY --from=builder /opt/kimchi /opt/kimchi
+RUN ln -s /opt/kimchi/bin/kimchi /usr/local/bin/kimchi
+COPY --from=builder /usr/share/keyrings/cloud.google.gpg /usr/share/keyrings/cloud.google.gpg
+COPY --from=builder /etc/apt/sources.list.d/google-cloud-sdk.list /etc/apt/sources.list.d/google-cloud-sdk.list
+RUN apt-get update -qq && apt-get install -y --no-install-recommends google-cloud-cli ca-certificates docker.io

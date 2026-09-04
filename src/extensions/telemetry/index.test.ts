@@ -4,6 +4,7 @@ import type { TelemetryConfig } from "../../config.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
 import { createContext } from "../__mocks__/context.js"
 import telemetryExtension, {
+	trackRemoteExecution,
 	trackSubagentSpawned,
 	trackSurveyAnswered,
 	trackSurveyDismissed,
@@ -98,6 +99,8 @@ describe("telemetryExtension integration", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		resetAcpClientInfo()
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		Reflect.deleteProperty(process.env, "KIMCHI_PARENT_SESSION_ID")
 	})
 
 	it("registers all expected event handlers when enabled", () => {
@@ -232,11 +235,98 @@ describe("telemetryExtension integration", () => {
 			session_type: "coding",
 			source: "cli",
 			"telemetry.arch": expect.any(String),
+			"telemetry.cli_version": expect.any(String),
 			"telemetry.host_os": expect.any(String),
 			"telemetry.is_wsl": expect.any(String),
 			"telemetry.os": expect.any(String),
 			"user.account_uuid": "",
 		})
+	})
+
+	it("remote execution tracking emits all lifecycle event stages", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const stages = [
+			"started",
+			"completed",
+			"failed",
+			"sync.started",
+			"sync.completed",
+			"sync.failed",
+			"viewed",
+			"custom_action",
+			"done",
+		] as const
+		for (const stage of stages) {
+			trackRemoteExecution(stage, "ferment plan")
+		}
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+
+		for (const stage of stages) {
+			const record = allRecords.find((rec) => rec.eventName === `remote_execution.${stage}`)
+			expect(record, `remote_execution.${stage}`).toBeDefined()
+			const attrs = Object.fromEntries(record?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+			expect(attrs.origin).toBe("ferment plan")
+		}
+	})
+
+	it("remote execution stats attributes flow through on completed/failed events", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		await getHandler(handlers, "session_start")({}, ctx)
+		trackRemoteExecution("completed", "plan", {
+			duration_ms: 42_000,
+			tool_calls: 7,
+			turns: 3,
+			input_tokens: 1000,
+			output_tokens: 500,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue?: string; intValue?: string } }>
+			}>
+		})
+
+		const record = allRecords.find((rec) => rec.eventName === "remote_execution.completed")
+		expect(record).toBeDefined()
+		const attrs = Object.fromEntries(
+			record?.attributes.map((a) => [a.key, a.value.stringValue ?? a.value.intValue]) ?? [],
+		)
+		expect(attrs.origin).toBe("plan")
+		expect(attrs.duration_ms).toBeDefined()
+		expect(attrs.tool_calls).toBeDefined()
+		expect(attrs.turns).toBeDefined()
+		expect(attrs.input_tokens).toBeDefined()
+		expect(attrs.output_tokens).toBeDefined()
+	})
+
+	it("remote execution tracking is a no-op when telemetry is disabled", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig({ enabled: false }))(api)
+
+		trackRemoteExecution("started", "plan")
+		expect(handlers.size).toBe(0)
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		expect(logCalls).toHaveLength(0)
 	})
 
 	it("survey tracking helpers send survey events through the telemetry batch", async () => {
@@ -317,6 +407,126 @@ describe("telemetryExtension integration", () => {
 		expect(headers["X-Session-Id"]).toBeTruthy()
 		expect(headers["X-Turn-Index"]).toBe("4")
 	})
+
+	it("before_provider_headers injects X-Parent-Session-Id inside a subagent run", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env.KIMCHI_PARENT_SESSION_ID = "parent-session-1"
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Parent-Session-Id"]).toBe("parent-session-1")
+	})
+
+	it("before_provider_headers omits X-Parent-Session-Id for main-session requests", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// KIMCHI_PARENT_SESSION_ID is process-global and set during a subagent
+		// run; main-session requests must not be tagged with it.
+		process.env.KIMCHI_PARENT_SESSION_ID = "parent-session-1"
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Parent-Session-Id"]).toBeUndefined()
+	})
+
+	it("before_provider_headers injects W3C traceparent derived from session id", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const sessionId = event.headers["X-Session-Id"]
+		const traceparent = event.headers.traceparent
+		expect(traceparent).toBeDefined()
+		const [version, traceId, spanId, flags] = traceparent.split("-")
+		expect(version).toBe("00")
+		expect(traceId).toBe(sessionId.replace(/-/g, "").toLowerCase())
+		expect(traceId).toMatch(/^[0-9a-f]{32}$/)
+		expect(spanId).toMatch(/^[0-9a-f]{16}$/)
+		expect(flags).toBe("01")
+	})
+
+	it("before_provider_headers generates a fresh span id on each request", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event1 = { headers: {} as Record<string, string> }
+		const event2 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event1)
+		getHandler(handlers, "before_provider_headers")(event2)
+
+		const spanId1 = event1.headers.traceparent.split("-")[2]
+		const spanId2 = event2.headers.traceparent.split("-")[2]
+		expect(spanId1).not.toBe(spanId2)
+	})
+
+	it("before_provider_headers preserves an existing traceparent header", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const existingTraceparent = "00-11111111111111111111111111111111-2222222222222222-01"
+		const event = { headers: { traceparent: existingTraceparent } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers.traceparent).toBe(existingTraceparent)
+	})
+
+	it("before_provider_headers preserves an existing traceparent header regardless of case", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const existingTraceparent = "00-11111111111111111111111111111111-2222222222222222-01"
+		const event = { headers: { Traceparent: existingTraceparent } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers.Traceparent).toBe(existingTraceparent)
+		expect(event.headers.traceparent).toBeUndefined()
+	})
+
+	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const convId = event.headers["X-Conversation-Id"]
+		expect(typeof convId).toBe("string")
+		expect(convId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+	})
+
+	it("session_start regenerates X-Conversation-Id", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event1 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event1)
+		const beforeId = event1.headers["X-Conversation-Id"]
+
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event2 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event2)
+		const afterId = event2.headers["X-Conversation-Id"]
+
+		expect(afterId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+		expect(afterId).not.toBe(beforeId)
+	})
 })
 
 // ---------------------------------------------------------------------------
@@ -364,6 +574,42 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 	function attrsOf(rec: { attributes: Array<{ key: string; value: { stringValue: string } }> }) {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
+
+	it("emits privacy-safe Ferment V2 evaluator totals without the reason", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			fermentV2Id: "fv2-001",
+			verdict: "continue",
+			count: 2,
+			model: "test/judge",
+			reason: "private evaluator rationale",
+			usage: {
+				input: 20,
+				output: 10,
+				cacheRead: 4,
+				cacheWrite: 2,
+				totalTokens: 36,
+				costUsd: 0.66,
+			},
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.evaluated")
+		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
+			ferment_v2_id: "fv2-001",
+			verdict: "continue",
+			count: "2",
+			evaluator_model: "test/judge",
+			input_tokens: "20",
+			output_tokens: "10",
+			cache_read_tokens: "4",
+			cache_write_tokens: "2",
+			total_tokens: "36",
+			cost: "0.66",
+		})
+		expect(attrsOf(rec as NonNullable<typeof rec>).reason).toBeUndefined()
+	})
 
 	it("ferment:started → ferment.started OTLP record with ferment_id, name, model", async () => {
 		const { handlers, events } = await setup()

@@ -9,14 +9,30 @@ const tipWidgetLocationMock = vi.hoisted(() => ({
 	set: vi.fn(),
 }))
 
+const workingAnimationMock = vi.hoisted(() => ({
+	pauseWorkingAnimation: vi.fn(),
+	resumeWorkingAnimation: vi.fn(),
+}))
+
 vi.mock("../tips/index.js", () => ({
 	setTipWidgetLocation: tipWidgetLocationMock.set,
 }))
+
+vi.mock("../ui.js", async () => {
+	const actual = await vi.importActual<typeof import("../ui.js")>("../ui.js")
+	return {
+		...actual,
+		pauseWorkingAnimation: workingAnimationMock.pauseWorkingAnimation,
+		resumeWorkingAnimation: workingAnimationMock.resumeWorkingAnimation,
+	}
+})
 
 beforeEach(() => {
 	tipWidgetLocationMock.restore.mockReset()
 	tipWidgetLocationMock.set.mockReset()
 	tipWidgetLocationMock.set.mockReturnValue(tipWidgetLocationMock.restore)
+	workingAnimationMock.pauseWorkingAnimation.mockReset()
+	workingAnimationMock.resumeWorkingAnimation.mockReset()
 })
 
 describe("ferment prompt UI", () => {
@@ -64,6 +80,8 @@ describe("ferment prompt UI", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+		expect(workingAnimationMock.pauseWorkingAnimation).toHaveBeenCalledTimes(1)
+		expect(workingAnimationMock.resumeWorkingAnimation).toHaveBeenCalledTimes(1)
 	})
 
 	it("passes existing content as editor prefill for edit prompts", async () => {
@@ -82,6 +100,8 @@ describe("ferment prompt UI", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+		expect(workingAnimationMock.pauseWorkingAnimation).toHaveBeenCalledTimes(1)
+		expect(workingAnimationMock.resumeWorkingAnimation).toHaveBeenCalledTimes(1)
 	})
 
 	it("hides tips while a selection prompt replaces the editor", async () => {
@@ -99,6 +119,8 @@ describe("ferment prompt UI", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+		expect(workingAnimationMock.pauseWorkingAnimation).toHaveBeenCalledTimes(1)
+		expect(workingAnimationMock.resumeWorkingAnimation).toHaveBeenCalledTimes(1)
 	})
 })
 

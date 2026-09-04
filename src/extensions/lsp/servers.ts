@@ -89,6 +89,50 @@ export function serverForFile(filePath: string, servers: ServerConfig[]): Server
 	return servers.find((s) => s.extensions.includes(ext)) ?? null
 }
 
+/**
+ * If cwd is a git worktree, return the main repository root.
+ * Returns undefined if cwd is not a worktree (no .git, .git is a directory,
+ * or the gitdir line doesn't point at a worktrees entry).
+ */
+export function findMainRepoRoot(cwd: string): string | undefined {
+	const dotGitPath = path.join(cwd, ".git")
+	if (!fs.existsSync(dotGitPath)) return undefined
+
+	// If .git is a directory, this is a normal repo root, not a worktree.
+	const stat = fs.statSync(dotGitPath)
+	if (stat.isDirectory()) return undefined
+
+	const content = fs.readFileSync(dotGitPath, "utf-8").trim()
+	const gitdirMatch = content.match(/^gitdir:\s*(.+)$/m)
+	if (!gitdirMatch) return undefined
+
+	const gitdir = gitdirMatch[1]
+	// gitdir looks like /path/to/main-repo/.git/worktrees/<name>
+	const worktreeMatch = gitdir.match(/^(.+?\/\.git)\/worktrees\/[^/]+$/)
+	if (!worktreeMatch) return undefined
+
+	const mainRoot = path.dirname(worktreeMatch[1])
+	return path.isAbsolute(mainRoot) ? mainRoot : path.resolve(cwd, mainRoot)
+}
+
+/**
+ * Resolve the tsserver.js path for the given cwd.
+ * Checks cwd's node_modules first, then the main repo root if cwd is a
+ * git worktree. Returns undefined if nothing is found.
+ */
+export function resolveTsserverPath(cwd: string): string | undefined {
+	const localTsserver = path.join(cwd, "node_modules/typescript/lib/tsserver.js")
+	if (fs.existsSync(localTsserver)) return localTsserver
+
+	const mainRepo = findMainRepoRoot(cwd)
+	if (mainRepo) {
+		const mainTsserver = path.join(mainRepo, "node_modules/typescript/lib/tsserver.js")
+		if (fs.existsSync(mainTsserver)) return mainTsserver
+	}
+
+	return undefined
+}
+
 const ROOT_MARKERS: Record<string, string[]> = {
 	gopls: ["go.mod"],
 	"typescript-language-server": ["tsconfig.json", "package.json"],

@@ -77,8 +77,10 @@ import {
 	type BashToolGuardBlockPayload,
 	type BashToolGuardWarnPayload,
 } from "./bash-tool-guard-events.js"
+import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
-import { parseCommandSegments, stripRtk } from "./permissions/taxonomy.js"
+import { parseCommandSegments } from "./permissions/taxonomy.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
@@ -91,7 +93,7 @@ export interface BashClassification {
 	suggestion: string
 	/** A short, human-readable rendering of the matched segment (for steer text). */
 	matchedSegment: string
-	/** The tool name detected (first token after stripping rtk wrapper). */
+	/** The tool name detected (first token). */
 	tool: string
 }
 
@@ -157,9 +159,21 @@ const BLOCK_REASON_BASE =
 const READ_SUGGESTION = "Use the read tool with the file path (and offset/limit for head/tail)."
 const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
-const BACKGROUND_SUGGESTION =
-	"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
-	"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs."
+const DAEMON_STEER =
+	"if the process must keep running after your session ends (e.g. a server someone connects to afterwards), use the `daemon` tool instead."
+const NO_DAEMON_STEER =
+	"managed background is killed at session end — if the service must outlive the session, restate that requirement to the user before finishing."
+
+function backgroundSuggestion(): string {
+	const daemon = isExperimentalFeaturesEnabled()
+	return (
+		"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
+		"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. " +
+		(daemon
+			? `Managed background (bash + bash_control) is killed when the session ends; ${DAEMON_STEER}`
+			: `Managed background is likewise killed at session end; ${NO_DAEMON_STEER}`)
+	)
+}
 
 /**
  * Replacement description for the bash tool. Keeps the original output
@@ -169,14 +183,18 @@ const BACKGROUND_SUGGESTION =
  * rather than by mutating a `pi.getAllTools()` result — the registry
  * write is what actually reaches the rendered system prompt.
  */
-export const BASH_TOOL_DESCRIPTION = `
+// Private: the flag-aware `bashToolDescription()` below is the single
+// public entry point — everything (override + tests) must go through the
+// GATE-aware variant, never reach for the constant directly (the raw
+// const contains the experimental `daemon` mention).
+const BASH_TOOL_DESCRIPTION = `
 Execute a bash command for operations without a dedicated tool: build commands, test runners, git, package managers, system administration, shell scripting.
 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
 
 DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly and set a realistic timeout. For long-running commands (builds, tests, training), set a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60), then drive the process via bash_control.
 
-DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management.
+DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management. Managed background (timeout/checkin_interval + bash_control) is killed when the session ends — use the \`daemon\` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).
 
 Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
 
@@ -189,9 +207,23 @@ Each command runs in a fresh shell rooted at the session working directory; \`cd
  * can exercise it without a mock `pi` and so the override rules are
  * visible at a glance.
  */
+/**
+ * The bash description to use in the CURRENT environment. When the
+ * experimental daemon tools are disabled, strip the `daemon`-mentioning
+ * sentence from BASH_TOOL_DESCRIPTION so the model is never steered
+ * toward a tool that doesn't exist.
+ */
+export function bashToolDescription(): string {
+	if (isExperimentalFeaturesEnabled()) return BASH_TOOL_DESCRIPTION
+	return BASH_TOOL_DESCRIPTION.replace(
+		"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends — use the `daemon` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).",
+		"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends.",
+	)
+}
+
 export function toolDescriptionOverride(name: string): string | undefined {
 	if (name !== "bash") return undefined
-	return BASH_TOOL_DESCRIPTION
+	return bashToolDescription()
 }
 
 /**
@@ -226,8 +258,8 @@ export function classifyBashCommand(command: string): BashClassification | null 
 	if (bg) return bg
 
 	for (const segment of segments) {
-		// Drop the leading tool name and any RTK wrapper to inspect args.
-		const tokens = stripRtk(segment.tokens)
+		// Drop the leading tool name to inspect args.
+		const tokens = segment.tokens
 		const tool = tokens[0]
 		if (!tool) continue
 
@@ -283,7 +315,7 @@ function detectBackgrounding(command: string): BashClassification | null {
 	// on quoted text (e.g. `echo "do not use nohup"`).
 	const segments = parseCommandSegments(command)
 	for (const segment of segments) {
-		const tokens = stripRtk(segment.tokens)
+		const tokens = segment.tokens
 		const tool = tokens[0]
 		if (!tool) continue
 
@@ -291,7 +323,7 @@ function detectBackgrounding(command: string): BashClassification | null {
 		if (tool === "nohup") {
 			return {
 				category: "background",
-				suggestion: BACKGROUND_SUGGESTION,
+				suggestion: backgroundSuggestion(),
 				matchedSegment: tokens.join(" "),
 				tool: "nohup",
 			}
@@ -302,7 +334,7 @@ function detectBackgrounding(command: string): BashClassification | null {
 		if (tool === "disown") {
 			return {
 				category: "background",
-				suggestion: BACKGROUND_SUGGESTION,
+				suggestion: backgroundSuggestion(),
 				matchedSegment: tokens.join(" "),
 				tool: "disown",
 			}
@@ -314,7 +346,7 @@ function detectBackgrounding(command: string): BashClassification | null {
 	if (hasBackgroundOperator) {
 		return {
 			category: "background",
-			suggestion: BACKGROUND_SUGGESTION,
+			suggestion: backgroundSuggestion(),
 			matchedSegment: "& (background)",
 			tool: "&",
 		}
@@ -749,7 +781,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,
-				content: [{ type: "text", text: guard.formatWarnText(result) }],
+				content: [{ type: "text", text: markHarnessSteer(guard.formatWarnText(result)) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

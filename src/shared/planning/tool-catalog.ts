@@ -99,11 +99,34 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "skill", modes: ["shared"] },
 	{ name: "web_fetch", modes: ["shared"] },
 	{ name: "web_search", modes: ["shared"] },
+	// Framework-owned workflow control-plane tools. They are registered only
+	// while a reporting/asking step is active, but must survive restrictive
+	// planning profiles so the step can return its result or questions.
+	{ name: "workflow_submit_result", modes: ["shared"] },
+	{ name: "workflow_submit_questions", modes: ["shared"] },
 	// MCP gateway — discovery + proxy for MCP server tools. Treated as a
 	// shared discovery tool (analogous to read/grep/find): harmless when no
 	// servers are configured, and required during planning so the model can
 	// search/describe/call read-only MCP tools (e.g. Atlassian Jira).
 	{ name: "mcp", modes: ["shared"] },
+	// DAP debugger tools — always available in every mode/profile so the agent
+	// can inspect runtime state at any time. Registered by the dap extension.
+	{ name: "debug_launch", modes: ["shared"] },
+	{ name: "debug_set_breakpoint", modes: ["shared"] },
+	{ name: "debug_continue", modes: ["shared"] },
+	{ name: "debug_locals", modes: ["shared"] },
+	{ name: "debug_eval", modes: ["shared"] },
+	{ name: "debug_backtrace", modes: ["shared"] },
+	{ name: "debug_terminate", modes: ["shared"] },
+	{ name: "step_in", modes: ["shared"] },
+	{ name: "step_over", modes: ["shared"] },
+	{ name: "step_out", modes: ["shared"] },
+	{ name: "debug_state_at", modes: ["shared"] },
+	{ name: "debug_last_error", modes: ["shared"] },
+	{ name: "debug_trace_calls", modes: ["shared"] },
+	{ name: "debug_watch_change", modes: ["shared"] },
+	{ name: "debug_set_variable", modes: ["shared"] },
+	{ name: "debug_restart", modes: ["shared"] },
 	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
 	// These are general-purpose session tools used in all modes (adhoc chat,
 	// ferment planning, and ferment implementation). The system prompt,
@@ -122,6 +145,28 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model collects structured input from the user
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
 ]
+
+const ADHOC_ONLY_TOOL_NAMES = new Set(ADHOC_MODE_TOOLS.map((t) => t.name))
+
+/**
+ * True when the tool is declared adhoc-only in the catalog (e.g.
+ * `questionnaire`), meaning it must NOT be re-surfaced by ferment profiles
+ * whose base is `getAllTools()`. The ferment interactive-question surface is
+ * `ask_user`; both being visible would give the model two competing ways to
+ * ask the user.
+ */
+export function isAdhocOnlyToolName(name: string): boolean {
+	return ADHOC_ONLY_TOOL_NAMES.has(name)
+}
+
+/**
+ * Plan-submission tool available in both adhoc plan mode and ferment
+ * planning phase. The model calls it when the plan is ready for user
+ * review. Visible only in planning profiles — hidden in idle, worker,
+ * and implementation-ferment. This is the only "write-like" tool visible
+ * during planning (edit, write, bash-write are all suppressed).
+ */
+export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: "submit_plan", modes: ["adhoc"] }]
 
 /**
  * Tools gated behind the ferment lifecycle.
@@ -241,6 +286,7 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 			return [
 				...SHARED_CORE_TOOLS,
 				...ADHOC_MODE_TOOLS,
+				...SHARED_PLANNING_TOOLS,
 				// bash is the only write tool in adhoc planning mode
 				...WRITE_TOOLS.filter((t) => t.modes.includes("adhoc")),
 			]

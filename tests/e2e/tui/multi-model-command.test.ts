@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
@@ -353,8 +355,9 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("toggle-select first open")
 
-			// Move cursor down to row 1 (with TWO_MODELS that's the second
-			// and last model — no wrap yet). Confirm we're not on row 0.
+			// Move cursor down to row 1 and confirm we're no longer on row 0.
+			// Saved default-role models also appear in this sorted list, so the
+			// exact model occupying row 1 is deliberately not part of this test.
 			terminal.keyDown()
 			await new Promise((resolve) => setTimeout(resolve, 100))
 			const firstOpenView = viewText(terminal)
@@ -362,7 +365,7 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 				.split("\n")
 				.find((line) => /^> \[/.test(line))
 				?.match(/kimchi-dev\/(\S+)/)?.[1]
-			expect(firstCursorModel).toBe("heavy")
+			expect(firstCursorModel).not.toBe("basic")
 			trace.step(`cursor on row 1 (${firstCursorModel}) after first open`)
 
 			// Escape cancels back to main menu.
@@ -565,7 +568,100 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 
 			const view = viewText(terminal)
 			expect(view).not.toContain("Enter custom model")
+			expect(view).not.toContain("kimchi-dev/auto")
 			trace.step("no Enter custom model... option visible")
+
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+		},
+	)
+})
+
+test("/multi-model offers Auto when experimental features are enabled", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-experimental-auto",
+			extraArgs: ["--enable-experimental-features"],
+			// Deliberately reverse the API order so this scenario also verifies sorting.
+			models: [TWO_MODELS[1], TWO_MODELS[0]],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			// Orchestrator is the first role, so Enter opens its single-model picker.
+			terminal.submit("")
+			await waitForText(terminal, "delegates work", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "kimchi-dev/auto", { timeoutMs: INPUT_TIMEOUT_MS })
+			const view = viewText(terminal)
+			expect(view).toContain("kimchi-dev/auto")
+			expect(view.match(/kimchi-dev\/basic/g)).toHaveLength(1)
+			expect(view.match(/kimchi-dev\/heavy/g)).toHaveLength(1)
+			expect(view.indexOf("kimchi-dev/auto")).toBeLessThan(view.indexOf("kimchi-dev/basic"))
+			expect(view.indexOf("kimchi-dev/basic")).toBeLessThan(view.indexOf("kimchi-dev/heavy"))
+			trace.step("Auto and unique concrete models visible in sorted order")
+
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+		},
+	)
+})
+
+test("/multi-model restores every role configured as Auto", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-all-roles-auto",
+			models: [...TWO_MODELS],
+			responses: [],
+			seedHome(homeDir) {
+				const auto = "kimchi-dev/auto"
+				writeFileSync(
+					join(homeDir, ".config", "kimchi", "harness", "settings.json"),
+					JSON.stringify(
+						{
+							hideThinkingBlock: true,
+							statusLine: { pinned: [] },
+							modelRoles: {
+								orchestrator: auto,
+								planner: auto,
+								builder: auto,
+								reviewer: auto,
+								explorer: auto,
+								researcher: auto,
+								judge: auto,
+								compactor: auto,
+							},
+						},
+						null,
+						"\t",
+					),
+					"utf-8",
+				)
+			},
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open with saved Auto roles")
+
+			const view = viewText(terminal)
+			for (const label of ["Orchestrator", "Planner", "Builder", "Reviewer", "Explorer", "Researcher", "Judge"]) {
+				expect(view).toMatch(new RegExp(`${label}:\\s+kimchi-dev/auto`))
+			}
+			trace.step("all surfaced roles restored as Auto")
+
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			expect(viewText(terminal)).toMatch(/\[x\]\s+kimchi-dev\/auto/)
+			trace.step("Auto is retained and checked without the experimental flag")
 
 			terminal.keyEscape()
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })

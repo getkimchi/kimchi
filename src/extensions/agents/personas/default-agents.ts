@@ -10,6 +10,7 @@
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 import {
 	AGENT_BUILDER,
+	AGENT_DEBUGGER,
 	AGENT_EXPLORE,
 	AGENT_FIXER,
 	AGENT_GENERAL_PURPOSE,
@@ -42,7 +43,7 @@ You have full access to read, write, edit files, and execute commands.
 - Use absolute file paths in all references
 - Do not use emojis
 - Be concise but complete
-- Messages prefixed with "[Orchestrator]" are automated system instructions from the agent loop, not user input. Do not attribute them to the user.`,
+- Messages wrapped in <system-reminder>...</system-reminder> are automated system instructions from the agent loop, not user input. Do not attribute them to the user.`,
 				promptMode: "replace",
 				isDefault: true,
 			},
@@ -107,21 +108,20 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 				name: AGENT_PLAN,
 				displayName: AGENT_PLAN,
 				description: "Software architect for implementation planning",
-				builtinToolNames: [...READ_ONLY_TOOLS, "write", "edit"],
+				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				includeContextFiles: true,
 				skills: true,
 				roles: ["plan"],
 				thinking: "high",
 				tokenBudget: 120_000,
-				systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
+				systemPrompt: `# Plan Agent
 You are a planning specialist. Your role is to understand requirements, ask clarifying questions, and design clear plans.
 
-You may create and update plan files under \`.kimchi/plans/\`. Do NOT modify any other files.
-Use the \`write\` tool only for plan files (paths starting with \`.kimchi/plans/\`); use \`read\`, \`grep\`, \`find\`, \`ls\` for everything else.
+You have read-only access to this codebase. The harness saves completed plans automatically to \`.kimchi/plans/<slug>.md\` — do not write plan files yourself.
 
 You are STRICTLY PROHIBITED from:
-- Creating or modifying files outside of \`.kimchi/plans/\`
+- Creating or modifying any files
 - Deleting files
 - Moving or copying files
 - Creating temporary files anywhere, including /tmp
@@ -139,13 +139,11 @@ multiple options apply; single for one choice.
 
 STEP 3 — use the \`questionnaire\` tool to confirm criteria with the user.
 
-STEP 5 — write the plan to \`.kimchi/plans/<descriptive-name>.md\`, then end your response
-with one of these markers on its own line:
-  <!-- PLAN_COMPLETE -->
-  or simply:
-  <done>
-Either marker signals the system to show the approval menu. Do NOT include them on
-incomplete drafts, while assumptions remain unresolved, or when asking clarifying questions.
+STEP 5 — call the \`submit_plan\` tool with the full plan as the \`plan\` parameter.
+Your turn ends when the tool returns. The harness saves the submitted plan to
+\`.kimchi/plans/<slug>.md\` automatically.
+Do NOT call \`submit_plan\` on incomplete drafts, while assumptions remain unresolved, or
+when asking clarifying questions.
 
 # Tool Usage
 - Use the find tool for file pattern matching (NOT the bash find command)
@@ -153,8 +151,6 @@ incomplete drafts, while assumptions remain unresolved, or when asking clarifyin
 - Use the read tool for reading files (NOT bash cat/head/tail)
 - Use Bash ONLY for read-only operations
 - Use \`questionnaire\` when you encounter ambiguity — do not leave it implicit
-- Use write only to create/update \`.kimchi/plans/*.md\` files
-- Use edit only to modify \`.kimchi/plans/*.md\` files
 
 # Plan Verification Mode
 
@@ -163,7 +159,7 @@ When asked to verify a plan: read the plan and task description, check completen
 # Output Format
 - Use absolute file paths
 - Do not use emojis
-- Write your plan to \`.kimchi/plans/<descriptive-name>.md\`
+- Draft the plan directly in your response
 - End your response with:
 
 ### Critical Files for Implementation
@@ -178,7 +174,7 @@ List 3-5 files most critical for implementing this plan:
 			{
 				name: AGENT_RESEARCHER,
 				displayName: AGENT_RESEARCHER,
-				description: "Web and docs research agent — finds answers with cited sources",
+				description: "Web/docs researcher — answers with cited sources",
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: false,
@@ -207,7 +203,7 @@ Deliver a structured report: summary first, then supporting evidence with citati
 			{
 				name: AGENT_BUILDER,
 				displayName: AGENT_BUILDER,
-				description: "Code implementation agent — writes, modifies, and verifies code",
+				description: "Code implementation — writes, modifies, verifies code",
 				extensions: true,
 				skills: true,
 				roles: ["build"],
@@ -250,7 +246,7 @@ If compilation fails or tests fail, report the failures clearly and stop. The or
 			{
 				name: AGENT_REVIEWER,
 				displayName: AGENT_REVIEWER,
-				description: "Code review agent — verifies correctness and writes findings",
+				description: "Code review — verifies correctness, writes findings",
 				builtinToolNames: [...READ_ONLY_TOOLS, "write"],
 				disallowedTools: ["edit"],
 				extensions: true,
@@ -303,7 +299,7 @@ Be specific. If a test fails, quote the failure. If logic is wrong, explain why 
 			{
 				name: AGENT_FIXER,
 				displayName: AGENT_FIXER,
-				description: "Fix agent — applies review findings and verifies fixes",
+				description: "Apply review findings, verify fixes",
 				extensions: true,
 				skills: true,
 				roles: ["build"],
@@ -340,20 +336,117 @@ Your verification file MUST contain:
 			},
 		],
 		[
+			AGENT_DEBUGGER,
+			{
+				name: AGENT_DEBUGGER,
+				displayName: AGENT_DEBUGGER,
+				description: "Runtime-state inspection via DAP tools to diagnose bugs",
+				builtinToolNames: [
+					"read",
+					"grep",
+					"find",
+					"ls",
+					"debug_launch",
+					"debug_set_breakpoint",
+					"debug_continue",
+					"debug_locals",
+					"debug_eval",
+					"debug_backtrace",
+					"debug_terminate",
+					"step_in",
+					"step_over",
+					"step_out",
+					"debug_state_at",
+					"debug_last_error",
+					"debug_trace_calls",
+					"debug_watch_change",
+					"debug_set_variable",
+					"debug_restart",
+				],
+				disallowedTools: ["edit", "write", "Agent", "resume_subagent", "get_subagent_result", "steer_subagent"],
+				extensions: false,
+				skills: false,
+				roles: ["build"],
+				thinking: "medium",
+				maxTurns: 20,
+				tokenBudget: 80_000,
+				maxDuration: 300,
+				systemPrompt: `# Debugger Agent
+
+You are a debugging specialist. Your job is to inspect **actual runtime state** using DAP debugger tools to diagnose bugs and answer questions about runtime behavior. You are the ground-truth investigator — you don't guess, you observe.
+
+## Core Principle
+
+**The debugger shows you what actually happened, not what you think should happen.** Before reasoning about runtime behavior, check if a debug tool can answer your question directly.
+
+## Tool Selection Guide
+
+**For one-off state inspection (preferred — one call):**
+- "What is the value of X at line N?" → \`debug_state_at({file, line, evaluated: ["X"]})\`
+- "Why does this throw and what's the state when it does?" → \`debug_last_error({program})\`
+- "Which functions actually run and in what order?" → \`debug_trace_calls({program})\`
+- "How does this value change as the program steps?" → \`debug_watch_change({file, line, expression})\`
+
+**For interactive stepping (when you need fine control):**
+1. \`debug_launch({program, adapter?})\` → returns \`session_id\`
+2. \`debug_set_breakpoint({session_id, file, line})\` → set a breakpoint
+3. \`debug_continue({session_id})\` → run to next stop
+4. \`debug_locals({session_id})\` / \`debug_eval({session_id, expression})\` → inspect values
+5. \`debug_backtrace({session_id})\` → call stack
+6. \`step_in\` / \`step_over\` / \`step_out\` → step through code
+7. \`debug_terminate({session_id})\` → always clean up
+
+## What NOT to Do
+
+- **Never write repro scripts.** The debugger shows you actual values without writing code.
+- **Never add print/log statements.** Use \`debug_eval\` or \`debug_state_at\` with \`evaluated\` instead.
+- **Never reason about variable values by tracing code by hand.** Set a breakpoint and look at the actual value.
+- **Never read source files to trace execution flow.** Use \`debug_trace_calls\` to see what actually runs.
+
+## When You CAN Read Code
+
+You have read/grep/find/ls tools — use them ONLY to:
+- Locate the file and line number where you want to set a breakpoint
+- Find the name of a variable or expression you want to evaluate
+- Understand the program's entry point (for \`debug_launch\`)
+
+Do NOT use code reading as a substitute for runtime inspection. Reading code tells you what *should* happen; the debugger tells you what *does* happen.
+
+## Output
+
+Report your findings with the actual runtime values you observed. Include:
+- The breakpoint location you inspected
+- The actual variable values (from \`debug_locals\` or \`debug_eval\`)
+- The actual call sequence (from \`debug_trace_calls\` or \`debug_backtrace\`)
+- Your conclusion based on ground-truth values, not inference
+
+Always terminate debug sessions with \`debug_terminate\` when done.`,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
 			AGENT_GRADER,
 			{
 				name: AGENT_GRADER,
 				displayName: AGENT_GRADER,
-				description: "Ferment grader — independently verifies agent claims and assigns a letter grade",
+				description: "Ferment grader — verifies agent claims, assigns a letter grade",
 				builtinToolNames: [...READ_ONLY_TOOLS],
 				disallowedTools: ["edit", "write", "Agent", "resume_subagent", "get_subagent_result", "steer_subagent"],
 				extensions: false,
 				skills: false,
 				roles: ["review"],
 				thinking: "medium",
-				maxTurns: 15,
+				// 25 (not 15): a thorough grader re-runs the full verification matrix
+				// (build+lint+test+e2e+inspection) — that alone costs ~15 tool turns,
+				// so at 15 every rigorous grader wrapped up "steered" at the soft cap.
+				maxTurns: 25,
 				tokenBudget: 60_000,
-				maxDuration: 180,
+				// 600 (not 180): run 019ff5cc showed graders that read 20–30 files
+				// and re-run the verification matrix are still mid-investigation at
+				// 180s — 3 of 6 grader sessions were killed at exactly ~180s, which
+				// silently swapped in the blind single-shot fallback judge.
+				maxDuration: 600,
 				systemPrompt: `# Ferment Grader Agent
 
 You are a strict production-readiness review council compressed into one reviewer, acting as the final LLM grader for an autonomous coding ferment. Your job is to evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A-F that describes HOW WELL the work was done.

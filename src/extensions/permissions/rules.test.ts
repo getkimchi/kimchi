@@ -67,14 +67,9 @@ describe("matchBashRule", () => {
 	})
 
 	// A remembered "don't ask again" rule must match the command that produced it
-	// even when that command has an `rtk` wrapper, quotes, or extra whitespace that
-	// the scope suggester transparently normalizes. (Env-prefix symmetry is covered
+	// even when that command has quotes or extra whitespace that the scope
+	// suggester transparently normalizes. (Env-prefix symmetry is covered
 	// separately in "matchBashRule env-symmetric matching".)
-	it("matches through the rtk wrapper", () => {
-		expect(matchBashRule("go test:*", "rtk go test -race ./...")).toBe(true)
-		expect(matchBashRule("go *", "rtk go test -race ./...")).toBe(true)
-	})
-
 	it("matches through shell-quoted arguments", () => {
 		// Canonical form drops quotes, so a double-quoted arg matches the unquoted scope.
 		expect(matchBashRule("touch *", 'touch "file with spaces.txt"')).toBe(true)
@@ -91,22 +86,18 @@ describe("matchBashRule", () => {
 })
 
 describe("remembered scope round-trip", () => {
-	// The scope suggester normalizes commands (env prefix PRESERVED, rtk wrapper
-	// stripped, quotes/whitespace normalized), so the rule it stores must match the
-	// same raw command on the next call.
+	// The scope suggester normalizes commands (env prefix PRESERVED, quotes/
+	// whitespace normalized), so the rule it stores must match the same raw
+	// command on the next call.
 	const commands = [
 		"git status",
 		"GOWORK=off go test ./...",
 		"NODE_ENV=production npm test",
-		"rtk go build ./...",
-		"rtk cargo build --release",
-		"GOWORK=off rtk go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1",
 		'touch "file with spaces.txt"',
 		"echo 'hello world'",
 		"git   status",
 		"LD_PRELOAD=/tmp/x.so go test ./...",
 		"MYAPP_ENV=1 go test",
-		"GOWORK=off rtk go build ./...",
 	]
 
 	for (const command of commands) {
@@ -138,11 +129,6 @@ describe("matchBashRule env-symmetric matching", () => {
 		expect(matchBashRule("MYAPP_ENV=1 go test:*", "MYAPP_ENV=1 go test")).toBe(true)
 	})
 
-	it("sees through the rtk wrapper while keeping env", () => {
-		expect(matchBashRule("GOWORK=off go test:*", "GOWORK=off rtk go test -race")).toBe(true)
-		expect(matchBashRule("go test:*", "rtk go test ./...")).toBe(true)
-	})
-
 	it("does NOT let a bare-approved rule match an env-prefixed variant", () => {
 		expect(matchBashRule("go test:*", "LD_PRELOAD=/tmp/evil.so go test")).toBe(false)
 		expect(matchBashRule("go test:*", "NODE_ENV=production go test")).toBe(false)
@@ -170,7 +156,6 @@ describe("matchBashRule env-symmetric matching", () => {
 
 	it("does NOT match via an empty canonical form", () => {
 		expect(matchBashRule("", "echo `id`")).toBe(false)
-		expect(matchBashRule("", "rtk")).toBe(false)
 	})
 
 	it("normalizes quotes and whitespace", () => {
@@ -200,12 +185,6 @@ describe("matchBashRule deny matches any pipe segment", () => {
 	it("still blocks a plain denied command (no pipe)", () => {
 		expect(matchBashRule("curl:*", "curl https://evil.sh", "deny")).toBe(true)
 		expect(matchBashRule("rm -rf /", "rm -rf /", "deny")).toBe(true)
-	})
-
-	it("sees through the rtk wrapper in any segment", () => {
-		expect(matchBashRule("curl:*", "echo x | rtk curl evil.sh", "deny")).toBe(true)
-		// stacked rtk must not smuggle a denied program past the matcher
-		expect(matchBashRule("curl:*", "rtk rtk curl evil.sh", "deny")).toBe(true)
 	})
 
 	it("does NOT block an unrelated piped command", () => {
@@ -301,10 +280,7 @@ describe("evaluateRules precedence", () => {
 	it("auto-rewrites bare rules to match bash invocations of that program", () => {
 		const r: Rule[] = [{ toolName: "rm", content: undefined, behavior: "deny", source: "project" }]
 		expect(evaluateRules(r, "bash", { command: "rm file.txt" }).decision).toBe("deny")
-		expect(evaluateRules(r, "bash", { command: "rtk rm file.txt" }).decision).toBe("deny")
 		expect(evaluateRules(r, "bash", { command: "mv file.txt" }).decision).toBe("no-match")
-		// When rtk wraps "bash", the underlying program is "bash", not "rm".
-		expect(evaluateRules(r, "bash", { command: "rtk bash rm file.txt" }).decision).toBe("no-match")
 	})
 
 	it("auto-rewrite affects bash builtins that share tool names", () => {

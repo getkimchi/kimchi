@@ -9,6 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import type { ResolverIO } from "./session-context.js"
 import { BEHAVIOUR_EVAL_TYPE, BEHAVIOUR_LOADED_TYPE, BEHAVIOUR_SESSION_SUMMARY_TYPE } from "./stats.js"
 import { cli, tool } from "./triggers.js"
@@ -135,7 +136,6 @@ const testEnv: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -269,7 +269,7 @@ describe("wireBehaviours — tool_result", () => {
 			{
 				message: expect.objectContaining({
 					customType: BEHAVIOUR_BODY_TYPE,
-					content: "Use glab for GitLab.",
+					content: markHarnessSteer("Use glab for GitLab."),
 					display: false,
 				}),
 				options: { deliverAs: "steer" },

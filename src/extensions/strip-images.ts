@@ -9,6 +9,8 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
+import { isAutoModel } from "./router/constants.js"
+import { getEffectiveModel } from "./router/state.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
@@ -44,14 +46,15 @@ function collectImages(messages: ReturnType<typeof getLatestMessages>): Map<stri
  */
 function findVisionModel(ctx: ExtensionContext): Model<Api> | undefined {
 	// Check if current model supports vision
-	if (ctx.model?.input?.includes("image")) {
-		return ctx.model as Model<Api>
+	const currentModel = getEffectiveModel(ctx)
+	if (currentModel?.input.includes("image") && !isAutoModel(currentModel)) {
+		return currentModel
 	}
 
 	// Find first vision-capable model from available models
 	const available = ctx.modelRegistry?.getAvailable() ?? []
 	for (const model of available) {
-		if (model.input?.includes("image")) {
+		if (model.input?.includes("image") && !isAutoModel(model)) {
 			return model as Model<Api>
 		}
 	}

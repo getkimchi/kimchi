@@ -2,8 +2,10 @@
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
 import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
-import { join } from "node:path"
+import { homedir } from "node:os"
+import { isAbsolute, join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
+import { fileURLToPath } from "node:url"
 import {
 	type SessionInfo as AcpSessionInfo,
 	type Agent,
@@ -57,9 +59,13 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
+import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
+import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -84,31 +90,44 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
-import { parseTodoScopeKey } from "../../extensions/todos/scope.js"
-import { getTodoState, hasEverHadTodos, subscribeTodoStore } from "../../extensions/todos/store.js"
-import {
-	TODO_TOOL_RESULT_SCHEMA_VERSION,
-	type TodoScope,
-	type WriteTodosDetails,
-} from "../../extensions/todos/types.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { updateModelsConfig } from "../../models.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
+import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
-import { buildPlanUpdate } from "./plan-mapper.js"
+import { AcpPlanTracker, type ActivePlan } from "./plans.js"
+import {
+	type AcpSkillInfo,
+	buildSkillAvailableCommands,
+	buildSkillCommandPrompt,
+	buildSkillListBlock,
+	discoverAcpSkillCommands,
+	tryParseSkillCommand,
+} from "./skill-commands.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
+import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
-import { asString, truncate } from "./utils.js"
+import { asString, extractImages, truncate } from "./utils.js"
 
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
+
+/** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
+function resolveCliPermissionMode(): PermissionMode | undefined {
+	const { options } = getParsedCliArgs()
+	if (options.plan) return "plan"
+	if (options.auto) return "auto"
+	if (options.yolo) return "yolo"
+	return undefined
+}
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -135,6 +154,12 @@ export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSess
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
+	/**
+	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
+	 * every session's DefaultResourceLoader. When a client also sends
+	 * `_meta["kimchi.dev"].appendSystemPrompt`, meta content is appended after this.
+	 */
+	appendSystemPrompt?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
 	/** Override for tests. Defaults to {@link defaultSessionLister}. */
@@ -149,20 +174,101 @@ export interface RunAcpOptions {
 	mcpServerManager?: McpServerManager
 }
 
+/**
+ * Per-turn usage accumulator. pi-mono chains multiple agent.prompt /
+ * agent.continue calls per turn, each producing an AssistantMessage with its
+ * own pi-ai `usage`; ACP's (v1/experimental) PromptResponse.usage expects a
+ * single summary, so message_end events fold their usage into this record and
+ * finalizeTurn emits the summed totals. `messages` counts the assistant
+ * usage records folded in — it gates the optional PromptResponse.usage field
+ * (omitted when no usage data was collected, e.g. a cancel before the first
+ * message).
+ */
+type TurnUsage = {
+	input: number
+	output: number
+	cacheRead: number
+	cacheWrite: number
+	reasoning: number
+	/** Sum of the provider-computed usage.totalTokens across the chain. */
+	total: number
+	/** true once any provider actually reported a reasoning/thought count. */
+	sawReasoning: boolean
+	messages: number
+}
+
+function emptyTurnUsage(): TurnUsage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		reasoning: 0,
+		total: 0,
+		sawReasoning: false,
+		messages: 0,
+	}
+}
+
 type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
 	announcedToolCallIds: Set<string>
 	lastStreamedContent: Map<string, string>
+	/**
+	 * Pre-write file contents read at tool_execution_start for `write` tool
+	 * calls: the original file content if the file existed (later surfaced as
+	 * the diff's oldText), null for a new file. Keyed by toolCallId; the entry
+	 * is consumed and cleared at tool_execution_end. Args travel only on
+	 * tool_execution_start (ToolExecutionEndEvent carries none), so everything
+	 * the end event needs must be captured here.
+	 */
+	preWriteContents: Map<string, string | null>
+	/**
+	 * File changes derived from tool args at tool_execution_start for the
+	 * mutation tools (edit, write). Emitted as ACP `diff` content blocks at
+	 * tool_execution_end; key removed once consumed. Read-only tools never
+	 * appear here. Write entries keep their operation undecided until the end
+	 * event resolves add-vs-modify from preWriteContents.
+	 */
+	pendingFileChanges: Map<string, PendingFileChange[]>
+	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
 
+/**
+ * Internal file-mutation abstraction shared by the v1 and (future) v2 ACP
+ * diff adapters. Populated from tool args at tool_execution_start so the v1
+ * emission ({@link fileChangeToDiffContent}) is a pure adapter over data
+ * already known before the tool ran — v2 migration is a pure adapter swap.
+ */
+export interface FileChange {
+	path: string
+	operation: "add" | "modify" | "delete"
+	/** undefined for "add" */
+	oldText?: string
+	/** undefined for "delete" */
+	newText?: string
+}
+
+/**
+ * Captured-at-start representation of a pending diff. Edit calls resolve to
+ * FileChange immediately (args carry both texts). Write calls carry the
+ * "write" sentinel: whether the change is an add or a modify depends on
+ * TurnContext.preWriteContents, which is only consulted at tool_execution_end
+ * ({@link resolveFileChange}) — that is what keeps preWriteContents the
+ * single source of truth for the write oldText.
+ */
+type PendingFileChange = FileChange | { operation: "write"; path: string; newText: string }
+
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
-	/** Unsubscribes the ACP `plan` emitter wired in {@link KimchiAcpAgent.attachPlanSync}. */
-	unsubscribePlanSync: () => void
+	// Session cwd, captured at newSession/loadSession time. AgentSession keeps
+	// its cwd private, but the ACP server needs it to resolve relative tool
+	// paths (pre-write reads for per-turn diffs).
+	cwd: string
 	turn?: TurnContext
 	/**
 	 * Session-wide monotonic counter for ACP messageIds. Every distinct
@@ -181,6 +287,17 @@ type SessionRecord = {
 	 * previous message's assignments.
 	 */
 	contentIndexToBlockId: Map<number, string>
+	/**
+	 * Per-assistant-message map from pi-mono's contentIndex → text already
+	 * streamed to the client
+	 * via text_delta. message_end reads this to send only the un-streamed
+	 * tail of each text block — covering extensions that suppress deltas
+	 * while streaming and restore the text in message_end's returned
+	 * message, and providers that skip incremental deltas entirely. Cleared
+	 * everywhere contentIndexToBlockId is cleared, so it shares the same
+	 * per-message lifetime.
+	 */
+	streamedText: Map<number, string>
 	/**
 	 * Session-wide monotonic counter for ACP toolCallIds.
 	 *
@@ -201,36 +318,36 @@ type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	/**
+	 * Per-session skill commands advertised to the ACP client. Populated from
+	 * the session cwd during newSession/loadSession so command names can be
+	 * resolved and skill content injected when the user invokes one.
+	 */
+	skillCommands: Map<string, AcpSkillInfo>
+	/**
+	 * The plan currently being advertised via ACP `plan` sessionUpdates, if
+	 * any. Only set while a ferment is driving structured plan progress —
+	 * the execute path (plan approved without a ferment) deliberately emits
+	 * nothing. `planId` is the ferment id, kept for ACP v2 (`plan_update`
+	 * with `PlanItems`) readiness.
+	 */
+	activePlan?: ActivePlan
+	/**
+	 * Tracks ferment lifecycle events + ferment-scoped todo store changes and
+	 * emits `plan` sessionUpdates for this session. Started after extensions
+	 * are bound, stopped in disposeSessionRecord.
+	 */
+	planTracker?: AcpPlanTracker
 }
 
-/** Display specificity when multiple todo scopes hold items. */
-const TODO_SCOPE_SPECIFICITY: Record<TodoScope["kind"], number> = {
-	"ferment-step": 2,
-	ferment: 1,
-	global: 0,
+/** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
+interface DisposeSessionRecordOpts {
+	alreadyUnsubscribed?: boolean
 }
 
-/**
- * Picks the initial plan snapshot for a resumed session: the most specific
- * non-empty todo scope (ferment-step > ferment > global). Deterministic —
- * TodoScopeState carries no timestamps and key order is insertion order.
- */
-function pickInitialPlanDetails(sessionId: string): WriteTodosDetails | undefined {
-	const byScope = getTodoState(sessionId).byScope
-	const candidates = Object.entries(byScope).filter(([, state]) => state.todos.length > 0)
-	if (candidates.length === 0) return undefined
-	candidates.sort(
-		([a], [b]) =>
-			(TODO_SCOPE_SPECIFICITY[parseTodoScopeKey(b).kind] ?? -1) -
-			(TODO_SCOPE_SPECIFICITY[parseTodoScopeKey(a).kind] ?? -1),
-	)
-	const [scopeKey, state] = candidates[0]
-	return {
-		schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
-		scope: parseTodoScopeKey(scopeKey),
-		todos: state.todos,
-		updatedAt: new Date().toISOString(),
-	}
+/** Options for {@link KimchiAcpAgent.retireToolCall}. */
+interface RetireToolCallOpts {
+	removeFromHidden?: boolean
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -258,7 +375,12 @@ export class KimchiAcpAgent implements Agent {
 	private getInitialPermissionMode(session: AgentSession): PermissionModeState {
 		const cwd = session.sessionManager.getCwd()
 		const { loaded } = loadConfig({ cwd })
-		return resolveInitialPermissionMode(session.sessionManager, this.permissionsEnvFlag, undefined, loaded)
+		return resolveInitialPermissionMode(
+			session.sessionManager,
+			this.permissionsEnvFlag,
+			resolveCliPermissionMode(),
+			loaded,
+		)
 	}
 
 	constructor(
@@ -309,6 +431,10 @@ export class KimchiAcpAgent implements Agent {
 
 		return {
 			protocolVersion: PROTOCOL_VERSION,
+			agentInfo: {
+				name: "kimchi",
+				version: getVersion(),
+			},
 			agentCapabilities: {
 				loadSession: true,
 				// Advertise logout support so clients know they can call
@@ -320,6 +446,7 @@ export class KimchiAcpAgent implements Agent {
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
 				_meta: {
 					[CAPABILITIES_KEY]: {
@@ -411,23 +538,12 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		// mcpServers isn't plumbed: kimchi loads MCP servers from its own config via
-		// mcpAdapterExtension, so a caller-supplied list would be silently ignored.
-		// Surface that as invalidParams instead of accepting the request and
-		// pretending those servers are live.
-		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
-			throw RequestError.invalidParams(
-				undefined,
-				"mcpServers is not supported; configure MCP servers via kimchi config",
-			)
-		}
 		const session = await this.sessionFactory(params)
-		const initialMode = this.getInitialPermissionMode(session)
-		// Once the factory hands us a live session we own its lifecycle. If model
-		// verification, extension binding, subscribe, or the registering Map.set
-		// throws before we hand it back to the caller, nothing else will ever
-		// dispose it — so make ownership transfer atomic.
 		try {
+			// Caller-supplied MCP servers, keyed by sessionId so concurrent
+			// sessions can't consume each other's entries.
+			setCallerMcpServers(session.sessionId, convertAcpMcpServers(params.mcpServers ?? []))
+			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
 
 			const sessionId = session.sessionId
@@ -440,11 +556,13 @@ export class KimchiAcpAgent implements Agent {
 			const record: SessionRecord = {
 				session,
 				unsubscribe: () => {},
-				unsubscribePlanSync: () => {},
+				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -456,22 +574,21 @@ export class KimchiAcpAgent implements Agent {
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
-			this.attachPlanSync(sessionId, record)
+			this.startPlanTracker(record, sessionId)
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(session, () => this.getInitialPermissionMode(session).mode)
+			const configOptions = buildConfigOptions(session, initialMode.mode)
 			return {
 				sessionId,
 				configOptions,
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
+			removePendingEntry(session.sessionId)
 			unregisterAcpPrompter(session.sessionId)
 			unregisterSessionPermissionFlagController(session.sessionId)
 			clearPermissionModeEnv(session.sessionId)
-			this.sessions.get(session.sessionId)?.unsubscribePlanSync()
-
 			session.dispose()
 			throw err
 		}
@@ -496,6 +613,38 @@ export class KimchiAcpAgent implements Agent {
 				process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
 			},
 		})
+
+		// Activate the Skill tool if the claude-code-skills extension registered it.
+		// This gives ACP sessions the same model-driven skill loading that TUI has
+		// by default (skills === true).
+		if (session.getToolDefinition("Skill")) {
+			const active = new Set(session.getActiveToolNames())
+			if (!active.has("Skill")) {
+				session.setActiveToolsByName([...active, "Skill"])
+			}
+		}
+	}
+
+	/**
+	 * Start emitting ACP `plan` sessionUpdates driven by the ferment
+	 * lifecycle. The tracker subscribes to FERMENT_EVENTS.PHASE_STARTED on the
+	 * same pi.events bus the ferment todo-sync bridge uses (exposed via
+	 * defaultFermentRuntime.events after bindExtensions), and to the process-
+	 * level todo store. Sessions without a running ferment never emit a plan.
+	 * Called after the record is registered so a tracker start failure can't
+	 * leave a half-registered session.
+	 */
+	private startPlanTracker(record: SessionRecord, sessionId: string): void {
+		const tracker = new AcpPlanTracker({
+			sessionId,
+			events: defaultFermentRuntime.events,
+			send: (params) => this.send(params),
+			onActivePlanChanged: (plan) => {
+				record.activePlan = plan
+			},
+		})
+		tracker.start()
+		record.planTracker = tracker
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -525,7 +674,7 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
 		return {
-			configOptions: buildConfigOptions(record.session, () => this.getInitialPermissionMode(record.session).mode),
+			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
 		}
 	}
 
@@ -601,14 +750,6 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		// Same posture as newSession: mcpServers isn't plumbed, surface as
-		// invalidParams instead of silently dropping caller intent.
-		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
-			throw RequestError.invalidParams(
-				undefined,
-				"mcpServers is not supported; configure MCP servers via kimchi config",
-			)
-		}
 		const sessionId = params.sessionId
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
@@ -618,10 +759,7 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(existing.session)
 			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(
-				existing.session,
-				() => this.getInitialPermissionMode(existing.session).mode,
-			)
+			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
@@ -642,87 +780,97 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		const session: AgentSession = await this.sessionLoader(params)
-		const initialMode = this.getInitialPermissionMode(session)
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		const sid = session.sessionId
-		// Defensive: pi reads the sessionId from the JSONL header, not the
-		// filename, so a corrupted / hand-edited session whose header id
-		// disagrees with the requested id would land under the wrong key in
-		// `sessions`. Subsequent session/prompt for params.sessionId would then
-		// fail with "unknown sessionId" while the file is still held open.
-		// Reject up front and dispose so we don't quietly diverge.
-		if (sid !== params.sessionId) {
-			session.dispose()
-			throw RequestError.invalidParams(
-				undefined,
-				`session header id ${sid} does not match requested sessionId ${params.sessionId}`,
-			)
-		}
+		const loadedSession = await this.sessionLoader(params)
+		const initialMode = this.getInitialPermissionMode(loadedSession)
+		const sessionId = loadedSession.sessionId
 		try {
-			assertSessionHasModel(session)
+			// Defensive: pi reads the sessionId from the JSONL header, not the
+			// filename, so a corrupted / hand-edited session whose header id
+			// disagrees with the requested id would land under the wrong key in
+			// `sessions`. Subsequent session/prompt for params.sessionId would then
+			// fail with "unknown sessionId" while the file is still held open.
+			// Reject up front and dispose so we don't quietly diverge.
+			if (sessionId !== params.sessionId) {
+				loadedSession.dispose()
+				throw RequestError.invalidParams(
+					undefined,
+					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
+				)
+			}
+			setCallerMcpServers(sessionId, convertAcpMcpServers(params.mcpServers ?? []))
+			assertSessionHasModel(loadedSession)
 
-			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			const uiContext = this.createUiContext(loadedSession)
+			registerPermissionFlagController(loadedSession, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
-				session,
+				session: loadedSession,
 				unsubscribe: () => {},
-				unsubscribePlanSync: () => {},
+				// The session header cwd was validated against params.cwd above, so
+				// the session manager's cwd is the session's true cwd.
+				cwd: loadedSession.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				skillCommands: new Map(discoverAcpSkillCommands(loadedSession.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
-				sid,
-				createAcpPermissionPrompter(this.conn, sid, uiContext, (piToolCallId, toolName) =>
+				sessionId,
+				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
 					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
 				),
 			)
-			await this.bindAcpExtensions(session, uiContext)
+			await this.bindAcpExtensions(loadedSession, uiContext)
 
-			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, record)
-			this.attachPlanSync(sid, record, { emitInitialSnapshot: true })
+			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.sessions.set(sessionId, record)
+			this.startPlanTracker(record, sessionId)
+			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
+			// already-active phase, so the tracker also snapshots from the
+			// restored todo store (gated on an active ferment — emits nothing
+			// when there is none or only global-scope todos survived).
+			record.planTracker?.emitRestoredSnapshot()
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
-			this.seedBlockCounterFromBranch(session, record)
+			this.seedBlockCounterFromBranch(loadedSession, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
-			this.replayTranscript(session)
-			this.sendAvailableCommandsUpdate(sid)
+			this.replayTranscript(loadedSession)
+			this.sendAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(session, () => this.getInitialPermissionMode(session).mode)
+			const configOptions = buildConfigOptions(loadedSession, initialMode.mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sid)
-			unregisterSessionPermissionFlagController(sid)
-			clearPermissionModeEnv(sid)
-
-			const existing = this.sessions.get(sid)
+			removePendingEntry(sessionId)
+			unregisterAcpPrompter(sessionId)
+			unregisterSessionPermissionFlagController(sessionId)
+			clearPermissionModeEnv(sessionId)
+			const existing = this.sessions.get(sessionId)
 			if (existing) {
-				this.sessions.delete(sid)
+				this.sessions.delete(sessionId)
+				existing.planTracker?.stop()
 				existing.unsubscribe()
-				existing.unsubscribePlanSync()
 			}
-			session.dispose()
+			loadedSession.dispose()
 			throw err
 		}
 	}
@@ -751,20 +899,20 @@ export class KimchiAcpAgent implements Agent {
 				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
 			}
 		}
-		const text = params.prompt
+		let text = params.prompt
 			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
 			.join("")
 			.trim()
+
+		// If the prompt starts with `/skill:<name>` and matches a skill advertised
+		// for this session, rewrite the turn to inject the skill content.
+		const skillRewrite = await tryParseSkillCommand(text, entry.skillCommands)
+		if (skillRewrite) {
+			text = buildSkillCommandPrompt(skillRewrite)
+		}
+
 		// Extract image blocks from the prompt only if model supports vision.
-		const images: ImageContent[] = supportsImages
-			? params.prompt
-					.filter((b: ContentBlock): b is ContentBlock & { type: "image" } => b.type === "image")
-					.map((b) => ({
-						type: "image" as const,
-						data: b.data,
-						mimeType: b.mimeType,
-					}))
-			: []
+		const images: ImageContent[] = supportsImages ? extractImages(params.prompt) : []
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
@@ -779,6 +927,9 @@ export class KimchiAcpAgent implements Agent {
 			hiddenToolCallIds: new Set(),
 			announcedToolCallIds: new Set(),
 			lastStreamedContent: new Map(),
+			preWriteContents: new Map(),
+			pendingFileChanges: new Map(),
+			usage: emptyTurnUsage(),
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -826,7 +977,30 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
-		await entry.session.abort()
+		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
+		// chains queued steering messages into the running prompt —
+		// session.prompt() resolves only after all chained calls — so awaiting
+		// abort() first lets every still-queued steer self-deliver into history
+		// with a full reply while we wait for idle. clearQueue() is synchronous,
+		// so running it first drops undelivered steers before the chain can
+		// drain them. Mirrors the TUI's Escape → clearAllQueues() behaviour.
+		// The drain is wrapped in try/catch/finally so a clearQueue() failure
+		// can never skip the abort — the turn is already marked cancelled, and
+		// leaving the agent running would burn tokens until the LLM responds.
+		// cancel() is a notification (fire-and-forget), so the error is caught
+		// and logged rather than rethrown as an unhandled rejection; the worst
+		// case is a partially-drained queue, which is no worse than before the
+		// fix.
+		try {
+			entry.session.clearQueue()
+		} catch (err) {
+			// clearQueue failure is non-fatal — abort must still run. Log so a
+			// recurring drain failure is observable instead of silently leaking
+			// queued steers into history again.
+			console.error("kimchi acp: clearQueue() failed during cancel; aborting anyway", err)
+		} finally {
+			await entry.session.abort()
+		}
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -837,6 +1011,16 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.steering:
+				return handleSteering((sessionId) => {
+					const entry = this.sessions.get(sessionId)
+					if (!entry) return undefined
+					// A cancelled turn stays defined until the prompt settles, but
+					// cancel() has already drained its queue — a steer landing in this
+					// window must not re-queue text that would leak into the next prompt.
+					const turnActive = entry.turn !== undefined && !entry.turn.cancelled
+					return { session: entry.session, turnActive }
+				}, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
@@ -865,24 +1049,6 @@ export class KimchiAcpAgent implements Agent {
 		resetAcpClientInfo()
 	}
 
-	/**
-	 * Emits ACP `plan` session updates for todo writes belonging to this
-	 * session. Session-scoped on purpose (not turn-scoped): store notifications
-	 * fire synchronously inside applyWriteTodos, so snapshots land in order on
-	 * the SDK write queue. On resume (`emitInitialSnapshot`), emits one
-	 * snapshot from restored todos — the transcript restore path bypasses
-	 * store listeners, so this must be done imperatively.
-	 */
-	private attachPlanSync(sessionId: string, record: SessionRecord, opts: { emitInitialSnapshot?: boolean } = {}): void {
-		record.unsubscribePlanSync = subscribeTodoStore((details, emitterSessionId) => {
-			if (emitterSessionId !== sessionId) return
-			this.send({ sessionId, update: buildPlanUpdate(details) })
-		})
-		if (!opts.emitInitialSnapshot || !hasEverHadTodos(sessionId)) return
-		const initial = pickInitialPlanDetails(sessionId)
-		if (initial) this.send({ sessionId, update: buildPlanUpdate(initial) })
-	}
-
 	private async closeSessionRecord(sessionId: string): Promise<void> {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
@@ -904,12 +1070,9 @@ export class KimchiAcpAgent implements Agent {
 		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
 	}
 
-	private async disposeSessionRecord(
-		entry: SessionRecord,
-		opts: { alreadyUnsubscribed?: boolean } = {},
-	): Promise<void> {
+	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		entry.planTracker?.stop()
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
-		entry.unsubscribePlanSync()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
@@ -929,14 +1092,17 @@ export class KimchiAcpAgent implements Agent {
 				// ended or were orphaned). Wipe both maps so fresh allocations
 				// don't reuse old ids.
 				entry.contentIndexToBlockId.clear()
+				entry.streamedText.clear()
 				entry.toolCallIdMap.clear()
 				return
 			}
 			case "message_start": {
 				// New assistant message → contentIndex restarts from 0. Wipe the
-				// per-message map so a fresh block at index 0 gets a fresh id
-				// instead of inheriting the previous message's assignment.
+				// per-message maps so a fresh block at index 0 gets a fresh id
+				// (and no streamed prefix) instead of inheriting the previous
+				// message's assignment.
 				entry.contentIndexToBlockId.clear()
+				entry.streamedText.clear()
 				return
 			}
 			case "message_update": {
@@ -956,6 +1122,12 @@ export class KimchiAcpAgent implements Agent {
 							messageId,
 						},
 					})
+					// Track streamed text length only — thinking is not restored at
+					// message_end and must not be re-emitted from that path.
+					if (ame.type === "text_delta") {
+						const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
+						entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
+					}
 				}
 
 				// Tool call argument generation started — emit pending tool_call so
@@ -1017,6 +1189,65 @@ export class KimchiAcpAgent implements Agent {
 
 				return
 			}
+			case "message_end": {
+				if (!turn) return
+				const msg = event.message
+				if (msg.role !== "assistant") return
+				// Emit whatever text a block carries that streaming never sent —
+				// an extension can zero text_delta while streaming and restore the
+				// text only in message_end's returned message (Ferment V2 does
+				// this for any message that isn't an unaccepted completion
+				// candidate), and a provider can emit a text block with no
+				// incremental deltas at all. In the normal fully-streamed case
+				// sent === block.text.length for every block, so nothing extra
+				// goes out here. Emitted before usage accounting so ordering
+				// relative to emitUsageUpdate is unchanged.
+				if (Array.isArray(msg.content)) {
+					msg.content.forEach((block, index) => {
+						if (block.type !== "text") return
+						const streamed = entry.streamedText.get(index) ?? ""
+						if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
+						let messageId = entry.contentIndexToBlockId.get(index)
+						if (messageId === undefined) {
+							messageId = `km.${entry.nextBlockId++}`
+							entry.contentIndexToBlockId.set(index, messageId)
+						}
+						this.send({
+							sessionId,
+							update: {
+								sessionUpdate: "agent_message_chunk",
+								content: { type: "text", text: block.text.slice(streamed.length) },
+								messageId,
+							},
+						})
+						entry.streamedText.set(index, block.text)
+					})
+				}
+				const usage = msg.usage
+				if (usage) {
+					// `|| 0` guards against providers emitting undefined/NaN for a
+					// field the type declares required — one bad message must not
+					// poison the whole turn's totals.
+					turn.usage.input += usage.input || 0
+					turn.usage.output += usage.output || 0
+					turn.usage.cacheRead += usage.cacheRead || 0
+					turn.usage.cacheWrite += usage.cacheWrite || 0
+					turn.usage.total += usage.totalTokens || 0
+					// reasoning is a SUBSET of output (pi-ai 0.84 Usage docs) — summed
+					// separately for thoughtTokens only, never re-added to totals.
+					if (typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning)) {
+						turn.usage.reasoning += usage.reasoning
+						turn.usage.sawReasoning = true
+					}
+					turn.usage.messages++
+					// Live context-window refresh: a message_end carrying usage means
+					// the session's estimate just moved. Emit here (subject to
+					// emitUsageUpdate's undefined/null skip) so clients track the
+					// context window across chained steps, not just at turn end.
+					this.emitUsageUpdate(entry)
+				}
+				return
+			}
 			case "tool_execution_start": {
 				// Symmetry with the other turn-lifecycle branches: if the turn was
 				// already finalized (e.g., shutdown cleared it), don't emit stray
@@ -1029,6 +1260,13 @@ export class KimchiAcpAgent implements Agent {
 					// prompter ran before we knew it was hidden — retire its state.
 					this.retireToolCall(entry, turn, event.toolCallId)
 					return
+				}
+				// Capture the diff data now — tool_execution_end carries no args.
+				// For `write` the pre-existing content must be read before the tool
+				// runs; afterwards the file already holds the new content.
+				const fileChanges = collectFileChanges(event.toolName, event.args, entry.cwd, turn, event.toolCallId)
+				if (fileChanges.length > 0) {
+					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
@@ -1084,12 +1322,22 @@ export class KimchiAcpAgent implements Agent {
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
 				}
+				// Consume the per-call capture so a later turn reusing the id (or a
+				// retried call) can't leak stale diff data across tool calls.
+				const pending = turn.pendingFileChanges.get(event.toolCallId) ?? []
+				turn.pendingFileChanges.delete(event.toolCallId)
+				const preWrite = turn.preWriteContents.get(event.toolCallId)
+				turn.preWriteContents.delete(event.toolCallId)
+				// Diffs are additional content blocks, appended after the existing
+				// text/image content. Failed mutations emit no diff: the client
+				// would otherwise render a change that never landed.
+				const diffs = event.isError ? [] : pending.map((p) => fileChangeToDiffContent(resolveFileChange(p, preWrite)))
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
-					content: toolResultContent(event.result),
+					content: [...toolResultContent(event.result), ...diffs],
 					rawOutput: event.result,
 				})
 				this.send({ sessionId, update })
@@ -1373,7 +1621,7 @@ export class KimchiAcpAgent implements Agent {
 		record: SessionRecord,
 		turn: TurnContext,
 		piToolCallId: string,
-		opts: { removeFromHidden?: boolean } = {},
+		opts: RetireToolCallOpts = {},
 	): void {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
@@ -1384,11 +1632,30 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private sendAvailableCommandsUpdate(sessionId: string): void {
+		const record = this.sessions.get(sessionId)
+		const skillCommands = record ? buildSkillAvailableCommands(Array.from(record.skillCommands.values())) : []
 		this.send({
 			sessionId,
 			update: {
 				sessionUpdate: "available_commands_update",
-				availableCommands: AVAILABLE_COMMANDS,
+				availableCommands: [...AVAILABLE_COMMANDS, ...skillCommands],
+			},
+		})
+	}
+
+	private emitUsageUpdate(entry: SessionRecord): void {
+		const session = entry.session
+		const ctx = session.getContextUsage()
+		// Per the issue doc: skip when getContextUsage() returns undefined or
+		// tokens is null (e.g. right after compaction). ACP requires both `used`
+		// and `size`, so there is no null-safe emission.
+		if (!ctx || ctx.tokens === null) return
+		this.send({
+			sessionId: session.sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used: ctx.tokens,
+				size: ctx.contextWindow,
 			},
 		})
 	}
@@ -1397,7 +1664,28 @@ export class KimchiAcpAgent implements Agent {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
-		turn.resolve({ stopReason })
+		try {
+			this.emitUsageUpdate(entry)
+		} finally {
+			const response: PromptResponse = { stopReason }
+			// usage is v1/experimental-only on PromptResponse (v2 drops it in favor
+			// of usage_update session events) and is omitted when the turn produced
+			// no usage data (e.g. cancelled before the first assistant message).
+			// totalTokens is emitted because the pinned ACP SDK's experimental Usage
+			// type marks it required, even though the ticket's v1 field table drops it.
+			if (turn.usage.messages > 0) {
+				const u = turn.usage
+				response.usage = {
+					inputTokens: u.input,
+					outputTokens: u.output,
+					cachedReadTokens: u.cacheRead,
+					cachedWriteTokens: u.cacheWrite,
+					...(u.sawReasoning ? { thoughtTokens: u.reasoning } : {}),
+					totalTokens: u.total,
+				}
+			}
+			turn.resolve(response)
+		}
 	}
 
 	private failTurn(entry: SessionRecord, err: unknown): void {
@@ -1481,12 +1769,8 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
-function buildConfigOptions(
-	session: AgentSession,
-	defaultMode: PermissionMode | (() => PermissionMode),
-): SessionConfigOption[] {
-	const mode =
-		getPermissionMode(session.sessionId)?.mode ?? (typeof defaultMode === "function" ? defaultMode() : defaultMode)
+function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
+	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
 	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 
@@ -1662,7 +1946,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
  * timeout, and load resources. Both the session loader and factory
  * diverge only in how they obtain a SessionManager.
  */
-async function createSessionSettings(cwd: string, options: RunAcpOptions) {
+async function createSessionSettings(cwd: string, options: RunAcpOptions, params: { _meta?: unknown }) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
 	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
@@ -1679,17 +1963,38 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions) {
 	// sessions in one process, the last-configured session's value governs
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
+	// Cache the skill list block per session so we don't rediscover skills on
+	// every turn's system prompt rebuild. Built lazily on first access; errors
+	// during loader access fall back to an empty block.
+	let cachedSkillListBlock: string | undefined
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: options.extensionFactories,
+		appendSystemPromptOverride: () => {
+			if (cachedSkillListBlock === undefined) {
+				try {
+					cachedSkillListBlock = buildSkillListBlock(resourceLoader)
+				} catch {
+					// If the loader isn't ready (e.g. during reload before skills
+					// are populated), return empty rather than crashing session
+					// startup — the block is non-essential.
+					cachedSkillListBlock = ""
+				}
+			}
+			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
+			// then the skill list block (matches upstream override behaviour).
+			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
+			return [...base, ...(cachedSkillListBlock ? [cachedSkillListBlock] : [])]
+		},
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
 }
 
-function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+/** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
+export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
@@ -1764,7 +2069,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -1776,10 +2081,11 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	}
 }
 
-function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
+/** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
+export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -1835,6 +2141,116 @@ function replayTextParts(text: string): ReplayTextPart[] {
 function extractStreamContent(args: unknown): string | undefined {
 	const a = (args ?? {}) as Record<string, unknown>
 	return asString(a.content) ?? asString(a.newText) ?? asString(a.command)
+}
+
+// ACP v1 Diff = { path, newText, oldText? }. The v1 adapter maps one
+// FileChange to one ToolCallContent with type "diff": add carries
+// oldText: null, modify carries both texts, delete omits newText (no tool
+// produces deletes today; the branch exists so the adapter is total over
+// FileChange and the v2 migration stays a pure adapter swap).
+export function fileChangeToDiffContent(change: FileChange): ToolCallContent {
+	switch (change.operation) {
+		case "add":
+			return { type: "diff", path: change.path, newText: change.newText ?? "", oldText: null }
+		case "modify":
+			return { type: "diff", path: change.path, newText: change.newText ?? "", oldText: change.oldText ?? null }
+		case "delete":
+			// The SDK's v1 Diff type marks newText required, but the protocol
+			// treats it as absent for deletions (oldText is the "None for new
+			// files" mirror). Cast keeps the wire shape per the v1 mapping.
+			return { type: "diff", path: change.path, oldText: change.oldText ?? null } as ToolCallContent
+	}
+}
+
+// Faithful replication of pi's resolveToCwd (dist/core/tools/path-utils.js →
+// resolvePath with normalizeUnicodeSpaces + stripAtPrefix): the write tool
+// resolves args.path this way, so the pre-write read must match or a path
+// like "@notes.txt" or "~/file (with NBSP).md" would be misclassified as a
+// new file. pi-coding-agent only exports "." and "./hooks", so the helper
+// can't be imported — replicated here. Drift surfaces as an 'add' diff on an
+// overwritten file, not corruption.
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
+function resolveToolPath(input: string, cwd: string): string {
+	let p = input.replace(UNICODE_SPACES, " ")
+	if (p.startsWith("@")) p = p.slice(1)
+	if (p === "~") {
+		p = homedir()
+	} else if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) {
+		p = join(homedir(), p.slice(2))
+	}
+	if (/^file:\/\//.test(p)) p = fileURLToPath(p)
+	return isAbsolute(p) ? resolve(p) : resolve(cwd, p)
+}
+
+// Reads the pre-write content for a `write` tool call. Returns null when the
+// file doesn't exist yet (new-file add). Other read errors are logged — the
+// diff still omits oldText rather than breaking the tool_call_update, but a
+// swallowed EACCES/ETOOLARGE would otherwise be indistinguishable from
+// "file did not exist".
+function readPreWriteContent(toolPath: string, cwd: string): string | null {
+	try {
+		return readFileSync(resolveToolPath(toolPath, cwd), "utf-8")
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+			process.stderr.write(`acp per-turn-diff: pre-write read failed for ${toolPath}: ${String(err)}\n`)
+		}
+		return null
+	}
+}
+
+// Derives pending file-change entries from a tool's arguments. Only the
+// mutation tools (edit, write) produce changes; everything else returns []
+// so read-only tools never attach diffs.
+function collectFileChanges(
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	turn: { preWriteContents: Map<string, string | null> },
+	toolCallId: string,
+): PendingFileChange[] {
+	const a = (args ?? {}) as Record<string, unknown>
+	const path = typeof a.path === "string" ? a.path : undefined
+	if (toolName === "edit") {
+		if (!path) return []
+		// pi's edit tool accepts the multi-edit shape {path, edits: [...]} and
+		// normalizes a legacy single-edit shape {path, oldText, newText}
+		// internally. Mirror that normalization so legacy-shape calls still
+		// emit a diff instead of silently producing none.
+		const editsInput: unknown[] = Array.isArray(a.edits)
+			? a.edits
+			: typeof a.oldText === "string" && typeof a.newText === "string"
+				? [{ oldText: a.oldText, newText: a.newText }]
+				: []
+		const changes: FileChange[] = []
+		for (const e of editsInput) {
+			if (!e || typeof e !== "object") continue
+			const edit = e as { oldText?: unknown; newText?: unknown }
+			if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") continue
+			changes.push({ operation: "modify", path, oldText: edit.oldText, newText: edit.newText })
+		}
+		return changes
+	}
+	if (toolName === "write") {
+		if (!path || typeof a.content !== "string") return []
+		// Capture the pre-existing content now (before the tool overwrites it).
+		// The entry is stored with its operation undecided; tool_execution_end
+		// resolves add-vs-modify from preWriteContents via resolveFileChange,
+		// keeping that map the single source of truth for the write oldText.
+		turn.preWriteContents.set(toolCallId, readPreWriteContent(path, cwd))
+		return [{ operation: "write", path, newText: a.content }]
+	}
+	return []
+}
+
+// Resolves a captured-at-start entry to a concrete FileChange for the v1
+// adapter. "write" entries become "add" when the file didn't exist (or the
+// pre-write read failed, or no pre-write content was captured) and "modify"
+// with the recorded oldText otherwise.
+function resolveFileChange(pending: PendingFileChange, preWrite: string | null | undefined): FileChange {
+	if (pending.operation !== "write") return pending
+	return preWrite === null || preWrite === undefined
+		? { operation: "add", path: pending.path, newText: pending.newText }
+		: { operation: "modify", path: pending.path, oldText: preWrite, newText: pending.newText }
 }
 
 // UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai

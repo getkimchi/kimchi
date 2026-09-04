@@ -80,10 +80,11 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
             await agent.install(object())
 
         self.assertEqual(len(agent.root_commands), 1)
-        self.assertEqual(len(agent.agent_commands), 1)
+        self.assertEqual(len(agent.agent_commands), 2)
         self.assertIn("git", agent.root_commands[0])
-        self.assertIn("npm install -g gsd-pi@latest", agent.agent_commands[0])
-        self.assertIn("gsd --version", agent.agent_commands[0])
+        self.assertIn("git config", agent.agent_commands[0])
+        self.assertIn("npm install -g gsd-pi@latest", agent.agent_commands[1])
+        self.assertIn("gsd --version", agent.agent_commands[1])
 
     def test_version_command_tolerates_system_node_install(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,7 +105,7 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.install(object())
 
-        self.assertIn("npm install -g gsd-pi@3.0.0", agent.agent_commands[0])
+        self.assertIn("npm install -g gsd-pi@3.0.0", agent.agent_commands[1])
 
     async def test_registers_and_runs_selected_kimchi_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,8 +116,8 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        self.assertEqual(len(agent.agent_commands), 2)
-        config_command, run_command = agent.agent_commands
+        self.assertEqual(len(agent.agent_commands), 3)
+        config_command, _git_command, run_command = agent.agent_commands
         self.assertIn("/tmp/terminal-bench-gsd-home/agent/models.json", config_command)
         self.assertIn("/tmp/terminal-bench-gsd-home/agent/settings.json", config_command)
         self.assertIn("/tmp/terminal-bench-gsd-home/preferences.md", config_command)
@@ -214,11 +215,12 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("- kimchi-dev/minimax-m2.7", prefs)
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            agent = RecordingGsdKimchi(logs_dir=Path(tmp), model_name="openai/gpt-4.1")
+        for model_name in ("openai/gpt-4.1", "openrouter/z-ai/glm-5.2"):
+            with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
+                agent = RecordingGsdKimchi(logs_dir=Path(tmp), model_name=model_name)
 
-            with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
-                await agent.run("solve it", object(), AgentContext())
+                with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
+                    await agent.run("solve it", object(), AgentContext())
 
     async def test_missing_kimchi_api_key_fails_before_commands(self) -> None:
         os.environ.pop("KIMCHI_API_KEY", None)

@@ -23,10 +23,12 @@ describe("Grader agent registration", () => {
 		expect(cfg.disallowedTools).toContain("write")
 		expect(cfg.disallowedTools).toContain("Agent")
 
-		// Must be bounded
-		expect(cfg.maxTurns).toBe(15)
+		// Must be bounded, with room to actually re-run the full verification
+		// matrix (build+lint+test+e2e+inspection ≈ 15 tool turns) before the
+		// soft turn cap starts steering wrap-up.
+		expect(cfg.maxTurns).toBe(25)
 		expect(cfg.tokenBudget).toBe(60_000)
-		expect(cfg.maxDuration).toBe(180)
+		expect(cfg.maxDuration).toBe(600)
 
 		// No extensions or skills — purely built-in tools
 		expect(cfg.extensions).toBe(false)

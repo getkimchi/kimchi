@@ -240,6 +240,8 @@ describe("passive staleness counter", () => {
 			| undefined
 		expect(result).toBeDefined()
 		expect(result?.messages).toHaveLength(1)
+		expect(result?.messages[0]?.content).toMatch(/^<system-reminder>\n/)
+		expect(result?.messages[0]?.content).toMatch(/\n<\/system-reminder>$/)
 		expect(result?.messages[0]?.content).toContain("## Current Todos")
 		expect(result?.messages[0]?.content).toContain("check work")
 	})

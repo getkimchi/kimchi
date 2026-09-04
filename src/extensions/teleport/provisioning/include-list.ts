@@ -161,11 +161,9 @@ export async function walkGitDir(cwd: string, signal?: AbortSignal): Promise<str
 }
 
 /**
- * Build the rsync `--files-from` include list for teleport: every path
- * the workspace upload should consist of, relative to `cwd`,
- * POSIX-separated.
- *
- * Composed of:
+ * Tracked + untracked working-tree files, relative to `cwd`,
+ * POSIX-separated. Shared core of `buildIncludeList` /
+ * `buildWorkingTreeList`:
  *   1. `git ls-files --cached -z` — tracked files, minus any that
  *      `git ls-files --deleted -z` reports as missing from the working
  *      tree. Tracked entries are otherwise explicit user intent — if we
@@ -177,9 +175,35 @@ export async function walkGitDir(cwd: string, signal?: AbortSignal): Promise<str
  *      git would otherwise see. The basename safety filter is applied
  *      here so an accidentally-left-around `.env` / `.DS_Store` doesn't
  *      leak to the sandbox.
- *   3. A recursive walk of `<cwd>/.git/` — git's metadata dir, which the
- *      teleport flow currently uploads (it's not in `BASE_EXCLUDE_GLOBS`)
- *      but which `git ls-files` never lists.
+ *
+ * Per-source git errors (git missing, not a repo) are swallowed so a
+ * partial list is still useful.
+ */
+async function buildWorkingTreeEntries(
+	cwd: string,
+	signal: AbortSignal | undefined,
+	spawner: typeof spawn,
+): Promise<string[]> {
+	const [tracked, others, deleted] = await Promise.all([
+		listGitTrackedFiles(cwd, signal, spawner),
+		listGitUntrackedFiles(cwd, signal, spawner),
+		listGitDeletedFiles(cwd, signal, spawner),
+	])
+	const deletedSet = new Set(deleted)
+	const liveTracked = tracked.filter((p) => !deletedSet.has(p))
+	const safeOthers = others.filter((p) => !excludesBaseFilePattern(p))
+	return [...liveTracked, ...safeOthers]
+}
+
+/**
+ * Build the rsync `--files-from` include list for teleport: every path
+ * the workspace upload should consist of, relative to `cwd`,
+ * POSIX-separated.
+ *
+ * Composed of the working-tree entries (see `buildWorkingTreeEntries`)
+ * plus a recursive walk of `<cwd>/.git/` — git's metadata dir, which the
+ * teleport flow currently uploads (it's not in `BASE_EXCLUDE_GLOBS`)
+ * but which `git ls-files` never lists.
  *
  * Cheap: no remote roundtrip, no rsync subprocess. Per-source errors
  * (git missing, `.git` unreadable) are swallowed so a partial list is
@@ -190,14 +214,172 @@ export async function buildIncludeList(
 	signal?: AbortSignal,
 	spawner: typeof spawn = defaultSpawn,
 ): Promise<string[]> {
-	const [tracked, others, deleted, gitDirFiles] = await Promise.all([
-		listGitTrackedFiles(cwd, signal, spawner),
-		listGitUntrackedFiles(cwd, signal, spawner),
-		listGitDeletedFiles(cwd, signal, spawner),
+	const [entries, gitDirFiles] = await Promise.all([
+		buildWorkingTreeEntries(cwd, signal, spawner),
 		walkGitDir(cwd, signal),
 	])
-	const deletedSet = new Set(deleted)
-	const liveTracked = tracked.filter((p) => !deletedSet.has(p))
+	return [...entries, ...gitDirFiles]
+}
+
+/**
+ * Like `buildIncludeList` but WITHOUT the `<cwd>/.git/` walk — the
+ * `/teleport --fast` diff-rsync variant, where the remote side already
+ * has a fresh clone's `.git` and only the working-tree diff is synced.
+ */
+export async function buildWorkingTreeList(
+	cwd: string,
+	signal?: AbortSignal,
+	spawner: typeof spawn = defaultSpawn,
+): Promise<string[]> {
+	return buildWorkingTreeEntries(cwd, signal, spawner)
+}
+
+/**
+ * Files that differ from the upstream tracking ref — only what the diff
+ * rsync actually needs to transfer after a server-side clone. Uses
+ * `git diff @{upstream}` to capture both unpushed commits AND uncommitted
+ * changes. Falls back to `git diff HEAD` (uncommitted only) when no
+ * upstream is set (unpushed branch with no tracking ref).
+ *
+ * On a clean tree with no unpushed commits, this returns ~0 files.
+ */
+export async function buildChangedFilesList(
+	cwd: string,
+	signal?: AbortSignal,
+	spawner: typeof spawn = defaultSpawn,
+): Promise<string[]> {
+	const [changed, others] = await Promise.all([
+		listGitChangedFiles(cwd, signal, spawner),
+		listGitUntrackedFiles(cwd, signal, spawner),
+	])
 	const safeOthers = others.filter((p) => !excludesBaseFilePattern(p))
-	return [...liveTracked, ...safeOthers, ...gitDirFiles]
+	return [...changed, ...safeOthers]
+}
+
+function listGitChangedFiles(cwd: string, signal: AbortSignal | undefined, spawner: typeof spawn): Promise<string[]> {
+	return new Promise((resolve) => {
+		let stdout = Buffer.alloc(0)
+		let child: ChildProcess
+		try {
+			// @{upstream} = origin/<branch>. Captures both unpushed commits
+			// and uncommitted changes in one diff.
+			child = spawner("git", ["-C", cwd, "diff", "--name-only", "--diff-filter=ACMRTUXB", "@{upstream}", "-z"], {
+				cwd,
+				signal,
+				stdio: ["ignore", "pipe", "pipe"],
+			})
+		} catch {
+			resolve([])
+			return
+		}
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = Buffer.concat([stdout, chunk])
+		})
+		child.on("error", () => resolve([]))
+		child.on("close", (code) => {
+			if (code !== 0) {
+				// No upstream set (unpushed branch) — fall back to HEAD + local-only commits.
+				resolve(listGitChangedFilesFallback(cwd, signal, spawner))
+				return
+			}
+			resolve(
+				stdout
+					.toString("utf-8")
+					.split("\0")
+					.filter((s) => s.length > 0),
+			)
+		})
+	})
+}
+
+/**
+ * Fallback when no upstream tracking ref is set (unpushed branch).
+ * Combines:
+ *   1. `git diff HEAD` — uncommitted changes (staged + unstaged).
+ *   2. `git log --branches --not --remotes --name-only` — files changed in
+ *      commits that exist locally but not on any remote (unpushed commits).
+ * Together these capture everything the remote clone is missing.
+ */
+async function listGitChangedFilesFallback(
+	cwd: string,
+	signal: AbortSignal | undefined,
+	spawner: typeof spawn,
+): Promise<string[]> {
+	const [uncommitted, localOnly] = await Promise.all([
+		runGitDiffHEAD(cwd, signal, spawner),
+		runGitLogLocalOnly(cwd, signal, spawner),
+	])
+	return [...new Set([...uncommitted, ...localOnly])]
+}
+
+function runGitDiffHEAD(cwd: string, signal: AbortSignal | undefined, spawner: typeof spawn): Promise<string[]> {
+	return new Promise((resolve) => {
+		let stdout = Buffer.alloc(0)
+		let child: ChildProcess
+		try {
+			child = spawner("git", ["-C", cwd, "diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "-z"], {
+				cwd,
+				signal,
+				stdio: ["ignore", "pipe", "pipe"],
+			})
+		} catch {
+			resolve([])
+			return
+		}
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = Buffer.concat([stdout, chunk])
+		})
+		child.on("error", () => resolve([]))
+		child.on("close", (code) => {
+			if (code !== 0) {
+				resolve([])
+				return
+			}
+			resolve(
+				stdout
+					.toString("utf-8")
+					.split("\0")
+					.filter((s) => s.length > 0),
+			)
+		})
+	})
+}
+
+function runGitLogLocalOnly(cwd: string, signal: AbortSignal | undefined, spawner: typeof spawn): Promise<string[]> {
+	return new Promise((resolve) => {
+		let stdout = Buffer.alloc(0)
+		let child: ChildProcess
+		try {
+			// List files changed in commits that exist on local branches
+			// but not on any remote — i.e. unpushed commits.
+			child = spawner(
+				"git",
+				["-C", cwd, "log", "--branches", "--not", "--remotes", "--name-only", "--pretty=format:", "-z"],
+				{
+					cwd,
+					signal,
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			)
+		} catch {
+			resolve([])
+			return
+		}
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = Buffer.concat([stdout, chunk])
+		})
+		child.on("error", () => resolve([]))
+		child.on("close", (code) => {
+			if (code !== 0) {
+				resolve([])
+				return
+			}
+			resolve(
+				stdout
+					.toString("utf-8")
+					.split("\0")
+					.filter((s) => s.length > 0),
+			)
+		})
+	})
 }

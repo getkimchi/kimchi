@@ -6,6 +6,8 @@ export interface SessionGitDetails {
 	repo?: string
 	branch?: string
 	targetDirectory?: string
+	/** When true, the worker clones with --depth 1 --single-branch (no history). */
+	noHistory?: boolean
 }
 
 export interface SessionToolDetails {
@@ -42,6 +44,7 @@ export interface SessionStatus {
 	connectedThroughBridge: boolean
 	startedAt?: string | null
 	finishedAt?: string | null
+	freshClone?: boolean
 	lastActivityAt?: string | null
 }
 

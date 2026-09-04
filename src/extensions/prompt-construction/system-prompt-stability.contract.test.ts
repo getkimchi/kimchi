@@ -88,6 +88,16 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
 		expectedStability: "dynamic",
 		reason: "LSP block reflects the detected servers for the current working directory",
 	},
+	{
+		file: "src/extensions/dap.ts",
+		owner: "dap",
+		blockId: "dap-*",
+		expectedStability: "dynamic",
+		reason:
+			"dap-tools + 6 language skill blocks are detection- and state-gated: the tools block appears " +
+			"when a debug adapter is discovered in cwd, language skills appear once their adapter is " +
+			"activated at session start, so visibility legitimately changes during a session",
+	},
 ]
 
 /** Modules that hold per-turn or per-action mutable session state.

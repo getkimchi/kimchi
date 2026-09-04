@@ -114,6 +114,16 @@ export function getConfig(type: string): {
 	skills: true | string[] | false
 	promptMode: "replace" | "append"
 } {
+	if (type === "Remote-Runner") {
+		return {
+			displayName: "Cloud Agent",
+			description: "Remote agent running on a sandbox worker via ACP",
+			builtinToolNames: [],
+			extensions: false,
+			skills: false,
+			promptMode: "replace" as const,
+		}
+	}
 	const key = resolveKey(type)
 	const config = key ? agents.get(key) : undefined
 	if (config && config.enabled !== false) {

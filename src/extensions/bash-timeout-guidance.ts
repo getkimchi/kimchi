@@ -27,6 +27,7 @@
 
 import type { TextContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import { markHarnessSteer } from "./steer-marker.js"
 
 const TIMEOUT_PATTERN = /Command timed out after (\d+) seconds/
 
@@ -77,7 +78,7 @@ export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
 		pi.sendMessage(
 			{
 				customType: "bash-timeout-guidance",
-				content: [{ type: "text", text: message }],
+				content: [{ type: "text", text: markHarnessSteer(message) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

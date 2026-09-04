@@ -14,8 +14,9 @@ type ExitProcess = (code?: typeof process.exitCode) => void
 export function applyPostMainInfrastructureExitPolicy(
 	failure: InfrastructureFailure | undefined,
 	exitProcess: ExitProcess = process.exit,
+	runFailed: boolean = Boolean(process.exitCode),
 ): boolean {
-	if (!process.exitCode) return false
+	if (!runFailed) return false
 	if (!applyInfrastructureExitPolicy(failure)) return false
 	exitProcess(process.exitCode ?? KIMCHI_INFRA_ERROR_EXIT_CODE)
 	return true

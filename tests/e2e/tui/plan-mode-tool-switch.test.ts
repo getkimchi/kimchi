@@ -20,14 +20,29 @@ test("plan-mode tool switch: Execute approved plan exits plan mode", async ({ te
 			extraArgs: ["--plan=true"], // registered boolean flag in permissions/index.ts:160
 			extraEnv: { KIMCHI_PERMISSIONS: "plan" }, // env fallback per permissions/index.ts:200
 			responses: [
-				// Stream a complete plan ending with the plan-mode marker.
+				// Stream a complete plan, then call submit_plan to trigger the review dropdown.
 				{
 					stream: [
 						"Here's a lightweight plan:\n\n",
 						"1. Read the relevant source files\n",
 						"2. Make the targeted change\n",
 						"3. Run tests to verify\n\n",
-						"<!-- PLAN_COMPLETE -->\n",
+					],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan:
+										"Here's a lightweight plan:\n\n" +
+										"1. Read the relevant source files\n" +
+										"2. Make the targeted change\n" +
+										"3. Run tests to verify\n",
+								}),
+							},
+						},
 					],
 				},
 				// After Execute is picked, the model will respond again (now in auto mode).
@@ -45,19 +60,15 @@ test("plan-mode tool switch: Execute approved plan exits plan mode", async ({ te
 			await waitForText(terminal, "plan → shift+tab", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
-			// Stage 2: submit a trivial request — model responds with a complete plan.
+			// Stage 2: submit a trivial request — model responds by calling
+			// submit_plan, which triggers the review dropdown.
 			terminal.submit("Plan out how to add a new feature.")
 			trace.step("submitted planning request")
-			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("plan complete marker seen")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("submit_plan tool called — dropdown appeared")
 
-			// Stage 4: plan-complete approval dropdown appears (permissions/index.ts:498).
-			// NOTE: in this TUI test harness the dropdown overlay is not reliably captured
-			// by `terminal.getBuffer()` — we therefore press Enter directly after seeing the
-			// PLAN_COMPLETE marker, and rely on the dropdown's `ctx.ui.select(...)` to
-			// accept Enter as the default selection of the first option ("Execute the plan").
-			// See the parallel test `plan-to-ferment-promo.test.ts` for a `test.fail` that
-			// explicitly asserts on the overlay text (with a KNOWN ISSUE comment).
+			// Stage 4: plan-complete approval dropdown appears (permissions/index.ts).
+			// Press Enter to default-select "Execute the plan" (first option).
 			terminal.keyPress(Key.Enter)
 			trace.step("pressed Enter to select default dropdown option ('Execute the plan')")
 
@@ -65,7 +76,7 @@ test("plan-mode tool switch: Execute approved plan exits plan mode", async ({ te
 			// status line mode transition (`plan → shift+tab` → `auto → shift+tab`)
 			// instead of the post-execute model response (which is timing-flaky in CI).
 			// This proves the dropdown consumed Enter and the session exited plan mode
-			// (permissions/index.ts:520: changeMode("plan", "auto", "user")).
+			// (permissions/index.ts: changeMode("plan", "auto", "user")).
 			await waitForText(terminal, "auto → shift+tab", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("status line transitioned to auto — dropdown consumed Enter and plan mode exited")
 		},

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../truncate-lines.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
@@ -77,7 +78,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 
 					return {
 						render(width: number): string[] {
-							const innerW = Math.max(20, width - 2)
+							const innerW = Math.max(1, width - 2)
 							const contentW = innerW - 2
 							const keyColW = Math.max(16, Math.min(28, Math.floor(contentW * 0.35)))
 
@@ -93,7 +94,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 							const emptyRow = () => `${border("│")}${" ".repeat(innerW)}${border("│")}`
 
 							const titleText = " Help "
-							const borderLen = innerW - titleText.length
+							const borderLen = Math.max(0, innerW - titleText.length)
 							const leftB = Math.floor(borderLen / 2)
 							const rightB = borderLen - leftB
 
@@ -132,7 +133,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 							out.push(wrapRow(theme.fg("dim", `  ${hintText}`), hintText.length + 2))
 							out.push(border(`╰${"─".repeat(innerW)}╯`))
 
-							return out
+							return truncateLinesToWidth(out, width)
 						},
 						invalidate() {},
 						handleInput(data: string): void {

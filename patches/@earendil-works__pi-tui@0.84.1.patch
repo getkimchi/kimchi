@@ -1,17 +1,22 @@
-# Patch: Kimchi stroke rendering and scrollback behavior for pi-tui 0.84.1
+# Patch: Kimchi stroke rendering, scrollback behavior, and narrow-terminal
+# hardening for pi-tui 0.84.1
 #
 # Tracking: https://github.com/getkimchi/kimchi/issues/863
-# Changes: account for stroke width in box/text/markdown rendering and make
-# scrollback clearing opt-in to avoid viewport jumps in long iTerm2 sessions.
-# Removal: delete when the pinned Pi TUI release provides both behaviors.
+# Changes:
+#   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine).
+#   - Make scrollback clearing opt-in to avoid viewport jumps in long iTerm2 sessions.
+#   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
+#     so that no component can emit a line wider than the terminal (prevents
+#     crashes at widths 1-2 where paddingX margins alone exceed width).
+# Removal: delete when the pinned Pi TUI release provides all three behaviors.
 #
 diff --git a/dist/components/box.js b/dist/components/box.js
-index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d50d8793a 100644
+index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..2f1590d4828c4b1c02447d5342f7e1ed4d882a84 100644
 --- a/dist/components/box.js
 +++ b/dist/components/box.js
 @@ -1,4 +1,4 @@
 -import { applyBackgroundToLine, visibleWidth } from "../utils.js";
-+import { STROKE_WIDTH, applyStrokeToLine, visibleWidth } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, truncateToWidth, visibleWidth } from "../utils.js";
  /**
   * Box component - a container that applies padding and background to all children
   */
@@ -25,7 +30,7 @@ index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d
          const leftPad = " ".repeat(this.paddingX);
          // Render all children
          const childLines = [];
-@@ -92,11 +93,12 @@ export class Box {
+@@ -92,13 +93,14 @@ export class Box {
          return result;
      }
      applyBg(line, width) {
@@ -38,10 +43,14 @@ index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d
 -            return applyBackgroundToLine(padded, width, this.bgFn);
 +            return applyStrokeToLine(padded, width, this.paddingX, this.bgFn);
          }
-         return padded;
+-        return padded;
++        return truncateToWidth(padded, width);
      }
+ }
+ //# sourceMappingURL=box.js.map
+\ No newline at end of file
 diff --git a/dist/components/markdown.js b/dist/components/markdown.js
-index 8f0ef3bef6645d790932cbb9eaf4c2fdb2849b7c..c078a5ad7250232972727d6f1052912089cbd5c6 100644
+index 8f0ef3bef6645d790932cbb9eaf4c2fdb2849b7c..31f5251c26f72e5280abd7bac1dfcab741d2ed38 100644
 --- a/dist/components/markdown.js
 +++ b/dist/components/markdown.js
 @@ -1,7 +1,7 @@
@@ -49,7 +58,7 @@ index 8f0ef3bef6645d790932cbb9eaf4c2fdb2849b7c..c078a5ad7250232972727d6f10529120
  import { renderLatex } from "../latex.js";
  import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
 -import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
-+import { STROKE_WIDTH, applyStrokeToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
  const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
  class StrictStrikethroughTokenizer extends Tokenizer {
      del(src) {
@@ -79,7 +88,7 @@ index 8f0ef3bef6645d790932cbb9eaf4c2fdb2849b7c..c078a5ad7250232972727d6f10529120
 -                const visibleLen = visibleWidth(lineWithMargins);
 -                const paddingNeeded = Math.max(0, width - visibleLen);
 -                contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-+                contentLines.push(padded);
++                contentLines.push(truncateToWidth(padded, width));
              }
          }
          // Add top/bottom padding (empty lines)
@@ -93,12 +102,12 @@ index 8f0ef3bef6645d790932cbb9eaf4c2fdb2849b7c..c078a5ad7250232972727d6f10529120
          }
          // Combine top padding, content, and bottom padding
 diff --git a/dist/components/text.js b/dist/components/text.js
-index 0d840239c41181e24dfc60237c3338081c6b48d5..7208d53add7d89955c799f73d9d5ce134a5123b8 100644
+index 0d840239c41181e24dfc60237c3338081c6b48d5..9118596f5254b4ffcc5b0eeb93ee20fe5999f954 100644
 --- a/dist/components/text.js
 +++ b/dist/components/text.js
 @@ -1,4 +1,4 @@
 -import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
-+import { STROKE_WIDTH, applyStrokeToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
  /**
   * Text component - displays multi-line text with word wrapping
   */
@@ -129,7 +138,7 @@ index 0d840239c41181e24dfc60237c3338081c6b48d5..7208d53add7d89955c799f73d9d5ce13
 -                const visibleLen = visibleWidth(lineWithMargins);
 -                const paddingNeeded = Math.max(0, width - visibleLen);
 -                contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-+                contentLines.push(padded);
++                contentLines.push(truncateToWidth(padded, width));
              }
          }
          // Add top/bottom padding (empty lines)
@@ -143,7 +152,7 @@ index 0d840239c41181e24dfc60237c3338081c6b48d5..7208d53add7d89955c799f73d9d5ce13
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
 diff --git a/dist/tui-main-screen.js b/dist/tui-main-screen.js
-index 05279f4699c298ca345785dd2f896a33d8271f4a..2f8c183515b8bc8b967fa441ad10b371d245b07b 100644
+index 05279f4699c298ca345785dd2f896a33d8271f4a..4177bb93658d3e2ce73eeb06a55405dff86a99ec 100644
 --- a/dist/tui-main-screen.js
 +++ b/dist/tui-main-screen.js
 @@ -181,7 +181,10 @@ export class TuiMainScreen extends TuiBase {

@@ -5,24 +5,26 @@
 #
 # Usage examples:
 #   ./scripts/run-release.sh -i terminal-bench/fix-git
-#   MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-release.sh -i terminal-bench/fix-git
+#   MODEL=kimchi-dev/minimax-m3 ./scripts/run-release.sh -i terminal-bench/fix-git
 #   MODEL=multi-model ./scripts/run-release.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
-DATASET="terminal-bench/terminal-bench-2"
-
-: "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
+DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
+MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$BENCH_DIR/scripts/model_api_key.sh"
+require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai multi-model
 cd "$BENCH_DIR"
 
 # Force the release path: ignore any host-side binary.
 unset KIMCHI_CODE_BINARY
 
 exec uv run --python 3.14 harbor run \
-    --agent-import-path kimchi_agent:Kimchi \
+    --agent kimchi_agent:Kimchi \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.5}" \
-    --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
+    --model "$MODEL" \
+    --ae "$MODEL_API_KEY_ENV=${!MODEL_API_KEY_ENV}" \
     -d "$DATASET" \
+    --jobs-dir "${JOBS_DIR:-benchmark/${DATASET#terminal-bench/}/jobs}" \
     "$@"

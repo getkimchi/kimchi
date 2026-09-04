@@ -23,7 +23,7 @@ describe("Claude Code hook discovery", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("does not load user Claude settings when cwd lacks .claude", () => {
+	it("loads user Claude settings even when cwd lacks .claude", () => {
 		const home = process.env.HOME ?? ""
 		const cwd = join(home, "work", "project")
 		mkdirSync(cwd, { recursive: true })
@@ -40,7 +40,23 @@ describe("Claude Code hook discovery", () => {
 
 		const resources = discoverClaudeCodeHookResources(cwd)
 
-		expect(resources).toEqual([])
+		// User-level settings.json always loads (real Claude Code loads user hooks regardless of project structure).
+		// settings.local.json at the home level is not a valid source (local scope is project-level only), so its Stop hook is NOT discovered.
+		expect(resources).toEqual([
+			{
+				adapterId: "claude-code",
+				async: false,
+				command: "load-context",
+				env: undefined,
+				eventName: "SessionStart",
+				id: "hooks.claude-code.user.session-start.0",
+				index: 0,
+				matcher: undefined,
+				path: join(home, ".claude", "settings.json"),
+				scope: "user",
+				timeoutMs: 60_000,
+			},
+		])
 	})
 })
 

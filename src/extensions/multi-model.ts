@@ -1,4 +1,5 @@
 import type { CustomEntry, ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs, MULTI_MODEL_ID } from "../cli-args.js"
 import { readConfigSetting } from "../config/settings.js"
 import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "./kimchi-process.js"
 
@@ -12,19 +13,29 @@ export interface MultiModelResolution {
 
 // --- Precedence layers (highest to lowest) ---
 // 1. In-session runtime selection (process map, set by user actions mid-session) → source: "runtime"
-// 2. Explicit --model CLI flag (computed once at startup)                        → source: "cli"
-// 3. Persisted session-log value (last custom entry in session entries)          → source: "persisted"
-// 4. Global config default (settings.json "multiModel" key, default true)        → source: "global"
+// 2. Explicit --multi-model or --model multi-model CLI flag                     → source: "cli" (value: true)
+// 3. Explicit --model <real-model> CLI flag                                     → source: "cli" (value: false)
+// 4. Persisted session-log value (last custom entry in session entries)          → source: "persisted"
+// 5. Global config default (settings.json "multiModel" key, default true)        → source: "global"
 
 const MULTI_MODEL_SESSION_ENTRY_TYPE = "multi_model_enabled"
 
-/** Whether --model was passed on the CLI. */
+/** Whether --model was passed on the CLI (including `--model multi-model`). */
 export function hasExplicitModelFlag(): boolean {
-	const args = process.argv
-	for (let i = 0; i < args.length; i++) {
-		if (args[i] === "--model" || args[i]?.startsWith("--model=")) return true
-	}
-	return false
+	const { options } = getParsedCliArgs()
+	return !!options.model
+}
+
+/**
+ * Whether the CLI args explicitly selected multi-model mode.
+ *
+ * Reads from the parsed CLI args cache populated by `populateCliArgs()` in
+ * cli.ts. Before the cache is populated (e.g. in tests or early-loaded code),
+ * it falls back to parsing `process.argv.slice(2)`.
+ */
+export function isCliMultiModelEnabled(): boolean {
+	const { options } = getParsedCliArgs()
+	return options.model === MULTI_MODEL_ID || options["multi-model"] === true
 }
 
 /** The global config default (settings.json or hardcoded true). */
@@ -66,6 +77,7 @@ export function resolveMultiModelEnabled(
 
 	// CLI flag ranks above persisted & global, but below runtime.
 	// Check BEFORE persisted so that --model overrides a stale session value.
+	if (isCliMultiModelEnabled()) return { value: true, source: "cli" }
 	if (hasExplicitModelFlag()) return { value: false, source: "cli" }
 
 	if (sessionManager) {

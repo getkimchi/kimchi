@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
+import { markHarnessSteer } from "./steer-marker.js"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -323,7 +324,7 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,
-				content: [{ type: "text", text: result.steer }],
+				content: [{ type: "text", text: markHarnessSteer(result.steer) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

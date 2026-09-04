@@ -1,8 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
@@ -85,6 +88,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
+				thinkingLevelMap: { off: "none", max: "max" },
 			},
 		])
 	})
@@ -101,7 +105,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0].input).toEqual(["text"])
 	})
 
-	it("sets Anthropic compat flags for anthropic models", async () => {
+	it("routes Anthropic models through the native messages API", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [SONNET_46] }),
@@ -111,13 +115,39 @@ describe("updateModelsConfig", () => {
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev/anthropic"]).toBeDefined()
-		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
-		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
-		expect(config.providers["kimchi-dev/anthropic"].models[0].compat).toEqual({
-			supportsReasoningEffort: false,
-			cacheControlFormat: "anthropic",
-			supportsUsageInStreaming: true,
-		})
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("anthropic-messages")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/anthropic")
+
+		const model = config.providers["kimchi-dev/anthropic"].models[0]
+		const upstream = ANTHROPIC_MODELS["claude-sonnet-4-6"]
+		expect(model.compat).toEqual(upstream.compat)
+		expect(model.thinkingLevelMap).toEqual(upstream.thinkingLevelMap)
+	})
+
+	it("leaves compat unset for anthropic models not in the upstream catalog", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{
+						slug: "claude-unknown-9",
+						display_name: "Claude Unknown 9",
+						provider: "anthropic",
+						reasoning: true,
+						input_modalities: ["text", "image"],
+						is_serverless: false,
+						limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+					},
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const model = config.providers["kimchi-dev/anthropic"].models[0]
+		expect(model).not.toHaveProperty("compat")
+		expect(model).not.toHaveProperty("thinkingLevelMap")
 	})
 
 	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
@@ -136,7 +166,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("omits compat for non-anthropic models", async () => {
+	it("does not set compat for non-anthropic ai-enabler models", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -148,7 +178,24 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
-	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {
+	it("maps ai-enabler thinking levels required by the upstream selector", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const model = config.providers["kimchi-dev"].models[0]
+		expect(model.thinkingLevelMap).toEqual({
+			off: "none",
+			max: "max",
+		})
+		expect(getSupportedThinkingLevels(model)).toContain("max")
+	})
+
+	it("routes claude-* models from non-anthropic providers through openai-completions with compat flags", async () => {
 		const CLAUDE_ON_AZURE: unknown = {
 			slug: "claude-sonnet-4-6",
 			display_name: "",
@@ -167,6 +214,8 @@ describe("updateModelsConfig", () => {
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev/azure_ai"]).toBeDefined()
+		expect(config.providers["kimchi-dev/azure_ai"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/azure_ai"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
 		expect(config.providers["kimchi-dev/azure_ai"].models[0].compat).toEqual({
 			supportsReasoningEffort: false,
 			cacheControlFormat: "anthropic",
@@ -193,9 +242,10 @@ describe("updateModelsConfig", () => {
 		const anthropicIds = config.providers["kimchi-dev/anthropic"].models.map((m: { id: string }) => m.id)
 		expect(anthropicIds).toEqual(["claude-opus-4-6", "claude-sonnet-4-6"])
 
-		// All providers use openai-completions
+		// kimchi-dev stays on openai-completions; anthropic moves to messages
 		expect(config.providers["kimchi-dev"].api).toBe("openai-completions")
-		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("anthropic-messages")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/anthropic")
 	})
 
 	it("uses correct URL, Authorization header, and timeout", async () => {
@@ -644,6 +694,19 @@ describe("updateModelsConfig", () => {
 		expect(fetch).not.toHaveBeenCalled()
 	})
 
+	it("does not advertise the virtual Auto model as cached concrete metadata", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		injectAutoModel(modelsJsonPath)
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
+	})
+
 	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
 		const result = await updateModelsConfig(modelsJsonPath, "")
 
@@ -792,6 +855,67 @@ describe("updateModelsConfig", () => {
 		const model = result.models.find((m) => m.slug === "old-model")
 		expect(model?.status).toBe("deprecated")
 		expect(model?.replacement).toBe("new-model")
+	})
+})
+
+describe("injectAutoModel", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						api: "openai-completions",
+						models: [
+							{
+								id: "kimi-k2.5",
+								name: "Kimi K2.5",
+								provider: "ai-enabler",
+								reasoning: true,
+								input: ["text", "image"],
+								contextWindow: 262144,
+								maxTokens: 32768,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		)
+	})
+
+	afterEach(() => rmSync(tempDir, { recursive: true, force: true }))
+
+	it("adds exactly kimchi-dev/auto with a model-level API", () => {
+		const providerIds = Object.keys(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers)
+		injectAutoModel(modelsJsonPath)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const auto = config.providers["kimchi-dev"].models.find((model: { id: string }) => model.id === "auto")
+
+		expect(auto).toMatchObject({
+			id: "auto",
+			name: "Auto (Kimchi Router)",
+			api: "kimchi-auto",
+			reasoning: true,
+			thinkingLevelMap: { off: "none", max: "max" },
+			input: ["text", "image"],
+		})
+		expect(Object.keys(config.providers)).toEqual(providerIds)
+	})
+
+	it("upserts Auto without duplicates", () => {
+		injectAutoModel(modelsJsonPath)
+		injectAutoModel(modelsJsonPath)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const autoModels = config.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
+
+		expect(autoModels).toHaveLength(1)
 	})
 })
 

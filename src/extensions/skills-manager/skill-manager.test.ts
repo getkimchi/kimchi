@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -344,6 +344,88 @@ describe("SkillManager", () => {
 			await mgr.writeFile("my-skill", "references/foo.md", "# Doc")
 			await mgr.removeFile("my-skill", "references/foo.md")
 			expect(existsSync(join(tmpDir, "my-skill", "references"))).toBe(false)
+		})
+	})
+
+	describe("bundled roots", () => {
+		let bundledDir: string
+		let bundledMgr: SkillManager
+
+		beforeEach(() => {
+			bundledDir = mkdtempSync(join(tmpdir(), "kimchi-skill-bundled-"))
+			const skillDir = join(bundledDir, "bundled-skill")
+			mkdirSync(skillDir, { recursive: true })
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				"---\nname: bundled-skill\ndescription: ships with harness\n---\nBundled body.",
+			)
+			bundledMgr = new SkillManager(tmpDir, { bundledRoots: [bundledDir] })
+		})
+
+		afterEach(() => {
+			rmSync(bundledDir, { recursive: true, force: true })
+		})
+
+		it("view finds a bundled skill that is absent from the harness dir", async () => {
+			const result = await bundledMgr.view("bundled-skill")
+			expect(result.success).toBe(true)
+			expect(result.content).toContain("Bundled body.")
+		})
+
+		it("harness skill shadows a bundled skill with the same name", async () => {
+			await bundledMgr.create("bundled-skill", "---\ndescription: y\n---\nHarness body.")
+			const result = await bundledMgr.view("bundled-skill")
+			expect(result.content).toContain("Harness body.")
+		})
+
+		it("listInventory annotates bundled origin", async () => {
+			const inventory = await bundledMgr.listInventory()
+			const bundled = inventory.find((s) => s.name === "bundled-skill")
+			expect(bundled?.origin).toBe("bundled")
+		})
+
+		it("listInventory dedupes a harness skill that shadows a bundled one", async () => {
+			await bundledMgr.create("bundled-skill", "---\ndescription: y\n---\nHarness body.")
+			const inventory = await bundledMgr.listInventory()
+			expect(inventory.filter((s) => s.name === "bundled-skill")).toHaveLength(1)
+			expect(inventory.find((s) => s.name === "bundled-skill")?.origin).toBe("harness")
+		})
+
+		it("edit refuses to mutate a bundled skill", async () => {
+			const result = await bundledMgr.edit("bundled-skill", "---\ndescription: y\n---\nHacked.")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/bundled with the harness/i)
+		})
+
+		it("patch refuses to mutate a bundled skill", async () => {
+			const result = await bundledMgr.patch("bundled-skill", "Bundled body.", "Hacked.")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/bundled with the harness/i)
+		})
+
+		it("delete refuses to remove a bundled skill", async () => {
+			const result = await bundledMgr.delete("bundled-skill")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/bundled with the harness/i)
+			expect(existsSync(join(bundledDir, "bundled-skill"))).toBe(true)
+		})
+
+		it("writeFile refuses to add a file under a bundled skill", async () => {
+			const result = await bundledMgr.writeFile("bundled-skill", "references/x.md", "# Extra")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/bundled with the harness/i)
+		})
+
+		it("removeFile refuses to delete a file under a bundled skill", async () => {
+			const result = await bundledMgr.removeFile("bundled-skill", "SKILL.md")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/bundled with the harness/i)
+		})
+
+		it("create is unaffected (always writes into the harness dir)", async () => {
+			const result = await bundledMgr.create("new-skill", "---\ndescription: x\n---\nBody.")
+			expect(result.success).toBe(true)
+			expect(result.path).toContain(tmpDir)
 		})
 	})
 })

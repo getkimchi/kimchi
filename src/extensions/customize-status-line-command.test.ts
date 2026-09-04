@@ -1,6 +1,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { StatusLine } from "../components/status-line.js"
 import {
@@ -215,6 +216,7 @@ describe("customize-status-line popover", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("● Context")
 		expect(text).toContain("● Agents")
+		expect(text).toContain("● Thinking level")
 		expect(text).toContain("○ Phase")
 		expect(text).toContain("● Token I/O")
 	})
@@ -245,7 +247,7 @@ describe("customize-status-line popover", () => {
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
 
-		const component = makeComponent(2) // ferment at STATUS_LINE_ELEMENTS index 2
+		const component = makeComponent(3) // ferment at STATUS_LINE_ELEMENTS index 3
 		component.handleInput(" ") // pin ferment
 
 		expect(strip(component.render(80).join("\n"))).toContain("● Ferment")
@@ -253,10 +255,27 @@ describe("customize-status-line popover", () => {
 	})
 
 	it("pressing space on context unpins it: popover shows '○ Context' AND status line bar loses ctx", () => {
-		const component = makeComponent(4) // context at STATUS_LINE_ELEMENTS index 4
+		const component = makeComponent(5) // context at STATUS_LINE_ELEMENTS index 5
 		component.handleInput(" ") // unpin context (was default-pinned)
 
 		expect(strip(component.render(80).join("\n"))).toContain("○ Context")
 		expect(renderStatusLine()).not.toContain("ctx")
 	})
+})
+
+describe("narrow terminals", () => {
+	// Regression: border title math produced a negative "─".repeat count below
+	// the title width, crashing with RangeError.
+	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 24]) {
+		it(`renders without crashing or overflowing at width ${width}`, () => {
+			const component = makeComponent(0)
+			let lines: string[] = []
+			expect(() => {
+				lines = component.render(width)
+			}).not.toThrow()
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	}
 })

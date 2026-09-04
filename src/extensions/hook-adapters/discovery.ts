@@ -6,7 +6,7 @@ export type HookAdapterScope = "user" | "project" | "local"
 export type CommandHookEventName =
 	| "PreToolUse"
 	| "PostToolUse"
-	| "PostToolUseFail"
+	| "PostToolUseFailure"
 	| "PostToolBatch"
 	| "SessionStart"
 	| "PreCompact"
@@ -29,7 +29,7 @@ export type CommandHookEventName =
 export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"PreToolUse",
 	"PostToolUse",
-	"PostToolUseFail",
+	"PostToolUseFailure",
 	"PostToolBatch",
 	"SessionStart",
 	"PreCompact",

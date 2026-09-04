@@ -12,7 +12,12 @@ import { formatRsyncFailure, runRsync } from "./rsync-runner.js"
 export const HARNESS_CONFIG_ALLOWLIST: readonly string[] = [
 	"settings.json",
 	"keybindings.json",
-	"themes",
+	// Trailing slash is load-bearing: in --files-from mode, a bare `themes`
+	// entry transfers as an EMPTY directory while rsync still exits 0 —
+	// the remote gets no theme files at all and the session falls back
+	// with "Failed to load theme". Verified on GNU rsync 3.5 (Linux) and
+	// macOS openrsync — both need `themes/` to recurse.
+	"themes/",
 	"models.json",
 ]
 

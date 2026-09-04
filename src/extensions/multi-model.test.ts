@@ -20,12 +20,14 @@ vi.mock("../config/settings.js", async (importOriginal) => {
 	}
 })
 
+import { populateCliArgs } from "../cli-args.js"
 import { getProcessMultiModelEnabled } from "./kimchi-process.js"
 import {
 	getGlobalDefault,
 	getMultiModelEnabled,
 	getPersistedMultiModelEnabled,
 	hasExplicitModelFlag,
+	isCliMultiModelEnabled,
 	resolveMultiModelEnabled,
 	setAndPersistMultiModelEnabled,
 	setMultiModelEnabled,
@@ -67,17 +69,9 @@ function setGlobalConfig(config: Record<string, unknown>): void {
 	_globalConfig = config
 }
 
-/** Spy on process.argv; restore in afterEach. */
-let argvSpy: ReturnType<typeof vi.spyOn> | null = null
-function setArgv(args: string[]): void {
-	argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(args)
-}
-
-function clearArgv(): void {
-	if (argvSpy) {
-		argvSpy.mockRestore()
-		argvSpy = null
-	}
+/** Reset the parsed CLI args cache to an empty argument list. */
+function clearCliArgs(): void {
+	populateCliArgs([])
 }
 
 /** Reset the process side-channel map for our test session id. */
@@ -91,12 +85,12 @@ function resetProcessMap(): void {
 beforeEach(() => {
 	_globalConfig = {}
 	resetProcessMap()
-	clearArgv()
+	clearCliArgs()
 })
 
 afterEach(() => {
 	resetProcessMap()
-	clearArgv()
+	clearCliArgs()
 })
 
 // ---------------------------------------------------------------------------
@@ -163,7 +157,7 @@ describe("resolveMultiModelEnabled", () => {
 	})
 
 	it("--model flag present, no persisted value -> returns { value: false, source: 'cli' }", () => {
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		const sm = makeSessionManager([])
 		expect(resolveMultiModelEnabled(sm)).toEqual({
 			value: false,
@@ -172,7 +166,7 @@ describe("resolveMultiModelEnabled", () => {
 	})
 
 	it("--model flag present, persisted true in session -> returns { value: false, source: 'cli' } (CLI ranks above persisted)", () => {
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		const sm = makeSessionManager([mmEntry(true)])
 		expect(resolveMultiModelEnabled(sm)).toEqual({
 			value: false,
@@ -181,7 +175,7 @@ describe("resolveMultiModelEnabled", () => {
 	})
 
 	it("--model flag present, but process map set to true (runtime) -> returns { value: true, source: 'runtime' } (runtime ranks above CLI)", () => {
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		setMultiModelEnabled(SESSION_ID, true)
 		const sm = makeSessionManager([mmEntry(false)])
 		expect(resolveMultiModelEnabled(sm)).toEqual({
@@ -191,13 +185,66 @@ describe("resolveMultiModelEnabled", () => {
 	})
 
 	it("handles --model=value form", () => {
-		setArgv(["node", "cli", "--model=some-model"])
+		populateCliArgs(["--model=some-model"])
 		const sm = makeSessionManager([])
 		expect(hasExplicitModelFlag()).toBe(true)
 		expect(resolveMultiModelEnabled(sm)).toEqual({
 			value: false,
 			source: "cli",
 		})
+	})
+
+	it("returns { value: true, source: 'cli' } for --multi-model", () => {
+		populateCliArgs(["--multi-model"])
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "cli",
+		})
+	})
+
+	it("returns { value: true, source: 'cli' } for --model multi-model", () => {
+		populateCliArgs(["--model", "multi-model"])
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "cli",
+		})
+	})
+
+	it("CLI multi-model selection outranks persisted false", () => {
+		populateCliArgs(["--model", "multi-model"])
+		const sm = makeSessionManager([mmEntry(false)])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "cli",
+		})
+	})
+
+	it("runtime still outranks CLI multi-model selection", () => {
+		populateCliArgs(["--multi-model"])
+		setMultiModelEnabled(SESSION_ID, false)
+		const sm = makeSessionManager([mmEntry(true)])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: false,
+			source: "runtime",
+		})
+	})
+
+	it("distinguishes --model multi-model from a real --model value", () => {
+		const sm = makeSessionManager([])
+		populateCliArgs(["--model", "multi-model"])
+		expect(resolveMultiModelEnabled(sm)).toEqual({ value: true, source: "cli" })
+		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7"])
+		expect(resolveMultiModelEnabled(sm)).toEqual({ value: false, source: "cli" })
+	})
+
+	it("multi-model flag wins when combined with a real --model value", () => {
+		const sm = makeSessionManager([])
+		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7", "--multi-model"])
+		expect(resolveMultiModelEnabled(sm)).toEqual({ value: true, source: "cli" })
+		populateCliArgs(["--multi-model", "--model", "kimchi-dev/kimi-k2.7"])
+		expect(resolveMultiModelEnabled(sm)).toEqual({ value: true, source: "cli" })
 	})
 
 	it("returns global default when sessionManager is null", () => {
@@ -228,13 +275,13 @@ describe("getMultiModelEnabled", () => {
 		expect(typeof getMultiModelEnabled(smPersisted)).toBe("boolean")
 
 		// cli
-		setArgv(["node", "cli", "--model"])
+		populateCliArgs(["--model", "some-model"])
 		const smCli = makeSessionManager([])
 		expect(getMultiModelEnabled(smCli)).toBe(false)
 		expect(typeof getMultiModelEnabled(smCli)).toBe("boolean")
 
 		// global
-		clearArgv()
+		clearCliArgs()
 		setGlobalConfig({})
 		const smGlobal = makeSessionManager([])
 		expect(getMultiModelEnabled(smGlobal)).toBe(true)
@@ -248,13 +295,34 @@ describe("getMultiModelEnabled", () => {
 
 describe("hasExplicitModelFlag", () => {
 	it("returns true when --model is present", () => {
-		setArgv(["node", "cli", "--model"])
+		populateCliArgs(["--model", "some-model"])
 		expect(hasExplicitModelFlag()).toBe(true)
 	})
 
 	it("returns false when --model is absent", () => {
-		setArgv(["node", "cli", "--other-flag"])
+		populateCliArgs(["--other-flag"])
 		expect(hasExplicitModelFlag()).toBe(false)
+	})
+})
+
+describe("isCliMultiModelEnabled", () => {
+	it.each([
+		["--multi-model"],
+		["--model", "multi-model"],
+		["--model=multi-model"],
+	])("returns true for %j", (...args) => {
+		populateCliArgs(args)
+		expect(isCliMultiModelEnabled()).toBe(true)
+	})
+
+	it.each([
+		[["--model", "kimchi-dev/kimi-k2.7"]],
+		[["--model=kimchi-dev/kimi-k2.7"]],
+		[["--other-flag"]],
+		[[]],
+	])("returns false for %j", (args) => {
+		populateCliArgs(args)
+		expect(isCliMultiModelEnabled()).toBe(false)
 	})
 })
 
@@ -326,7 +394,7 @@ describe("setAndPersistMultiModelEnabled", () => {
 
 	it("does NOT persist when effective differs from persisted AND source is 'cli' (no persisted value)", () => {
 		const { persist, spy } = makePersist()
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		// no process map, --model present, no persisted -> effective false (cli), persisted undefined -> drift but cli source
 		const sm = makeSessionManager([])
 
@@ -338,13 +406,25 @@ describe("setAndPersistMultiModelEnabled", () => {
 
 	it("does NOT persist when effective differs from persisted AND source is 'cli' (persisted true -> effective false)", () => {
 		const { persist, spy } = makePersist()
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		// no process map, --model present, persisted true -> effective false (cli outranks persisted), drift but cli source
 		const sm = makeSessionManager([mmEntry(true)])
 
 		const result = setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
 
 		expect(result).toEqual({ value: false, source: "cli" })
+		expect(spy).not.toHaveBeenCalled()
+	})
+
+	it("does NOT persist when CLI multi-model is enabled and source is 'cli'", () => {
+		const { persist, spy } = makePersist()
+		populateCliArgs(["--multi-model"])
+		// no process map, CLI multi-model flag set, no persisted -> effective true (cli), drift but cli source
+		const sm = makeSessionManager([])
+
+		const result = setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
+
+		expect(result).toEqual({ value: true, source: "cli" })
 		expect(spy).not.toHaveBeenCalled()
 	})
 
@@ -362,7 +442,7 @@ describe("setAndPersistMultiModelEnabled", () => {
 	it("always syncs process map regardless of persistence decision", () => {
 		const { persist, spy } = makePersist()
 		// cli source -> no persistence, but process map should still be synced to false
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		const sm = makeSessionManager([])
 
 		setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
@@ -384,7 +464,7 @@ describe("setAndPersistMultiModelEnabled", () => {
 	it("user toggles multi-model ON mid-session despite --model -> runtime source, effective true is persisted", () => {
 		const { persist, spy } = makePersist()
 		// --model is present, but user toggled ON via setMultiModelEnabled (runtime)
-		setArgv(["node", "cli", "--model", "some-model"])
+		populateCliArgs(["--model", "some-model"])
 		setMultiModelEnabled(SESSION_ID, true)
 		// persisted was false (or undefined); runtime outranks cli
 		const sm = makeSessionManager([mmEntry(false)])

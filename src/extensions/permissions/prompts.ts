@@ -102,7 +102,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	const lines: string[] = []
 	const termWidth = process.stdout.columns || 80
 	const badge = riskScore ? formatRiskBadge(riskScore) : ""
-	const wrapWidth = badge ? Math.max(20, termWidth - visibleWidth(badge) - 2) : Math.max(20, termWidth)
+	const wrapWidth = badge ? Math.max(1, termWidth - visibleWidth(badge) - 2) : Math.max(1, termWidth)
 	const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
 	lines.push(badge ? `${badge} ${wrappedCommand}` : wrappedCommand)
 	if (subtitle) lines.push(subtitle)
@@ -157,7 +157,7 @@ export async function promptForCompoundApproval(opts: {
 	const descriptions = await Promise.all(
 		commands.map(async (cmd) => {
 			const highlighted = await describeCallHighlighted(opts.toolName, { command: cmd.command })
-			return wrapTextWithAnsi(highlighted, Math.max(20, termWidth)).join("\n")
+			return wrapTextWithAnsi(highlighted, Math.max(1, termWidth)).join("\n")
 		}),
 	)
 	const lines = [

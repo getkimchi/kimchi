@@ -14,9 +14,16 @@
 
 import { execSync, spawnSync } from "node:child_process"
 
+import type { Step } from "../../ferment/types.js"
+
 const MAX_FILES_LISTED = 20
 const MAX_DIFF_BYTES = 4000
 const GIT_TIMEOUT_MS = 5000
+
+/** Bounds for gatherStepVerifyEvidence output (grader prompt budget). */
+const MAX_STEP_VERIFY_BLOCK_CHARS = 6000
+const PER_STEP_STDOUT_TAIL = 800
+const PER_STEP_STDERR_TAIL = 300
 
 export interface PhaseEvidence {
 	/** Files touched between the phase start and now, with insertion/deletion counts. */
@@ -176,4 +183,55 @@ function truncateDiff(diff: string): string {
 	const head = diff.slice(0, half)
 	const tail = diff.slice(-half)
 	return `${head}\n\n[... diff truncated, ${diff.length - MAX_DIFF_BYTES} bytes elided ...]\n\n${tail}`
+}
+
+/** Render each step's declared verification run — the command, exit code, and
+ *  the tails of stdout/stderr the harness captured when it executed the
+ *  verify. This block is deterministic: it is generated from executed runs,
+ *  not from agent-written claims, so the grader gets "what actually ran" for
+ *  free instead of having to demand pasted terminal output.
+ *
+ *  Absence is recorded too — a step with no verify command, or a command
+ *  declared but never executed, is called out explicitly (a no-test
+ *  situation is itself evidence).
+ *
+ *  Steps are rendered in plan order (step.index). Returns undefined when the
+ *  phase has no steps at all. */
+export function gatherStepVerifyEvidence(steps: ReadonlyArray<Step>): string | undefined {
+	if (steps.length === 0) return undefined
+	const ordered = [...steps].sort((a, b) => a.index - b.index)
+	const lines: string[] = []
+	for (const step of ordered) {
+		const label = `${step.id} "${step.description}"`
+		if (!step.verification) {
+			lines.push(`- ${label}: (no verify command declared)`)
+			continue
+		}
+		if (!step.result) {
+			lines.push(`- ${label}: \`${step.verification.command}\` — declared, never executed`)
+			continue
+		}
+		const exit =
+			step.result.exitCode !== undefined ? `exit ${step.result.exitCode}` : step.result.success ? "exit 0" : "failed"
+		lines.push(`- ${label}: \`${step.verification.command}\` → ${exit}${step.result.success ? " ✓" : " ✗"}`)
+		const stdoutTail = (step.result.stdout ?? "").trim()
+		if (stdoutTail) lines.push(`  stdout (tail):\n${indentBlock(tailChars(stdoutTail, PER_STEP_STDOUT_TAIL))}`)
+		const stderrTail = (step.result.stderr ?? "").trim()
+		if (stderrTail) lines.push(`  stderr (tail):\n${indentBlock(tailChars(stderrTail, PER_STEP_STDERR_TAIL))}`)
+	}
+	const block = lines.join("\n")
+	if (block.length <= MAX_STEP_VERIFY_BLOCK_CHARS) return block
+	return `${block.slice(0, MAX_STEP_VERIFY_BLOCK_CHARS)}\n…(truncated — later steps omitted)`
+}
+
+/** Keep the *tail* of long command output — the failure signal lives at the end. */
+function tailChars(s: string, max: number): string {
+	return s.length <= max ? s : `…${s.slice(s.length - max)}`
+}
+
+function indentBlock(s: string): string {
+	return s
+		.split("\n")
+		.map((line) => `    ${line}`)
+		.join("\n")
 }

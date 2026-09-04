@@ -11,7 +11,6 @@ import { cancel as clackCancel } from "@clack/prompts"
 import type { WizardResult, WizardState } from "./state.js"
 import { runAuthStep } from "./steps/auth.js"
 import { runDoneStep } from "./steps/done.js"
-import { runRtkStep } from "./steps/rtk.js"
 import { runTelemetryStep } from "./steps/telemetry.js"
 import { runWelcomeStep } from "./steps/welcome.js"
 
@@ -23,7 +22,6 @@ interface Step {
 
 const STEPS: Step[] = [
 	{ name: "auth", run: runAuthStep },
-	{ name: "rtk", run: runRtkStep },
 	{ name: "telemetry", run: runTelemetryStep },
 ]
 
@@ -32,7 +30,7 @@ const STEPS: Step[] = [
  * forward, calling each step and respecting `state.back` (rewind to the
  * previous non-skipped step) and `state.cancelled` (abort).
  *
- * Step order: welcome → auth → rtk → telemetry → done.
+ * Step order: welcome → auth → telemetry → done.
  */
 export async function runWizard(): Promise<WizardResult> {
 	const state: WizardState = {
@@ -40,7 +38,6 @@ export async function runWizard(): Promise<WizardResult> {
 		mode: "override",
 		scope: "global",
 		selectedTools: [],
-		installRtk: false,
 		telemetryEnabled: true,
 		cancelled: false,
 		back: false,
@@ -55,7 +52,6 @@ export async function runWizard(): Promise<WizardResult> {
 		telemetryEnabled: state.telemetryEnabled,
 		selectedTools: [...state.selectedTools],
 		configuredTools: [],
-		rtkInstalled: false,
 	})
 
 	runWelcomeStep()
@@ -95,7 +91,6 @@ export async function runWizard(): Promise<WizardResult> {
 		configuredTools: state.selectedTools.filter((id) =>
 			outcome.successes.some((name) => name.toLowerCase().includes(id)),
 		),
-		rtkInstalled: outcome.rtkInstalled,
 	}
 }
 

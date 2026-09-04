@@ -45,6 +45,17 @@ describe("post-main CLI infrastructure exit policy", () => {
 		expect(consoleErrorSpy.mock.calls[0]?.[0]).toContain("KIMCHI_INFRA_ERROR")
 	})
 
+	it("treats a trailing print-mode infrastructure error as a failed run", () => {
+		process.exitCode = undefined
+		const exitProcess = vi.fn()
+
+		const applied = applyPostMainInfrastructureExitPolicy(createFailure("ERR_SOCKET_CLOSED"), exitProcess, true)
+
+		expect(applied).toBe(true)
+		expect(process.exitCode).toBe(KIMCHI_INFRA_ERROR_EXIT_CODE)
+		expect(exitProcess).toHaveBeenCalledWith(KIMCHI_INFRA_ERROR_EXIT_CODE)
+	})
+
 	it("does not force exit when the run did not fail or no infra failure was tracked", () => {
 		const exitProcess = vi.fn()
 

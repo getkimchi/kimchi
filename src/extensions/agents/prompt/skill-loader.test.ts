@@ -41,12 +41,34 @@ describe("preloadSkills", () => {
 })
 
 describe("listAvailableSkillNames", () => {
-	it("returns an array of skill objects with name and description", () => {
-		const skills = listAvailableSkillNames(process.cwd())
-		expect(Array.isArray(skills)).toBe(true)
-		for (const skill of skills) {
-			expect(typeof skill.name).toBe("string")
-			expect(typeof skill.description).toBe("string")
-		}
+	it("returns an array of skill objects with name, description, and filePath", () => {
+		const base = join(tmpdir(), `kimchi-list-skills-${Date.now()}`)
+		const cwd = join(base, "project")
+		const skillDir = join(cwd, ".pi", "agent", "skills", "listed-skill")
+		mkdirSync(skillDir, { recursive: true })
+		const skillPath = join(skillDir, "SKILL.md")
+		writeFileSync(skillPath, "---\nname: listed-skill\ndescription: listed\n---\nbody")
+
+		const skills = listAvailableSkillNames(cwd)
+		expect(skills).toContainEqual({
+			name: "listed-skill",
+			description: "listed",
+			filePath: skillPath,
+		})
+	})
+
+	it("resolves .config/ paths against the provided homeDir override", () => {
+		const home = join(tmpdir(), `kimchi-home-skills-${Date.now()}`)
+		const skillDir = join(home, ".config", "kimchi", "harness", "skills", "home-skill")
+		mkdirSync(skillDir, { recursive: true })
+		const skillPath = join(skillDir, "SKILL.md")
+		writeFileSync(skillPath, "---\nname: home-skill\ndescription: from home\n---\nbody")
+
+		const skills = listAvailableSkillNames("/tmp/anywhere", { homeDir: home })
+		expect(skills).toContainEqual({
+			name: "home-skill",
+			description: "from home",
+			filePath: skillPath,
+		})
 	})
 })

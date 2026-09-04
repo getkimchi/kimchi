@@ -8,6 +8,8 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { withPrintGate } from "../print-mode.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
@@ -63,6 +65,8 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	const commands = new Map<string, CommandHandler>()
 	const shortcuts = new Map<string, { description?: string; handler: ShortcutHandler }>()
 	const registeredFlags = new Set<string>()
+	const { events } = createMiniEventBus()
+
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			// `handlers` keeps the first registration per event for tests that fetch a
@@ -91,7 +95,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
-		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
+		events,
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
@@ -774,7 +778,21 @@ describe("fermentExtension question dropdown", () => {
 		)
 
 		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Retry", "Skip", "Let me say something else"])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Skip", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user selected "Skip" in the UI prompt\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("passes through a running-state contextual option named like the default confirmation", async () => {
@@ -806,7 +824,21 @@ describe("fermentExtension question dropdown", () => {
 			"Pause",
 			"Let me say something else",
 		])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Yes, proceed", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user selected "Yes, proceed" in the UI prompt\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("uses a ferment-specific prompt at manual phase boundaries and stops without follow-up", async () => {
@@ -886,7 +918,21 @@ describe("fermentExtension question dropdown", () => {
 		)
 
 		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Continue", "Pause", "Let me say something else"])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Pause", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user selected "Pause" in the UI prompt\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.anything(),
@@ -1368,7 +1414,21 @@ Does this plan look right?`,
 			"No, revise",
 			"Let me say something else",
 		])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("No — please revise.", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user answered "No, revise" in the UI prompt — revise the plan in your next response\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("does not show a second draft confirmation after propose_ferment_scoping already asked", async () => {
@@ -1672,5 +1732,33 @@ describe("agent-spawn-guard integration", () => {
 		// one that fired.
 		expect(redirect?.reason ?? "").toContain("has a pending step that has not been started")
 		expect(redirect?.reason ?? "").toContain("start_ferment_step")
+	})
+})
+
+// =============================================================================
+// Print-mode suite gate (token-optimization Phase 1 Chunk 7)
+// =============================================================================
+
+describe("ferment suite print gate (Chunk 7)", () => {
+	it("interactive session registers the full ferment suite", () => {
+		const { pi } = registerFermentExtension()
+		const names = vi.mocked(pi.registerTool).mock.calls.map((call) => (call[0] as { name: string }).name)
+		expect(names.length).toBeGreaterThan(0)
+		expect(names).toContain("list_ferments")
+	})
+
+	it("plain --print run suppresses the ferment suite tools", () => {
+		return withPrintGate({ print: true }, async () => {
+			const { pi } = registerFermentExtension()
+			expect(vi.mocked(pi.registerTool).mock.calls).toHaveLength(0)
+		})
+	})
+
+	it("--print with ferment-oneshot keeps the full suite (gate composition)", () => {
+		return withPrintGate({ print: true, fermentOneshot: true }, async () => {
+			const { pi } = registerFermentExtension()
+			const names = vi.mocked(pi.registerTool).mock.calls.map((call) => (call[0] as { name: string }).name)
+			expect(names).toContain("list_ferments")
+		})
 	})
 })

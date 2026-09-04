@@ -236,6 +236,27 @@ describe("buildTree", () => {
 		expect(beta?.row.sessionCount).toBe("?")
 		expect(beta?.sessions).toEqual([])
 	})
+
+	it("disambiguates workspace display names with an id-based suffix on name collisions", async () => {
+		const { ctx } = makeCtx()
+		const nodes = await buildTree(
+			[
+				ws("23d3a753-d949-47fb-9ecf-b237256f9f54", "gemini-check"),
+				ws("ac0ca279-247b-4107-b553-7662e1725f5e", "gemini-check"),
+			],
+			ctx,
+			"proj",
+		)
+		expect(nodes[0]?.row.displayName).toBe("gemini-check-23d3a753")
+		expect(nodes[1]?.row.displayName).toBe("gemini-check-ac0ca279")
+	})
+
+	it("keeps the raw name when workspace names are unique", async () => {
+		const { ctx } = makeCtx()
+		const nodes = await buildTree([ws("w-1", "alpha"), ws("w-2", "beta")], ctx, "proj")
+		expect(nodes[0]?.row.displayName).toBe("alpha")
+		expect(nodes[1]?.row.displayName).toBe("beta")
+	})
 })
 
 describe("runRemoteSessions", () => {

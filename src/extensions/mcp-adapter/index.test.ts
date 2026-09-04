@@ -1,17 +1,46 @@
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import { toolNamesFromSection } from "../prompt-construction/test-utils.js"
 import mcpAdapter from "./index.js"
 import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
+
+// Gate tests need control over the REGISTERED
+// proxy surface, which is derived from loadMcpConfig() at factory time.
+// Mock it so the gate is deterministic and does not read (or purge) the
+// developer machine's ambient mcp.json / mcp-cache.json.
+const mcpConfigState = vi.hoisted(() => ({
+	config: {
+		mcpServers: {} as Record<string, unknown>,
+		settings: undefined as { disableProxyTool?: boolean } | undefined,
+	},
+}))
+vi.mock("./config.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./config.js")>()
+	return {
+		...original,
+		loadMcpConfig: () => ({ config: mcpConfigState.config, warnings: [] }),
+	}
+})
+vi.mock("./metadata-cache.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./metadata-cache.js")>()
+	return {
+		...original,
+		// No ambient cache: prevents purgeStaleEntries from deleting and
+		// overwriteMetadataCache from rewriting the real user cache file.
+		loadMetadataCache: () => undefined,
+		overwriteMetadataCache: () => {},
+		flushMetadataCache: () => {},
+	}
+})
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -60,8 +89,16 @@ function makePi(): ExtensionAPI & { fireShutdown: () => Promise<void> } {
 	return pi as unknown as ExtensionAPI & { fireShutdown: () => Promise<void> }
 }
 
+beforeEach(() => {
+	// Default to one fake server: the registration gate requires at
+	// least one configured MCP server to register the proxy tool. Gate-off
+	// tests explicitly empty this map.
+	mcpConfigState.config.mcpServers = { "test-server": { command: "definitely-not-a-real-kimchi-test-binary" } }
+})
+
 afterEach(() => {
 	vi.unstubAllEnvs()
+	mcpConfigState.config.mcpServers = {}
 })
 
 // ---------------------------------------------------------------------------
@@ -101,6 +138,48 @@ function makeState(meta: ToolMetadata, serverName: string): McpExtensionState {
 	} as unknown as McpExtensionState
 }
 
+describe("mcp proxy registration gate", () => {
+	it("registers the proxy tool when at least one MCP server is configured", async () => {
+		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
+		const pi = makePi()
+		mcpAdapter(pi)
+		try {
+			expect(pi.getAllTools().map((t) => t.name)).toContain("mcp")
+		} finally {
+			await pi.fireShutdown()
+		}
+	})
+
+	it("skips registering the proxy tool when zero MCP servers are configured", async () => {
+		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
+		mcpConfigState.config.mcpServers = {}
+		const pi = makePi()
+		mcpAdapter(pi)
+		try {
+			expect(pi.getAllTools().map((t) => t.name)).not.toContain("mcp")
+		} finally {
+			await pi.fireShutdown()
+		}
+	})
+
+	it("still skips the proxy when disableProxyTool is false but no servers exist", async () => {
+		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
+		mcpConfigState.config.mcpServers = {}
+		mcpConfigState.config.settings = { disableProxyTool: false }
+		try {
+			const pi = makePi()
+			mcpAdapter(pi)
+			try {
+				expect(pi.getAllTools().map((t) => t.name)).not.toContain("mcp")
+			} finally {
+				await pi.fireShutdown()
+			}
+		} finally {
+			delete mcpConfigState.config.settings
+		}
+	})
+})
+
 describe("mcp adapter system prompt block", () => {
 	it("does not inject a dedicated MCP discovery block (consolidated into core ## Tool Selection)", async () => {
 		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
@@ -122,7 +201,7 @@ describe("mcp adapter system prompt block", () => {
 			// Consolidated core section must still cover the MCP guidance.
 			expect(result).toContain("## Tool Selection")
 			expect(result).toContain("mcp({ search")
-			expect(result).toContain('<tool name="mcp">')
+			expect(toolNamesFromSection(result)).toContain("mcp")
 		} finally {
 			await pi.fireShutdown()
 		}

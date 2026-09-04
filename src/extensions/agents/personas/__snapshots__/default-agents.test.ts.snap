@@ -40,8 +40,6 @@ exports[`default agents — resolved invocation config snapshot > Plan 1`] = `
     "grep",
     "find",
     "ls",
-    "write",
-    "edit",
   ],
   "maxTurns": undefined,
   "modelId": undefined,

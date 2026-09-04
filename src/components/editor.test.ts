@@ -72,6 +72,32 @@ describe("PromptEditor", () => {
 		})
 	})
 
+	describe("render — narrow terminals", () => {
+		// Regression: at width <= CHEVRON_WIDTH the upstream Editor received a
+		// negative content width and threw RangeError on "─".repeat(-1),
+		// crashing the whole TUI on extremely small terminals.
+		for (const width of [1, 2, 3, 4]) {
+			it(`does not throw and stays within width ${width} when empty`, () => {
+				const { editor } = makeEditor()
+				const lines = editor.render(width)
+				expect(lines.length).toBeGreaterThan(0)
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			})
+
+			it(`does not throw and stays within width ${width} with text`, () => {
+				const { editor } = makeEditor()
+				editor.setText("test")
+				const lines = editor.render(width)
+				expect(lines.length).toBeGreaterThan(0)
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			})
+		}
+	})
+
 	describe("render — with indicator", () => {
 		let editor: PromptEditor
 

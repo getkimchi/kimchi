@@ -20,6 +20,7 @@ import {
 	deleteRuntimeState,
 	emptyState,
 	loadRuntimeState,
+	type PersistedPhaseRefusal,
 	type PersistedRuntimeState,
 	saveRuntimeState,
 } from "./runtime-state-store.js"
@@ -519,6 +520,44 @@ export function clearMidTurnOneshotWarnings(): void {
 	midTurnOneshotWarnings.clear()
 }
 
+// ─── Mid-turn inline-compaction effect validation (per session) ──────────────
+// Suppress-abort inline compaction rewrites `agent.state.messages`, which the
+// running agent loop (context snapshotted at run start) never reads — a
+// "successful" mid-turn inline compaction can leave the live context untouched,
+// and the next over-threshold turn_end fires again (run 019ffb83 storm: 6
+// consecutive no-op fires, ~1.5M uncached summarization tokens, 10+ min).
+// Detection: record usage at fire time; the next turn_end below the compaction
+// threshold proves the wire shrank and clears the marker. A new mid-turn
+// trigger while the marker is still set proves the previous fire never took
+// effect — suppress the inline path and use the abort fallback from then on.
+const lastMidTurnFireTokens = new Map<string, number>()
+const midTurnInlineSuppressed = new Set<string>()
+
+export function setLastMidTurnFireTokens(fermentId: string, tokens: number): void {
+	lastMidTurnFireTokens.set(fermentId, tokens)
+}
+
+export function getLastMidTurnFireTokens(fermentId: string): number | undefined {
+	return lastMidTurnFireTokens.get(fermentId)
+}
+
+export function clearLastMidTurnFireTokens(fermentId: string): void {
+	lastMidTurnFireTokens.delete(fermentId)
+}
+
+export function markMidTurnInlineSuppressed(fermentId: string): void {
+	midTurnInlineSuppressed.add(fermentId)
+}
+
+export function isMidTurnInlineSuppressed(fermentId: string): boolean {
+	return midTurnInlineSuppressed.has(fermentId)
+}
+
+export function clearMidTurnCompactionTracking(): void {
+	lastMidTurnFireTokens.clear()
+	midTurnInlineSuppressed.clear()
+}
+
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After
@@ -532,8 +571,21 @@ export function clearMidTurnOneshotWarnings(): void {
 
 const blockRetryCounts = new CounterMap()
 const lastBlockHash = new Map<string, string>()
+/** Delta-grading memory: latest LLM-grader refusal (grade + recs) per phase. */
+const lastPhaseRefusals = new Map<string, PersistedPhaseRefusal>()
 
 export const MAX_BLOCK_RETRIES = 3
+
+/** How-to-fix protocol appended to LLM-grader refusal errors. Graders name a
+ *  per-recommendation fix-check; the main agent must run those checks before
+ *  re-calling, must not weaken tests or swap test tooling to make assertions
+ *  pass (that was the real run-6 failure: jsdom → happy-dom churn instead of
+ *  removing the offending inline style), and must fix the artifact itself. */
+export const FIX_PROTOCOL =
+	"How to fix this correctly:\n" +
+	"- Each recommendation names a fix you can verify in this environment. Apply the fix to the source (the behavior the grader flagged), then run its check before re-calling — the check must now pass.\n" +
+	"- Fix the artifact, not the test: do NOT modify test files, assertions, test runners, or test configuration to make a failing check pass, unless the recommendation explicitly asks for that test change. If the asserted behavior cannot be evaluated in this environment (e.g. browser-rendered CSS in jsdom), verify at the source level instead and say so in your summary.\n" +
+	"- If the same recommendation repeats across retries, your last fix missed the real defect — re-read the flagged file first instead of editing more tests."
 
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {
 	hydrateIfNeeded(fermentId)
@@ -551,6 +603,12 @@ export function clearBlockRetry(fermentId: string, phaseId: string): void {
 	hydrateIfNeeded(fermentId)
 	blockRetryCounts.clear(`${fermentId}:${phaseId}`)
 	lastBlockHash.delete(`${fermentId}:${phaseId}`)
+	// NOTE: lastPhaseRefusals intentionally OUTLIVES block acceptance — the
+	// first journey-grade attempt reads the most recent phase refusal as
+	// "quality momentum" context (see latestPhaseRefusal in lifecycle.ts).
+	// Deleting it here made that path permanently dead because every shipped
+	// phase passes through this function. Refusals are purged per-ferment by
+	// clearFermentState on ferment completion/abandon.
 	persistFerment(fermentId)
 }
 
@@ -564,6 +622,21 @@ export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string
 	lastBlockHash.set(key, hash)
 	persistFerment(fermentId)
 	return prev !== undefined && prev === hash
+}
+
+/** Record the latest LLM-grader refusal of a phase (grade + recommendations)
+ *  so the NEXT grader of the same phase can delta-grade: verify the refused
+ *  items are now fixed, and look primarily at what changed since. Overwrites
+ *  the previous refusal; cleared with the retry budget on completion. */
+export function setLastPhaseRefusal(fermentId: string, phaseId: string, refusal: PersistedPhaseRefusal): void {
+	hydrateIfNeeded(fermentId)
+	lastPhaseRefusals.set(`${fermentId}:${phaseId}`, refusal)
+	persistFerment(fermentId)
+}
+
+export function getLastPhaseRefusal(fermentId: string, phaseId: string): PersistedPhaseRefusal | undefined {
+	hydrateIfNeeded(fermentId)
+	return lastPhaseRefusals.get(`${fermentId}:${phaseId}`)
 }
 
 // ─── Step failure / completion counter (per step) ────────────────────────────
@@ -670,6 +743,9 @@ function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	for (const [k, v] of lastBlockHash.entries()) {
 		if (k.startsWith(prefix)) snap.lastBlockHashes[stripPrefix(k)] = v
 	}
+	for (const [k, v] of lastPhaseRefusals.entries()) {
+		if (k.startsWith(prefix)) snap.lastPhaseRefusals[stripPrefix(k)] = v
+	}
 	for (const [k, v] of stepCompleteAttempts.entries()) {
 		if (k.startsWith(prefix)) snap.stepCompleteAttempts[stripPrefix(k)] = v
 	}
@@ -693,6 +769,7 @@ function hydrateIfNeeded(fermentId: string): void {
 	for (const [k, v] of Object.entries(state.stepStartCounts)) stepStartCounts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.blockRetries)) blockRetryCounts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.lastBlockHashes)) lastBlockHash.set(`${prefix}${k}`, v)
+	for (const [k, v] of Object.entries(state.lastPhaseRefusals)) lastPhaseRefusals.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepCompleteAttempts)) stepCompleteAttempts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.phaseStartRefs)) phaseStartRefs.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepStartRefs)) stepStartRefs.set(`${prefix}${k}`, v)
@@ -754,6 +831,9 @@ export function clearFermentState(fermentId: string): void {
 	for (const key of lastBlockHash.keys()) {
 		if (key.startsWith(prefix)) lastBlockHash.delete(key)
 	}
+	for (const key of lastPhaseRefusals.keys()) {
+		if (key.startsWith(prefix)) lastPhaseRefusals.delete(key)
+	}
 	for (const key of phaseStartRefs.keys()) {
 		if (key.startsWith(prefix)) phaseStartRefs.delete(key)
 	}
@@ -767,6 +847,8 @@ export function clearFermentState(fermentId: string): void {
 	// for the same id (key collisions are vanishingly unlikely but cheap to avoid).
 	pendingCompactions.delete(fermentId)
 	compactionInFlight.delete(fermentId)
+	lastMidTurnFireTokens.delete(fermentId)
+	midTurnInlineSuppressed.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }
 

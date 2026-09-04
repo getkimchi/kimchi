@@ -29,6 +29,16 @@ import { resolveFermentsDir } from "../../ferment/store.js"
 
 export const RUNTIME_STATE_SCHEMA_VERSION = 1
 
+/** The latest LLM-grader refusal of a phase — grade + recommendations +
+ *  timestamp. Feeds delta-grading: the next grader of the same phase starts
+ *  from these items instead of paying for a whole-phase re-sweep. */
+export interface PersistedPhaseRefusal {
+	grade: string
+	recommendations: string[]
+	/** ISO timestamp of the refusal. */
+	at: string
+}
+
 export interface PersistedRuntimeState {
 	schemaVersion: typeof RUNTIME_STATE_SCHEMA_VERSION
 	/** Key: `${phaseId}:${stepId}`. Note: fermentId is implicit (per-file). */
@@ -43,6 +53,8 @@ export interface PersistedRuntimeState {
 	phaseStartRefs: Record<string, string>
 	/** Key: `${phaseId}:${stepId}`. Git sha captured at start_ferment_step. */
 	stepStartRefs: Record<string, string>
+	/** Key: `${phaseId}`. Latest grader refusal (delta-grading memory). */
+	lastPhaseRefusals: Record<string, PersistedPhaseRefusal>
 }
 
 export function emptyState(): PersistedRuntimeState {
@@ -54,6 +66,7 @@ export function emptyState(): PersistedRuntimeState {
 		stepCompleteAttempts: {},
 		phaseStartRefs: {},
 		stepStartRefs: {},
+		lastPhaseRefusals: {},
 	}
 }
 
@@ -86,6 +99,8 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 			merged.stepCompleteAttempts = raw.stepCompleteAttempts
 		if (raw.phaseStartRefs && typeof raw.phaseStartRefs === "object") merged.phaseStartRefs = raw.phaseStartRefs
 		if (raw.stepStartRefs && typeof raw.stepStartRefs === "object") merged.stepStartRefs = raw.stepStartRefs
+		if (raw.lastPhaseRefusals && typeof raw.lastPhaseRefusals === "object")
+			merged.lastPhaseRefusals = raw.lastPhaseRefusals
 		return merged
 	} catch {
 		return emptyState()
