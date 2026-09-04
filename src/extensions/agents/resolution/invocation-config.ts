@@ -25,11 +25,20 @@ interface AgentInvocationParams {
  * - tokenBudget: caller override first, then persona default.
  * - thinking: caller override first, then persona default (orchestrator selects per delegation).
  * - maxTurns, isolation, inheritContext, runInBackground: persona
- *   policy first, then caller value.
+ *   policy first, then caller value. runInBackground falls back to
+ *   `defaultRunInBackground` when neither sets it — background in
+ *   interactive sessions, foreground in headless/one-shot runs.
  */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,
 	params: AgentInvocationParams,
+	/**
+	 * Fallback when neither persona policy nor the caller sets the mode.
+	 * Background in interactive sessions; foreground in headless/one-shot
+	 * runs — there is no interactive loop to consume completion
+	 * notifications there, so backgrounded work would outlive the process.
+	 */
+	defaultRunInBackground = true,
 ): {
 	modelInput?: string
 	modelFromParams: boolean
@@ -58,7 +67,7 @@ export function resolveAgentInvocationConfig(
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		maxDuration: params.max_duration ?? agentConfig?.maxDuration,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
-		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? true,
+		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? defaultRunInBackground,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,
 		isolation: agentConfig?.isolation ?? params.isolation,
 	}
