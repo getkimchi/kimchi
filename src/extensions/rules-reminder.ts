@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
+import { getActive, isInactiveOrPaused } from "./ferment/state.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import type { PromptMode } from "./prompt-construction/system-prompt.js"
 import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
@@ -37,7 +38,11 @@ export default function rulesReminderExtension(pi: ExtensionAPI): void {
 		// setting the builder reads. From the second prompt on the recorded
 		// value takes over, so a mid-session mode change still wins here.
 		const mode = getPromptMode(sessionId) ?? derivePromptMode(ctx)
-		const text = cfg.text(mode)
+		// A ferment in progress carries its own planner rules in the system
+		// prompt, so the block leaves that part of the guidance to them. Paused
+		// and finished ferments no longer supply those rules.
+		const fermentActive = !isInactiveOrPaused(getActive())
+		const text = cfg.text(mode, fermentActive)
 		if (!text) return
 
 		const now = Date.now()

@@ -17,7 +17,8 @@ export const RULES_BLOCK_HEADER = "Working rules, always follow:"
 /**
  * Only for a thread whose subagents are anonymous workers. Orchestrator mode
  * drops this bullet: the Orchestration section already states how that thread
- * delegates, in more detail than one bullet can.
+ * delegates, in more detail than one bullet can. An active ferment drops it
+ * too, see rulesBlockFor.
  */
 const RULES_DELEGATION_BULLET =
 	"\n- Delegate implementation, testing, and review to focused subagents; keep this thread orchestrating and verifying. Run independent subagents in parallel."
@@ -53,13 +54,19 @@ const RULES_AFTER_REVIEW = `
  * The working rules for a session in the given prompt mode. Returns undefined
  * for a subagent prompt: a subagent has no Agent tool, so the delegation and
  * review rules cannot be followed there and would only cost it turns.
+ *
+ * With a ferment in progress the delegation bullet is dropped: the ferment
+ * planner supplement owns the execution stance for the ferment, and in single
+ * model mode that stance is to run the steps directly. These rules arrive with
+ * the user's turn, after the system prompt, so a delegation bullet here would
+ * be the last word on a question the planner rules already answered.
  */
-export function rulesBlockFor(mode: PromptMode): string | undefined {
+export function rulesBlockFor(mode: PromptMode, fermentActive = false): string | undefined {
 	if (mode === "subagent") return undefined
 	const orchestrator = mode === "orchestrator"
 	return (
 		RULES_BLOCK_HEADER +
-		(orchestrator ? "" : RULES_DELEGATION_BULLET) +
+		(orchestrator || fermentActive ? "" : RULES_DELEGATION_BULLET) +
 		RULES_BEFORE_REVIEW +
 		(orchestrator ? RULES_REVIEW_PERSONAS : RULES_REVIEW_FRESH_SUBAGENT) +
 		RULES_AFTER_REVIEW

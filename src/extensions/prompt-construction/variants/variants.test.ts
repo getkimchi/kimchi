@@ -185,7 +185,7 @@ describe("SPICY descriptor", () => {
 	})
 
 	it("rulesReminder.text is the mode-aware rules block", () => {
-		expect(SPICY.rulesReminder?.text("single")).toBe(rulesBlockFor("single"))
+		expect(SPICY.rulesReminder?.text("single", false)).toBe(rulesBlockFor("single"))
 	})
 
 	it("rulesReminder.intervalMs is five minutes", () => {
@@ -632,6 +632,12 @@ describe("rulesBlockFor", () => {
 
 	it("subagent mode gets no rules block", () => {
 		expect(rulesBlockFor("subagent")).toBeUndefined()
+	})
+
+	it("single mode drops the delegation bullet while a ferment is in progress", () => {
+		const block = rulesBlockFor("single", true)
+		expect(block).not.toContain("- Delegate implementation, testing, and review to focused subagents")
+		expect(block).toContain("Never delete a failing test")
 	})
 })
 

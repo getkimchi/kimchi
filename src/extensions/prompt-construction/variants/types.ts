@@ -59,12 +59,13 @@ export interface PromptVariant {
 	 * When defined, the rules-reminder extension appends the variant's working
 	 * rules to the user's turn. Presence (defined) enables the reminder;
 	 * absent/undefined disables it entirely. `text` returns the block for the
-	 * session's prompt mode, or undefined when that mode gets no rules.
-	 * `intervalMs` throttles repeats within a session: the first prompt always
-	 * gets the block, later prompts only once the interval has passed. 0 sends
-	 * it on every prompt.
+	 * session's prompt mode, or undefined when that mode gets no rules; it also
+	 * receives whether a ferment is in progress, because a ferment's planner
+	 * rules own the execution stance while it runs. `intervalMs` throttles
+	 * repeats within a session: the first prompt always gets the block, later
+	 * prompts only once the interval has passed. 0 sends it on every prompt.
 	 */
-	rulesReminder?: { text: (mode: PromptMode) => string | undefined; intervalMs: number }
+	rulesReminder?: { text: (mode: PromptMode, fermentActive: boolean) => string | undefined; intervalMs: number }
 
 	/**
 	 * Transform built-in default agent personas before they are registered for

@@ -21,6 +21,14 @@ vi.mock("./multi-model.js", async (importOriginal) => ({
 	getMultiModelEnabled: () => mockMultiModelEnabled(),
 }))
 
+// The ferment the reminder sees; the real status predicate stays in play.
+const mockActiveFerment = vi.fn()
+
+vi.mock("./ferment/state.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./ferment/state.js")>()),
+	getActive: () => mockActiveFerment(),
+}))
+
 // ---------------------------------------------------------------------------
 // Pi mock factory
 // ---------------------------------------------------------------------------
@@ -80,6 +88,7 @@ beforeEach(() => {
 	vi.resetModules()
 	mockResolvePromptVariant.mockReturnValue(spicyReminder())
 	mockMultiModelEnabled.mockReturnValue(false)
+	mockActiveFerment.mockReturnValue(undefined)
 })
 
 afterEach(() => {
@@ -187,6 +196,28 @@ describe("rulesReminderExtension message content", () => {
 		const { handlers, sendMessage } = await loadExtension()
 
 		firePrompt(handlers, "rules-single")
+
+		expect(deliveredText(sendMessage)).toContain("- Delegate implementation, testing, and review to focused subagents")
+	})
+
+	it("leaves the delegation bullet out while a ferment is in progress", async () => {
+		await recordPromptMode("rules-ferment", "single")
+		mockActiveFerment.mockReturnValue({ status: "running" })
+		const { handlers, sendMessage } = await loadExtension()
+
+		firePrompt(handlers, "rules-ferment")
+
+		expect(deliveredText(sendMessage)).not.toContain(
+			"- Delegate implementation, testing, and review to focused subagents",
+		)
+	})
+
+	it("sends the delegation bullet again once the ferment is finished", async () => {
+		await recordPromptMode("rules-ferment-done", "single")
+		mockActiveFerment.mockReturnValue({ status: "complete" })
+		const { handlers, sendMessage } = await loadExtension()
+
+		firePrompt(handlers, "rules-ferment-done")
 
 		expect(deliveredText(sendMessage)).toContain("- Delegate implementation, testing, and review to focused subagents")
 	})
