@@ -24,7 +24,12 @@ import {
 const SESSION_ID = "auto-session"
 type ModelSelectEvent = Extract<ExtensionEvent, { type: "model_select" }>
 
-function model(id: string, input: ("text" | "image")[] = ["text"], reasoning = true): Model<string> {
+function model(
+	id: string,
+	input: ("text" | "image")[] = ["text"],
+	reasoning = true,
+	limits: { contextWindow?: number; maxTokens?: number } = {},
+): Model<string> {
 	return {
 		id,
 		name: id,
@@ -34,8 +39,8 @@ function model(id: string, input: ("text" | "image")[] = ["text"], reasoning = t
 		reasoning,
 		input,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 128000,
-		maxTokens: 16000,
+		contextWindow: limits.contextWindow ?? 128000,
+		maxTokens: limits.maxTokens ?? 16000,
 	}
 }
 
@@ -253,6 +258,50 @@ describe("Auto model extension", () => {
 		expect(setModel).toHaveBeenCalledOnce()
 		expect(setModel).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "auto", api: "kimchi-auto", reasoning: false, thinkingLevelMap: undefined }),
+		)
+	})
+
+	it("applies the routed model's context window and max tokens to the Auto session", async () => {
+		const { getHandler, setModel, ctx, target } = harness(
+			model("deepseek-3", ["text"], true, { contextWindow: 1_048_576, maxTokens: 128_000 }),
+		)
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				json: async () => ({ best_model: target.id, probabilities: { [target.id]: 1 } }),
+			})),
+		)
+		await getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		await getHandler<BeforeAgentStartEvent>("before_agent_start")(beforeEvent(), ctx)
+		await consumeAutoRoutingAttempt(SESSION_ID)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto", api: "kimchi-auto", contextWindow: 1_048_576, maxTokens: 128_000 }),
+		)
+	})
+
+	it("restores Auto with the resolved model's context window on session restore", async () => {
+		const target = model("deepseek-3", ["text"], true, { contextWindow: 1_048_576, maxTokens: 128_000 })
+		const auto = model("auto", ["text", "image"])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({
+			model: auto,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target })
+
+		await extension.getHandler<ModelSelectEvent>("model_select")(
+			{ type: "model_select", model: auto, previousModel: target, source: "set" },
+			ctx,
+		)
+
+		expect(extension.setModel).toHaveBeenCalledOnce()
+		expect(extension.setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto", api: "kimchi-auto", contextWindow: 1_048_576, maxTokens: 128_000 }),
 		)
 	})
 
