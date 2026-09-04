@@ -1994,11 +1994,27 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to read session directory: ${msg}`)
 		}
-		// Map "session not found" to invalidParams — SessionManager.open would
-		// silently start a fresh session on a missing file (and rewrite it with
-		// a new id), which is destructive and not what loadSession should do.
 		if (!sessionPath) {
-			throw RequestError.invalidParams(undefined, `session ${params.sessionId} not found`)
+			// Pi intentionally delays writing a new session until its first
+			// assistant response. If the ACP process restarts before that, Zed
+			// reloads a valid id with no file. Recreate the empty manager with the
+			// same id; it remains lazy, so abandoned empty threads leave no files.
+			let sessionManager: SessionManager
+			try {
+				sessionManager = SessionManager.create(cwd, sessionDir, { id: params.sessionId })
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err)
+				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
+			}
+			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir: options.agentDir,
+				settingsManager,
+				resourceLoader,
+				sessionManager,
+			})
+			return session
 		}
 		let header: Pick<SessionHeader, "id" | "cwd"> | null
 		try {
