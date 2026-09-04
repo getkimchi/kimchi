@@ -33,19 +33,25 @@ export function parseFermentV2Command(args: string): FermentV2Command {
 export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, liveElapsedMs = 0): string {
 	if (!fermentV2) return `No Ferment V2 is currently set.\nUse /${FERMENT_V2_COMMAND_NAME} <objective> to create one.`
 	const evaluation = fermentV2.lastEvaluation
+	const approvedPlan = fermentV2.presentation?.kind === "approved-plan" ? fermentV2.presentation : undefined
+	const title = approvedPlan
+		? approvedPlan.title.startsWith("Plan:")
+			? approvedPlan.title
+			: `Plan: ${approvedPlan.title}`
+		: "Ferment V2"
 	return [
-		"Ferment V2",
+		title,
 		`Status: ${fermentV2.status}`,
 		...(fermentV2.status === "blocked" && fermentV2.blockedReason
 			? [`Blocked reason: ${fermentV2.blockedReason}`]
 			: []),
 		`Revision: ${fermentV2.revision}`,
 		`Objective: ${fermentV2.objective}`,
-		`Fermenting time: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
+		`${approvedPlan ? "Run time" : "Fermenting time"}: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
 		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
 		...(evaluation ? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}`] : []),
 		"",
-		`Commands: ${fermentV2Commands(fermentV2)}`,
+		approvedPlan ? `Actions: ${approvedPlanActions(fermentV2)}` : `Commands: ${fermentV2Commands(fermentV2)}`,
 	].join("\n")
 }
 
@@ -70,6 +76,12 @@ function fermentV2Commands(fermentV2: SessionFermentV2): string {
 		return `/${FERMENT_V2_COMMAND_NAME} edit, /${FERMENT_V2_COMMAND_NAME} resume, /${FERMENT_V2_COMMAND_NAME} clear`
 	}
 	return `/${FERMENT_V2_COMMAND_NAME} <objective>, /${FERMENT_V2_COMMAND_NAME} clear`
+}
+
+function approvedPlanActions(fermentV2: SessionFermentV2): string {
+	if (fermentV2.status === "active") return "edit, pause, clear"
+	if (fermentV2.status === "paused" || fermentV2.status === "blocked") return "edit, resume, clear"
+	return "start a new objective, clear"
 }
 
 function parseTokenBudget(input: string): { objective: string; tokenBudget?: number } {

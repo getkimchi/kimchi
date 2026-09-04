@@ -197,6 +197,80 @@ describe("PromptEditor", () => {
 		})
 	})
 
+	describe("render — active plan title", () => {
+		const violet = "\x1b[38;2;178;129;214m"
+		const pink = "\x1b[38;2;215;135;175m"
+		const orange = "\x1b[38;2;254;188;56m"
+
+		it("shows the active plan name alongside existing indicators", () => {
+			const { editor } = makeEditor()
+
+			editor.setActivePlanTitle("Cache Layer")
+			editor.setSessionIndicator("(host)")
+			editor.setPendingImageIndicator("📎 1 image (5 KB)")
+			editor.setIdeSelectionIndicator("@src/app.ts:10-20")
+
+			const lines = editor.render(80).map(stripAnsi)
+			expect(lines).toHaveLength(4)
+			expect(lines[1]).toContain("Plan: Cache Layer")
+			expect(lines[1]).toContain("(host)")
+			expect(lines[1]).toContain("📎 1 image (5 KB)")
+			expect(lines[1]).toContain("@src/app.ts:10-20")
+		})
+
+		it("colors both borders with the fixed violet-pink-orange RGB gradient", () => {
+			const { editor } = makeEditor()
+
+			editor.setActivePlanTitle("Cache Layer")
+
+			const rawLines = editor.render(80)
+			for (const border of [rawLines[0], rawLines[3]]) {
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: assertions inspect ANSI output
+				const colors = [...border.matchAll(/\x1b\[(38;2;\d+;\d+;\d+)m/g)].map((match) => `\x1b[${match[1]}m`)
+				expect(colors).toHaveLength(80)
+				expect(colors[0]).toBe(violet)
+				expect(colors[40]).toBe(pink)
+				expect(colors[79]).toBe(orange)
+			}
+			expect(stripAnsi(rawLines[0])).toBe("─".repeat(80))
+			expect(stripAnsi(rawLines[3])).toBe("─".repeat(80))
+			expect(visibleWidth(rawLines[0])).toBe(80)
+			expect(visibleWidth(rawLines[3])).toBe(80)
+		})
+
+		for (const width of [1, 2, 3, 4]) {
+			it(`keeps active-plan render within width ${width}`, () => {
+				const { editor } = makeEditor()
+
+				editor.setActivePlanTitle("Cache Layer")
+
+				for (const line of editor.render(width)) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			})
+		}
+
+		it("no-ops when the same active plan title is set twice", () => {
+			const { editor, tui } = makeEditor()
+			const spy = vi.spyOn(tui, "requestRender")
+
+			editor.setActivePlanTitle("Cache Layer")
+			editor.setActivePlanTitle("Cache Layer")
+
+			expect(spy).toHaveBeenCalledTimes(1)
+		})
+
+		it("restores the exact baseline bytes after clearing the active plan title", () => {
+			const { editor } = makeEditor()
+			const baseline = editor.render(80)
+
+			editor.setActivePlanTitle("Cache Layer")
+			editor.setActivePlanTitle(null)
+
+			expect(editor.render(80)).toEqual(baseline)
+		})
+	})
+
 	describe("render — typed text with chevron", () => {
 		it("uses ❯ prefix only on the cursor row and two-space indent on other rows", () => {
 			const { editor } = makeEditor()

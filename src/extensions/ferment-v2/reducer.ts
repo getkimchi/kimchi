@@ -4,6 +4,7 @@ import {
 	FERMENT_V2_STATUSES,
 	type FermentV2Evaluation,
 	type FermentV2JournalEntry,
+	type FermentV2Presentation,
 	type FermentV2Status,
 	type SessionFermentV2,
 } from "./types.js"
@@ -24,13 +25,20 @@ export function createFermentV2(
 	id: string,
 	now: string,
 	tokenBudget?: number,
+	presentation?: FermentV2Presentation,
 ): SessionFermentV2 {
 	if (state) throw new Error("A Ferment V2 already exists.")
-	return newFermentV2(objective, id, now, tokenBudget)
+	return newFermentV2(objective, id, now, tokenBudget, presentation)
 }
 
-export function replaceFermentV2(objective: unknown, id: string, now: string, tokenBudget?: number): SessionFermentV2 {
-	return newFermentV2(objective, id, now, tokenBudget)
+export function replaceFermentV2(
+	objective: unknown,
+	id: string,
+	now: string,
+	tokenBudget?: number,
+	presentation?: FermentV2Presentation,
+): SessionFermentV2 {
+	return newFermentV2(objective, id, now, tokenBudget, presentation)
 }
 
 export function editFermentV2(
@@ -200,7 +208,13 @@ function requireCurrentFermentV2(
 	return state
 }
 
-function newFermentV2(objective: unknown, id: string, now: string, tokenBudget?: number): SessionFermentV2 {
+function newFermentV2(
+	objective: unknown,
+	id: string,
+	now: string,
+	tokenBudget?: number,
+	presentation?: FermentV2Presentation,
+): SessionFermentV2 {
 	if (!id.trim()) throw new Error("Ferment V2 ID cannot be empty.")
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
 		throw new Error("Ferment V2 token budget must be a positive integer.")
@@ -212,6 +226,7 @@ function newFermentV2(objective: unknown, id: string, now: string, tokenBudget?:
 		objective: normalizeObjective(objective),
 		status: "active",
 		tokensUsed: 0,
+		...(presentation ? { presentation } : {}),
 		...(tokenBudget === undefined ? {} : { tokenBudget }),
 		timeUsedMs: 0,
 		createdAt: now,
@@ -249,6 +264,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		(candidate) => candidate === value.completionConfidence,
 	)
 	const lastEvaluation = parseFermentV2Evaluation(value.lastEvaluation)
+	const presentation = parseFermentV2Presentation(value.presentation)
 	if (
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
@@ -256,6 +272,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		!isNonEmptyString(value.objective) ||
 		status === undefined ||
 		(value.blockedReason !== undefined && !isNonEmptyString(value.blockedReason)) ||
+		(value.presentation !== undefined && presentation === undefined) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
 		(value.consecutiveErrorTurns !== undefined && !isNonNegativeInteger(value.consecutiveErrorTurns)) ||
@@ -274,6 +291,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		revision: value.revision,
 		objective: value.objective,
 		status,
+		...(presentation ? { presentation } : {}),
 		...(status === "blocked" && value.blockedReason !== undefined
 			? { blockedReason: normalizeBlockedReason(value.blockedReason) }
 			: {}),
@@ -289,6 +307,19 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		timeUsedMs: value.timeUsedMs ?? 0,
 		createdAt: value.createdAt,
 		updatedAt: value.updatedAt,
+	}
+}
+
+function parseFermentV2Presentation(value: unknown): FermentV2Presentation | undefined {
+	if (value === undefined) return undefined
+	if (!isRecord(value) || value.kind !== "approved-plan" || !isNonEmptyString(value.title)) return undefined
+	if (value.planPath !== undefined && !isNonEmptyString(value.planPath)) return undefined
+	if (value.planText !== undefined && !isNonEmptyString(value.planText)) return undefined
+	return {
+		kind: "approved-plan",
+		title: value.title,
+		...(value.planPath === undefined ? {} : { planPath: value.planPath }),
+		...(value.planText === undefined ? {} : { planText: value.planText }),
 	}
 }
 

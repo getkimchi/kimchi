@@ -118,6 +118,7 @@ let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 let currentIdeSelectionIndicatorText: string | null = null
+let currentActivePlanTitle: string | null = null
 
 // Own timer for the exit stage — upstream's lastSigintTime isn't updated when
 // the abort stage consumes the event, so we can't rely on it.
@@ -273,6 +274,11 @@ export function setIdeSelectionIndicator(text: string | null): void {
 export function setSessionIndicator(text: string | null): void {
 	currentSessionIndicatorText = text
 	currentEditor?.setSessionIndicator(text)
+}
+
+export function setActivePlanTitle(title: string | null): void {
+	currentActivePlanTitle = title
+	currentEditor?.setActivePlanTitle(title)
 }
 
 function runScript(
@@ -480,6 +486,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			if (currentIdeSelectionIndicatorText !== null) {
 				editor.setIdeSelectionIndicator(currentIdeSelectionIndicatorText)
 			}
+			if (currentActivePlanTitle !== null) {
+				editor.setActivePlanTitle(currentActivePlanTitle)
+			}
 			return editor
 		})
 
@@ -631,6 +640,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
+		setActivePlanTitle(null)
+		currentEditor = undefined
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()

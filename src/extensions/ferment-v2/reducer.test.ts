@@ -34,6 +34,36 @@ describe("Ferment V2 reducer", () => {
 		})
 	})
 
+	it("persists approved-plan presentation metadata and preserves it across edits", () => {
+		const presentation = { kind: "approved-plan" as const, title: "Cache plan", planPath: "/tmp/cache-plan.md" }
+		const fermentV2 = createFermentV2(undefined, "execute it", "ferment-v2-a", T1, undefined, presentation)
+		const edited = editFermentV2(fermentV2, "ferment-v2-a", 1, "execute it better", T2)
+
+		expect(restoreFermentV2([putFermentV2Entry(edited)])).toMatchObject({
+			objective: "execute it better",
+			presentation,
+		})
+	})
+
+	it("round-trips inline approved-plan metadata and still restores legacy entries", () => {
+		const legacy = createFermentV2(undefined, "legacy", "ferment-v2-legacy", T1)
+		const presentation = { kind: "approved-plan" as const, title: "Inline plan", planText: "# Inline plan" }
+		const automatic = createFermentV2(undefined, "execute inline", "ferment-v2-auto", T1, undefined, presentation)
+
+		expect(restoreFermentV2([putFermentV2Entry(legacy)])).toEqual(legacy)
+		expect(restoreFermentV2([putFermentV2Entry(automatic)])).toEqual(automatic)
+	})
+
+	it("rejects malformed optional approved-plan presentation metadata", () => {
+		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
+		const malformed = {
+			...putFermentV2Entry(fermentV2),
+			fermentV2: { ...fermentV2, presentation: { kind: "approved-plan", title: "", planText: 42 } },
+		}
+
+		expect(restoreFermentV2([malformed])).toBeUndefined()
+	})
+
 	it("rejects empty objectives and preserves objectives longer than 4,000 characters", () => {
 		expect(() => createFermentV2(undefined, " \n ", "ferment-v2-a", T1)).toThrow("Ferment V2 objective cannot be empty")
 		expect(createFermentV2(undefined, "x".repeat(4_001), "ferment-v2-a", T1).objective).toHaveLength(4_001)

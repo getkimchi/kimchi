@@ -12,6 +12,8 @@ import {
 	resetAll,
 } from "./tool-profile-manager.js"
 
+const FERMENT_V2_TOOL_NAMES = ["get_ferment_v2", "update_ferment_v2"]
+
 /** Build a fresh mock ExtensionAPI. */
 const makeMockPi = (
 	overrides: {
@@ -154,6 +156,21 @@ describe("apply", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("bash")
 	})
+
+	it("planning-adhoc profile includes Ferment V2 state tools and excludes legacy Ferment/write tools", () => {
+		const pi = makeMockPi()
+
+		apply("planning-adhoc", "adhoc", pi)
+
+		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		for (const name of FERMENT_V2_TOOL_NAMES) {
+			expect(calledWith).toContain(name)
+		}
+		for (const name of ["propose_ferment_scoping", "start_ferment_step", "edit", "write"]) {
+			expect(calledWith).not.toContain(name)
+		}
+	})
+
 	describe("planning-ferment read-only MCP union", () => {
 		it("includes read-only-qualified tool names from registered providers", () => {
 			const pi = makeMockPi()

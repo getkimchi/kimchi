@@ -9,6 +9,100 @@ test.use(TUI_TEST_CONFIG)
 
 const COMPACTION_SUMMARY_MARKER = "FERMENT_V2_COMPACTION_SUMMARY"
 
+test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({ terminal }) => {
+	const outputFile = "plan-mode-ferment.txt"
+	const acceptedFinal = "PLAN_MODE_FERMENT_COMPLETE"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-from-plan-mode",
+			seedHome: enableFermentV2Mode,
+			extraArgs: ["--plan=true"],
+			models: [
+				{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 },
+				{
+					slug: "deepseek-v4-flash",
+					displayName: "DeepSeek V4 Flash",
+					contextWindow: 200_000,
+					maxTokens: 8192,
+				},
+			],
+			responses: [
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [
+						'{"verdict":"met","checks":[{"requirement":"Create and verify plan-mode-ferment.txt","met":true,"failureMode":"the file could contain different data; l1 records the verified write","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo records the verified file write."}',
+					],
+				},
+				{
+					stream: ["Creating the requested file."],
+					toolCalls: [
+						{
+							id: "create-plan-mode-todo",
+							index: 0,
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({
+									todos: [{ content: "Create and verify plan-mode-ferment.txt", status: "in_progress" }],
+								}),
+							},
+						},
+						{
+							id: "write-plan-mode-file",
+							index: 1,
+							function: {
+								name: "write",
+								arguments: JSON.stringify({ path: outputFile, content: "done" }),
+							},
+						},
+					],
+				},
+				{
+					stream: ['{"verdict":"safe","reason":"Writes the requested test artifact","riskScore":"low"}'],
+				},
+				{
+					stream: ["Verifying the file."],
+					toolCalls: [
+						{
+							id: "read-plan-mode-file",
+							index: 0,
+							function: { name: "read", arguments: JSON.stringify({ path: outputFile }) },
+						},
+						{
+							id: "finish-plan-mode-todo",
+							index: 1,
+							function: {
+								name: "mark_todo",
+								arguments: JSON.stringify({
+									id: 1,
+									status: "completed",
+									note: "Evidence: wrote and read plan-mode-ferment.txt with exact content done",
+								}),
+							},
+						},
+					],
+				},
+				{ stream: ["The requested file is verified."] },
+				{ stream: [acceptedFinal] },
+			],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit(`/ferment-v2 create ${outputFile} containing exactly done and verify it`)
+			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
+			await waitForText(terminal, /auto(?: → shift\+tab)? · basic\b/, { timeoutMs: 5_000 })
+			await waitForText(terminal, acceptedFinal, { timeoutMs: 15_000 })
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			expect(readFileSync(join(fixture.workDir, outputFile), "utf-8")).toBe("done")
+			expect(fullText(terminal)).not.toContain(
+				"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			)
+			expect(fullText(terminal)).not.toContain("Plan mode: tool write is not available")
+			trace.step("manual Ferment V2 left Plan mode, wrote the exact file, and completed")
+		},
+	)
+})
+
 test("experimental Ferment V2 continues after automatic compaction and then completes", async ({ terminal }) => {
 	const planningResponse: FakeResponseScript = {
 		stream: ["Creating a tactical plan."],

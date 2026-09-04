@@ -22,12 +22,20 @@ export interface FermentV2EvaluatorUsage {
 	costUsd: number
 }
 
+export interface FermentV2Presentation {
+	kind: "approved-plan"
+	title: string
+	planPath?: string
+	planText?: string
+}
+
 export interface SessionFermentV2 {
 	schemaVersion: 1
 	id: string
 	revision: number
 	objective: string
 	status: FermentV2Status
+	presentation?: FermentV2Presentation
 	blockedReason?: string
 	completionConfidence?: FermentV2CompletionConfidence
 	evaluationCount?: number

@@ -8,6 +8,7 @@ import uiExtension, {
 	ctrlCCascadeDecision,
 	findNextCompatibleModel,
 	holdWorkedForMessage,
+	setActivePlanTitle,
 	withWorkingHidden,
 } from "./ui.js"
 
@@ -16,6 +17,62 @@ function makeModel(id: string, contextWindow: number, input: string[] = ["text",
 	return { id, provider: "test", name: id, contextWindow, input } as import("@earendil-works/pi-ai").Model<
 		import("@earendil-works/pi-ai").Api
 	>
+}
+
+function makeUiSessionCtx() {
+	return {
+		hasUI: true,
+		sessionManager: { getSessionId: () => "session-under-test" },
+		ui: {
+			theme: {
+				fg: (_name: string, value: string) => value,
+				getFgAnsi: (_name: string) => "",
+			},
+			setHeader: vi.fn(),
+			setFooter: vi.fn(),
+			setEditorComponent: vi.fn(),
+			setToolsExpanded: vi.fn(),
+			onTerminalInput: vi.fn(() => () => {}),
+			setWorkingVisible: vi.fn(),
+			setWorkingIndicator: vi.fn(),
+			setWorkingMessage: vi.fn(),
+			setStatus: vi.fn(),
+			notify: vi.fn(),
+		},
+		modelRegistry: { getAvailable: () => [], find: () => undefined },
+		model: undefined,
+		getContextUsage: () => null,
+		isIdle: () => true,
+		abort: vi.fn(),
+		shutdown: vi.fn(),
+	} as unknown as ExtensionContext
+}
+
+function createRegisteredPromptEditor(ctx: ExtensionContext) {
+	const factory = (ctx.ui.setEditorComponent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Parameters<
+		ExtensionContext["ui"]["setEditorComponent"]
+	>[0]
+	if (!factory) throw new Error("editor factory was not registered")
+	return factory(
+		{
+			requestRender: vi.fn(),
+			setShowHardwareCursor: vi.fn(),
+			terminal: { rows: 40, cols: 80 },
+		} as never,
+		{
+			borderColor: (s: string) => s,
+			selectList: {},
+		} as never,
+		{
+			matches: () => false,
+		} as never,
+	)
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: test-only helper
+const ANSI_RE = /\x1b\[[0-9;]*m/g
+function stripAnsi(s: string): string {
+	return s.replace(ANSI_RE, "")
 }
 
 describe("isBareExitAlias", () => {
@@ -125,6 +182,48 @@ describe("worked-for message hold", () => {
 		release()
 		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
 		expect(setWorkingMessage.mock.lastCall?.[0]).toContain("Worked for")
+	})
+})
+
+describe("active plan title lifecycle", () => {
+	afterEach(() => {
+		setActivePlanTitle(null)
+	})
+
+	it("seeds a prompt editor created after the title is set, then propagates clear", async () => {
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const ctx = makeUiSessionCtx()
+
+		setActivePlanTitle("Cache Layer")
+		await harness.getHandler("session_start")({ type: "session_start" } as never, ctx)
+		const editor = createRegisteredPromptEditor(ctx)
+
+		expect(stripAnsi(editor.render(80)[1])).toContain("Plan: Cache Layer")
+
+		setActivePlanTitle(null)
+
+		expect(editor.render(80).map(stripAnsi).join("\n")).not.toContain("Plan: Cache Layer")
+	})
+
+	it("clears the cached title and current editor on session shutdown", async () => {
+		const first = createExtensionApi()
+		uiExtension(first.api)
+		const firstCtx = makeUiSessionCtx()
+
+		setActivePlanTitle("Old Plan")
+		await first.getHandler("session_start")({ type: "session_start" } as never, firstCtx)
+		expect(stripAnsi(createRegisteredPromptEditor(firstCtx).render(80)[1])).toContain("Plan: Old Plan")
+		for (const handler of first.getHandlers("session_shutdown")) {
+			await handler({ type: "session_shutdown" } as never, firstCtx)
+		}
+
+		const second = createExtensionApi()
+		uiExtension(second.api)
+		const secondCtx = makeUiSessionCtx()
+		await second.getHandler("session_start")({ type: "session_start" } as never, secondCtx)
+
+		expect(createRegisteredPromptEditor(secondCtx).render(80).map(stripAnsi).join("\n")).not.toContain("Old Plan")
 	})
 })
 
