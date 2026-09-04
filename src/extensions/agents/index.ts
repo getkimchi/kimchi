@@ -2088,12 +2088,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
 
+				let waitOutcome: AgentWaitOutcome | undefined
 				if (params.wait && record.status === "running" && record.promise) {
 					// Bounded, interruptible join: honor the tool's abort signal and
 					// the wait cap instead of blocking the caller's run indefinitely.
 					// On timeout/abort the result stays unconsumed and the completion
 					// nudge stays armed, so the notification still delivers the result.
-					const waitOutcome = await waitForAgentCompletion(record.promise, signal)
+					waitOutcome = await waitForAgentCompletion(record.promise, signal)
 					if (waitOutcome === "completed") {
 						record.resultConsumed = true
 						cancelNudge(params.agent_id as string)
@@ -2116,9 +2117,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 					`Description: ${record.description}\n\n`
 
 				let bodyForDisplay: string
-				if (record.status === "running") {
-					bodyForDisplay =
-						"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results."
+				if (record.status === "queued") {
+					bodyForDisplay = `Agent is queued behind the background-agent concurrency cap (max ${manager.getMaxConcurrent()} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`
+					output += bodyForDisplay
+				} else if (record.status === "running") {
+					if (waitOutcome === "timed_out") {
+						bodyForDisplay = `Waited ${GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`
+					} else if (waitOutcome === "aborted") {
+						bodyForDisplay =
+							"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification."
+					} else {
+						bodyForDisplay =
+							"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results."
+					}
 					output += bodyForDisplay
 				} else if (record.status === "error") {
 					bodyForDisplay = `Error: ${record.error}`

@@ -914,11 +914,15 @@ describe("get_subagent_result wait contract", () => {
 		await vi.advanceTimersByTimeAsync(30_000)
 		expect(settled).toBe(false)
 
-		// ...released by the 60s cap with a still-running report.
+		// ...released by the 60s cap with a timeout-specific report that
+		// distinguishes "join expired" from a plain status check and points
+		// hard-dependency callers (e.g. ferment) at re-joining.
 		await vi.advanceTimersByTimeAsync(31_000)
 		const result = await execPromise
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("still running")
+		expect(text).toContain("60s (cap)")
+		expect(text).toContain("wait: true again to re-join")
 		expect(record.resultConsumed).not.toBe(true)
 
 		// Because the result was not consumed, completing the agent afterwards
@@ -952,7 +956,8 @@ describe("get_subagent_result wait contract", () => {
 		const result = await execPromise
 
 		const text = result.content[0]?.text ?? ""
-		expect(text).toContain("still running")
+		expect(text).toContain("Wait cancelled")
+		expect(text).not.toContain("still running")
 		expect(record.resultConsumed).not.toBe(true)
 	})
 
@@ -982,6 +987,33 @@ describe("get_subagent_result wait contract", () => {
 		expect(text).toContain("notified")
 		expect(text).not.toContain("wait: true")
 		expect(text).not.toContain("check back later")
+	})
+
+	it('reports queued agents as queued (not "No output."), with and without wait: true', async () => {
+		// Background-by-default makes the queued state common (3-concurrent
+		// cap). A queued worker has no run promise yet, so the join guard
+		// skips it — the body must say queued, not "No output.".
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = latestManagerInstance()
+		const record = makeRunningRecord({ status: "queued" })
+		manager._records.set(record.id as string, record)
+		const tool = getRegisteredTool(pi, "get_subagent_result")
+
+		for (const wait of [undefined, true]) {
+			const result = await tool.execute(
+				`call-q-${wait}`,
+				{ agent_id: record.id, wait },
+				undefined,
+				undefined,
+				undefined,
+			)
+			const text = result.content[0]?.text ?? ""
+			expect(text).toContain("queued")
+			expect(text).toContain("notified")
+			expect(text).not.toBe("No output.")
+			expect(record.resultConsumed).not.toBe(true)
+		}
 	})
 })
 
