@@ -67,6 +67,16 @@ function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	})
 }
 
+/** True when `err` is the rejection produced by aborting `signal` — either
+ *  the signal's own reason (what fetch rejects with) or an AbortError-shaped
+ *  error surfaced by a retry/transport layer. Distinguishes a Ctrl+C skip
+ *  from a genuine network/checksum failure that happened to coincide with
+ *  it, so a real failure is never mislabeled as a user skip. */
+function isCausedByAbort(err: unknown, signal: AbortSignal): boolean {
+	if (err === signal.reason) return true
+	return err instanceof Error && err.name === "AbortError"
+}
+
 function warn(message: string): void {
 	process.stderr.write(`${LOG_PREFIX} ${message}\n`)
 }
@@ -309,8 +319,14 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 					AUTO_UPDATE_DEFAULT_TIMEOUT_MS,
 				)
 			} catch (err) {
-				if (sigint.signal.aborted) {
+				if (sigint.signal.aborted && isCausedByAbort(err, sigint.signal)) {
 					await skipByUserNotice()
+					return
+				}
+				// The caller's deadline fired mid-check: not a check failure —
+				// report it the same way as the post-check deadline path.
+				if (opts.signal?.aborted) {
+					warn("deadline exceeded after update check; skipping auto-update on this launch")
 					return
 				}
 				warn(`update check failed: ${(err as Error).message}`)
@@ -335,7 +351,7 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 			try {
 				await raceWithTimeout(applyUpdate({ tag: check.tag, signal }), AUTO_UPDATE_APPLY_TIMEOUT_MS)
 			} catch (err) {
-				if (sigint.signal.aborted) {
+				if (sigint.signal.aborted && isCausedByAbort(err, sigint.signal)) {
 					await skipByUserNotice()
 					return
 				}

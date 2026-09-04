@@ -440,6 +440,27 @@ describe("maybeAutoUpdateOnLaunch — deadline / abort handling", () => {
 		expect(execveSpy).not.toHaveBeenCalled()
 	})
 
+	it("reports the deadline when the caller signal aborts mid-check", async () => {
+		const stderr = makeStderrSpy()
+		const controller = new AbortController()
+		try {
+			mockCheckForUpdate.mockImplementation(async (opts: { signal?: AbortSignal }) => {
+				controller.abort()
+				// The caller-deadline abort of the combined signal rejects the
+				// in-flight check with the signal's reason, like fetch would.
+				throw opts.signal?.reason ?? new Error("aborted")
+			})
+
+			await expect(maybeAutoUpdateOnLaunch({ signal: controller.signal })).resolves.toBeUndefined()
+
+			expect(mockApplyUpdate).not.toHaveBeenCalled()
+			expect(stderr.getLines()).toContain("deadline exceeded after update check; skipping auto-update on this launch")
+			expect(stderr.getLines()).not.toContain("update check failed")
+		} finally {
+			stderr.restore()
+		}
+	})
+
 	it("proceeds with re-exec after applyUpdate completes even if signal aborts mid-install", async () => {
 		const controller = new AbortController()
 		mockCheckForUpdate.mockResolvedValue({
@@ -749,6 +770,7 @@ describe("maybeAutoUpdateOnLaunch — Ctrl+C skip", () => {
 	})
 
 	it("pauses after the skip message so the user can read it before launch continues", async () => {
+		vi.useFakeTimers()
 		const stderr = makeStderrSpy()
 		try {
 			mockCheckForUpdate.mockImplementation(async () => {
@@ -756,11 +778,41 @@ describe("maybeAutoUpdateOnLaunch — Ctrl+C skip", () => {
 				return updateAvailable
 			})
 
-			const started = Date.now()
-			await maybeAutoUpdateOnLaunch()
+			let settled = false
+			const launch = maybeAutoUpdateOnLaunch().then(() => {
+				settled = true
+			})
 
-			expect(Date.now() - started).toBeGreaterThanOrEqual(1_000)
+			// Just before the notice period ends: the notice is on screen but
+			// launch has not continued yet.
+			await vi.advanceTimersByTimeAsync(999)
+			expect(settled).toBe(false)
 			expect(stderr.getLines()).toContain("update skipped by user — launching current version (1.0.0)")
+
+			// The full SKIP_NOTICE_MS pause has elapsed — launch continues.
+			await vi.advanceTimersByTimeAsync(1)
+			await launch
+			expect(settled).toBe(true)
+		} finally {
+			vi.useRealTimers()
+			stderr.restore()
+		}
+	})
+
+	it("reports a genuine check failure even when Ctrl+C fires at the same time", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockImplementation(async () => {
+				process.emit("SIGINT")
+				// A real network failure landing in the same tick as Ctrl+C must
+				// not be misreported as a user skip — its cause is not the abort.
+				throw new Error("getaddrinfo ENOTFOUND github.com")
+			})
+
+			await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
+
+			expect(stderr.getLines()).toContain("update check failed: getaddrinfo ENOTFOUND github.com")
+			expect(stderr.getLines()).not.toContain("update skipped by user")
 		} finally {
 			stderr.restore()
 		}
@@ -775,8 +827,9 @@ describe("maybeAutoUpdateOnLaunch — Ctrl+C skip", () => {
 				seenSignal = opts.signal
 				expect(seenSignal?.aborted).toBe(false)
 				process.emit("SIGINT")
-				// Model fetchWithRetry's rejection once the combined signal fires.
-				throw new Error("This operation was aborted")
+				// Model fetchWithRetry's rejection once the combined signal
+				// fires: an AbortError like the one fetch rejects with.
+				throw new DOMException("This operation was aborted", "AbortError")
 			})
 
 			await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
