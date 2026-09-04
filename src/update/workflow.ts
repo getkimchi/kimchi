@@ -35,6 +35,9 @@ export interface CheckOptions {
 	canary?: boolean
 	/** Resolve an exact release tag (e.g. `v0.0.23-rc.1`) instead of latest or canary. */
 	tag?: string
+	/** Abort signal forwarded to the default GitHubClient (ignored when an
+	 *  explicit `client` is passed). */
+	signal?: AbortSignal
 }
 
 /** Strip the "Canary " title prefix to recover the embedded version string. */
@@ -74,7 +77,7 @@ export function parseCanarySha7(version: string): string | null {
  */
 export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 	const repo = opts.repo ?? KIMCHI_REPO
-	const client = opts.client ?? new GitHubClient()
+	const client = opts.client ?? new GitHubClient({ signal: opts.signal })
 
 	if (isUpdateCheckDisabled()) {
 		return {
@@ -176,6 +179,11 @@ export interface UpdateOptions {
 	tag: string
 	client?: GitHubClient
 	executablePath?: string
+	/** Abort signal forwarded to the default GitHubClient (ignored when an
+	 *  explicit `client` is passed). On abort the download stops and the temp
+	 *  dirs are cleaned up by the finally blocks below; the install itself
+	 *  (`atomicInstall`) is only reached on a completed download. */
+	signal?: AbortSignal
 }
 
 /**
@@ -194,7 +202,7 @@ export interface UpdateOptions {
  */
 export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 	const repo = opts.repo ?? KIMCHI_REPO
-	const client = opts.client ?? new GitHubClient()
+	const client = opts.client ?? new GitHubClient({ signal: opts.signal })
 	const targetPath = opts.executablePath ?? resolveExecutablePath()
 
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-update-"))

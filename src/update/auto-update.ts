@@ -67,8 +67,36 @@ function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	})
 }
 
+/** True when `err` is the rejection produced by aborting `signal` — either
+ *  the signal's own reason (what fetch rejects with) or an AbortError-shaped
+ *  error surfaced by a retry/transport layer. Distinguishes a Ctrl+C skip
+ *  from a genuine network/checksum failure that happened to coincide with
+ *  it, so a real failure is never mislabeled as a user skip. */
+function isCausedByAbort(err: unknown, signal: AbortSignal): boolean {
+	if (err === signal.reason) return true
+	return err instanceof Error && err.name === "AbortError"
+}
+
 function warn(message: string): void {
 	process.stderr.write(`${LOG_PREFIX} ${message}\n`)
+}
+
+/** Stderr line when the user interrupts the update with Ctrl+C: name the
+ *  version they're getting so the skip reads as a result, not a failure. */
+function skippedByUserMessage(): string {
+	return `update skipped by user — launching current version (${getVersion()})`
+}
+
+/** Time the Ctrl+C skip notice stays on screen before launch continues — a
+ *  beat for the user to read it before the TUI redraws the terminal. */
+const SKIP_NOTICE_MS = 1_000
+
+/** Print the skip notice, then hold briefly so it is readable before the
+ *  shared terminal is handed to the TUI. The 3-line warn-and-return guard
+ *  lives here rather than at each checkpoint. */
+async function skipByUserNotice(): Promise<void> {
+	warn(skippedByUserMessage())
+	await new Promise((resolve) => setTimeout(resolve, SKIP_NOTICE_MS))
 }
 
 /** Thrown by performReExec when no re-exec primitive is available. Callers
@@ -219,6 +247,9 @@ export interface MaybeAutoUpdateOnLaunchOptions {
  *   - running from source/dev (getVersion() is "dev" or "unknown", or
  *     process.execPath is not the packaged kimchi binary)
  *   - loadAutoUpdateSetting() returns false
+ *   - the user presses Ctrl+C during the check or download (per-launch skip;
+ *     the persisted auto-update setting is untouched, so the next launch
+ *     retries the update)
  *   - checkForUpdate throws or reports no update
  *   - applyUpdate throws (network, checksum, smoke-test failure)
  *   - opts.signal is already aborted (caller's deadline has passed)
@@ -257,63 +288,110 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		if (!loadAutoUpdateSetting()) return
 		if (opts.signal?.aborted) return
 
-		// Race only the *check* phase against the deadline. Once we commit
-		// to applyUpdate below, we await it fully — a timeout there would
-		// leave the install half-finished with cli.js booting concurrently.
-		let check: Awaited<ReturnType<typeof checkForUpdate>>
+		// Ctrl+C-to-skip: from here until this launch commits to a version,
+		// intercept SIGINT so the first Ctrl+C abandons the update instead of
+		// terminating the process. Installed only after every skip gate above
+		// passed, so launches that never touch the network keep default Ctrl+C
+		// semantics. `.once` means a second Ctrl+C (after the listener has
+		// fired) falls through to the default behavior — terminate. Removed on
+		// every exit path: cli.js must never inherit this listener.
+		const sigint = new AbortController()
+		const onSigint = (): void => sigint.abort()
+		process.once("SIGINT", onSigint)
 		try {
-			check = await raceWithTimeout(
-				checkForUpdate({ currentVersion: getVersion(), skipCache: true, canary: false }),
-				AUTO_UPDATE_DEFAULT_TIMEOUT_MS,
-			)
-		} catch (err) {
-			warn(`update check failed: ${(err as Error).message}`)
-			return
-		}
-		if (opts.signal?.aborted) {
-			warn("deadline exceeded after update check; skipping auto-update on this launch")
-			return
-		}
-		if (!check.hasUpdate) return
+			// The caller's deadline signal and the Ctrl+C controller feed one
+			// combined signal, threaded all the way into fetch: an interrupt
+			// actually cancels the in-flight request (freeing the connection for
+			// the slow-network users this exists for) instead of merely
+			// abandoning the promise while the download loiters in the
+			// background.
+			const signal = opts.signal ? AbortSignal.any([opts.signal, sigint.signal]) : sigint.signal
 
-		// Commit point: from here on we await applyUpdate fully. No external
-		// Promise.race can abandon it mid-swap — the install must complete
-		// before cli.js boots. We do cap with a 30s hard timeout so a hung
-		// network or filesystem doesn't stall startup indefinitely; on
-		// timeout we log a warning and continue on the current version.
-		warn(`applying update ${check.tag} from ${check.releaseUrl || "<no url>"}`)
-		try {
-			await raceWithTimeout(applyUpdate({ tag: check.tag }), AUTO_UPDATE_APPLY_TIMEOUT_MS)
-		} catch (err) {
-			if (err instanceof TimeoutError) {
-				warn(`update apply timed out after ${AUTO_UPDATE_APPLY_TIMEOUT_MS / 1000}s; skipping this launch`)
+			warn("checking for updates — press Ctrl+C to skip and launch the current version")
+
+			// Race only the *check* phase against the deadline. Once we commit
+			// to applyUpdate below, we await it fully — a timeout there would
+			// leave the install half-finished with cli.js booting concurrently.
+			let check: Awaited<ReturnType<typeof checkForUpdate>>
+			try {
+				check = await raceWithTimeout(
+					checkForUpdate({ currentVersion: getVersion(), skipCache: true, canary: false, signal }),
+					AUTO_UPDATE_DEFAULT_TIMEOUT_MS,
+				)
+			} catch (err) {
+				if (sigint.signal.aborted && isCausedByAbort(err, sigint.signal)) {
+					await skipByUserNotice()
+					return
+				}
+				// The caller's deadline fired mid-check: not a check failure —
+				// report it the same way as the post-check deadline path.
+				if (opts.signal?.aborted) {
+					warn("deadline exceeded after update check; skipping auto-update on this launch")
+					return
+				}
+				warn(`update check failed: ${(err as Error).message}`)
 				return
 			}
-			warn(`update apply failed: ${(err as Error).message}`)
-			return
-		}
+			if (sigint.signal.aborted) {
+				await skipByUserNotice()
+				return
+			}
+			if (opts.signal?.aborted) {
+				warn("deadline exceeded after update check; skipping auto-update on this launch")
+				return
+			}
+			if (!check.hasUpdate) return
 
-		if (process.platform === "win32") {
-			// No re-exec on Windows: the swap is in-place via .old rotation.
-			warn(`Update installed; restart your terminal to use ${check.latestVersion}.`)
-			return
-		}
+			// Commit point: from here on we await applyUpdate fully. No external
+			// Promise.race can abandon it mid-swap — the install must complete
+			// before cli.js boots. We do cap with a 30s hard timeout so a hung
+			// network or filesystem doesn't stall startup indefinitely; on
+			// timeout we log a warning and continue on the current version.
+			warn(`applying update ${check.tag} from ${check.releaseUrl || "<no url>"}`)
+			try {
+				await raceWithTimeout(applyUpdate({ tag: check.tag, signal }), AUTO_UPDATE_APPLY_TIMEOUT_MS)
+			} catch (err) {
+				if (sigint.signal.aborted && isCausedByAbort(err, sigint.signal)) {
+					await skipByUserNotice()
+					return
+				}
+				if (err instanceof TimeoutError) {
+					warn(`update apply timed out after ${AUTO_UPDATE_APPLY_TIMEOUT_MS / 1000}s; skipping this launch`)
+					return
+				}
+				warn(`update apply failed: ${(err as Error).message}`)
+				return
+			}
 
-		// Hand off to the freshly-installed binary. We forward only the user
-		// args (process.argv.slice(2)); argv[1] is the launcher's own entry
-		// (a /$bunfs/… virtual path in the compiled binary) and must not be
-		// passed through. performReExec re-prepends process.execPath itself.
-		try {
-			performReExec(process.argv.slice(2), process.env)
-		} catch (err) {
-			if (err instanceof ReExecUnavailableError) {
-				// Update is on disk but we can't swap into it this launch
-				// (no exec primitive). Continue on the current version; the
-				// user's next launch picks up the new binary.
+			if (process.platform === "win32") {
+				// No re-exec on Windows: the swap is in-place via .old rotation.
 				warn(`Update installed; restart your terminal to use ${check.latestVersion}.`)
 				return
 			}
-			throw err
+
+			// Update is on disk and we're handing off: drop the skip handler so
+			// the freshly launched binary (and this process while it waits on
+			// Bun.spawnSync) sees default Ctrl+C semantics again.
+			process.removeListener("SIGINT", onSigint)
+
+			// Hand off to the freshly-installed binary. We forward only the user
+			// args (process.argv.slice(2)); argv[1] is the launcher's own entry
+			// (a /$bunfs/… virtual path in the compiled binary) and must not be
+			// passed through. performReExec re-prepends process.execPath itself.
+			try {
+				performReExec(process.argv.slice(2), process.env)
+			} catch (err) {
+				if (err instanceof ReExecUnavailableError) {
+					// Update is on disk but we can't swap into it this launch
+					// (no exec primitive). Continue on the current version; the
+					// user's next launch picks up the new binary.
+					warn(`Update installed; restart your terminal to use ${check.latestVersion}.`)
+					return
+				}
+				throw err
+			}
+		} finally {
+			process.removeListener("SIGINT", onSigint)
 		}
 	} catch (err) {
 		// Defense in depth — should be unreachable given the inner
