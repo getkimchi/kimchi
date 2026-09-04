@@ -7,6 +7,7 @@ import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
 	formatToolTimer,
+	GREP_NO_MATCHES_SENTINEL,
 	getToolElapsedMs,
 	isMcpToolName,
 	mcpCallLabelAndSummary,
@@ -217,6 +218,52 @@ describe("hidden tool block rendering", () => {
 		const rendered = component.render(80).map(stripSgr).join("\n")
 		expect(rendered).toContain("Custom Tool")
 		expect(rendered).not.toContain("custom non-Agent renderer")
+	})
+})
+
+describe("grep result rendering", () => {
+	let mockApi: ReturnType<typeof createExtensionApi>
+	beforeAll(() => {
+		mockApi = createExtensionApi()
+		toolRenderingExtension(mockApi.api)
+	})
+
+	function grepRenderResult(result: unknown, options: { expanded?: boolean } = {}) {
+		// biome-ignore lint/suspicious/noExplicitAny: registerTool is a vi mock in the shared double
+		const grepDef = ((mockApi.api as any).registerTool as any).mock.calls
+			.map((call: unknown[]) => call[0])
+			.find((def: { name?: string }) => def?.name === "grep")
+		expect(grepDef, "grep tool definition registered").toBeDefined()
+		const invoke = (expanded: boolean) =>
+			grepDef.renderResult(result, { expanded, isPartial: false }, plainTheme, createToolRenderContext())
+		// renderResult returns a Text component; render it and strip SGR + branch glyphs for a plain string.
+		const rendered = invoke(options.expanded ?? false).render(120)
+		return rendered.map((line: string) => stripSgr(line)).join("\n")
+	}
+
+	it("reports no matches when ripgrep returns the empty sentinel", () => {
+		const text = grepRenderResult({ content: [{ type: "text", text: GREP_NO_MATCHES_SENTINEL }], details: undefined })
+		expect(text).toContain("no matches")
+		expect(text).not.toContain("1 matches")
+	})
+
+	it("still counts real match lines", () => {
+		const text = grepRenderResult({
+			content: [{ type: "text", text: "src/a.ts:12: const x = 1\nsrc/b.ts:3: const y = 2" }],
+			details: undefined,
+		})
+		expect(text).toContain("2 matches")
+	})
+
+	it("counts a real match whose text equals the sentinel string", () => {
+		// A genuine match line always carries a `path:line:` prefix, so even if its text is
+		// "No matches found" it must be counted — not treated as the zero-match sentinel.
+		const text = grepRenderResult({
+			content: [{ type: "text", text: `src/a.ts:7: ${GREP_NO_MATCHES_SENTINEL}` }],
+			details: undefined,
+		})
+		expect(text).toContain("1 matches")
+		expect(text).not.toContain("no matches")
 	})
 })
 

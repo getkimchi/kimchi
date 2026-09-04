@@ -449,6 +449,12 @@ function formatWorkedDuration(ms: number): string {
  * framework's `getRenderContext` method aliases them via
  * `state: this.rendererState`.
  */
+/**
+ * Sentinel string that pi's grep tool returns as the sole content line when ripgrep
+ * finds nothing. Used to distinguish a genuine zero-match result from match output.
+ */
+export const GREP_NO_MATCHES_SENTINEL = "No matches found"
+
 export function getToolElapsedMs(ctx: ToolRenderContext): number {
 	const startedAt = ctx?.state?._executionStartedAt
 	if (!startedAt) return 0
@@ -4280,9 +4286,14 @@ export default function (pi: ExtensionAPI) {
 			}
 			clearBlinkTimer(ctx)
 			const details = result.details as GrepToolDetails | undefined
-			const matches = (result.content[0]?.type === "text" ? result.content[0].text : "")
-				.split("\n")
-				.filter((line) => line.trim().length > 0)
+			const rawText = result.content[0]?.type === "text" ? result.content[0].text : ""
+			// Pi's grep tool emits the GREP_NO_MATCHES_SENTINEL string as the sole content line
+			// when ripgrep finds nothing. Detect it at the content level so it isn't miscounted
+			// as one match — a per-line filter would risk swallowing a genuine match whose text
+			// happens to equal the sentinel.
+			if (rawText.trim() === GREP_NO_MATCHES_SENTINEL)
+				return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
+			const matches = rawText.split("\n").filter((line) => line.trim().length > 0)
 			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
 			let text = theme.fg("muted", `${matches.length} matches`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
