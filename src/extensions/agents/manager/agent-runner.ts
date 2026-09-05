@@ -34,7 +34,7 @@ import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
-import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
+import { resolveMemoryBlock } from "../memory/memory.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -423,12 +423,11 @@ ${skillLines}`
 		if (hasWriteTools) {
 			const extraNames = getMemoryToolNames(existingNames)
 			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames]
-			extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd)
 		} else {
 			const extraNames = getReadOnlyMemoryToolNames(existingNames)
 			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames]
-			extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd)
 		}
+		extras.memoryBlock = await resolveMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd, hasWriteTools)
 	}
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined

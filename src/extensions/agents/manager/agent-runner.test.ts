@@ -88,6 +88,7 @@ vi.mock("../../tags.js", () => ({
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
+	resolveMemoryBlock: vi.fn().mockResolvedValue(""),
 }))
 
 vi.mock("../../prompt-construction/context-files.js", () => ({
