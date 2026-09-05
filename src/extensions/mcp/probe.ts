@@ -10,12 +10,6 @@ import type {
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
-import {
-	installMcpAnnotationCapture,
-	McpAnnotationCatalog,
-	mcpAnnotationSourceHash,
-	runWithMcpAnnotationCatalog,
-} from "./annotation-catalog.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 
 export interface ProbeTool {
@@ -188,33 +182,22 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 	}
 }
 
-async function emitHandlers(
-	host: ProbeHost,
-	event: "session_start" | "session_shutdown",
-	catalog: McpAnnotationCatalog,
-): Promise<void> {
+async function emitHandlers(host: ProbeHost, event: "session_start" | "session_shutdown"): Promise<void> {
 	const payload = event === "session_start" ? { type: event, reason: "startup" } : { type: event, reason: "shutdown" }
 	for (const handler of host.handlers.get(event) ?? []) {
-		await runWithMcpAnnotationCatalog(catalog, () => handler(payload, host.context))
+		await handler(payload, host.context)
 	}
 }
 
-async function executeGateway(
-	host: ProbeHost,
-	params: Record<string, unknown>,
-	catalog: McpAnnotationCatalog,
-): Promise<GatewayResult> {
+async function executeGateway(host: ProbeHost, params: Record<string, unknown>): Promise<GatewayResult> {
 	const gateway = host.tools.get("mcp")
 	if (!gateway) throw new Error("pi-mcp-adapter did not register its MCP gateway")
-	return runWithMcpAnnotationCatalog(catalog, () =>
-		gateway.execute(`probe-${randomUUID()}`, params, host.context.signal, undefined, host.context),
-	)
+	return gateway.execute(`probe-${randomUUID()}`, params, host.context.signal, undefined, host.context)
 }
 
 export class UpstreamMcpProbe implements McpProbe {
 	async probeTools(name: string, definition: ServerEntry, options: McpProbeOptions = {}): Promise<ProbeResult> {
 		installKeyringRequireBridge()
-		installMcpAnnotationCapture()
 		const cwd = options.cwd ?? process.cwd()
 		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name
@@ -232,12 +215,10 @@ export class UpstreamMcpProbe implements McpProbe {
 				elicitation: false,
 			},
 		}
-		const catalog = new McpAnnotationCatalog({ sourceHash: mcpAnnotationSourceHash(config) })
-
 		try {
-			runWithMcpAnnotationCatalog(catalog, () => createMcpAdapter({ config })(host.api))
-			await emitHandlers(host, "session_start", catalog)
-			const connected = await executeGateway(host, { connect: probeName }, catalog)
+			createMcpAdapter({ config })(host.api)
+			await emitHandlers(host, "session_start")
+			const connected = await executeGateway(host, { connect: probeName })
 			const details = resultDetails(connected)
 			if (details.error === "auth_required") {
 				return {
@@ -255,7 +236,7 @@ export class UpstreamMcpProbe implements McpProbe {
 				: []
 			const tools = await Promise.all(
 				names.map(async (toolName): Promise<ProbeTool> => {
-					const described = await executeGateway(host, { describe: toolName }, catalog)
+					const described = await executeGateway(host, { describe: toolName })
 					const tool = resultDetails(described).tool
 					const description =
 						tool && typeof tool === "object" && typeof (tool as { description?: unknown }).description === "string"
@@ -273,7 +254,7 @@ export class UpstreamMcpProbe implements McpProbe {
 					?.handler(`logout ${probeName}`, commandContext)
 					.catch(() => {})
 			}
-			await emitHandlers(host, "session_shutdown", catalog).catch(() => {})
+			await emitHandlers(host, "session_shutdown").catch(() => {})
 		}
 	}
 }

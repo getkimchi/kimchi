@@ -9,19 +9,12 @@ import { createMcpAdapter, MCP_STATUS_EVENT } from "pi-mcp-adapter"
 import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
-import { registerReadOnlyToolProvider } from "../../shared/planning/read-only-tool-registry.js"
 import {
 	applyCooperativeTweak,
 	getCurrentProfile,
 	reapplyCurrentProfile,
 } from "../../shared/planning/tool-profile-manager.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
-import {
-	installMcpAnnotationCapture,
-	McpAnnotationCatalog,
-	mcpAnnotationSourceHash,
-	runWithMcpAnnotationCatalog,
-} from "./annotation-catalog.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
@@ -35,7 +28,6 @@ import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-tru
 
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
-const MCP_DIRECT_TOOL_LABEL_PREFIX = "MCP: "
 const MCP_SCRIPT_RECOMMENDATION = "When one request needs several MCP calls with logic between them, use mcpScript. "
 
 function legacyMcpConfigWarning(cwd: string): string | undefined {
@@ -45,17 +37,11 @@ function legacyMcpConfigWarning(cwd: string): string | undefined {
 }
 
 interface McpToolSurfacePolicy {
-	annotationCatalog: McpAnnotationCatalog
-	config: McpConfig
-	directTools: Map<string, { originalName: string; description: string }>
 	suppressedToolNames: Set<string>
 }
 
-function createMcpToolSurfacePolicy(config: McpConfig, annotationCatalog: McpAnnotationCatalog): McpToolSurfacePolicy {
+function createMcpToolSurfacePolicy(config: McpConfig): McpToolSurfacePolicy {
 	return {
-		annotationCatalog,
-		config,
-		directTools: new Map(),
 		suppressedToolNames: new Set([
 			MCP_SCRIPT_TOOL,
 			...(Object.keys(config.mcpServers).length === 0 ? [MCP_PROXY_TOOL] : []),
@@ -63,52 +49,20 @@ function createMcpToolSurfacePolicy(config: McpConfig, annotationCatalog: McpAnn
 	}
 }
 
-function getDirectToolOriginalName(tool: ToolDefinition): string | undefined {
-	if (tool.name === MCP_PROXY_TOOL || tool.name === MCP_SCRIPT_TOOL) return undefined
-	if (!tool.label.startsWith(MCP_DIRECT_TOOL_LABEL_PREFIX)) return undefined
-	const originalName = tool.label.slice(MCP_DIRECT_TOOL_LABEL_PREFIX.length).trim()
-	return originalName || undefined
-}
-
-function planningBlockReason(originalName: string): string {
-	return `MCP tool "${originalName}" is not read-only according to its protocol annotations and is unavailable in plan mode.`
-}
-
-function blockedPlanningResult(originalName: string) {
-	const reason = planningBlockReason(originalName)
-	return {
-		content: [{ type: "text" as const, text: reason }],
-		details: { error: "plan_mode_write_blocked", tool: originalName, message: reason },
-		isError: true,
-	}
-}
-
-function blockedMcpToolInPlanning(
-	pi: ExtensionAPI,
-	policy: McpToolSurfacePolicy,
-	registeredName: string,
-	originalName: string | undefined,
-	params: unknown,
-	ctx: ExtensionContext,
-): string | undefined {
+function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
 	const profile = getCurrentProfile(pi)
 	const permissionMode = getPermissionMode(ctx.sessionManager.getSessionId())?.mode
 	const explicitPlan = getParsedCliArgs().options.plan === true
-	if (!explicitPlan && permissionMode !== "plan" && profile !== "planning-adhoc" && profile !== "planning-ferment")
-		return undefined
-	if (originalName)
-		return policy.annotationCatalog.isReadOnly(originalName, policy.directTools.get(registeredName)?.description)
-			? undefined
-			: originalName
-	if (registeredName !== MCP_PROXY_TOOL || !params || typeof params !== "object" || Array.isArray(params))
-		return undefined
-	const gatewayParams = params as { server?: unknown; tool?: unknown }
-	const gatewayTool = gatewayParams.tool
-	if (typeof gatewayTool !== "string") return undefined
-	const gatewayServer = typeof gatewayParams.server === "string" ? gatewayParams.server : undefined
-	return policy.annotationCatalog.isReadOnlyGatewayTool(gatewayTool, gatewayServer, policy.config)
-		? undefined
-		: gatewayTool
+	return explicitPlan || permissionMode === "plan" || profile === "planning-adhoc" || profile === "planning-ferment"
+}
+
+function blockedPlanningResult(toolName: string) {
+	const reason = `MCP tool "${toolName}" is unavailable in plan mode.`
+	return {
+		content: [{ type: "text" as const, text: reason }],
+		details: { error: "plan_mode_mcp_blocked", tool: toolName, message: reason },
+		isError: true,
+	}
 }
 
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
@@ -123,14 +77,12 @@ function createUpstreamApi(
 		get(target, property) {
 			if (property === "on") {
 				return (event: string, handler: (event: unknown, ctx: unknown) => unknown): void => {
-					const wrapped = (eventValue: unknown, ctx: unknown) =>
-						runWithMcpAnnotationCatalog(policy.annotationCatalog, () => handler(eventValue, ctx))
 					if (event === "session_start" || event === "input") {
-						captureHandler(event, (eventValue, ctx) => wrapped(eventValue, ctx))
+						captureHandler(event, handler)
 						return
 					}
 					const on = target.on as (event: string, handler: (event: unknown, ctx: unknown) => unknown) => void
-					on(event, wrapped)
+					on(event, handler)
 				}
 			}
 			if (property === "registerTool") {
@@ -143,26 +95,12 @@ function createUpstreamApi(
 								? brandMcpAdapterText(tool.description.replace(MCP_SCRIPT_RECOMMENDATION, ""))
 								: tool.description,
 					}
-					const originalName = getDirectToolOriginalName(brandedTool)
-					if (originalName) {
-						policy.directTools.set(brandedTool.name, { originalName, description: brandedTool.description })
-					}
 					const execute = brandedTool.execute.bind(brandedTool)
 					target.registerTool({
 						...brandedTool,
-						execute: (...args: Parameters<typeof execute>) => {
-							const blockedTool = blockedMcpToolInPlanning(
-								target,
-								policy,
-								brandedTool.name,
-								originalName,
-								args[1],
-								args[4],
-							)
-							if (blockedTool) return Promise.resolve(blockedPlanningResult(blockedTool))
-							return runWithMcpAnnotationCatalog(policy.annotationCatalog, async () =>
-								brandMcpAdapterOwnedToolResult(await execute(...args)),
-							)
+						execute: async (...args: Parameters<typeof execute>) => {
+							if (isPlanningMode(target, args[4])) return blockedPlanningResult(brandedTool.name)
+							return brandMcpAdapterOwnedToolResult(await execute(...args))
 						},
 					})
 					reapplyCurrentProfile(target)
@@ -211,7 +149,6 @@ export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensi
 function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterExtensionOptions): void {
 	installKeyringRequireBridge()
 	installMcpOAuthCallbackBranding()
-	installMcpAnnotationCapture()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
@@ -220,18 +157,10 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	}
 	let warnings: string[] = []
 
-	registerReadOnlyToolProvider(pi, () => {
-		const currentPolicy = policy
-		if (!currentPolicy) return []
-		return [...currentPolicy.directTools]
-			.filter(([, tool]) => currentPolicy.annotationCatalog.isReadOnly(tool.originalName, tool.description))
-			.map(([toolName]) => toolName)
-	})
-
 	// The adapter is installed after trust resolves, but its input readiness hook
 	// must exist before extension event dispatch begins. Forward through this
-	// eagerly registered handler so cold-cache direct tools and annotations are
-	// ready for the first model request.
+	// eagerly registered handler so cold-cache direct tools are ready for the
+	// first model request.
 	pi.on("input", async (event, ctx) => {
 		for (const handler of upstreamHandlers.input) await handler(event, ctx)
 	})
@@ -269,11 +198,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]
-			const annotationCatalog = new McpAnnotationCatalog({
-				sourceHash: mcpAnnotationSourceHash(config),
-				onChanged: () => reapplyCurrentProfile(pi),
-			})
-			const installedPolicy = createMcpToolSurfacePolicy(config, annotationCatalog)
+			const installedPolicy = createMcpToolSurfacePolicy(config)
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
@@ -281,13 +206,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					: selectedResult.configPath
 						? { configPath: selectedResult.configPath }
 						: {}
-			runWithMcpAnnotationCatalog(installedPolicy.annotationCatalog, () => {
-				createMcpAdapter(adapterOptions)(
-					createUpstreamApi(pi, installedPolicy, (upstreamEvent, handler) => {
-						upstreamHandlers[upstreamEvent].push(handler)
-					}),
-				)
-			})
+			createMcpAdapter(adapterOptions)(
+				createUpstreamApi(pi, installedPolicy, (upstreamEvent, handler) => {
+					upstreamHandlers[upstreamEvent].push(handler)
+				}),
+			)
 		}
 
 		for (const warning of warnings) {

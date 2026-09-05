@@ -25,7 +25,6 @@ const cliState = vi.hoisted(() => ({
 	noApprove: undefined as boolean | undefined,
 }))
 const planning = vi.hoisted(() => ({
-	provider: undefined as (() => string[]) | undefined,
 	applyCooperativeTweak: vi.fn(() => true),
 	currentProfile: undefined as "planning-adhoc" | "planning-ferment" | "idle" | undefined,
 	reapplyCurrentProfile: vi.fn(() => false),
@@ -33,9 +32,6 @@ const planning = vi.hoisted(() => ({
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
-const annotations = vi.hoisted(() => ({
-	readOnly: new Set<string>(),
-}))
 
 vi.mock("pi-mcp-adapter", () => ({
 	MCP_STATUS_EVENT: "pi-mcp-adapter/status/v1",
@@ -74,12 +70,6 @@ vi.mock("../../config.js", () => ({
 	getConfiguredLegacyMcpKeys: () => configState.legacyKeys,
 }))
 
-vi.mock("../../shared/planning/read-only-tool-registry.js", () => ({
-	registerReadOnlyToolProvider: (_pi: ExtensionAPI, provider: () => string[]) => {
-		planning.provider = provider
-	},
-}))
-
 vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	applyCooperativeTweak: planning.applyCooperativeTweak,
 	getCurrentProfile: () => planning.currentProfile,
@@ -103,24 +93,6 @@ vi.mock("./oauth-callback-branding.js", () => ({
 vi.mock("./project-trust.js", () => ({
 	MCP_PROJECT_TRUST_WARNING: "project MCP config is not trusted",
 	resolveMcpProjectTrust: vi.fn(async () => projectTrust.trusted),
-}))
-
-vi.mock("./annotation-catalog.js", () => ({
-	installMcpAnnotationCapture: vi.fn(),
-	mcpAnnotationSourceHash: vi.fn(() => "test-source"),
-	runWithMcpAnnotationCatalog: (_catalog: unknown, callback: () => unknown) => callback(),
-	McpAnnotationCatalog: class {
-		isReadOnly(originalName: string): boolean {
-			return annotations.readOnly.has(originalName)
-		}
-		isReadOnlyByName(originalName: string): boolean {
-			return annotations.readOnly.has(originalName)
-		}
-		isReadOnlyGatewayTool(toolName: string, serverName: string | undefined): boolean {
-			const originalName = serverName ? toolName.replace(`${serverName}_`, "") : toolName
-			return annotations.readOnly.has(originalName)
-		}
-	},
 }))
 
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
@@ -157,12 +129,10 @@ describe("upstream MCP adapter facade", () => {
 		configState.legacyKeys = []
 		oauthMigration.warnings = []
 		oauthBranding.install.mockClear()
-		annotations.readOnly.clear()
 		cliState.mcpConfig = undefined
 		cliState.approve = undefined
 		cliState.noApprove = undefined
 		projectTrust.trusted = true
-		planning.provider = undefined
 		planning.currentProfile = undefined
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockClear()
@@ -233,9 +203,8 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.applyCooperativeTweak).toHaveBeenCalledWith(harness.api, ["read"])
 	})
 
-	it("registers direct tools and exposes only read-only names to planning", async () => {
+	it("registers direct tools and reapplies the active profile", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		annotations.readOnly.add("get_issue")
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		await start(harness)
@@ -244,7 +213,6 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
 
 		expect(harness.getRegisteredTools().map(({ name }) => name)).toEqual(["docs_get_issue", "docs_delete_issue"])
-		expect(planning.provider?.()).toEqual(["docs_get_issue"])
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(2)
 	})
 
@@ -261,24 +229,23 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.applyCooperativeTweak).not.toHaveBeenCalled()
 	})
 
-	it("blocks direct and gateway writes in planning profiles", async () => {
+	it("blocks all direct and gateway MCP calls in planning profiles", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		planning.currentProfile = "planning-adhoc"
-		annotations.readOnly.add("get_issue")
-		const directExecute = vi.fn(tool("docs_delete_issue", "MCP: delete_issue").execute)
+		const directExecute = vi.fn(tool("docs_get_issue", "MCP: get_issue").execute)
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		await start(harness)
-		upstream.api?.registerTool({ ...tool("docs_delete_issue", "MCP: delete_issue"), execute: directExecute })
+		upstream.api?.registerTool({ ...tool("docs_get_issue", "MCP: get_issue"), execute: directExecute })
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
-		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_delete_issue")
+		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
 		const directResult = await direct?.execute("direct", {}, undefined, undefined, createContext())
 		const gatewayResult = await gateway?.execute(
 			"gateway",
-			{ tool: "delete_issue", args: {} },
+			{ tool: "get_issue", args: {} },
 			undefined,
 			undefined,
 			createContext(),
@@ -286,14 +253,19 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(directExecute).not.toHaveBeenCalled()
 		expect(gatewayExecute).not.toHaveBeenCalled()
-		expect(directResult).toMatchObject({ isError: true, details: { error: "plan_mode_write_blocked" } })
-		expect(gatewayResult).toMatchObject({ isError: true, details: { error: "plan_mode_write_blocked" } })
+		expect(directResult).toMatchObject({
+			isError: true,
+			details: { error: "plan_mode_mcp_blocked", tool: "docs_get_issue" },
+		})
+		expect(gatewayResult).toMatchObject({
+			isError: true,
+			details: { error: "plan_mode_mcp_blocked", tool: "mcp" },
+		})
 	})
 
-	it("allows a server-prefixed read-only gateway call in planning profiles", async () => {
+	it("allows MCP calls outside planning profiles", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		planning.currentProfile = "planning-adhoc"
-		annotations.readOnly.add("get_issue")
+		planning.currentProfile = "idle"
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)

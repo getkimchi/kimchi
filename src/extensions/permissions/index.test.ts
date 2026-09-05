@@ -298,17 +298,15 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
 	})
 
-	it("allows the mcp gateway tool under explicit --plan", async () => {
+	it("hides and blocks the mcp gateway tool under explicit --plan", async () => {
 		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		// mcp must be in the active set (cataloged as shared core)
-		expect(harness.activeTools().sort()).toEqual(["mcp", "read"])
-		// And the tool_call gate must not block it
+		expect(harness.activeTools()).toEqual(["read"])
 		await expect(
 			harness.fire("tool_call", { toolName: "mcp", input: { search: "jira" } }, createMockContext([])),
-		).resolves.toBeUndefined()
+		).resolves.toEqual(expect.objectContaining({ block: true }))
 	})
 
 	it("blocks read calls targeting directories before upstream read", async () => {

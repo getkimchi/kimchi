@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
@@ -97,54 +95,14 @@ test("registers and calls a direct MCP tool on the first session", async ({ term
 	)
 })
 
-test("uses MCP read-only annotations in plan mode and fails closed for explicit false", async ({ terminal }) => {
-	const dangerousGatewayCall = gatewayMcpCall("get_danger")
+test("does not expose MCP tools in plan mode", async ({ terminal }) => {
 	await runMcpKimchiSession(
 		terminal,
 		{
-			artifactName: "mcp-stdio-plan-annotations",
+			artifactName: "mcp-stdio-plan-disabled",
 			extraArgs: ["--plan=true"],
 			mcp: {
-				directTools: ["echo", "get_danger"],
-				behavior: {
-					catalogTools: [
-						{
-							name: "get_danger",
-							description: "Mutating tool with a read-looking name",
-							inputSchema: { type: "object", properties: {}, additionalProperties: false },
-							annotations: { readOnlyHint: false },
-						},
-					],
-				},
-			},
-			responses: [dangerousGatewayCall.response, modelReply("Planning MCP annotations were applied.")],
-		},
-		async (fixture, trace) => {
-			terminal.submit("Inspect the available planning tools")
-			await waitForText(terminal, "Planning MCP annotations were applied.", { timeoutMs: STREAM_TIMEOUT_MS })
-
-			const annotationCache = JSON.parse(readFileSync(join(fixture.agentDir, "mcp-annotations.json"), "utf8")) as {
-				tools: Record<string, string>
-			}
-			expect(Object.values(annotationCache.tools)).toContain("not-read-only")
-			const request = requireRequestAdvertisingTool(fixture.fake.requests, "fixture_echo")
-			const tools = (request.body as { tools?: Array<{ function?: { name?: string } }> }).tools ?? []
-			expect(tools.some((tool) => tool.function?.name === "fixture_get_danger")).toBe(false)
-			expect(toolResultText(fixture.fake.requests, dangerousGatewayCall)).toContain("unavailable in plan mode")
-			expect(fixture.mcp.hasEvent("tool_called", { name: "get_danger" })).toBe(false)
-			trace.step("plan profile and gateway both rejected explicit readOnlyHint false")
-		},
-	)
-})
-
-test("calls a server-prefixed read-only MCP tool through the gateway in plan mode", async ({ terminal }) => {
-	const safeGatewayCall = gatewayMcpCall("get_safe")
-	await runMcpKimchiSession(
-		terminal,
-		{
-			artifactName: "mcp-stdio-plan-read-only-gateway",
-			extraArgs: ["--plan=true"],
-			mcp: {
+				directTools: ["get_safe"],
 				behavior: {
 					catalogTools: [
 						{
@@ -154,23 +112,21 @@ test("calls a server-prefixed read-only MCP tool through the gateway in plan mod
 							annotations: { readOnlyHint: true },
 						},
 					],
-					tools: [
-						mcpToolResult("get_safe", {
-							content: [{ type: "text", text: "fixture safe value" }],
-						}),
-					],
 				},
 			},
-			responses: [safeGatewayCall.response, modelReply("The read-only MCP gateway call succeeded in plan mode.")],
+			responses: [modelReply("MCP tools are unavailable in plan mode.")],
 		},
 		async (fixture, trace) => {
-			terminal.submit("Read the safe MCP fixture value")
-			await waitForText(terminal, "The read-only MCP gateway call succeeded in plan mode.", {
-				timeoutMs: STREAM_TIMEOUT_MS,
-			})
-			await fixture.mcp.waitForEvent("tool_called", { where: { name: "get_safe", arguments: {} } })
-			expect(toolResultText(fixture.fake.requests, safeGatewayCall)).toContain("fixture safe value")
-			trace.step("prefixed gateway name was matched to its read-only protocol annotation")
+			terminal.submit("Inspect the available planning tools")
+			await waitForText(terminal, "MCP tools are unavailable in plan mode.", { timeoutMs: STREAM_TIMEOUT_MS })
+
+			const request = fixture.fake.requests.find((candidate) => candidate.url.startsWith("/openai/v1/chat/completions"))
+			expect(request).toBeDefined()
+			const tools = (request?.body as { tools?: Array<{ function?: { name?: string } }> } | undefined)?.tools ?? []
+			expect(tools.some((tool) => tool.function?.name === "mcp")).toBe(false)
+			expect(tools.some((tool) => tool.function?.name === "fixture_get_safe")).toBe(false)
+			expect(fixture.mcp.hasEvent("tool_called", { name: "get_safe" })).toBe(false)
+			trace.step("plan profile omitted both gateway and direct MCP tools")
 		},
 	)
 })

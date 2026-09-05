@@ -124,37 +124,24 @@ Relevant code:
 
 ### Planning-mode safety and tool-profile integration
 
-Kimchi must not expose write-capable MCP tools while a session is in plan
-mode. The published adapter's narrowed cache metadata does not expose MCP
-`annotations`, so the facade observes the raw public MCP client's `tools/list`
-response and stores only the classification needed by Kimchi.
+Kimchi exposes no model-facing MCP tools while a session is in plan mode. This
+applies equally to the gateway and direct tools, regardless of protocol
+annotations or tool names. The planning catalogs exclude the `mcp` gateway and
+do not admit dynamically registered direct tools. A planning snapshot is
+refreshed before the agent starts, closing the race where direct tools finish
+registering after the initial profile selection.
 
-The rules are intentionally fail-closed:
-
-- `readOnlyHint: true` is read-only.
-- `readOnlyHint: false` is not read-only.
-- contradictory observations are a conflict and are not read-only.
-- a missing annotation may use the existing `get`, `search`, `list`, `read`,
-  or `fetch` name heuristic, but only after a real tool observation.
-- an unknown tool is not read-only.
-
-Cached classifications are bound to the effective server configuration hash,
-so changing a command, URL, headers, environment, auth, or tool filters makes
-the old annotation cache ineligible. The classification applies both to direct
-tools and gateway calls. A write or unknown gateway call attempted in plan mode returns
-`plan_mode_write_blocked` before it reaches the MCP server. Session-scoped
-state keeps concurrent extension/API wrappers from leaking profiles or
-classifications between sessions. A planning snapshot is refreshed before the
-agent starts, closing the race where direct tools finish registering after the
-initial profile selection.
+The facade also checks the active planning state when any adapter-owned tool is
+executed. A stale or forced call returns `plan_mode_mcp_blocked` before it can
+reach the MCP server. Outside plan mode, the gateway and direct tools retain
+their normal behavior. This blanket policy avoids local annotation capture,
+classification, and cache machinery.
 
 Relevant code:
 
-- [`src/extensions/mcp/annotation-catalog.ts`](../src/extensions/mcp/annotation-catalog.ts)
-- [`src/extensions/mcp/read-only-tools.ts`](../src/extensions/mcp/read-only-tools.ts)
 - [`src/extensions/mcp/index.ts`](../src/extensions/mcp/index.ts)
 - [`src/shared/planning/tool-session-scope.ts`](../src/shared/planning/tool-session-scope.ts)
-- [`src/shared/planning/read-only-tool-registry.ts`](../src/shared/planning/read-only-tool-registry.ts)
+- [`src/shared/planning/tool-catalog.ts`](../src/shared/planning/tool-catalog.ts)
 - [`src/shared/planning/tool-profile-manager.ts`](../src/shared/planning/tool-profile-manager.ts)
 - [`src/extensions/permissions/index.ts`](../src/extensions/permissions/index.ts)
 
@@ -224,7 +211,7 @@ regressions:
 | OAuth callback branding | Users finish authorization on an unbranded package page or provider errors render unsafe HTML | Compiled-browser success/denial scenarios plus renderer and real HTTP-response unit tests |
 | Repository project trust | Opening a clone executes a project `.mcp.json` command during cache bootstrap | Compiled TUI accept/deny sentinel scenarios plus headless ACP denial and trust-resolution units |
 | Product/model branding | Setup, MCP App pages, or model guidance identifies Kimchi as Pi or recommends a hidden tool | Compiled setup/browser/model-contract scenarios plus exact-boundary units |
-| Plan-mode race or classification leak | A write-capable direct or gateway MCP tool becomes callable during planning | TUI scenario with explicit `readOnlyHint: true` and `false`; assert the blocked call never reaches the fixture server; unit tests for unknown/conflicting annotations and multiple sessions |
+| Plan-mode MCP exposure leak | A direct or gateway MCP tool becomes visible or callable during planning | TUI scenario asserts neither surface is advertised and no call reaches the fixture server; unit tests verify the planning catalog and defensive execution block |
 | ACP session isolation | One Desktop session sees another session's servers, or caller definitions lose precedence | ACP `session/new`/`session/load`, collision, direct-tool registration, and multi-session configuration tests |
 | Probe cleanup and OAuth isolation | Probe hangs, leaves a callback listener/process alive, or overwrites another server's credentials | CLI and compiled ACP probes for stdio, HTTP, timeout/failure, OAuth, and same-name/different-URL behavior |
 | Adapter startup and direct-tool synchronization | First request lacks tools, a restrictive profile is widened, or stale tools survive reconnect | TUI lifecycle, restart, stdio, failure, and planning scenarios |

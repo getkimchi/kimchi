@@ -40,9 +40,6 @@ importers:
       '@kimchi-dev/kimchi-workflows':
         specifier: 0.0.8
         version: 0.0.8(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
-      '@modelcontextprotocol/client':
-        specifier: 2.0.0
-        version: 2.0.0
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
