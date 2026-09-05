@@ -106,7 +106,7 @@ describe("session-metadata-store", () => {
 
 			// Config is a ConfigSnapshot (the 7 config.* keys).
 			expect(Object.keys(meta.config).sort()).toEqual(EXPECTED_CONFIG_KEYS)
-			expect(meta.config["config.search_provider"]).toBe("bm25")
+			expect(meta.config["config.search_provider"]).toBe("weighted")
 			expect(meta.config["config.telemetry_enabled"]).toBe(true)
 
 			// capturedAt is a finite numeric epoch-ms timestamp.
@@ -127,7 +127,7 @@ describe("session-metadata-store", () => {
 			captureSessionStart(makeConfig({ mcpSearch: { ...SEARCH_STRATEGY, strategy: "regex" } }), true)
 			const first = getSessionStartMetadata()
 			if (first === undefined) throw new Error("expected first capture to be defined")
-			expect(first.config["config.search_provider"]).toBe("regex")
+			expect(first.config["config.search_provider"]).toBe("weighted")
 			expect(first.config["config.telemetry_enabled"]).toBe(true)
 
 			const beforeSecond = Date.now()
@@ -135,7 +135,7 @@ describe("session-metadata-store", () => {
 			const second = getSessionStartMetadata()
 			if (second === undefined) throw new Error("expected second capture to be defined")
 
-			expect(second.config["config.search_provider"]).toBe("bm25")
+			expect(second.config["config.search_provider"]).toBe("weighted")
 			expect(second.config["config.telemetry_enabled"]).toBe(false)
 			expect(second.capturedAt).toBeGreaterThanOrEqual(beforeSecond)
 			expect(second.capturedAt).toBeGreaterThanOrEqual(first.capturedAt)

@@ -8,14 +8,22 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 const upstream = vi.hoisted(() => ({
 	api: undefined as ExtensionAPI | undefined,
 	options: undefined as McpAdapterOptions | undefined,
+	input: vi.fn(),
+	sessionStart: vi.fn(),
 }))
 const configState = vi.hoisted(() => ({
 	config: { mcpServers: {} } as McpConfig,
+	userConfig: { mcpServers: {} } as McpConfig,
 	configPath: undefined as string | undefined,
 	useProgrammaticConfig: false,
 	warnings: [] as string[],
+	legacyKeys: [] as string[],
 }))
-const cliState = vi.hoisted(() => ({ mcpConfig: undefined as string | undefined }))
+const cliState = vi.hoisted(() => ({
+	mcpConfig: undefined as string | undefined,
+	approve: undefined as boolean | undefined,
+	noApprove: undefined as boolean | undefined,
+}))
 const planning = vi.hoisted(() => ({
 	provider: undefined as (() => string[]) | undefined,
 	applyCooperativeTweak: vi.fn(() => true),
@@ -23,6 +31,8 @@ const planning = vi.hoisted(() => ({
 	reapplyCurrentProfile: vi.fn(() => false),
 }))
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
+const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
+const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const annotations = vi.hoisted(() => ({
 	readOnly: new Set<string>(),
 }))
@@ -32,20 +42,36 @@ vi.mock("pi-mcp-adapter", () => ({
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
 		upstream.options = options
 		upstream.api = api
+		api.on("session_start", upstream.sessionStart)
+		api.on("input", upstream.input)
 	}),
 }))
 
 vi.mock("../../cli-args.js", () => ({
-	getParsedCliArgs: () => ({ options: { "mcp-config": cliState.mcpConfig }, positionals: [] }),
+	getParsedCliArgs: () => ({
+		options: {
+			"mcp-config": cliState.mcpConfig,
+			approve: cliState.approve,
+			"no-approve": cliState.noApprove,
+		},
+		positionals: [],
+	}),
 }))
 
 vi.mock("./config.js", () => ({
-	loadKimchiMcpConfig: () => ({
-		config: configState.config,
-		configPath: configState.configPath,
-		...(configState.useProgrammaticConfig ? { useProgrammaticConfig: true } : {}),
-		warnings: configState.warnings,
-	}),
+	loadKimchiMcpConfig: (options: { includeProjectSources?: boolean }) =>
+		options.includeProjectSources === false
+			? { config: configState.userConfig, useProgrammaticConfig: true, warnings: [] }
+			: {
+					config: configState.config,
+					configPath: configState.configPath,
+					...(configState.useProgrammaticConfig ? { useProgrammaticConfig: true } : {}),
+					warnings: configState.warnings,
+				},
+}))
+
+vi.mock("../../config.js", () => ({
+	getConfiguredLegacyMcpKeys: () => configState.legacyKeys,
 }))
 
 vi.mock("../../shared/planning/read-only-tool-registry.js", () => ({
@@ -65,6 +91,18 @@ vi.mock("./oauth-migration.js", () => ({
 		migratedServerNames: [],
 		warnings: oauthMigration.warnings,
 	})),
+}))
+
+vi.mock("./oauth-callback-branding.js", () => ({
+	brandMcpAdapterOwnedToolResult: (result: unknown) => result,
+	brandMcpAdapterText: (text: string) => text.replaceAll("Pi", "Kimchi"),
+	createBrandedMcpContext: (ctx: unknown) => ctx,
+	installMcpOAuthCallbackBranding: oauthBranding.install,
+}))
+
+vi.mock("./project-trust.js", () => ({
+	MCP_PROJECT_TRUST_WARNING: "project MCP config is not trusted",
+	resolveMcpProjectTrust: vi.fn(async () => projectTrust.trusted),
 }))
 
 vi.mock("./annotation-catalog.js", () => ({
@@ -97,52 +135,95 @@ function tool(name: string, label: string): ToolDefinition {
 	}
 }
 
+async function start(
+	harness: ReturnType<typeof createExtensionApi>,
+	ctx = createContext({ isProjectTrusted: () => true }),
+) {
+	await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
+	return ctx
+}
+
 describe("upstream MCP adapter facade", () => {
 	beforeEach(() => {
 		upstream.api = undefined
 		upstream.options = undefined
+		upstream.input.mockReset()
+		upstream.sessionStart.mockReset()
 		configState.config = { mcpServers: {} }
+		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
 		configState.useProgrammaticConfig = false
 		configState.warnings = []
+		configState.legacyKeys = []
 		oauthMigration.warnings = []
+		oauthBranding.install.mockClear()
 		annotations.readOnly.clear()
 		cliState.mcpConfig = undefined
+		cliState.approve = undefined
+		cliState.noApprove = undefined
+		projectTrust.trusted = true
 		planning.provider = undefined
 		planning.currentProfile = undefined
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockClear()
 	})
 
-	it("keeps the upstream adapter in file-backed mode", () => {
+	it("installs the Kimchi OAuth callback-page decorator", () => {
+		const { api } = createExtensionApi()
+
+		mcpAdapterExtension(api)
+
+		expect(oauthBranding.install).toHaveBeenCalledOnce()
+	})
+
+	it("defers adapter installation until project trust is resolved", async () => {
+		const harness = createExtensionApi()
+
+		mcpAdapterExtension(harness.api)
+		expect(upstream.api).toBeUndefined()
+		expect(harness.getHandlers("input")).toHaveLength(1)
+
+		await start(harness)
+		await harness.getHandler("input")({ type: "input", text: "hello" }, createContext())
+
+		expect(upstream.api).toBeDefined()
+		expect(upstream.sessionStart).toHaveBeenCalledOnce()
+		expect(upstream.input).toHaveBeenCalledOnce()
+		expect(harness.getHandlers("input")).toHaveLength(1)
+	})
+
+	it("keeps the upstream adapter in file-backed mode", async () => {
 		configState.config = {
 			mcpServers: { docs: { url: "https://example.test/mcp" } },
 			settings: { scriptMode: false },
 		}
 		cliState.mcpConfig = "/tmp/mcp.json"
 		configState.configPath = "/tmp/mcp.json"
-		const { api } = createExtensionApi()
+		const harness = createExtensionApi()
 
-		mcpAdapterExtension(api)
+		mcpAdapterExtension(harness.api)
+		await start(harness)
 
 		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 		expect(upstream.api).toBeDefined()
 	})
 
-	it("uses the resolved config when selected-file precedence requires an overlay", () => {
+	it("uses the resolved config when selected-file precedence requires an overlay", async () => {
 		configState.config = { mcpServers: { docs: { command: "selected-server" } } }
 		configState.configPath = "/tmp/mcp.json"
 		configState.useProgrammaticConfig = true
-		const { api } = createExtensionApi()
+		const harness = createExtensionApi()
 
-		mcpAdapterExtension(api)
+		mcpAdapterExtension(harness.api)
+		await start(harness)
 
 		expect(upstream.options).toEqual({ config: configState.config })
 	})
 
-	it("suppresses all model-facing MCP tools for an empty configuration", () => {
+	it("suppresses all model-facing MCP tools for an empty configuration", async () => {
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
+		await start(harness)
 
 		upstream.api?.registerTool(tool("mcp", "MCP"))
 		upstream.api?.registerTool(tool("mcpScript", "MCP Script"))
@@ -152,11 +233,12 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.applyCooperativeTweak).toHaveBeenCalledWith(harness.api, ["read"])
 	})
 
-	it("registers direct tools and exposes only read-only names to planning", () => {
+	it("registers direct tools and exposes only read-only names to planning", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		annotations.readOnly.add("get_issue")
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
+		await start(harness)
 
 		upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
 		upstream.api?.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
@@ -166,11 +248,12 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(2)
 	})
 
-	it("keeps the current profile authoritative over upstream active-tool synchronization", () => {
+	it("keeps the current profile authoritative over upstream active-tool synchronization", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		planning.reapplyCurrentProfile.mockReturnValue(true)
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
+		await start(harness)
 
 		upstream.api?.setActiveTools(["read", "docs_delete_issue"])
 
@@ -186,6 +269,7 @@ describe("upstream MCP adapter facade", () => {
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
+		await start(harness)
 		upstream.api?.registerTool({ ...tool("docs_delete_issue", "MCP: delete_issue"), execute: directExecute })
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
@@ -213,6 +297,7 @@ describe("upstream MCP adapter facade", () => {
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
+		await start(harness)
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
@@ -228,7 +313,7 @@ describe("upstream MCP adapter facade", () => {
 		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
 	})
 
-	it("creates an isolated caller-wins configuration for ACP sessions", () => {
+	it("creates an isolated caller-wins configuration for ACP sessions", async () => {
 		configState.config = {
 			mcpServers: {
 				shared: { command: "from-file" },
@@ -245,6 +330,7 @@ describe("upstream MCP adapter facade", () => {
 				callerOnly: { command: "caller-only" },
 			},
 		})(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => true }))
 
 		expect(upstream.options).toEqual({
 			config: {
@@ -256,6 +342,74 @@ describe("upstream MCP adapter facade", () => {
 				settings: { scriptMode: false },
 			},
 		})
+	})
+
+	it("keeps ACP caller servers while excluding an untrusted project's servers", async () => {
+		projectTrust.trusted = false
+		configState.config = { mcpServers: { project: { command: "project-server" } } }
+		configState.userConfig = { mcpServers: { personal: { command: "personal-server" } } }
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({
+			cwd: "/workspace",
+			callerServers: { ide: { command: "ide-server" } },
+		})(harness.api)
+		const ctx = await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => false }))
+
+		expect(upstream.options).toEqual({
+			config: {
+				mcpServers: {
+					personal: { command: "personal-server" },
+					ide: { command: "ide-server" },
+				},
+			},
+		})
+		expect(ctx.ui.notify).toHaveBeenCalledWith("project MCP config is not trusted", "warning")
+	})
+
+	it("removes impossible mcpScript guidance and Pi product wording from the gateway", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		upstream.api?.registerTool({
+			...tool("mcp", "MCP"),
+			description:
+				"When one request needs several MCP calls with logic between them, use mcpScript. Non-MCP Pi tools should be called directly.",
+		})
+
+		const description = harness.getRegisteredTools().find(({ name }) => name === "mcp")?.description
+		expect(description).not.toContain("mcpScript")
+		expect(description).toContain("Non-MCP Kimchi tools")
+	})
+
+	it("does not rewrite MCP server-owned direct-tool descriptions", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		upstream.api?.registerTool({
+			...tool("docs_reference", "MCP: reference"),
+			description: "A server-owned guide for migrating from Pi",
+		})
+
+		expect(harness.getRegisteredTools().find(({ name }) => name === "docs_reference")?.description).toBe(
+			"A server-owned guide for migrating from Pi",
+		)
+	})
+
+	it("does not expose the upstream /pi-mcp alias", async () => {
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		upstream.api?.registerCommand("mcp", { async handler() {} })
+		upstream.api?.registerCommand("pi-mcp", { async handler() {} })
+
+		expect(harness.api.registerCommand).toHaveBeenCalledTimes(1)
+		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())
 	})
 
 	it("reapplies the active profile after an upstream status update", () => {
@@ -270,6 +424,7 @@ describe("upstream MCP adapter facade", () => {
 
 	it("surfaces compatibility warnings when the session starts", async () => {
 		configState.warnings = ["legacy config is malformed"]
+		configState.legacyKeys = ["mcpSearch"]
 		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
@@ -279,5 +434,6 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy config is malformed", "warning")
 		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy OAuth entry conflicts with the upstream layout", "warning")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("mcpSearch no longer controls"), "warning")
 	})
 })

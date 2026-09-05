@@ -30,9 +30,20 @@ Kimchi continues to support the project configuration path
 facade constructs the effective configuration before creating the published
 adapter, so this compatibility does not require a copied config loader.
 
+Standard project MCP sources, including `.mcp.json`, are gated by the same
+persisted project-trust decisions and `--approve` / `--no-approve` overrides as
+other executable project resources. Adapter installation is deferred until the
+decision is known because a cold metadata-cache bootstrap can start configured
+stdio servers during adapter initialization. A denied or headless-untrusted
+project receives the complete user-level upstream configuration through the
+adapter's programmatic API; ACP caller-supplied servers are still accepted as
+trusted caller input. Trusted sessions retain normal file-backed adapter
+discovery, setup, reload, and persistence behavior.
+
 Relevant code:
 
 - [`src/extensions/mcp/config.ts`](../src/extensions/mcp/config.ts)
+- [`src/extensions/mcp/project-trust.ts`](../src/extensions/mcp/project-trust.ts)
 - [`src/cli-args.ts`](../src/cli-args.ts)
 
 ### OAuth credential migration and compiled keyring support
@@ -58,6 +69,30 @@ Relevant code:
 - [`src/commands/mcp.ts`](../src/commands/mcp.ts)
 - [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 - [`.github/workflows/canary.yml`](../.github/workflows/canary.yml)
+
+### Kimchi-owned MCP branding
+
+Successful and failed MCP OAuth callbacks continue to use Kimchi's shared
+browser templates and MCP-specific wording. The package does not expose a
+callback-page renderer hook, so the facade decorates only the package's exact
+self-contained callback response. State validation, PKCE, token exchange,
+listener ownership, and callback cleanup remain in the published adapter.
+Provider-controlled error details are decoded from the package page and then
+escaped again by Kimchi's shared renderer. The package's success-page
+auto-close behavior is preserved.
+
+The same narrow adapter boundary brands the MCP App host/landing pages,
+adapter command UI, adapter-classified tool guidance, and the model-facing MCP
+gateway. The obsolete `/pi-mcp` alias is not exposed, and gateway instructions
+do not recommend the deliberately hidden `mcpScript` tool. MCP server names,
+descriptions, successful content, and server-originated errors are never
+rewritten; a server is allowed to use the word “Pi” as its own content.
+
+Relevant code:
+
+- [`src/extensions/mcp/oauth-callback-branding.ts`](../src/extensions/mcp/oauth-callback-branding.ts)
+- [`src/utils/oauth-page.ts`](../src/utils/oauth-page.ts)
+- [`tests/e2e/tui/mcp-browser-branding.test.ts`](../tests/e2e/tui/mcp-browser-branding.test.ts)
 
 ### ACP caller-supplied servers
 
@@ -128,7 +163,10 @@ Relevant code:
 The facade disables the model-facing `mcpScript` tool and omits the MCP
 gateway entirely when no server is configured. Direct-tool updates are folded
 back through Kimchi's active tool profile so the adapter cannot silently widen
-a restricted profile.
+a restricted profile. Explicit uses of the retired `mcpSearch`,
+`mcpSearchLimit`, and `maxToolResultChars` Kimchi settings receive a migration
+warning. Telemetry reports the adapter's actual weighted search provider rather
+than the ignored legacy setting.
 
 ## Vendored patches deliberately dropped
 
@@ -147,7 +185,7 @@ has equivalent or superseding behavior:
 - Invalid-config warnings and empty-status handling.
 - Panel display, reconnect, authentication, narrow-layout, and sanitization
   fixes.
-- Host-name branding in OAuth callback pages and dynamic client registration.
+- Host-name substitution in dynamic client registration.
 - Stale cache cleanup and hot direct-tool refresh.
 
 Keeping parallel copies of these fixes would require Kimchi to depend on
@@ -174,8 +212,8 @@ regressions:
 - Resource operations use the package's `read_<resource>` spelling rather than
   the former `get_<resource>` spelling.
 - Saving the package MCP panel closes it and refreshes direct tools.
-- OAuth callback and dynamic-client display names use package branding rather
-  than the old vendored Kimchi branding.
+- Dynamic OAuth client registrations use the host package name `kimchi` rather
+  than the old `Pi Coding Agent` name.
 
 ## Highest-risk failure scenarios and required tests
 
@@ -183,13 +221,16 @@ regressions:
 | --- | --- | --- |
 | Compiled native keyring loading | OAuth cannot read or persist credentials in a distributed binary | Build the binary and run `kimchi mcp keyring-check --json` on macOS, Linux under a Secret Service session, and Windows in release/canary CI |
 | OAuth layout migration | Existing users are prompted to authenticate again, lose dynamic registration, or have credentials overwritten | Compiled-process upgrade test plus invalid-record and destination-conflict unit cases |
+| OAuth callback branding | Users finish authorization on an unbranded package page or provider errors render unsafe HTML | Compiled-browser success/denial scenarios plus renderer and real HTTP-response unit tests |
+| Repository project trust | Opening a clone executes a project `.mcp.json` command during cache bootstrap | Compiled TUI accept/deny sentinel scenarios plus headless ACP denial and trust-resolution units |
+| Product/model branding | Setup, MCP App pages, or model guidance identifies Kimchi as Pi or recommends a hidden tool | Compiled setup/browser/model-contract scenarios plus exact-boundary units |
 | Plan-mode race or classification leak | A write-capable direct or gateway MCP tool becomes callable during planning | TUI scenario with explicit `readOnlyHint: true` and `false`; assert the blocked call never reaches the fixture server; unit tests for unknown/conflicting annotations and multiple sessions |
 | ACP session isolation | One Desktop session sees another session's servers, or caller definitions lose precedence | ACP `session/new`/`session/load`, collision, direct-tool registration, and multi-session configuration tests |
 | Probe cleanup and OAuth isolation | Probe hangs, leaves a callback listener/process alive, or overwrites another server's credentials | CLI and compiled ACP probes for stdio, HTTP, timeout/failure, OAuth, and same-name/different-URL behavior |
 | Adapter startup and direct-tool synchronization | First request lacks tools, a restrictive profile is widened, or stale tools survive reconnect | TUI lifecycle, restart, stdio, failure, and planning scenarios |
 | Transport/OAuth lifecycle | Cancellation is ignored, keep-alive restart fails, or HTTP authentication loops | MCP TUI HTTP/OAuth/restart suites plus MCP conformance initialize, tools, SSE retry, discovery, and pre-registration suites |
 | UI replacement | Panel crashes on narrow output, fails to reconnect/save, or renders unsafe content | TUI panel/UI scenarios and focused facade tests |
-| Config compatibility | `.kimchi/mcp.json`, `--mcp-config`, or caller-wins precedence silently changes | Config precedence and ACP conversion/merge tests |
+| Config compatibility | `.kimchi/mcp.json`, `--mcp-config`, trust-filtered user config, or caller-wins precedence silently changes | Config precedence, trust denial, and ACP conversion/merge tests |
 
 ## Verification record
 
@@ -197,8 +238,8 @@ The migration is accepted only when all of the following remain green:
 
 - Full Vitest unit/integration suite.
 - `pnpm run lint` and `pnpm run typecheck`.
-- All MCP TUI suites: stdio, failures, HTTP, OAuth, restart, panel,
-  lifecycle, and UI.
+- All MCP TUI suites: stdio, failures, HTTP, OAuth browser branding, OAuth,
+  restart, panel, lifecycle, and UI.
 - ACP caller-server and probe workflows.
 - MCP conformance: initialize, tool calls, SSE retry, OAuth metadata
   discovery, and OAuth pre-registration.
@@ -214,16 +255,32 @@ Credential Manager runtime checks. Those two native backends remain an
 environment validation gate until a CI run executes the updated workflows;
 cross-compilation alone is not evidence that they work.
 
+Current Linux x64 verification passes all 44 focused MCP TUI scenarios,
+including project-trust denial/acceptance and four compiled browser/setup/model
+branding contracts, all five focused ACP MCP scenarios, and the complete
+conformance matrix. The full unit run has 9,541 passing and 11 skipped tests;
+its sole failure is an unrelated ferment
+auto-compaction expectation reproduced on the baseline.
+
 The broader smoke suite has three known failures outside this migration: one
 live model request receives HTTP 401, and two agent-session tracking cases do
 not create their expected child session files. They are not MCP release
 signals.
 
+The complete 170-scenario TUI run has 168 passing, one intentionally skipped
+debugger scenario, and one environment-dependent failure: a multi-model test
+expects one selected model, while the developer machine's four installed
+Ollama models make the correctly rendered count five. Neither that test nor its
+implementation area is changed by this migration. The complete ACP suite passes
+27/27. Native Secret Service CRUD passes from the compiled Linux x64 binary in
+a fresh D-Bus session using the release-workflow recipe.
+
 ## Ongoing maintenance boundary
 
-Kimchi owns only the facade contracts listed above. The published package owns
-transport behavior, process lifecycle, callback servers, output protection,
-cache mechanics, tool rendering, and panel implementation. Future adapter
-upgrades must rerun this document's risk matrix. A package regression may be
-worked around locally when necessary, but copying the package implementation
-back into `src/extensions/` is explicitly out of scope.
+Kimchi owns only the facade contracts listed above, including the browser-facing
+callback page. The published package owns transport behavior, process lifecycle,
+the callback server and its security/lifecycle logic, output protection, cache
+mechanics, tool rendering, and panel implementation. Future adapter upgrades
+must rerun this document's risk matrix. A package regression may be worked
+around locally when necessary, but copying the package implementation back into
+`src/extensions/` is explicitly out of scope.

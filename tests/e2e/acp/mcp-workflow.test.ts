@@ -1,7 +1,10 @@
+import { existsSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { mcpToolResult } from "../tui/support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "../tui/support/mcp-model-script.js"
-import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpMcpFixture } from "./support/acp-fixture.js"
+import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture, startAcpMcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
 describe("ACP integration — MCP", () => {
@@ -152,4 +155,35 @@ describe("ACP integration — OAuth MCP", () => {
 		})
 		expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: acp-oauth-mcp")
 	})
+})
+
+describe("ACP integration — project MCP trust", () => {
+	it(
+		"does not execute repository MCP configuration in a headless session without trust",
+		async () => {
+			const fixture = await startAcpFixture({ artifactName: "acp-mcp-project-trust", responses: [] })
+			try {
+				const sentinel = join(fixture.workDir, "project-mcp-started")
+				writeFileSync(
+					join(fixture.workDir, ".mcp.json"),
+					JSON.stringify({
+						mcpServers: {
+							untrusted: {
+								command: process.execPath,
+								args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(sentinel)}, "started")`],
+							},
+						},
+					}),
+				)
+
+				await newSession(fixture, fixture.workDir)
+				await delay(500)
+
+				expect(existsSync(sentinel)).toBe(false)
+			} finally {
+				await fixture.stop()
+			}
+		},
+		STARTUP_TIMEOUT_MS,
+	)
 })

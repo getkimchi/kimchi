@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import type { McpConfig } from "pi-mcp-adapter/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -36,6 +37,16 @@ describe("loadKimchiMcpConfig", () => {
 
 		expect(result).toEqual({ config, warnings: [] })
 		expect(upstream.load).toHaveBeenCalledWith(undefined, cwd)
+	})
+
+	it("loads user-only config outside the repository and forces programmatic mode", () => {
+		const config: McpConfig = { mcpServers: { personal: { command: "personal-server" } } }
+		upstream.load.mockReturnValue(config)
+
+		const result = loadKimchiMcpConfig({ cwd, includeProjectSources: false })
+
+		expect(result).toEqual({ config, useProgrammaticConfig: true, warnings: [] })
+		expect(upstream.load).toHaveBeenCalledWith(undefined, join(getAgentDir(), ".kimchi-mcp-user-config"))
 	})
 
 	it("uses the legacy project config as a file-backed upstream override", () => {

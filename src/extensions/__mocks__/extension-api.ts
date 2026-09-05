@@ -31,6 +31,7 @@ export function createExtensionApi(): {
 	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
+	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
 	const registeredTools = new Map<string, ToolDefinition>()
 	const activeToolNames = new Set<string>()
 	const registerTool = vi.fn((tool: ToolDefinition) => {
@@ -49,6 +50,7 @@ export function createExtensionApi(): {
 		api: {
 			on,
 			registerCommand,
+			registerFlag,
 			registerTool,
 			getAllTools,
 			getActiveTools,

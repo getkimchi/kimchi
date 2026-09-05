@@ -42,7 +42,13 @@ interface McpFixtureEventDetails {
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
 	oauth_token_rejected: { grantType?: string }
 	oauth_browser_opened: Record<string, never>
-	oauth_browser_completed: { status: number }
+	oauth_browser_completed: {
+		status: number
+		hasKimchiBranding: boolean
+		hasMcpErrorCopy: boolean
+		hasMcpSuccessCopy: boolean
+		hasGenericAdapterBadge: boolean
+	}
 	http_request: {
 		method?: string
 		path: string
@@ -59,7 +65,7 @@ interface McpFixtureEventDetails {
 	process_stopping: { signal: string }
 	process_exited: { code: number }
 	ui_browser_opened: Record<string, never>
-	ui_host_loaded: { status: number }
+	ui_host_loaded: { status: number; hasKimchiCompletionCopy: boolean; hasPiCompletionCopy: boolean }
 }
 
 export type McpFixtureEventType = keyof McpFixtureEventDetails
@@ -487,7 +493,16 @@ if (!target) throw new Error("MCP UI browser driver did not receive an HTTP URL"
 writeFileSync(targetPath, JSON.stringify({ target }), "utf-8")
 appendFileSync(eventPath, JSON.stringify({ type: "ui_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "ui-app" }) + "\\n")
 const response = await fetch(target)
-appendFileSync(eventPath, JSON.stringify({ type: "ui_host_loaded", at: new Date().toISOString(), pid: process.pid, scenario: "ui-app", status: response.status }) + "\\n")
+const body = await response.text()
+appendFileSync(eventPath, JSON.stringify({
+  type: "ui_host_loaded",
+  at: new Date().toISOString(),
+  pid: process.pid,
+  scenario: "ui-app",
+  status: response.status,
+  hasKimchiCompletionCopy: body.includes("return to Kimchi"),
+  hasPiCompletionCopy: body.includes("return to Pi"),
+}) + "\\n")
 if (!response.ok) throw new Error(\`MCP UI browser driver received HTTP \${response.status}\`)
 `,
 		"utf-8",
@@ -568,7 +583,21 @@ const target = process.argv.find((argument) => argument.startsWith("http://") ||
 if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
 appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth" }) + "\\n")
 const response = await fetch(target, { redirect: "follow" })
-appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_completed", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", status: response.status }) + "\\n")
+const body = await Promise.race([
+  response.text().catch(() => ""),
+  new Promise((resolve) => setTimeout(() => resolve(""), 1_000)),
+])
+appendFileSync(eventPath, JSON.stringify({
+  type: "oauth_browser_completed",
+  at: new Date().toISOString(),
+  pid: process.pid,
+  scenario: "oauth",
+  status: response.status,
+  hasKimchiBranding: body.includes('class="logo-wrap"') && body.includes('fill="#FF521D"'),
+  hasMcpErrorCopy: body.includes('<title>MCP Authorization Failed</title>') && body.includes('An error occurred during MCP authorization.'),
+  hasMcpSuccessCopy: body.includes('<title>MCP Authorization Successful</title>') && body.includes('You can close this window and return to Kimchi.'),
+  hasGenericAdapterBadge: body.includes('class="badge ok"') || body.includes('class="badge bad"'),
+}) + "\\n")
 if (!response.ok) throw new Error(\`OAuth browser driver received HTTP \${response.status}\`)
 `,
 		"utf-8",
@@ -576,6 +605,12 @@ if (!response.ok) throw new Error(\`OAuth browser driver received HTTP \${respon
 	chmodSync(browserPath, 0o755)
 	return {
 		BROWSER: browserPath,
+		// Force xdg-open through $BROWSER even when tests run inside a Linux desktop
+		// session; otherwise it bypasses the deterministic driver via the desktop's
+		// registered HTTP handler.
+		DISPLAY: "",
 		PATH: `${browserBinDir}:${process.env.PATH ?? ""}`,
+		WAYLAND_DISPLAY: "",
+		XDG_CURRENT_DESKTOP: "X-Generic",
 	}
 }

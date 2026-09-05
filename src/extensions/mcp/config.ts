@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { loadMcpConfig as loadUpstreamMcpConfig } from "pi-mcp-adapter/config"
 import type { ImportKind, McpConfig, McpSettings, ServerEntry } from "pi-mcp-adapter/types"
 import { readJson } from "../../config/json.js"
@@ -80,8 +81,24 @@ function applySelectedPrecedence(discovered: McpConfig, selected: McpConfig): Mc
 	}
 }
 
-export function loadKimchiMcpConfig(options: { cwd?: string; overridePath?: string } = {}): KimchiMcpConfigResult {
+export function loadKimchiMcpConfig(
+	options: { cwd?: string; overridePath?: string; includeProjectSources?: boolean } = {},
+): KimchiMcpConfigResult {
 	const cwd = options.cwd ?? process.cwd()
+	if (options.includeProjectSources === false) {
+		// The upstream loader does not expose a source filter. Resolve its complete
+		// user-level behavior against a cwd outside the repository so standard
+		// project files, project host imports, and project package declarations
+		// cannot enter the effective config. The resulting config must be passed to
+		// createMcpAdapter() programmatically; otherwise it would rediscover the real
+		// session cwd during initialization.
+		const userConfigCwd = join(getAgentDir(), ".kimchi-mcp-user-config")
+		return {
+			config: loadUpstreamMcpConfig(undefined, userConfigCwd),
+			useProgrammaticConfig: true,
+			warnings: [],
+		}
+	}
 	const exclusiveMode = process.env.PI_MCP_CONFIG_MODE?.trim().toLowerCase() === "exclusive"
 	const legacyPath = resolve(cwd, LEGACY_PROJECT_MCP_CONFIG)
 	const configPath = options.overridePath ?? (!exclusiveMode && existsSync(legacyPath) ? legacyPath : undefined)

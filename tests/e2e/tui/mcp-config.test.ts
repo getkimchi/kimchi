@@ -71,6 +71,7 @@ test("legacy project MCP config wins a same-name standard project collision", as
 	await exerciseSelectedConfig(terminal, {
 		artifactName: "mcp-config-legacy-precedence",
 		destination: (workDir) => join(workDir, ".kimchi", "mcp.json"),
+		extraArgs: ["--approve"],
 	})
 })
 

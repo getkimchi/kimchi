@@ -164,8 +164,11 @@ export interface KimchiConfig {
 	llmEndpoint: string
 	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
 	customLlmEndpoint: string | undefined
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	maxToolResultChars: number
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	mcpSearchLimit: number
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	mcpSearch: SearchStrategyConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
@@ -482,6 +485,22 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		deviceId: extras.deviceId ?? "",
 		redaction: extras.redaction,
 	}
+}
+
+export type LegacyMcpConfigKey = "maxToolResultChars" | "mcpSearchLimit" | "mcpSearch"
+
+/** Return only legacy MCP keys the user actually persisted, excluding defaults. */
+export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?: string }): LegacyMcpConfigKey[] {
+	const globalConfigPath = options?.configPath ?? KIMCHI_CONFIG_PATH
+	const projectConfigPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
+	const sources = [readConfigExtras(globalConfigPath), readConfigExtras(projectConfigPath)]
+	const configured = new Set<LegacyMcpConfigKey>()
+	for (const source of sources) {
+		if (source.maxToolResultChars !== undefined) configured.add("maxToolResultChars")
+		if (source.mcpSearchLimit !== undefined) configured.add("mcpSearchLimit")
+		if (source.mcpSearch !== undefined && Object.keys(source.mcpSearch).length > 0) configured.add("mcpSearch")
+	}
+	return [...configured]
 }
 
 export function getAgentConfigDir(): string {
