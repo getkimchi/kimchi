@@ -206,7 +206,12 @@ export function buildProxyDescription(
 					}).length
 				: 0
 		const totalItems = toolCount + resourceCount
-		if (totalItems === 0) continue
+		if (totalItems === 0) {
+			if (!entry) {
+				serverSummaries.push(`${serverName} (lazy)`)
+			}
+			continue
+		}
 		const directCount = directByServer.get(serverName) ?? 0
 		const proxyCount = totalItems - directCount
 		if (proxyCount > 0) {

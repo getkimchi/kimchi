@@ -304,6 +304,7 @@ If `settings.autoAuth` is `true`, `mcp({ connect: ... })`, `mcp({ tool: ... })`,
 
 - One `mcp` tool in context (~200 tokens) instead of hundreds
 - Servers are lazy by default — they connect on first tool call, not at startup
+- Lazy servers (configured but not yet connected) appear in the `mcp` tool description with a `(lazy)` marker, e.g. `Servers: my-server (5 tools), lazy-server (lazy)`. The agent knows these servers exist and can connect on demand via `mcp({ connect: "lazy-server" })` to discover their tools
 - Tool metadata is cached to disk so search/list/describe work without live connections
 - Idle servers disconnect after 10 minutes (configurable), reconnect automatically on next use
 - npx-based servers resolve to direct binary paths, skipping the ~143 MB npm parent process
