@@ -51,7 +51,9 @@ test("bridges an MCP App tool call and prompt back into the agent", async ({ ter
 			terminal.submit("Open the fixture MCP App")
 			await waitForText(terminal, "The MCP App opened.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await fixture.mcp.waitForEvent("resource_read", { where: { uri: "ui://fixture/app" } })
-			await fixture.mcp.waitForEvent("ui_host_loaded", { where: { status: 200 } })
+			const hostPage = await fixture.mcp.waitForEvent("ui_host_loaded", { where: { status: 200 } })
+			expect(hostPage.hasKimchiCompletionCopy).toBe(true)
+			expect(hostPage.hasPiCompletionCopy).toBe(false)
 			const ui = fixture.mcp.ui
 			expect(ui).toBeDefined()
 			if (!ui) throw new Error("MCP UI fixture was not configured")

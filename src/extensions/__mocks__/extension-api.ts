@@ -1,5 +1,6 @@
-import type { ExtensionAPI, ExtensionHandler } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionHandler, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
+import { createMiniEventBus } from "./mini-event-bus.js"
 
 type RegisteredHandler = ExtensionHandler<unknown, unknown>
 
@@ -11,6 +12,10 @@ export function createExtensionApi(): {
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	emitEvent: ReturnType<typeof vi.fn>
+	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
+	getRegisteredTools(): ToolDefinition[]
+	getActiveToolNames(): string[]
 	getAppendedEntries<T = unknown>(type: string): T[]
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
@@ -26,18 +31,34 @@ export function createExtensionApi(): {
 	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
-	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
-	const emitEvent = vi.fn()
+	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
+	const registeredTools = new Map<string, ToolDefinition>()
+	const activeToolNames = new Set<string>()
+	const registerTool = vi.fn((tool: ToolDefinition) => {
+		registeredTools.set(tool.name, tool)
+		activeToolNames.add(tool.name)
+	}) as ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	const setActiveTools = vi.fn((toolNames: string[]) => {
+		activeToolNames.clear()
+		for (const name of toolNames) activeToolNames.add(name)
+	})
+	const getActiveTools = vi.fn(() => [...activeToolNames])
+	const getAllTools = vi.fn(() => [...registeredTools.values()])
+	const { events, emit } = createMiniEventBus()
 
 	return {
 		api: {
 			on,
 			registerCommand,
+			registerFlag,
 			registerTool,
+			getAllTools,
+			getActiveTools,
+			setActiveTools,
 			sendMessage,
 			appendEntry,
 			setModel,
-			events: { emit: emitEvent },
+			events,
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
 			const handler = handlers.get(event)?.[0]
@@ -49,7 +70,11 @@ export function createExtensionApi(): {
 		},
 		sendMessage,
 		setModel,
-		emitEvent,
+		emitEvent: emit,
+		registerTool,
+		setActiveTools,
+		getRegisteredTools: () => [...registeredTools.values()],
+		getActiveToolNames: () => [...activeToolNames],
 		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
 		getAppendedEntries<T = unknown>(type: string): T[] {
 			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)

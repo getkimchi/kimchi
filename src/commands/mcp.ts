@@ -1,10 +1,9 @@
 /**
  * `kimchi mcp probe` — transient MCP server tool discovery.
  *
- * Reads a `{ name: string, server: ServerEntry }` JSON from stdin,
- * connects to the server using a throwaway {@link McpServerManager}
- * connection, calls `tools/list`, prints the result as JSON to stdout,
- * and exits.
+ * Reads a `{ name: string, server: ServerEntry }` JSON from stdin, connects
+ * through an isolated upstream adapter instance, calls `tools/list`, prints
+ * the result as JSON to stdout, and exits.
  *
  * The `name` field selects the OAuth token-store key. Before any OAuth
  * write, the probe checks whether an auth entry already exists under that
@@ -26,21 +25,11 @@
  * Exit:   0 on success (including needs-auth), 1 on error
  */
 
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
-import { removeAuthEntry } from "../extensions/mcp-adapter/mcp-auth.js"
-import { authenticate, supportsOAuth } from "../extensions/mcp-adapter/mcp-auth-flow.js"
-import { resolveProbeName } from "../extensions/mcp-adapter/resolve-probe-name.js"
-import { McpServerManager } from "../extensions/mcp-adapter/server-manager.js"
-import type { McpTool, ServerEntry } from "../extensions/mcp-adapter/types.js"
-
-type ProbeTool = Pick<McpTool, "name" | "title" | "description">
-
-interface ProbeResult {
-	tools: ProbeTool[]
-	needsAuth: boolean
-	error: string | null
-}
+import { verifyMcpKeyringRuntime } from "../extensions/mcp/keyring-require-bridge.js"
+import { type ProbeResult, UpstreamMcpProbe } from "../extensions/mcp/probe.js"
 
 /**
  * TypeBox schema for the probe stdin input.
@@ -69,11 +58,32 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 	if (subcommand === "probe") {
 		return runProbe(args.slice(1))
 	}
+	if (subcommand === "keyring-check") {
+		return runKeyringCheck(args.slice(1))
+	}
 
 	// Future: `kimchi mcp list`, `kimchi mcp status`, etc.
 	process.stderr.write(`Unknown mcp subcommand: ${subcommand ?? "(none)"}\n`)
 	process.stderr.write("Usage: kimchi mcp probe --json < server-config.json\n")
+	process.stderr.write("       kimchi mcp keyring-check --json\n")
 	return 1
+}
+
+async function runKeyringCheck(args: string[]): Promise<number> {
+	if (!args.includes("--json")) return emitError("--json flag is required", null)
+	try {
+		return emitJson({ ok: true, ...verifyMcpKeyringRuntime() }, 0)
+	} catch (err) {
+		return emitJson(
+			{
+				ok: false,
+				platform: process.platform,
+				arch: process.arch,
+				error: err instanceof Error ? err.message : String(err),
+			},
+			1,
+		)
+	}
 }
 
 async function runProbe(args: string[]): Promise<number> {
@@ -114,76 +124,26 @@ async function runProbe(args: string[]): Promise<number> {
 		return await emitError("Server config must have either 'command' or 'url'", null)
 	}
 
-	// Non-OAuth servers: 15 second timeout.
-	// OAuth-capable servers that need auth: 60 second timeout (browser redirect + callback).
-	const isOAuthCapable = supportsOAuth(definition)
-	const timeoutMs = isOAuthCapable ? 60_000 : 15_000
-	const timeoutMsg = isOAuthCapable
+	const timeoutMs = definition.url ? 60_000 : 15_000
+	const timeoutMsg = definition.url
 		? "Probe timed out after 60 seconds (including OAuth flow)"
 		: "Probe timed out after 15 seconds"
-
-	// Guard against URL mismatch in the OAuth token store. The token store is
-	// keyed by server name, so probing a server whose URL was edited (but whose
-	// name stayed the same) would otherwise overwrite the real server's stored
-	// credentials. See {@link resolveProbeName} for the decision rules.
-	const probeName = resolveProbeName(name, definition)
-	const usedThrowaway = probeName !== name
-
-	const manager = new McpServerManager()
+	const controller = new AbortController()
+	const timer = setTimeout(() => controller.abort(new Error(timeoutMsg)), timeoutMs)
+	const probe = new UpstreamMcpProbe()
 	try {
-		// Use `probeName` (the real name or a throwaway) so the token-store key
-		// is shared between the initial probe, authenticate(), and the retry.
-		// A repeat probe of an already-authorized server finds stored OAuth
-		// tokens on the first call and skips the browser flow entirely.
-		let result = await withTimeout(manager.probeTools(probeName, definition), timeoutMs, timeoutMsg)
-		// probeTools returns errors inline via `result.error` (it does not throw
-		// on connect/tools failures) — surface those as exit-1 failures so the UI
-		// can display them, preserving the pre-unification contract.
-		if (result.error) {
-			return await emitError(result.error, null)
-		}
-
-		// If the server needs auth and OAuth is supported, attempt the full
-		// OAuth flow (browser redirect + callback) then retry the probe.
-		if (result.needsAuth && isOAuthCapable && definition.url) {
-			try {
-				await withTimeout(authenticate(probeName, definition.url, definition), timeoutMs, "OAuth flow timed out")
-			} catch (err) {
-				// Auth failed or timed out — return needsAuth: true with the real
-				// error message so the UI can display it. Exit 0 because the probe
-				// ran successfully; the user just needs to authorize.
-				const message = err instanceof Error ? err.message : String(err)
-				return await emitResult({ tools: [], needsAuth: true, error: message }, 0)
-			}
-
-			// Retry probe after successful auth, reusing the same name so the
-			// token store has the credentials.
-			result = await withTimeout(manager.probeTools(probeName, definition), timeoutMs, timeoutMsg)
-			if (result.error) {
-				return await emitError(result.error, null)
-			}
-		}
-
-		const output: ProbeResult = {
-			tools: result.tools.map((t) => ({
-				name: t.name,
-				title: t.title,
-				description: t.description,
-			})),
-			needsAuth: result.needsAuth,
-			error: null,
-		}
-		return await emitResult(output, 0)
+		const result = await probe.probeTools(name, definition, {
+			authenticate: true,
+			cwd: process.cwd(),
+			signal: controller.signal,
+		})
+		if (controller.signal.aborted) throw controller.signal.reason
+		if (result.error && !result.needsAuth) return await emitError(result.error, null)
+		return await emitResult(result, 0)
 	} catch (err) {
 		return await emitError(err instanceof Error ? err.message : String(err), null)
 	} finally {
-		await manager.closeAll().catch(() => {})
-		// Clean up throwaway probe credentials so the token store never
-		// accumulates `__probe_*` entries. Never called for the real name —
-		// real credentials must survive the probe.
-		if (usedThrowaway) {
-			removeAuthEntry(probeName)
-		}
+		clearTimeout(timer)
 	}
 }
 
@@ -238,20 +198,11 @@ function readStdin(): Promise<string> {
 	})
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined
-	const timerPromise = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(message)), ms)
-	})
-	// Attach a no-op catch to the original promise so that if it rejects
-	// after the timer wins the race, the rejection is not unhandled.
-	promise.catch(() => {})
-	return Promise.race([promise, timerPromise]).finally(() => {
-		if (timer) clearTimeout(timer)
-	})
+function emitResult(result: ProbeResult, exitCode: number): Promise<number> {
+	return emitJson(result, exitCode)
 }
 
-function emitResult(result: ProbeResult, exitCode: number): Promise<number> {
+function emitJson(result: unknown, exitCode: number): Promise<number> {
 	return new Promise<number>((resolve, reject) => {
 		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`, (err) => {
 			if (err) {

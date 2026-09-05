@@ -1,4 +1,4 @@
-import type { McpSettings } from "../../../../src/extensions/mcp-adapter/types.js"
+import type { McpSettings } from "pi-mcp-adapter/types"
 import type { FakeResponseScript, RecordedRequest } from "./fake-openai-server.js"
 
 type JsonObject = Record<string, unknown>

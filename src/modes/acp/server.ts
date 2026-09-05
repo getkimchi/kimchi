@@ -26,6 +26,7 @@ import {
 	type LoadSessionResponse,
 	type LogoutRequest,
 	type LogoutResponse,
+	type McpServer,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	ndJsonStream,
@@ -63,10 +64,9 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
-import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
-import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
-import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
-import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
+import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
+import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
+import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
@@ -153,6 +153,8 @@ export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSess
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
+	/** Add the session-scoped MCP adapter after caller servers are known. */
+	mcpExtensionFactory?: (options: KimchiMcpAdapterExtensionOptions) => ExtensionFactory
 	/**
 	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
 	 * every session's DefaultResourceLoader. When a client also sends
@@ -166,11 +168,10 @@ export interface RunAcpOptions {
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
 	sessionLoader?: AcpSessionLoader
 	/**
-	 * MCP server manager used by the `_kimchi.dev/probe_mcp_server` extMethod
-	 * handler to create transient probe connections. Injected so tests can stub
-	 * it; production code constructs a real McpServerManager.
+	 * Isolated MCP probe used by `_kimchi.dev/probe_mcp_server`. Injected so
+	 * tests can stub it; production uses the upstream-adapter-backed probe.
 	 */
-	mcpServerManager?: McpServerManager
+	mcpProbe?: McpProbe
 }
 
 /**
@@ -343,7 +344,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly agentDir: string
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
-	private readonly mcpServerManager: McpServerManager | undefined
+	private readonly mcpProbe: McpProbe | undefined
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
 	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
@@ -378,7 +379,7 @@ export class KimchiAcpAgent implements Agent {
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
-		this.mcpServerManager = options.mcpServerManager
+		this.mcpProbe = options.mcpProbe
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
@@ -438,7 +439,7 @@ export class KimchiAcpAgent implements Agent {
 				_meta: {
 					[CAPABILITIES_KEY]: {
 						...ADVERTISED_CAPABILITIES,
-						...(this.mcpServerManager ? {} : { probe_mcp_server: false }),
+						...(this.mcpProbe ? {} : { probe_mcp_server: false }),
 					},
 				},
 			},
@@ -529,7 +530,6 @@ export class KimchiAcpAgent implements Agent {
 		try {
 			// Caller-supplied MCP servers, keyed by sessionId so concurrent
 			// sessions can't consume each other's entries.
-			setCallerMcpServers(session.sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
 
@@ -572,7 +572,6 @@ export class KimchiAcpAgent implements Agent {
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			removePendingEntry(session.sessionId)
 			unregisterAcpPrompter(session.sessionId)
 			unregisterSessionPermissionFlagController(session.sessionId)
 			clearPermissionModeEnv(session.sessionId)
@@ -778,7 +777,6 @@ export class KimchiAcpAgent implements Agent {
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
 				)
 			}
-			setCallerMcpServers(sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			assertSessionHasModel(loadedSession)
 
 			const uiContext = this.createUiContext(loadedSession)
@@ -833,7 +831,6 @@ export class KimchiAcpAgent implements Agent {
 				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
-			removePendingEntry(sessionId)
 			unregisterAcpPrompter(sessionId)
 			unregisterSessionPermissionFlagController(sessionId)
 			clearPermissionModeEnv(sessionId)
@@ -979,7 +976,7 @@ export class KimchiAcpAgent implements Agent {
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		switch (method) {
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
-				const result = await handleProbeMcpServer(this.mcpServerManager, params)
+				const result = await handleProbeMcpServer(this.mcpProbe, params)
 				return result as Record<keyof ProbeResult, unknown>
 			}
 			case AVAILABLE_EXT_METHODS.set_session_title:
@@ -1919,7 +1916,11 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
  * timeout, and load resources. Both the session loader and factory
  * diverge only in how they obtain a SessionManager.
  */
-async function createSessionSettings(cwd: string, options: RunAcpOptions, params: { _meta?: unknown }) {
+async function createSessionSettings(
+	cwd: string,
+	options: RunAcpOptions,
+	params: { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
+) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
 	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
@@ -1940,11 +1941,13 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 	// every turn's system prompt rebuild. Built lazily on first access; errors
 	// during loader access fall back to an empty block.
 	let cachedSkillListBlock: string | undefined
+	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
+	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
-		extensionFactories: options.extensionFactories,
+		extensionFactories: [...options.extensionFactories, ...(mcpExtension ? [mcpExtension] : [])],
 		appendSystemPromptOverride: () => {
 			if (cachedSkillListBlock === undefined) {
 				try {

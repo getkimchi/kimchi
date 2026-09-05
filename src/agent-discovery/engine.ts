@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
-import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import type { AgentDefinition, AgentDiscovery } from "./index.js"
 
 function msg(err: unknown): string {

@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ServerEntry } from "../../extensions/mcp-adapter/types.js"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { hasBearerAuthorizationHeader } from "../engine.js"
 import type { AgentDefinition } from "../index.js"
 import { parseJsonc } from "../jsonc.js"

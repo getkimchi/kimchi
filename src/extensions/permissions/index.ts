@@ -25,6 +25,7 @@ import {
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
+import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
@@ -115,45 +116,9 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 	paths: {},
 }
 
-// bash is allowed but gated per-command by isReadOnlyBashCommand.
-const PLAN_MODE_TOOLS = [
-	"read",
-	"grep",
-	"find",
-	"ls",
-	"web_search",
-	"web_fetch",
-	"mcp",
-	"questionnaire",
-	"submit_plan",
-	"bash",
-	...TODO_TOOL_NAMES,
-	// DAP debugger tools — available in plan mode by product decision: the
-	// debugger is the fastest way to investigate an issue the user is asking
-	// to plan a fix for. NOTE: this is NOT a read-only allowance —
-	// debug_launch executes the program (with args/env) and debug_eval runs
-	// arbitrary expressions in the debuggee, so plan mode can observe runtime
-	// behavior at the cost of executing user code. This mirrors how plan mode
-	// already permits read-only bash probing; side effects of the debuggee
-	// itself are out of scope for the gate.
-	"debug_launch",
-	"debug_set_breakpoint",
-	"debug_continue",
-	"debug_locals",
-	"debug_eval",
-	"debug_backtrace",
-	"debug_terminate",
-	"step_in",
-	"step_over",
-	"step_out",
-	"debug_state_at",
-	"debug_last_error",
-	"debug_trace_calls",
-	"debug_watch_change",
-	"debug_set_variable",
-	"debug_restart",
-]
-const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
+// The unified catalog owns plan-mode visibility, including deliberate
+// exceptions such as read-only bash and debugger tools.
+const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((tool) => tool.name))
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
@@ -603,6 +568,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// only written to the session log when the next agent run starts.
 	pi.on("before_agent_start", (_event, ctx) => {
 		maybePersistPermissionMode(ctx)
+		if (getRuntimePermissionMode().mode === "plan") {
+			// MCP direct tools can finish registering after session_start. Rebuild
+			// the snapshot immediately before every model request so late
+			// registration cannot widen the restricted tool surface.
+			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
+		}
 	})
 
 	// Plan-mode stall recovery: when the model made tool calls in plan mode and

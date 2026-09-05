@@ -4,13 +4,14 @@ import { resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
-import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
-import type { McpConfig, McpSettings, OAuthConfig, ServerEntry } from "../../../../src/extensions/mcp-adapter/types.js"
+import type { CallToolResult, ReadResourceResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
+import type { McpConfig, McpSettings, OAuthConfig, ServerEntry } from "pi-mcp-adapter/types"
 
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
 	: fileURLToPath(new URL("../../../../", import.meta.url))
 const FIXTURE_SERVER_PATH = resolve(REPO_ROOT, "tests/e2e/mcp/fixture-server.mjs")
+export const MCP_FIXTURE_OAUTH_ACCESS_TOKEN = "kimchi-e2e-oauth-access-token"
 
 interface McpFixtureEventBase {
 	at: string
@@ -41,7 +42,13 @@ interface McpFixtureEventDetails {
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
 	oauth_token_rejected: { grantType?: string }
 	oauth_browser_opened: Record<string, never>
-	oauth_browser_completed: { status: number }
+	oauth_browser_completed: {
+		status: number
+		hasKimchiBranding: boolean
+		hasMcpErrorCopy: boolean
+		hasMcpSuccessCopy: boolean
+		hasGenericAdapterBadge: boolean
+	}
 	http_request: {
 		method?: string
 		path: string
@@ -58,7 +65,7 @@ interface McpFixtureEventDetails {
 	process_stopping: { signal: string }
 	process_exited: { code: number }
 	ui_browser_opened: Record<string, never>
-	ui_host_loaded: { status: number }
+	ui_host_loaded: { status: number; hasKimchiCompletionCopy: boolean; hasPiCompletionCopy: boolean }
 }
 
 export type McpFixtureEventType = keyof McpFixtureEventDetails
@@ -111,6 +118,13 @@ export interface McpFixtureBehavior {
 	startup?: { type: "exit"; code: number }
 	/** MCP call outcomes declared by the test that exercises them. */
 	tools?: McpFixtureToolBehavior[]
+	/** Additional advertised tools used by tool-surface policy scenarios. */
+	catalogTools?: Array<{
+		name: string
+		description?: string
+		inputSchema: { type: "object"; properties?: Record<string, unknown>; additionalProperties?: boolean }
+		annotations?: ToolAnnotations
+	}>
 	/** MCP resource-read outcomes declared by the test that exercises them. */
 	resources?: McpFixtureResourceBehavior[]
 }
@@ -139,6 +153,7 @@ export interface McpServerFixtureOptions {
 	idleTimeout?: number
 	toolPrefix?: McpSettings["toolPrefix"]
 	autoAuth?: boolean
+	oauthPreauthorized?: boolean
 	behavior?: McpFixtureBehavior
 }
 
@@ -374,13 +389,14 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 			KIMCHI_MCP_FIXTURE_TRANSPORT: transport,
 			...fixtureBehaviorEnv(options.behavior),
 			...(oauth ? { KIMCHI_MCP_FIXTURE_OAUTH: "1" } : {}),
+			...(oauth && options.oauthPreauthorized ? { KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED: "1" } : {}),
 			...(oauth && options.oauth?.grantType ? { KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE: options.oauth.grantType } : {}),
 			...(oauth && options.oauth?.clientId ? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID: options.oauth.clientId } : {}),
 			...(oauth && options.oauth?.clientSecret
 				? { KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET: options.oauth.clientSecret }
 				: {}),
 			...(oauth
-				? { KIMCHI_MCP_FIXTURE_BEARER_TOKEN: "kimchi-e2e-oauth-access-token" }
+				? { KIMCHI_MCP_FIXTURE_BEARER_TOKEN: MCP_FIXTURE_OAUTH_ACCESS_TOKEN }
 				: options.bearerToken
 					? { KIMCHI_MCP_FIXTURE_BEARER_TOKEN: options.bearerToken }
 					: {}),
@@ -401,13 +417,14 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 		}
 		const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
 		const browserEnv = oauth ? createOAuthBrowserDriver(agentDir, eventPath) : {}
+		const authStoreEnv = oauth ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 		const serverFixture: McpServerFixture = { serverName, serverDefinition, configPath, eventPath, ...eventReader }
 
 		return {
 			...serverFixture,
 			transport: oauth ? "oauth" : transport,
 			url: listening.url,
-			env: browserEnv,
+			env: { ...browserEnv, ...authStoreEnv },
 			servers: { [serverName]: serverFixture },
 			server(name) {
 				if (name !== serverName) throw new Error(`MCP fixture server ${name} is not configured`)
@@ -437,6 +454,8 @@ function seedExternalHttpFixture(agentDir: string, options: McpFixtureOptions): 
 	}
 	const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
 	const browserEnv = options.transport === "oauth" ? createOAuthBrowserDriver(agentDir, eventPath) : {}
+	const authStoreEnv =
+		options.transport === "oauth" ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 	const serverFixture: McpServerFixture = {
 		serverName,
 		serverDefinition,
@@ -448,7 +467,7 @@ function seedExternalHttpFixture(agentDir: string, options: McpFixtureOptions): 
 		...serverFixture,
 		transport: options.transport === "oauth" ? "oauth" : "http",
 		url: options.externalUrl,
-		env: browserEnv,
+		env: { ...browserEnv, ...authStoreEnv },
 		servers: { [serverName]: serverFixture },
 		server(name) {
 			if (name !== serverName) throw new Error(`MCP fixture server ${name} is not configured`)
@@ -474,7 +493,16 @@ if (!target) throw new Error("MCP UI browser driver did not receive an HTTP URL"
 writeFileSync(targetPath, JSON.stringify({ target }), "utf-8")
 appendFileSync(eventPath, JSON.stringify({ type: "ui_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "ui-app" }) + "\\n")
 const response = await fetch(target)
-appendFileSync(eventPath, JSON.stringify({ type: "ui_host_loaded", at: new Date().toISOString(), pid: process.pid, scenario: "ui-app", status: response.status }) + "\\n")
+const body = await response.text()
+appendFileSync(eventPath, JSON.stringify({
+  type: "ui_host_loaded",
+  at: new Date().toISOString(),
+  pid: process.pid,
+  scenario: "ui-app",
+  status: response.status,
+  hasKimchiCompletionCopy: body.includes("return to Kimchi"),
+  hasPiCompletionCopy: body.includes("return to Pi"),
+}) + "\\n")
 if (!response.ok) throw new Error(\`MCP UI browser driver received HTTP \${response.status}\`)
 `,
 		"utf-8",
@@ -555,7 +583,21 @@ const target = process.argv.find((argument) => argument.startsWith("http://") ||
 if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
 appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth" }) + "\\n")
 const response = await fetch(target, { redirect: "follow" })
-appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_completed", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", status: response.status }) + "\\n")
+const body = await Promise.race([
+  response.text().catch(() => ""),
+  new Promise((resolve) => setTimeout(() => resolve(""), 1_000)),
+])
+appendFileSync(eventPath, JSON.stringify({
+  type: "oauth_browser_completed",
+  at: new Date().toISOString(),
+  pid: process.pid,
+  scenario: "oauth",
+  status: response.status,
+  hasKimchiBranding: body.includes('class="logo-wrap"') && body.includes('fill="#FF521D"'),
+  hasMcpErrorCopy: body.includes('<title>MCP Authorization Failed</title>') && body.includes('An error occurred during MCP authorization.'),
+  hasMcpSuccessCopy: body.includes('<title>MCP Authorization Successful</title>') && body.includes('You can close this window and return to Kimchi.'),
+  hasGenericAdapterBadge: body.includes('class="badge ok"') || body.includes('class="badge bad"'),
+}) + "\\n")
 if (!response.ok) throw new Error(\`OAuth browser driver received HTTP \${response.status}\`)
 `,
 		"utf-8",
@@ -563,6 +605,12 @@ if (!response.ok) throw new Error(\`OAuth browser driver received HTTP \${respon
 	chmodSync(browserPath, 0o755)
 	return {
 		BROWSER: browserPath,
+		// Force xdg-open through $BROWSER even when tests run inside a Linux desktop
+		// session; otherwise it bypasses the deterministic driver via the desktop's
+		// registered HTTP handler.
+		DISPLAY: "",
 		PATH: `${browserBinDir}:${process.env.PATH ?? ""}`,
+		WAYLAND_DISPLAY: "",
+		XDG_CURRENT_DESKTOP: "X-Generic",
 	}
 }

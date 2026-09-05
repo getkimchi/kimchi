@@ -36,6 +36,7 @@ export interface ConfigSnapshot {
 
 /** Default provider for this harness. */
 const DEFAULT_PROVIDER = "cast-ai"
+const MCP_ADAPTER_SEARCH_PROVIDER = "weighted"
 
 /**
  * Parse pi's `settings.json` (under `KIMCHI_CODING_AGENT_DIR`) once.
@@ -144,14 +145,14 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
  * `discoverAgent`) can never crash the CLI launch — returns a minimal safe
  * fallback snapshot on any error.
  */
-export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: boolean): ConfigSnapshot {
+export function buildConfigSnapshot(_config: KimchiConfig, telemetryEnabled: boolean): ConfigSnapshot {
 	try {
 		const settings = readAgentSettings()
 		const roles = getModelRoles()
 		return {
 			"config.model": resolveModel(settings),
 			"config.provider": resolveProvider(settings),
-			"config.search_provider": config.mcpSearch.strategy,
+			"config.search_provider": MCP_ADAPTER_SEARCH_PROVIDER,
 			"config.telemetry_enabled": telemetryEnabled,
 			"config.permission_mode": getDefaultPermissionMode(),
 			"config.agents_enabled": getMultiModelEnabled(null),

@@ -34,20 +34,11 @@ import { measureCanonicalToolSurface } from "./context-budget-tools.js"
 // surface must not depend on the ambient machine's mcp.json. The metadata
 // cache is stubbed too — with zero servers the factory would otherwise purge
 // and rewrite the developer machine's real mcp-cache.json.
-vi.mock("./mcp-adapter/config.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp-adapter/config.js")>()
+vi.mock("./mcp/config.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp/config.js")>()
 	return {
 		...original,
-		loadMcpConfig: () => ({ config: { mcpServers: {} }, warnings: [] }),
-	}
-})
-vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp-adapter/metadata-cache.js")>()
-	return {
-		...original,
-		loadMetadataCache: () => undefined,
-		overwriteMetadataCache: () => {},
-		flushMetadataCache: () => {},
+		loadKimchiMcpConfig: () => ({ config: { mcpServers: {} }, warnings: [] }),
 	}
 })
 

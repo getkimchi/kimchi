@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { createToolVisibility } from "../../extensions/prompt-construction/tool-visibility.js"
-import { registerReadOnlyToolProvider, resetReadOnlyToolRegistry } from "./read-only-tool-registry.js"
 import { getToolsForProfile } from "./tool-catalog.js"
 import {
 	apply,
@@ -35,18 +34,14 @@ const makeMockPi = (
 		on,
 		getAllTools,
 		getActiveTools,
-		events: overrides.events,
+		events: overrides.events ?? createMiniEventBus().events,
 	} as unknown as ExtensionAPI
 }
 
-// Reset both module-level state variables before every test so runs are
-// fully independent even though the ESM module is evaluated once per VM.
-// Also reset the read-only-tool registry so provider registrations from one
-// test do not leak into another (the WeakMap is keyed on the mock pi, which
-// is freshly constructed per test).
+// Reset module-level state before every test so runs are fully independent
+// even though the ESM module is evaluated once per VM.
 beforeEach(() => {
 	resetAll()
-	resetReadOnlyToolRegistry()
 })
 
 describe("apply", () => {
@@ -154,105 +149,38 @@ describe("apply", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("bash")
 	})
-	describe("planning-ferment read-only MCP union", () => {
-		it("includes read-only-qualified tool names from registered providers", () => {
-			const pi = makeMockPi()
-			registerReadOnlyToolProvider(pi, () => ["server_get_record", "server_search_items"])
+	it("applyCore on a PEER pi excludes a cross-extension vote cast on the shared bus (the DAP→ferment case)", () => {
+		// pi-mono hands each extension its own ExtensionAPI; a full-toolset
+		// snapshot taken under ferment's pi must still respect votes DAP cast
+		// under DAP's pi. The shared synchronous bus is the session identity,
+		// exactly as in the real runner (resource-loader creates one bus per
+		// session).
+		const handlers = new Map<string, Set<(d: unknown) => void>>()
+		const events = {
+			on: (c: string, h: (d: unknown) => void) => {
+				const set = handlers.get(c) ?? new Set()
+				set.add(h)
+				handlers.set(c, set)
+				return () => set.delete(h)
+			},
+			emit: (c: string, d: unknown) => {
+				for (const h of [...(handlers.get(c) ?? [])]) h(d)
+			},
+		}
+		const dapPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
+		const fermentPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
 
-			apply("planning-ferment", "ferment", pi)
+		// DAP votes to defer a tool under its own pi at session_start.
+		createToolVisibility(dapPi).disable(["bash"])
 
-			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-			expect(calledWith).toContain("server_get_record")
-			expect(calledWith).toContain("server_search_items")
-			// Catalog tools are still present
-			expect(calledWith).toContain("read")
-		})
+		// Ferment applies the full-toolset "idle" profile under ITS pi at
+		// before_agent_start. The vote must be visible cross-pi, so the
+		// snapshot must NOT re-surface bash.
+		apply("idle", "ferment", fermentPi)
 
-		it("includes read-only-qualified tool names under planning-adhoc (else branch widened)", () => {
-			const pi = makeMockPi()
-			registerReadOnlyToolProvider(pi, () => ["server_get_record"])
-
-			apply("planning-adhoc", "adhoc", pi)
-
-			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-			expect(calledWith).toContain("server_get_record")
-		})
-
-		it("unions providers and deduplicates overlapping names", () => {
-			const pi = makeMockPi()
-			registerReadOnlyToolProvider(pi, () => ["server_get_record"])
-			registerReadOnlyToolProvider(pi, () => ["server_get_record", "server_list_things"])
-
-			apply("planning-ferment", "ferment", pi)
-
-			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-			const occurrences = calledWith.filter((n) => n === "server_get_record").length
-			expect(occurrences).toBe(1)
-			expect(calledWith).toContain("server_list_things")
-		})
-
-		it("includes nothing extra when no providers are registered", () => {
-			const pi = makeMockPi()
-
-			apply("planning-ferment", "ferment", pi)
-
-			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-			const expected = getToolsForProfile("planning-ferment").map((t) => t.name)
-			expect(calledWith).toEqual(expected)
-		})
-
-		it("respects the cooperative-visibility disabled filter for read-only tools", () => {
-			const pi = makeMockPi()
-			registerReadOnlyToolProvider(pi, () => ["server_get_record"])
-			// Simulate the cooperative layer voting to hide the read-only MCP
-			// tool. `createToolVisibility` reads `pi.getActiveTools()` and
-			// writes back via `pi.setActiveTools()`; the mock above mirrors
-			// that. The disable vote must propagate through the WeakMap so
-			// `getDisabledToolNames(pi)` returns it when `applyCore` runs.
-			createToolVisibility(pi).disable(["server_get_record"])
-			// Clear the disable's own setActiveTools call so the assertion below
-			// observes the apply() call only.
-			vi.mocked(pi.setActiveTools).mockClear()
-
-			apply("planning-ferment", "ferment", pi)
-
-			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-			expect(calledWith).not.toContain("server_get_record")
-		})
-
-		it("applyCore on a PEER pi excludes a cross-extension vote cast on the shared bus (the DAP→ferment case)", () => {
-			// pi-mono hands each extension its own ExtensionAPI; a full-toolset
-			// snapshot taken under ferment's pi must still respect votes DAP cast
-			// under DAP's pi. The shared synchronous bus is the session identity,
-			// exactly as in the real runner (resource-loader creates one bus per
-			// session).
-			const handlers = new Map<string, Set<(d: unknown) => void>>()
-			const events = {
-				on: (c: string, h: (d: unknown) => void) => {
-					const set = handlers.get(c) ?? new Set()
-					set.add(h)
-					handlers.set(c, set)
-					return () => set.delete(h)
-				},
-				emit: (c: string, d: unknown) => {
-					for (const h of [...(handlers.get(c) ?? [])]) h(d)
-				},
-			}
-			const dapPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
-			const fermentPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
-
-			// DAP votes to defer a tool under its own pi at session_start.
-			createToolVisibility(dapPi).disable(["bash"])
-
-			// Ferment applies the full-toolset "idle" profile under ITS pi at
-			// before_agent_start. The vote must be visible cross-pi, so the
-			// snapshot must NOT re-surface bash.
-			apply("idle", "ferment", fermentPi)
-
-			const calledWith = (fermentPi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string[]
-			expect(calledWith).not.toContain("bash")
-			expect(calledWith).toContain("edit")
-		})
+		const calledWith = (fermentPi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string[]
+		expect(calledWith).not.toContain("bash")
+		expect(calledWith).toContain("edit")
 	})
 })
 
@@ -313,31 +241,24 @@ describe("installTurnBoundaryReset", () => {
 })
 
 describe("reapplyCurrentProfile", () => {
-	it("re-applies the last profile, picking up newly-registered read-only tools", () => {
-		// Simulate the real-world timing gap: the planning snapshot is applied
-		// while the MCP read-only-tool provider returns [] (state not yet
-		// populated). After init completes the provider starts returning tool
-		// names; reapplyCurrentProfile must re-run applyCore so those names
-		// enter the active set.
-		const pi = makeMockPi()
-		let providerResult: string[] = []
-		registerReadOnlyToolProvider(pi, () => providerResult)
-
-		// First apply — provider returns nothing (MCP not yet initialized)
+	it("re-applies a planning profile without exposing newly registered MCP tools", () => {
+		const pi = makeMockPi({ allTools: [{ name: "read" }] })
 		apply("planning-ferment", "ferment", pi)
-		let calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		expect(calledWith).not.toContain("server_get_record")
 
-		// MCP init completes — provider now returns a read-only tool
-		providerResult = ["server_get_record"]
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ name: "read" },
+			{ name: "mcp" },
+			{ name: "server_get_record" },
+		])
 		vi.clearAllMocks()
 
 		const reapplied = reapplyCurrentProfile(pi)
 
 		expect(reapplied).toBe(true)
 		expect(pi.setActiveTools).toHaveBeenCalledOnce()
-		calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		expect(calledWith).toContain("server_get_record")
+		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).not.toContain("mcp")
+		expect(calledWith).not.toContain("server_get_record")
 		expect(calledWith).toContain("read")
 	})
 
@@ -364,107 +285,5 @@ describe("reapplyCurrentProfile", () => {
 
 		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
 		expect(calledWith).toContain("server_get_record")
-	})
-})
-
-describe("read-only MCP filter integration (planning-ferment vs implementation-ferment)", () => {
-	// These tests verify the registry + profile-manager behaviour (union,
-	// inclusion, exclusion) using pre-filtered fixture arrays. They do NOT
-	// exercise `isReadOnlyMcpTool` — that predicate lives in
-	// src/extensions/mcp-adapter/tool-metadata.ts and is covered by
-	// src/extensions/mcp-adapter/tool-metadata.test.ts. Coupling to it here
-	// would invert the dependency direction (shared/planning must not import
-	// from src/extensions/mcp-adapter).
-	//
-	// Fixture: three MCP tools behind a server. Only `server_get_record` is
-	// read-only-qualified (annotated with readOnlyHint:true).
-	const mcpReadOnlyProvider = (): string[] => ["server_get_record"]
-
-	it("planning-ferment: includes read-only MCP tool and excludes write/destructive MCP tools", () => {
-		const pi = makeMockPi()
-		registerReadOnlyToolProvider(pi, mcpReadOnlyProvider)
-
-		apply("planning-ferment", "ferment", pi)
-
-		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		// Read-only tool is included
-		expect(calledWith).toContain("server_get_record")
-		// Write tools are NOT included — they're neither in the catalog nor read-only-qualified
-		expect(calledWith).not.toContain("server_create_record")
-		expect(calledWith).not.toContain("server_delete_record")
-		// Catalog tools are still present
-		expect(calledWith).toContain("read")
-	})
-
-	it("planning-ferment: heuristic-only read-only tool (no annotations) is included", () => {
-		// A separate provider whose read-only set is hardcoded — simulates a
-		// server that classified its tools via the name heuristic rather than
-		// annotations. The fixture asserts the registry treats it as read-only.
-		const pi = makeMockPi()
-		registerReadOnlyToolProvider(pi, () => ["server_search_items"])
-
-		apply("planning-ferment", "ferment", pi)
-
-		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		expect(calledWith).toContain("server_search_items")
-		expect(calledWith).not.toContain("server_update_record")
-	})
-
-	it("planning-adhoc: includes read-only MCP tool and excludes write MCP tools", () => {
-		const pi = makeMockPi()
-		registerReadOnlyToolProvider(pi, mcpReadOnlyProvider)
-
-		apply("planning-adhoc", "adhoc", pi)
-
-		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		// Read-only tool is included
-		expect(calledWith).toContain("server_get_record")
-		// Write tools are NOT included
-		expect(calledWith).not.toContain("server_create_record")
-		expect(calledWith).not.toContain("server_delete_record")
-	})
-
-	it("implementation-ferment: includes ALL MCP tools (read and write)", () => {
-		const pi = makeMockPi({
-			allTools: [
-				{ name: "read" },
-				{ name: "bash" },
-				{ name: "server_get_record" }, // read-only MCP
-				{ name: "server_create_record" }, // write MCP
-				{ name: "server_delete_record" }, // destructive MCP
-			],
-		})
-		registerReadOnlyToolProvider(pi, mcpReadOnlyProvider)
-
-		apply("implementation-ferment", "ferment", pi)
-
-		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		// All MCP tools are present — implementation phase has full access
-		expect(calledWith).toContain("server_get_record")
-		expect(calledWith).toContain("server_create_record")
-		expect(calledWith).toContain("server_delete_record")
-		// Core tools still present
-		expect(calledWith).toContain("read")
-		expect(calledWith).toContain("bash")
-	})
-
-	it("planning-ferment: write MCP tool is NOT added even if present in getAllTools", () => {
-		// Edge case: the write tool is registered in pi.getAllTools() (so it would
-		// appear under implementation-ferment), but planning-ferment must still
-		// exclude it because it's not read-only-qualified and not in the catalog.
-		const pi = makeMockPi({
-			allTools: [
-				{ name: "read" },
-				{ name: "server_get_record" }, // read-only — should appear
-				{ name: "server_create_record" }, // write — must NOT appear
-			],
-		})
-		registerReadOnlyToolProvider(pi, mcpReadOnlyProvider)
-
-		apply("planning-ferment", "ferment", pi)
-
-		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-		expect(calledWith).toContain("server_get_record")
-		expect(calledWith).not.toContain("server_create_record")
 	})
 })
