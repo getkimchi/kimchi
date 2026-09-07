@@ -106,8 +106,18 @@ describe("resolveAgentInvocationConfig — runInBackground default", () => {
 		expect(result.runInBackground).toBe(false)
 	})
 
-	it("explicit param and persona policy still override a foreground fallback", () => {
+	it("headless sessions ignore persona background pins", () => {
+		// Persona pins are a session-mode preference; in headless automation
+		// backgrounded work can outlive the process, so only explicit
+		// per-call opt-in backgrounds an agent.
+		expect(resolveAgentInvocationConfig({ ...agent, runInBackground: true }, {}, false).runInBackground).toBe(false)
+	})
+
+	it("explicit run_in_background: true still opts into background in headless sessions", () => {
 		expect(resolveAgentInvocationConfig(agent, { run_in_background: true }, false).runInBackground).toBe(true)
-		expect(resolveAgentInvocationConfig({ ...agent, runInBackground: true }, {}, false).runInBackground).toBe(true)
+		expect(
+			resolveAgentInvocationConfig({ ...agent, runInBackground: false }, { run_in_background: true }, false)
+				.runInBackground,
+		).toBe(true)
 	})
 })
