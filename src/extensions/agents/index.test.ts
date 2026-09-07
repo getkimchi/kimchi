@@ -66,8 +66,9 @@ describe("AGENT_TOOL_GUIDELINES", () => {
 		// Backgrounding regression guard: results arrive via completion
 		// notification, so the guidelines must not endorse polling/blocking.
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("(poll)")
-		expect(AGENT_TOOL_GUIDELINES).toContain("do NOT call get_subagent_result with wait: true")
-		expect(AGENT_TOOL_GUIDELINES).toContain("notified when the agent completes")
+		expect(AGENT_TOOL_GUIDELINES).toContain("blocks your very next action")
+		expect(AGENT_TOOL_GUIDELINES).toContain("join it with get_subagent_result wait: true")
+		expect(AGENT_TOOL_GUIDELINES).toContain("completion notification")
 	})
 })
 
