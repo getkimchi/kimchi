@@ -183,11 +183,11 @@ function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSi
 }
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Launch agents in the background by default in interactive sessions (run_in_background defaults to true; headless runs default to foreground). Only set run_in_background: false when the next step in your workflow cannot proceed without the agent's result.
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
-- One call per task, detailed prompt; run_in_background for parallelism.
-- Follow-ups: resume_subagent (continue), get_subagent_result (status check), steer_subagent (redirect).
-- On a backgrounded agent, do NOT call get_subagent_result with wait: true — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user. You will be notified when the agent completes; the notification contains the results.`
+- Launch agents in the background by default in interactive sessions (run_in_background defaults to true; headless runs default to foreground).
+- Choose the mode by dependency: run_in_background: false only when the agent blocks your very next action (immediate dependency). If the result is needed for a LATER step, keep it backgrounded and join it with get_subagent_result wait: true when you need it — do not wait right after spawning; do independent work or end your turn first. For fire-and-forget or parallel work, background it and rely on the completion notification; the notification contains the results.
+- One call per task, detailed prompt.
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
 	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
@@ -2785,7 +2785,7 @@ extensions: <true (inherit all MCP/extension tools), false (none), or comma-sepa
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
 disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
 inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
-run_in_background: <true to run in background by default. Default: true; set false only when the next step depends on the result>
+run_in_background: <true to run in background by default. Default: true in interactive sessions; persona pins are interactive-only — headless runs require the call site to opt in>
 isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 ---
