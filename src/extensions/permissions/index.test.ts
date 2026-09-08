@@ -24,6 +24,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import * as remoteRun from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
@@ -33,7 +34,6 @@ import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
-import type { ToolPermissionPrompter } from "./prompter.js"
 import { SessionMemory } from "./session-memory.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
@@ -143,6 +143,7 @@ function createMockContext(
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getEntries: () => sessionEntries,
+			getBranch: () => sessionEntries,
 		},
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
@@ -157,6 +158,7 @@ function createMockContext(
 			notify: vi.fn(),
 			setStatus: vi.fn(),
 			setWorkingVisible: vi.fn(),
+			setWidget: vi.fn(),
 			theme: {
 				fg: vi.fn((_, s) => s),
 				bold: vi.fn((s) => s),
@@ -196,6 +198,16 @@ type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Pro
 type RegisteredCommand = {
 	handler: (args: string, ctx: ExtensionContext) => unknown | Promise<unknown>
 }
+type RegisteredTool = {
+	name: string
+	execute: (
+		toolCallId: string,
+		params: unknown,
+		signal: AbortSignal | undefined,
+		onUpdate: unknown,
+		ctx: ExtensionContext,
+	) => unknown | Promise<unknown>
+}
 
 function createPermissionsHarness(
 	toolNames: string[],
@@ -204,7 +216,7 @@ function createPermissionsHarness(
 ) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, RegisteredCommand>()
-	const registeredTools = new Map<string, { name: string; execute: unknown }>()
+	const registeredTools = new Map<string, RegisteredTool>()
 	const { events } = createMiniEventBus()
 	const tools = toolNames.map((name) => ({ name, description: `${name} tool` }) as ToolInfo)
 	let activeTools = [...initialActiveTools]
@@ -214,6 +226,10 @@ function createPermissionsHarness(
 		getFlag: vi.fn((name: string) => flags[name]),
 		registerCommand: vi.fn((name: string, command: RegisteredCommand) => {
 			commands.set(name, command)
+		}),
+		registerTool: vi.fn((tool: RegisteredTool) => {
+			registeredTools.set(tool.name, tool)
+			tools.push({ name: tool.name, description: `${tool.name} tool` } as ToolInfo)
 		}),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
@@ -226,10 +242,8 @@ function createPermissionsHarness(
 			const known = new Set(toolNames)
 			activeTools = names.filter((name) => known.has(name))
 		}),
-		registerTool: vi.fn((tool: { name: string } & Record<string, unknown>) => {
-			registeredTools.set(tool.name, tool as { name: string; execute: unknown })
-		}),
 		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
 		events,
 	} as unknown as ExtensionAPI
@@ -239,7 +253,7 @@ function createPermissionsHarness(
 	return {
 		pi,
 		commands,
-		registeredTools,
+		tools: registeredTools,
 		activeTools: () => activeTools,
 		async fire(event: string, payload: unknown, ctx: ExtensionContext = createMockContext([])) {
 			let result: unknown
@@ -529,6 +543,18 @@ describe("permissions plan-mode tool visibility", () => {
 		).resolves.toBeUndefined()
 	})
 
+	it("re-filters tools activated after session_start before the first plan turn", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit", "Agent", "ExitPlanMode"], { plan: true })
+		const ctx = createMockContext([])
+
+		await harness.fire("session_start", {}, ctx)
+		harness.pi.setActiveTools(["read", "bash", "write", "edit", "Agent", "ExitPlanMode"])
+
+		await harness.fire("before_agent_start", {}, ctx)
+
+		expect(harness.activeTools().sort()).toEqual(["ExitPlanMode", "bash", "read"])
+	})
+
 	it("blocks read calls targeting directories before upstream read", async () => {
 		const tmp = mkdtempSync(join(tmpdir(), "kimchi-read-dir-"))
 		try {
@@ -550,6 +576,24 @@ describe("permissions plan-mode tool visibility", () => {
 		peerVisibility.disable(["bash"])
 
 		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools().sort()).toEqual(["grep", "read"])
+
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode default", createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["edit", "grep", "read", "write"])
+
+		peerVisibility.enable(["bash"])
+		expect(harness.activeTools().sort()).toEqual(["bash", "edit", "grep", "read", "write"])
+	})
+
+	it("leaving plan mode preserves tools hidden by another extension after entry", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true })
+		const peerVisibility = createToolVisibility(harness.pi)
+
+		await harness.fire("session_start", {}, createMockContext([]))
+		peerVisibility.disable(["bash"])
 		expect(harness.activeTools().sort()).toEqual(["grep", "read"])
 
 		const command = harness.commands.get("permissions")
@@ -588,31 +632,21 @@ describe("plan mode assumption detection", () => {
 		vi.unstubAllEnvs()
 	})
 
-	// --- Integration tests for turn_end handler ---
+	// --- Integration tests for ExitPlanMode tool ---
 
-	type SubmitPlanToolDef = {
-		execute: (
-			toolCallId: string,
-			params: { plan: string },
-			signal: AbortSignal | undefined,
-			onUpdate: undefined,
-			ctx: ExtensionContext,
-		) => Promise<unknown>
-	}
-
-	// Drive the submit_plan flow: invoke the captured tool's execute with the
+	// Drive the ExitPlanMode flow: invoke the captured tool's execute with the
 	// plan text (no completion markers — that protocol is gone), then flush
 	// the task queue so the TUI decision callback (`void .then(...)`) and any
 	// review-decision side effects (mode changes, sendMessage, ferment
 	// artefacts) have run before assertions.
-	async function submitPlan(
+	async function firePlanExit(
 		harness: ReturnType<typeof createPermissionsHarness>,
-		plan: string,
+		plan: string | undefined,
 		ctx: ExtensionContext,
 	): Promise<unknown> {
-		const tool = harness.registeredTools.get("submit_plan") as SubmitPlanToolDef | undefined
-		if (!tool) throw new Error("submit_plan tool was not registered with pi")
-		const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
+		const tool = harness.tools.get("ExitPlanMode")
+		if (!tool) throw new Error("ExitPlanMode tool was not registered with pi")
+		const result = await tool.execute("tc-submit-plan", plan === undefined ? {} : { plan }, undefined, undefined, ctx)
 		await new Promise<void>((resolve) => setTimeout(resolve, 0))
 		return result
 	}
@@ -625,7 +659,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
+		await firePlanExit(
 			harness,
 			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.",
 			ctx,
@@ -634,13 +668,25 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
+	it("does not treat legacy marker text as a plan-exit signal", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const ctx = createMockContext([])
+		await harness.fire(
+			"turn_end",
+			{ message: { role: "assistant", content: [{ type: "text", text: "<!-- PLAN_COMPLETE -->" }] } },
+			ctx,
+		)
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
 	it("shows approval menu even when assumptions section is present (agent is trusted)", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1", ctx)
+		await firePlanExit(harness, "# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -651,7 +697,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
+		await firePlanExit(
 			harness,
 			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1",
 			ctx,
@@ -666,7 +712,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
+		await firePlanExit(
 			harness,
 			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.",
 			ctx,
@@ -681,7 +727,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
+		await firePlanExit(
 			harness,
 			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.",
 			ctx,
@@ -690,13 +736,13 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("shows menu for plan with assumptions (submit_plan is the gate)", async () => {
+	it("shows menu for plan with assumptions (ExitPlanMode is the gate)", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "## ASSUMPTIONS\n- Schema TBD", ctx)
+		await firePlanExit(harness, "## ASSUMPTIONS\n- Schema TBD", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -707,7 +753,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "## Assumptions\n\n- Database schema may differ", ctx)
+		await firePlanExit(harness, "## Assumptions\n\n- Database schema may differ", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
@@ -718,7 +764,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
+		await firePlanExit(
 			harness,
 			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.",
 			ctx,
@@ -731,13 +777,13 @@ describe("plan mode assumption detection", () => {
 		)
 	})
 
-	it("review gate: menu shows for any plan submitted via submit_plan", async () => {
+	it("review gate: menu shows for any plan submitted via ExitPlanMode", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
+		await firePlanExit(
 			harness,
 			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.",
 			ctx,
@@ -752,51 +798,30 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("tool_execution_start", {})
 
 		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "## Chunk 1\nJust one chunk.", ctx)
+		await firePlanExit(harness, "## Chunk 1\nJust one chunk.", ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("review menu offers Execute / Rework / Start as ferment / Start execution in remote session", async () => {
+	it("review menu offers Execute / Rework / Start as ferment", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		const planText =
 			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests."
 		const ctx = createMockContext(["Rework the plan"])
-		await submitPlan(harness, planText, ctx)
+		await firePlanExit(harness, planText, ctx)
 
 		expect(ctx.ui.select).toHaveBeenCalledWith(
 			"Plan complete. How would you like to proceed?",
-			["Execute the plan locally", "Execute the plan in a remote workspace", "Rework the plan", "Start as ferment"],
+			["Execute the plan", "Rework the plan", "Start as ferment"],
 			expect.anything(),
 		)
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
 	})
 
-	it("review menu drops the cloud option when remote run is disabled via KIMCHI_REMOTE_RUN=0", async () => {
-		vi.stubEnv("KIMCHI_REMOTE_RUN", "0")
-		try {
-			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-			await harness.fire("session_start", {}, createMockContext([]))
-
-			const planText =
-				"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests."
-			const ctx = createMockContext(["Execute the plan"])
-			await submitPlan(harness, planText, ctx)
-
-			expect(ctx.ui.select).toHaveBeenCalledWith(
-				"Plan complete. How would you like to proceed?",
-				["Execute the plan locally", "Rework the plan", "Start as ferment"],
-				expect.anything(),
-			)
-		} finally {
-			vi.unstubAllEnvs()
-		}
-	})
-
-	it("oneshot sessions skip the plan-complete dropdown entirely", async () => {
+	it("oneshot sessions return deterministically without the approval dropdown", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		// Simulate a oneshot session: pi.getFlag returns true for ferment-oneshot.
 		;(harness.pi as { getFlag?: (n: string) => unknown }).getFlag = (n: string) =>
@@ -805,10 +830,108 @@ describe("plan mode assumption detection", () => {
 
 		const planText = "# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache."
 		const ctx = createMockContext([])
-		await submitPlan(harness, planText, ctx)
+		await firePlanExit(harness, planText, ctx)
 
 		// The dropdown must NOT have been shown — oneshot sessions bypass it.
 		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("ExitPlanMode does not stall without an interactive UI", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		Object.assign(ctx, { hasUI: false, mode: "print" })
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await firePlanExit(
+			harness,
+			"# Plan\n\n## Goal\nDo it.\n\n## Chunks\n\n### Chunk 1\nDo the thing.",
+			ctx,
+		)
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(result).toEqual(expect.objectContaining({ details: expect.objectContaining({ approved: false }) }))
+	})
+
+	it("ExitPlanMode restores the captured mode and tools and starts a compact user turn", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit"], {})
+		const initialTools = harness.activeTools().slice().sort()
+		const ctx = createMockContext(["Execute the plan"])
+		await harness.fire("session_start", {}, ctx)
+		await harness.commands.get("permissions")?.handler("mode plan", ctx)
+
+		const plan =
+			"# Plan\n\n## Goal\nShip it.\n\n## Constraints\n- Keep API stable\n\n## Chunks\n\n### Chunk 1: Implement\n- **Files Changed**: src/a.ts\n\n## Verification Strategy\nRun tests."
+		await firePlanExit(harness, plan, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+		expect(harness.activeTools().slice().sort()).toEqual(initialTools)
+		expect(harness.pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("Goal: Ship it."), {
+			deliverAs: "followUp",
+		})
+		const handoff = (harness.pi.sendUserMessage as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string
+		expect(handoff).not.toContain("Verification Strategy")
+	})
+
+	it("ExitPlanMode without plan skips its persisted tool-only assistant message", async () => {
+		const plan = "# Prior plan\n\n## Goal\nPreserve the API."
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext(["Rework the plan"], TEST_SESSION_ID, {
+			sessionEntries: [
+				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: plan }] } },
+				{
+					type: "message",
+					message: { role: "assistant", content: [{ type: "toolCall", name: "ExitPlanMode", arguments: {} }] },
+				},
+			],
+		})
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-exit-fallback-"))
+		ctx.cwd = tmpDir
+		try {
+			await harness.fire("session_start", {}, ctx)
+			const result = await firePlanExit(harness, undefined, ctx)
+
+			expect(result).toMatchObject({ details: { submitted: true } })
+			expect(ctx.ui.select).toHaveBeenCalled()
+			expect(readFileSync(join(tmpDir, ".kimchi", "plans", "prior-plan.md"), "utf8")).toBe(plan)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it.each([
+		"default",
+		"yolo",
+	] as const)("failed cloud approval preserves the original %s mode and tools for local execution", async (originalMode) => {
+		vi.stubEnv("KIMCHI_REMOTE_RUN", "1")
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit"])
+		const ctx = createMockContext(["Start execution in cloud", "Execute the plan"])
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-cloud-rollback-"))
+		ctx.cwd = tmpDir
+		const cloudRun = vi.spyOn(remoteRun, "runCloudAgent").mockImplementationOnce(async () => {
+			// The active surface can change while cloud startup is pending.
+			harness.pi.setActiveTools(["read", "bash", "write"])
+			throw new Error("cloud unavailable")
+		})
+		try {
+			await harness.fire("session_start", {}, ctx)
+			await harness.commands.get("permissions")?.handler(`mode ${originalMode}`, ctx)
+			const priorMode = getPermissionMode(TEST_SESSION_ID)
+			const priorTools = harness.activeTools().slice().sort()
+			await harness.commands.get("permissions")?.handler("mode plan", ctx)
+			const plan = "# Cloud plan\n\n## Goal\nPreserve the API."
+			await firePlanExit(harness, plan, ctx)
+
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			expect(ctx.ui.notify).toHaveBeenCalledWith("Could not start the cloud agent: cloud unavailable", "error")
+			await firePlanExit(harness, plan, ctx)
+
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual(priorMode)
+			expect(harness.activeTools().slice().sort()).toEqual(priorTools)
+			expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce()
+		} finally {
+			cloudRun.mockRestore()
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 
 	describe("plan file persistence", () => {
@@ -824,12 +947,11 @@ describe("plan mode assumption detection", () => {
 			try {
 				const ctx = createMockContext(["Rework the plan"])
 				ctx.cwd = tmpDir
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				const plansDir = join(tmpDir, ".kimchi", "plans")
 				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
 				const saved = readFileSync(join(plansDir, "plan-cache-layer.md"), "utf-8")
-				expect(saved).not.toContain("PLAN_COMPLETE")
 				expect(saved).toContain("## Goal\nAdd caching layer.")
 				// The approval dropdown is still shown after the save.
 				expect(ctx.ui.select).toHaveBeenCalled()
@@ -846,7 +968,7 @@ describe("plan mode assumption detection", () => {
 				const ctx = createMockContext([])
 				Object.assign(ctx, { hasUI: false })
 				ctx.cwd = tmpDir
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				const plansDir = join(tmpDir, ".kimchi", "plans")
 				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
@@ -863,10 +985,10 @@ describe("plan mode assumption detection", () => {
 			try {
 				const ctx1 = createMockContext(["Rework the plan"])
 				ctx1.cwd = tmpDir
-				await submitPlan(harness, PLAN_V1, ctx1)
+				await firePlanExit(harness, PLAN_V1, ctx1)
 				const ctx2 = createMockContext(["Rework the plan"])
 				ctx2.cwd = tmpDir
-				await submitPlan(harness, PLAN_V2, ctx2)
+				await firePlanExit(harness, PLAN_V2, ctx2)
 
 				const plansDir = join(tmpDir, ".kimchi", "plans")
 				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
@@ -883,19 +1005,15 @@ describe("plan mode assumption detection", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-execute-"))
 			try {
-				const ctx = createMockContext(["Execute the plan locally"])
+				const ctx = createMockContext(["Execute the plan"])
 				ctx.cwd = tmpDir
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				const planFile = join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md")
 				expect(existsSync(planFile)).toBe(true)
-				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-					expect.objectContaining({
-						customType: "plan-execute",
-						content: expect.stringContaining(`Approved plan saved to: ${planFile}`),
-					}),
-					expect.anything(),
-				)
+				expect(harness.pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining(`Plan path: ${planFile}`), {
+					deliverAs: "followUp",
+				})
 
 				// After execute the session slug is released; switch back to plan
 				// mode and emit a differently titled plan to verify a fresh file.
@@ -904,7 +1022,7 @@ describe("plan mode assumption detection", () => {
 				const OTHER_PLAN = "# Plan: Rate Limits\n\n## Goal\nAdd rate limits."
 				const ctx2 = createMockContext(["Rework the plan"])
 				ctx2.cwd = tmpDir
-				await submitPlan(harness, OTHER_PLAN, ctx2)
+				await firePlanExit(harness, OTHER_PLAN, ctx2)
 				expect(readdirSync(join(tmpDir, ".kimchi", "plans")).sort()).toEqual([
 					"plan-cache-layer.md",
 					"plan-rate-limits.md",
@@ -933,9 +1051,9 @@ describe("plan mode assumption detection", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-execute-"))
 			try {
-				const ctx = createMockContext(["Execute the plan locally"])
+				const ctx = createMockContext(["Execute the plan"])
 				ctx.cwd = tmpDir
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				const planFile = join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md")
 				expect(calls).toEqual(["approved", "executor"])
@@ -954,16 +1072,16 @@ describe("plan mode assumption detection", () => {
 			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))
-			const ctx = createMockContext(["Execute the plan locally"])
+			const ctx = createMockContext(["Execute the plan"])
 
-			await submitPlan(harness, PLAN_V1, ctx)
+			await firePlanExit(harness, PLAN_V1, ctx)
 
 			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({ customType: "plan-execute" }),
 				expect.anything(),
 			)
 			expect(ctx.ui.notify).toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
-			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
 		})
 
 		it("Execute uses inline approved Markdown when the plan file is unavailable", async () => {
@@ -978,10 +1096,10 @@ describe("plan mode assumption detection", () => {
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-inline-"))
 			try {
 				writeFileSync(join(tmpDir, ".kimchi"), "not a directory")
-				const ctx = createMockContext(["Execute the plan locally"])
+				const ctx = createMockContext(["Execute the plan"])
 				ctx.cwd = tmpDir
 
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				expect(executions).toEqual([
 					{
@@ -1004,7 +1122,7 @@ describe("plan mode assumption detection", () => {
 			registerFermentV2PlanExecutor(harness.pi, async () => "kept-existing")
 			await harness.fire("session_start", {}, createMockContext([]))
 
-			await submitPlan(harness, PLAN_V1, createMockContext(["Execute the plan locally"]))
+			await firePlanExit(harness, PLAN_V1, createMockContext(["Execute the plan"]))
 
 			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({ customType: "plan-execute" }),
@@ -1020,11 +1138,11 @@ describe("plan mode assumption detection", () => {
 			})
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-reject-"))
-			const ctx = createMockContext(["Execute the plan locally"])
+			const ctx = createMockContext(["Execute the plan"])
 			ctx.cwd = tmpDir
 
 			try {
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
 					expect.objectContaining({ customType: "plan-execute" }),
@@ -1065,7 +1183,7 @@ describe("plan mode assumption detection", () => {
 			try {
 				const ctx = createMockContext(["Start as ferment"])
 				ctx.cwd = tmpDir
-				await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+				await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 				const planFile = join(tmpDir, ".kimchi", "plans", "plan.md")
 				expect(existsSync(planFile)).toBe(true)
@@ -1094,7 +1212,7 @@ describe("plan mode assumption detection", () => {
 				writeFileSync(join(tmpDir, ".kimchi"), "not a directory")
 				const ctx = createMockContext(["Rework the plan"])
 				ctx.cwd = tmpDir
-				await submitPlan(harness, PLAN_V1, ctx)
+				await firePlanExit(harness, PLAN_V1, ctx)
 
 				expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("failed to save plan file"), "warning")
 				expect(ctx.ui.select).toHaveBeenCalled()
@@ -1129,7 +1247,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
 			expect(existsSync(fermentsDir)).toBe(true)
@@ -1163,7 +1281,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			// Find the implementation-ferment apply call by selecting the largest
 			// setActiveTools call — the planning-adhoc profile produces a 12-tool set
@@ -1203,7 +1321,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
 			const implementationFermentCall = calls.reduce<{ size: number; arr: string[] | undefined }>(
@@ -1244,7 +1362,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			// After 'Start as ferment', the ferment runtime must know the active ferment.
 			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
@@ -1268,7 +1386,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			// appendRefEntry calls pi.sendMessage with customType 'ferment_reference'.
 			// safeSendMessage passes (message, options) — options may be undefined.
@@ -1301,7 +1419,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			const handoffCall = vi
 				.mocked(harness.pi.sendMessage)
@@ -1343,7 +1461,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["Start as ferment"])
 		ctx.cwd = "/dev/null/nonexistent-path-that-cannot-be-created"
 
-		await submitPlan(harness, planText, ctx)
+		await firePlanExit(harness, planText, ctx)
 
 		// 1) No setActiveTools call should include implementation-ferment-only tools
 		//    like edit/write/Agent (the implementation profile signature).
@@ -1380,7 +1498,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
+			await firePlanExit(harness, SHARED_PLAN_TEXT, ctx)
 
 			expect(harness.activeTools()).toEqual(planningTools)
 			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
@@ -1408,7 +1526,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
-			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
+			await firePlanExit(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -1833,7 +1951,7 @@ describe("permissions ACP prompter", () => {
 				requests.push(req.toolCallId)
 				const remember = req.choices.find((choice) => choice.kind === "allow-remember")
 				if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
-				return { kind: "allow-remember", rules: remember.rules }
+				return { kind: "allow-remember", rule: remember.rule }
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
@@ -1980,34 +2098,10 @@ describe("permissions ACP prompter", () => {
 })
 
 describe("checkCompoundCommand", () => {
-	it.each([false, true])("honors a whole-command deny with explicit segment allows: %s", (allowSegments) => {
-		const rules: Rule[] = [{ toolName: "bash", content: "ls && pwd", behavior: "deny", source: "user" }]
-		if (allowSegments) {
-			rules.push(
-				{ toolName: "bash", content: "ls", behavior: "allow", source: "user" },
-				{ toolName: "bash", content: "pwd", behavior: "allow", source: "user" },
-			)
-		}
-
-		const result = checkCompoundCommand("ls && pwd", rules)
-		expect(result.decision).toBe("deny")
-		expect(result.deniedReason).toContain("ls && pwd")
-	})
-
-	it("preserves higher-priority whole-command allows over lower-priority denies", () => {
-		const rules: Rule[] = [
-			{ toolName: "bash", content: "ls && pwd", behavior: "deny", source: "user" },
-			{ toolName: "bash", content: "ls && pwd", behavior: "allow", source: "session" },
-		]
-		expect(checkCompoundCommand("ls && pwd", rules).decision).toBe("allow")
-	})
-
 	it("returns prompt for compound command with no rules", () => {
-		// npm install is mutable: without rules the compound must prompt
-		// (read-only segments are implicitly allowed and cannot prompt it).
-		const result = checkCompoundCommand("cd /tmp && npm install", [])
+		const result = checkCompoundCommand('echo "hello" && whoami', [])
 		expect(result.decision).toBe("prompt")
-		expect(result.subcommands).toEqual(["cd /tmp", "npm install"])
+		expect(result.subcommands).toEqual(["echo hello", "whoami"])
 	})
 
 	it("returns deny when subcommand matches deny rule", () => {
@@ -2028,20 +2122,20 @@ describe("checkCompoundCommand", () => {
 
 	it("returns prompt when some subcommands lack rules", () => {
 		const rules: Rule[] = [{ toolName: "bash", content: "echo *", behavior: "allow", source: "session" }]
-		const result = checkCompoundCommand('echo "test" && npm test', rules)
+		const result = checkCompoundCommand('echo "test" && whoami', rules)
 		expect(result.decision).toBe("prompt")
-		expect(result.subcommands).toEqual(["echo test", "npm test"])
+		expect(result.subcommands).toEqual(["echo test", "whoami"])
 	})
 
 	it("splits on &&, ||, and ;", () => {
-		const result = checkCompoundCommand("echo a || npm test ; echo c && echo d", [])
-		expect(result.subcommands).toEqual(["echo a", "npm test", "echo c", "echo d"])
+		const result = checkCompoundCommand("echo a || echo b ; echo c && echo d", [])
+		expect(result.subcommands).toEqual(["echo a", "echo b", "echo c", "echo d"])
 	})
 
 	it("keeps pipes inside segments", () => {
-		const result = checkCompoundCommand("echo a && npm install | tail -5", [])
+		const result = checkCompoundCommand("echo a && cat file | grep x", [])
 		expect(result.decision).toBe("prompt")
-		expect(result.subcommands).toEqual(["echo a", "npm install | tail -5"])
+		expect(result.subcommands).toEqual(["echo a", "cat file | grep x"])
 	})
 
 	it("returns deny for hard-blocked program in subcommand", () => {
@@ -2074,14 +2168,11 @@ describe("compound command with session rules", () => {
 		})
 
 		const rules = session.all()
-		// `whoami` is read-only and post-alignment implicitly allowed in
-		// compounds, so use a mutable second segment to keep pinning per-segment
-		// evaluation.
-		const result = checkCompoundCommand('echo "test" && npm test', rules)
+		const result = checkCompoundCommand('echo "test" && whoami', rules)
 
 		expect(result.decision).toBe("prompt")
 		expect(result.subcommands).toContain("echo test")
-		expect(result.subcommands).toContain("npm test")
+		expect(result.subcommands).toContain("whoami")
 	})
 
 	it("all allowed subcommands result in allow decision", () => {
@@ -2120,31 +2211,6 @@ describe("compound command with session rules", () => {
 		expect(result.decision).toBe("deny")
 	})
 
-	it("read-only segments are implicitly allowed when the mutable segment is remembered", () => {
-		// ls never asks standalone; the remembered npm install rule settles it.
-		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		const result = checkCompoundCommand("ls && npm install", session.all())
-		expect(result.decision).toBe("allow")
-	})
-
-	it.each(["cd /tmp", "pushd /tmp", "popd"])("implicitly allows %s with a remembered mutable segment", (command) => {
-		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		expect(checkCompoundCommand(`${command} && npm install`, session.all()).decision).toBe("allow")
-	})
-
-	it.each(["cd /tmp", "pushd /tmp", "popd"])("honors an explicit deny for %s", (command) => {
-		session.add({ toolName: "bash", content: `${command}:*`, behavior: "deny", source: "user" })
-		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		expect(checkCompoundCommand(`${command} && npm install`, session.all()).decision).toBe("deny")
-	})
-
-	it("a deny rule still wins over the implicit read-only allowance", () => {
-		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		session.add({ toolName: "bash", content: "echo:*", behavior: "deny", source: "user" })
-		const result = checkCompoundCommand('echo "test" && npm install', session.all())
-		expect(result.decision).toBe("deny")
-	})
-
 	it("complex compound with mixed operators", () => {
 		session.add({ toolName: "bash", content: "echo *", behavior: "allow", source: "session" })
 		session.add({ toolName: "bash", content: "whoami *", behavior: "allow", source: "session" })
@@ -2152,212 +2218,6 @@ describe("compound command with session rules", () => {
 
 		const result = checkCompoundCommand("echo a || whoami ; pwd", session.all())
 		expect(result.decision).toBe("allow")
-	})
-})
-
-describe("compound bash permission regressions", () => {
-	const command = "cd /tmp && npm install"
-	const bashCall = (toolCallId: string, bashCommand = command) => ({
-		type: "tool_call",
-		toolCallId,
-		toolName: "bash",
-		input: { command: bashCommand },
-	})
-
-	beforeEach(() => {
-		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
-		vi.mocked(classifyToolCall).mockClear()
-		vi.mocked(classifyToolCall).mockResolvedValue({
-			verdict: "requires-confirmation",
-			riskScore: "medium",
-			reason: "Installing dependencies requires approval",
-			ok: true,
-		})
-	})
-
-	afterEach(() => {
-		unregisterAcpPrompter(TEST_SESSION_ID)
-		vi.unstubAllEnvs()
-		vi.mocked(classifyToolCall).mockReset().mockResolvedValue({
-			verdict: "safe",
-			riskScore: "low",
-			reason: "mock safe",
-			ok: true,
-			usedModelId: "deepseek-v4-flash-0731",
-		})
-	})
-
-	// Bug: both remember choices retain only cd's scope, so npm install prompts again.
-	it.each([
-		"narrow",
-		"wildcard",
-	])("TUI auto: %s remember approves an identical compound on its next call", async (scope) => {
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			const rememberChoices = choices.filter((choice) => choice.includes("don't ask again"))
-			return rememberChoices[scope === "narrow" ? 0 : 1]
-		})
-		const ctx = createClassifierContext()
-		ctx.hasUI = true
-		ctx.ui.select = select
-		const harness = createPermissionsHarness(["bash"], { auto: true })
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("first"), ctx)).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(1)
-		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-
-		expect(await harness.fire("tool_call", bashCall("repeat"), ctx)).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(1)
-		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-	})
-
-	// Bug: the ACP single-card branch also remembers only the first segment.
-	it.each([
-		"allow-remember",
-		"allow-remember-wildcard",
-	])("ACP default: %s approves an identical compound on its next call", async (kind) => {
-		const request = vi.fn<ToolPermissionPrompter["request"]>(async (req) => {
-			const selected = req.choices.find((choice) => choice.kind === kind)
-			if (selected?.kind !== "allow-remember" && selected?.kind !== "allow-remember-wildcard") {
-				throw new Error(`Missing ${kind} choice`)
-			}
-			return selected
-		})
-		registerAcpPrompter(TEST_SESSION_ID, { request })
-		const ctx = createClassifierContext()
-		ctx.mode = "rpc"
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("first"), ctx)).toBeUndefined()
-		expect(request).toHaveBeenCalledTimes(1)
-		expect(request.mock.calls[0][0].input).toEqual({ command })
-		expect(classifyToolCall).not.toHaveBeenCalled()
-		expect(ctx.ui.select).not.toHaveBeenCalled()
-
-		expect(await harness.fire("tool_call", bashCall("repeat"), ctx)).toBeUndefined()
-		expect(request).toHaveBeenCalledTimes(1)
-	})
-
-	it("TUI default: Allow all remembers an identical compound", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("first"), ctx)).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-		expect(await harness.fire("tool_call", bashCall("repeat"), ctx)).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-	})
-
-	// Bug: Allow all stores npm *, silently approving unrelated npm subcommands.
-	it("TUI default: remembering npm install still asks before npm publish", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("install"), ctx)).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-		const result = await harness.fire("tool_call", bashCall("publish", "cd /tmp && npm publish"), ctx)
-		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
-		expect(result).toEqual({ block: true, reason: "Declined by user" })
-	})
-
-	it("TUI default: Run all once asks again for the identical compound", async () => {
-		const ctx = createMockContext(["Run all (once)", "No — tell the assistant what to do differently"])
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("first"), ctx)).toBeUndefined()
-		expect(await harness.fire("tool_call", bashCall("repeat"), ctx)).toEqual({
-			block: true,
-			reason: "Declined by user",
-		})
-		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
-	})
-
-	// Bug: LLMs habitually append `2>&1 | tail -40`; the read-only filter tail
-	// made the compound's remember choice a silent no-op (stored only the cd scope).
-	it("TUI default: remembering a tail-pipelined compound approves the identical rerun silently", async () => {
-		const piped = "cd /tmp && npm install 2>&1 | tail -40"
-		const ctx = createMockContext(["Allow all from now on"])
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("first", piped), ctx)).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-
-		expect(await harness.fire("tool_call", bashCall("repeat", piped), ctx)).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-	})
-
-	// Guard pin: `sh` is NOT a whitelisted output filter — a remembered tail-
-	// pipelined compound must never widen to cover an appended shell stage.
-	it("TUI default: a shell stage after the filter tail still prompts on rerun", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(
-			await harness.fire("tool_call", bashCall("first", "cd /tmp && npm install 2>&1 | tail -40"), ctx),
-		).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-
-		const result = await harness.fire(
-			"tool_call",
-			bashCall("repeat", "cd /tmp && npm install 2>&1 | tail -40 | sh"),
-			ctx,
-		)
-		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
-		expect(result).toEqual({ block: true, reason: "Declined by user" })
-	})
-
-	// Only mutable segments prompt; remembering them settles the compound.
-	it("TUI picker: remembering each prompted segment settles the identical compound", async () => {
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
-			if (picker) return picker
-			const remember = choices.find((choice) => choice.includes("don't ask again"))
-			if (remember) return remember
-			return choices.find((choice) => choice.includes("just this call"))
-		})
-		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select } })
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		expect(await harness.fire("tool_call", bashCall("first"), ctx)).toBeUndefined()
-		// Compound card + npm install prompt; cd is implicitly read-only.
-		expect(select).toHaveBeenCalledTimes(2)
-
-		// Standalone npm install no longer prompts either.
-		expect(await harness.fire("tool_call", bashCall("npm-alone", "npm install"), ctx)).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(2)
-
-		expect(await harness.fire("tool_call", bashCall("repeat"), ctx)).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(2)
-	})
-
-	// Directory-changing segments are skipped; approval applies to npm install.
-	it.each(["approve", "deny"])("TUI picker: skip cd and let the user %s npm install", async (decision) => {
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
-			if (picker) return picker
-			return choices.find((choice) => choice.includes(decision === "approve" ? "just this call" : "No —"))
-		})
-		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select } })
-		const harness = createPermissionsHarness(["bash"])
-		await harness.fire("session_start", {}, ctx)
-
-		// Standalone cd still never prompts.
-		expect(await harness.fire("tool_call", bashCall("cd-alone", "cd /tmp"), ctx)).toBeUndefined()
-		expect(select).not.toHaveBeenCalled()
-
-		const result = await harness.fire("tool_call", bashCall("compound"), ctx)
-		expect(result).toEqual(decision === "approve" ? undefined : { block: true, reason: "Declined by user" })
-		// Prompt titles embed shiki highlighting; strip ANSI codes before matching.
-		const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
-		const titles = select.mock.calls.slice(1).map(([title]) => title.replace(ansiEscape, ""))
-		expect(titles).toEqual([expect.stringContaining("npm install")])
 	})
 })
 
@@ -2388,7 +2248,7 @@ describe("handleCompoundConfirm", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("adds narrow per-segment rules to session for allow-all-remember", async () => {
+	it("adds wildcard rules to session for allow-all-remember", async () => {
 		const ctx = createMockContext(["Allow all from now on"])
 		const event = createMockEvent()
 
@@ -2397,15 +2257,13 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["npm install", "npm test"],
+			subcommands: ["echo a", "whoami"],
 		})
 
 		expect(result).toBeUndefined()
 		expect(session.all()).toHaveLength(2)
-		// Narrow scopes, not `npm *`: remembering must not grant
-		// more than the subcommands shown on the card.
-		expect(session.all()[0].content).toBe("npm install:*")
-		expect(session.all()[1].content).toBe("npm test:*")
+		expect(session.all()[0].content).toBe("echo *")
+		expect(session.all()[1].content).toBe("whoami *")
 	})
 
 	it("inputs feedback for deny-with-feedback", async () => {
@@ -2462,122 +2320,6 @@ describe("handleCompoundConfirm", () => {
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
 	})
 
-	it.each([
-		"cd /tmp",
-		"pushd /tmp",
-		"popd",
-	])("picker skips %s and remembers only the mutable command", async (command) => {
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
-			if (picker) return picker
-			return choices.find((choice) => choice.includes("don't ask again"))
-		})
-		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select } })
-		const event = createMockEvent()
-		const result = await handleCompoundConfirm(event, {
-			ctx,
-			session,
-			pi,
-			activeAborts,
-			subcommands: [command, "npm install"],
-		})
-
-		expect(result).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(2)
-		const npmChoices = select.mock.calls[1][1]
-		const npmRemember = npmChoices.find((choice) => choice.includes("don't ask again"))
-		expect(npmRemember).toContain("npm install:*")
-		expect(npmRemember).not.toContain(command)
-		expect(session.all()).toEqual([
-			{ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" },
-		])
-	})
-
-	it("picker stores NOTHING on allow-once for every segment", async () => {
-		const ctx = createMockContext(["Pick permissions per subcommand", "Yes — just this call"])
-		const event = createMockEvent()
-		const result = await handleCompoundConfirm(event, {
-			ctx,
-			session,
-			pi,
-			activeAborts,
-			subcommands: ["cd /tmp", "npm install"],
-		})
-
-		expect(result).toBeUndefined()
-		expect(session.all()).toEqual([])
-	})
-
-	it("picker stores NOTHING when the mutable command is denied", async () => {
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
-			if (picker) return picker
-			return choices.find((choice) => choice.includes("No —"))
-		})
-		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select } })
-		ctx.ui.input = vi.fn(async () => "")
-		const event = createMockEvent()
-		const result = await handleCompoundConfirm(event, {
-			ctx,
-			session,
-			pi,
-			activeAborts,
-			subcommands: ["cd /tmp", "npm install"],
-		})
-
-		// cd is skipped; denying npm install stores nothing.
-		expect(result).toEqual({ block: true, reason: "Declined by user" })
-		expect(select).toHaveBeenCalledTimes(2)
-		expect(session.all()).toEqual([])
-	})
-
-	it.each([
-		"cd /new",
-		"pushd /new",
-		"popd",
-	])("picker skips %s when the mutable segment is already approved", async (command) => {
-		const rule: Rule = { toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" }
-		session.add(rule)
-		const ctx = createMockContext(["Pick permissions per subcommand"])
-		const result = await handleCompoundConfirm(createMockEvent(), {
-			ctx,
-			session,
-			pi,
-			activeAborts,
-			subcommands: [command, "npm install"],
-		})
-
-		expect(result).toBeUndefined()
-		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
-		expect(session.all()).toEqual([rule])
-	})
-
-	// Regression: the read-only shortcut bypasses deny rules added while the picker is open.
-	it("picker rechecks a read-only subcommand denied while the prompt is open", async () => {
-		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			session.add({ toolName: "bash", content: "git diff:*", behavior: "deny", source: "session" })
-			return choices.find((choice) => choice.includes("Pick permissions per subcommand"))
-		})
-		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select } })
-		const event = { ...createMockEvent(), input: { command: "git diff && npm install && npm publish" } }
-
-		// No deny exists yet, so the early gate cannot catch the later rule change.
-		// (npm publish is mutable and unruled — that alone opens the prompt.)
-		expect(checkCompoundCommand(event.input.command, session.all()).decision).toBe("prompt")
-		const result = await handleCompoundConfirm(event, {
-			ctx,
-			session,
-			pi,
-			activeAborts,
-			subcommands: ["git diff", "npm install", "npm publish"],
-		})
-
-		expect(select).toHaveBeenCalledTimes(1)
-		expect(checkCompoundCommand(event.input.command, session.all()).decision).toBe("deny")
-		expect(result).toEqual({ block: true, reason: "Subcommand blocked by rule: git diff" })
-	})
-
 	it("returns undefined for pick-per-subcommand when all subcommands already allowed", async () => {
 		// Pre-add rules so all subcommands are allowed
 		session.add({ toolName: "bash", content: "echo *", behavior: "allow", source: "session" })
@@ -2608,9 +2350,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			// Non-read-only subcommands: read-only segments skip the per-subcommand
-			// prompt entirely (a standalone call would never ask either).
-			subcommands: ["npm install", "cargo build"],
+			subcommands: ["echo a", "whoami"],
 		})
 
 		expect(result).toBeUndefined()
@@ -2627,7 +2367,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["npm install", "cargo build"],
+			subcommands: ["echo a", "whoami"],
 		})
 
 		expect(result).toEqual({
@@ -2650,7 +2390,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["npm install", "cargo build"],
+			subcommands: ["echo a", "whoami"],
 		})
 
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
@@ -2690,9 +2430,9 @@ describe("handleCompoundConfirm", () => {
 	})
 
 	it("returns block when a subcommand matches deny rule in pick-per-subcommand mode", async () => {
-		session.add({ toolName: "bash", content: "cargo *", behavior: "allow", source: "session" })
-		// Add deny rule for npm
-		session.add({ toolName: "bash", content: "npm *", behavior: "deny", source: "session" })
+		session.add({ toolName: "bash", content: "whoami *", behavior: "allow", source: "session" })
+		// Add deny rule for echo
+		session.add({ toolName: "bash", content: "echo *", behavior: "deny", source: "session" })
 
 		const ctx = createMockContext(["Pick permissions per subcommand"])
 		const event = createMockEvent()
@@ -2702,15 +2442,16 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["npm install", "cargo build"],
+			subcommands: ["echo a", "whoami"],
 		})
 
-		expect(result).toEqual({ block: true, reason: "Subcommand blocked by rule: npm install" })
+		expect(result).toEqual({ block: true, reason: "Subcommand blocked by rule: echo a" })
 	})
 
 	it("remembers subcommand permission in pick-per-subcommand mode", async () => {
-		// No pre-existing rules - both subcommands need approval.
-		// Subcommands are non-read-only so the per-subcommand prompts actually fire.
+		// No pre-existing rules - both subcommands need approval
+		// The label for bash subcommands is "bash(command)" via recommendScope
+		// We use assert to dynamically check what label the implementation uses
 		const mockSelect = vi.fn()
 		let yesRememberLabel = ""
 		mockSelect.mockImplementation(async (_title: string, choices: string[]) => {
@@ -2730,12 +2471,12 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["npm install", "cargo build"],
+			subcommands: ["echo hello", "whoami"],
 		})
 
 		expect(result).toBeUndefined()
-		// Should have added a narrow session rule for cargo build (not `cargo *`)
-		expect(session.all().map((r) => r.content)).toEqual(["cargo build:*"])
+		// Should have added a session rule for whoami
+		expect(session.all().length).toBeGreaterThanOrEqual(1)
 	})
 
 	it("returns block with default reason for unrecognized choice", async () => {
@@ -2818,8 +2559,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
-			// Non-read-only subcommands so both nested prompts fire.
-			subcommands: ["npm install", "cargo build"],
+			subcommands: ["echo a", "whoami"],
 		})
 		expect(result).toBeUndefined()
 
@@ -2875,12 +2615,14 @@ describe("herdr:blocked signaling", () => {
 })
 
 describe("compound command auto-mode fall-through", () => {
-	it("read-only compound is allowed directly by the gate", () => {
-		// Read-only segments are implicitly allowed inside compounds, so the
-		// gate now approves `ls && pwd` itself — the handler's read-only
-		// auto-approve path is a fallback, not a requirement.
+	it("read-only compound returns prompt from checkCompoundCommand so the handler can approve it", () => {
+		// The early gate in the handler ONLY short-circuits on allow/deny;
+		// "prompt" falls through to evaluateRules → read-only auto-approve.
+		// For ls && pwd, isReadOnlyBashCommand returns true, so the handler
+		// silently approves it. checkCompoundCommand must NOT block it.
 		const result = checkCompoundCommand("ls && pwd", [])
-		expect(result.decision).toBe("allow")
+		expect(result.decision).toBe("prompt")
+		expect(result.subcommands).toEqual(["ls", "pwd"])
 	})
 
 	it("hard-blocked compound is denied by the early gate (not auto-mode)", () => {

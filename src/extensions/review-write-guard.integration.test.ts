@@ -7,6 +7,7 @@ import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { buildAgentOutcome } from "./agents/manager/agent-manager.js"
 import { setMultiModelEnabled } from "./multi-model.js"
 import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
 
@@ -277,6 +278,93 @@ describe("reviewWriteGuardExtension wiring", () => {
 			},
 		})
 
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not arm on a background Agent acknowledgement", () => {
+		const pi = createMockPI({ steerThreshold: 1 })
+
+		emit(pi, "tool_result", {
+			toolName: "Agent",
+			result: undefined,
+			details: { status: "background", agentId: "agent-1" },
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it.each([
+		["running", "running"],
+		["queued", "queued"],
+		["running", "completed"],
+	] as const)("does not arm on a %s poll with a real %s outcome", (status, outcomeStatus) => {
+		const pi = createMockPI()
+		const agentOutcome = buildAgentOutcome({
+			id: "agent-1",
+			type: "Builder",
+			description: "implementation in progress",
+			visibility: "user",
+			status: outcomeStatus,
+			startedAt: 1,
+			toolUses: 0,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compactionCount: 0,
+			currentAttemptId: 0,
+		})
+
+		// Polls include buildAgentOutcome before completion, and a resumed worker
+		// retains its previous terminal outcome while its outer status is running.
+		emit(pi, "tool_result", {
+			toolName: "get_subagent_result",
+			details: { status, agentId: "agent-1", agentOutcome },
+		})
+		for (let i = 0; i < 6; i++) emit(pi, "tool_call", { toolName: "edit" })
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+
+		// Polling another worker must not reset an already armed allowance.
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_result", {
+			toolName: "get_subagent_result",
+			details: { status, agentId: "agent-1", agentOutcome },
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		for (let i = 0; i < 3; i++) emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.blockResult?.block).toBe(true)
+	})
+
+	it("arms only when get_subagent_result carries a terminal outcome", () => {
+		const pi = createMockPI({ steerThreshold: 1, triageSteerThreshold: 3 })
+
+		// A status-only poll must not count as a worker return.
+		emit(pi, "tool_result", {
+			toolName: "get_subagent_result",
+			result: undefined,
+			details: { status: "running", agentId: "agent-1" },
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// A failed terminal result arms triage thresholds, not success thresholds.
+		emit(pi, "tool_result", {
+			toolName: "get_subagent_result",
+			result: undefined,
+			details: {
+				status: "error",
+				agentId: "agent-1",
+				agentOutcome: { status: "error", outcome: "failed", subagentType: "Builder" },
+			},
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })

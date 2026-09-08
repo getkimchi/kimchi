@@ -17,16 +17,28 @@ Run these commands and read these files to build your evidence base. Do NOT skip
    - Parse the header line (type: "session") for session metadata (id, cwd, timestamp)
    - Extract all entries, noting their type, id, parentId, and timestamp
 2. Build the delegation timeline:
-   a. Scan all "message" entries for assistant tool_use blocks with name: "Agent"
-   b. For each Agent call, extract: subagentType, model, thinking, tokenBudget, and the turn index
-   c. Scan for "agent_start" and "agent_end" entries (type: "agent_start" / "agent_end")
-   d. For each agent span, record: start timestamp, end timestamp, subagentType, model
-   e. When agent_start/agent_end entries are missing, infer the span from the Agent
-      tool_use timestamp to the corresponding tool_result for that call
-   f. Build a chronological segment map:
-      - Self-performed segments: turns where the orchestrator worked directly (no active delegation)
-      - Delegated segments: agent_start→agent_end windows (or Agent tool_use→tool_result windows
-        when entries are missing), tagged with the subagentType (e.g. explorer, researcher, builder)
+   a. Scan assistant content for type: "toolCall", name: "Agent", with parameters in
+      arguments (legacy provider tool_use blocks use input). Record id, subagent_type,
+      model, thinking, token_budget, run_in_background, timestamp, and turn index.
+   b. Join each call id to the message with role: "toolResult" and matching toolCallId.
+      Record details.agentId and any details.sessionFile. A result with status
+      "background", "running", or "queued" is NOT completion, even if agentOutcome exists.
+   c. For background agents, join subsequent get_subagent_result/resume_subagent calls
+      by arguments.agent_id to details.agentId and require a terminal status:
+      completed, steered, aborted, stopped, or error. Record outcome separately:
+      a terminal failure is not successful completion. If no terminal result is
+      recorded, leave the end unknown. Runtime agent_start/agent_end events are not
+      persisted session entries and must not be assumed to exist in JSONL.
+   d. agentOutcome.duration_ms/details.durationMs measure cumulative lifetime from
+      the worker's original start, including resumes; do not count them as each
+      attempt's duration. Derive resume spans from recorded attempt timestamps.
+      Otherwise leave attempt duration unknown, or label the resume-call-to-terminal-
+      result interval as an observed upper bound (polling may occur after completion).
+      Retain overlapping worker spans; do not collapse concurrent workers into one timeline.
+   e. Attribute parent turns to parent work even while a background worker runs.
+      Attribute child turns to their own agent/persona using recorded session links.
+      If a child session is unavailable, report its detailed usage as unavailable,
+      not zero, and do not assign parent usage to it by timestamp overlap.
 3. Extract model changes:
    - Scan for all "model_change" entries (type: "model_change")
    - Record: timestamp, provider, modelId
@@ -34,10 +46,12 @@ Run these commands and read these files to build your evidence base. Do NOT skip
 4. Extract per-turn usage data:
    - For each "message" entry with role: "assistant", extract:
      usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.cost.total
-   - Tag each turn with its segment (self-performed or delegated, and to which persona)
-   - Tag each turn with its active model (from model_change entries in step 3)
+   - Tag each turn with its owning session/agent segment (parent or delegated persona).
+     Read linked child sessions when available; deduplicate sessions and count each
+     assistant message once, including when worker spans overlap.
+   - Tag each turn with its active model (from model_change entries in its own session)
 5. Extract tool usage:
-   - For each assistant message, scan content blocks for type: "tool_use"
+   - For each assistant message, scan content blocks for type: "toolCall" (legacy: "tool_use")
    - Record tool name, frequency, and which segment each tool call occurred in
 6. Extract behaviour data (if present):
    - Scan for "behaviour_loaded", "behaviour_eval", "behaviour_session_summary" entries
@@ -76,11 +90,20 @@ Provide the grade, 2-4 bullet strengths, and 2-4 bullet weaknesses with specific
 
 #### 2.1 Delegation Discipline
 
+First establish the session's delegation policy from recorded mode/configuration,
+prompt, and user instructions. Single-model sessions and relaxed Ferment normally
+execute directly; strict multi-model sessions delegate work assigned to other roles
+while retaining any explicitly self-owned responsibilities. If the policy cannot
+be established, mark it unknown and do not infer a delegation requirement.
+
 Evaluate:
-- Did the session delegate work to the right persona at the right time? (e.g., exploration to an explorer agent, implementation to a builder)
-- Were delegations timely — was exploration delegated before implementation, not after?
-- Was self-performed work by the orchestrator minimized? (The orchestrator should delegate, not do the work itself.)
-- Were the right number of delegations used? (Too few = the orchestrator is doing too much itself; too many = excessive round-trips.)
+- Did execution follow that policy and the user's instructions? Do not penalize zero
+  delegations, direct execution, or a fixed model when those are the prescribed behavior.
+- Where delegation was required or requested, were the right personas used at the right time?
+- In strict mode, did the orchestrator delegate work assigned to other roles and keep
+  self-performed work within its allowed responsibilities?
+- Were delegations useful relative to their overhead? In relaxed mode, unnecessary
+  delegation can be the mistake; fewer delegations alone is not a defect.
 - Did each delegated segment produce a meaningful result that was used?
 - Were there unnecessary delegation churn or redundant subagent invocations?
 - Did the personas chosen match the work being done? (e.g., was a research persona used for code exploration instead of an explorer?)
@@ -89,7 +112,7 @@ Evaluate:
 #### 2.2 Architecture & Design Decisions
 
 Evaluate:
-- Were design decisions made before implementation began (via research or planning delegations, not ad-hoc during build)?
+- Were design decisions made before implementation began (through direct research/planning or delegation, as the session policy requires)?
 - Are module boundaries clean? (single-responsibility, clear public API)
 - Are cross-module dependencies sensible? (no circular imports, no god modules)
 - Does the code follow established project patterns? (check CLAUDE.md, existing conventions)
@@ -120,6 +143,9 @@ Evaluate:
 - Are there deprecation warnings or test smells? (hardcoded counts, fragile assertions)
 
 #### 2.5 Role-Model Alignment
+
+Judge model choices against the recorded policy and user-selected models. A required
+single-model run is not deficient for lacking cheaper workers or model switches.
 
 Evaluate:
 - Were expensive models (Opus) used primarily for complex work (planning, review)?
@@ -393,8 +419,9 @@ Per-model-pair breakdown:
 Search for all `Agent` tool calls within assistant turns. For each, capture:
 - The `turnIndex` when invoked
 - The model delegated to (from tool arguments: `model` field)
-- The `tokenBudget` requested
-- Whether a `get_subagent_result` or `steer_subagent` appears later in the session (indicating lifecycle completion or intervention)
+- The `token_budget` requested
+- The linked terminal outcome and any steer_subagent/resume_subagent intervention,
+  using the agent-ID joins from Step 1; a polling call alone is not completion
 
 Count subagent loops: # of `Agent` calls that precede a `steer_subagent` for the same subagent.
 
@@ -407,8 +434,10 @@ Output table:
 
 Definitions:
 - **Looped**: a `steer_subagent` was sent to this subagent before it completed
-- **Completed**: a `get_subagent_result` was received for this subagent
-- **Context-Complete**: no `steer_subagent` was needed (subagent self-completed)
+- **Completed**: a terminal result reports agentOutcome.outcome = "completed";
+  background acknowledgements and running/queued polls do not qualify
+- **Context-Complete**: assess the worker report and follow-up requests; absence of
+  steer_subagent alone does not establish that the worker had sufficient context
 
 ---
 
@@ -444,10 +473,11 @@ Aggregate token usage per class across all turns and per-model:
 ### Step 9: Cost per Completed Task
 
 A "task" is defined as a contiguous block of turns bounded by:
-- A delegation boundary (Agent call starting a new subagent, or agent_start/agent_end), OR
+- A delegation attempt boundary established by the agent-ID and terminal-result joins in Step 1, OR
 - A terminal outcome (all tests passing, human-explicit completion, or branch commit/push)
 
-Compute cost per task = sum of `usage.cost.total` for all turns within the block.
+Compute cost per task from the owning session's turns. Keep parallel worker tasks
+separate; do not count the same parent or child usage in multiple overlapping blocks.
 
 Only count tasks that reach a terminal state (tests pass, user confirms done, branch commit/push, etc.).
 

@@ -125,18 +125,12 @@ describe("OrchestratorWriteGuard — triage thresholds", () => {
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
-	it("uses triage thresholds after a non-terminal but valid subagent outcome", () => {
-		const guard = new OrchestratorWriteGuard({
-			steerThreshold: 2,
-			triageSteerThreshold: 4,
-			triageBlockThreshold: 8,
-		})
-		guard.recordSubagentReturn({ status: "queued", outcome: "completed" })
-		expect(guard.getState().armed).toBe(true)
+	it.each(["running", "queued"] as const)("ignores %s status even when an outcome says completed", (status) => {
+		const guard = new OrchestratorWriteGuard()
+		guard.recordSubagentReturn({ status, outcome: "completed" })
+		expect(guard.getState().armed).toBe(false)
 		expect(guard.getState().lastSubagentSuccessful).toBe(false)
-		// 3 edits under the triage threshold of 4 should not trigger a steer.
-		for (let i = 0; i < 3; i++) guard.checkToolCall("edit")
-		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+		for (let i = 0; i < 6; i++) expect(guard.checkToolCall("edit")).toBeUndefined()
 	})
 
 	it("uses triage thresholds for an unknown subagent outcome", () => {

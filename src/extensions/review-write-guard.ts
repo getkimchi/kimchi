@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
+import { fermentDelegationIsStrict } from "./ferment/delegation-mode.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
@@ -126,6 +127,10 @@ export class OrchestratorWriteGuard {
 	}
 
 	recordSubagentReturn(outcome?: AgentOutcomeSummary): void {
+		// Polling includes structured outcomes before completion. It must neither
+		// arm this guard nor reset counters from a previously returned worker.
+		if (outcome?.status === "running" || outcome?.status === "queued") return
+
 		// Arm on any subagent return. The guard stays armed for the remainder
 		// of this user turn; pi.on("agent_start") resets at the next user prompt.
 		this.armed = true
@@ -194,17 +199,19 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 	const details = event.details
 	if (!details || typeof details !== "object") return undefined
 
-	const agentOutcome = (details as Record<string, unknown>).agentOutcome
+	const record = details as Record<string, unknown>
+	const agentOutcome = record.agentOutcome
 	if (!agentOutcome || typeof agentOutcome !== "object") return undefined
 
 	const ao = agentOutcome as Record<string, unknown>
-	const rawStatus = typeof ao.status === "string" ? ao.status : undefined
 	const rawOutcome = typeof ao.outcome === "string" ? ao.outcome : undefined
-	const detailsSubagentType = (details as Record<string, unknown>).subagentType
+	const detailsSubagentType = record.subagentType
 
-	const status = AGENT_RECORD_STATUSES.includes(rawStatus as AgentRecord["status"])
-		? (rawStatus as AgentRecord["status"])
-		: undefined
+	// A resumed worker keeps its previous outcome until it finishes. The outer
+	// status describes the live record and takes precedence over that snapshot.
+	const status =
+		AGENT_RECORD_STATUSES.find((value) => value === record.status) ??
+		AGENT_RECORD_STATUSES.find((value) => value === ao.status)
 	const outcome = AGENT_OUTCOME_KINDS.includes(rawOutcome as AgentOutcomeKind)
 		? (rawOutcome as AgentOutcomeKind)
 		: undefined
@@ -219,6 +226,13 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 					? detailsSubagentType
 					: undefined,
 	}
+}
+
+function isBackgroundAcknowledgement(event: { details?: unknown }): boolean {
+	const details = event.details
+	if (!details || typeof details !== "object") return false
+	const record = details as Record<string, unknown>
+	return record.status === "background" && !record.agentOutcome
 }
 
 /**
@@ -237,7 +251,7 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
  * strict, and what makes delegation the default outside ferment.
  */
 function delegationRequired(ctx: ExtensionContext): boolean {
-	return getMultiModelEnabled(ctx.sessionManager)
+	return fermentDelegationIsStrict(getMultiModelEnabled(ctx.sessionManager))
 }
 
 export interface ReviewWriteGuardExtensionOptions extends OrchestratorWriteGuardOptions {
@@ -324,6 +338,9 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Re
 
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName === "Agent") {
+			// A background Agent result is only an acknowledgement that work was
+			// queued. The terminal outcome arrives via get_subagent_result.
+			if (isBackgroundAcknowledgement(event)) return
 			const guard = getOrchestratorWriteGuard(ctx)
 			// A ferment can activate mid-turn, after the guard was already armed.
 			// Reset rather than arm so the orchestrator is not left throttled under
@@ -333,6 +350,20 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Re
 				return
 			}
 			guard.recordSubagentReturn(extractAgentOutcome(event))
+			return
+		}
+
+		// Polling can carry a nonterminal outcome; recordSubagentReturn ignores it.
+		// Status-only results without an outcome cannot arm the guard either.
+		if (event.toolName === "get_subagent_result") {
+			const outcome = extractAgentOutcome(event)
+			if (!outcome) return
+			const guard = getOrchestratorWriteGuard(ctx)
+			if (!isDelegationRequired(ctx)) {
+				guard.reset()
+				return
+			}
+			guard.recordSubagentReturn(outcome)
 		}
 	})
 }
