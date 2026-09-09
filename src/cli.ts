@@ -18,6 +18,7 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -561,7 +562,7 @@ try {
 		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+		const rawArgsWithoutMultiModel = stripMemoryArgs(stripMultiModelArgs(rawArgs))
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI

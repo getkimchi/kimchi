@@ -52,6 +52,15 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 	const isEnabled = deps.isEnabled ?? (() => getParsedCliArgs().options.memory === true)
 
 	return function memoryExtension(pi: ExtensionAPI): void {
+		// Registered unconditionally — pi rejects unknown extension flags at
+		// startup (applyExtensionFlagValues), so "memory" must be known even
+		// when the feature is off. Dual-declared with CLI_OPTIONS in
+		// cli-args.ts (the kimchi-side parser + help text), same as --yolo/--plan.
+		pi.registerFlag("memory", {
+			description: "Enable persistent personal memory (capture + recall across sessions, local-only storage).",
+			type: "boolean",
+			default: false,
+		})
 		if (!isEnabled()) return
 
 		wireMemoryCapture(pi)

@@ -35,6 +35,17 @@ export function isPreDispatchValueFlag(arg: string): boolean {
 }
 
 /**
+ * Strip Kimchi-local memory flags from the args list before passing them
+ * upstream. pi-mono's parser treats any unknown "--flag" as greedy: it
+ * consumes the next argument as the flag's value, so `--memory "prompt"`
+ * would eat the prompt (see pi cli/args.ts unknownFlags handling). Kimchi
+ * parses --memory itself via populateCliArgs; pi must never see it.
+ */
+export function stripMemoryArgs(args: string[]): string[] {
+	return args.filter((arg) => arg !== "--memory" && !arg.startsWith("--memory="))
+}
+
+/**
  * Strip virtual multi-model CLI arguments from the args list before passing
  * them upstream. Upstream pi-mono does not recognize "multi-model" as a model
  * id, so we translate these flags into the multi-model side-channel instead.
