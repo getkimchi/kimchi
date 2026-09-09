@@ -208,6 +208,23 @@ function getSubcommand(args: string[]): string {
 
 const originalArgs = process.argv.slice(2)
 
+// The memory capture worker runs as a detached child of an exiting session.
+// In compiled binaries process.execPath is the kimchi binary itself, so the
+// worker is routed as a subcommand here (capture.ts takes the bun-script
+// path under `bun run`). Routed before telemetry/session setup so worker
+// invocations are invisible to app_started instrumentation.
+if (originalArgs[0] === "memory-capture") {
+	const { runCaptureWorker } = await import("./extensions/memory/capture-worker.js")
+	try {
+		const captured = await runCaptureWorker(originalArgs.slice(1))
+		console.log(`[memory-capture] captured ${captured} facts`)
+		process.exit(0)
+	} catch (err) {
+		console.error("[memory-capture] failed:", err instanceof Error ? err.message : err)
+		process.exit(1)
+	}
+}
+
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
 const infrastructureErrorTracker = createInfrastructureErrorTracker()

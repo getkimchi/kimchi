@@ -27,6 +27,7 @@ import {
 	createMemoryBackend,
 	type MemoryBackendOptions,
 } from "./backend.js"
+import { wireMemoryCapture } from "./capture.js"
 import { DIGEST_SCORE_THRESHOLD, digestDbPath, MEMORY_USER_ID } from "./config.js"
 import { buildMemoryDigest, type DigestComposition } from "./inject.js"
 import { createMemorySearchTool } from "./tools.js"
@@ -48,6 +49,8 @@ function isMemoryEnabled(): boolean {
 
 export default function memoryExtension(pi: ExtensionAPI): void {
 	if (!isMemoryEnabled()) return
+
+	wireMemoryCapture(pi)
 
 	// Per-runtime state (closure, like context-assembly's hash fields) — never
 	// module-level: each session runtime gets a fresh extension instance.
