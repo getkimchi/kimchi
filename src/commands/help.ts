@@ -32,6 +32,10 @@ const KIMCHI_FLAGS: FlagDoc[] = Object.entries(CLI_OPTIONS).map(([name, def]) =>
 
 const KIMCHI_ENV: FlagDoc[] = [
 	{ name: "KIMCHI_API_KEY", description: "Kimchi API key (overrides config.json apiKey)" },
+	{
+		name: "KIMCHI_MODEL",
+		description: "Inherited launch model; explicit CLI model selection takes precedence",
+	},
 	{ name: "KIMCHI_PERMISSIONS", description: "Initial permissions mode: default | plan | auto | yolo" },
 	{
 		name: "KIMCHI_TELEMETRY_ENABLED",

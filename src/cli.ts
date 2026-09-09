@@ -8,12 +8,12 @@ import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
+	applyModelEnvArgs,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
@@ -559,15 +559,12 @@ try {
 			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 			process.exit(1)
 		}
-		const rawArgs = atFileArgs.args
+		const rawArgs = applyModelEnvArgs(atFileArgs.args, process.env.KIMCHI_MODEL)
 
 		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
-		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
-			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
-		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
