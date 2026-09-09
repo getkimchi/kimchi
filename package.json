@@ -22,6 +22,7 @@
 		"lint": "biome check src/ scripts/ tests/",
 		"lint:fix": "biome check --write src/ scripts/ tests/",
 		"memory:check": "bun run src/extensions/memory/backend.check.ts",
+		"memory:measure": "bun run src/extensions/memory/verify-measure.ts",
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
