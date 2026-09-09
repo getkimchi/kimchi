@@ -97,7 +97,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							filters: { user_id: MEMORY_USER_ID },
 							topK: 8,
 						})
-						const list = (Array.isArray(results) ? results : results?.results ?? []) as Array<{
+						const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
 							memory?: string
 							score?: number
 						}>

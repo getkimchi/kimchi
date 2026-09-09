@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-	findSupersededIds,
-	type SupersedeCandidate,
-} from "./supersede.js"
+import { findSupersededIds, type SupersedeCandidate } from "./supersede.js"
 
 describe("findSupersededIds", () => {
 	const candidates: SupersedeCandidate[] = [
