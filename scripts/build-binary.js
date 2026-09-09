@@ -77,7 +77,12 @@ if (!isCI) {
 }
 
 cleanDist()
-run("typecheck", "pnpm run typecheck")
+// Opt-in skip (KIMCHI_SKIP_TYPECHECK=1): memory-constrained CI pods can OOM
+// tsc before the compile step. Benchmark artifact builds use it — product CI
+// still typechecks every src change; the benchmarked ref's own CI covers it.
+if (!process.env.KIMCHI_SKIP_TYPECHECK) {
+	run("typecheck", "pnpm run typecheck")
+}
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
 // If a new dependency causes a build failure, check whether it also needs --external here.
