@@ -257,7 +257,7 @@ describe("tags system prompt block", () => {
 					{ name: "set_phase", description: "Set the current work phase" },
 				],
 				env: testEnv,
-				mode: "single",
+				mode: "orchestrator",
 				sessionId: TEST_SESSION_ID,
 			})
 

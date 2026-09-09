@@ -6,7 +6,7 @@
 # Usage examples:
 #   ./scripts/run-local.sh -i terminal-bench/fix-git
 #   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
-#   MODEL=kimchi-dev/auto ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
+#   MODEL=multi-model ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
@@ -15,7 +15,7 @@ MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(git -C "$BENCH_DIR" rev-parse --show-toplevel)"
 source "$BENCH_DIR/scripts/model_api_key.sh"
-require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai
+require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai multi-model
 
 echo "==> Cross-building kimchi (target=linux-x64)"
 (cd "$REPO_ROOT" && pnpm run build:binary-linux-x64)

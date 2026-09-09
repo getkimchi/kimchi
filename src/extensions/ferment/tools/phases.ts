@@ -13,6 +13,7 @@ import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Grade, Phase } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
 import { getEffectiveModel } from "../../router/state.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
@@ -218,6 +219,7 @@ function pauseForManualPhaseBoundary(
 
 function formatManualPhaseBoundaryContinue(
 	ferment: Ferment,
+	multiModelEnabled: boolean,
 	completedPhase: Phase,
 	nextPhase: Phase,
 	projectChecksLine: string,
@@ -231,6 +233,7 @@ function formatManualPhaseBoundaryContinue(
 			"User chose to continue to the next phase.",
 		].join("\n"),
 		ferment,
+		multiModelEnabled,
 	)
 }
 
@@ -260,7 +263,14 @@ async function maybeCompleteManualPhaseBoundary(
 		)
 		if (choice === "Continue to next phase") {
 			return toolOk(
-				formatManualPhaseBoundaryContinue(ferment, completedPhase, nextPhase, projectChecksLine, warnSection),
+				formatManualPhaseBoundaryContinue(
+					ferment,
+					getMultiModelEnabled(ctx?.sessionManager ?? null),
+					completedPhase,
+					nextPhase,
+					projectChecksLine,
+					warnSection,
+				),
 			)
 		}
 	}
@@ -274,7 +284,11 @@ export async function completePhase(
 	services: PhaseHandlerServices = defaultPhaseHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(ctx ? getEffectiveModel(ctx) : undefined, ctx?.modelRegistry)
+	runtime.captureJudgeContext(
+		ctx ? getEffectiveModel(ctx) : undefined,
+		ctx?.modelRegistry,
+		getMultiModelEnabled(ctx?.sessionManager ?? null),
+	)
 
 	// Step 1: resolve the phase (host concern — fuzzy lookup).
 	const f = runtime.getStorage().get(params.ferment_id)
@@ -282,9 +296,11 @@ export async function completePhase(
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 
+	const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 	// FSM validation: complete_ferment_phase requires all phases to be terminal
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
-	if (fsmError) return toolErrWithNextAction(fsmError, f)
+	if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 	// Step 2a: validate gate coverage + per-verdict shape. Phase-scope is the
 	// one tool that does NOT short-circuit on a flag — flags feed the
@@ -604,7 +620,7 @@ export async function completePhase(
 		},
 		blockRetries: blockRetriesForTelemetry,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
 
 	// Clear the block-retry counter — phase advanced cleanly.
 	runtime.clearBlockRetry(params.ferment_id, phase.id)
@@ -663,6 +679,7 @@ export async function completePhase(
 						: ""
 				}`,
 				fresh,
+				multiModelEnabled,
 			),
 		)
 	}
@@ -671,6 +688,7 @@ export async function completePhase(
 		withNextActionHint(
 			`**Phase "${phase.name}"** done.${projectChecksLine}${warnSection}\n**Next:** "${nextPhase.name}".`,
 			fresh,
+			multiModelEnabled,
 		),
 	)
 }
@@ -686,11 +704,13 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		label: "Activate Phase",
 		description: "Start a planned phase.",
 		parameters: ActivateParams,
-		async execute(_, params) {
+		async execute(_, params, _abort, _onUpdate, ctx) {
 			// Resolution is a host concern (fuzzy lookup) — find the phase first,
 			// then dispatch to the right state-machine command.
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
+
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {
@@ -698,11 +718,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				target = f.phases.find((p) => p.name.toLowerCase().includes(name))
 			}
 			if (!target) target = f.phases.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
-			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f)
+			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f, multiModelEnabled)
 
 			// FSM validation: ensure phase activation is allowed
 			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -710,7 +730,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					type: "activate_phase_group",
 					groupIndex: target.groupIndex,
 				})
-				if (!outcome.ok) return failedToolResult(outcome.error, f)
+				if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 				// Hook: re-apply the profile based on the updated lifecycle state.
 				// pi-mono snapshots the active tool list at the start of each agent run,
@@ -750,12 +770,13 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					withNextActionHint(
 						`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_ferment_phase + start_ferment_step for each phase simultaneously.${dmSection}`,
 						fresh,
+						multiModelEnabled,
 					),
 				)
 			}
 
 			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 			// Hook: re-apply the profile based on the updated lifecycle state.
 			// pi-mono snapshots the active tool list at the start of each agent run,
@@ -784,6 +805,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				withNextActionHint(
 					`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${dmSection}`,
 					fresh,
+					multiModelEnabled,
 				),
 			)
 		},
@@ -795,7 +817,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		description:
 			"Add steps to an active phase. Overwrites existing. Use the phase_id returned by activate_ferment_phase.",
 		parameters: RefineParams,
-		async execute(_, params) {
+		async execute(_, params, _abort, _onUpdate, ctx) {
 			// Phase resolution: exact id → name substring → active phase fallback.
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
@@ -816,9 +838,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				)
 			}
 
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 			// FSM validation: refine_ferment_phase is only valid in PHASE_ACTIVE state
 			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "refine_phase",
@@ -828,9 +852,9 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (!outcome.ok) {
 				// Rewrite phase-not-active for the LLM-friendly form expected today.
 				if (outcome.error.code === "PHASE_NOT_IN_STATUS") {
-					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f)
+					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f, multiModelEnabled)
 				}
-				return failedToolResult(outcome.error, f)
+				return failedToolResult(outcome.error, f, multiModelEnabled)
 			}
 
 			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
@@ -847,6 +871,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				withNextActionHint(
 					`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}${verifyAdvisory}`,
 					outcome.ferment,
+					multiModelEnabled,
 				),
 			)
 		},
@@ -889,23 +914,25 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 			// FSM validation: phase must be active to skip
 			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 			const manualBoundary = await maybeCompleteManualPhaseBoundary(runtime, pi, outcome.ferment, phase, "", "", ctx, {
 				summaryLine: `Phase "${phase.name}" skipped.`,
 			})
 			if (manualBoundary) return manualBoundary
 
-			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment))
+			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment, multiModelEnabled))
 		},
 	})
 
@@ -914,26 +941,29 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 		label: "Fail Phase",
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 			// FSM validation: phase must be active to fail
 			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 			return toolOk(
 				withNextActionHint(
 					`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
 					outcome.ferment,
+					multiModelEnabled,
 				),
 			)
 		},

@@ -19,10 +19,13 @@
  * failures into JudgeFlag for a uniform on-disk audit trail.
  */
 
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { CharterClauseVerdict, FermentCharter, Grade } from "../../ferment/types.js"
+import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { renderCharterFull } from "./charter.js"
-import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
+import { getJudgeModel, getJudgeModelRegistry, isJudgeMultiModelEnabled } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 const JOURNEY_GRADE_MAX_ATTEMPTS = 3
@@ -54,9 +57,26 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
-/** Resolve the captured judge model's display ref for observability. */
+/** Resolve the model the judge grades with: in multi-model mode the configured
+ *  `modelRoles.judge` assignment (falling back to the captured session model
+ *  when it doesn't resolve); in single-model mode the captured session model —
+ *  roles never apply there. */
+function resolveJudgeModel(registry: ModelRegistry | undefined): Model<Api> | undefined {
+	if (!isJudgeMultiModelEnabled()) return getJudgeModel()
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
+	return (judgeRef && registry ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+}
+
+/**
+ * Resolve the judge model's display ref for observability (mirrors
+ * judgeApiCall's resolution — both go through resolveJudgeModel). Returns
+ * `provider/id`, or undefined when neither side is known (unit tests that
+ * inject apiCall hit this).
+ */
 export function describeJudgeModel(): string | undefined {
-	const model = getJudgeModel()
+	const model = resolveJudgeModel(getJudgeModelRegistry())
 	if (!model) return undefined
 	return `${model.provider}/${model.id}`
 }
@@ -65,7 +85,7 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }
 
-	const model = getJudgeModel()
+	const model = resolveJudgeModel(registry)
 	if (!model) return { ok: false, reason: "no_model" }
 
 	const auth = await registry.getApiKeyAndHeaders(model)

@@ -2,6 +2,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
+import { getMultiModelEnabled } from "./multi-model.js"
+import { getOrchestratorModelId } from "./orchestration/model-roles.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
@@ -29,6 +31,7 @@ interface AgentToolDetails {
 interface PromptSummaryData {
 	elapsed: string
 	orchestrator: UsageTotals | null
+	orchestratorModel?: string
 	subagents: UsageTotals | null
 	subagentsByModel?: Array<{ model: string; totals: UsageTotals }>
 	total: UsageTotals
@@ -114,7 +117,7 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 
 	if (!data.subagents) {
 		// No subagents — single compact row
-		const tokensLabel = "tokens"
+		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
 		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
@@ -127,7 +130,8 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		// Multi-row breakdown when subagents were involved
 		const rows: Array<{ label: string; totals: UsageTotals }> = []
 		if (data.orchestrator) {
-			rows.push({ label: "main model:", totals: data.orchestrator })
+			const label = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "main model:"
+			rows.push({ label, totals: data.orchestrator })
 		}
 		if (data.subagentsByModel?.length) {
 			for (const { model, totals } of data.subagentsByModel) {
@@ -232,9 +236,11 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 				? [...subagentModelTotals.entries()].map(([model, totals]) => ({ model, totals }))
 				: undefined
 
+		const sessionId = ctx.sessionManager.getSessionId()
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
+			orchestratorModel: getMultiModelEnabled(ctx.sessionManager) ? getOrchestratorModelId(sessionId) : undefined,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
 			subagentsByModel,
 			total: grandTotal,

@@ -26,6 +26,11 @@
 #   - Flag conflict crash: when an npm extension registers a flag that kimchi
 #     already provides (e.g. `--plan`), the conflict is downgraded from a hard
 #     error to a warning (kimchi built-in extensions load first and win).
+#   - Legacy multi-model is hidden from interactive surfaces only: the
+#     model-selector no longer injects the virtual "multi-model" row, and the
+#     slash-command autocomplete filters the multi-model command out. Legacy
+#     sessions and the explicit /multi-model command keep working — the
+#     virtual-selection handler in handleModelSelectorSearch stays patched in.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
 #   that routing. Do not re-add a dist hunk for it.
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
@@ -509,36 +514,7 @@ index bd88940..9a21d51 100644
          }
          // Add bottom border
          this.addChild(new DynamicBorder());
-@@ -107,6 +111,14 @@ export class ModelSelectorComponent extends Container {
-             model,
-         }));
-         this.allModels = this.sortModels(models);
-+        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
-+        if (orchRef) {
-+            const orchId = orchRef.split('/').pop();
-+            const orchEntry = this.allModels.find(m => m.id === orchId);
-+            if (orchEntry) {
-+                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
-+            }
-+        }
-         this.scopedModels = this.scopedModels.map((scoped) => {
-             const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
-             return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -116,6 +128,13 @@ export class ModelSelectorComponent extends Container {
-             id: scoped.model.id,
-             model: scoped.model,
-         }));
-+        if (orchRef) {
-+            const orchIdScoped = orchRef.split('/').pop();
-+            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
-+            if (orchScopedEntry) {
-+                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
-+            }
-+        }
-         this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-         this.filteredModels = this.activeModels;
-         const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -262,12 +281,17 @@ export class ModelSelectorComponent extends Container {
+@@ -262,12 +266,17 @@ export class ModelSelectorComponent extends Container {
              if (!item)
                  continue;
              const isSelected = i === this.selectedIndex;
@@ -558,7 +534,7 @@ index bd88940..9a21d51 100644
              const providerBadge = theme.fg("muted", `[${item.provider}]`);
              const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
              this.listContainer.addChild(new Text(line, 0, 0));
-@@ -352,6 +376,11 @@ export class ModelSelectorComponent extends Container {
+@@ -352,6 +361,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
          this.dispose();
@@ -647,6 +623,15 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index a1e7d98..304960d 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
+@@ -465,7 +465,7 @@ export class InteractiveMode {
+         const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
+         const extensionCommands = this.session.extensionRunner
+             .getRegisteredCommands()
+-            .filter((cmd) => !builtinCommandNames.has(cmd.name))
++            .filter((cmd) => !builtinCommandNames.has(cmd.name) && cmd.name !== "multi-model")
+             .map((cmd) => ({
+             name: cmd.invocationName,
+             description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
 @@ -1900,6 +1900,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),

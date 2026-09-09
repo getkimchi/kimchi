@@ -39,6 +39,7 @@ import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
+import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { renderCharterCompact } from "./charter.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
@@ -231,6 +232,36 @@ function findActivePhaseAndStep(ferment: Ferment): { phase?: Phase; step?: Step 
 	return { phase, step }
 }
 
+type RegisteredCompactorModel = ReturnType<NonNullable<ExtensionContext["modelRegistry"]>["find"]>
+
+interface CompactorModelResolution {
+	model?: RegisteredCompactorModel
+	fallbackWarning?: string
+}
+
+/** Resolve the optional compactor override; missing model means use the session model. */
+function resolveCompactorModel(ctx: ExtensionContext): CompactorModelResolution {
+	try {
+		const ref = getModelRoles().compactor
+		if (!ref) return {}
+		const parsed = splitModelRef(ref)
+		if (!parsed) {
+			return {
+				fallbackWarning: `Compactor model role "${ref}" is not a valid provider/model reference — stage compaction falls back to the session model`,
+			}
+		}
+		const model = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+		if (!model) {
+			return {
+				fallbackWarning: `Compactor model role "${ref}" is not in the model registry — stage compaction falls back to the session model`,
+			}
+		}
+		return { model }
+	} catch {
+		return {}
+	}
+}
+
 /** Append the plan-anchor lines every ferment compaction prompt must preserve
  *  (identity, success criteria, intent charter, open concerns). One home for
  *  the block so the two instruction builders cannot drift apart. */
@@ -391,8 +422,8 @@ function isExpectedCompactionError(error: Error): boolean {
 }
 
 /**
- * Fire `ctx.inlineCompact` with the shared ferment compaction options (thinking
- * level, keepRecent floor, force). Assumes the caller
+ * Fire `ctx.inlineCompact` with the shared ferment compaction options (compactor
+ * model override, thinking level, keepRecent floor, force). Assumes the caller
  * has already verified `ctx.inlineCompact` is a function.
  *
  * Never throws: returns `{ result }` on success or `{ error }` on failure. The
@@ -401,6 +432,7 @@ function isExpectedCompactionError(error: Error): boolean {
  * sharing the one call that must not drift — the `inlineCompact` invocation.
  */
 async function invokeInlineCompaction(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	customInstructions: string,
 	options: StageCompactionOptions,
@@ -409,9 +441,20 @@ async function invokeInlineCompaction(
 	if (typeof inlineCompact !== "function") {
 		return { error: new Error("inlineCompact unavailable") }
 	}
+	const compactorModel = resolveCompactorModel(ctx)
+	if (compactorModel.fallbackWarning) {
+		tryPiAction(() => {
+			pi.appendEntry("ferment_breadcrumb", { text: compactorModel.fallbackWarning })
+		})
+	}
 	try {
 		const result = await inlineCompact({
 			customInstructions,
+			// Optional override so compaction's summarization call can run on a
+			// separate (e.g. cheaper) model instead of the session's active one.
+			// Undefined when unconfigured — inlineCompact falls back to the session
+			// model exactly as before.
+			model: compactorModel.model,
 			thinkingLevel: options.thinkingLevel,
 			keepRecentTokens: Math.max(
 				options.minKeepRecentTokens,
@@ -620,7 +663,7 @@ async function triggerCompactionForPending(
 		// is a valid cut point, so the cut lands here and the next stage keeps
 		// exactly what it needs: compaction summary + plan handoff.
 		appendHandoffEntry(undefined, undefined, true)
-		const { result, error } = await invokeInlineCompaction(ctx, customInstructions, options)
+		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		runtime.clearCompactionInFlight(fermentId)
 		if (result) {
 			reportDegenerateSummaryIfAny(pi, ferment, result)
@@ -813,7 +856,7 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	// step-resume continuation below. Skipped once the no-op detector has
 	// proven the inline path ineffectual for this ferment.
 	if (typeof ctx.inlineCompact === "function" && !runtime.isMidTurnInlineSuppressed(fermentId)) {
-		const { result, error } = await invokeInlineCompaction(ctx, customInstructions, options)
+		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		if (result) {
 			runtime.clearCompactionInFlight(fermentId)
 			reportDegenerateSummaryIfAny(pi, activeFerment, result)

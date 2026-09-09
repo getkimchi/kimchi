@@ -8,7 +8,6 @@ import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-codin
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	applyModelEnvArgs,
-	findDeprecatedMultiModelFlag,
 	hasFermentOneshotArg,
 	hasPrintFlag,
 	isCliAtFileArg,
@@ -18,6 +17,7 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -96,6 +96,7 @@ import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
+import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
 import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import permissionsExtension from "./extensions/permissions/index.js"
@@ -158,7 +159,13 @@ import {
 	updateModelsConfig,
 } from "./models.js"
 import { IS_ACP_MODE } from "./modes/acp/state.js"
-import { injectOllamaProvider, readOllamaModelMetadata, resolveOllamaHost } from "./ollama.js"
+import {
+	augmentModelRolesWithOllama,
+	injectOllamaProvider,
+	readOllamaModelMetadata,
+	readOllamaModelsFromConfig,
+	resolveOllamaHost,
+} from "./ollama.js"
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
@@ -445,6 +452,14 @@ try {
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
 		setAvailableModels(models)
 
+		// Wire Ollama-discovered models into the explorer / reviewer / builder
+		// role pools. Runs after setAvailableModels so the resolved roles
+		// singleton reflects the same model list the picker exposes.
+		const ollamaModelsForRoles = readOllamaModelsFromConfig(modelsJsonPath)
+		if (ollamaModelsForRoles.length > 0) {
+			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
+		}
+
 		// Write default settings on first run only — respect user's choices afterward
 		const settingsPath = resolve(agentDir, "settings.json")
 		try {
@@ -518,14 +533,11 @@ try {
 		}
 		const rawArgs = applyModelEnvArgs(atFileArgs.args, process.env.KIMCHI_MODEL)
 
-		// Parse Kimchi-local CLI flags once before upstream pi-mono sees the args.
+		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
+		// before upstream pi-mono sees them (it does not recognize "multi-model"
+		// as a model id).
 		populateCliArgs(rawArgs)
-		const deprecatedMultiModelFlag = findDeprecatedMultiModelFlag(rawArgs)
-		if (deprecatedMultiModelFlag) {
-			throw new Error(
-				`The ${deprecatedMultiModelFlag} option was removed. Omit it to use Auto or select a concrete model with --model provider/modelId.`,
-			)
-		}
+		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -746,7 +758,7 @@ try {
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgs, { extensionFactories })
+			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
 		applyPostMainInfrastructureExitPolicy(
 			infrastructureErrorTracker.getFailure(),

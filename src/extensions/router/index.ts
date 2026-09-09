@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { getParsedCliArgs } from "../../cli-args.js"
+import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
+import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, isAutoModel } from "./constants.js"
 import { routeQuery } from "./router-client.js"
@@ -84,7 +85,13 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const hasPersistedSession = sessionFile !== undefined && existsSync(sessionFile)
 			const cliOptions = options.handleCliModelSelection ? getParsedCliArgs().options : undefined
 			const requestedModel = event.reason === "startup" ? cliOptions?.model : undefined
-			if (requestedModel && ctx.model && (isAutoModel(ctx.model) || sessionSelectsAuto(entries))) {
+			if (
+				requestedModel &&
+				requestedModel !== MULTI_MODEL_ID &&
+				ctx.model &&
+				(isAutoModel(ctx.model) || sessionSelectsAuto(entries))
+			) {
+				setMultiModelEnabled(sessionId, false)
 				// kimchi-dev: explicit CLI --model/--provider choice is user-initiated;
 				// persist it as the default (0.84.1 semantics - upstream 0.85.1 made
 				// setModel session-only by default).
@@ -102,7 +109,8 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 					!hasPersistedSession &&
 					!entries.some((entry) => entry.type === "message"))
 			const explicitLaunchChoice =
-				event.reason === "startup" && (cliOptions?.model || cliOptions?.provider || cliOptions?.models)
+				event.reason === "startup" &&
+				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
 			if (options.handleCliModelSelection && freshSession && !explicitLaunchChoice) {
 				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
 			}
@@ -117,6 +125,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 					return
 				}
 			}
+			setMultiModelEnabled(sessionId, false)
 			const state = hydrateAutoRoutingState(sessionId, entries, ctx.modelRegistry)
 			const sessionAutoModel = state.status === "resolved" ? autoModelForTarget(autoModel, state.model) : autoModel
 			const currentModel = ctx.model

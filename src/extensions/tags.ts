@@ -27,6 +27,7 @@ import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
+import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
 import { getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
@@ -457,7 +458,8 @@ const SetPhaseParams = Type.Object({
 	}),
 	thinking: Type.Optional(
 		Type.String({
-			description: "Optional thinking level to use when performing this phase yourself.",
+			description:
+				"Optional thinking level to use when the orchestrator performs this phase itself (not delegating). Set per the Orchestration Thinking levels table.",
 			enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 		}),
 	),
@@ -547,15 +549,22 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	// Register the set_phase tool unless the print gate suppresses the Ferment
-	// tool suite. Interactive sessions keep phase tagging available for all
-	// model selections.
-	if (!shouldSuppressFermentModeTools())
+	// Register the set_phase tool — unless this is a headless non-ferment run
+	// that is not multi-model. In --print sessions without a ferment one-shot
+	// the tool is dead surface (~217 est) for single-model runs, which never
+	// tag phases. Multi-model sessions run the orchestrator prompt, whose
+	// instructions tell the model to call set_phase — the tool must be
+	// registered whenever the session resolves multi-model so those
+	// instructions are satisfiable even when the print gate suppresses the
+	// ferment suite. Registration-time resolution covers the
+	// session-independent layers (CLI flag, settings default); the per-turn
+	// prompt gate re-checks the full effective value.
+	if (!shouldSuppressFermentModeTools() || resolveMultiModelEnabled(null).value)
 		pi.registerTool({
 			name: "set_phase",
 			label: "Set Phase",
 			description:
-				"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When performing a phase yourself, pass `thinking` to select the reasoning level.",
+				"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
 			parameters: SetPhaseParams,
 
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

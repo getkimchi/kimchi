@@ -2,9 +2,10 @@ import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
+import { getMultiModelEnabled } from "../multi-model.js"
+import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
-import { getEffectiveModel } from "../router/state.js"
 import type { TodoItem } from "../todos/types.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
@@ -144,7 +145,11 @@ type RenderedTranscriptEntry = {
 }
 
 export function resolveFermentV2EvaluatorModel(ctx: ExtensionContext): Model<Api> | undefined {
-	return getEffectiveModel(ctx)
+	const sessionModel = ctx.model
+	if (!getMultiModelEnabled(ctx.sessionManager)) return sessionModel
+	const assignment = normalizeRoleModels(getModelRoles().judge)[0]
+	const ref = assignment ? splitModelRef(assignment) : undefined
+	return (ref ? ctx.modelRegistry.find(ref.provider, ref.modelId) : undefined) ?? sessionModel
 }
 
 export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2EvaluatorOutput | undefined {

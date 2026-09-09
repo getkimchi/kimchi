@@ -23,6 +23,14 @@ function mockMetadata(): SessionStartMetadata {
 			"config.permission_mode": "default",
 			"config.agents_enabled": true,
 			"config.mcp_server_count": 2,
+			"config.multi_model_enabled": true,
+			"config.model_roles.orchestrator": "test/orch",
+			"config.model_roles.planner": "test/p1,test/p2",
+			"config.model_roles.builder": "test/build",
+			"config.model_roles.reviewer": "test/rev1,test/rev2",
+			"config.model_roles.explorer": "test/explore",
+			"config.model_roles.researcher": "test/research",
+			"config.model_roles.judge": "test/judge",
 		},
 		capturedAt: 1700000000000,
 	}
@@ -188,7 +196,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header["telemetry.is_wsl"]).toBe(false)
 	})
 
-	it("injects the config snapshot into the session header line", () => {
+	it("injects config snapshot incl. multimodel into the session header line", () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-config.jsonl")
@@ -200,8 +208,16 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 			.split("\n")
 			.filter((l) => l.trim().length > 0)
 		const header = JSON.parse(result[0])
+		expect(header["config.multi_model_enabled"]).toBe(true)
+		expect(header["config.model_roles.orchestrator"]).toBe("test/orch")
+		expect(header["config.model_roles.planner"]).toBe("test/p1,test/p2")
+		expect(header["config.model_roles.builder"]).toBe("test/build")
+		expect(header["config.model_roles.reviewer"]).toBe("test/rev1,test/rev2")
+		expect(header["config.model_roles.explorer"]).toBe("test/explore")
+		expect(header["config.model_roles.researcher"]).toBe("test/research")
+		expect(header["config.model_roles.judge"]).toBe("test/judge")
 		const configKeys = Object.keys(header).filter((k) => k.startsWith("config."))
-		expect(configKeys.length).toBe(7)
+		expect(configKeys.length).toBe(15)
 	})
 
 	it("appends config-change entries as custom entries", () => {
@@ -514,7 +530,8 @@ describe("postProcessHtmlExport", () => {
 		const os = hostMetadata.os as Record<string, unknown>
 		const cfg = hostMetadata.config as Record<string, unknown>
 		expect(os["telemetry.os"]).toBe("linux")
-		expect(cfg["config.agents_enabled"]).toBe(true)
+		expect(cfg["config.multi_model_enabled"]).toBe(true)
+		expect(cfg["config.model_roles.orchestrator"]).toBe("test/orch")
 	})
 
 	it("injects config-change entries into session-data entries", () => {

@@ -13,7 +13,9 @@ describe("GENERAL_TIPS", () => {
 
 		expect(messages).toContain("Press `shift+tab` to change permissions mode.")
 		expect(messages).toContain("Run `/settings > Themes` to change colors.")
-		expect(messages).toContain("Use `/model` to choose a concrete model for the session.")
+		expect(messages).toContain("Use `ctrl+p` or `/model` to select Auto for routing.")
+		expect(messages.join(" ")).not.toContain("multi-model")
+		expect(messages).toContain("Use `/model` to select single model for entire session")
 		expect(messages).toContain("Use `/agents` to manage agents or display running agents sessions")
 		expect(messages).toContain("Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).")
 		expect(messages).toContain("Resume the latest session with `kimchi --continue`.")

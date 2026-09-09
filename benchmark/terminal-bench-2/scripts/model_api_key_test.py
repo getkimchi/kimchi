@@ -5,14 +5,14 @@ from pathlib import Path
 import pytest
 
 HELPER = Path(__file__).with_name("model_api_key.sh")
-ALL_ROUTES = ("kimchi-dev", "openrouter", "anthropic", "moonshotai", "zai", "openai")
+ALL_ROUTES = ("kimchi-dev", "multi-model", "openrouter", "anthropic", "moonshotai", "zai", "openai")
 
 
 @pytest.mark.parametrize(
     ("model", "env_name"),
     [
         ("kimchi-dev/kimi-k2.7", "KIMCHI_API_KEY"),
-        ("kimchi-dev/auto", "KIMCHI_API_KEY"),
+        ("multi-model", "KIMCHI_API_KEY"),
         ("openrouter/example/model", "OPENROUTER_API_KEY"),
         ("anthropic/claude-sonnet-5", "ANTHROPIC_API_KEY"),
         ("moonshotai/kimi-k3", "MOONSHOT_API_KEY"),
@@ -61,28 +61,6 @@ def test_reports_the_route_specific_missing_key() -> None:
 
     assert result.returncode == 1
     assert result.stderr == "MOONSHOT_API_KEY is required for moonshotai/kimi-k3\n"
-
-
-def test_rejects_the_retired_multi_model_route() -> None:
-    env = {**os.environ, "KIMCHI_API_KEY": "test-key"}
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'source "$1"; require_model_api_key multi-model kimchi-dev',
-            "bash",
-            str(HELPER),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert result.returncode == 1
-    assert result.stderr == (
-        "multi-model selection was removed; use kimchi-dev/auto or a concrete provider/model: multi-model\n"
-    )
 
 
 def test_rejects_a_known_route_not_supported_by_the_runner() -> None:

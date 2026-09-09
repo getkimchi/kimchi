@@ -1113,14 +1113,27 @@ describe("judge renders intent charter", () => {
 })
 
 describe("describeJudgeModel", () => {
+	const judgeModel = { provider: "kimchi-dev", id: "judge-x" } as unknown as Model<Api>
 	const sessionModel = { provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>
+	const roleResolvingRegistry = { find: () => judgeModel } as unknown as ModelRegistry
 
 	afterEach(() => {
-		captureJudgeContext(undefined, undefined)
+		// Leave single-model mode behind so sibling describes keep their defaults.
+		captureJudgeContext(undefined, undefined, false)
 	})
 
-	it("returns the captured effective session model", () => {
-		captureJudgeContext(sessionModel)
+	it("returns the captured session model in single-model mode, ignoring the role", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry, false)
+		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
+	})
+
+	it("returns the judge-role model in multi-model mode when the role resolves", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry, true)
+		expect(describeJudgeModel()).toBe("kimchi-dev/judge-x")
+	})
+
+	it("falls back to the captured session model in multi-model mode when the role does not resolve", () => {
+		captureJudgeContext(sessionModel, { find: () => undefined } as unknown as ModelRegistry, true)
 		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 })
@@ -1128,7 +1141,7 @@ describe("describeJudgeModel", () => {
 describe("judgeApiCall", () => {
 	afterEach(() => {
 		completeMock.mockReset()
-		captureJudgeContext(undefined, undefined)
+		captureJudgeContext(undefined, undefined, false)
 	})
 
 	it.each(["kimi-k3", "judge-x"])("sends Pi token limits to the judge model (%s)", async (modelId) => {
@@ -1145,7 +1158,7 @@ describe("judgeApiCall", () => {
 			requests.push(options as (typeof requests)[number])
 			return { content: [{ type: "text", text: "ok" }], stopReason: "stop" }
 		})
-		captureJudgeContext(model, registry)
+		captureJudgeContext(model, registry, false)
 
 		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)

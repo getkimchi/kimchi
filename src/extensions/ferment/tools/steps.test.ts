@@ -13,6 +13,14 @@ vi.mock("../../agents/index.js", () => ({
 	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
 }))
 
+// Pin single-model mode: getMultiModelEnabled otherwise falls through to the
+// ambient settings.json default (true when unset — e.g. in CI), which would
+// flip start responses to the multi-model branch and make the direct-first
+// assertions environment-dependent.
+vi.mock("../../multi-model.js", () => ({
+	getMultiModelEnabled: () => false,
+}))
+
 import { createContext } from "../../__mocks__/context.js"
 import {
 	completeStep,

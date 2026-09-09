@@ -2,6 +2,8 @@ import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
+import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
+import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -156,16 +158,291 @@ describe("buildSystemPrompt", () => {
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
-	it("keeps Agent and all resolved skills in single-model prompts", () => {
-		const result = buildSystemPrompt({
-			tools,
-			env: testEnv,
-			skills: [createSkill({ name: "subagent-driven-development", description: "Use the delegated workflow." })],
-			mode: "single",
+	describe("orchestrator mode", () => {
+		it("includes all expected sections", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("You are Kimchi, an AI coding agent")
+			expect(result).toContain("# Environment")
+			expect(result).toContain("## Available Tools")
+			expect(result).toContain("## Documents")
+			expect(result).toContain("## Guidelines")
+			expect(result).toContain("## Orchestration")
+			expect(result).toContain("Token budgets")
+			expect(result).toContain("token_budget")
 		})
 
-		expect(result).toContain("read, bash, Agent, get_subagent_result, steer_subagent")
-		expect(result).toContain("subagent-driven-development")
+		it("includes all tool names (descriptions live in the API payload)", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
+			// Descriptions are intentionally not duplicated in the prompt: the API
+			// tools parameter already carries them.
+			expect(result).not.toContain("<available_tools>")
+			expect(result).not.toContain("Launch a specialized agent")
+		})
+
+		it("keeps phase behaviour but omits phase tool instructions without set_phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+
+			expect(result).not.toContain("Phase Tagging for Analytics")
+			expect(result).not.toContain("Call `set_phase`")
+			expect(result).toContain("### Phase-specific behaviour")
+			expect(result).toContain("During **plan** phase")
+		})
+
+		it("handles empty tools list", () => {
+			const result = buildSystemPrompt({
+				tools: [],
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("(No tools available)")
+		})
+
+		it("injects project context files", () => {
+			const contextFiles = [{ path: "/repo/AGENTS.md", content: "Always run tests before committing." }]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				contextFiles,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("# Project Guidelines")
+			expect(result).toContain("Always run tests before committing.")
+		})
+
+		it("places global context files before project context files", () => {
+			const contextFiles = [
+				{ path: "/home/testuser/.config/kimchi/harness/AGENTS.md", content: "Global rule" },
+				{ path: "/repo/AGENTS.md", content: "Project rule" },
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				contextFiles,
+				mode: "orchestrator",
+			})
+			const globalPos = result.indexOf("Global rule")
+			const projectPos = result.indexOf("Project rule")
+			expect(globalPos).toBeGreaterThan(-1)
+			expect(projectPos).toBeGreaterThan(-1)
+			expect(globalPos).toBeLessThan(projectPos)
+		})
+
+		it("injects skills", () => {
+			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("available_skills")
+			expect(result).toContain("deploy")
+			expect(result).toContain("Deploy the app to production")
+		})
+
+		it("excludes skills with disableModelInvocation", () => {
+			const skills = [
+				createSkill({ name: "safe-skill", description: "Visible skill" }),
+				createSkill({ name: "hidden-skill", description: "Hidden skill", disableModelInvocation: true }),
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("safe-skill")
+			expect(result).not.toContain("hidden-skill")
+		})
+
+		it("injects environment info", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain(`OS: ${testEnv.os}`)
+			expect(result).not.toContain(`OS release:`)
+			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
+			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
+			expect(result).toContain(`Shell: ${testEnv.shell}`)
+			expect(result).toContain(`Username: ${testEnv.username}`)
+			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
+			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
+			expect(result).toContain("Git repository: no")
+		})
+
+		it("injects git branch and remote when present", () => {
+			const gitEnv: EnvironmentInfo = {
+				...testEnv,
+				isGitRepo: true,
+				gitBranch: "main",
+				gitRemote: "git@github.com:org/repo.git",
+			}
+			const result = buildSystemPrompt({
+				tools,
+				env: gitEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("Git repository: yes")
+			expect(result).toContain("Git branch: main")
+			expect(result).toContain("Git remote: git@github.com:org/repo.git")
+		})
+
+		it("omits git branch and remote when not a git repo", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).not.toContain("Git branch:")
+			expect(result).not.toContain("Git remote:")
+		})
+
+		it("places environment section before project guidelines", () => {
+			const contextFiles = [{ path: "/repo/AGENTS.md", content: "custom rule" }]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				contextFiles,
+				mode: "orchestrator",
+			})
+			const envPos = result.indexOf("# Environment")
+			const contextPos = result.indexOf("# Project Guidelines")
+			expect(envPos).toBeLessThan(contextPos)
+		})
+
+		it("omits phase management when no phase tool or owned phase behaviour applies", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("During **explore** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("During **plan** phase")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).not.toContain("During **review** phase")
+		})
+
+		it("includes phase behaviour the orchestrator may perform directly", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				registry,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **plan** phase")
+			expect(result).not.toContain("During **explore** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).toContain("During **review** phase")
+		})
+
+		it("uses orchestrator-specific core guidelines", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("Follow **Orchestration** for what to do yourself vs delegate")
+			expect(result).not.toContain("Provide complete, functional code")
+		})
+
+		it("suppresses conflicting superpowers skills in orchestrator mode", () => {
+			const skills = [
+				createSkill({ name: "brainstorming", description: "Brainstorm" }),
+				createSkill({ name: "subagent-driven-development", description: "Alternate delegation workflow" }),
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("brainstorming")
+			expect(result).not.toContain("subagent-driven-development")
+		})
+
+		it("documents the canonical names of suppressed orchestrator-conflicting skills", () => {
+			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
+				"dispatching-parallel-agents",
+				"executing-plans",
+				"finishing-a-development-branch",
+				"receiving-code-review",
+				"requesting-code-review",
+				"subagent-driven-development",
+				"systematic-debugging",
+				"test-driven-development",
+				"verification-before-completion",
+				"writing-plans",
+			])
+		})
+
+		it("includes thinking levels in orchestrator mode", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				registry,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("### Thinking levels")
+			expect(result).toContain("| Build chunk | Builder |")
+		})
+
+		it("includes model-specific orchestration notes when model is provided", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("### Model-specific notes")
+			expect(result).toContain("MiniMax M2 family")
+		})
+
+		it("includes Phase Management section alongside model-specific orchestration notes", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				roles: {
+					...DEFAULT_MODEL_ROLES,
+					orchestrator: "kimchi-dev/minimax-m3",
+					planner: "kimchi-dev/minimax-m3",
+				},
+				mode: "orchestrator",
+			})
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **plan** phase")
+			expect(result).toContain("### Model-specific notes")
+		})
 	})
 
 	describe("subagent mode", () => {

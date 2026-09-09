@@ -37,7 +37,7 @@ def test_is_moonshot_model_detects_prefixed_names() -> None:
     assert is_moonshot_model("moonshotai/kimi-k2.7-code") is True
     assert is_moonshot_model("openrouter/moonshotai/kimi-k3") is False
     assert is_moonshot_model("kimchi-dev/kimi-k3") is False
-    assert is_moonshot_model("kimchi-dev/auto") is False
+    assert is_moonshot_model("multi-model") is False
     assert is_moonshot_model(None) is False
     assert is_moonshot_model("") is False
 

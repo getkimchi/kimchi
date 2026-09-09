@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getAcpClientInfo } from "../../../modes/acp/state.js"
+import { getProcessMultiModelEnabled } from "../../kimchi-process.js"
 import { getPermissionMode } from "../../permissions/mode-controller.js"
 import type { TelemetryAttributes } from "../session-context.js"
 
@@ -31,6 +32,12 @@ export function getPiSessionAttributes(ctx: ExtensionContext): TelemetryAttribut
 	const permissionMode = getPermissionMode(sessionId)?.mode
 	if (permissionMode !== undefined) {
 		attrs.permission_mode = permissionMode
+	}
+	// Using the process flag to avoid querying the configuration file
+	// in the case that the flag hasn't been persisted yet (slow).
+	const multiModel = getProcessMultiModelEnabled(sessionId)
+	if (multiModel !== undefined) {
+		attrs.multi_model_enabled = multiModel
 	}
 	return attrs
 }

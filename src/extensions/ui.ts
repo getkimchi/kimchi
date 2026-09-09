@@ -24,6 +24,7 @@ import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -387,6 +388,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
 		setSessionModeOnboardingStatusLineSuppressed(false)
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
@@ -530,7 +533,42 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						if (available.length > 0 && current) {
+						// Legacy sessions may still be in multi-model; cycling leaves that mode.
+						if (getMultiModelEnabled(ctx.sessionManager)) {
+							// Currently on the virtual multi-model entry — wrap to first real model.
+							// Check ALL models (including the orchestrator itself) because we are
+							// leaving the virtual entry, not a real model — the orchestrator in
+							// single-model mode is a valid distinct destination.
+							if (available.length > 0) {
+								const usage = ctx.getContextUsage()
+								const tokens = usage?.tokens ?? null
+								const images = sessionHasImages()
+								const curVision = current?.input.includes("image") ?? false
+								let firstReal: Model<Api> | undefined
+								for (const candidate of available) {
+									if (tokens !== null && candidate.contextWindow < tokens) continue
+									if (images && !candidate.input.includes("image") && curVision) continue
+									firstReal = candidate
+									break
+								}
+								if (firstReal) {
+									setMultiModelEnabled(sessionId, false)
+									if (current && modelsAreEqual(firstReal, current)) {
+										// Model object is the same (orchestrator → orchestrator) so setModel
+										// won't emit model_select and the status line won't re-render.
+										// Force a re-render via a no-op status update.
+										ctx.ui.setStatus("__model_cycle", undefined)
+									} else {
+										pi.setModel(firstReal).catch((err) => {
+											ctx.ui.notify(
+												`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
+												"warning",
+											)
+										})
+									}
+								}
+							}
+						} else if (available.length > 0 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
 

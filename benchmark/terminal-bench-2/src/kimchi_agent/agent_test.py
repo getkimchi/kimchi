@@ -161,7 +161,7 @@ async def test_run_uses_shell_process_group_cleanup_on_cancellation(tmp_path: Pa
     assert "pkill" not in agent.root_commands[0]
 
 
-async def test_run_passes_the_selected_model_to_workflow_subprocesses(tmp_path: Path) -> None:
+async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_path: Path) -> None:
     agent = RecordingKimchi(
         logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
         model_name="kimchi-dev/kimi-k2.6",
@@ -172,26 +172,13 @@ async def test_run_passes_the_selected_model_to_workflow_subprocesses(tmp_path: 
 
     command = agent.agent_commands[0]
     assert "--model kimchi-dev/kimi-k2.6" in command
-    assert "--multi-model" not in command
     assert agent.agent_envs[0]["KIMCHI_MODEL"] == "kimchi-dev/kimi-k2.6"
-    # Keep saved settings for older harness binaries.
+    assert "--multi-model" not in command
+    # Pinned on disk, not just on the CLI: workflow steps run as spawned
+    # kimchi subprocesses whose argv carries no --model, and would otherwise
+    # resolve multi-model=true and a different model from the global defaults.
     assert "~/.config/kimchi/harness/settings.json" in command
-    assert '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}' in command
-
-
-async def test_auto_route_passes_model_to_workflow_subprocesses(tmp_path: Path) -> None:
-    agent = RecordingKimchi(
-        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        model_name="kimchi-dev/auto",
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await agent.run("hello", object(), AgentContext())
-
-    command = agent.agent_commands[0]
-    assert "--model kimchi-dev/auto" in command
-    assert agent.agent_envs[0]["KIMCHI_MODEL"] == "kimchi-dev/auto"
-    assert '{"defaultProvider":"kimchi-dev","defaultModel":"auto"}' in command
+    assert '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}' in command
 
 
 async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None:
@@ -208,7 +195,7 @@ async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None
     assert "~/.config/kimchi/harness/settings.json" in command
     # One wholesale write — the model pin must not be dropped by the compaction key.
     assert (
-        '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
         '"compaction":{"enabled":false}}' in command
     )
 
@@ -227,7 +214,7 @@ async def test_ferment_v2_kwarg_enables_resource_and_prepends_command(tmp_path: 
     assert "printf '%s' '/ferment-v2 implement the task'" in command
     assert "--ferment-v2" not in command
     assert (
-        '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
         '"resources":{"extensions.ferment-v2":true}}' in command
     )
 
@@ -244,13 +231,50 @@ async def test_ferment_v2_kwarg_shares_harness_settings_write(tmp_path: Path) ->
 
     command = agent.agent_commands[0]
     assert (
-        '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
         '"compaction":{"enabled":false},"resources":{"extensions.ferment-v2":true}}' in command
     )
 
 
-def test_retired_multi_model_kwarg_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="agent kwarg was removed"):
+async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="multi-model",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "--model" not in command
+    assert "--multi-model" not in command
+    assert agent.agent_envs[0]["KIMCHI_MODEL"] == "multi-model"
+    assert "~/.config/kimchi/harness/settings.json" in command
+    assert '{"multiModel":true}' in command
+    assert "compaction" not in command
+    assert not agent._harness_settings_command().endswith("&& ")
+    assert f"{agent._harness_settings_command()} && set -m" in command
+    assert agent.to_agent_info().model_info.provider == "kimchi"
+    assert agent.to_agent_info().model_info.name == "multi-model"
+
+
+async def test_multi_model_with_disable_compaction_writes_both_settings_in_one_json(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="multi-model",
+        **{"disable-compaction": "true"},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    # Both keys must land in one write — the file is written wholesale.
+    assert '{"multiModel":true,"compaction":{"enabled":false}}' in command
+
+
+def test_legacy_multi_model_kwarg_cannot_enable_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must match model_name='multi-model'"):
         RecordingKimchi(
             logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
             model_name="kimchi-dev/kimi-k2.6",
@@ -258,11 +282,12 @@ def test_retired_multi_model_kwarg_is_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_retired_multi_model_selection_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="model_name='multi-model' was removed"):
+def test_multi_model_virtual_selection_rejects_explicit_false_kwarg(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must match model_name='multi-model'"):
         RecordingKimchi(
             logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
             model_name="multi-model",
+            **{"multi-model": False},
         )
 
 
@@ -381,11 +406,26 @@ async def test_run_passes_merged_tags_in_exec_env(tmp_path: Path) -> None:
     assert "run" not in tags
 
 
-def test_retired_disable_multi_model_kwarg_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match=r"disable-multi-model.*removed"):
+async def test_legacy_disable_multi_model_kwarg_does_not_emit_removed_cli_flag(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"disable-multi-model": True},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "--model kimchi-dev/kimi-k2.6" in command
+    assert "--multi-model" not in command
+
+
+def test_multi_model_and_legacy_disable_multi_model_conflict(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
         RecordingKimchi(
             logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-            model_name="kimchi-dev/kimi-k2.6",
+            model_name="multi-model",
             **{"disable-multi-model": True},
         )
 
@@ -1142,7 +1182,7 @@ def test_is_openrouter_model_detects_prefixed_names() -> None:
     assert is_openrouter_model("openrouter/z-ai/glm-5.2") is True
     assert is_openrouter_model("openrouter/anthropic/claude-opus-5-fast") is True
     assert is_openrouter_model("kimchi-dev/kimi-k2.6") is False
-    assert is_openrouter_model("kimchi-dev/auto") is False
+    assert is_openrouter_model("multi-model") is False
     assert is_openrouter_model(None) is False
     assert is_openrouter_model("") is False
 
@@ -1155,7 +1195,7 @@ def test_is_openrouter_model_detects_prefixed_names() -> None:
         ("anthropic/claude-sonnet-5", ["api.anthropic.com"]),
         ("zai/glm-5.2", ["api.z.ai"]),
         ("moonshotai/kimi-k3", ["api.moonshot.ai"]),
-        ("kimchi-dev/auto", ["llm.kimchi.dev"]),
+        ("multi-model", ["api.anthropic.com", "llm.kimchi.dev", "openrouter.ai"]),
     ],
 )
 def test_network_allowlist_domains_match_the_selected_route(

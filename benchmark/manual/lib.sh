@@ -102,7 +102,7 @@ bench_task_setup() {
 #   bench_generate_runner_script <output_path> <runner_type> <task_name> <model/cli_name> <session_dir> <session_num> <binary_or_cli> <temp_prefix>
 #
 # runner_type = "kimchi" | "claude"
-# model_name: for kimchi type, pass "" to use the Auto router.
+# model_name: for kimchi type, pass "" to run in multi-model mode (no --model flag).
 bench_generate_runner_script() {
   local output_path="$1"
   local runner_type="$2"
@@ -131,8 +131,7 @@ bench_generate_runner_script() {
     fi
 
     local run_dir_name="${task_name}"
-    local model_flag_line="  --model kimchi-dev/auto \\
-"
+    local model_flag_line=""
     if [[ -n "$model_name" ]]; then
       run_dir_name="${task_name}-${model_name}"
       model_flag_line="  --model kimchi-dev/${model_name} \\

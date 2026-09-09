@@ -4,6 +4,7 @@
 
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { ModelTier } from "../../orchestration/model-registry/types.js"
+import type { ModelRole } from "../../orchestration/model-roles.js"
 import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
@@ -103,9 +104,8 @@ export type MemoryScope = "user" | "project" | "local"
 /** Isolation mode for agent execution. */
 export type IsolationMode = "worktree"
 
-/** Task role and model tier labels used by agent configs. */
-export type AgentRole = "review" | "build" | "plan" | "explore" | "research"
-export type { ModelTier }
+/** Re-export orchestration types used in agent configs. */
+export type { ModelRole, ModelTier }
 
 /** Unified agent configuration — used for both default and user-defined agents. */
 export interface AgentConfig {
@@ -154,10 +154,10 @@ export interface AgentConfig {
 	/** Where this agent was loaded from */
 	source?: "default" | "project" | "global" | "package"
 	/**
-	 * Task roles this persona is optimized for. Used by agent auto-pick logic
-	 * when no model is explicitly specified and models[] is empty.
+	 * Task roles this persona is optimized for. Used by the orchestrator
+	 * auto-pick logic when no model is explicitly specified and models[] is empty.
 	 */
-	roles?: AgentRole[]
+	roles?: ModelRole[]
 }
 
 export type JoinMode = "async" | "group" | "smart"

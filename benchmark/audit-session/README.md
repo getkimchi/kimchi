@@ -84,7 +84,7 @@ cd benchmark/manual
 ./new-session.sh
 ```
 
-This creates `sessions/session-NN/` with run scripts. Most tasks use `--model kimchi-dev/auto`; `complex-single` is generated once per configured concrete model with `--model kimchi-dev/<model>`.
+This creates `sessions/session-NN/` with run scripts. Most tasks run in multi-model mode (no `--model` flag); `complex-single` is generated once per configured model with `--model` to force single-model mode.
 
 ### 2. Run the complex task
 

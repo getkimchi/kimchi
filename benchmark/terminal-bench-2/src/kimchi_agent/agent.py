@@ -76,6 +76,7 @@ CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 ANTHROPIC_PROVIDER = "anthropic"
+MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
@@ -211,8 +212,6 @@ def _coerce_bool_kwarg(value: object, name: str) -> bool:
 
 
 def _validate_model_name(model_name: str | None) -> None:
-    if model_name == "multi-model":
-        raise ValueError("--model multi-model was removed; use --model kimchi-dev/auto or a concrete provider/model")
     if not model_name or "/" not in model_name:
         raise ValueError(
             "--model is required and must be qualified with a provider "
@@ -303,14 +302,8 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
     ]
 
     def __init__(self, *args, **kwargs):
-        if "multi-model" in kwargs:
-            kwargs.pop("multi-model")
-            raise ValueError("the 'multi-model' agent kwarg was removed; use model_name='kimchi-dev/auto'")
-        if "disable-multi-model" in kwargs:
-            kwargs.pop("disable-multi-model")
-            raise ValueError(
-                "the 'disable-multi-model' agent kwarg was removed; remove it from the benchmark configuration"
-            )
+        multi_model_kwarg = kwargs.pop("multi-model", None)
+        disable_multi_model = _coerce_bool_kwarg(kwargs.pop("disable-multi-model", False), "disable-multi-model")
         # Compaction follows kimchi's default (on) unless explicitly disabled.
         disable_compaction = _coerce_bool_kwarg(kwargs.pop("disable-compaction", False), "disable-compaction")
         ferment_v2_enabled = _coerce_bool_kwarg(
@@ -320,10 +313,15 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         llm_per_model_params = _decode_agent_kwarg(kwargs.pop("llm-per-model-params", None))
 
         super().__init__(*args, **kwargs)
-        if self.model_name == "multi-model":
-            raise ValueError(
-                "model_name='multi-model' was removed; use model_name='kimchi-dev/auto' or a concrete provider/model"
-            )
+        selected_multi_model = self.model_name == MULTI_MODEL
+        legacy_multi_model = (
+            _coerce_bool_kwarg(multi_model_kwarg, "multi-model") if multi_model_kwarg is not None else False
+        )
+        if multi_model_kwarg is not None and legacy_multi_model != selected_multi_model:
+            raise ValueError("the 'multi-model' agent kwarg must match model_name='multi-model'")
+        if selected_multi_model and disable_multi_model:
+            raise ValueError("multi-model selection conflicts with legacy 'disable-multi-model=true'")
+        self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
         self._ferment_v2_enabled = ferment_v2_enabled
         self._llm_params = llm_params
@@ -342,6 +340,12 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         AgentInfo type. ``agent_info_types()`` picks the matching classes.
         """
         AgentInfo, ModelInfo = agent_info_types()
+        if self._multi_model_enabled:
+            return AgentInfo(
+                name=self.name(),
+                version=self.version() or "unknown",
+                model_info=ModelInfo(name="multi-model", provider="kimchi"),
+            )
         return AgentInfo(
             name=self.name(),
             version=self.version() or "unknown",
@@ -362,10 +366,13 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         proxy. The set is model-dependent: kimchi-dev/* routes through the
         Kimchi gateway, openrouter/* through OpenRouter, anthropic/* through the
         native Anthropic API, zai/* through Z.AI's API, and moonshotai/*
-        through the native Moonshot API.
+        through the native Moonshot API. Multi-model can route to any of the
+        gateway-served providers.
         """
         domains: set[str] = set()
-        if is_openrouter_model(self.model_name):
+        if self._multi_model_enabled:
+            domains.update({"llm.kimchi.dev", "openrouter.ai", "api.anthropic.com"})
+        elif is_openrouter_model(self.model_name):
             domains.add("openrouter.ai")
         elif is_anthropic_model(self.model_name):
             domains.add("api.anthropic.com")
@@ -545,23 +552,29 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        # kimchi's built-in pi-ai catalog also registers models like kimi-k2.7 under
-        # the opencode provider. Without a qualifier the resolver may pick opencode and
-        # fail auth with the kimchi key, so we force the caller to be explicit.
-        _validate_model_name(self.model_name)
-        # OpenRouter models are validated against OpenRouter's /api/v1/models
-        # endpoint at launch time, not against the Kimchi LLM gateway — so
-        # skip the gateway metadata fetch here.
-        self._is_openrouter = is_openrouter_model(self.model_name)
-        # zai/* models route directly through Z.AI's OpenAI-compatible API —
-        # no Kimchi gateway, and metadata is static so no catalogue fetch.
-        self._is_zai = is_zai_model(self.model_name)
-        # anthropic/* models use the native Anthropic API via pi-ai's built-in
-        # provider — no Kimchi gateway involvement.
-        self._is_anthropic = is_anthropic_model(self.model_name)
-        # moonshotai/* models use the native Moonshot API via pi-ai's
-        # built-in provider — no Kimchi gateway involvement.
-        self._is_moonshot = is_moonshot_model(self.model_name)
+        if not self._multi_model_enabled:
+            # kimchi's built-in pi-ai catalog also registers models like kimi-k2.7 under
+            # the opencode provider. Without a qualifier the resolver may pick opencode and
+            # fail auth with the kimchi key, so we force the caller to be explicit.
+            _validate_model_name(self.model_name)
+            # OpenRouter models are validated against OpenRouter's /api/v1/models
+            # endpoint at launch time, not against the Kimchi LLM gateway — so
+            # skip the gateway metadata fetch here.
+            self._is_openrouter = is_openrouter_model(self.model_name)
+            # zai/* models route directly through Z.AI's OpenAI-compatible API —
+            # no Kimchi gateway, and metadata is static so no catalogue fetch.
+            self._is_zai = is_zai_model(self.model_name)
+            # anthropic/* models use the native Anthropic API via pi-ai's built-in
+            # provider — no Kimchi gateway involvement.
+            self._is_anthropic = is_anthropic_model(self.model_name)
+            # moonshotai/* models use the native Moonshot API via pi-ai's
+            # built-in provider — no Kimchi gateway involvement.
+            self._is_moonshot = is_moonshot_model(self.model_name)
+        else:
+            self._is_openrouter = False
+            self._is_zai = False
+            self._is_anthropic = False
+            self._is_moonshot = False
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -591,7 +604,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             ),
             "KIMCHI_TAGS": kimchi_tags,
             # Workflow subprocesses inherit env but do not pass --model.
-            "KIMCHI_MODEL": self.model_name,
+            "KIMCHI_MODEL": self.model_name or "",
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
@@ -814,9 +827,13 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         # every key must land in a single write or the last writer clobbers the
         # rest.
         settings: dict[str, Any] = {}
+        # Absent, kimchi defaults to multi-model ON — and a workflow step is a spawned
+        # process whose argv has no --model, so it reads this file, not the launch flag.
+        settings["multiModel"] = self._multi_model_enabled
         provider, _, model_id = (self.model_name or "").partition("/")
-        if provider and model_id:
-            # Compatibility for older harness binaries that predate KIMCHI_MODEL.
+        if not self._multi_model_enabled and provider and model_id:
+            # Those same subprocesses would otherwise start on kimchi's built-in default
+            # rather than the model this run is labelled with.
             settings["defaultProvider"] = provider
             settings["defaultModel"] = model_id
         if self._disable_compaction:
@@ -907,7 +924,9 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         )
 
     def _kimchi_command(self, cli_flags: str) -> str:
-        model_flag = f"--model {shlex.quote(self.model_name or '')} "
+        model_flag = ""
+        if not self._multi_model_enabled:
+            model_flag = f"--model {shlex.quote(self.model_name or '')} "
 
         # Extension flags, if any, come right after the binary path — before
         # --print/--session/--model — matching the ordering used elsewhere

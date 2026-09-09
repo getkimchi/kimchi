@@ -12,7 +12,7 @@ Edit `benchmark.json` to match your environment:
 ```
 
 - `binary` — path to the kimchi binary (`~` is expanded)
-- `models` — model IDs for the concrete `complex-single` task (one script per model)
+- `models` — model IDs for the single-model `complex-single` task (one script per model)
 
 ## Workflow
 
@@ -22,10 +22,10 @@ Edit `benchmark.json` to match your environment:
 ./new-session.sh
 ```
 
-Creates `session-01` (or the next number) with run scripts under `runs/`. Each task passes an explicit model:
+Creates `session-01` (or the next number) with run scripts under `runs/`. Each task runs in one of two modes:
 
-- **Auto-routed** — `--model kimchi-dev/auto` lets the router select models per phase. Used by `simple`, `complex`, `research`, `explore`, and `mega`.
-- **Concrete** — `--model kimchi-dev/<model>` uses one model for the entire session. Used by `complex-single`, generated once per model in `benchmark.json`.
+- **Multi-model** — no `--model` flag; the orchestrator selects models per phase. Used by `simple`, `complex`, `research`, `explore`, and `mega`.
+- **Single-model** — `--model kimchi-dev/<model>` forces one model for the entire session. Used by `complex-single`, generated once per model in `benchmark.json`.
 
 ### 2. Run the scripts
 
@@ -86,25 +86,25 @@ Shows a table with token delta (%), subagent counts, and durations side by side.
 
 See `tasks.md` for full prompts, baseline implementations, and expected behavior.
 
-| Task | Model | Prompt summary | Expected |
+| Task | Mode | Prompt summary | Expected |
 |------|------|---------------|----------|
-| simple | `kimchi-dev/auto` | Go HTTP rate limiter middleware (token bucket, per-IP) | 0–2 subagents, <5 min, <300k tokens |
-| complex | `kimchi-dev/auto` | Go REST API task management (layered architecture) | 1–5 subagents, <10 min, <700k tokens |
-| complex-single | concrete (`--model`) | Same prompt as complex, one script per model | 0 subagents, <10 min, <500k tokens |
-| research | `kimchi-dev/auto` | Top 3 Go HTTP router libraries with stars and examples | 0–1 subagents, <2 min, <30k tokens |
-| explore | `kimchi-dev/auto` | Find and fix missing input validation in existing Go API | 1–4 subagents, <10 min, <500k tokens |
-| mega | `kimchi-dev/auto` | Go concurrent build system (not in run-all) | 3–6 subagents, <15 min, <800k tokens |
+| simple | multi | Go HTTP rate limiter middleware (token bucket, per-IP) | 0–2 subagents, <5 min, <300k tokens |
+| complex | multi | Go REST API task management (layered architecture) | 1–5 subagents, <10 min, <700k tokens |
+| complex-single | single (`--model`) | Same prompt as complex, one script per model | 0 subagents, <10 min, <500k tokens |
+| research | multi | Top 3 Go HTTP router libraries with stars and examples | 0–1 subagents, <2 min, <30k tokens |
+| explore | multi | Find and fix missing input validation in existing Go API | 1–4 subagents, <10 min, <500k tokens |
+| mega | multi | Go concurrent build system (not in run-all) | 3–6 subagents, <15 min, <800k tokens |
 
 ## Session directory structure
 
 ```
 sessions/session-01/
-├── run-simple.sh                    # Auto-routed task (--model kimchi-dev/auto)
+├── run-simple.sh                    # multi-model tasks (no --model flag)
 ├── run-complex.sh
 ├── run-research.sh
 ├── run-explore.sh
 ├── run-mega.sh
-├── run-complex-single-kimi-k2.5.sh  # concrete model per configured model
+├── run-complex-single-kimi-k2.5.sh  # single-model per configured model
 ├── run-complex-single-minimax-m2.7.sh
 ├── run-all.sh
 ├── analysis.json                    # created by analyze-session.py

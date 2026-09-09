@@ -12,12 +12,12 @@ describe("printMergedHelp", () => {
 		logSpy.mockRestore()
 	})
 
-	it("includes concrete model and provider flags without the removed mode", async () => {
+	it("includes the multi-model, model, and provider flags", async () => {
 		await printMergedHelp()
 		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
+		expect(output).toContain("--multi-model")
 		expect(output).toContain("--model <pattern>")
 		expect(output).toContain("--provider <name>")
-		expect(output).not.toContain("--multi-model")
 	})
 
 	it("includes boolean flags with short aliases", async () => {

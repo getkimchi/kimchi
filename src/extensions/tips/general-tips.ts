@@ -12,9 +12,14 @@ export const GENERAL_TIPS = [
 		message: "Run `/settings > Themes` to change colors.",
 	},
 	{
-		id: "model-switch",
+		id: "auto-model-switch",
 		scope: "general",
-		message: "Use `/model` to choose a concrete model for the session.",
+		message: "Use `ctrl+p` or `/model` to select Auto for routing.",
+	},
+	{
+		id: "single-model-mode",
+		scope: "general",
+		message: "Use `/model` to select single model for entire session",
 	},
 	{
 		id: "agents",

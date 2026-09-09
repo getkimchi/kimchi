@@ -3,7 +3,7 @@
  *
  * Stores custom metadata (tier, description, vision) keyed by model ref in
  * ~/.config/kimchi/harness/settings.json under the "modelMetadata" key.
- * This keeps custom metadata separate from model selection and configuration.
+ * This separates metadata from role assignments in modelRoles.
  *
  * Unified lookup: custom settings → builtin MODEL_CAPABILITIES → undefined
  */

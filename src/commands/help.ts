@@ -34,7 +34,7 @@ const KIMCHI_ENV: FlagDoc[] = [
 	{ name: "KIMCHI_API_KEY", description: "Kimchi API key (overrides config.json apiKey)" },
 	{
 		name: "KIMCHI_MODEL",
-		description: "Inherited launch model; explicit --model, --provider or --models takes precedence",
+		description: "Inherited launch model; explicit CLI model selection takes precedence",
 	},
 	{ name: "KIMCHI_PERMISSIONS", description: "Initial permissions mode: default | plan | auto | yolo" },
 	{

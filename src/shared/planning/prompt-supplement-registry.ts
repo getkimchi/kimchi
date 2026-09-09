@@ -153,9 +153,11 @@ export type { SuppressibleSection }
  * `mode` field identifies which planning mode is currently active, so a
  * block can adapt its content even when registered for multiple modes.
  *
- * Structurally a supertype of the upstream `SystemPromptBlockContext`: this
- * context narrows its mode field to the two planning modes the registry cares
- * about. Blocks written against either context type work in this registry.
+ * Structurally a supertype of the upstream `SystemPromptBlockContext`: the
+ * upstream `mode` field is the broader `PromptMode = "orchestrator" |
+ * "subagent" | "single"`, while this context narrows it to the two planning
+ * modes the registry cares about. Blocks written against either context
+ * type work in this registry.
  */
 export interface PromptBlockRenderContext {
 	readonly mode: PlanningMode

@@ -8,11 +8,6 @@ require_model_api_key() {
     local model="$1"
     shift
 
-    if [[ "$model" == "multi-model" ]]; then
-        echo "multi-model selection was removed; use kimchi-dev/auto or a concrete provider/model: $model" >&2
-        return 1
-    fi
-
     case "$model" in
         moonshotai/*) MODEL_ROUTE="moonshotai"; MODEL_API_KEY_ENV="MOONSHOT_API_KEY" ;;
         zai/*) MODEL_ROUTE="zai"; MODEL_API_KEY_ENV="ZAI_API_KEY" ;;
@@ -20,6 +15,7 @@ require_model_api_key() {
         anthropic/*) MODEL_ROUTE="anthropic"; MODEL_API_KEY_ENV="ANTHROPIC_API_KEY" ;;
         openai/*) MODEL_ROUTE="openai"; MODEL_API_KEY_ENV="OPENAI_API_KEY" ;;
         kimchi-dev/*) MODEL_ROUTE="kimchi-dev"; MODEL_API_KEY_ENV="KIMCHI_API_KEY" ;;
+        multi-model) MODEL_ROUTE="multi-model"; MODEL_API_KEY_ENV="KIMCHI_API_KEY" ;;
         *)
             echo "unsupported model route: $model" >&2
             return 1

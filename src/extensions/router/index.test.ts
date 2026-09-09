@@ -127,6 +127,7 @@ describe("Auto model extension", () => {
 	it.each([
 		["--model", "concrete"],
 		["--provider", "custom"],
+		["--multi-model"],
 	])("preserves an explicit launch choice: %j", async (...args) => {
 		populateCliArgs(args)
 		const extension = createExtensionApi()

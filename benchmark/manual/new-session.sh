@@ -67,9 +67,9 @@ n                = int(os.environ["N"])
 binary           = os.environ["BINARY"]
 
 # Fields: (name, prompt, extra_flags, in_run_all, setup_cmd)
-# Most tasks use the Auto router; complex-single is generated once per configured
-# model with an explicit concrete model.
-auto_tasks = [
+# All tasks run in multi-model mode (no --model flag) except complex-single,
+# which is generated once per configured model with --model to force single-model mode.
+multi_model_tasks = [
     ("simple",   simple_prompt,   [], True,  None),
     ("complex",  complex_prompt,  [], True,  None),
     ("research", research_prompt, [], True,  None),
@@ -80,8 +80,8 @@ auto_tasks = [
 all_scripts = []
 run_all_scripts = []
 
-# Generate Auto-routed task scripts (one per task)
-for task, task_prompt, extra_flags, in_run_all, setup_cmd in auto_tasks:
+# Generate multi-model task scripts (one per task, no --model flag)
+for task, task_prompt, extra_flags, in_run_all, setup_cmd in multi_model_tasks:
     run_dir = task
     os.makedirs(os.path.join(session_dir, "runs", run_dir), exist_ok=True)
     slug = f"s{n}-{task}"
@@ -102,7 +102,6 @@ git config user.email "benchmark@local"
 {setup_block}git add -A && git commit -q -m 'baseline' --allow-empty
 {binary} \\
   --yolo \\
-  --model kimchi-dev/auto \\
 {flags_block}  --session "$SESSION_FILE" \\
   "{task_prompt}"
 """
