@@ -1,9 +1,12 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import { createEventBus } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
-import { registerFermentLifecycleContext } from "./lifecycle-context.js"
+import { markHarnessSteer } from "../steer-marker.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
+import { FERMENT_LIFECYCLE_CUSTOM_TYPE, registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 
@@ -19,8 +22,10 @@ type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Pro
 
 const TEST_SESSION_ID = "test-session"
 
-function makeMockCtx(): ExtensionContext {
-	return createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+interface MessageLike {
+	role?: string
+	customType?: string
+	content?: unknown
 }
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
@@ -67,11 +72,31 @@ function makeNoActiveRuntime(): FermentRuntime {
 	}
 }
 
-type ContextResult = { messages: Array<{ role?: string; customType?: string; content?: unknown }> } | undefined
+/** A runtime whose active ferment can be swapped mid-test to simulate
+ *  lifecycle transitions (the persistence layer re-renders on domain events
+ *  and dedupes against the previously persisted block). */
+function makeMutableRuntime(initial: Ferment | undefined): {
+	runtime: FermentRuntime
+	setActive: (f?: Ferment) => void
+} {
+	let active = initial
+	return {
+		runtime: {
+			...createDefaultFermentRuntime(),
+			getActive: () => active,
+		},
+		setActive: (f) => {
+			active = f
+		},
+	}
+}
 
-function createHarness() {
+function createHarness(branch: MessageLike[] = []) {
 	const handlers = new Map<string, ExtensionHandler[]>()
+	const bus = createEventBus()
 	const pi = {
+		events: bus,
+		sendMessage: vi.fn(),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
@@ -79,25 +104,35 @@ function createHarness() {
 		}),
 	} as unknown as ExtensionAPI
 
-	const ctx = makeMockCtx()
+	const ctx = createContext({
+		sessionManager: {
+			getSessionId: () => TEST_SESSION_ID,
+			getBranch: () => branch as unknown as SessionEntry[],
+		},
+	})
 
-	async function fireContext(
-		messages: Array<{ role?: string; customType?: string; content?: unknown }> = [],
-	): Promise<ContextResult> {
-		let result: ContextResult
-		for (const handler of handlers.get("context") ?? []) {
-			result = (await handler({ messages }, ctx)) as ContextResult
+	async function fire(event: string, payload: unknown): Promise<unknown> {
+		let result: unknown
+		for (const handler of handlers.get(event) ?? []) {
+			result = await handler(payload, ctx)
 		}
 		return result
 	}
 
-	return { pi, ctx, fireContext }
+	type SentMessage = { customType?: string; display?: boolean; content?: unknown }
+
+	function persistedBlocks(): SentMessage[] {
+		return vi
+			.mocked(pi.sendMessage)
+			.mock.calls.map(([message]) => message as unknown as SentMessage)
+			.filter((message) => message.customType === FERMENT_LIFECYCLE_CUSTOM_TYPE)
+	}
+
+	return { pi, bus, ctx, fire, persistedBlocks }
 }
 
-function extractLifecycleMessage(result: ContextResult): { content?: string } | undefined {
-	const message = result?.messages?.find((m) => m.role === "custom" && m.customType === "ferment-lifecycle")
-	if (!message) return undefined
-	return { content: typeof message.content === "string" ? message.content : undefined }
+async function startSession(harness: ReturnType<typeof createHarness>): Promise<void> {
+	await harness.fire("session_start", { reason: "new" })
 }
 
 describe("registerFermentLifecycleContext", () => {
@@ -105,47 +140,78 @@ describe("registerFermentLifecycleContext", () => {
 		getMultiModelEnabledMock.mockReturnValue(true)
 	})
 
-	it("injects volatile lifecycle state for a running ferment with an active phase", async () => {
-		const { pi, fireContext } = createHarness()
-		registerFermentLifecycleContext(pi, makeRuntime())
+	it("persists a hidden lifecycle block once per transition for a running ferment", async () => {
+		const harness = createHarness()
+		const { runtime, setActive } = makeMutableRuntime(makeFerment())
+		registerFermentLifecycleContext(harness.pi, runtime)
+		await startSession(harness)
 
-		const result = await fireContext([])
-		const lifecycle = extractLifecycleMessage(result)
-		expect(lifecycle).toBeDefined()
-		expect(lifecycle?.content).toContain("## Current lifecycle state")
-		expect(lifecycle?.content).toContain('Scoping is COMPLETE (ferment status "running"')
-		expect(lifecycle?.content).toContain(
-			'active phase "phase-1" ("Build the feature"), 1/2 steps terminal in phase "phase-1"',
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+
+		expect(harness.persistedBlocks()).toHaveLength(1)
+		const block = harness.persistedBlocks()[0]
+		expect(block?.display).toBe(false)
+		const content = block?.content as string
+		expect(content).toMatch(/^<system-reminder>\n/)
+		expect(content).toContain("## Current lifecycle state")
+		expect(content).toContain('Scoping is COMPLETE (ferment status "running"')
+		expect(content).toContain('active phase "phase-1" ("Build the feature"), 1/2 steps terminal in phase "phase-1"')
+		expect(content).toContain("Next action:")
+
+		// A repeated event without an actual transition persists nothing new.
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+		expect(harness.persistedBlocks()).toHaveLength(1)
+
+		// A real transition (step completes → 2/2 terminal) persists exactly
+		// one more block.
+		const phase = makeFerment().phases[0]
+		if (!phase) throw new Error("expected phase fixture")
+		setActive(
+			makeFerment({
+				phases: [
+					{
+						...phase,
+						steps: [
+							{ id: "step-1", index: 1, description: "Do thing one", status: "done" },
+							{ id: "step-2", index: 2, description: "Do thing two", status: "done" },
+						],
+					},
+				],
+			}),
 		)
-		expect(lifecycle?.content).toContain("Next action:")
+		harness.bus.emit(FERMENT_EVENTS.STEP_COMPLETED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-2" })
+		expect(harness.persistedBlocks()).toHaveLength(2)
+		expect(harness.persistedBlocks()[1]?.content).toContain('2/2 steps terminal in phase "phase-1"')
 	})
 
-	it("injects the next-action hint for a planned ferment", async () => {
-		const { pi, fireContext } = createHarness()
+	it("persists the next-action hint for a planned ferment", async () => {
+		const harness = createHarness()
 		const phase = makeFerment().phases[0]
 		if (!phase) throw new Error("expected phase fixture")
 		registerFermentLifecycleContext(
-			pi,
+			harness.pi,
 			makeRuntime({
 				status: "planned",
 				phases: [{ ...phase, status: "planned" }],
 			}),
 		)
+		await startSession(harness)
 
-		const result = await fireContext([])
-		const lifecycle = extractLifecycleMessage(result)
-		expect(lifecycle).toBeDefined()
-		expect(lifecycle?.content).toContain('ferment status "planned"')
-		expect(lifecycle?.content).toContain("Next action: call `activate_ferment_phase`")
-		expect(lifecycle?.content).toContain('phase_id "phase-1"')
+		harness.bus.emit(FERMENT_EVENTS.SCOPING_COMPLETE, { fermentId: "ferment-1" })
+
+		expect(harness.persistedBlocks()).toHaveLength(1)
+		const content = harness.persistedBlocks()[0]?.content as string
+		expect(content).toContain('ferment status "planned"')
+		expect(content).toContain("Next action: call `activate_ferment_phase`")
+		expect(content).toContain('phase_id "phase-1"')
 	})
 
 	it("counts failed steps as terminal in active-phase progress", async () => {
-		const { pi, fireContext } = createHarness()
+		const harness = createHarness()
 		const phase = makeFerment().phases[0]
 		if (!phase) throw new Error("expected phase fixture")
 		registerFermentLifecycleContext(
-			pi,
+			harness.pi,
 			makeRuntime({
 				phases: [
 					{
@@ -155,18 +221,18 @@ describe("registerFermentLifecycleContext", () => {
 				],
 			}),
 		)
+		await startSession(harness)
 
-		const result = await fireContext([])
-		const lifecycle = extractLifecycleMessage(result)
-		expect(lifecycle?.content).toContain('1/1 steps terminal in phase "phase-1"')
+		harness.bus.emit(FERMENT_EVENTS.STEP_FAILED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+		expect(harness.persistedBlocks()[0]?.content).toContain('1/1 steps terminal in phase "phase-1"')
 	})
 
 	it("reports progress for every active phase in a parallel group", async () => {
-		const { pi, fireContext } = createHarness()
+		const harness = createHarness()
 		const phase = makeFerment().phases[0]
 		if (!phase) throw new Error("expected phase fixture")
 		registerFermentLifecycleContext(
-			pi,
+			harness.pi,
 			makeRuntime({
 				phases: [
 					{ ...phase, parallel: true, groupIndex: 1 },
@@ -182,66 +248,124 @@ describe("registerFermentLifecycleContext", () => {
 				],
 			}),
 		)
+		await startSession(harness)
 
-		const result = await fireContext([])
-		const lifecycle = extractLifecycleMessage(result)
-		expect(lifecycle?.content).toContain('1/2 steps terminal in phase "phase-1"')
-		expect(lifecycle?.content).toContain('0/1 steps terminal in phase "phase-2"')
+		harness.bus.emit(FERMENT_EVENTS.PHASE_STARTED, { fermentId: "ferment-1", phaseId: "phase-1" })
+		const content = harness.persistedBlocks()[0]?.content as string
+		expect(content).toContain('1/2 steps terminal in phase "phase-1"')
+		expect(content).toContain('0/1 steps terminal in phase "phase-2"')
 	})
 
 	for (const status of ["draft", "paused", "complete", "abandoned"] as FermentStatus[]) {
-		it(`does not inject for a ${status} ferment`, async () => {
-			const { pi, fireContext } = createHarness()
-			registerFermentLifecycleContext(pi, makeRuntime({ status }))
+		it(`persists nothing for a ${status} ferment`, async () => {
+			const harness = createHarness()
+			registerFermentLifecycleContext(harness.pi, makeRuntime({ status }))
+			await startSession(harness)
 
-			const result = await fireContext([])
-			expect(extractLifecycleMessage(result)).toBeUndefined()
+			harness.bus.emit(FERMENT_EVENTS.RESUMED, { fermentId: "ferment-1" })
+			harness.bus.emit(FERMENT_EVENTS.PHASE_STARTED, { fermentId: "ferment-1" })
+			expect(harness.persistedBlocks()).toHaveLength(0)
 		})
 	}
 
-	it("does not inject when no ferment is active", async () => {
-		const { pi, fireContext } = createHarness()
-		registerFermentLifecycleContext(pi, makeNoActiveRuntime())
+	it("a complete transition persists nothing (the last running block stays in history)", async () => {
+		const harness = createHarness()
+		const { runtime, setActive } = makeMutableRuntime(makeFerment())
+		registerFermentLifecycleContext(harness.pi, runtime)
+		await startSession(harness)
 
-		const result = await fireContext([])
-		expect(extractLifecycleMessage(result)).toBeUndefined()
+		harness.bus.emit(FERMENT_EVENTS.PHASE_STARTED, { fermentId: "ferment-1", phaseId: "phase-1" })
+		expect(harness.persistedBlocks()).toHaveLength(1)
+
+		setActive(makeFerment({ status: "complete" }))
+		harness.bus.emit(FERMENT_EVENTS.COMPLETED, { fermentId: "ferment-1" })
+		expect(harness.persistedBlocks()).toHaveLength(1)
 	})
 
-	it("does not inject for agent workers", async () => {
-		const { pi, fireContext } = createHarness()
-		registerFermentLifecycleContext(pi, makeRuntime())
+	it("persists nothing when no ferment is active", async () => {
+		const harness = createHarness()
+		registerFermentLifecycleContext(harness.pi, makeNoActiveRuntime())
+		await startSession(harness)
+
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
+		expect(harness.persistedBlocks()).toHaveLength(0)
+	})
+
+	it("persists nothing for agent workers", async () => {
+		const harness = createHarness()
+		registerFermentLifecycleContext(harness.pi, makeRuntime())
+		await startSession(harness)
 
 		await runAsAgentWorker(async () => {
-			const result = await fireContext([])
-			expect(extractLifecycleMessage(result)).toBeUndefined()
+			harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
+			expect(harness.persistedBlocks()).toHaveLength(0)
 		})
 	})
 
-	it("strips prior lifecycle messages so they do not stack", async () => {
-		const { pi, fireContext } = createHarness()
-		registerFermentLifecycleContext(pi, makeRuntime())
+	it("does not re-persist on resume when history already holds the current block", async () => {
+		const harness = createHarness()
+		const { runtime } = makeMutableRuntime(makeFerment())
+		registerFermentLifecycleContext(harness.pi, runtime)
+		await startSession(harness)
 
-		const first = await fireContext([])
-		const firstMessage = extractLifecycleMessage(first)
-		expect(firstMessage).toBeDefined()
+		// Produce the definitive current block first.
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
+		expect(harness.persistedBlocks()).toHaveLength(1)
+		const persistedContent = harness.persistedBlocks()[0]?.content
 
-		const second = await fireContext(first?.messages ?? [])
-		const lifecycleMessages = second?.messages?.filter(
-			(m) => m.role === "custom" && m.customType === "ferment-lifecycle",
-		)
-		expect(lifecycleMessages).toHaveLength(1)
-		expect(second?.messages?.at(-1)?.content).toBe(firstMessage?.content)
+		// Simulate a fresh registration against a resumed session whose branch
+		// already contains that exact block: no duplicate persist.
+		const resumed = createHarness([
+			{ role: "user", content: "resume me" },
+			{ role: "custom", customType: FERMENT_LIFECYCLE_CUSTOM_TYPE, content: persistedContent },
+		])
+		registerFermentLifecycleContext(resumed.pi, runtime)
+		await resumed.fire("session_start", { reason: "resume" })
+
+		resumed.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
+		expect(resumed.persistedBlocks()).toHaveLength(0)
+	})
+
+	it("strip-only context handler keeps the newest lifecycle block", async () => {
+		const newest = markHarnessSteer("## Current lifecycle state\n- newest")
+		const messages: MessageLike[] = [
+			{ role: "user", content: "u1" },
+			{ role: "custom", customType: FERMENT_LIFECYCLE_CUSTOM_TYPE, content: markHarnessSteer("older") },
+			{ role: "assistant", content: "asst" },
+			{ role: "custom", customType: FERMENT_LIFECYCLE_CUSTOM_TYPE, content: newest },
+			{ role: "user", content: "u2" },
+		]
+
+		const harness = createHarness()
+		registerFermentLifecycleContext(harness.pi, makeRuntime())
+		await startSession(harness)
+
+		const result = (await harness.fire("context", { messages })) as { messages: MessageLike[] }
+		const retained = result.messages.filter((m) => m.customType === FERMENT_LIFECYCLE_CUSTOM_TYPE)
+		expect(retained).toHaveLength(1)
+		expect(retained[0]?.content).toBe(newest)
+		expect(result.messages.map((m) => m.role)).toEqual(["user", "assistant", "custom", "user"])
+	})
+
+	it("context handler never appends a lifecycle block (no tail push)", async () => {
+		const harness = createHarness()
+		registerFermentLifecycleContext(harness.pi, makeRuntime())
+		await startSession(harness)
+
+		const result = (await harness.fire("context", { messages: [] })) as unknown
+		expect(result).toBeUndefined()
 	})
 
 	it("uses the multi-model flag to shape delegation hints", async () => {
-		const { pi, fireContext } = createHarness()
+		const harness = createHarness()
 		getMultiModelEnabledMock.mockReturnValue(false)
-		registerFermentLifecycleContext(pi, makeRuntime())
+		registerFermentLifecycleContext(harness.pi, makeRuntime())
+		await startSession(harness)
 
-		const result = await fireContext([])
-		const lifecycle = extractLifecycleMessage(result)
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
+		const content = harness.persistedBlocks()[0]?.content as string
 		// In single-model mode, the next-action suffix tells the planner it should
 		// execute the step directly instead of always spawning a subagent.
-		expect(lifecycle?.content).toContain("Then execute the step directly")
+		expect(content).toContain("Then execute the step directly")
 	})
 })

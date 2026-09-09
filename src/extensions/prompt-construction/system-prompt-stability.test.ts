@@ -32,6 +32,20 @@ type ContextResult = { messages?: Array<{ content?: unknown }> } | undefined
 
 type SendMessageCall = { message: unknown; options?: { deliverAs?: string } }
 
+interface MessageLike {
+	role?: string
+	customType?: string
+	content?: unknown
+}
+
+/** Custom types whose persisted history entries are multi-copy suppressed by
+ *  the deterministic context-view strip (keep newest only). */
+const SUPPRESSED_STATE_TYPES = new Set(["todo-state", "ferment-lifecycle"])
+
+function nonStateMessages(view: MessageLike[]): MessageLike[] {
+	return view.filter((m) => !SUPPRESSED_STATE_TYPES.has(String(m.customType)))
+}
+
 const SESSION_ID = "system-prompt-stability-session"
 
 const testEnv: EnvironmentInfo = {
@@ -97,9 +111,14 @@ interface TestHarness {
 	fire(event: string, payload: unknown): Promise<unknown>
 	registerPlanningBlock(): void
 	buildFinalSystemPrompt(): Promise<string>
+	buildContextView(): Promise<MessageLike[]>
 	buildContextText(): Promise<string>
 	buildModelVisiblePrefix(): Promise<string>
 	getSentMessages(): SendMessageCall[]
+	/** Messages persisted so far, in append order (mirrors the session manager's
+	 *  append of custom messages sent via pi.sendMessage). */
+	getHistory(): readonly MessageLike[]
+	appendHistory(...messages: MessageLike[]): void
 }
 
 function createHarness(surface: WorkflowSurface): TestHarness {
@@ -109,6 +128,11 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 
 	const runtime = createDefaultFermentRuntime()
 
+	// Messages sent via pi.sendMessage persist into session history in
+	// production (custom_message entries); the harness mirrors that append so
+	// the strip-only context handlers operate over the same growing stream.
+	const history: MessageLike[] = []
+
 	const pi = {
 		events: createEventBus(),
 		registerTool: vi.fn(),
@@ -116,7 +140,9 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		registerShortcut: vi.fn(),
 		registerMessageRenderer: vi.fn(),
 		appendEntry: vi.fn(),
-		sendMessage: vi.fn(),
+		sendMessage: vi.fn((message: MessageLike) => {
+			history.push({ role: "custom", ...message })
+		}),
 		sendUserMessage: vi.fn(),
 		getActiveTools: vi.fn(() => []),
 		getAllTools: vi.fn(() => []),
@@ -161,7 +187,10 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 				currentPayload = { type: "context", messages: contextResult.messages }
 			}
 		}
-		return result
+		// For context events the effective request view is the final chained
+		// payload — a handler returning undefined means "no change", not
+		// "empty view".
+		return event === "context" ? currentPayload : result
 	}
 
 	async function buildFinalSystemPrompt(): Promise<string> {
@@ -187,9 +216,13 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		return prompt
 	}
 
+	async function buildContextView(): Promise<MessageLike[]> {
+		const result = (await fire("context", { type: "context", messages: [...history] })) as ContextResult
+		return (result?.messages ?? []) as MessageLike[]
+	}
+
 	async function buildContextText(): Promise<string> {
-		const result = (await fire("context", { type: "context", messages: [] })) as ContextResult
-		return extractTodoContextText(result)
+		return extractTodoContextText({ messages: await buildContextView() })
 	}
 
 	/* The provider's cache key is the model-visible prefix of the whole
@@ -199,8 +232,7 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 	 * sees, so excluding them is correctness-preserving, not a codified
 	 * carve-out. */
 	async function buildModelVisiblePrefix(): Promise<string> {
-		const result = (await fire("context", { type: "context", messages: [] })) as ContextResult
-		const messages = (result?.messages ?? []).map((message) => {
+		const messages = (await buildContextView()).map((message) => {
 			const projected = message as { role?: string; customType?: string; content?: unknown }
 			return { role: projected.role, customType: projected.customType, content: projected.content }
 		})
@@ -220,9 +252,14 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		fire,
 		registerPlanningBlock,
 		buildFinalSystemPrompt,
+		buildContextView,
 		buildContextText,
 		buildModelVisiblePrefix,
 		getSentMessages,
+		getHistory: () => history,
+		appendHistory: (...messages: MessageLike[]) => {
+			history.push(...messages)
+		},
 	}
 }
 
@@ -256,39 +293,38 @@ describe("system prompt stability contract", () => {
 
 				it("keeps the assembled system prompt stable when todos are added, updated, and cleared", async () => {
 					const promptBefore = await harness.buildFinalSystemPrompt()
-					const contextBefore = await harness.buildContextText()
 					expect(promptBefore).toContain("## Todos")
-					if (surface === "non-ferment") {
-						expect(contextBefore).toBe("")
-					} else {
-						expect(contextBefore).toContain("## Current lifecycle state")
+					expect(await harness.buildContextText()).not.toContain("## Current Todos")
+
+					if (surface !== "non-ferment") {
+						// Production emits phase activation before the first running-phase
+						// turn; the lifecycle block arrives via that persisted event.
+						emitFermentDomainEvent(harness.pi.events, { type: "activate_phase", phaseId: "phase-1" }, makeFerment())
+						expect(await harness.buildContextText()).toContain("## Current lifecycle state")
 					}
 
 					applyWriteTodos({ todos: [{ content: "initial task", status: "pending" }] }, SESSION_ID)
-					const promptAfterAdd = await harness.buildFinalSystemPrompt()
-					const contextAfterAdd = await harness.buildContextText()
-					expect(promptAfterAdd).toBe(promptBefore)
-					expect(contextAfterAdd).not.toBe(contextBefore)
-					expect(contextAfterAdd).toContain("initial task")
+					const afterAdd = await harness.buildContextText()
+					expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+					expect(afterAdd).toContain("initial task")
 
 					applyWriteTodos({ todos: [{ id: 1, content: "updated task", status: "in_progress" }] }, SESSION_ID)
-					const promptAfterUpdate = await harness.buildFinalSystemPrompt()
-					const contextAfterUpdate = await harness.buildContextText()
-					expect(promptAfterUpdate).toBe(promptBefore)
-					expect(contextAfterUpdate).not.toBe(contextAfterAdd)
-					expect(contextAfterUpdate).toContain("updated task")
+					const afterUpdate = await harness.buildContextText()
+					expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+					expect(afterUpdate).toContain("updated task")
+					// The superseded state block is stripped from the request view.
+					expect(afterUpdate).not.toContain("initial task")
 
 					applyWriteTodos({ todos: [] }, SESSION_ID)
-					const promptAfterClear = await harness.buildFinalSystemPrompt()
-					const contextAfterClear = await harness.buildContextText()
-					expect(promptAfterClear).toBe(promptBefore)
-					expect(contextAfterClear).toBe(contextBefore)
+					const afterClear = await harness.buildContextText()
+					expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+					expect(afterClear).not.toContain("updated task")
 				})
 			})
 		}
 	})
 
-	describe("context message determinism", () => {
+	describe("persisted state delivery", () => {
 		for (const surface of ["non-ferment", "ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
 			describe(`workflow: ${surface}`, () => {
 				let harness: TestHarness
@@ -313,12 +349,34 @@ describe("system prompt stability contract", () => {
 				})
 
 				/* Prefix caching cares about the whole request, not just the system
-				 * prompt. The transient `context` message is the other channel that
-				 * volatile state flows through, so it must be *deterministic*: the
-				 * same state must render the same bytes on every call, and restoring
-				 * a prior state must restore the exact prior bytes. */
+				 * prompt. Todo/ferment state now flows through *persisted* custom
+				 * messages (one per actual change), never through transient pushes
+				 * inside the context event. The request view must be a deterministic
+				 * function of persisted history: identical renders for identical
+				 * history, and identical block bytes when the store returns to prior
+				 * contents. */
 
-				it("renders byte-identical context for identical state", async () => {
+				it("delivers state via persisted messages, never via the context event itself", async () => {
+					// Nothing in history → the context event appends nothing.
+					expect(await harness.buildContextView()).toEqual([])
+
+					applyWriteTodos({ todos: [{ content: "determinism task", status: "pending" }] }, SESSION_ID)
+
+					const stateCalls = harness
+						.getSentMessages()
+						.filter((call) => (call.message as { customType?: string }).customType === "todo-state")
+					expect(stateCalls).toHaveLength(1)
+					expect(stateCalls[0]?.options?.deliverAs).toBe("steer")
+					expect((stateCalls[0]?.message as { display?: boolean }).display).toBe(false)
+
+					// The persisted block appears in the next request's view exactly
+					// because it is part of history — not because a handler appended it.
+					const view = await harness.buildContextView()
+					expect(view).toHaveLength(1)
+					expect(String(view[0]?.content)).toContain("determinism task")
+				})
+
+				it("renders a byte-identical view across consecutive renders with no state change", async () => {
 					applyWriteTodos({ todos: [{ content: "determinism task", status: "pending" }] }, SESSION_ID)
 
 					const first = await harness.buildContextText()
@@ -328,31 +386,25 @@ describe("system prompt stability contract", () => {
 					expect(second).toBe(first)
 				})
 
-				it("restores byte-identical context when todos are cleared back to baseline", async () => {
-					const baseline = await harness.buildContextText()
-
-					applyWriteTodos({ todos: [{ content: "clear task", status: "pending" }] }, SESSION_ID)
-					expect(await harness.buildContextText()).not.toBe(baseline)
-
-					applyWriteTodos({ todos: [] }, SESSION_ID)
-					expect(await harness.buildContextText()).toBe(baseline)
-				})
-
-				it("restores byte-identical context when a mutated list is restored to its prior contents", async () => {
+				it("re-renders identical block bytes when the store returns to prior contents", async () => {
 					applyWriteTodos({ todos: [{ id: 1, content: "restore task", status: "pending" }] }, SESSION_ID)
-					const baseline = await harness.buildContextText()
-
 					applyWriteTodos({ todos: [{ id: 1, content: "restore task mutated", status: "in_progress" }] }, SESSION_ID)
-					expect(await harness.buildContextText()).not.toBe(baseline)
-
 					applyWriteTodos({ todos: [{ id: 1, content: "restore task", status: "pending" }] }, SESSION_ID)
-					expect(await harness.buildContextText()).toBe(baseline)
+
+					const blocks = harness
+						.getSentMessages()
+						.map((call) => call.message as { customType?: string; content?: string })
+						.filter((message) => message.customType === "todo-state")
+					expect(blocks).toHaveLength(3)
+					// Persist-on-change purity: returning to the prior store contents
+					// persists byte-identical block content.
+					expect(blocks[2]?.content).toBe(blocks[0]?.content)
 				})
 			})
 		}
 	})
 
-	describe("multi-turn request prefix identity", () => {
+	describe("request-level prefix containment", () => {
 		for (const surface of ["non-ferment", "ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
 			describe(`workflow: ${surface}`, () => {
 				let harness: TestHarness
@@ -376,31 +428,64 @@ describe("system prompt stability contract", () => {
 					__resetTodoStore()
 				})
 
-				/* A later turn in the same session reuses the provider's cached
-				 * prefix only if the whole model-visible prefix (system prompt +
-				 * transient context messages) is byte-identical. Restoring volatile
-				 * state must restore that combined prefix — this is the integration
-				 * guarantee that the per-channel suites prove separately. */
+				/* The provider's cache can only hit when each request's message list
+				 * is a strict prefix-extension of the previous request. With state
+				 * persisted into history, a real state change causes one bounded
+				 * invalidation (the superseded block is stripped, the new block is
+				 * appended); everything else must remain a growing prefix. This is
+				 * the property the old transient tail-push permanently violated. */
 
-				it("restores the full model-visible prefix when todo state returns to a prior snapshot", async () => {
-					applyWriteTodos({ todos: [{ id: 1, content: "prefix task", status: "pending" }] }, SESSION_ID)
-					const baseline = await harness.buildModelVisiblePrefix()
+				it("each request view prefix-extends the previous, modulo superseded state blocks", async () => {
+					const u1: MessageLike = { role: "user", content: "u1" }
+					const asst: MessageLike = { role: "assistant", content: "a1" }
+					const toolResult: MessageLike = { role: "toolResult", content: "t1" }
+					const u2: MessageLike = { role: "user", content: "u2" }
 
-					applyWriteTodos(
-						{
-							todos: [
-								{ id: 1, content: "prefix task", status: "completed" },
-								{ id: 2, content: "second task", status: "pending", note: "note" },
-							],
-						},
-						SESSION_ID,
-					)
-					const mutated = await harness.buildModelVisiblePrefix()
-					expect(mutated).not.toBe(baseline)
+					harness.appendHistory(u1)
+					const view1 = await harness.buildContextView()
 
-					applyWriteTodos({ todos: [{ id: 1, content: "prefix task", status: "pending" }] }, SESSION_ID)
-					const restored = await harness.buildModelVisiblePrefix()
-					expect(restored).toBe(baseline)
+					applyWriteTodos({ todos: [{ content: "prefix task", status: "pending" }] }, SESSION_ID)
+					const view2 = await harness.buildContextView()
+
+					harness.appendHistory(asst, toolResult)
+					const view3 = await harness.buildContextView()
+
+					// Mid-sequence todo write: the superseded block is stripped, the
+					// new block is appended — exactly one bounded invalidation.
+					applyWriteTodos({ todos: [{ id: 1, content: "prefix task", status: "completed" }] }, SESSION_ID)
+					harness.appendHistory(u2)
+					const view4 = await harness.buildContextView()
+
+					// Non-state messages form a growing prefix chain.
+					const views = [view1, view2, view3, view4]
+					for (let i = 1; i < views.length; i++) {
+						const prev = nonStateMessages(views[i - 1] ?? [])
+						const curr = nonStateMessages(views[i] ?? [])
+						expect(curr.length).toBeGreaterThanOrEqual(prev.length)
+						expect(curr.slice(0, prev.length)).toEqual(prev)
+					}
+
+					// At most one persisted block per state type in every view — the
+					// deterministic strip keeps the view stable between writes.
+					for (const view of views) {
+						expect(view.filter((m) => m.customType === "todo-state")).toHaveLength(
+							view.some((m) => m.customType === "todo-state") ? 1 : 0,
+						)
+					}
+
+					// Every message in every request view is a persisted history
+					// entry: nothing is injected transiently, so the tail breakpoint
+					// candidate (last message) is always real history.
+					for (const view of views) {
+						for (const message of view) {
+							expect(harness.getHistory()).toContain(message)
+						}
+					}
+
+					// The newest state is visible; the superseded one is not.
+					const text4 = view4.map((m) => String(m.content)).join("\n")
+					expect(text4).toContain("✓ prefix task")
+					expect(text4).not.toContain("○ prefix task")
 				})
 
 				it("keeps the full prefix byte-identical across consecutive turns with no state change", async () => {
@@ -458,6 +543,14 @@ describe("system prompt stability contract", () => {
 					expect(contextBefore).toContain("## Current Todos")
 					expect(contextBefore).toContain("## Current lifecycle state")
 					expect(contextBefore).toContain("write parser")
+
+					// State blocks must have arrived via persistence, not context pushes.
+					expect(
+						harness
+							.getSentMessages()
+							.map((call) => (call.message as { customType?: string }).customType)
+							.filter((type) => type === "todo-state" || type === "ferment-lifecycle"),
+					).not.toHaveLength(0)
 
 					const completedStepFerment: Ferment = {
 						...ferment,

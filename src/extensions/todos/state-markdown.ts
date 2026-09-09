@@ -1,7 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { getTurnsSinceStepTodoWrite } from "../ferment/todo-sync.js"
 import { parseTodoScopeKey } from "./scope.js"
-import { getTodoState, getToolCallsSinceTodoWrite, hasTodoListBeenUpdated } from "./store.js"
+import { getTodoState } from "./store.js"
 import type { TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 function statusGlyph(status: TodoStatus): string {
@@ -35,30 +34,18 @@ function formatProgressSummary(todos: TodoItem[]): string {
 	return parts.join(" · ")
 }
 
-/**
- * Returns a graduated staleness indicator string based on the number of
- * non-todo tool calls since the last todo write. Returns `undefined` when
- * staleness is low enough not to warrant a warning.
- *
- * This replaces the old active nudge messages with passive state
- * enrichment — the model sees the warning in the state block it already
- * reads, and can choose to act on it at the next natural break point.
- */
-function stalenessIndicator(changes: number): string | undefined {
-	if (changes <= 8) return undefined
-	if (changes <= 16) return `${changes} changes since last update — refresh the list at the next natural breakpoint`
-	if (changes <= 24) return `⚠ ${changes} changes since last update — update at the next natural breakpoint`
-	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint`
-}
-
 /** Render the current todo store as a markdown section. Returns `undefined`
  *  when there is nothing to show (no scopes at all).
  *
- *  This is volatile per-session state: it is consumed ONLY by the transient
- *  `context`-event path (`context-state.ts`), never by a system-prompt block.
- *  Keeping it here (rather than in `prompt-block.ts`) lets the cache-stability
- *  contract test hold the static todos registrar to a zero-volatile-imports
- *  standard — see system-prompt-stability.contract.test.ts. */
+ *  This is a PURE function of the todo store: no counters, no time. Persisted
+ *  todo-state blocks are cached by prefix, so two renders of the same store
+ *  must be byte-identical. Staleness/stall pressure is delivered separately
+ *  as bounded one-shot steers — see staleness-steers.ts (todo writes) and
+ *  ferment/todo-sync.ts (step stall).
+ *
+ *  The renderer lives outside any registrar file so the static import guard
+ *  in the cache-stability contract test can be strict (zero allowlisted
+ *  exceptions) — see system-prompt-stability.contract.test.ts. */
 export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 	const state = getTodoState(sessionId)
 	const scopeKeys = Object.keys(state.byScope)
@@ -104,26 +91,11 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 	lines.push("## Current Todos")
 	lines.push("")
 
-	// Collect all staleness signals to show the strongest one at the end.
-	const stalenessWarnings: string[] = []
-
 	if (global.length > 0) {
 		const summary = formatProgressSummary(global)
 		lines.push(`**Global**${summary ? ` (${summary})` : ""}`)
 		for (const todo of global) lines.push(formatTodoLine(todo))
 		lines.push("")
-
-		// Global-scope staleness (from toolCallsSinceTodoWrite counter)
-		const changes = getToolCallsSinceTodoWrite(sessionId)
-		if (changes > 2 && !hasTodoListBeenUpdated(sessionId)) {
-			// List was created but never updated — more urgent than generic staleness.
-			stalenessWarnings.push(
-				`⚠ List created but never updated — mark items as you complete them alongside your next tool call`,
-			)
-		} else {
-			const globalStale = stalenessIndicator(changes)
-			if (globalStale) stalenessWarnings.push(globalStale)
-		}
 	}
 
 	for (const phase of fermentScopes) {
@@ -140,24 +112,6 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 		lines.push(`**Step ${stepScope.phaseId}/${stepScope.stepId}**${summary ? ` (${summary})` : ""}`)
 		for (const todo of stepScope.todos) lines.push(formatTodoLine(todo))
 		lines.push("")
-	}
-
-	// Ferment stall detection: if a ferment step is running and the step-scope
-	// todos haven't been updated in many turns, add a staleness warning.
-	// Step-list staleness health check. Now that sub-task lists are optional,
-	// nagging at a few turns manufactures todo churn exactly where we told the
-	// model to skip lists — one threshold at roughly one long step means the
-	// warning fires only on genuine iteration thrash.
-	const staleTurns = getTurnsSinceStepTodoWrite(sessionId)
-	if (staleTurns >= 12) {
-		stalenessWarnings.push(
-			`⚠ Step todos have not been updated for ${staleTurns} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
-		)
-	}
-
-	if (stalenessWarnings.length > 0) {
-		lines.push("")
-		for (const warning of stalenessWarnings) lines.push(warning)
 	}
 
 	// Trim trailing blank line for cleanliness.

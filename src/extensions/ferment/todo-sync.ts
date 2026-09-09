@@ -31,6 +31,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Phase, StepStatus } from "../../ferment/types.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { parseTodoScopeKey } from "../todos/scope.js"
+import { createThresholdSteerTracker, sendHiddenSteer } from "../todos/staleness-steers.js"
 import {
 	applyWriteTodos,
 	getTodoState,
@@ -408,6 +409,36 @@ export function getTurnsSinceStepTodoWrite(sessionId: string): number {
 	return turnsSinceStepTodoWrite.get(sessionId) ?? 0
 }
 
+// ─── Step stall steer ───────────────────────────────────────────────────────
+// The step-stall warning used to be rendered inside the todo state block,
+// which made the block depend on this volatile counter. The block is now a
+// pure function of the store (persisted for cache stability), so the warning
+// moved here: a one-shot persistent steer fired once per stall epoch.
+
+export const FERMENT_STEP_STALL_CUSTOM_TYPE = "ferment-step-stall"
+export const FERMENT_STEP_STALL_THRESHOLD = 12
+
+const stallSteerTracker = createThresholdSteerTracker()
+
+/** Fire a one-shot hidden steer when the step-todo stall counter has crossed
+ *  the threshold for the current epoch. The epoch (and tracker) resets on any
+ *  running step-scope todo write or when a new step starts. */
+export function fireStepStallSteerIfStalled(pi: ExtensionAPI, sessionId: string): void {
+	const count = getTurnsSinceStepTodoWrite(sessionId)
+	stallSteerTracker.fireCrossed({
+		sessionId,
+		count,
+		thresholds: [FERMENT_STEP_STALL_THRESHOLD],
+		send: () =>
+			sendHiddenSteer(
+				pi,
+				FERMENT_STEP_STALL_CUSTOM_TYPE,
+				`⚠ Step todos have not been updated for ${count} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
+				{ reason: "step_stall", threshold: FERMENT_STEP_STALL_THRESHOLD },
+			),
+	})
+}
+
 function handleStepStarted(raw: unknown, sessionId: string, appendEntry?: AppendEntryFn): void {
 	const payload = raw as FermentStepStartedPayload
 	const ferment = getActive()
@@ -457,6 +488,7 @@ function handleStepStarted(raw: unknown, sessionId: string, appendEntry?: Append
 		stepId: payload.stepId,
 	})
 	turnsSinceStepTodoWrite.set(sessionId, 0)
+	stallSteerTracker.reset(sessionId)
 }
 
 function clearStepTodos(phaseId: string, stepId: string, sessionId: string, appendEntry?: AppendEntryFn): void {
@@ -689,6 +721,7 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 		const scope = details.scope as { phaseId: string; stepId: string }
 		if (bucket.has(stepKey(scope.phaseId, scope.stepId))) {
 			turnsSinceStepTodoWrite.set(sessionId, 0)
+			stallSteerTracker.reset(sessionId)
 		}
 	})
 
@@ -732,6 +765,7 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 		// the process keep their buckets intact.
 		runningSteps.delete(sessionId)
 		turnsSinceStepTodoWrite.delete(sessionId)
+		stallSteerTracker.reset(sessionId)
 
 		todoIdMaps.get(sessionId)?.clear()
 		todoIdMaps.delete(sessionId)

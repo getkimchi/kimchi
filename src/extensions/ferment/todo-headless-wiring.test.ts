@@ -16,7 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { createEventBus } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "../todos/state-markdown.js"
@@ -26,6 +26,8 @@ import { setActive } from "./state.js"
 import {
 	__getRunningSteps,
 	bumpStallCounter,
+	FERMENT_STEP_STALL_CUSTOM_TYPE,
+	fireStepStallSteerIfStalled,
 	getTurnsSinceStepTodoWrite,
 	registerFermentTodoSync,
 } from "./todo-sync.js"
@@ -63,11 +65,16 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 }
 
 /** Minimal ExtensionAPI stub that delegates events to a real EventBus. */
-function makePiWithRealEventBus(): { pi: ExtensionAPI; unsubscribe: () => void } {
+function makePiWithRealEventBus(): {
+	pi: ExtensionAPI
+	sendMessage: ReturnType<typeof vi.fn>
+	unsubscribe: () => void
+} {
 	const bus = createEventBus()
-	const pi = { events: bus } as unknown as ExtensionAPI
+	const sendMessage = vi.fn()
+	const pi = { events: bus, sendMessage } as unknown as ExtensionAPI
 	const unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
-	return { pi, unsubscribe }
+	return { pi, sendMessage, unsubscribe }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -483,7 +490,7 @@ describe("stall detection via step todo write tracking", () => {
 		}
 	})
 
-	it("stall warning appears in rendered markdown after threshold", () => {
+	it("stall pressure fires as a one-shot persistent steer after threshold (not in the rendered block)", () => {
 		const ferment = makeFerment({
 			phases: [
 				{
@@ -497,7 +504,7 @@ describe("stall detection via step todo write tracking", () => {
 			],
 		})
 		setActive(ferment)
-		const { pi, unsubscribe } = makePiWithRealEventBus()
+		const { pi, sendMessage, unsubscribe } = makePiWithRealEventBus()
 
 		try {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
@@ -515,9 +522,30 @@ describe("stall detection via step todo write tracking", () => {
 			// Bump past threshold (12 turns — one long step = genuine thrash)
 			for (let i = 0; i < 13; i++) bumpStallCounter(TEST_SESSION_ID)
 
+			// The rendered block no longer carries volatile staleness text — it
+			// must stay byte-stable between real store writes for prefix caching.
 			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-			expect(md).toContain("\u26a0 Step todos have not been updated for 13 turns")
-			expect(md).toContain("reassess your approach")
+			expect(md).not.toContain("have not been updated")
+
+			// The pressure is delivered as a one-shot persistent steer instead.
+			fireStepStallSteerIfStalled(pi, TEST_SESSION_ID)
+			const stallSteers = sendMessage.mock.calls.filter(
+				(call) => (call[0] as { customType?: string }).customType === FERMENT_STEP_STALL_CUSTOM_TYPE,
+			)
+			expect(stallSteers).toHaveLength(1)
+			expect((stallSteers[0]?.[0] as { content: string }).content).toContain(
+				"Step todos have not been updated for 13 turns",
+			)
+			expect((stallSteers[0]?.[0] as { content: string }).content).toContain("reassess your approach")
+			expect(stallSteers[0]?.[1]).toEqual({ deliverAs: "steer" })
+
+			// One-shot: firing again without a new epoch persists nothing more.
+			fireStepStallSteerIfStalled(pi, TEST_SESSION_ID)
+			expect(
+				sendMessage.mock.calls.filter(
+					(call) => (call[0] as { customType?: string }).customType === FERMENT_STEP_STALL_CUSTOM_TYPE,
+				),
+			).toHaveLength(1)
 		} finally {
 			unsubscribe()
 		}

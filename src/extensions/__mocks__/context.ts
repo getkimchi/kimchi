@@ -51,6 +51,7 @@ export function createContext(
 			getSessionDir: () => "",
 			getSessionFile: () => undefined,
 			getEntries: () => [],
+			getBranch: () => [],
 			getHeader: () => null,
 			...overrides?.sessionManager,
 		} as SessionManager,

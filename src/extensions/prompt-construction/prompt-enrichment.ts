@@ -35,7 +35,7 @@ import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
-import { bumpStallCounter } from "../ferment/todo-sync.js"
+import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
@@ -387,6 +387,7 @@ export default function (skillPathsFromConfig: string[]) {
 				// block can detect when the orchestrator hasn't updated step todos.
 				// Scoped to this session so concurrent sessions do not share a counter.
 				bumpStallCounter(sessionId)
+				fireStepStallSteerIfStalled(pi, sessionId)
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.
