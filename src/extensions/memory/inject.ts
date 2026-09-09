@@ -8,12 +8,7 @@
  *
  * Pure — unit-testable under Node.
  */
-import {
-	DIGEST_MAX_FACTS,
-	DIGEST_MAX_TOKENS,
-	DIGEST_SCORE_THRESHOLD,
-	tokensEstimated,
-} from "./config.js"
+import { DIGEST_MAX_FACTS, DIGEST_MAX_TOKENS, DIGEST_SCORE_THRESHOLD, tokensEstimated } from "./config.js"
 
 export interface MemorySearchHit {
 	memory?: string
