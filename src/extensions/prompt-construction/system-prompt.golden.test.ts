@@ -7,12 +7,10 @@
  * via `createSystemPromptBlocks`, and `system-prompt.test.ts` asserts
  * presence/absence — neither shows which content lines actually changed.
  *
- * Covers: (a) a single-model session prompt, (b) a mu lti-model orchestrator
- * prompt with a known role assignment, (c) a subagent prompt for one persona
+ * Covers: (a) a main-session prompt, (b) a subagent prompt for one persona
  * (Builder) with its resolved guidelines block.
  *
- * Determinism: fixed env, fixed tools, `customConfigs: new Map()` so user
- * settings are never read, no `sessionId` so extension blocks stay empty.
+ * Determinism: fixed env and tools, no `sessionId` so extension blocks stay empty.
  */
 
 import { describe, expect, it } from "vitest"
@@ -22,7 +20,6 @@ import { AGENT_BUILDER, type EnvInfo } from "../agents/personas/types.js"
 import { buildAgentPrompt } from "../agents/prompt/prompts.js"
 import { buildRoleGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
-import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -69,8 +66,6 @@ describe("system prompt golden snapshots", () => {
 			env: testEnv,
 			mode: "single",
 			currentModelId: "kimi-k2.7",
-			registry,
-			customConfigs: new Map(),
 		})
 
 		// The section replacing the old Phase Management must be present.
@@ -79,27 +74,6 @@ describe("system prompt golden snapshots", () => {
 		expect(prompt).not.toContain("set_phase")
 		expect(prompt).not.toContain("Do NOT modify files")
 		expect(prompt).not.toContain("Do not apply fixes")
-		expect(prompt).toMatchSnapshot()
-	})
-
-	it("orchestrator session with default role assignments assembles the expected prompt", () => {
-		const prompt = buildSystemPrompt({
-			tools,
-			env: testEnv,
-			mode: "orchestrator",
-			currentModelId: "kimi-k2.7",
-			registry,
-			roles: DEFAULT_MODEL_ROLES,
-			customConfigs: new Map(),
-		})
-
-		expect(prompt).toContain("## Orchestration")
-		expect(prompt).toContain("## Working Practices")
-		expect(prompt).not.toContain("## Phase Management")
-		expect(prompt).not.toContain("set_phase")
-		// Orchestrators must not receive build guidance (load-bearing filter).
-		expect(prompt).not.toContain("### During build")
-		expect(prompt).not.toContain("Read a file before modifying it")
 		expect(prompt).toMatchSnapshot()
 	})
 

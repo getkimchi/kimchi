@@ -129,6 +129,19 @@ describe("worked-for message hold", () => {
 })
 
 describe("findNextCompatibleModel", () => {
+	it("considers the first and only scoped model when current is outside the list", () => {
+		const models = [makeModel("only", 100_000)]
+		expect(findNextCompatibleModel(models, -1, 50_000, false).model).toBe(models[0])
+	})
+
+	it("starts at the first scoped model and retains compatibility checks when current is absent", () => {
+		const models = [makeModel("small", 10_000), makeModel("big", 100_000)]
+		expect(findNextCompatibleModel(models, -1, null, false).model).toBe(models[0])
+		const result = findNextCompatibleModel(models, -1, 50_000, false)
+		expect(result.model).toBe(models[1])
+		expect(result.skipped).toHaveLength(1)
+	})
+
 	it("returns the next model when current is compatible", () => {
 		const models = [makeModel("a", 100_000), makeModel("b", 100_000), makeModel("c", 100_000)]
 		const result = findNextCompatibleModel(models, 0, 50_000, false)

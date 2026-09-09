@@ -4,7 +4,6 @@ import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import { successCriteriaToAnswer } from "../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
@@ -1041,8 +1040,7 @@ export class FermentCommandController {
 					"ack",
 					"ferment_ack",
 				)
-				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-				const nudge = buildOneshotNudge(updated, resolvedIntent, multiModelEnabled)
+				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
 				safeSendMessage(
 					pi,

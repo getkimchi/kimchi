@@ -7,18 +7,17 @@ import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
-	getParsedCliArgs,
+	applyModelEnvArgs,
+	findDeprecatedMultiModelFlag,
 	hasFermentOneshotArg,
 	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
-	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -96,7 +95,6 @@ import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
-import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
 import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import permissionsExtension from "./extensions/permissions/index.js"
@@ -113,7 +111,6 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
-import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
 import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -159,13 +156,7 @@ import {
 	updateModelsConfig,
 } from "./models.js"
 import { IS_ACP_MODE } from "./modes/acp/state.js"
-import {
-	augmentModelRolesWithOllama,
-	injectOllamaProvider,
-	readOllamaModelMetadata,
-	readOllamaModelsFromConfig,
-	resolveOllamaHost,
-} from "./ollama.js"
+import { injectOllamaProvider, readOllamaModelMetadata, resolveOllamaHost } from "./ollama.js"
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
@@ -312,7 +303,7 @@ try {
 		installAutoModelAdapters()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
-		// (set_phase, list_ferments, ferment suite) tools stay out of headless
+		// (list_ferments, ferment suite) tools stay out of headless
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
@@ -376,7 +367,6 @@ try {
 		const rejectedEnvironmentKeyMessage =
 			"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
-		let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
 		try {
 			if (envKey) {
 				const discover = () =>
@@ -386,7 +376,6 @@ try {
 					})
 				const discovered = await discover()
 				models = discovered.models
-				environmentOllamaModels = discovered.ollamaModels
 				installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 			} else {
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
@@ -453,14 +442,6 @@ try {
 		// Share the discovered model metadata with extensions before main() runs.
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
 		setAvailableModels(models)
-
-		// Wire Ollama-discovered models into the explorer / reviewer / builder
-		// role pools. Runs after setAvailableModels so the resolved roles
-		// singleton reflects the same model list the picker exposes.
-		const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
-		if (ollamaModelsForRoles.length > 0) {
-			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
-		}
 
 		// Write default settings on first run only — respect user's choices afterward
 		const settingsPath = resolve(agentDir, "settings.json")
@@ -533,16 +514,16 @@ try {
 			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 			process.exit(1)
 		}
-		const rawArgs = atFileArgs.args
+		const rawArgs = applyModelEnvArgs(atFileArgs.args, process.env.KIMCHI_MODEL)
 
-		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
-		// before upstream pi-mono sees them (it does not recognize "multi-model"
-		// as a model id).
+		// Parse Kimchi-local CLI flags once before upstream pi-mono sees the args.
 		populateCliArgs(rawArgs)
-		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
-			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
+		const deprecatedMultiModelFlag = findDeprecatedMultiModelFlag(rawArgs)
+		if (deprecatedMultiModelFlag) {
+			throw new Error(
+				`The ${deprecatedMultiModelFlag} option was removed. Omit it to use Auto or select a concrete model with --model provider/modelId.`,
+			)
 		}
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -637,7 +618,6 @@ try {
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
-			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
@@ -758,7 +738,7 @@ try {
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgsWithoutMultiModel, { extensionFactories })
+			await main(rawArgs, { extensionFactories })
 		}
 		applyPostMainInfrastructureExitPolicy(
 			infrastructureErrorTracker.getFailure(),

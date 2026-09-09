@@ -9,7 +9,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { VALID_MEMORY_CATEGORIES } from "../../../ferment/state-machine.js"
 import type { MemoryCategory } from "../../../ferment/types.js"
-import { getMultiModelEnabled } from "../../multi-model.js"
 import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
@@ -22,8 +21,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 		label: "Add Decision",
 		description: "Record a decision.",
 		parameters: DecisionParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+		async execute(_, params) {
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "add_decision",
 				title: params.title,
@@ -31,7 +29,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 				phaseId: params.phase_id,
 				stepId: params.step_id,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, undefined, multiModelEnabled)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined)
 			const last = outcome.ferment.decisions[outcome.ferment.decisions.length - 1]
 			return toolOk(`Decision: ${last.id} — ${params.title}`)
 		},
@@ -42,12 +40,11 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 		label: "Add Memory",
 		description: "Record a memory.",
 		parameters: MemoryParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
+		async execute(_, params) {
 			// Pre-validate to keep the existing user-friendly error wording.
 			if (!VALID_MEMORY_CATEGORIES.includes(params.category as MemoryCategory)) {
 				return toolErr(`Invalid category "${params.category}". Use one of: ${VALID_MEMORY_CATEGORIES.join(", ")}.`)
 			}
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "add_memory",
 				category: params.category as MemoryCategory,
@@ -55,7 +52,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 				phaseId: params.phase_id,
 				stepId: params.step_id,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, undefined, multiModelEnabled)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined)
 			const last = outcome.ferment.memories[outcome.ferment.memories.length - 1]
 			return toolOk(`Memory: ${last.id} [${params.category}]: ${params.content}`)
 		},

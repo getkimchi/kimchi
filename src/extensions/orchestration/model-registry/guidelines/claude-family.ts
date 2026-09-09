@@ -13,13 +13,6 @@
 // Sources: Anthropic "Claude Code: best practices for agentic coding",
 //          Anthropic prompt-engineering guide (over-planning, verbosity, structured output)
 
-/** Claude family orchestration: proportional delegation, structured prompts.
- * Sources: §3.5 item 1 (over-planning → over-orchestrating),
- *          §3.5 items 2–3 (verbosity, strong structured output) */
-export const CLAUDE_FAMILY_ORCHESTRATION = `When orchestrating (Claude family):
-- Match delegation granularity to task complexity. A single-file bug fix does not need an explore → plan → build delegation chain — delegate a single build step.
-- Write subagent prompts as structured artefacts (file paths, interfaces, acceptance criteria), not verbose prose. Tight prompts save downstream tokens.`
-
 /** Claude family plan: proportional depth, artefact-led, avoid over-planning. */
 export const CLAUDE_FAMILY_PLAN = `During **plan** phase (Claude family):
 - Match plan depth to task complexity. A single-file edit needs a 5-line spec, not a treatise.

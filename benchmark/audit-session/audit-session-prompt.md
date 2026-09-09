@@ -91,18 +91,19 @@ Provide the grade, 2-4 bullet strengths, and 2-4 bullet weaknesses with specific
 #### 2.1 Delegation Discipline
 
 First establish the session's delegation policy from recorded mode/configuration,
-prompt, and user instructions. Single-model sessions and relaxed Ferment normally
-execute directly; strict multi-model sessions delegate work assigned to other roles
-while retaining any explicitly self-owned responsibilities. If the policy cannot
+prompt, and user instructions. Main sessions and Ferment normally execute directly;
+ordinary subagents remain available when requested or required by the recorded
+instructions. For historical sessions, use their recorded policy rather than
+applying current defaults retroactively. If the policy cannot
 be established, mark it unknown and do not infer a delegation requirement.
 
 Evaluate:
 - Did execution follow that policy and the user's instructions? Do not penalize zero
   delegations, direct execution, or a fixed model when those are the prescribed behavior.
 - Where delegation was required or requested, were the right personas used at the right time?
-- In strict mode, did the orchestrator delegate work assigned to other roles and keep
-  self-performed work within its allowed responsibilities?
-- Were delegations useful relative to their overhead? In relaxed mode, unnecessary
+- Where delegation was required, did the parent keep self-performed work within
+  its allowed responsibilities?
+- Were delegations useful relative to their overhead? Without a delegation requirement, unnecessary
   delegation can be the mistake; fewer delegations alone is not a defect.
 - Did each delegated segment produce a meaningful result that was used?
 - Were there unnecessary delegation churn or redundant subagent invocations?
@@ -215,7 +216,7 @@ Compute and present:
 
 | Approach | Cost | vs Actual |
 |----------|------|-----------|
-| Actual (multi-model) | $X | baseline |
+| Actual | $X | baseline |
 | Role-optimized (Opus plan/review, Sonnet rest) | $X | X.Xx vs actual |
 | Opus only | $X | X.Xx vs actual |
 

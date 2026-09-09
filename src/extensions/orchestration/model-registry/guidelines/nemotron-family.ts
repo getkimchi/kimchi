@@ -30,11 +30,6 @@ export const NEMOTRON_FAMILY_BUILD = `During **build** phase (Nemotron family):
 
 /** Reserved: no family-level review override identified yet. */
 export const NEMOTRON_FAMILY_REVIEW = ""
-/** Nemotron family orchestration: leverage long-context for subagent results.
- * Sources: §3.4 item 1 (1M context window, near-perfect retrieval) */
-export const NEMOTRON_FAMILY_ORCHESTRATION = `When orchestrating (Nemotron family):
-- Read subagent results in full — your long context window lets you ingest them completely. Do not skim or skip sections when deciding next steps.`
-
 // ── Nemotron 3 Ultra FP4 per-model overrides ──────────────────────────
 // Sources: in-pool benchmark observations (weakest coder, multi-file unreliability)
 
@@ -48,9 +43,6 @@ export const NEMOTRON_3_ULTRA_EXPLORE = `During **explore** phase (nemotron-3-ul
 export const NEMOTRON_3_ULTRA_RESEARCH = `During **research** phase (nemotron-3-ultra-fp4 specific):
 - Your 1M token context window lets you ingest entire documentation pages or long web resources in a single pass. Prefer \`web_fetch\` for long pages rather than skimming search snippets.
 - Produce a concise structured summary — extract the key facts, not a transcript.`
-
-/** Reserved: no Nemotron 3 Ultra-specific orchestration override identified yet. */
-export const NEMOTRON_3_ULTRA_ORCHESTRATION = ""
 
 /** Nemotron 3 Ultra build: conservative scope for FP4 quantisation's coding weakness. */
 export const NEMOTRON_3_ULTRA_BUILD = `During **build** phase (nemotron-3-ultra-fp4 specific):

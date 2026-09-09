@@ -18,7 +18,6 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { getCompactionEnabled } from "../../settings-watcher.js"
-import { applyRoleAugmentation, resetModelRolesCache } from "../orchestration/model-roles.js"
 import {
 	buildCustomInstructions,
 	buildHandoffDetails,
@@ -598,7 +597,6 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.clearCompactionInFlight("ferment-2")
 		clearPendingCompaction("ferment-1")
 		clearPendingCompaction("ferment-2")
-		resetModelRolesCache()
 		vi.restoreAllMocks()
 	})
 
@@ -699,12 +697,6 @@ describe("maybeTriggerFermentCompaction", () => {
 			)
 			return inlineResult
 		})
-		ctx.modelRegistry = {
-			find: vi.fn((provider: string, modelId: string) =>
-				provider === "kimchi-dev" && modelId === "minimax-m3" ? { provider, id: modelId } : undefined,
-			),
-		} as unknown as ExtensionContext["modelRegistry"]
-
 		const run = maybeTriggerFermentCompaction(pi, ctx, runtime)
 		await Promise.resolve()
 
@@ -715,7 +707,6 @@ describe("maybeTriggerFermentCompaction", () => {
 				force: true,
 				// 5% of the 100k window is 5k — clamped up to the 20k floor.
 				keepRecentTokens: 20_000,
-				model: { provider: "kimchi-dev", id: "minimax-m3" },
 				thinkingLevel: "off",
 			}),
 		)
@@ -749,7 +740,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(nudgeCall[1]).toMatchObject({ triggerTurn: true, deliverAs: "steer" })
 	})
 
-	it("resolves modelRoles.compactor into ctx.inlineCompact's model option", async () => {
+	it("lets inline compaction resolve the session's effective summarization model", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Do it" },
@@ -758,10 +749,6 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: "kimchi-dev/non-reasoning-model" }))
-		const compactorModel = { provider: "kimchi-dev", id: "non-reasoning-model" }
-		const find = vi.fn(() => compactorModel)
-		ctx.modelRegistry = { find } as unknown as ExtensionContext["modelRegistry"]
 		ctx.inlineCompact = vi.fn(async () => ({
 			summary: "compacted",
 			firstKeptEntryId: "entry-1",
@@ -770,95 +757,11 @@ describe("maybeTriggerFermentCompaction", () => {
 
 		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
-		expect(find).toHaveBeenCalledWith("kimchi-dev", "non-reasoning-model")
-		expect(ctx.inlineCompact).toHaveBeenCalledWith(
-			expect.objectContaining({ model: compactorModel, force: true, thinkingLevel: "off" }),
-		)
-	})
-
-	it("omits the model override when modelRoles.compactor is unset", async () => {
-		const ferment = makeFermentWithPhase(
-			{ id: "phase-1", name: "Phase", goal: "Goal" },
-			{ id: "step-1", description: "Do it" },
-		)
-		storageMap.set(ferment.id, ferment)
-		runtime.setActive(ferment)
-		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
-
-		// Force compactor unset regardless of the real ~/.config/kimchi/harness/settings.json
-		// on the machine running this test — getModelRoles() reads that file directly
-		// (same as judge.ts), so a locally configured compactor role would otherwise
-		// leak into this "unset" scenario.
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
-
-		const find = vi.fn()
-		ctx.modelRegistry = { find } as unknown as ExtensionContext["modelRegistry"]
-		ctx.inlineCompact = vi.fn(async () => ({
-			summary: "compacted",
-			firstKeptEntryId: "entry-1",
-			tokensBefore: 10,
-		}))
-
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		expect(find).not.toHaveBeenCalled()
 		expect(ctx.inlineCompact).toHaveBeenCalledWith(
 			expect.not.objectContaining({
 				model: expect.anything(),
 			}),
 		)
-	})
-
-	it("warns when the compactor ref is configured but not in the registry", async () => {
-		const ferment = makeFermentWithPhase(
-			{ id: "phase-1", name: "Phase", goal: "Goal" },
-			{ id: "step-1", description: "Do it" },
-		)
-		storageMap.set(ferment.id, ferment)
-		runtime.setActive(ferment)
-		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
-
-		// Configured but not in the registry: silently compacting on the session
-		// model forever is the diagnosability trap the warning exists for.
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: "kimchi-dev/typo-model" }))
-		ctx.modelRegistry = { find: vi.fn(() => undefined) } as unknown as ExtensionContext["modelRegistry"]
-		ctx.inlineCompact = vi.fn(async () => ({
-			summary: "compacted",
-			firstKeptEntryId: "entry-1",
-			tokensBefore: 10,
-		}))
-
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
-			text: expect.stringContaining('Compactor model role "kimchi-dev/typo-model" is not in the model registry'),
-		})
-		// The fallback itself must be unaffected: compaction ran on the session model.
-		const call = (ctx.inlineCompact as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: unknown }
-		expect(call.model).toBeUndefined()
-	})
-
-	it("warns when the compactor ref is not a valid provider/model reference", async () => {
-		const ferment = makeFermentWithPhase(
-			{ id: "phase-1", name: "Phase", goal: "Goal" },
-			{ id: "step-1", description: "Do it" },
-		)
-		storageMap.set(ferment.id, ferment)
-		runtime.setActive(ferment)
-		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
-
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: "ref-without-provider-slash" }))
-		ctx.inlineCompact = vi.fn(async () => ({
-			summary: "compacted",
-			firstKeptEntryId: "entry-1",
-			tokensBefore: 10,
-		}))
-
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
-			text: expect.stringContaining("not a valid provider/model reference"),
-		})
 	})
 
 	it("emits a loud breadcrumb when the synchronous handoff direct-append is unavailable", async () => {
@@ -1077,7 +980,6 @@ describe("maybeTriggerFermentCompaction", () => {
 		storageMap.set(ferment.id, ferment)
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
 		// 30k context: below the default 50k gate, above the custom 10k one.
 		ctx = makeCtx(30_000)
 		ctx.model = { contextWindow: 100_000 } as ExtensionContext["model"]
@@ -1116,7 +1018,6 @@ describe("maybeTriggerFermentCompaction", () => {
 		// Phase-kind pending so the 60%-of-window step gate (which would skip
 		// this 60k-on-a-1M-window context) does not shadow the keepRecent math.
 		setPendingCompaction(ferment.id, makePendingPhase(ferment.id, "phase-1"))
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
 		ctx.model = { contextWindow: 1_000_000 } as ExtensionContext["model"]
 		ctx.inlineCompact = vi.fn(async () => ({
 			summary: "compacted",

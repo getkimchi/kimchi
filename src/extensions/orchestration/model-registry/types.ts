@@ -1,4 +1,5 @@
-import type { ModelRole } from "../model-roles.js"
+/** Static persona specializations, independent of model selection. */
+export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
 
 /**
  * Relative cost/capability tier used by the Orchestrator to match task
@@ -24,10 +25,6 @@ export interface ModelCapabilities {
 	 *  REPLACES the default guideline for that role. If absent, the default
 	 *  guideline is used. */
 	guidelines?: Partial<Readonly<Record<ModelRole, string>>>
-	/** Orchestration-specific guideline annex. Appended to the system prompt
-	 *  when this model acts as the orchestrator. If absent, the default
-	 *  orchestration guideline is used. */
-	orchestrationGuidelines?: string
 }
 
 /**

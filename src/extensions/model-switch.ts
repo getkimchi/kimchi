@@ -10,17 +10,15 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
-import { setMultiModelEnabled } from "./multi-model.js"
 import { findModelByRef, refFromModel, splitModelRef } from "./orchestration/model-ref-utils.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
 import { resolveEffectiveModel } from "./router/state.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
 
-/** Suppress the model_select guard temporarily (e.g. when /multi-model calls setModel). */
+/** Suppress the model_select guard temporarily while set_model validates a switch. */
 export async function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): Promise<T> {
 	suppressModelSelectGuard = true
 	return fn().finally(() => {
@@ -64,46 +62,15 @@ export default function modelSwitchExtension(
 		name: "set_model",
 		label: "Switch Model",
 		description:
-			'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
+			'Change the active AI model to a different concrete model. Provide it in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
 		parameters: Type.Object({
 			model: Type.String({
-				description:
-					'Target model identifier in "provider/modelId" format (e.g. "kimchi-dev/kimi-k2.6", "anthropic/claude-sonnet-4-20250514").',
+				description: 'Target concrete model in "provider/modelId" format (e.g. "kimchi-dev/kimi-k2.6").',
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const sessionId = ctx.sessionManager.getSessionId()
 			const { model } = params
-
-			if (model === "multi-model") {
-				const {
-					model: orchestrator,
-					modelId: orchId,
-					modelRef: orchRef,
-				} = getOrchestratorModel(sessionId, ctx.modelRegistry)
-				if (!orchestrator) {
-					return {
-						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
-						details: null,
-					}
-				}
-				setMultiModelEnabled(sessionId, true)
-				suppressModelSelectGuard = true
-				try {
-					await pi.setModel(orchestrator)
-				} finally {
-					suppressModelSelectGuard = false
-				}
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Switched to multi-model mode (orchestrator: ${orchId})`,
-						},
-					],
-					details: null,
-				}
-			}
 
 			if (!splitModelRef(model)) {
 				const available = ctx.modelRegistry
@@ -114,7 +81,7 @@ export default function modelSwitchExtension(
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId".\n\nAvailable models:\n${available.join("\n")}`,
 						},
 					],
 					details: null,
@@ -179,7 +146,6 @@ export default function modelSwitchExtension(
 				}
 			}
 
-			setMultiModelEnabled(sessionId, false)
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
@@ -292,14 +258,6 @@ export default function modelSwitchExtension(
 				"error",
 			)
 			return
-		}
-
-		if (event.source === "set") {
-			const orchRef = getOrchestratorModelRef(sessionId)
-			const selectedRef = `${event.model.provider}/${event.model.id}`
-			if (selectedRef !== orchRef) {
-				setMultiModelEnabled(sessionId, false)
-			}
 		}
 	})
 }

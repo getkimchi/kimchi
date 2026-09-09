@@ -2,9 +2,8 @@
  * default-agents.ts — Embedded default agent configurations.
  *
  * Personas define agent behaviour (system prompt, tools, roles) only.
- * Model selection is the orchestrator's responsibility — it sees all
- * available models in the "Your Team" system prompt section and picks
- * the right one for each delegation.
+ * Default personas inherit the parent model unless the caller explicitly
+ * selects another model.
  */
 
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"

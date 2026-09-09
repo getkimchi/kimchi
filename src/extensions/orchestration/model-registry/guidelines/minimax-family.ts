@@ -27,14 +27,6 @@ export const MINIMAX_FAMILY_RESEARCH = `During **research** phase (MiniMax famil
 
 export const MINIMAX_FAMILY_PLAN = ""
 
-/** M2 family orchestration: direct web_search, short prompts, single-goal subagents.
- * Sources: §2.2 Issue 1 (reflexive research delegation), §3.1 item 2 (drops long lists),
- *          §3.1 item 5 (step-limit ~100 tool calls) */
-export const MINIMAX_FAMILY_ORCHESTRATION = `When orchestrating (MiniMax M2 family):
-- Call \`web_search\` directly for simple lookups — do NOT delegate to a research subagent. M2 models reflexively over-delegate research, costing 10–20× the tokens.
-- Keep subagent prompts short and front-load the critical instruction. M2 drops items from long structured contexts.
-- Each subagent prompt should target a single focused goal — do not ask a subagent to do multiple unrelated things.`
-
 /** M2 family build: architecture-level traits (outline-then-diff, scope, APIs, step-limit). */
 export const MINIMAX_FAMILY_BUILD = `During **build** phase (MiniMax M2 family):
 - Outline-then-diff: state the change in 1–3 bullets, then emit the minimal diff. No "clever" refactors, no surprise restructuring.
@@ -49,14 +41,6 @@ export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family
 
 // ── MiniMax M2.7 per-model overrides ──────────────────────────────────
 // Sources: session-01-findings (Go mutex over-use observed in M2.7 benchmarks)
-
-/** M2.7 orchestration: delegation reinforcement.
- * Sources: benchmark sessions 01-05 (M2.7 does 0 Agent calls for many tasks,
- *          causing 300k-1.5M token overruns). */
-export const MINIMAX_M27_ORCHESTRATION = `When orchestrating (minimax-m2.7 specific):
-- For simple tasks (single file, straightforward change): you may do the work yourself if the step matches your roles.
-- For complex tasks (2+ files or multi-step): delegate ALL steps — build, exploration, and review — to separate agents. Do NOT do any of these yourself for complex tasks, even if they match your roles. Split the work into small chunks (1-2 files each) and delegate each chunk. M2.7 produces 300k-1.5M token overruns when it tries complex work inline.
-- After delegating, do NOT re-read the files the subagent created or re-run its tests. Trust the subagent result unless it explicitly reported an error.`
 
 /** M2.7 build: Go-specific concurrency pattern observed in M2.7. */
 export const MINIMAX_M27_BUILD = `During **build** phase (minimax-m2.7 specific):

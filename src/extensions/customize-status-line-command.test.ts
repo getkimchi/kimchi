@@ -129,7 +129,6 @@ beforeEach(() => {
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 	vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
-	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 })
 
 afterEach(() => {
