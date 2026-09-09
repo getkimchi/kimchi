@@ -113,6 +113,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
 	},
+	memory: {
+		type: "boolean",
+		description: "Enable persistent personal memory (capture + recall across sessions, local-only storage)",
+	},
 	"enable-experimental-features": {
 		type: "boolean",
 		description: "Enable experimental features, including the kimchi-dev/auto model",
@@ -235,6 +239,7 @@ export interface SessionCliArgs {
 		model?: string
 		models?: string
 		"multi-model"?: boolean
+		memory?: boolean
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -289,6 +294,7 @@ const CACHEABLE_OPTION_NAMES = [
 	"model",
 	"models",
 	"multi-model",
+	"memory",
 	"thinking",
 	"mode",
 	"print",
