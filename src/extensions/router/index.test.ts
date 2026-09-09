@@ -91,6 +91,76 @@ afterEach(() => {
 })
 
 describe("Auto model extension", () => {
+	it.each([
+		"startup",
+		"new",
+	] as const)("starts a fresh %s session in Auto despite a saved concrete choice", async (reason) => {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const ctx = createContext({
+			model: model("concrete"),
+			modelRegistry: { find: () => auto },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto)
+	})
+
+	it.each(["reload", "resume", "fork"] as const)("preserves the model on %s", async (reason) => {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({
+			model: model("concrete"),
+			modelRegistry: { find: () => model("auto") },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		["--model", "concrete"],
+		["--provider", "custom"],
+		["--multi-model"],
+	])("preserves an explicit launch choice: %j", async (...args) => {
+		populateCliArgs(args)
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({
+			model: model("concrete"),
+			modelRegistry: { find: () => model("auto") },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
+	it("resets /new to Auto even after an explicit concrete launch", async () => {
+		populateCliArgs(["--model", "concrete"])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => auto } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto)
+	})
+
+	it("leaves child model selection to the agent runner", async () => {
+		const extension = createExtensionApi()
+		createAutoModelExtension()(extension.api)
+		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => model("auto") } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
 		const extension = createExtensionApi()
@@ -149,19 +219,58 @@ describe("Auto model extension", () => {
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
 	})
 
-	it("keeps a concrete model when the session has no Auto state", async () => {
+	it("keeps a concrete model when Auto is unavailable", async () => {
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const getEntries = vi.fn(() => [])
 		const ctx = createContext({
 			model: model("kimi-k2.5"),
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries },
+			modelRegistry: { find: () => undefined },
 		})
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(getEntries).toHaveBeenCalledOnce()
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+	})
+
+	it("keeps the first scoped model on startup", async () => {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const concrete = model("concrete")
+		const ctx = createContext({
+			model: concrete,
+			scopedModels: [{ model: concrete, thinkingLevel: "medium" }],
+			modelRegistry: { find: () => model("auto") },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
+	it("preserves a concrete session loaded at startup", async () => {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const entries: SessionEntry[] = [
+			{
+				type: "message",
+				id: "user-message",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				message: { role: "user", content: "Existing conversation", timestamp: Date.now() },
+			},
+		]
+		const ctx = createContext({
+			model: model("concrete"),
+			sessionManager: { getEntries: () => entries },
+			modelRegistry: { find: () => model("auto") },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
 	})
 
 	it("restores the Auto selection that Pi inferred as the concrete assistant model", async () => {

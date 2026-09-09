@@ -8,7 +8,6 @@ import {
 	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
@@ -350,20 +349,5 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
-	})
-
-	it.each([
-		["canonical", ["--model", "kimchi-dev/auto"]],
-		["provider and id", ["--provider", "kimchi-dev", "--model", "auto"]],
-		["bare id", ["--model", "auto"]],
-		["thinking suffix", ["--model", "kimchi-dev/auto:high"]],
-	] as const)("recognizes an explicit Auto selection in %s form", (_label, args) => {
-		populateCliArgs([...args])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(true)
-	})
-
-	it("does not mistake another provider's auto model for kimchi-dev/auto", () => {
-		populateCliArgs(["--provider", "custom", "--model", "auto"])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
 	})
 })
