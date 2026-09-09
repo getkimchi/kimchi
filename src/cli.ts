@@ -18,6 +18,7 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -520,7 +521,7 @@ try {
 		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+		const rawArgsWithoutMultiModel = stripMemoryArgs(stripMultiModelArgs(rawArgs))
 
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,

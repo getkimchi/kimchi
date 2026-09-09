@@ -89,7 +89,11 @@ export async function chatJson(
 	let lastError: unknown
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
-			const response = await fetchImpl(new URL("/chat/completions", options.baseURL), {
+			const response = await fetchImpl(
+				// Relative join (no leading slash) so the gateway's base path
+				// (https://llm.kimchi.dev/openai/v1) is preserved.
+				new URL("chat/completions", options.baseURL.endsWith("/") ? options.baseURL : `${options.baseURL}/`),
+				{
 				method: "POST",
 				headers: {
 					"content-type": "application/json",

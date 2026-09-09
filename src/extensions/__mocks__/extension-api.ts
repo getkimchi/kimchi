@@ -28,6 +28,7 @@ export function createExtensionApi(): {
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
+	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
 	const emitEvent = vi.fn()
 
 	return {
@@ -35,6 +36,7 @@ export function createExtensionApi(): {
 			on,
 			registerCommand,
 			registerTool,
+			registerFlag,
 			sendMessage,
 			appendEntry,
 			setModel,
