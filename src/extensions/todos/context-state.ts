@@ -1,4 +1,5 @@
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { latestRunTailIsAborted } from "../aborted-run.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { renderTodoStateMarkdown } from "./state-markdown.js"
 import { subscribeTodoStore } from "./store.js"
@@ -70,10 +71,22 @@ function newestTodoStateContentFromHistory(ctx: ExtensionContext): string | unde
  * message except the newest one. The resulting request view is a pure
  * function of persisted history — identical every round until the next real
  * todo write, which is the only moment a bounded prefix invalidation occurs.
+ *
+ * Timing: upstream compaction (`findCutPoint`) treats every custom message
+ * as a turn start, so a block persisted mid-turn (steered between a tool
+ * result and the next assistant message) becomes a turn boundary. That
+ * turns the compaction into a split-turn compaction with an extra
+ * prefix-summarization request and breaks turn accounting. Writes are
+ * therefore deferred while the agent is busy: changes coalesce into a
+ * single block flushed at `agent_end`, when the plain append path places it
+ * after all persisted turn entries.
  */
 export function registerTodoStatePersistence(pi: ExtensionAPI): void {
 	/** Per-session newest persisted block content; `undefined` = nothing persisted yet. */
 	const lastPersistedContent = new Map<string, string | undefined>()
+	/** Sessions whose rendered block changed while the agent was busy. */
+	const pendingFlush = new Set<string>()
+	let agentBusy = 0
 
 	function persistIfChanged(sessionId: string): void {
 		const markdown = renderTodoStateMarkdown(sessionId)
@@ -109,7 +122,37 @@ export function registerTodoStatePersistence(pi: ExtensionAPI): void {
 	pi.on("session_start", initFromHistory)
 	pi.on("session_tree", initFromHistory)
 
+	// While the agent is busy, coalesce all changes into one block flushed
+	// after the run — see the module comment for the compaction rationale.
+	pi.on("agent_start", () => {
+		agentBusy++
+	})
+	pi.on("agent_end", () => {
+		agentBusy = Math.max(0, agentBusy - 1)
+	})
+	// Flush on agent_settled, not agent_end: during agent_end the run is
+	// still streaming upstream, so a steered custom message would be queued
+	// as a pending agent steer — that both disturbs compaction of the just-
+	// finished run and makes other extensions (e.g. the Ferment V2 gate at
+	// agent_settled) see hasPendingMessages() === true and drop continuations.
+	// At agent_settled the run is fully inactive, so sendCustomMessage takes
+	// the plain append path (no steer, no pending messages, no new turn).
+	pi.on("agent_settled", (_event, ctx) => {
+		if (agentBusy > 0) return
+		// Skip aborted runs: the flushed block would become the newest turn
+		// start and steal the interrupted turn's slot in a compaction cut.
+		if (latestRunTailIsAborted(ctx)) return
+		for (const sessionId of pendingFlush) {
+			persistIfChanged(sessionId)
+		}
+		pendingFlush.clear()
+	})
+
 	subscribeTodoStore((_details, sessionId) => {
+		if (agentBusy > 0) {
+			pendingFlush.add(sessionId)
+			return
+		}
 		persistIfChanged(sessionId)
 	})
 

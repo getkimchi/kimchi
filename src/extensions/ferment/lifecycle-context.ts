@@ -4,6 +4,7 @@ type SessionManagerHandle = Pick<SessionManager, "getEntries" | "getSessionId">
 
 import { TERMINAL_STEP_STATUSES } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
+import { latestRunTailIsAborted } from "../aborted-run.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -96,6 +97,13 @@ function newestLifecycleContentFromHistory(ctx: ExtensionContext): string | unde
  * identical every round between real transitions, so each transition causes
  * exactly one bounded invalidation instead of a permanent cache freeze.
  *
+ * Timing: upstream compaction (`findCutPoint`) treats every custom message
+ * as a turn start, so a block persisted mid-turn becomes a turn boundary
+ * and compaction produces an extra split-turn prefix-summarization request.
+ * Writes are therefore deferred while the agent is busy and flushed at
+ * `agent_settled`, when the run is fully inactive and the plain append
+ * path lands after all turn entries.
+ *
  * Registered once at extension init; the TUI is a single-session process.
  */
 export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: FermentRuntime): void {
@@ -119,6 +127,10 @@ export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: Ferme
 		return markHarnessSteer(content)
 	}
 
+	/** Whether a lifecycle transition happened while the agent was busy. */
+	let pendingFlush = false
+	let agentBusy = 0
+
 	function persistIfChanged(): void {
 		const content = renderCurrent()
 		if (content === undefined || content === lastPersistedContent) return
@@ -141,6 +153,30 @@ export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: Ferme
 	pi.on("session_start", initFromHistory)
 	pi.on("session_tree", initFromHistory)
 
+	// While the agent is busy, coalesce all transitions into one block flushed
+	// after the run — see the module comment for the compaction rationale.
+	pi.on("agent_start", () => {
+		agentBusy++
+	})
+	pi.on("agent_end", () => {
+		agentBusy = Math.max(0, agentBusy - 1)
+	})
+	// Flush on agent_settled rather than agent_end: during agent_end the run
+	// is still streaming upstream, so a steered send would be queued as a
+	// pending agent steer. At agent_settled the run is fully inactive, so
+	// sendCustomMessage takes the plain append path (no steer, no pending
+	// messages, no new turn) and downstream agent_settled handlers that gate
+	// on ctx.hasPendingMessages() (e.g. the Ferment V2 evaluation gate) are
+	// unaffected.
+	pi.on("agent_settled", (_event, ctx) => {
+		if (agentBusy > 0 || !pendingFlush) return
+		// Skip aborted runs: the flushed block would become the newest turn
+		// start and steal the interrupted turn's slot in a compaction cut.
+		if (latestRunTailIsAborted(ctx)) return
+		pendingFlush = false
+		persistIfChanged()
+	})
+
 	// Re-render + dedupe on every lifecycle transition that can change the
 	// rendered block (or the planned/running gate).
 	for (const channel of [
@@ -154,6 +190,10 @@ export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: Ferme
 		FERMENT_EVENTS.SCOPING_COMPLETE,
 	] as const) {
 		pi.events.on(channel, () => {
+			if (agentBusy > 0) {
+				pendingFlush = true
+				return
+			}
 			persistIfChanged()
 		})
 	}

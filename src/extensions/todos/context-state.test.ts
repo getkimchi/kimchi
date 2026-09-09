@@ -67,6 +67,79 @@ describe("registerTodoStatePersistence", () => {
 		__resetTodoStore()
 	})
 
+	it("defers persistence while the agent is busy and flushes once on agent_settled, not agent_end", async () => {
+		const harness = createHarness()
+		await harness.fire("session_start", { reason: "new" })
+
+		await harness.fire("agent_start", {})
+		applyWriteTodos({ todos: [{ content: "mid-turn task", status: "pending" }] }, SESSION_ID)
+		expect(harness.stateSyncCalls()).toHaveLength(0)
+
+		// agent_end must NOT flush: while the run is still settling upstream,
+		// a steered send would be queued as a pending agent steer, which
+		// disturbs compaction and makes hasPendingMessages()-gated handlers
+		// (e.g. the Ferment V2 evaluation gate) drop their continuations.
+		await harness.fire("agent_end", {})
+		expect(harness.stateSyncCalls()).toHaveLength(0)
+
+		// At agent_settled the run is fully inactive: plain append, no steer.
+		await harness.fire("agent_settled", {})
+		expect(harness.stateSyncCalls()).toHaveLength(1)
+		expect(harness.stateSyncCalls()[0]?.options).toEqual({ deliverAs: "steer" })
+
+		// Busy writes coalesce into one flush per settled run.
+		await harness.fire("agent_start", {})
+		applyWriteTodos({ todos: [{ id: 1, content: "mid-turn task", status: "in_progress" }] }, SESSION_ID)
+		applyWriteTodos({ todos: [{ id: 1, content: "mid-turn task", status: "completed" }] }, SESSION_ID)
+		expect(harness.stateSyncCalls()).toHaveLength(1)
+		await harness.fire("agent_end", {})
+		await harness.fire("agent_settled", {})
+		expect(harness.stateSyncCalls()).toHaveLength(2)
+
+		// No change while busy: nothing to flush.
+		await harness.fire("agent_start", {})
+		await harness.fire("agent_end", {})
+		await harness.fire("agent_settled", {})
+		expect(harness.stateSyncCalls()).toHaveLength(2)
+	})
+
+	it("does not flush after an aborted run; the block lands at the next normal settle", async () => {
+		const abortedAssistant = {
+			type: "message",
+			id: "aborted-1",
+			parentId: null,
+			timestamp: "",
+			message: { role: "assistant", stopReason: "aborted", content: [] },
+		}
+		const normalAssistant = {
+			type: "message",
+			id: "normal-1",
+			parentId: null,
+			timestamp: "",
+			message: { role: "assistant", stopReason: "stop", content: [] },
+		}
+		const branch: MessageLike[] = []
+		const harness = createHarness(branch)
+		await harness.fire("session_start", { reason: "new" })
+
+		await harness.fire("agent_start", {})
+		applyWriteTodos({ todos: [{ content: "interrupted task", status: "pending" }] }, SESSION_ID)
+		await harness.fire("agent_end", {})
+		branch.push(abortedAssistant as MessageLike)
+		await harness.fire("agent_settled", {})
+		// Flushing now would make the block the newest turn start; under a
+		// small keep-recent budget compaction would swallow the interrupted
+		// turn into the summary instead of keeping it.
+		expect(harness.stateSyncCalls()).toHaveLength(0)
+
+		await harness.fire("agent_start", {})
+		await harness.fire("agent_end", {})
+		branch.push(normalAssistant as MessageLike)
+		await harness.fire("agent_settled", {})
+		expect(harness.stateSyncCalls()).toHaveLength(1)
+		expect(String(harness.stateSyncCalls()[0]?.message.content)).toContain("interrupted task")
+	})
+
 	it("persists exactly one hidden state block per actual store change", async () => {
 		const harness = createHarness()
 		await harness.fire("session_start", { reason: "new" })

@@ -143,8 +143,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events
 
-	registerFermentLifecycleContext(pi, runtime)
-
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
@@ -459,6 +457,12 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		}
 		finalCompletionNudgedThisRun = false
 	})
+
+	// Registered after this module's own agent event handlers: the lifecycle
+	// persistence layer subscribes to agent_start/agent_end/agent_settled, and
+	// its handlers must not precede the main agent_end handler in the
+	// registration order (test fixtures fetch the first-registered handler).
+	registerFermentLifecycleContext(pi, runtime)
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)

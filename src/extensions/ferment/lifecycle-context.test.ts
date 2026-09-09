@@ -140,6 +140,84 @@ describe("registerFermentLifecycleContext", () => {
 		getMultiModelEnabledMock.mockReturnValue(true)
 	})
 
+	it("defers transitions while the agent is busy and flushes once on agent_settled, not agent_end", async () => {
+		const harness = createHarness()
+		const { runtime, setActive } = makeMutableRuntime(makeFerment())
+		registerFermentLifecycleContext(harness.pi, runtime)
+		await startSession(harness)
+
+		await harness.fire("agent_start", {})
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+		expect(harness.persistedBlocks()).toHaveLength(0)
+
+		// agent_end must NOT flush: while the run is still settling upstream,
+		// a steered send would be queued as a pending agent steer.
+		await harness.fire("agent_end", {})
+		expect(harness.persistedBlocks()).toHaveLength(0)
+
+		// At agent_settled the run is fully inactive: plain append, no steer.
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(1)
+		expect(harness.persistedBlocks()[0]?.content).toContain("## Current lifecycle state")
+
+		// Further transitions during the next busy run coalesce.
+		const phase = makeFerment().phases[0]
+		if (!phase) throw new Error("expected phase fixture")
+		setActive(
+			makeFerment({
+				phases: [
+					{
+						...phase,
+						steps: [
+							{ id: "step-1", index: 1, description: "Do thing one", status: "done" },
+							{ id: "step-2", index: 2, description: "Do thing two", status: "done" },
+						],
+					},
+				],
+			}),
+		)
+		await harness.fire("agent_start", {})
+		harness.bus.emit(FERMENT_EVENTS.STEP_COMPLETED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-2" })
+		await harness.fire("agent_end", {})
+		expect(harness.persistedBlocks()).toHaveLength(1)
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(2)
+	})
+
+	it("does not flush after an aborted run; the block lands at the next normal settle", async () => {
+		const abortedAssistant = {
+			type: "message",
+			id: "aborted-1",
+			parentId: null,
+			timestamp: "",
+			message: { role: "assistant", stopReason: "aborted", content: [] },
+		}
+		const branch: MessageLike[] = []
+		const harness = createHarness(branch)
+		const { runtime } = makeMutableRuntime(makeFerment())
+		registerFermentLifecycleContext(harness.pi, runtime)
+		await startSession(harness)
+
+		await harness.fire("agent_start", {})
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+		await harness.fire("agent_end", {})
+		branch.push(abortedAssistant as MessageLike)
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(0)
+
+		await harness.fire("agent_start", {})
+		await harness.fire("agent_end", {})
+		branch.push({
+			type: "message",
+			id: "normal-1",
+			parentId: null,
+			timestamp: "",
+			message: { role: "assistant", stopReason: "stop", content: [] },
+		} as MessageLike)
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(1)
+	})
+
 	it("persists a hidden lifecycle block once per transition for a running ferment", async () => {
 		const harness = createHarness()
 		const { runtime, setActive } = makeMutableRuntime(makeFerment())
