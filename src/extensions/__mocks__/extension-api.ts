@@ -32,7 +32,6 @@ export function createExtensionApi(): {
 	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
-<<<<<<< HEAD
 	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
 	const registeredTools = new Map<string, ToolDefinition>()
 	const activeToolNames = new Set<string>()
@@ -47,11 +46,6 @@ export function createExtensionApi(): {
 	const getActiveTools = vi.fn(() => [...activeToolNames])
 	const getAllTools = vi.fn(() => [...registeredTools.values()])
 	const { events, emit } = createMiniEventBus()
-=======
-	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
-	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
-	const emitEvent = vi.fn()
->>>>>>> 30fc2838f (feat(memory): verification — flag plumbing fix, A/B kwarg, dogfood pass)
 
 	return {
 		api: {
@@ -59,13 +53,9 @@ export function createExtensionApi(): {
 			registerCommand,
 			registerFlag,
 			registerTool,
-<<<<<<< HEAD
 			getAllTools,
 			getActiveTools,
 			setActiveTools,
-=======
-			registerFlag,
->>>>>>> 30fc2838f (feat(memory): verification — flag plumbing fix, A/B kwarg, dogfood pass)
 			sendMessage,
 			appendEntry,
 			setModel,

@@ -16,11 +16,12 @@ describe("buildMemoryDigest", () => {
 			{ memory: "mid fact", score: 0.5 },
 		])
 		expect(result).toBeDefined()
-		expect(result!.composition.belowThreshold).toBe(1)
-		expect(result!.composition.facts).toBe(2)
-		expect(result!.text).toContain("strong fact")
-		expect(result!.text).toContain("mid fact")
-		expect(result!.text).not.toContain("weak fact")
+		if (!result) throw new Error("expected a digest")
+		expect(result.composition.belowThreshold).toBe(1)
+		expect(result.composition.facts).toBe(2)
+		expect(result.text).toContain("strong fact")
+		expect(result.text).toContain("mid fact")
+		expect(result.text).not.toContain("weak fact")
 	})
 
 	it("enforces the top-N cap, keeping the highest-scored facts", () => {
@@ -30,11 +31,12 @@ describe("buildMemoryDigest", () => {
 		}))
 		const result = buildMemoryDigest(hits)
 		expect(result).toBeDefined()
-		expect(result!.composition.facts).toBe(DIGEST_MAX_FACTS)
-		expect(result!.composition.overCap).toBe(5)
+		if (!result) throw new Error("expected a digest")
+		expect(result.composition.facts).toBe(DIGEST_MAX_FACTS)
+		expect(result.composition.overCap).toBe(5)
 		// The highest-scored facts win.
-		expect(result!.text).toContain("fact 9")
-		expect(result!.text).not.toContain("fact 0")
+		expect(result.text).toContain("fact 9")
+		expect(result.text).not.toContain("fact 0")
 	})
 
 	it("enforces the token budget by dropping the lowest-scored facts first", () => {
@@ -47,21 +49,23 @@ describe("buildMemoryDigest", () => {
 		}))
 		const result = buildMemoryDigest(hits)
 		expect(result).toBeDefined()
-		expect(result!.composition.overCap).toBe(1)
-		expect(result!.composition.tokensEstimated).toBeLessThanOrEqual(DIGEST_MAX_TOKENS)
+		if (!result) throw new Error("expected a digest")
+		expect(result.composition.overCap).toBe(1)
+		expect(result.composition.tokensEstimated).toBeLessThanOrEqual(DIGEST_MAX_TOKENS)
 		// Some facts survived and some were dropped for budget.
-		expect(result!.composition.facts).toBeGreaterThan(1)
-		expect(result!.composition.overBudget).toBeGreaterThan(0)
+		expect(result.composition.facts).toBeGreaterThan(1)
+		expect(result.composition.overBudget).toBeGreaterThan(0)
 		// The highest-scored facts are still present.
-		expect(result!.text).toContain("fact 5")
-		expect(result!.text).not.toContain("fact 0")
+		expect(result.text).toContain("fact 5")
+		expect(result.text).not.toContain("fact 0")
 	})
 
 	it("hard-truncates a single fact that alone exceeds the budget", () => {
 		const result = buildMemoryDigest([{ memory: "y".repeat(100_000), score: 0.9 }])
 		expect(result).toBeDefined()
-		expect(result!.composition.overBudget).toBe(1)
-		expect(result!.composition.tokensEstimated).toBeLessThanOrEqual(DIGEST_MAX_TOKENS)
+		if (!result) throw new Error("expected a digest")
+		expect(result.composition.overBudget).toBe(1)
+		expect(result.composition.tokensEstimated).toBeLessThanOrEqual(DIGEST_MAX_TOKENS)
 	})
 
 	it("produces byte-identical output for identical input (stable prefix)", () => {
@@ -75,8 +79,6 @@ describe("buildMemoryDigest", () => {
 	})
 
 	it("wraps the body in the stable memory section", () => {
-		expect(digestSection("- a fact")).toBe(
-			"\n\n## User memory (from previous sessions, local-only)\n- a fact",
-		)
+		expect(digestSection("- a fact")).toBe("\n\n## User memory (from previous sessions, local-only)\n- a fact")
 	})
 })
