@@ -11,7 +11,6 @@ import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
-import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -346,7 +345,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 
 			const apiModels = getAvailableModels()
 			const availableModelRefs = [...new Set(apiModels.map((m) => `kimchi-dev/${m.slug}`))]
-			if (isExperimentalFeaturesEnabled() && !availableModelRefs.includes(AUTO_MODEL_REF)) {
+			if (!availableModelRefs.includes(AUTO_MODEL_REF)) {
 				availableModelRefs.push(AUTO_MODEL_REF)
 			}
 

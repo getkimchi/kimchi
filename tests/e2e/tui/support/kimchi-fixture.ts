@@ -91,6 +91,8 @@ export interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	routerResponses?: unknown[]
+	/** Email served by the fake `/v1/me`; an @cast.ai address opts into Auto-by-default. Null serves 404. */
+	userEmail?: string | null
 	/** Keep this one-based router request open until cancellation closes the connection. */
 	stallRouterRequestNumber?: number
 	/** Provider id written to models.json and used for the initial CLI selection. */
@@ -212,6 +214,9 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
 		const seedEnv = {
 			KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
+			// Keep the Auto-by-default gate's /v1/me lookup on the fake server;
+			// otherwise it would reach the real app API.
+			KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
 			...(mcp?.env ?? {}),
 			...(seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}),
 		}
