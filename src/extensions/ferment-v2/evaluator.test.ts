@@ -6,10 +6,9 @@ import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
-import { getMultiModelEnabled } from "../multi-model.js"
-import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../router/state.js"
 import {
 	evaluateFermentV2,
 	MAX_TODO_STATE_CHARS,
@@ -21,22 +20,14 @@ import { MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.j
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ completeSimple: vi.fn() }))
-vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn() }))
-vi.mock("../orchestration/model-roles.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../orchestration/model-roles.js")>()
-	return { ...actual, getModelRoles: vi.fn() }
-})
 vi.mock("./settings.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./settings.js")>()
 	return { ...actual, getFermentV2Settings: vi.fn() }
 })
 
 const completeMock = vi.mocked(completeSimple)
-const multiModelMock = vi.mocked(getMultiModelEnabled)
-const modelRolesMock = vi.mocked(getModelRoles)
 const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
 const sessionModel = model("session", "main")
-const judgeModel = model("judge", "independent")
 const rawUsage = {
 	input: 10,
 	output: 5,
@@ -63,20 +54,11 @@ describe("Ferment V2 evaluator", () => {
 		resetRedactionConfigCache()
 		redactor.resetRedactorEngine()
 		completeMock.mockReset()
-		multiModelMock.mockReturnValue(false)
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
-		modelRolesMock.mockReturnValue({
-			orchestrator: "session/main",
-			planner: "session/main",
-			builder: "session/main",
-			reviewer: "session/main",
-			explorer: "session/main",
-			researcher: "session/main",
-			judge: "judge/independent",
-		})
 	})
 
 	afterEach(() => {
+		clearAutoRoutingState("test-session")
 		if (savedRedactionEnv === undefined) delete process.env.KIMCHI_REDACTION_ENABLED
 		else process.env.KIMCHI_REDACTION_ENABLED = savedRedactionEnv
 		resetRedactionConfigCache()
@@ -84,10 +66,19 @@ describe("Ferment V2 evaluator", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("uses the session model in single-model mode", () => {
+	it("uses the session model when Auto has no routed target", () => {
 		const ctx = evaluatorContext()
 		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 		expect(ctx.modelRegistry.find).not.toHaveBeenCalled()
+	})
+
+	it("uses Auto's concrete model for the owning session", () => {
+		const autoModel = model("kimchi-dev", "auto")
+		const routedModel = model("kimchi-dev", "routed")
+		const ctx = evaluatorContext(undefined, false, autoModel)
+		setAutoRoutingState(ctx.sessionManager.getSessionId(), { status: "resolved", model: routedModel })
+
+		expect(resolveFermentV2EvaluatorModel(ctx)).toBe(routedModel)
 	})
 
 	it("evaluates managed file requirements without restoring the full text into the objective", async () => {
@@ -124,16 +115,6 @@ describe("Ferment V2 evaluator", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true })
 		}
-	})
-
-	it("uses the judge role in multi-model mode and falls back to the session model", () => {
-		multiModelMock.mockReturnValue(true)
-		const ctx = evaluatorContext(judgeModel)
-		expect(resolveFermentV2EvaluatorModel(ctx)).toBe(judgeModel)
-		expect(ctx.modelRegistry.find).toHaveBeenCalledWith("judge", "independent")
-
-		vi.mocked(ctx.modelRegistry.find).mockReturnValue(undefined)
-		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 	})
 
 	it("fails closed when evaluator authentication rejects", async () => {
@@ -1345,7 +1326,7 @@ describe("Ferment V2 evaluator", () => {
 })
 
 function evaluatorContext(
-	resolvedJudge?: Model<Api>,
+	_resolvedModel?: Model<Api>,
 	reasoning = false,
 	activeModel = sessionModel,
 	sessionManager?: SessionManager,
@@ -1363,7 +1344,7 @@ function evaluatorContext(
 			: {}),
 		model: reasoning ? { ...activeModel, reasoning: true } : activeModel,
 		modelRegistry: {
-			find: vi.fn(() => resolvedJudge),
+			find: vi.fn(() => _resolvedModel),
 			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "test-key" })),
 		},
 	})

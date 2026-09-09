@@ -6,20 +6,26 @@ import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
 // importing them from cli-args.ts without touching their import paths.
 export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "./cli-modes.js"
 
-// Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
-// such as `--mode acp`, which upstream pi does not parse.
+// Pre-dispatch scanners still need to skip values for raw scans. Keep the
+// upstream value-taking flags here because pi's parser is not exposed as a
+// value catalog; Kimchi-local string options are derived from CLI_OPTIONS below.
 const PRE_DISPATCH_VALUE_FLAGS = new Set([
 	"--provider",
 	"--model",
 	"--api-key",
 	"--system-prompt",
 	"--append-system-prompt",
+	"--name",
+	"-n",
 	"--session",
+	"--session-id",
 	"--fork",
 	"--session-dir",
 	"--models",
 	"--tools",
 	"-t",
+	"--exclude-tools",
+	"-xt",
 	"--thinking",
 	"--export",
 	"--extension",
@@ -27,45 +33,35 @@ const PRE_DISPATCH_VALUE_FLAGS = new Set([
 	"--skill",
 	"--prompt-template",
 	"--theme",
+	"--tui-mode",
 ])
 
 export function isPreDispatchValueFlag(arg: string): boolean {
-	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
+	if (PRE_DISPATCH_VALUE_FLAGS.has(arg)) return true
+	if (!arg.startsWith("--") || arg.includes("=")) return false
+	const option = CLI_OPTIONS[arg.slice(2)]
+	return option?.type === "string" && option.optional !== true
 }
 
-/**
- * Strip virtual multi-model CLI arguments from the args list before passing
- * them upstream. Upstream pi-mono does not recognize "multi-model" as a model
- * id, so we translate these flags into the multi-model side-channel instead.
- *
- * Recognizes:
- *   --multi-model
- *   --model multi-model
- *   --model=multi-model
- */
-export function stripMultiModelArgs(args: string[]): string[] {
-	const result: string[] = []
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === "--multi-model") {
+/** Return a removed multi-model flag so startup can fail with a clear message. */
+export function findDeprecatedMultiModelFlag(args: readonly string[]): string | undefined {
+	let expectsValue = false
+	for (const arg of args) {
+		if (arg === "--") break
+		if (expectsValue) {
+			expectsValue = false
 			continue
 		}
-		if (arg === "--model" && i + 1 < args.length && args[i + 1] === MULTI_MODEL_ID) {
-			i += 1
+		if (isPreDispatchValueFlag(arg)) {
+			expectsValue = true
 			continue
 		}
-		if (arg === `--model=${MULTI_MODEL_ID}`) {
-			continue
-		}
-		result.push(arg)
+		if (arg === "--multi-model" || arg.startsWith("--multi-model=")) return arg
 	}
-	return result
+	return undefined
 }
 
 export type CliOptionType = "string" | "boolean"
-
-/** Virtual model id that enables multi-model orchestration mode. */
-export const MULTI_MODEL_ID = "multi-model"
 
 export interface CliOptionDef {
 	type: CliOptionType
@@ -95,13 +91,13 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	model: {
 		type: "string",
-		description:
-			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
+		description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`.",
 		placeholder: "<pattern>",
 	},
-	"multi-model": {
-		type: "boolean",
-		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
+	models: {
+		type: "string",
+		description: "Comma-separated model patterns for this session's model cycle",
+		placeholder: "<patterns>",
 	},
 	"enable-experimental-features": {
 		type: "boolean",
@@ -223,7 +219,7 @@ export interface SessionCliArgs {
 	options: {
 		provider?: string
 		model?: string
-		"multi-model"?: boolean
+		models?: string
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -264,12 +260,17 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 		...(def.multiple ? { multiple: def.multiple } : {}),
 	}
 }
+// Consume upstream option values so text such as --system-prompt "--model"
+// cannot be mistaken for a model-selection flag by our cached parse.
+for (const flag of PRE_DISPATCH_VALUE_FLAGS) {
+	if (flag.startsWith("--")) PARSE_ARGS_OPTIONS[flag.slice(2)] ??= { type: "string" }
+}
 
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
 const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
-	"multi-model",
+	"models",
 	"thinking",
 	"mode",
 	"print",
@@ -301,6 +302,14 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		;(options as Record<string, unknown>)[key] = value
 	}
 	return { options, positionals }
+}
+
+/** An inherited model is an explicit launch choice; command-line selection wins. */
+export function applyModelEnvArgs(args: string[], model: string | undefined): string[] {
+	if (!model) return args
+	const { options } = parseCliArgs(args)
+	if (options.model || options.provider || options.models) return args
+	return ["--model", model, ...args]
 }
 
 /**

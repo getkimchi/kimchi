@@ -381,7 +381,7 @@ test("a new session defaults to Auto without experimental features", async ({ te
 	)
 })
 
-test("a new session returns to Auto after a saved concrete choice", async ({ terminal }) => {
+test("a saved model cycle list and concrete choice still start a new session in Auto", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -396,7 +396,16 @@ test("a new session returns to Auto after a saved concrete choice", async ({ ter
 				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
 				writeFileSync(
 					settingsPath,
-					JSON.stringify({ ...settings, defaultProvider: "kimchi-dev", defaultModel: "routed" }, null, "\t"),
+					JSON.stringify(
+						{
+							...settings,
+							defaultProvider: "kimchi-dev",
+							defaultModel: "routed",
+							enabledModels: ["kimchi-dev/auto", "kimchi-dev/routed"],
+						},
+						null,
+						"\t",
+					),
 				)
 			},
 		},
@@ -407,6 +416,51 @@ test("a new session returns to Auto after a saved concrete choice", async ({ ter
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
 			expect(requestModel(requestsTo(fixture, "/openai/v1/chat/completions")[0]?.body)).toBe("routed")
 			trace.step("new session routed despite saved concrete default")
+		},
+	)
+})
+
+test("Ctrl+P cycles through concrete models and wraps back to Auto", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-cycle-wrap",
+			providerId: "kimchi-dev",
+			initialModel: false,
+			models: MODELS,
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.keyPress("p", { ctrl: true })
+			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("cycled to concrete model")
+			terminal.keyPress("p", { ctrl: true })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("wrapped to Auto")
+		},
+	)
+})
+
+test("an inherited launch model bypasses Auto without a model argument", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-inherited-launch",
+			providerId: "kimchi-dev",
+			initialModel: false,
+			models: MODELS,
+			env: { KIMCHI_MODEL: "kimchi-dev/routed" },
+			responses: [{ stream: ["Inherited model reply."] }],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.submit("Use the inherited model")
+			await waitForText(terminal, "Inherited model reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			expect(requestsTo(fixture, "/v1/route")).toHaveLength(0)
+			expect(requestModel(requestsTo(fixture, "/openai/v1/chat/completions")[0]?.body)).toBe("routed")
+			trace.step("inherited model sent the request without routing")
 		},
 	)
 })

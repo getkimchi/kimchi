@@ -39,7 +39,7 @@ export const STATUS_LINE_ELEMENTS: Array<{
 	{
 		id: "model",
 		label: "Model",
-		description: "Active model or multi-model  → ctrl+p",
+		description: "Active model → ctrl+p",
 		canPin: false,
 	},
 	{

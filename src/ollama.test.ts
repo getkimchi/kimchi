@@ -7,7 +7,6 @@
  *  - PiModelConfig conversion (cost, modalities, reasoning flag)
  *  - models.json merge preserving existing custom providers
  *  - injectOllamaProvider idempotency and silent offline fallback
- *  - role pool augmentation (explorer/reviewer/builder only, never orchestrator, dedup)
  *  - resolveOllamaHost env-var precedence
  */
 
@@ -16,11 +15,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { ModelRoles } from "./extensions/orchestration/model-roles.js"
 import type { PiModelConfig } from "./models.js"
 import type { OllamaModel } from "./ollama.js"
 import {
-	augmentModelRolesWithOllama,
 	injectOllamaProvider,
 	ollamaModelTier,
 	ollamaToModelConfig,
@@ -811,7 +808,7 @@ describe("readOllamaModelsFromConfig + readOllamaModelMetadata", () => {
 		// entries with nulls, primitives, or objects missing `id`. The defensive
 		// type guard in readOllamaModelsFromConfig must drop every entry that
 		// does not look like a real PiModelConfig (which would otherwise surface
-		// as `ollama/undefined` in the role pools).
+		// as `ollama/undefined` model IDs.
 		writeFileSync(
 			modelsJsonPath,
 			JSON.stringify({
@@ -859,121 +856,6 @@ describe("readOllamaModelsFromConfig + readOllamaModelMetadata", () => {
 		expect(metadata).toHaveLength(2)
 		expect(metadata.map((m) => m.slug)).toEqual(["valid:1", "valid:2"])
 		expect(metadata.every((m) => typeof m.slug === "string" && m.slug.length > 0)).toBe(true)
-	})
-})
-
-/* -------------------------------------------------------------------------- */
-/*  augmentModelRolesWithOllama — role pool rules                             */
-/* -------------------------------------------------------------------------- */
-
-describe("augmentModelRolesWithOllama — role pool augmentation", () => {
-	const baseRoles: ModelRoles = {
-		orchestrator: "anthropic/claude-opus-4",
-		planner: "anthropic/claude-sonnet-4",
-		judge: "anthropic/claude-sonnet-4",
-		researcher: "anthropic/claude-sonnet-4",
-		builder: ["anthropic/claude-sonnet-4", "openai/gpt-5"],
-		reviewer: "anthropic/claude-sonnet-4",
-		explorer: ["openai/gpt-5-mini"],
-	}
-
-	const ollamaModels: OllamaModel[] = [
-		{
-			name: "llama3:8b",
-			parameterSize: 8,
-			contextWindow: 8192,
-			inputModalities: ["text"],
-			reasoning: false,
-			family: "llama",
-			quantization: "Q4_K_M",
-		},
-		{
-			name: "qwen2:70b",
-			parameterSize: 70,
-			contextWindow: 32768,
-			inputModalities: ["text"],
-			reasoning: false,
-			family: "qwen2",
-			quantization: "Q4_K_M",
-		},
-	]
-
-	it("adds each model to explorer, reviewer, and builder", () => {
-		const result = augmentModelRolesWithOllama(baseRoles, ollamaModels)
-		expect(result.explorer).toContain("ollama/llama3:8b")
-		expect(result.explorer).toContain("ollama/qwen2:70b")
-		expect(result.reviewer).toContain("ollama/llama3:8b")
-		expect(result.reviewer).toContain("ollama/qwen2:70b")
-		expect(result.builder).toContain("ollama/llama3:8b")
-		expect(result.builder).toContain("ollama/qwen2:70b")
-	})
-
-	it("never touches orchestrator, planner, judge, or researcher", () => {
-		const result = augmentModelRolesWithOllama(baseRoles, ollamaModels)
-		expect(result.orchestrator).toBe("anthropic/claude-opus-4")
-		expect(result.planner).toBe("anthropic/claude-sonnet-4")
-		expect(result.judge).toBe("anthropic/claude-sonnet-4")
-		expect(result.researcher).toBe("anthropic/claude-sonnet-4")
-	})
-
-	it("does not mutate the input roles object", () => {
-		const original = JSON.parse(JSON.stringify(baseRoles))
-		augmentModelRolesWithOllama(baseRoles, ollamaModels)
-		expect(baseRoles).toEqual(original)
-	})
-
-	it("returns the same roles reference when models array is empty", () => {
-		const result = augmentModelRolesWithOllama(baseRoles, [])
-		expect(result).toBe(baseRoles)
-	})
-
-	it("dedupes when an ollama/<id> ref is already present in the pool", () => {
-		const rolesWithOllamaAlready: ModelRoles = {
-			...baseRoles,
-			builder: ["anthropic/claude-sonnet-4", "ollama/llama3:8b"],
-		}
-		const result = augmentModelRolesWithOllama(rolesWithOllamaAlready, [ollamaModels[0]])
-		// llama3:8b is already present — should not be duplicated
-		const builderArr = Array.isArray(result.builder) ? result.builder : [result.builder]
-		const occurrences = builderArr.filter((r) => r === "ollama/llama3:8b").length
-		expect(occurrences).toBe(1)
-	})
-
-	it("promotes a string assignment to an array when a second model is appended", () => {
-		const singleModelRoles: ModelRoles = {
-			...baseRoles,
-			reviewer: "anthropic/claude-sonnet-4",
-		}
-		const result = augmentModelRolesWithOllama(singleModelRoles, [ollamaModels[0]])
-		expect(Array.isArray(result.reviewer)).toBe(true)
-		expect(result.reviewer).toEqual(["anthropic/claude-sonnet-4", "ollama/llama3:8b"])
-	})
-
-	it("keeps the single-string form when a second model is appended to a single-element array", () => {
-		const singleElementRoles: ModelRoles = {
-			...baseRoles,
-			explorer: ["openai/gpt-5-mini"],
-		}
-		const result = augmentModelRolesWithOllama(singleElementRoles, [ollamaModels[0]])
-		expect(Array.isArray(result.explorer)).toBe(true)
-		expect(result.explorer as string[]).toEqual(["openai/gpt-5-mini", "ollama/llama3:8b"])
-	})
-
-	it("accepts PiModelConfig entries (the cli.ts call shape)", () => {
-		const piConfigs: PiModelConfig[] = [
-			{
-				id: "llama3:8b",
-				name: "llama3:8b",
-				reasoning: false,
-				input: ["text"],
-				contextWindow: 8192,
-				maxTokens: 8192,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				provider: "ollama",
-			},
-		]
-		const result = augmentModelRolesWithOllama(baseRoles, piConfigs)
-		expect(result.builder).toContain("ollama/llama3:8b")
 	})
 })
 

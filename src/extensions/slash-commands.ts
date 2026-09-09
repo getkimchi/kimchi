@@ -2,7 +2,6 @@ export const SLASH_COMMANDS = {
 	settings: { hint: "Open settings menu" },
 	model: { hint: "Switch to a specific model" },
 	"scoped-models": { hint: "Enable or disable models for Ctrl+P cycling" },
-	"multi-model": { hint: "Configure model roles" },
 	ferment: { hint: "Run task in background" },
 	todos: { hint: "Open todo overlay / manage short-lived todo items" },
 	compact: { hint: "Compact context window" },

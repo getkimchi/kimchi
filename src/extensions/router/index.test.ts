@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Model } from "@earendil-works/pi-ai"
 import type {
 	BeforeAgentStartEvent,
@@ -124,7 +127,6 @@ describe("Auto model extension", () => {
 	it.each([
 		["--model", "concrete"],
 		["--provider", "custom"],
-		["--multi-model"],
 	])("preserves an explicit launch choice: %j", async (...args) => {
 		populateCliArgs(args)
 		const extension = createExtensionApi()
@@ -147,6 +149,53 @@ describe("Auto model extension", () => {
 		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => auto } })
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto)
+	})
+
+	it("preserves a concrete model on an existing empty session", async () => {
+		const sessionRoot = mkdtempSync(join(tmpdir(), "kimchi-router-resume-"))
+		const sessionFile = join(sessionRoot, "empty-session.jsonl")
+		writeFileSync(
+			sessionFile,
+			`${JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "empty-session",
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp",
+			})}\n`,
+			"utf8",
+		)
+		try {
+			populateCliArgs(["--session", sessionFile])
+			const extension = createExtensionApi()
+			autoModelExtension(extension.api)
+			const ctx = createContext({
+				model: model("concrete"),
+				modelRegistry: { find: () => model("auto") },
+				sessionManager: { getEntries: () => [], getSessionFile: () => sessionFile },
+			})
+
+			await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+			expect(extension.setModel).not.toHaveBeenCalled()
+		} finally {
+			rmSync(sessionRoot, { recursive: true, force: true })
+		}
+	})
+
+	it.each([
+		"--continue",
+		"--session-id",
+	] as const)("keeps fresh startup behavior when %s has no existing session", async (flag) => {
+		populateCliArgs(flag === "--continue" ? [flag] : [flag, "missing-session-id"])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => auto } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(extension.setModel).toHaveBeenCalledWith(auto)
 	})
@@ -235,7 +284,8 @@ describe("Auto model extension", () => {
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
 	})
 
-	it("keeps the first scoped model on startup", async () => {
+	it("keeps an explicitly scoped model on startup", async () => {
+		populateCliArgs(["--models", "kimchi-dev/concrete"])
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const concrete = model("concrete")
@@ -248,6 +298,23 @@ describe("Auto model extension", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
+	it("starts in Auto with a saved model cycle list and concrete default", async () => {
+		populateCliArgs([])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const concrete = model("concrete")
+		const ctx = createContext({
+			model: concrete,
+			scopedModels: [auto, concrete].map((model) => ({ model, thinkingLevel: "medium" })),
+			modelRegistry: { find: () => auto },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto)
 	})
 
 	it("preserves a concrete session loaded at startup", async () => {

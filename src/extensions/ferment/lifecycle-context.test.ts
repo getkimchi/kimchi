@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { createEventBus } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
@@ -9,14 +9,6 @@ import { FERMENT_EVENTS } from "./domain-events.js"
 import { FERMENT_LIFECYCLE_CUSTOM_TYPE, registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
-
-const getMultiModelEnabledMock = vi.fn(() => true)
-vi.mock("../multi-model.js", (importOriginal) => {
-	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
-		...mod,
-		getMultiModelEnabled: () => getMultiModelEnabledMock(),
-	}))
-})
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 
@@ -136,10 +128,6 @@ async function startSession(harness: ReturnType<typeof createHarness>): Promise<
 }
 
 describe("registerFermentLifecycleContext", () => {
-	beforeEach(() => {
-		getMultiModelEnabledMock.mockReturnValue(true)
-	})
-
 	it("defers transitions while the agent is busy and flushes once on agent_settled, not agent_end", async () => {
 		const harness = createHarness()
 		const { runtime, setActive } = makeMutableRuntime(makeFerment())
@@ -506,16 +494,15 @@ describe("registerFermentLifecycleContext", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("uses the multi-model flag to shape delegation hints", async () => {
+	it("uses direct-first delegation hints", async () => {
 		const harness = createHarness()
-		getMultiModelEnabledMock.mockReturnValue(false)
 		registerFermentLifecycleContext(harness.pi, makeRuntime())
 		await startSession(harness)
 
 		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
 		const content = harness.persistedBlocks()[0]?.content as string
-		// In single-model mode, the next-action suffix tells the planner it should
-		// execute the step directly instead of always spawning a subagent.
+		// Multi-model is retired: the next-action suffix always tells the
+		// planner it should execute the step directly.
 		expect(content).toContain("Then execute the step directly")
 	})
 })

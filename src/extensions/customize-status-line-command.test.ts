@@ -12,7 +12,6 @@ import {
 import * as AGENTS from "./agents/index.js"
 import { CustomizeStatusLineComponent } from "./customize-status-line-command.js"
 import * as FERMENT from "./ferment/index.js"
-import * as MULTI_MODEL from "./multi-model.js"
 import * as TAGS from "./tags.js"
 
 // ── Real status-line-config backed by in-memory JSON storage ──────────────────
@@ -131,7 +130,6 @@ beforeEach(() => {
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 	vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 })
 
 afterEach(() => {

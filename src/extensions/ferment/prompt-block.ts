@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
@@ -26,12 +25,7 @@ function buildAgentsSection(): string {
 	return `\n\n**Available subagent types (pick one per start_ferment_step by step intent):**\n${lines.join("\n")}`
 }
 
-function buildPlannerSupplement(
-	f: Ferment,
-	continuationPolicy: ContinuationPolicy,
-	isOneshot = false,
-	delegationMode: "strict" | "relaxed" = "strict",
-): string {
+function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPolicy, isOneshot = false): string {
 	const dm = formatDecisionsAndMemories(f)
 	const dmSection = dm ? `\n\n${dm}` : ""
 	const sc = formatScopingContext(f)
@@ -107,12 +101,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 
 	const agentsSection = buildAgentsSection()
 
-	const delegationRules =
-		delegationMode === "strict"
-			? `- NEVER write, edit, or read files yourself during step execution
-- NEVER implement a step inline — always delegate to a subagent worker
-- Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.`
-			: `- Execute steps directly with bash/edit/write — you hold the project context, and the deterministic verify gate plus phase graders supply the trust. Delegation is for exceptions, not the default.
+	const delegationRules = `- Execute steps directly with bash/edit/write — you hold the project context, and the deterministic verify gate plus phase graders supply the trust. Delegation is for exceptions, not the default.
 - Delegate to a linked subagent worker only for residue-heavy steps: long builds, large test-suite output, many large file reads, or independent parallel units (use run_in_background for those).
 - Measured rationale: direct execution completed 28 steps in 109 min at A/B grades (run 019ff530); forced delegation was slower per step at bench scale — workers re-establish context (~14 reads each) and hit budget caps on real builds.
 - If a worker aborts mid-step, resume it with resume_subagent, or finish directly when you already hold the context — do not spawn a duplicate that re-discovers the same work.`
@@ -121,7 +110,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 
 ## Ferment Planner Role
 
-You are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers. ${delegationCheckpoint}
+You are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and complete the implementation work, delegating where useful. ${delegationCheckpoint}
 
 **State machine — toolset follows the ferment lifecycle:**
 - **Planning phase** (no phase activated yet): your toolset is the read-only research set — \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\` — plus the ferment planning tools (\`propose_ferment_scoping\`, ${isOneshot ? "`scope_ferment`, " : ""}\`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`). Use these to draft the plan${isOneshot ? " and call \\`scope_ferment\\`" : ""}.
@@ -130,7 +119,7 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - Every tool result ends with a "Next action:" line — execute that action immediately in the same turn, do not defer it${stateMachineContinuationRule}
 - There is no shell CLI for ferment phase or step transitions; use the ferment tools only
 - ${CREATE_FERMENT_REDIRECT_MESSAGE}
-- For start_ferment_step: choose budget_tier explicitly from the scoped work shape — narrow | standard | complex — and pass it to the tool (standard is the normal implementation default). ${delegationMode === "strict" ? "Then spawn a subagent to do the work. Every Ferment worker Agent call must include max_turns, max_duration, token_budget, and the exact task_ref returned by start_ferment_step. Use the selected limits returned by start_ferment_step; never infer a tier from keywords in the step description." : "Then either spawn a subagent (with max_turns, max_duration, token_budget, and the exact task_ref) or execute the step directly. When delegating, use the selected limits returned by start_ferment_step."}
+- For start_ferment_step: choose budget_tier explicitly from the scoped work shape — narrow | standard | complex — and pass it to the tool (standard is the normal implementation default). Then either spawn a subagent (with max_turns, max_duration, token_budget, and the exact task_ref) or execute the step directly. When delegating, use the selected limits returned by start_ferment_step.
 - If start_ferment_step returns parallel_siblings, call start_ferment_step for all of them and spawn their subagents CONCURRENTLY
 - After a subagent returns, inspect agent_outcome before acting. If outcome is "completed" and agent_outcome.report.status is "completed", call complete_ferment_step with worker_agent_id and the report summary. If the report is missing, call resume_subagent with only agent_id and purpose "finalize_report"; the host supplies its fixed report-only prompt and limits. If outcome is budget_exhausted, failed, or stopped, do not mark the step complete. Read agent_outcome.report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for a separable remaining task, or stop/report when blocked. Do not raise the limits and retry the same broad task.
 - complete_ferment_step automatically runs the scoped verification command. Do not rerun it with bash before completing the step unless the worker reported a concrete inconsistency or the scoped command itself needs diagnosis.
@@ -236,16 +225,14 @@ export function buildFermentPromptBlock(
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
-	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-	const delegationMode: "strict" | "relaxed" = multiModelEnabled ? "strict" : "relaxed"
 
 	switch (f.status) {
 		case "draft":
-			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()
+			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
 			return undefined
 		case "planned":
 		case "running":
-			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()}`
+			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()}`
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

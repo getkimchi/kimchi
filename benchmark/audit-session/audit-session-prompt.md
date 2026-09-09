@@ -181,7 +181,7 @@ Compute and present:
 
 | Approach | Cost | vs Actual |
 |----------|------|-----------|
-| Actual (multi-model) | $X | baseline |
+| Actual (Auto-routed) | $X | baseline |
 | Phase-optimized (Opus plan/review, Sonnet rest) | $X | X.Xx vs actual |
 | Opus only | $X | X.Xx vs actual |
 
