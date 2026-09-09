@@ -64,6 +64,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import memoryExtension from "./extensions/memory/index.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -691,6 +692,7 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelGuardExtension,
+			memoryExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
 			piiRedactionExtension,
