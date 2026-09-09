@@ -21,6 +21,7 @@
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
 		"lint": "biome check src/ scripts/ tests/",
 		"lint:fix": "biome check --write src/ scripts/ tests/",
+		"memory:check": "bun run src/extensions/memory/backend.check.ts",
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
@@ -56,7 +57,9 @@
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ssh2": "^1.15.5",
 		"@xterm/headless": "^6.0.0",
+		"better-sqlite3": "link:./shims/better-sqlite3",
 		"diff": "^9.0.0",
+		"mem0ai": "3.1.8",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
 		"proper-lockfile": "^4.1.2",
@@ -121,6 +124,9 @@
 			"cpu-features",
 			"nan"
 		],
+		"overrides": {
+			"better-sqlite3": "link:./shims/better-sqlite3"
+		},
 		"patchedDependencies": {
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",
 			"@earendil-works/pi-ai@0.84.1": "patches/@earendil-works__pi-ai@0.84.1.patch",
