@@ -240,8 +240,35 @@ export async function chatWithRetry<T>(
 }
 
 async function extractFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
+	// Two passes: user-stated facts (the validated prompt), then cautious
+	// assistant-established facts (agent-aware: engagement evidence required).
+	// Sequential within the window — the pipeline's window-level concurrency
+	// (4) already bounds the instantaneous call rate.
+	const userFacts = await extractUserFacts(llm, window)
+	const assistantFacts = await extractAssistantFacts(llm, window)
+	return [...userFacts, ...assistantFacts]
+}
+
+async function extractUserFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
 	const transcript = window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
 	return chatWithRetry(llm, EXTRACTION_SYSTEM_PROMPT, transcript, parseFactsResponse)
+}
+
+const ASSISTANT_FACTS_SYSTEM_PROMPT = `You maintain the user's memory store, extracting facts established in conversation that involve ASSISTANT messages.
+The snippet below contains conversation turns. Messages marked "assistant" were produced by the user's coding assistant — an AI agent, not the user. Treat them with caution: assistant messages are AI output that can be tentative, speculative, or simply wrong, and only some become shared context.
+
+Capture an assistant statement ONLY when the window shows the user engaged with it:
+- the user asked a question it directly answers, OR
+- the user accepted, thanked, acted on, or later referred back to it.
+Write each fact self-contained with natural attribution to the conversation (e.g. "the user's classic omelette recipe uses 3 eggs, per the assistant's answer the user accepted" — adjust to the situation).
+Skip: suggestions the user ignored or rejected, plans that never materialized, statements the user corrected or pushed back on, hedged reasoning ("might", "one option is"), and anything you are unsure the user engaged with — when in doubt, skip.
+Respond with ONLY a JSON array of fact strings; [] when nothing qualifies.`
+
+export async function extractAssistantFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
+	// Pure-user windows are the common case — no assistant pass, no extra call.
+	if (!window.some((m) => m.role === "assistant")) return []
+	const transcript = window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
+	return chatWithRetry(llm, ASSISTANT_FACTS_SYSTEM_PROMPT, transcript, parseFactsResponse)
 }
 
 function hashesPath(dbPath: string): string {

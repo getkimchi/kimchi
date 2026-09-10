@@ -16,7 +16,7 @@ import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import type { CaptureMessage } from "./capture-worker.js"
-import { digestDbPath, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
+import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
 
 export function wireMemoryCapture(pi: ExtensionAPI): void {
 	pi.on("session_before_compact", (event) => {
@@ -64,25 +64,58 @@ export function incrementalCapture(
 }
 
 export function extractMessages(entries: readonly SessionEntry[]): CaptureMessage[] {
-	// User-only: assistant content is excluded by the extraction prompt
-	// anyway ("anything only the assistant said"), and carrying it costs
-	// ~half the extraction tokens while diluting needles — the proven
-	// failure mode. The benchmark's validated framing is user speech.
+	// User speech is the primary signal; assistant turns pass a structural
+	// gate (conversation-established facts): pure text only — no tool-call
+	// blocks (work product), no thinking blocks (internal reasoning),
+	// bounded length. The extraction taxonomy makes the final durability
+	// call with the exchange visible.
 	const messages: CaptureMessage[] = []
 	for (const entry of entries) {
 		if (entry.type !== "message") continue
 		const message = entry.message
-		if (message.role !== "user") continue
-		const content = messageText(message.content)
-		if (content.trim()) messages.push({ role: "user", content })
+		if (message.role === "user") {
+			const content = messageText(message.content)
+			if (content.trim()) messages.push({ role: "user", content })
+		} else if (message.role === "assistant" && passesAssistantGate(message.content)) {
+			const content = messageText(message.content)
+			if (content.trim()) messages.push({ role: "assistant", content })
+		}
 	}
 	return messages
+}
+
+/**
+ * Structural gate for assistant capture: the turn must be pure text — no
+ * toolCall blocks (work product; such turns are excluded whole: their text
+ * fragments are work commentary), no thinking (filtered by messageText's
+ * text-block pass), and within the length bound.
+ */
+function passesAssistantGate(content: unknown): boolean {
+	if (typeof content === "string") {
+		return content.trim().length > 0 && content.length <= MEMORY_CAPTURE_ASSISTANT_MAX_CHARS
+	}
+	if (Array.isArray(content)) {
+		if (content.some((part) => (part as { type?: string }).type === "toolCall")) return false
+		const text = messageText(content)
+		return text.trim().length > 0 && text.length <= MEMORY_CAPTURE_ASSISTANT_MAX_CHARS
+	}
+	return false
 }
 
 export function messageText(content: unknown): string {
 	if (typeof content === "string") return content
 	if (Array.isArray(content)) {
-		return content.map((part) => (typeof part === "string" ? part : ((part as { text?: string }).text ?? ""))).join("")
+		// Text blocks only: thinking blocks (type "thinking") are the model's
+		// internal reasoning and never enter capture jobs or drift signals.
+		return content
+			.map((part) =>
+				typeof part === "string"
+					? part
+					: (part as { type?: string }).type === "text"
+						? ((part as { text?: string }).text ?? "")
+						: "",
+			)
+			.join("")
 	}
 	return ""
 }

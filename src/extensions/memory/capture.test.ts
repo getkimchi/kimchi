@@ -5,6 +5,7 @@ import {
 	type CaptureMessage,
 	chatJson,
 	chatWithRetry,
+	extractAssistantFacts,
 	mapWithConcurrency,
 	messageHash,
 	parseFactsResponse,
@@ -124,25 +125,84 @@ describe("incrementalCapture", () => {
 	})
 })
 
-describe("extractMessages (user-only)", () => {
+describe("extractMessages (user + gated assistant)", () => {
 	// Minimal message-entry fixtures — the SessionEntry union's other
 	// members are irrelevant to the filter under test.
 	const msgEntry = (role: string, content: unknown) =>
 		({ type: "message", message: { role, content } }) as unknown as SessionEntry
 
-	it("keeps only non-blank user messages", () => {
+	it("keeps non-blank user messages and clean short assistant turns", () => {
 		const messages = extractMessages([
 			msgEntry("user", "I prefer pnpm"),
-			msgEntry("assistant", "Noted!"),
+			msgEntry("assistant", "Noted: pnpm it is."),
 			msgEntry("user", "   "),
 			{ type: "model_change" } as unknown as SessionEntry,
 		])
-		expect(messages).toEqual([{ role: "user", content: "I prefer pnpm" }])
+		expect(messages).toEqual([
+			{ role: "user", content: "I prefer pnpm" },
+			{ role: "assistant", content: "Noted: pnpm it is." },
+		])
 	})
 
 	it("extracts text from block content", () => {
 		const entry = msgEntry("user", [{ type: "text", text: "blocky " }, "plain"])
 		expect(extractMessages([entry])).toEqual([{ role: "user", content: "blocky plain" }])
+	})
+
+	it("excludes thinking blocks from the extracted text", () => {
+		const entry = msgEntry("assistant", [
+			{ type: "thinking", text: "internal reasoning about the approach" },
+			{ type: "text", text: "The recipe uses 3 eggs." },
+		])
+		expect(extractMessages([entry])).toEqual([{ role: "assistant", content: "The recipe uses 3 eggs." }])
+	})
+
+	it("excludes assistant turns containing tool-call blocks (work product)", () => {
+		const entry = msgEntry("assistant", [
+			{ type: "text", text: "Let me check the files." },
+			{ type: "toolCall", name: "read", arguments: {} },
+		])
+		expect(extractMessages([entry])).toEqual([])
+	})
+
+	it("excludes oversized assistant turns", () => {
+		const entry = msgEntry("assistant", "x".repeat(1001))
+		expect(extractMessages([entry])).toEqual([])
+	})
+
+	it("excludes thinking-only assistant turns", () => {
+		const entry = msgEntry("assistant", [{ type: "thinking", text: "only reasoning" }])
+		expect(extractMessages([entry])).toEqual([])
+	})
+})
+
+describe("extractAssistantFacts (cautious agent-aware pass)", () => {
+	it("skips the LLM call entirely for pure-user windows", async () => {
+		const fetchImpl = vi.fn()
+		const facts = await extractAssistantFacts({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, [
+			msg("user", "just talking"),
+		])
+		expect(facts).toEqual([])
+		expect(fetchImpl).not.toHaveBeenCalled()
+	})
+
+	it("runs the cautious prompt for windows containing assistant turns", async () => {
+		const fetchImpl = vi.fn().mockImplementation(() =>
+			Promise.resolve(
+				new Response(JSON.stringify({ choices: [{ message: { content: '["the assistant answered"]' } }] }), {
+					status: 200,
+				}),
+			),
+		)
+		const facts = await extractAssistantFacts({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, [
+			msg("user", "how many eggs?"),
+			msg("assistant", "3 eggs"),
+		])
+		expect(facts).toEqual(["the assistant answered"])
+		const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string) as {
+			messages: Array<{ content: string }>
+		}
+		expect(body.messages[0]?.content).toContain("AI agent, not the user")
 	})
 })
 

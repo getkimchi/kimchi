@@ -54,6 +54,15 @@ export const MEMORY_CAPTURE_CONCURRENCY = 4
  */
 export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 10
 
+/**
+ * Length bound for the assistant-capture gate: assistant turns enter capture
+ * jobs only when pure text (no tool-call blocks, no thinking), ≤ this many
+ * characters. Kills the ~93% work-product share of real coding sessions
+ * before it costs extraction tokens; the extraction taxonomy decides
+ * durability. See .kimchi/plans/assistant-message-memory.md.
+ */
+export const MEMORY_CAPTURE_ASSISTANT_MAX_CHARS = 1_000
+
 /** Max NEW facts per progressive turn recall (per re-evaluation). */
 export const TURN_RECALL_MAX_FACTS = 3
 
