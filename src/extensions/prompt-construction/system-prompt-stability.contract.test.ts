@@ -250,10 +250,14 @@ describe("system-prompt block cache contract (source)", () => {
 		const todosIndex = readSource("src/extensions/todos/index.ts")
 
 		// Persist-on-change: state blocks are written to session history via
-		// sendMessage, so they join the growing stable prefix.
-		expect(contextState).toContain("pi.sendMessage")
+		// sendMessage, so they join the growing stable prefix. The machinery is
+		// shared; each registrar wires its customType + render source into it.
+		const sharedPersistence = readSource("src/extensions/state-block-persistence.ts")
+		expect(sharedPersistence).toContain("pi.sendMessage")
+		expect(sharedPersistence).toContain("isStateBlockEntry")
+		expect(contextState).toContain("registerStateBlockPersistence")
 		expect(contextState).toContain("renderTodoStateMarkdown")
-		expect(lifecycleContext).toContain("pi.sendMessage")
+		expect(lifecycleContext).toContain("registerStateBlockPersistence")
 
 		// Tail-push ban: no writes to the message array inside a context handler.
 		// The context handlers in these files are strip-only (drop superseded
@@ -263,6 +267,8 @@ describe("system-prompt block cache contract (source)", () => {
 		expect(contextState).not.toContain("event.messages.push")
 		expect(lifecycleContext).not.toContain("messages.push")
 		expect(lifecycleContext).not.toContain("event.messages.push")
+		expect(sharedPersistence).not.toContain("messages.push")
+		expect(sharedPersistence).not.toContain("event.messages.push")
 
 		// The todos index wires persistence, not transient injection.
 		expect(todosIndex).toContain("registerTodoStatePersistence(pi)")

@@ -1,5 +1,6 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodoStatePersistence, TODO_STATE_CUSTOM_TYPE } from "./context-state.js"
 import { __resetTodoStore, applyWriteTodos, restoreTodoStoreFromDetails } from "./store.js"
@@ -8,13 +9,29 @@ type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Pro
 
 const SESSION_ID = "context-state-test"
 
+/** Conversation-view message shape (as carried by the `context` event). */
 interface MessageLike {
 	role?: string
 	customType?: string
 	content?: unknown
 }
 
-function createHarness(branch: MessageLike[] = []) {
+/** Real session-history entry shape for a persisted hidden custom message —
+ *  the journal has NO `role` field; matching on one is the bug these
+ *  fixtures guard against. */
+function stateEntry(content: unknown): Record<string, unknown> {
+	return {
+		type: "custom_message",
+		id: `entry-${String(content)}`.slice(0, 24),
+		parentId: null,
+		timestamp: "2026-01-01T00:00:00.000Z",
+		customType: TODO_STATE_CUSTOM_TYPE,
+		content,
+		display: false,
+	}
+}
+
+function createHarness(branch: Record<string, unknown>[] = []) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const pi = {
 		sendMessage: vi.fn(),
@@ -27,12 +44,12 @@ function createHarness(branch: MessageLike[] = []) {
 
 	registerTodoStatePersistence(pi)
 
-	const ctx = {
+	const ctx = createContext({
 		sessionManager: {
 			getSessionId: () => SESSION_ID,
-			getBranch: () => branch,
+			getBranch: () => branch as unknown as SessionEntry[],
 		},
-	} as unknown as ExtensionContext
+	})
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
 		let result: unknown
@@ -118,14 +135,14 @@ describe("registerTodoStatePersistence", () => {
 			timestamp: "",
 			message: { role: "assistant", stopReason: "stop", content: [] },
 		}
-		const branch: MessageLike[] = []
+		const branch: Record<string, unknown>[] = []
 		const harness = createHarness(branch)
 		await harness.fire("session_start", { reason: "new" })
 
 		await harness.fire("agent_start", {})
 		applyWriteTodos({ todos: [{ content: "interrupted task", status: "pending" }] }, SESSION_ID)
 		await harness.fire("agent_end", {})
-		branch.push(abortedAssistant as MessageLike)
+		branch.push(abortedAssistant)
 		await harness.fire("agent_settled", {})
 		// Flushing now would make the block the newest turn start; under a
 		// small keep-recent budget compaction would swallow the interrupted
@@ -134,7 +151,7 @@ describe("registerTodoStatePersistence", () => {
 
 		await harness.fire("agent_start", {})
 		await harness.fire("agent_end", {})
-		branch.push(normalAssistant as MessageLike)
+		branch.push(normalAssistant)
 		await harness.fire("agent_settled", {})
 		expect(harness.stateSyncCalls()).toHaveLength(1)
 		expect(String(harness.stateSyncCalls()[0]?.message.content)).toContain("interrupted task")
@@ -210,10 +227,19 @@ describe("registerTodoStatePersistence", () => {
 			(await import("./state-markdown.js")).renderTodoStateMarkdown(SESSION_ID) ?? "",
 		)
 
+		// History holds real session entries (custom_message), NOT the
+		// conversation-view shape — the old bug matched on role === "custom"
+		// and replay dedupe never fired in production.
 		const harness = createHarness([
-			{ role: "user", content: [{ type: "text", text: "hello" }] },
-			{ role: "custom", customType: TODO_STATE_CUSTOM_TYPE, content: persistedContent, display: false },
-		] as MessageLike[])
+			{
+				type: "message",
+				id: "msg-1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				message: { role: "user", content: [{ type: "text", text: "hello" }] },
+			},
+			stateEntry(persistedContent),
+		])
 		await harness.fire("session_start", { reason: "resume" })
 
 		// The store write path replays the same content → dedupe against history.
@@ -222,9 +248,7 @@ describe("registerTodoStatePersistence", () => {
 	})
 
 	it("persists when the resumed store differs from the newest history block", async () => {
-		const harness = createHarness([
-			{ role: "custom", customType: TODO_STATE_CUSTOM_TYPE, content: markHarnessSteer("stale block") },
-		] as MessageLike[])
+		const harness = createHarness([stateEntry(markHarnessSteer("stale block"))])
 		await harness.fire("session_start", { reason: "resume" })
 
 		applyWriteTodos({ todos: [{ content: "new task", status: "pending" }] }, SESSION_ID)

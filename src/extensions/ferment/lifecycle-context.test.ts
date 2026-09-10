@@ -91,7 +91,7 @@ function makeMutableRuntime(initial: Ferment | undefined): {
 	}
 }
 
-function createHarness(branch: MessageLike[] = []) {
+function createHarness(branch: Record<string, unknown>[] = []) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const bus = createEventBus()
 	const pi = {
@@ -192,7 +192,7 @@ describe("registerFermentLifecycleContext", () => {
 			timestamp: "",
 			message: { role: "assistant", stopReason: "aborted", content: [] },
 		}
-		const branch: MessageLike[] = []
+		const branch: Record<string, unknown>[] = []
 		const harness = createHarness(branch)
 		const { runtime } = makeMutableRuntime(makeFerment())
 		registerFermentLifecycleContext(harness.pi, runtime)
@@ -201,7 +201,7 @@ describe("registerFermentLifecycleContext", () => {
 		await harness.fire("agent_start", {})
 		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
 		await harness.fire("agent_end", {})
-		branch.push(abortedAssistant as MessageLike)
+		branch.push(abortedAssistant)
 		await harness.fire("agent_settled", {})
 		expect(harness.persistedBlocks()).toHaveLength(0)
 
@@ -213,7 +213,7 @@ describe("registerFermentLifecycleContext", () => {
 			parentId: null,
 			timestamp: "",
 			message: { role: "assistant", stopReason: "stop", content: [] },
-		} as MessageLike)
+		})
 		await harness.fire("agent_settled", {})
 		expect(harness.persistedBlocks()).toHaveLength(1)
 	})
@@ -392,10 +392,25 @@ describe("registerFermentLifecycleContext", () => {
 		const persistedContent = harness.persistedBlocks()[0]?.content
 
 		// Simulate a fresh registration against a resumed session whose branch
-		// already contains that exact block: no duplicate persist.
+		// already contains that exact block: no duplicate persist. History
+		// entries use the real journal shape (custom_message, no `role`).
 		const resumed = createHarness([
-			{ role: "user", content: "resume me" },
-			{ role: "custom", customType: FERMENT_LIFECYCLE_CUSTOM_TYPE, content: persistedContent },
+			{
+				type: "message",
+				id: "msg-1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				message: { role: "user", content: "resume me" },
+			},
+			{
+				type: "custom_message",
+				id: "entry-1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				customType: FERMENT_LIFECYCLE_CUSTOM_TYPE,
+				content: persistedContent,
+				display: false,
+			},
 		])
 		registerFermentLifecycleContext(resumed.pi, runtime)
 		await resumed.fire("session_start", { reason: "resume" })

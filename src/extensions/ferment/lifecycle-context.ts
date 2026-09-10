@@ -1,42 +1,18 @@
-import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 
 type SessionManagerHandle = Pick<SessionManager, "getEntries" | "getSessionId">
 
 import { TERMINAL_STEP_STATUSES } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
-import { latestRunTailIsAborted } from "../aborted-run.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
+import { registerStateBlockPersistence } from "../state-block-persistence.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { formatNextActionHint } from "./tool-helpers.js"
 
-type OrchestratorMessages = ContextEvent["messages"]
-
 export const FERMENT_LIFECYCLE_CUSTOM_TYPE = "ferment-lifecycle"
-
-function isFermentLifecycleMessage(m: unknown): boolean {
-	return (
-		m !== null &&
-		typeof m === "object" &&
-		(m as { role?: string }).role === "custom" &&
-		(m as { customType?: string }).customType === FERMENT_LIFECYCLE_CUSTOM_TYPE
-	)
-}
-
-function extractTextContent(content: unknown): string | undefined {
-	if (typeof content === "string") return content
-	if (Array.isArray(content)) {
-		for (const part of content) {
-			if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
-				const text = (part as { text?: unknown }).text
-				if (typeof text === "string") return text
-			}
-		}
-	}
-	return undefined
-}
 
 /** Renders the volatile part of the ferment lifecycle state: active phase
  *  details with step-progress counts, and the next-action hint. This is the
@@ -62,156 +38,58 @@ function buildFermentLifecycleContext(f: Ferment, multiModelEnabled: boolean): s
 	return lines.join("\n")
 }
 
-/** Replay dedupe: find the newest persisted ferment-lifecycle block in
- *  session history so a resumed session does not re-persist an identical
- *  block on its first transition. */
-function newestLifecycleContentFromHistory(ctx: ExtensionContext): string | undefined {
-	const branch = ctx.sessionManager.getBranch()
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const m = branch[i] as { role?: string; customType?: string; content?: unknown }
-		if (isFermentLifecycleMessage(m)) {
-			return extractTextContent(m.content)
-		}
-	}
-	return undefined
-}
+/** Channels that can change the rendered block (or the planned/running gate). */
+const LIFECYCLE_CHANGE_EVENTS = [
+	FERMENT_EVENTS.PHASE_STARTED,
+	FERMENT_EVENTS.STEP_STARTED,
+	FERMENT_EVENTS.STEP_COMPLETED,
+	FERMENT_EVENTS.STEP_FAILED,
+	FERMENT_EVENTS.PHASE_COMPLETED,
+	FERMENT_EVENTS.SUSPENDED,
+	FERMENT_EVENTS.RESUMED,
+	FERMENT_EVENTS.SCOPING_COMPLETE,
+] as const
 
 /**
- * Persist-on-change delivery of the ferment lifecycle state block.
+ * Persist-on-change delivery of the ferment lifecycle state block. Machinery
+ * (dedupe, busy-run deferral, settle flush, history replay dedupe,
+ * strip-only context view) lives in the shared `state-block-persistence`
+ * registrar — see its module comment for the cache-breakpoint rationale.
  *
- * Replaces the previous transient tail-injection (a fresh `ferment-lifecycle`
- * message appended inside the `context` handler on every LLM request), which
- * permanently poisoned the request-level cache breakpoint: every stored
- * prefix ended at a moving block, so every request rewrote the whole context.
- *
- * This registrar subscribes to ferment domain events and writes the rendered
- * block into session history — as a hidden custom message delivered as a
- * steer so it lands at the tool boundary — exactly once per rendered-content
- * change. The persisted entry then sits at a fixed chronological position and
- * joins the growing stable prefix.
- *
- * History is append-only for extensions, so superseded copies remain in the
- * branch. The `context` handler registered here is therefore strip-only: it
- * deterministically drops every `ferment-lifecycle` message except the
- * newest. The request view is a pure function of persisted history —
- * identical every round between real transitions, so each transition causes
- * exactly one bounded invalidation instead of a permanent cache freeze.
- *
- * Timing: upstream compaction (`findCutPoint`) treats every custom message
- * as a turn start, so a block persisted mid-turn becomes a turn boundary
- * and compaction produces an extra split-turn prefix-summarization request.
- * Writes are therefore deferred while the agent is busy and flushed at
- * `agent_settled`, when the run is fully inactive and the plain append
- * path lands after all turn entries.
+ * Ferment-specific bits retained here: the render source (active phase
+ * progress + next-action hint), the planned/running gate (draft, paused,
+ * complete, and abandoned have their own dedicated prompt blocks or no
+ * block — a transition out persists nothing; the last running block remains
+ * in history), the agent-worker suppression, and the domain-event channels
+ * as the change source.
  *
  * Registered once at extension init; the TUI is a single-session process.
  */
 export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: FermentRuntime): void {
-	/** Newest persisted block content; `undefined` = nothing persisted yet. */
-	let lastPersistedContent: string | undefined
 	/** Latest session handle, used to resolve the multi-model flag. */
 	let sessionManager: SessionManagerHandle | undefined
 
-	function renderCurrent(): string | undefined {
-		if (isAgentWorker()) return undefined
-		const f = runtime.getActive()
-		if (!f) return undefined
-		// Only persist for planned/running states — draft, paused, complete, and
-		// abandoned have their own dedicated prompt blocks or no block at all.
-		// A transition out of those states persists nothing; the previous
-		// block remains in history as the last known lifecycle state.
-		if (f.status !== "planned" && f.status !== "running") return undefined
-		if (!sessionManager) return undefined
-		const content = buildFermentLifecycleContext(f, getMultiModelEnabled(sessionManager))
-		if (!content) return undefined
-		return markHarnessSteer(content)
-	}
-
-	/** Whether a lifecycle transition happened while the agent was busy. */
-	let pendingFlush = false
-	let agentBusy = 0
-
-	function persistIfChanged(): void {
-		const content = renderCurrent()
-		if (content === undefined || content === lastPersistedContent) return
-		lastPersistedContent = content
-		pi.sendMessage(
-			{
-				customType: FERMENT_LIFECYCLE_CUSTOM_TYPE,
-				display: false,
-				content,
-				details: { reason: "state_sync" },
-			},
-			{ deliverAs: "steer" },
-		)
-	}
-
-	const initFromHistory = (_event: unknown, ctx: ExtensionContext) => {
-		sessionManager = ctx.sessionManager
-		lastPersistedContent = newestLifecycleContentFromHistory(ctx)
-	}
-	pi.on("session_start", initFromHistory)
-	pi.on("session_tree", initFromHistory)
-
-	// While the agent is busy, coalesce all transitions into one block flushed
-	// after the run — see the module comment for the compaction rationale.
-	pi.on("agent_start", () => {
-		agentBusy++
-	})
-	pi.on("agent_end", () => {
-		agentBusy = Math.max(0, agentBusy - 1)
-	})
-	// Flush on agent_settled rather than agent_end: during agent_end the run
-	// is still streaming upstream, so a steered send would be queued as a
-	// pending agent steer. At agent_settled the run is fully inactive, so
-	// sendCustomMessage takes the plain append path (no steer, no pending
-	// messages, no new turn) and downstream agent_settled handlers that gate
-	// on ctx.hasPendingMessages() (e.g. the Ferment V2 evaluation gate) are
-	// unaffected.
-	pi.on("agent_settled", (_event, ctx) => {
-		if (agentBusy > 0 || !pendingFlush) return
-		// Skip aborted runs: the flushed block would become the newest turn
-		// start and steal the interrupted turn's slot in a compaction cut.
-		if (latestRunTailIsAborted(ctx)) return
-		pendingFlush = false
-		persistIfChanged()
-	})
-
-	// Re-render + dedupe on every lifecycle transition that can change the
-	// rendered block (or the planned/running gate).
-	for (const channel of [
-		FERMENT_EVENTS.PHASE_STARTED,
-		FERMENT_EVENTS.STEP_STARTED,
-		FERMENT_EVENTS.STEP_COMPLETED,
-		FERMENT_EVENTS.STEP_FAILED,
-		FERMENT_EVENTS.PHASE_COMPLETED,
-		FERMENT_EVENTS.SUSPENDED,
-		FERMENT_EVENTS.RESUMED,
-		FERMENT_EVENTS.SCOPING_COMPLETE,
-	] as const) {
-		pi.events.on(channel, () => {
-			if (agentBusy > 0) {
-				pendingFlush = true
-				return
+	registerStateBlockPersistence(pi, {
+		customType: FERMENT_LIFECYCLE_CUSTOM_TYPE,
+		onSessionEvent: (ctx: ExtensionContext) => {
+			sessionManager = ctx.sessionManager
+		},
+		render: () => {
+			if (isAgentWorker()) return undefined
+			const f = runtime.getActive()
+			if (!f) return undefined
+			if (f.status !== "planned" && f.status !== "running") return undefined
+			if (!sessionManager) return undefined
+			const content = buildFermentLifecycleContext(f, getMultiModelEnabled(sessionManager))
+			if (!content) return undefined
+			return markHarnessSteer(content)
+		},
+		subscribe: (notify) => {
+			for (const channel of LIFECYCLE_CHANGE_EVENTS) {
+				pi.events.on(channel, () => {
+					notify()
+				})
 			}
-			persistIfChanged()
-		})
-	}
-
-	// Strip-only context pass: drop every ferment-lifecycle message except the
-	// newest. Never appends — the write path (domain events above and the
-	// current-context check below) is the only place these messages originate.
-	pi.on("context", async (event) => {
-		const messages = event.messages
-		let newestIndex = -1
-		for (let i = 0; i < messages.length; i++) {
-			if (isFermentLifecycleMessage(messages[i])) newestIndex = i
-		}
-		if (newestIndex === -1) return undefined
-		const hasSuperseded = messages.some((m, i) => i !== newestIndex && isFermentLifecycleMessage(m))
-		if (!hasSuperseded) return undefined
-
-		const stripped: OrchestratorMessages = messages.filter((m, i) => !isFermentLifecycleMessage(m) || i === newestIndex)
-		return { messages: stripped }
+		},
 	})
 }

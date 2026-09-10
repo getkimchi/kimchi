@@ -1,7 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 
-type MessageEntryLike = { type: "message"; message: { role?: string; stopReason?: string } } | { type?: string }
-
 /**
  * True when the newest message in branch history is an assistant message
  * that was aborted (e.g. the user ran /compact mid-stream).
@@ -15,12 +13,11 @@ type MessageEntryLike = { type: "message"; message: { role?: string; stopReason?
  * flushed at the settle of the next (unaborted) run instead.
  */
 export function latestRunTailIsAborted(ctx: ExtensionContext): boolean {
-	const branch = ctx.sessionManager.getBranch() as readonly MessageEntryLike[]
+	const branch = ctx.sessionManager.getBranch()
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i]
-		if (entry?.type !== "message") continue
-		const message = (entry as { message?: { role?: string; stopReason?: string } }).message
-		if (!message?.role) continue
+		if (entry.type !== "message") continue
+		const message = entry.message
 		return message.role === "assistant" && message.stopReason === "aborted"
 	}
 	return false

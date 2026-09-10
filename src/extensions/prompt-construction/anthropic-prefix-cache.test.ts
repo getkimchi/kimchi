@@ -24,9 +24,10 @@
  */
 import type { Message, Model } from "@earendil-works/pi-ai"
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages"
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import todosExtension from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 
@@ -97,15 +98,14 @@ function createHarness() {
 		}),
 	} as unknown as ExtensionAPI
 
-	const ctx = {
+	const ctx = createContext({
 		hasUI: false,
-		cwd: "/tmp",
 		hasPendingMessages: () => false,
 		sessionManager: {
 			getSessionId: () => SESSION_ID,
-			getBranch: () => history,
+			getBranch: () => history as unknown as SessionEntry[],
 		},
-	} as unknown as ExtensionContext
+	})
 
 	todosExtension(pi)
 
