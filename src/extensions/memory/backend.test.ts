@@ -6,6 +6,7 @@ import {
 	buildMemoryConfig,
 	createMemoryBackend,
 	defaultMemoryDir,
+	historyDbPath,
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
 	MEMORY_EXTRACTION_MODEL,
@@ -76,6 +77,12 @@ describe("buildMemoryConfig", () => {
 		expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
 		expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
 	})
+
+	it("pins the history store next to the vector store, never cwd", () => {
+		const config = buildMemoryConfig({ dbPath: "/tmp/scope/memory.db" }, testConfig())
+		expect(config.historyStore?.provider).toBe("sqlite")
+		expect(config.historyStore?.config.historyDbPath).toBe("/tmp/scope/memory-history.db")
+	})
 })
 
 describe("memory paths", () => {
@@ -88,6 +95,12 @@ describe("memory paths", () => {
 		expect(() => memoryDbPath("personal/../../evil")).toThrow(/invalid memory scope id/)
 		expect(() => memoryDbPath("../evil")).toThrow(/invalid memory scope id/)
 		expect(() => memoryDbPath("")).toThrow(/invalid memory scope id/)
+	})
+
+	it("derives the history db path from any db filename", () => {
+		expect(historyDbPath("/a/b/memory.db")).toBe("/a/b/memory-history.db")
+		expect(historyDbPath("/tmp/mem.db")).toBe("/tmp/mem-history.db")
+		expect(historyDbPath("/tmp/nosuffix")).toBe("/tmp/nosuffix-history.db")
 	})
 })
 
