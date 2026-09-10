@@ -165,9 +165,12 @@ describe("extractMessages (user + gated assistant)", () => {
 		expect(extractMessages([entry])).toEqual([])
 	})
 
-	it("excludes oversized assistant turns", () => {
-		const entry = msgEntry("assistant", "x".repeat(1001))
-		expect(extractMessages([entry])).toEqual([])
+	it("truncates oversized assistant turns to the bound (needles sit at the start)", () => {
+		const entry = msgEntry("assistant", "The answer is 3 eggs. " + "x".repeat(1500))
+		const messages = extractMessages([entry])
+		expect(messages).toHaveLength(1)
+		expect(messages[0]?.content).toHaveLength(1000)
+		expect(messages[0]?.content.startsWith("The answer is 3 eggs.")).toBe(true)
 	})
 
 	it("excludes thinking-only assistant turns", () => {

@@ -76,9 +76,9 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 		if (message.role === "user") {
 			const content = messageText(message.content)
 			if (content.trim()) messages.push({ role: "user", content })
-		} else if (message.role === "assistant" && passesAssistantGate(message.content)) {
-			const content = messageText(message.content)
-			if (content.trim()) messages.push({ role: "assistant", content })
+		} else if (message.role === "assistant") {
+			const content = gatedAssistantText(message.content)
+			if (content) messages.push({ role: "assistant", content })
 		}
 	}
 	return messages
@@ -88,18 +88,21 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
  * Structural gate for assistant capture: the turn must be pure text — no
  * toolCall blocks (work product; such turns are excluded whole: their text
  * fragments are work commentary), no thinking (filtered by messageText's
- * text-block pass), and within the length bound.
+ * text-block pass). Long turns TRUNCATE at the bound instead of being
+ * excluded — an answer's key statement (the count, the recommendation)
+ * sits at its start, so truncation retains the needle while bounding
+ * volume. Returns the gated text, or null when the turn is excluded.
  */
-function passesAssistantGate(content: unknown): boolean {
+function gatedAssistantText(content: unknown): string | null {
 	if (typeof content === "string") {
-		return content.trim().length > 0 && content.length <= MEMORY_CAPTURE_ASSISTANT_MAX_CHARS
+		return content.trim() ? content.slice(0, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS) : null
 	}
 	if (Array.isArray(content)) {
-		if (content.some((part) => (part as { type?: string }).type === "toolCall")) return false
+		if (content.some((part) => (part as { type?: string }).type === "toolCall")) return null
 		const text = messageText(content)
-		return text.trim().length > 0 && text.length <= MEMORY_CAPTURE_ASSISTANT_MAX_CHARS
+		return text.trim() ? text.slice(0, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS) : null
 	}
-	return false
+	return null
 }
 
 export function messageText(content: unknown): string {
