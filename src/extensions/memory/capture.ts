@@ -39,7 +39,7 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 	return messages
 }
 
-function messageText(content: unknown): string {
+export function messageText(content: unknown): string {
 	if (typeof content === "string") return content
 	if (Array.isArray(content)) {
 		return content.map((part) => (typeof part === "string" ? part : ((part as { text?: string }).text ?? ""))).join("")

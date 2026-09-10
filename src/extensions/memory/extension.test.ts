@@ -15,10 +15,10 @@ function startEvent(prompt: string): BeforeAgentStartEvent {
 }
 
 async function setup(extension: (pi: ExtensionAPI) => void) {
-	const { api, getHandler } = createExtensionApi()
+	const { api, getHandler, sendMessage } = createExtensionApi()
 	extension(api)
 	const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
-	return { api, getHandler, start }
+	return { api, getHandler, sendMessage, start }
 }
 
 afterEach(() => {
@@ -62,7 +62,7 @@ describe("memory extension", () => {
 		expect(turn3?.systemPrompt).toBe(turn1?.systemPrompt)
 	})
 
-	it("searches exactly once per session — an empty digest injects nothing ever", async () => {
+	it("an empty digest injects nothing ever (drift retries bounded by the cap)", async () => {
 		const search = vi.fn(async () => [{ memory: "weak", score: 0.1 }])
 		const { start } = await setup(
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
@@ -71,7 +71,9 @@ describe("memory extension", () => {
 			const result = await start(startEvent(`turn ${turn}`), {} as never)
 			expect(result).toBeUndefined()
 		}
-		expect(search).toHaveBeenCalledTimes(1)
+		// Turn 1 (digest) + turns 2-3: nothing was delivered, so the gate sees
+		// drift and retries retrieval — the session cap bounds this.
+		expect(search).toHaveBeenCalledTimes(3)
 	})
 
 	it("recomputes the digest after compaction, then goes stable again", async () => {
@@ -87,10 +89,12 @@ describe("memory extension", () => {
 		compact({ type: "session_compact" }, {} as never)
 		const afterCompact = await start(startEvent("turn 2"), {} as never)
 		expect(afterCompact?.systemPrompt).toContain("post-compact fact")
-		expect(searcher.search).toHaveBeenCalledTimes(2)
 
+		// Turn 3 drift-retrieves ("turn 3" is uncovered against the reseeded
+		// ledger) — search count: digest, post-compact recompute, drift recall.
 		const later = await start(startEvent("turn 3"), {} as never)
 		expect(later?.systemPrompt).toBe(afterCompact?.systemPrompt)
+		expect(searcher.search).toHaveBeenCalledTimes(3)
 	})
 
 	it("degrades to no-memory when the store fails — logged once, session untouched", async () => {
@@ -122,5 +126,68 @@ describe("memory extension", () => {
 		const result = await start(startEvent("turn"), {} as never)
 		expect(result?.systemPrompt).toContain("flag fact")
 		populateCliArgs([])
+	})
+
+	it("steers new facts on topic drift, once — deduped across turns", async () => {
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "user prefers pnpm over npm", score: 0.7 }])
+			.mockResolvedValueOnce([
+				{ memory: "user prefers pnpm over npm", score: 0.7 },
+				{ memory: "user bakes chocolate cakes on weekends", score: 0.5 },
+			])
+			.mockResolvedValueOnce([{ memory: "user bakes chocolate cakes on weekends", score: 0.5 }])
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const turn1 = await start(startEvent("set up the repo"), {} as never)
+		expect(turn1?.systemPrompt).toContain("user prefers pnpm over npm")
+
+		// Topic drift: the new prompt is uncovered territory — a steer with
+		// ONLY the new fact goes out (hidden, deliverAs steer).
+		const turn2 = await start(startEvent("what do I bake?"), {} as never)
+		expect(turn2?.systemPrompt).toBe(turn1?.systemPrompt)
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+		const [message, options] = sendMessage.mock.calls[0] as [
+			{ customType: string; content: Array<{ type: string; text: string }>; display: boolean },
+			{ deliverAs: string },
+		]
+		expect(message.customType).toBe("memory-recall")
+		expect(message.display).toBe(false)
+		expect(options.deliverAs).toBe("steer")
+		expect(message.content[0]?.text).toContain("user bakes chocolate cakes")
+		expect(message.content[0]?.text).not.toContain("pnpm")
+
+		// Same territory again: the fact is already delivered — no second steer.
+		await start(startEvent("more about baking?"), {} as never)
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("gate skips retrieval when the conversation stays covered", async () => {
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo with pnpm"), {} as never)
+		// Follow-up inside delivered territory: covered — no extra retrieval.
+		const covered = await start(startEvent("pnpm install"), {} as never)
+		expect(covered?.systemPrompt).toContain("pnpm")
+		expect(search).toHaveBeenCalledTimes(1)
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("bounds progressive re-evaluations by the session cap", async () => {
+		let n = 0
+		const search = vi.fn(async () => [{ memory: `distinct fact number ${++n}`, score: 0.6 }])
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		for (let turn = 0; turn < 8; turn++) {
+			await start(startEvent(`drift topic ${turn}`), {} as never)
+		}
+		// Turn 1 (digest) + TURN_RECALL_MAX_EVALUATIONS (5) drift retrievals —
+		// the 6th+ drift turns are out of budget.
+		expect(search).toHaveBeenCalledTimes(6)
+		expect(sendMessage).toHaveBeenCalledTimes(5)
 	})
 })
