@@ -75,7 +75,8 @@ describe("buildMemoryDigest", () => {
 		]
 		const a = buildMemoryDigest(hits)
 		const b = buildMemoryDigest([...hits])
-		expect(a!.text).toBe(b!.text)
+		if (!a || !b) throw new Error("expected digests")
+		expect(a.text).toBe(b.text)
 	})
 
 	it("wraps the body in the stable memory section", () => {
