@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
-import { chatJson, messageHash, parseFactsResponse, windowMessages, type CaptureMessage } from "./capture-worker.js"
+import {
+	type CaptureMessage,
+	chatJson,
+	chatWithRetry,
+	messageHash,
+	parseFactsResponse,
+	parseIdArray,
+	windowMessages,
+} from "./capture-worker.js"
 
 const msg = (role: "user" | "assistant", content: string): CaptureMessage => ({ role, content })
 
@@ -45,11 +53,13 @@ describe("parseFactsResponse", () => {
 
 describe("chatJson retry behavior", () => {
 	it("returns content on the first success", async () => {
-		const fetchImpl = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ choices: [{ message: { content: "[\"fact\"]" } }] }), { status: 200 }),
-		)
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ choices: [{ message: { content: '["fact"]' } }] }), { status: 200 }),
+			)
 		const text = await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
-		expect(text).toBe("[\"fact\"]")
+		expect(text).toBe('["fact"]')
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
 
@@ -77,5 +87,62 @@ describe("chatJson retry behavior", () => {
 			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", 2),
 		).rejects.toThrow(/after 2 attempts/)
 		expect(fetchImpl).toHaveBeenCalledTimes(2)
+	})
+})
+
+describe("chatWithRetry (prose responses are retryable)", () => {
+	const okCompletion = (content: string): Response =>
+		new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
+
+	it("retries a prose response once with the strict suffix and parses the valid retry", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const fetchImpl = vi
+				.fn()
+				.mockResolvedValueOnce(okCompletion("## What is Mediation?\nIt is a process where parties..."))
+				.mockResolvedValueOnce(okCompletion('["I mediate disputes weekly"]'))
+			const facts = await chatWithRetry(
+					{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				"system",
+				"user",
+				parseFactsResponse,
+			)
+			expect(facts).toEqual(["I mediate disputes weekly"])
+			expect(fetchImpl).toHaveBeenCalledTimes(2)
+			// The retry carried the strict format reminder appended to the system prompt.
+			const retryBody = JSON.parse(fetchImpl.mock.calls[1]?.[1]?.body as string) as {
+				messages: Array<{ role: string; content: string }>
+			}
+			expect(retryBody.messages[0]?.content).toContain("CRITICAL FORMAT REMINDER")
+		} finally {
+			consoleError.mockRestore()
+		}
+	})
+
+	it("throws after the strict retry also fails to parse", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const fetchImpl = vi
+				.fn()
+				.mockImplementation(() => Promise.resolve(okCompletion("still prose, no array")))
+			await expect(
+				chatWithRetry(
+					{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+					"system",
+					"user",
+					parseFactsResponse,
+				),
+			).rejects.toThrow(/unparseable response after strict retry/)
+			expect(fetchImpl).toHaveBeenCalledTimes(2)
+		} finally {
+			consoleError.mockRestore()
+		}
+	})
+
+	it("parseIdArray parses the supersede judge contract", () => {
+		expect(parseIdArray('["a","b"]')).toEqual(["a", "b"])
+		expect(parseIdArray('prefix ["x"] suffix')).toEqual(["x"])
+		expect(parseIdArray('["ok", 3, null]')).toEqual(["ok"])
+		expect(() => parseIdArray("no array at all")).toThrow(/no JSON array/)
 	})
 })
