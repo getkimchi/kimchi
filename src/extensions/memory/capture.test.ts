@@ -102,7 +102,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 				.mockResolvedValueOnce(okCompletion("## What is Mediation?\nIt is a process where parties..."))
 				.mockResolvedValueOnce(okCompletion('["I mediate disputes weekly"]'))
 			const facts = await chatWithRetry(
-					{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 				"system",
 				"user",
 				parseFactsResponse,
@@ -122,9 +122,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 	it("throws after the strict retry also fails to parse", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
-			const fetchImpl = vi
-				.fn()
-				.mockImplementation(() => Promise.resolve(okCompletion("still prose, no array")))
+			const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okCompletion("still prose, no array")))
 			await expect(
 				chatWithRetry(
 					{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },

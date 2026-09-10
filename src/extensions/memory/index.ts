@@ -34,19 +34,8 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { createMemoryBackend, type MemoryBackendOptions } from "./backend.js"
 import { messageText, wireMemoryCapture } from "./capture.js"
-import {
-	DIGEST_SCORE_THRESHOLD,
-	TURN_RECALL_MAX_EVALUATIONS,
-	digestDbPath,
-	MEMORY_USER_ID,
-} from "./config.js"
-import {
-	buildMemoryDigest,
-	buildTurnRecall,
-	factKey,
-	isCovered,
-	type DigestComposition,
-} from "./inject.js"
+import { DIGEST_SCORE_THRESHOLD, digestDbPath, MEMORY_USER_ID, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
+import { buildMemoryDigest, buildTurnRecall, type DigestComposition, factKey, isCovered } from "./inject.js"
 import { createMemorySearchTool } from "./tools.js"
 
 /** What one search call returns after the value gate. */
@@ -217,10 +206,15 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 								pi.sendMessage(
 									{
 										customType: "memory-recall",
-										content: [{ type: "text", text: markHarnessSteer(`[User memory — recalled from previous sessions]\n${recall.text}`) }],
+										content: [
+											{
+												type: "text",
+												text: markHarnessSteer(`[User memory — recalled from previous sessions]\n${recall.text}`),
+											},
+										],
 										display: false,
 									},
-										{ deliverAs: "steer" },
+									{ deliverAs: "steer" },
 								)
 								console.info(`[memory] turn recall delivered: ${JSON.stringify(recall.composition)}`)
 							} else {

@@ -137,9 +137,11 @@ async function partC(): Promise<void> {
 		// Writers and readers race on one store — WAL + busy_timeout must
 		// absorb the contention (the lock failure mode from the investigation).
 		const writers = Array.from({ length: 8 }, (_, i) =>
-			backend.add(`concurrent fact ${i}: the user's favorite number is ${i * 7}`, { userId, infer: false }))
+			backend.add(`concurrent fact ${i}: the user's favorite number is ${i * 7}`, { userId, infer: false }),
+		)
 		const readers = Array.from({ length: 8 }, () =>
-			backend.search("favorite number", { filters: { user_id: userId }, topK: 5 }))
+			backend.search("favorite number", { filters: { user_id: userId }, topK: 5 }),
+		)
 		await Promise.all([...writers, ...readers])
 		const all = await backend.search("concurrent fact", { filters: { user_id: userId }, topK: 10 })
 		const list = (Array.isArray(all) ? all : (all?.results ?? [])) as Array<{ memory?: string }>
