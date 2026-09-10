@@ -86,7 +86,7 @@ describe("incrementalCapture", () => {
 	it("does not spawn below the threshold", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		incrementalCapture([msgEntry("one"), msgEntry("two")], state, spawn)
+		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", spawn)
 		expect(spawn).not.toHaveBeenCalled()
 		expect(state.spawnedCount).toBe(0)
 	})
@@ -95,12 +95,12 @@ describe("incrementalCapture", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
 		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, state, spawn)
+		incrementalCapture(entries, state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
 		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
 		expect(state.spawnedCount).toBe(10)
 		// Below threshold again until 10 more accumulate.
-		incrementalCapture([...entries, msgEntry("one more")], state, spawn)
+		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
 	})
 
@@ -108,9 +108,9 @@ describe("incrementalCapture", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
 		const first = Array.from({ length: 10 }, (_, i) => msgEntry(`a${i}`))
-		incrementalCapture(first, state, spawn)
+		incrementalCapture(first, state, "/test/cwd", spawn)
 		const second = [...first, ...Array.from({ length: 12 }, (_, i) => msgEntry(`b${i}`))]
-		incrementalCapture(second, state, spawn)
+		incrementalCapture(second, state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 		const secondBatch = (spawn.mock.calls[1] as CaptureMessage[][])[0]
 		expect(secondBatch.every((m) => m.content.startsWith("b"))).toBe(true)
@@ -119,8 +119,8 @@ describe("incrementalCapture", () => {
 	it("a fresh state re-derives from zero — the worker ledger dedupes", () => {
 		const spawn = vi.fn()
 		const entries = Array.from({ length: 15 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, createIncrementalCaptureState(), spawn)
-		incrementalCapture(entries, createIncrementalCaptureState(), spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 	})
 })
@@ -182,10 +182,12 @@ describe("extractMessages (user + gated assistant)", () => {
 describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 	it("skips the LLM call entirely for pure-user windows", async () => {
 		const fetchImpl = vi.fn()
-		const facts = await extractAssistantFacts({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, [
-			msg("user", "just talking"),
-		])
-		expect(facts).toEqual([])
+		const facts = await extractAssistantFacts(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			[msg("user", "just talking")],
+			null,
+		)
+		expect(facts).toEqual({ personal: [], project: [] })
 		expect(fetchImpl).not.toHaveBeenCalled()
 	})
 
@@ -197,11 +199,12 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 				}),
 			),
 		)
-		const facts = await extractAssistantFacts({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, [
-			msg("user", "how many eggs?"),
-			msg("assistant", "3 eggs"),
-		])
-		expect(facts).toEqual(["the assistant answered"])
+		const facts = await extractAssistantFacts(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			[msg("user", "how many eggs?"), msg("assistant", "3 eggs")],
+			null,
+		)
+		expect(facts.personal).toEqual(["the assistant answered"])
 		const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string) as {
 			messages: Array<{ content: string }>
 		}

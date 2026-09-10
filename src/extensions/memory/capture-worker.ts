@@ -17,9 +17,15 @@
  * duplicate job is a no-op.
  */
 import { createHash } from "node:crypto"
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { createMemoryBackend, disableMem0Telemetry, resolveExtractionModel } from "./backend.js"
+import {
+	createMemoryBackend,
+	defaultMemoryDir,
+	disableMem0Telemetry,
+	projectDbPath,
+	resolveExtractionModel,
+} from "./backend.js"
 import {
 	MEMORY_CAPTURE_CHUNK_WINDOWS,
 	MEMORY_CAPTURE_CONCURRENCY,
@@ -35,6 +41,8 @@ export interface CaptureMessage {
 
 export interface CaptureJob {
 	messages: CaptureMessage[]
+	/** Project scope when captured inside a repository; null/absent → personal only. */
+	project?: { id: string; contextLine: string } | null
 }
 
 export function messageHash(message: CaptureMessage): string {
@@ -104,6 +112,34 @@ export function parseFactsResponse(text: string): string[] {
 		throw new Error("extraction response is not an array")
 	}
 	return parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+}
+
+/** Parsed two-scope extraction: personal vs project facts. */
+export interface TaggedFacts {
+	personal: string[]
+	project: string[]
+}
+
+/**
+ * Parse a tagged extraction response: {"personal": [...], "project": [...]}.
+ * Tolerates the bare-array shape (no-project jobs) — everything personal.
+ */
+export function parseTaggedFacts(text: string): TaggedFacts {
+	const objStart = text.indexOf("{")
+	if (objStart !== -1) {
+		const objEnd = text.lastIndexOf("}")
+		if (objEnd > objStart) {
+			const parsed: unknown = JSON.parse(text.slice(objStart, objEnd + 1))
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				const obj = parsed as { personal?: unknown; project?: unknown }
+				const filter = (v: unknown): string[] =>
+					Array.isArray(v) ? v.filter((f): f is string => typeof f === "string" && f.trim().length > 0) : []
+				return { personal: filter(obj.personal), project: filter(obj.project) }
+			}
+		}
+	}
+	// Bare array (the no-project shape) — all personal.
+	return { personal: parseFactsResponse(text), project: [] }
 }
 
 interface GatewayLlmOptions {
@@ -202,8 +238,9 @@ An identical or near-identical memory is not a replacement: never delete a fact 
 Respond with ONLY a JSON array of memory ids to delete; [] when nothing is replaced.`
 
 /** Appended on retry when the model ignored the format (seen in the benchmark:
- * the model answered the session's question instead of following the format). */
-const STRICT_JSON_RETRY_SUFFIX = `\n\nCRITICAL FORMAT REMINDER: Respond with ONLY a JSON array — no prose, no headings, no markdown, no code fences. The first character of your response must be "[" and the last must be "]".`
+ * the model answered the session's question instead of following the format). Shape-neutral:
+ * works for both the bare-array and the tagged-object response contracts. */
+const STRICT_JSON_RETRY_SUFFIX = `\n\nCRITICAL FORMAT REMINDER: Respond with ONLY the requested JSON — no prose, no headings, no markdown, no code fences.`
 
 /** Parse a JSON array of string ids from a response (the supersede judge contract). */
 export function parseIdArray(text: string): string[] {
@@ -240,19 +277,45 @@ export async function chatWithRetry<T>(
 	}
 }
 
-async function extractFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
+/**
+ * The scope-tag section, appended to extraction prompts ONLY when a project
+ * scope exists. Suppressed otherwise — the audit's home-dir finding: with no
+ * project to anchor to, the LLM still tags "project" if offered the choice,
+ * so the choice must not be offered. Unvalidated in the 95-fact audit:
+ * zero pollution, the asymmetric default works.
+ */
+const SCOPE_TAG_SECTION = `\n\nTag each fact's scope:\n- "personal" — true regardless of project or codebase: identity, home life, preferences stated generally ("I always...", "everywhere"), cross-cutting tool choices that hold in any repository.\n- "project" — anchored to this repository: its stack, conventions, decisions, architecture, anything referring to this codebase's files or work.\nWhen unsure, tag "project" — a project fact in the wrong store is recoverable; a project fact in the global store pollutes every other project.\n\nCurrent project: `
+
+/** Build the scoped variant of an extraction prompt (tag section + project context). */
+function scopedPrompt(basePrompt: string, scopeContextLine: string | null | undefined): string {
+	return scopeContextLine ? `${basePrompt}${SCOPE_TAG_SECTION}${scopeContextLine}` : basePrompt
+}
+
+async function extractFacts(
+	llm: GatewayLlmOptions,
+	window: CaptureMessage[],
+	scopeContextLine: string | null | undefined,
+): Promise<TaggedFacts> {
 	// Two passes: user-stated facts (the validated prompt), then cautious
 	// assistant-established facts (agent-aware: engagement evidence required).
 	// Sequential within the window — the pipeline's window-level concurrency
 	// (4) already bounds the instantaneous call rate.
-	const userFacts = await extractUserFacts(llm, window)
-	const assistantFacts = await extractAssistantFacts(llm, window)
-	return [...userFacts, ...assistantFacts]
+	const userFacts = await extractUserFacts(llm, window, scopeContextLine)
+	const assistantFacts = await extractAssistantFacts(llm, window, scopeContextLine)
+	return {
+		personal: [...userFacts.personal, ...assistantFacts.personal],
+		project: [...userFacts.project, ...assistantFacts.project],
+	}
 }
 
-async function extractUserFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
+async function extractUserFacts(
+	llm: GatewayLlmOptions,
+	window: CaptureMessage[],
+	scopeContextLine: string | null | undefined,
+): Promise<TaggedFacts> {
 	const transcript = window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
-	return chatWithRetry(llm, EXTRACTION_SYSTEM_PROMPT, transcript, parseFactsResponse)
+	const system = scopedPrompt(EXTRACTION_SYSTEM_PROMPT, scopeContextLine)
+	return chatWithRetry(llm, system, transcript, parseTaggedFacts)
 }
 
 const ASSISTANT_FACTS_SYSTEM_PROMPT = `You maintain the user's memory store, extracting facts established in conversation that involve ASSISTANT messages.
@@ -265,19 +328,40 @@ Write each fact self-contained with natural attribution to the conversation (e.g
 Skip: suggestions the user ignored or rejected, plans that never materialized, statements the user corrected or pushed back on, hedged reasoning ("might", "one option is"), and anything you are unsure the user engaged with — when in doubt, skip.
 Respond with ONLY a JSON array of fact strings; [] when nothing qualifies.`
 
-export async function extractAssistantFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
+export async function extractAssistantFacts(
+	llm: GatewayLlmOptions,
+	window: CaptureMessage[],
+	scopeContextLine: string | null | undefined,
+): Promise<TaggedFacts> {
 	// Pure-user windows are the common case — no assistant pass, no extra call.
-	if (!window.some((m) => m.role === "assistant")) return []
+	if (!window.some((m) => m.role === "assistant")) return { personal: [], project: [] }
 	const transcript = window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
-	return chatWithRetry(llm, ASSISTANT_FACTS_SYSTEM_PROMPT, transcript, parseFactsResponse)
+	const system = scopedPrompt(ASSISTANT_FACTS_SYSTEM_PROMPT, scopeContextLine)
+	return chatWithRetry(llm, system, transcript, parseTaggedFacts)
 }
 
-function hashesPath(dbPath: string): string {
-	return join(dirname(dbPath), "captured-hashes.json")
+/**
+ * Shared ledger: which messages have been processed, regardless of which
+ * store their facts landed in. Lives at the memory root — one window's
+ * messages hash once across both stores.
+ */
+function hashesPath(): string {
+	return join(defaultMemoryDir(), "captured-hashes.json")
 }
 
-function loadHashes(dbPath: string): Set<string> {
-	const path = hashesPath(dbPath)
+function loadHashes(): Set<string> {
+	const path = hashesPath()
+	// One-time migration: the ledger used to live in personal/ (when there
+	// was only one store). Move it to the root so both stores share it.
+	const legacy = join(defaultMemoryDir(), "personal", "captured-hashes.json")
+	if (!existsSync(path) && existsSync(legacy)) {
+		try {
+			renameSync(legacy, path)
+		} catch {
+			// Failed migration → empty ledger → re-extraction (duplicates are
+			// bounded by supersede; never data loss).
+		}
+	}
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"))
 		if (!Array.isArray(parsed)) return new Set()
@@ -289,8 +373,8 @@ function loadHashes(dbPath: string): Set<string> {
 	}
 }
 
-function saveHashes(dbPath: string, hashes: Set<string>): void {
-	const path = hashesPath(dbPath)
+function saveHashes(hashes: Set<string>): void {
+	const path = hashesPath()
 	mkdirSync(dirname(path), { recursive: true })
 	const tmp = `${path}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify([...hashes], null, 0)}\n`, "utf-8")
@@ -321,15 +405,19 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	const job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob
 	if (!Array.isArray(job.messages)) throw new Error(`job file ${jobFile} has no messages array`)
 
-	const hashes = loadHashes(dbPath)
+	const hashes = loadHashes()
 	const fresh = job.messages.filter((m) => m.content.trim() && !hashes.has(messageHash(m)))
 	if (fresh.length === 0) {
 		rmSync(jobFile, { force: true })
 		return 0
 	}
 
-	const backend = await createMemoryBackend({ dbPath })
-	const searchAll = async (query: string) => {
+	// The --db arg is the personal store; the project store (if any) derives
+	// from the job's project scope. Tagged facts route to their store.
+	const personalBackend = await createMemoryBackend({ dbPath })
+	const projectBackend = job.project ? await createMemoryBackend({ dbPath: projectDbPath(job.project.id) }) : null
+	type Backend = Awaited<ReturnType<typeof createMemoryBackend>>
+	const makeSearchAll = (backend: Backend) => async (query: string) => {
 		const results = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 5 })
 		const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
 			id?: string
@@ -354,7 +442,35 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		fetchImpl: options.fetchImpl,
 	}
 
+	const judge = async (
+		newFacts: string[],
+		candidates: Array<{ id: string; memory: string; score?: number }>,
+	): Promise<string[]> => {
+		const prompt = `NEW FACTS:\n${newFacts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
+			.map((c) => `${c.id}: ${c.memory}`)
+			.join("\n")}`
+		return chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
+	}
+
 	let captured = 0
+	/** Add facts to one store (window order), then a per-store supersede pass. */
+	const storeScope = async (backend: Backend, facts: string[]): Promise<void> => {
+		if (facts.length === 0) return
+		// Adds first (window order), then ONE supersede judge pass per chunk.
+		// The judge sees the chunk's facts against the store, which now includes
+		// them — the chronological-order and identical-fact rules in the prompt
+		// keep within-chunk supersede directionally correct and prevent
+		// self-deletion.
+		for (const fact of facts) {
+			await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+			captured += 1
+		}
+		const superseded = await findSupersededIds(facts, makeSearchAll(backend), judge)
+		for (const id of superseded) {
+			await backend.delete(id)
+		}
+	}
+
 	const windows = windowByBudget(fresh)
 	for (let start = 0; start < windows.length; start += MEMORY_CAPTURE_CHUNK_WINDOWS) {
 		const chunk = windows.slice(start, start + MEMORY_CAPTURE_CHUNK_WINDOWS)
@@ -362,7 +478,7 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		// windows are independent and order is preserved in the results.
 		const results = await mapWithConcurrency(chunk, MEMORY_CAPTURE_CONCURRENCY, async (window) => {
 			try {
-				return { window, facts: await extractFacts(llm, window) }
+				return { window, facts: await extractFacts(llm, window, job.project?.contextLine ?? null) }
 			} catch (err) {
 				// A failed window must not abort the job — log it and leave its
 				// hashes unmarked, so the next capture spawn retries it.
@@ -373,30 +489,14 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 				return { window, facts: null }
 			}
 		})
-		const chunkFacts = results.flatMap((result) => result.facts ?? [])
-		if (chunkFacts.length > 0) {
-			// Adds first (window order), then ONE supersede judge pass per
-			// chunk. The judge sees the chunk's facts against the store, which
-			// now includes them — the chronological-order and identical-fact
-			// rules in the prompt keep within-chunk supersede directionally
-			// correct and prevent self-deletion.
-			for (const fact of chunkFacts) {
-				await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
-				captured += 1
-			}
-			const superseded = await findSupersededIds(
-				chunkFacts,
-				async (fact) => searchAll(fact),
-				async (newFacts, candidates) => {
-					const prompt = `NEW FACTS:\n${newFacts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
-						.map((c) => `${c.id}: ${c.memory}`)
-						.join("\n")}`
-					return chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
-				},
-			)
-			for (const id of superseded) {
-				await backend.delete(id)
-			}
+		// Tagged routing: personal facts → the personal store; project facts →
+		// the project store. Supersede runs per store — a project fact never
+		// supersedes a personal one.
+		const personalFacts = results.flatMap((result) => result.facts?.personal ?? [])
+		const projectFacts = results.flatMap((result) => result.facts?.project ?? [])
+		await storeScope(personalBackend, personalFacts)
+		if (projectBackend) {
+			await storeScope(projectBackend, projectFacts)
 		}
 		// Mark only the successfully extracted windows — a crash resumes here.
 		for (const result of results) {
@@ -404,7 +504,7 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 				for (const message of result.window) hashes.add(messageHash(message))
 			}
 		}
-		saveHashes(dbPath, hashes)
+		saveHashes(hashes)
 	}
 
 	rmSync(jobFile, { force: true })
