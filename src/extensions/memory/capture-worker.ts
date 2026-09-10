@@ -94,19 +94,20 @@ export async function chatJson(
 				// (https://llm.kimchi.dev/openai/v1) is preserved.
 				new URL("chat/completions", options.baseURL.endsWith("/") ? options.baseURL : `${options.baseURL}/`),
 				{
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-					authorization: `Bearer ${options.apiKey}`,
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: `Bearer ${options.apiKey}`,
+					},
+					body: JSON.stringify({
+						model: options.model,
+						messages: [
+							{ role: "system", content: system },
+							{ role: "user", content: user },
+						],
+					}),
 				},
-				body: JSON.stringify({
-					model: options.model,
-					messages: [
-						{ role: "system", content: system },
-						{ role: "user", content: user },
-					],
-				}),
-			})
+			)
 			if (response.ok) {
 				const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
 				const content = body.choices?.[0]?.message?.content
@@ -142,21 +143,57 @@ function sleep(ms: number): Promise<void> {
 const EXTRACTION_SYSTEM_PROMPT = `You maintain the user's persistent memory store.
 Extract durable facts about the user from the conversation snippet below.
 Include: stable preferences (tools, workflow, style), decisions and their rationale, corrections of earlier statements, and personal context the user shares (role, projects, constraints).
+ALWAYS extract itemized values as their own facts: counts ("I have 38 pre-1920 American coins"), prices and valuations ("the necklace appraised at $5,000"), assignments ("Admon covers the 8am-4pm Sunday shift"), dates and years, and measurements.
 Exclude: transient task details, file or code contents, small talk, and anything only the assistant said.
-Write each fact as a short self-contained sentence from the user's perspective. When a fact changes an earlier one, state the change explicitly ("switched from X to Y").
+Write each fact as a short self-contained sentence from the user's perspective. When a value CHANGES from one stated earlier, emit the updated fact explicitly stating the change ("I now have 38 pre-1920 coins, up from 37") — never silently keep the old value.
 Respond with ONLY a JSON array of fact strings; [] when nothing durable appears.`
 
 const SUPERSEDE_SYSTEM_PROMPT = `You maintain a memory store and must decide which stored memories a set of NEW facts replaces.
 Rules: delete an existing memory only when a new fact explicitly changes, reverses, or updates it (same subject, different value). Complementary details are not replacements. When unsure, keep the old memory.
 Respond with ONLY a JSON array of memory ids to delete; [] when nothing is replaced.`
 
-async function extractFacts(
+/** Appended on retry when the model ignored the format (seen in the benchmark:
+ * the model answered the session's question instead of following the format). */
+const STRICT_JSON_RETRY_SUFFIX = `\n\nCRITICAL FORMAT REMINDER: Respond with ONLY a JSON array — no prose, no headings, no markdown, no code fences. The first character of your response must be "[" and the last must be "]".`
+
+/** Parse a JSON array of string ids from a response (the supersede judge contract). */
+export function parseIdArray(text: string): string[] {
+	const start = text.indexOf("[")
+	const end = text.lastIndexOf("]")
+	if (start === -1 || end === -1 || end < start) throw new Error(`response has no JSON array: ${text.slice(0, 120)}`)
+	const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+	if (!Array.isArray(parsed)) throw new Error("response is not an array")
+	return parsed.filter((id): id is string => typeof id === "string")
+}
+
+/**
+ * One chat call whose response must parse; an unparseable (prose) response
+ * is retried once with the strict-format suffix before giving up. Bounded:
+ * two attempts total, then the error propagates and the job stays for a
+ * later retry.
+ */
+export async function chatWithRetry<T>(
 	llm: GatewayLlmOptions,
-	window: CaptureMessage[],
-): Promise<string[]> {
+	system: string,
+	user: string,
+	parse: (text: string) => T,
+): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		const text = await chatJson(llm, attempt === 0 ? system : system + STRICT_JSON_RETRY_SUFFIX, user)
+		try {
+			return parse(text)
+		} catch (err) {
+			if (attempt >= 1) {
+				throw new Error(`unparseable response after strict retry: ${text.slice(0, 120)}`, { cause: err })
+			}
+			console.error("[memory-capture] response not parseable, retrying with strict prompt:", text.slice(0, 80))
+		}
+	}
+}
+
+async function extractFacts(llm: GatewayLlmOptions, window: CaptureMessage[]): Promise<string[]> {
 	const transcript = window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
-	const text = await chatJson(llm, EXTRACTION_SYSTEM_PROMPT, transcript)
-	return parseFactsResponse(text)
+	return chatWithRetry(llm, EXTRACTION_SYSTEM_PROMPT, transcript, parseFactsResponse)
 }
 
 function hashesPath(dbPath: string): string {
@@ -218,12 +255,15 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	const backend = await createMemoryBackend({ dbPath })
 	const searchAll = async (query: string) => {
 		const results = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 5 })
-		const list = (Array.isArray(results) ? results : results?.results ?? []) as Array<{
+		const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
 			id?: string
 			memory?: string
 			score?: number
 		}>
-		return list.filter((r): r is { id: string; memory: string; score?: number } => typeof r.id === "string" && typeof r.memory === "string")
+		return list.filter(
+			(r): r is { id: string; memory: string; score?: number } =>
+				typeof r.id === "string" && typeof r.memory === "string",
+		)
 	}
 	const config = (await import("../../config.js")).loadConfig()
 	const llm = {
@@ -237,14 +277,16 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	for (const window of windowMessages(fresh)) {
 		const facts = await extractFacts(llm, window)
 		if (facts.length > 0) {
-			const superseded = await findSupersededIds(facts, async (fact) => searchAll(fact), async (newFacts, candidates) => {
-				const prompt = `NEW FACTS:\n${newFacts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
-					.map((c) => `${c.id}: ${c.memory}`)
-					.join("\n")}`
-				const text = await chatJson(llm, SUPERSEDE_SYSTEM_PROMPT, prompt)
-				const parsed: unknown = JSON.parse(text.slice(text.indexOf("["), text.lastIndexOf("]") + 1))
-				return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []
-			})
+			const superseded = await findSupersededIds(
+				facts,
+				async (fact) => searchAll(fact),
+				async (newFacts, candidates) => {
+					const prompt = `NEW FACTS:\n${newFacts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
+						.map((c) => `${c.id}: ${c.memory}`)
+						.join("\n")}`
+					return chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
+				},
+			)
 			for (const id of superseded) {
 				await backend.delete(id)
 			}
@@ -263,7 +305,8 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 }
 
 // Executed directly via `bun run .../capture-worker.ts` (dev spawn path).
-if (import.meta.main) {	runCaptureWorker(process.argv.slice(2))
+if (import.meta.main) {
+	runCaptureWorker(process.argv.slice(2))
 		.then((captured) => {
 			console.log(`[memory-capture] captured ${captured} facts`)
 			process.exit(0)
