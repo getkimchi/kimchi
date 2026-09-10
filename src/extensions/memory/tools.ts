@@ -7,7 +7,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 
 export interface MemorySearchDeps {
-	search: (query: string) => Promise<Array<{ memory?: string; score?: number }>>
+	search: (query: string) => Promise<Array<{ memory?: string; score?: number; scope?: "personal" | "project" }>>
 }
 
 const MemorySearchSchema = Type.Object({
@@ -34,7 +34,8 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 			}
 			const lines = hits.map((hit) => {
 				const score = hit.score === undefined ? "?" : hit.score.toFixed(3)
-				return `- (score ${score}) ${hit.memory ?? ""}`.trimEnd()
+				const scope = hit.scope === "project" ? "[project] " : ""
+				return `- (score ${score}) ${scope}${hit.memory ?? ""}`.trimEnd()
 			})
 			return textResult(lines.join("\n"))
 		},

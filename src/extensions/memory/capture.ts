@@ -12,18 +12,20 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdirSync, renameSync, writeFileSync } from "node:fs"
-import { basename, dirname, join } from "node:path"
+import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
+import { defaultMemoryDir } from "./backend.js"
 import type { CaptureMessage } from "./capture-worker.js"
 import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
+import { resolveProjectScope } from "./scope.js"
 
 export function wireMemoryCapture(pi: ExtensionAPI): void {
-	pi.on("session_before_compact", (event) => {
-		captureMessages(extractMessages(event.branchEntries))
+	pi.on("session_before_compact", (event, ctx) => {
+		captureMessages(extractMessages(event.branchEntries), ctx.cwd)
 	})
 	pi.on("session_shutdown", (_event, ctx) => {
-		captureMessages(extractMessages(ctx.sessionManager.getEntries()))
+		captureMessages(extractMessages(ctx.sessionManager.getEntries()), ctx.cwd)
 	})
 }
 
@@ -54,13 +56,14 @@ export function createIncrementalCaptureState(): IncrementalCaptureState {
 export function incrementalCapture(
 	entries: readonly SessionEntry[],
 	state: IncrementalCaptureState,
-	spawn: (messages: CaptureMessage[]) => void = captureMessages,
+	cwd: string,
+	spawn: (messages: CaptureMessage[], cwd: string) => void = captureMessages,
 ): void {
 	const messages = extractMessages(entries)
 	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
 	const batch = messages.slice(state.spawnedCount)
 	state.spawnedCount = messages.length
-	spawn(batch)
+	spawn(batch, cwd)
 }
 
 export function extractMessages(entries: readonly SessionEntry[]): CaptureMessage[] {
@@ -123,18 +126,22 @@ export function messageText(content: unknown): string {
 	return ""
 }
 
-function captureMessages(messages: CaptureMessage[]): void {
+function captureMessages(messages: CaptureMessage[], cwd: string): void {
 	if (messages.length === 0) return
 	try {
 		const dbPath = digestDbPath()
-		const pendingDir = join(dirname(dbPath), "pending")
+		const pendingDir = join(defaultMemoryDir(), "pending")
 		mkdirSync(pendingDir, { recursive: true })
-		// Deterministic job id: re-spawning for identical content overwrites
+		const project = resolveProjectScope(cwd)
+		// Deterministic job id: identical content in the same scope overwrites
 		// the same job file instead of queueing duplicates.
-		const id = createHash("sha1").update(JSON.stringify({ messages })).digest("hex").slice(0, 16)
+		const id = createHash("sha1")
+			.update(JSON.stringify({ messages, project: project?.id ?? null }))
+			.digest("hex")
+			.slice(0, 16)
 		const jobFile = join(pendingDir, `${id}.json`)
 		const tmp = `${jobFile}.${process.pid}.tmp`
-		writeFileSync(tmp, JSON.stringify({ messages }))
+		writeFileSync(tmp, JSON.stringify({ messages, project }))
 		renameSync(tmp, jobFile)
 		spawnCaptureWorker(jobFile, dbPath)
 	} catch (err) {

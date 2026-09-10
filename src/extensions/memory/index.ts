@@ -32,10 +32,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { createMemoryBackend, type MemoryBackendOptions } from "./backend.js"
 import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
-import { DIGEST_SCORE_THRESHOLD, digestDbPath, MEMORY_USER_ID, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
+import { DIGEST_SCORE_THRESHOLD, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
 import { buildMemoryDigest, buildTurnRecall, type DigestComposition, factKey, isCovered } from "./inject.js"
+import { createScopedSearcher } from "./scoped-searcher.js"
 import { createMemorySearchTool } from "./tools.js"
 
 /** What one search call returns after the value gate. */
@@ -92,6 +92,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// Lever 3: mid-session incremental capture — the runtime mark makes
 		// batches non-overlapping; the worker's hash ledger dedupes restarts.
 		let incrementalState = createIncrementalCaptureState()
+		// The session's working directory, captured at the first agent start —
+		// scopes retrieval to the project store (see createScopedSearcher).
+		let sessionCwd: string | undefined
 
 		const logOnce = (message: string, err: unknown): void => {
 			// Degrade to no-memory; log enough to diagnose (skill: never swallow).
@@ -114,22 +117,11 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				return searcher
 			}
 			try {
-				const backend = await createMemoryBackend({
-					dbPath: digestDbPath(),
-				} satisfies MemoryBackendOptions)
-				searcher = {
-					search: async (query: string) => {
-						const results = await backend.search(query, {
-							filters: { user_id: MEMORY_USER_ID },
-							topK: 8,
-						})
-						const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
-							memory?: string
-							score?: number
-						}>
-						return list
-					},
-				}
+				// Scoped retrieval: the personal store plus the current project's
+				// store, merged by score (a project-store failure degrades to
+				// personal-only inside createScopedSearcher). The cwd is captured at
+				// the first agent start; the tool fallback uses personal-only.
+				searcher = await createScopedSearcher(sessionCwd ?? "")
 				return searcher
 			} catch (err) {
 				searcherFailed = true
@@ -170,9 +162,11 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		}
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			// Capture the session cwd once — scopes retrieval to the project store.
+			sessionCwd ??= ctx.cwd
 			// Lever 3: drain new content as it accumulates (sync, cheap — reads
 			// the in-memory entries and spawns a detached worker past the mark).
-			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState)
+			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd)
 
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
