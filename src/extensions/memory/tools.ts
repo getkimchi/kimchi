@@ -11,7 +11,9 @@ export interface MemorySearchDeps {
 }
 
 const MemorySearchSchema = Type.Object({
-	query: Type.String({ description: "What to look up in the user's persistent memory (preferences, past decisions, corrections)" }),
+	query: Type.String({
+		description: "What to look up in the user's persistent memory (preferences, past decisions, corrections)",
+	}),
 })
 
 function textResult(text: string): { content: Array<{ type: "text"; text: string }>; details: null } {

@@ -68,7 +68,10 @@ async function partA(): Promise<void> {
 
 		await store.update("m3", [0, 0, 1, 0], { data: "user switched to decaf coffee last month", user_id: "u1" })
 		const afterUpdate = await store.search([0, 0, 1, 0], 10)
-		check("update moves vector (real UPDATE)", afterUpdate.some((r) => r.id === "m3"))
+		check(
+			"update moves vector (real UPDATE)",
+			afterUpdate.some((r) => r.id === "m3"),
+		)
 
 		const [, count] = await store.list()
 		check("list returns count=3", count === 3, `count=${count}`)
@@ -110,7 +113,7 @@ async function partB(): Promise<void> {
 			filters: { user_id: userId },
 		})
 		console.log(`searched in ${Date.now() - searchT0}ms`)
-		const list = (Array.isArray(results) ? results : results?.results ?? []) as Array<{
+		const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
 			memory?: string
 			score?: number
 		}>

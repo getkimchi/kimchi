@@ -3,12 +3,12 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { KimchiConfig } from "../../config.js"
 import {
-	MEMORY_EMBEDDING_DIMS,
-	MEMORY_EMBEDDING_MODEL,
-	MEMORY_EXTRACTION_MODEL,
 	buildMemoryConfig,
 	createMemoryBackend,
 	defaultMemoryDir,
+	MEMORY_EMBEDDING_DIMS,
+	MEMORY_EMBEDDING_MODEL,
+	MEMORY_EXTRACTION_MODEL,
 	memoryDbPath,
 } from "./backend.js"
 
@@ -93,9 +93,7 @@ describe("memory paths", () => {
 
 describe("createMemoryBackend", () => {
 	it("rejects with a clear error when no API key resolves", async () => {
-		await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))).rejects.toThrow(
-			/API key/,
-		)
+		await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))).rejects.toThrow(/API key/)
 	})
 
 	it("requires the Bun runtime when constructing under Node (vitest)", async () => {
