@@ -11,7 +11,7 @@ describe("buildMemoryDigest", () => {
 
 	it("keeps only above-threshold facts, ranked by score", () => {
 		const result = buildMemoryDigest([
-			{ memory: "weak fact", score: 0.29 },
+			{ memory: "weak fact", score: 0.19 },
 			{ memory: "strong fact", score: 0.7 },
 			{ memory: "mid fact", score: 0.5 },
 		])
