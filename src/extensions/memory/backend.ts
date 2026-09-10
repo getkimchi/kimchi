@@ -60,9 +60,7 @@ export async function resolveExtractionModel(
 		return EXTRACTION_MODEL_PREFERENCES[0]
 	}
 	const body = (await response.json()) as { data?: Array<{ id?: string }> }
-	const available = new Set(
-		(body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"),
-	)
+	const available = new Set((body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"))
 	for (const preference of EXTRACTION_MODEL_PREFERENCES) {
 		if (available.has(preference)) return preference
 	}
