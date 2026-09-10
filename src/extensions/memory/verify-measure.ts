@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 		] as const) {
 			for (const query of queries) {
 				const search = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 8 })
-				const list = (Array.isArray(search) ? search : search?.results ?? []) as Array<{
+				const list = (Array.isArray(search) ? search : (search?.results ?? [])) as Array<{
 					memory?: string
 					score?: number
 				}>
@@ -84,7 +84,9 @@ async function main(): Promise<void> {
 		console.log(`\nvalue gate: threshold ${DIGEST_SCORE_THRESHOLD}\n`)
 		for (const r of results) {
 			const verdict = r.facts > 0 ? `INJECT (${r.facts} facts, ~${r.tokensEstimated} tok)` : "no injection"
-			console.log(`${r.related ? "RELATED  " : "unrelated"} top=${r.topScore?.toFixed(3) ?? "-"} ${verdict}  "${r.query}"`)
+			console.log(
+				`${r.related ? "RELATED  " : "unrelated"} top=${r.topScore?.toFixed(3) ?? "-"} ${verdict}  "${r.query}"`,
+			)
 		}
 
 		const related = results.filter((r) => r.related)

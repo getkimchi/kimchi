@@ -17,10 +17,7 @@ export interface SupersedeCandidate {
 }
 
 /** Returns the ids of candidates the new facts explicitly replace. */
-export type SupersedeJudge = (
-	newFacts: string[],
-	candidates: SupersedeCandidate[],
-) => Promise<string[]>
+export type SupersedeJudge = (newFacts: string[], candidates: SupersedeCandidate[]) => Promise<string[]>
 
 export async function findSupersededIds(
 	newFacts: string[],

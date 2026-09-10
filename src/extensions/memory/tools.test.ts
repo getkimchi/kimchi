@@ -34,8 +34,8 @@ describe("memory_search tool", () => {
 			},
 		}
 		const tool = createMemorySearchTool(deps)
-		await expect(
-			tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never),
-		).rejects.toThrow("store unavailable")
+		await expect(tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)).rejects.toThrow(
+			"store unavailable",
+		)
 	})
 })
