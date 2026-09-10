@@ -158,8 +158,7 @@ describe("createMemoryBackend", () => {
 
 describe("resolveExtractionModel", () => {
 	const gateway = { baseURL: "https://gw.test/v1", apiKey: "k" }
-	const okModels = (ids: string[]) =>
-		new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 })
+	const okModels = (ids: string[]) => new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 })
 
 	it("env override wins without querying the gateway", async () => {
 		process.env.KIMCHI_MEMORY_EXTRACTION_MODEL = "custom-model"
