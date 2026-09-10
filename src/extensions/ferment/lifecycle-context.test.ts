@@ -91,7 +91,7 @@ function makeMutableRuntime(initial: Ferment | undefined): {
 	}
 }
 
-function createHarness(branch: Record<string, unknown>[] = []) {
+function createHarness(branch: Record<string, unknown>[] | (() => Record<string, unknown>[]) = []) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const bus = createEventBus()
 	const pi = {
@@ -107,7 +107,7 @@ function createHarness(branch: Record<string, unknown>[] = []) {
 	const ctx = createContext({
 		sessionManager: {
 			getSessionId: () => TEST_SESSION_ID,
-			getBranch: () => branch as unknown as SessionEntry[],
+			getBranch: () => (typeof branch === "function" ? branch() : branch) as unknown as SessionEntry[],
 		},
 	})
 
@@ -216,6 +216,28 @@ describe("registerFermentLifecycleContext", () => {
 		})
 		await harness.fire("agent_settled", {})
 		expect(harness.persistedBlocks()).toHaveLength(1)
+	})
+
+	it("re-emits the newest lifecycle block at the next settle when compaction cut it from the branch", async () => {
+		let branch: Record<string, unknown>[] = []
+		const harness = createHarness(() => branch)
+		registerFermentLifecycleContext(harness.pi, makeRuntime())
+		await startSession(harness)
+
+		await harness.fire("agent_start", {})
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+		await harness.fire("agent_end", {})
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(1)
+
+		// Compaction summarizes the block: the journal entry leaves the branch.
+		branch = []
+		await harness.fire("session_compact", { reason: "threshold" })
+		await harness.fire("agent_start", {})
+		await harness.fire("agent_end", {})
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(2)
+		expect(harness.persistedBlocks()[1]?.content).toBe(harness.persistedBlocks()[0]?.content)
 	})
 
 	it("persists a hidden lifecycle block once per transition for a running ferment", async () => {

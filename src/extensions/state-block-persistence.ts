@@ -59,6 +59,17 @@ function newestStateBlockContentFromHistory(ctx: ExtensionContext, customType: s
 	return undefined
 }
 
+/** True when the newest persisted copy of this customType is still present in
+ *  the branch. Post-compaction it is not (the journal entries it summarized
+ *  leave the branch), which is the sole re-emit signal. */
+function newestStateBlockSurvivesInBranch(ctx: ExtensionContext, customType: string): boolean {
+	const branch = ctx.sessionManager.getBranch()
+	for (let i = branch.length - 1; i >= 0; i--) {
+		if (isStateBlockEntry(branch[i], customType)) return true
+	}
+	return false
+}
+
 export interface StateBlockPersistenceOptions {
 	customType: string
 	/** Render the block to persist for `key` — content must be final (e.g.
@@ -111,13 +122,20 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 	const lastPersisted = new Map<string, string | undefined>()
 	/** Session keys whose rendered block changed while the agent was busy. */
 	const pendingFlush = new Set<string>()
+	/** Keys whose newest persisted copy was compacted out of the branch: the
+	 *  journal entry is gone, so the next write must bypass the bytes-equality
+	 *  short-circuit (equal bytes is the desired outcome — the copy must exist). */
+	const forceReemit = new Set<string>()
 	let agentBusy = 0
 	let currentSessionKey = ""
 
-	function persistIfChanged(key: string): void {
+	/** Persist the rendered block if it changed (or `force` bypasses equality).
+	 *  Returns true when a new entry was written. */
+	function persistIfChanged(key: string, force = false): boolean {
 		const previous = lastPersisted.get(key)
 		const content = render(key, previous)
-		if (content === undefined || content === previous) return
+		if (content === undefined) return false
+		if (!force && content === previous) return false
 		lastPersisted.set(key, content)
 		pi.sendMessage(
 			{
@@ -128,6 +146,7 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 			},
 			{ deliverAs: "steer" },
 		)
+		return true
 	}
 
 	const initFromHistory = (_event: unknown, ctx: ExtensionContext) => {
@@ -147,15 +166,34 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 		agentBusy = Math.max(0, agentBusy - 1)
 	})
 	pi.on("agent_settled", (_event, ctx) => {
-		if (agentBusy > 0 || pendingFlush.size === 0) return
+		if (agentBusy > 0) return
+		if (pendingFlush.size === 0 && forceReemit.size === 0) return
 		// Skip aborted runs: the flushed block would become the newest turn
 		// start and steal the interrupted turn's slot in a compaction cut.
 		if (latestRunTailIsAborted(ctx)) return
+		// Change-flushes first: a store change between compact and settle
+		// already re-persists the newest bytes, satisfying forceReemit.
 		const keys = [...pendingFlush]
 		pendingFlush.clear()
 		for (const key of keys) {
-			persistIfChanged(key)
+			if (persistIfChanged(key, forceReemit.has(key))) forceReemit.delete(key)
 		}
+		for (const key of [...forceReemit]) {
+			if (persistIfChanged(key, true)) forceReemit.delete(key)
+		}
+	})
+
+	// Compacted-away copies: master re-rendered state after every compacted
+	// summary by construction; persist-on-change blocks are ordinary history
+	// and eligible cuts. When the newest copy left the branch, mark the key so
+	// the next settled flush re-emits (bytes unchanged is the desired
+	// outcome). Emission stays at the settle boundary — writing here would be
+	// the mid-run send the module comment forbids.
+	pi.on("session_compact", (_event, ctx) => {
+		const key = currentSessionKey
+		if (!key || !lastPersisted.get(key)) return
+		if (newestStateBlockSurvivesInBranch(ctx, customType)) return
+		forceReemit.add(key)
 	})
 
 	subscribe((key?: string) => {
@@ -164,7 +202,7 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 			pendingFlush.add(effectiveKey)
 			return
 		}
-		persistIfChanged(effectiveKey)
+		persistIfChanged(effectiveKey, forceReemit.delete(effectiveKey))
 	})
 
 	// Strip-only context pass: drop every block of this customType except the
