@@ -26,6 +26,15 @@ export const DIGEST_MAX_FACTS = 5
 /** Hard cap on digest size, estimated tokens (chars/4, repo convention). */
 export const DIGEST_MAX_TOKENS = 2_000
 
+/**
+ * Max characters per capture-extraction window — the proven-safe extraction
+ * size (small windows retain needles; the dilution experiment showed
+ * bundled content drops them). A single message over the budget extracts
+ * whole: it is coherent context and within the gateway's comfortable
+ * range. See .kimchi/plans/capture-windowing-design.md.
+ */
+export const MEMORY_CAPTURE_WINDOW_CHARS = 2_000
+
 /** Max NEW facts per progressive turn recall (per re-evaluation). */
 export const TURN_RECALL_MAX_FACTS = 3
 
