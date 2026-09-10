@@ -17,8 +17,8 @@
  */
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { loadConfig, type KimchiConfig } from "../../config.js"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
+import { type KimchiConfig, loadConfig } from "../../config.js"
 
 export const MEMORY_EMBEDDING_MODEL = "text-embedding-3-small"
 export const MEMORY_EMBEDDING_DIMS = 1536
@@ -69,10 +69,7 @@ function resolveEndpoint(
  * Build the mem0 MemoryConfig for a backend. Pure — safe to call under
  * vitest on Node.
  */
-export function buildMemoryConfig(
-	options: MemoryBackendOptions,
-	config: KimchiConfig = loadConfig(),
-): MemoryConfig {
+export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEndpoint(options.embedder, gateway, MEMORY_EMBEDDING_MODEL)
 	const llm = resolveEndpoint(options.llm, gateway, MEMORY_EXTRACTION_MODEL)
@@ -134,9 +131,7 @@ export async function createMemoryBackend(
 		["llm", llm],
 	] as const) {
 		if (!ep.apiKey) {
-			throw new Error(
-				`memory backend ${name} requires an API key — set KIMCHI_API_KEY or run \`kimchi setup\``,
-			)
+			throw new Error(`memory backend ${name} requires an API key — set KIMCHI_API_KEY or run \`kimchi setup\``)
 		}
 	}
 	// mem0's OSS telemetry phones home to PostHog unless MEM0_TELEMETRY is
