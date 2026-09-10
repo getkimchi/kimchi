@@ -19,6 +19,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
 import { type KimchiConfig, loadConfig } from "../../config.js"
+import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
 export const MEMORY_EMBEDDING_MODEL = "text-embedding-3-small"
 export const MEMORY_EMBEDDING_DIMS = 1536
@@ -81,6 +82,19 @@ export function memoryDbPath(scopeId: string): string {
 		throw new Error(`invalid memory scope id: ${JSON.stringify(scopeId)} (allowed: ${SCOPE_ID_RE})`)
 	}
 	return join(defaultMemoryDir(), scopeId, "memory.db")
+}
+
+/**
+ * Per-project store path: `projects/<owner>/<name>/memory.db` under the
+ * memory root. Project scope ids are `owner/name` segments — validated by
+ * sanitizeScopeId (the strict personal regex does not allow slashes).
+ */
+export function projectDbPath(scopeId: string): string {
+	const sanitized = sanitizeScopeId(scopeId)
+	if (!sanitized) {
+		throw new Error(`invalid project scope id: ${JSON.stringify(scopeId)} (allowed segments: ${PROJECT_SEGMENT_RE})`)
+	}
+	return join(defaultMemoryDir(), "projects", ...sanitized.split("/"), "memory.db")
 }
 
 /**

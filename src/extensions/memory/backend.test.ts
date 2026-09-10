@@ -11,6 +11,7 @@ import {
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
 	memoryDbPath,
+	projectDbPath,
 	resolveExtractionModel,
 } from "./backend.js"
 
@@ -102,6 +103,17 @@ describe("memory paths", () => {
 		expect(historyDbPath("/a/b/memory.db")).toBe("/a/b/memory-history.db")
 		expect(historyDbPath("/tmp/mem.db")).toBe("/tmp/mem-history.db")
 		expect(historyDbPath("/tmp/nosuffix")).toBe("/tmp/nosuffix-history.db")
+	})
+
+	it("places project stores under projects/<owner>/<name>/", () => {
+		expect(projectDbPath("castai/kimchi")).toBe(`${defaultMemoryDir()}/projects/castai/kimchi/memory.db`)
+		expect(projectDbPath("myrepo")).toBe(`${defaultMemoryDir()}/projects/myrepo/memory.db`)
+	})
+
+	it("rejects invalid project scope ids", () => {
+		expect(() => projectDbPath("../evil")).toThrow(/invalid project scope id/)
+		expect(() => projectDbPath("a/b/c/d/e")).toThrow(/invalid project scope id/)
+		expect(() => projectDbPath("")).toThrow(/invalid project scope id/)
 	})
 })
 
