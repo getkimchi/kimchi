@@ -28,13 +28,17 @@ export function wireMemoryCapture(pi: ExtensionAPI): void {
 }
 
 export function extractMessages(entries: readonly SessionEntry[]): CaptureMessage[] {
+	// User-only: assistant content is excluded by the extraction prompt
+	// anyway ("anything only the assistant said"), and carrying it costs
+	// ~half the extraction tokens while diluting needles — the proven
+	// failure mode. The benchmark's validated framing is user speech.
 	const messages: CaptureMessage[] = []
 	for (const entry of entries) {
 		if (entry.type !== "message") continue
 		const message = entry.message
-		if (message.role !== "user" && message.role !== "assistant") continue
+		if (message.role !== "user") continue
 		const content = messageText(message.content)
-		if (content.trim()) messages.push({ role: message.role, content })
+		if (content.trim()) messages.push({ role: "user", content })
 	}
 	return messages
 }

@@ -1,4 +1,6 @@
+import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import { extractMessages } from "./capture.js"
 import {
 	type CaptureMessage,
 	chatJson,
@@ -6,23 +8,64 @@ import {
 	messageHash,
 	parseFactsResponse,
 	parseIdArray,
-	windowMessages,
+	windowByBudget,
 } from "./capture-worker.js"
 
 const msg = (role: "user" | "assistant", content: string): CaptureMessage => ({ role, content })
 
-describe("windowMessages", () => {
-	it("chunks into windows of at most 4 messages", () => {
-		const messages = Array.from({ length: 9 }, (_, i) => msg("user", `m${i}`))
-		const windows = windowMessages(messages)
-		expect(windows).toHaveLength(3)
-		expect(windows[0]).toHaveLength(4)
-		expect(windows[1]).toHaveLength(4)
-		expect(windows[2]).toHaveLength(1)
+describe("windowByBudget", () => {
+	it("packs messages up to the char budget", () => {
+		// 3 × 700 chars, budget 2000: 700+700 fits, +700 overflows.
+		const messages = [msg("user", "a".repeat(700)), msg("user", "b".repeat(700)), msg("user", "c".repeat(700))]
+		const windows = windowByBudget(messages, 2000)
+		expect(windows).toHaveLength(2)
+		expect(windows[0]).toHaveLength(2)
+		expect(windows[1]).toHaveLength(1)
+	})
+
+	it("extracts an oversized message alone", () => {
+		const messages = [msg("user", "x".repeat(5000)), msg("user", "y".repeat(100))]
+		const windows = windowByBudget(messages, 2000)
+		expect(windows).toHaveLength(2)
+		expect(windows[0]).toEqual([messages[0]])
+		expect(windows[1]).toEqual([messages[1]])
+	})
+
+	it("preserves chronological order across windows", () => {
+		const messages = Array.from({ length: 6 }, (_, i) => msg("user", `m${i}-`.repeat(60)))
+		expect(windowByBudget(messages, 500).flat()).toEqual(messages)
+	})
+
+	it("uses the configured budget by default", () => {
+		const messages = Array.from({ length: 5 }, () => msg("user", "z".repeat(600)))
+		// 600 each, 2000 default: three fit (1800), the fourth overflows.
+		expect(windowByBudget(messages).map((w) => w.length)).toEqual([3, 2])
 	})
 
 	it("returns no windows for empty input", () => {
-		expect(windowMessages([])).toEqual([])
+		expect(windowByBudget([], 2000)).toEqual([])
+	})
+})
+
+describe("extractMessages (user-only)", () => {
+	// Minimal message-entry fixtures — the SessionEntry union's other
+	// members are irrelevant to the filter under test.
+	const msgEntry = (role: string, content: unknown) =>
+		({ type: "message", message: { role, content } }) as unknown as SessionEntry
+
+	it("keeps only non-blank user messages", () => {
+		const messages = extractMessages([
+			msgEntry("user", "I prefer pnpm"),
+			msgEntry("assistant", "Noted!"),
+			msgEntry("user", "   "),
+			{ type: "model_change" } as unknown as SessionEntry,
+		])
+		expect(messages).toEqual([{ role: "user", content: "I prefer pnpm" }])
+	})
+
+	it("extracts text from block content", () => {
+		const entry = msgEntry("user", [{ type: "text", text: "blocky " }, "plain"])
+		expect(extractMessages([entry])).toEqual([{ role: "user", content: "blocky plain" }])
 	})
 })
 
