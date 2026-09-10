@@ -37,10 +37,7 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 const KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
 const ACTIVE_IDS = KNOWN_IDS.filter((id) => MODEL_CAPABILITIES.get(id) !== "ignored")
 
-function metadata(
-	slug: string,
-	overrides: Partial<ModelMetadata> & { status?: ModelMetadata["status"]; replacement?: string } = {},
-): ModelMetadata {
+function metadata(slug: string, overrides: Partial<ModelMetadata> = {}): ModelMetadata {
 	return {
 		slug,
 		display_name: "",
@@ -165,18 +162,18 @@ describe("ModelRegistry — ignored models", () => {
 
 describe("ModelRegistry — sunset models", () => {
 	it("excludes sunset models from getAll() and getModelsWithCapabilities()", () => {
-		const registry = new ModelRegistry([metadata("some-model", { status: "sunset" })])
+		const registry = new ModelRegistry([metadata("some-model", { sunset_at: "2020-01-01T00:00:00Z" })])
 		expect(registry.getAll()).toHaveLength(0)
 		expect(registry.getModelsWithCapabilities()).toHaveLength(0)
 	})
 
 	it("does not emit warnings for sunset models", () => {
-		const registry = new ModelRegistry([metadata("some-model", { status: "sunset" })])
+		const registry = new ModelRegistry([metadata("some-model", { sunset_at: "2020-01-01T00:00:00Z" })])
 		expect(registry.warnings).toHaveLength(0)
 	})
 
 	it("sunset model is excluded even when it has a capabilities entry", () => {
-		const registry = new ModelRegistry([metadata(ACTIVE_IDS[0], { status: "sunset" })])
+		const registry = new ModelRegistry([metadata(ACTIVE_IDS[0], { sunset_at: "2020-01-01T00:00:00Z" })])
 		expect(registry.getAll().map((m) => m.id)).not.toContain(ACTIVE_IDS[0])
 		expect(registry.getModelsWithCapabilities().map((m) => m.id)).not.toContain(ACTIVE_IDS[0])
 		expect(registry.warnings).toHaveLength(0)
@@ -184,27 +181,47 @@ describe("ModelRegistry — sunset models", () => {
 })
 
 describe("ModelRegistry — deprecated models", () => {
-	it("includes deprecated models in getAll()", () => {
-		const registry = new ModelRegistry([metadata("some-model", { status: "deprecated" })])
+	it("includes announced-deprecated models in getAll()", () => {
+		const registry = new ModelRegistry([metadata("some-model", { deprecated_at: "2099-01-01T00:00:00Z" })])
 		expect(registry.getAll().map((m) => m.id)).toContain("some-model")
 	})
 
+	it("excludes past-deprecated models from getAll() and getModelsWithCapabilities()", () => {
+		const registry = new ModelRegistry([metadata("gone-model", { deprecated_at: "2020-01-01T00:00:00Z" })])
+		expect(registry.getAll()).toHaveLength(0)
+		expect(registry.getModelsWithCapabilities()).toHaveLength(0)
+	})
+
 	it("emits a deprecated_model warning with modelId", () => {
-		const registry = new ModelRegistry([metadata("some-model", { status: "deprecated" })])
+		const registry = new ModelRegistry([metadata("some-model", { deprecated_at: "2099-01-01T00:00:00Z" })])
 		const warning = registry.warnings.find((w) => w.modelId === "some-model")
 		expect(warning).toBeDefined()
 		expect(warning?.kind).toBe("deprecated_model")
 	})
 
 	it("emits deprecated_model warning with replacement when provided", () => {
-		const registry = new ModelRegistry([metadata("old-model", { status: "deprecated", replacement: "new-model" })])
+		const registry = new ModelRegistry([
+			metadata("old-model", { deprecated_at: "2099-01-01T00:00:00Z", replacement_model: "new-model" }),
+		])
 		const warning = registry.warnings.find((w) => w.modelId === "old-model")
 		expect(warning?.kind).toBe("deprecated_model")
 		expect(warning?.replacement).toBe("new-model")
 	})
 
+	it("falls back to the first alternative slug when replacement_model is absent", () => {
+		const registry = new ModelRegistry([
+			metadata("old-model", {
+				deprecated_at: "2099-01-01T00:00:00Z",
+				alternatives: [{ slug: "alt-model", reason: "closest tier" }],
+			}),
+		])
+		const warning = registry.warnings.find((w) => w.modelId === "old-model")
+		expect(warning?.kind).toBe("deprecated_model")
+		expect(warning?.replacement).toBe("alt-model")
+	})
+
 	it("deprecated model without replacement emits warning with undefined replacement", () => {
-		const registry = new ModelRegistry([metadata("old-model", { status: "deprecated" })])
+		const registry = new ModelRegistry([metadata("old-model", { deprecated_at: "2099-01-01T00:00:00Z" })])
 		const warning = registry.warnings.find((w) => w.modelId === "old-model")
 		expect(warning?.kind).toBe("deprecated_model")
 		expect(warning?.replacement).toBeUndefined()
@@ -212,7 +229,7 @@ describe("ModelRegistry — deprecated models", () => {
 
 	it("deprecated model with capabilities uses those capabilities", () => {
 		const id = ACTIVE_IDS[0]
-		const registry = new ModelRegistry([metadata(id, { status: "deprecated" })])
+		const registry = new ModelRegistry([metadata(id, { deprecated_at: "2099-01-01T00:00:00Z" })])
 		const model = registry.getAll().find((m) => m.id === id)
 		const entry = MODEL_CAPABILITIES.get(id)
 		if (!entry || entry === "ignored") return
@@ -221,7 +238,7 @@ describe("ModelRegistry — deprecated models", () => {
 	})
 
 	it("deprecated model without capabilities uses generic capabilities", () => {
-		const registry = new ModelRegistry([metadata("unknown-deprecated", { status: "deprecated" })])
+		const registry = new ModelRegistry([metadata("unknown-deprecated", { deprecated_at: "2099-01-01T00:00:00Z" })])
 		const model = registry.getAll().find((m) => m.id === "unknown-deprecated")
 		expect(model?.capabilities.description).toContain("No capability information")
 		expect(registry.getModelsWithCapabilities().map((m) => m.id)).not.toContain("unknown-deprecated")

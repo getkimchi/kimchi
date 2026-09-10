@@ -5,6 +5,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
+import { readModelDeprecations } from "./model-deprecation.js"
 import {
 	injectAutoModel,
 	injectExperimentalProvider,
@@ -773,7 +774,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "sunset",
+			sunset_at: "2020-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -798,7 +799,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "sunset",
+			sunset_at: "2020-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -807,7 +808,9 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("All models from the API are sunset"))
+		expect(consoleWarnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("All models from the API are deprecated or sunset"),
+		)
 		expect(result.models).toHaveLength(0)
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models).toHaveLength(0)
@@ -831,7 +834,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "sunset",
+			sunset_at: "2020-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -845,7 +848,7 @@ describe("updateModelsConfig", () => {
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(before)
 	})
 
-	it("treats models without status field as active (backward compatibility)", async () => {
+	it("treats models without deprecation fields as active", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -867,7 +870,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "deprecated",
+			deprecated_at: "2099-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -882,8 +885,8 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toContain("deprecated-model")
 	})
 
-	it("preserves replacement field on deprecated/sunset models in returned metadata", async () => {
-		const deprecatedWithReplacement = {
+	it("keeps announced-deprecated models, excludes past-deprecated, and persists deprecation to the sidecar", async () => {
+		const announcedModel = {
 			slug: "old-model",
 			display_name: "Old Model",
 			provider: "ai-enabler",
@@ -891,19 +894,28 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "deprecated",
-			replacement: "new-model",
+			deprecated_at: "2099-01-01T00:00:00Z",
+			replacement_model: "new-model",
 		}
+		const pastDeprecatedModel = { ...announcedModel, slug: "gone-model", deprecated_at: "2020-01-01T00:00:00Z" }
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [deprecatedWithReplacement] }),
+			json: async () => ({ models: [announcedModel, pastDeprecatedModel] }),
 		} as Response)
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
+		// Announced models stay available with their deprecation fields intact.
 		const model = result.models.find((m) => m.slug === "old-model")
-		expect(model?.status).toBe("deprecated")
-		expect(model?.replacement).toBe("new-model")
+		expect(model?.deprecated_at).toBe("2099-01-01T00:00:00Z")
+		expect(model?.replacement_model).toBe("new-model")
+		// Past-deprecated models are excluded from the active list.
+		expect(result.models.some((m) => m.slug === "gone-model")).toBe(false)
+
+		// Sidecar holds both entries: vanishing models keep replacement info.
+		const sidecar = readModelDeprecations(modelsJsonPath)
+		expect(sidecar.get("old-model")?.replacement_model).toBe("new-model")
+		expect(sidecar.get("gone-model")?.replacement_model).toBe("new-model")
 	})
 })
 

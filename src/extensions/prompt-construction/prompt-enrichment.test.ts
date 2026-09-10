@@ -10,7 +10,9 @@ import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-sk
 import * as startupContext from "../../startup-context.js"
 import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
+import * as multiModelModule from "../multi-model.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import * as modelRolesModule from "../orchestration/model-roles.js"
 import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
@@ -565,7 +567,10 @@ describe("model role startup warnings", () => {
 	})
 
 	it("keeps unavailable role warnings when Kimchi auth is already configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "test-key" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(config, "loadConfig").mockReturnValue({
+			apiKey: "test-key",
+			agentConfigDir: "",
+		} as ReturnType<typeof config.loadConfig>)
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("different-model")])
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const pi = {
@@ -614,10 +619,22 @@ function writeRawSkill(path: string, content: string): void {
 	writeFileSync(path, content, "utf-8")
 }
 
+// ISO timestamp N days out from test execution — deprecation fixtures must stay
+// inside the 30-day session-start notice window regardless of when tests run.
+function isoWithinDays(days: number): string {
+	return new Date(Date.now() + days * 86_400_000).toISOString()
+}
+
 describe("deprecated model notification", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
 		_resetDeprecatedNotificationTracking()
+		// Default to single-model mode: the ambient multiModel default is true,
+		// which would redirect session_start warnings to the orchestrator role
+		// model instead of ctx.model. Tests here control the context explicitly.
+		vi.spyOn(multiModelModule, "setAndPersistMultiModelEnabled").mockReturnValue({
+			value: false,
+		} as unknown as ReturnType<typeof multiModelModule.setAndPersistMultiModelEnabled>)
 	})
 
 	const deprecatedModelId = "kimi-k2.6-old"
@@ -646,6 +663,7 @@ describe("deprecated model notification", () => {
 			sessionStart: handlers.get("session_start"),
 			sessionShutdown: handlers.get("session_shutdown"),
 			modelSelect: handlers.get("model_select"),
+			modelInput: handlers.get("input"),
 		}
 	}
 
@@ -661,12 +679,12 @@ describe("deprecated model notification", () => {
 			{
 				slug: deprecatedModelId,
 				display_name: "Kimi K2.6 Old",
-				status: "deprecated",
-				replacement: replacementModelId,
+				deprecated_at: isoWithinDays(14),
+				replacement_model: replacementModelId,
 				...modelProps,
 			},
-			{ slug: "active-model", display_name: "Active Model", status: "active", ...modelProps },
-			{ slug: replacementModelId, display_name: "Kimi K2.7", status: "active", ...modelProps },
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
+			{ slug: replacementModelId, display_name: "Kimi K2.7", ...modelProps },
 		]
 		setupAvailableModels(models)
 
@@ -676,10 +694,8 @@ describe("deprecated model notification", () => {
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = ctx.ui.notify as Mock
-		expect(notifyMock.mock.calls.length).toBe(1)
-		expect(notifyMock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated. Switch to "${replacementModelId}" for better performance.`,
+		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Switch to "${replacementModelId}" for better performance.`,
 			"warning",
 		)
 	})
@@ -693,8 +709,8 @@ describe("deprecated model notification", () => {
 			limits: { context_window: 128000, max_output_tokens: 8192 },
 		}
 		const models: ModelMetadata[] = [
-			{ slug: deprecatedModelId, display_name: "Kimi K2.6 Old", status: "deprecated", ...modelProps },
-			{ slug: "active-model", display_name: "Active Model", status: "active", ...modelProps },
+			{ slug: deprecatedModelId, display_name: "Kimi K2.6 Old", deprecated_at: isoWithinDays(14), ...modelProps },
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
 		]
 		setupAvailableModels(models)
 
@@ -704,10 +720,8 @@ describe("deprecated model notification", () => {
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = ctx.ui.notify as Mock
-		expect(notifyMock.mock.calls.length).toBe(1)
-		expect(notifyMock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated. It may be removed in a future update.`,
+		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
 			"warning",
 		)
 	})
@@ -720,9 +734,7 @@ describe("deprecated model notification", () => {
 			is_serverless: true,
 			limits: { context_window: 128000, max_output_tokens: 8192 },
 		}
-		const models: ModelMetadata[] = [
-			{ slug: "active-model", display_name: "Active Model", status: "active", ...modelProps },
-		]
+		const models: ModelMetadata[] = [{ slug: "active-model", display_name: "Active Model", ...modelProps }]
 		setupAvailableModels(models)
 
 		const { sessionStart } = buildExtensionWithHandlers()
@@ -731,11 +743,10 @@ describe("deprecated model notification", () => {
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = ctx.ui.notify as Mock
-		expect(notifyMock.mock.calls.length).toBe(0)
+		expect((ctx.ui.notify as Mock).mock.calls.length).toBe(0)
 	})
 
-	it("only fires notification once per session", async () => {
+	it("notifies once per session per model — repeats do not re-fire", async () => {
 		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
 			provider: "kimchi-dev",
 			reasoning: false,
@@ -747,24 +758,23 @@ describe("deprecated model notification", () => {
 			{
 				slug: deprecatedModelId,
 				display_name: "Kimi K2.6 Old",
-				status: "deprecated",
-				replacement: replacementModelId,
+				deprecated_at: isoWithinDays(14),
+				replacement_model: replacementModelId,
 				...modelProps,
 			},
-			{ slug: "active-model", display_name: "Active Model", status: "active", ...modelProps },
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
 		]
 		setupAvailableModels(models)
 
-		const { sessionStart } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
+		const { sessionStart, modelInput } = buildExtensionWithHandlers()
+		if (!sessionStart || !modelInput) throw new Error("session_start/input handlers not registered")
 
-		// First session
-
+		// Session start notifies once; duplicate session starts and the first
+		// user message must not re-fire the per-model notification.
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
-
-		// Second session_start for same session should not fire again
 		await sessionStart({}, ctx)
+		await modelInput({ source: "interactive" }, ctx)
 
 		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
@@ -782,29 +792,30 @@ describe("deprecated model notification", () => {
 			{
 				slug: deprecatedModelId,
 				display_name: "Kimi K2.6 Old",
-				status: "deprecated",
-				replacement: replacementModelId,
+				deprecated_at: isoWithinDays(14),
+				replacement_model: replacementModelId,
 				...modelProps,
 			},
-			{ slug: "active-model", display_name: "Active Model", status: "active", ...modelProps },
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
 		]
 		setupAvailableModels(models)
 
-		const { sessionStart, sessionShutdown } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
+		const { sessionStart, sessionShutdown, modelInput } = buildExtensionWithHandlers()
+		if (!sessionStart || !modelInput) throw new Error("session_start/input handlers not registered")
 		if (!sessionShutdown) throw new Error("session_shutdown handler not registered")
 
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 
-		// Fire session_start
+		// First run: notification fires at session start.
 		await sessionStart({}, ctx)
-		// Fire session_shutdown (cleans up the tracking for this session)
+		await modelInput({ source: "interactive" }, ctx)
+		// Shutdown clears the per-session tracking...
 		await sessionShutdown({}, ctx)
-		// Fire session_start again with same session ID — should notify again
+		// ...so restarting and messaging notifies again.
 		await sessionStart({}, ctx)
+		await modelInput({ source: "interactive" }, ctx)
 
 		const notifyMock = ctx.ui.notify as Mock
-		// Should have fired twice — once at each session_start
 		expect(notifyMock.mock.calls.length).toBe(2)
 	})
 
@@ -820,11 +831,11 @@ describe("deprecated model notification", () => {
 			{
 				slug: deprecatedModelId,
 				display_name: "Kimi K2.6 Old",
-				status: "deprecated",
-				replacement: "nonexistent-model",
+				deprecated_at: isoWithinDays(14),
+				replacement_model: "nonexistent-model",
 				...modelProps,
 			},
-			{ slug: "active-model", display_name: "Active Model", status: "active", ...modelProps },
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
 		]
 		setupAvailableModels(models)
 
@@ -834,10 +845,422 @@ describe("deprecated model notification", () => {
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
+		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			"warning",
+		)
+	})
+	it("warns once per deprecated model while cycling, even when cycling back and forth", async () => {
+		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
+			provider: "kimchi-dev",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 128000, max_output_tokens: 8192 },
+		}
+		const models: ModelMetadata[] = [
+			{
+				slug: deprecatedModelId,
+				display_name: "Kimi K2.6 Old",
+				deprecated_at: isoWithinDays(14),
+				...modelProps,
+			},
+			{
+				slug: "kimi-k2.5-old",
+				display_name: "Kimi K2.5 Old",
+				deprecated_at: isoWithinDays(14),
+				...modelProps,
+			},
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
+		]
+		setupAvailableModels(models)
+
+		const { sessionStart, modelSelect } = buildExtensionWithHandlers()
+		if (!sessionStart || !modelSelect) throw new Error("session_start/model_select handlers not registered")
+
+		// Session starts on an active model — nothing notified.
+		const startCtx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
+		await sessionStart({}, startCtx)
+		expect((startCtx.ui.notify as Mock).mock.calls.length).toBe(0)
+
+		// Cycling onto a deprecated model notifies once.
+		const cycleOneCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
+		await modelSelect({ source: "cycle" }, cycleOneCtx)
+		expect(cycleOneCtx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			"warning",
+		)
+
+		// Cycling back to a non-deprecated model notifies nothing.
+		const cycleAwayCtx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
+		await modelSelect({ source: "cycle" }, cycleAwayCtx)
+		expect((cycleAwayCtx.ui.notify as Mock).mock.calls.length).toBe(0)
+
+		// Cycling back onto the same deprecated model is deduplicated.
+		const cycleBackCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
+		await modelSelect({ source: "cycle" }, cycleBackCtx)
+		expect((cycleBackCtx.ui.notify as Mock).mock.calls.length).toBe(0)
+
+		// A different deprecated model gets its own warning.
+		const cycleTwoCtx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.5-old" } })
+		await modelSelect({ source: "cycle" }, cycleTwoCtx)
+		expect(cycleTwoCtx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "kimi-k2.5-old" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			"warning",
+		)
+	})
+
+	it("warns on deprecated model switches made mid-conversation, at most once per model", async () => {
+		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
+			provider: "kimchi-dev",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 128000, max_output_tokens: 8192 },
+		}
+		const models: ModelMetadata[] = [
+			{
+				slug: deprecatedModelId,
+				display_name: "Kimi K2.6 Old",
+				deprecated_at: isoWithinDays(14),
+				...modelProps,
+			},
+			{
+				slug: "kimi-k2.5-old",
+				display_name: "Kimi K2.5 Old",
+				deprecated_at: isoWithinDays(14),
+				...modelProps,
+			},
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
+		]
+		setupAvailableModels(models)
+
+		const { sessionStart, modelSelect, modelInput } = buildExtensionWithHandlers()
+		if (!sessionStart || !modelSelect || !modelInput)
+			throw new Error("session_start/model_select/input handlers not registered")
+
+		// Session starts on an active model and the first user message is sent —
+		// the conversation is underway.
+		const firstCtx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
+		await sessionStart({}, firstCtx)
+		await modelInput({ source: "interactive" }, firstCtx)
+		expect((firstCtx.ui.notify as Mock).mock.calls.length).toBe(0)
+
+		// Switching to a deprecated model mid-conversation still warns once —
+		// the user should know the model they just picked is retiring.
+		const switchCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
+		await modelSelect({ source: "cycle" }, switchCtx)
+		expect(switchCtx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			"warning",
+		)
+
+		// Switching back and forth does not spam: the per-model warning already fired.
+		const switchBackCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
+		await modelSelect({ source: "cycle" }, switchBackCtx)
+		expect((switchBackCtx.ui.notify as Mock).mock.calls.length).toBe(0)
+	})
+	it("warns at session start for the deprecated multi-model orchestrator model", async () => {
+		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
+			provider: "kimchi-dev",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 128000, max_output_tokens: 8192 },
+		}
+		const models: ModelMetadata[] = [
+			{
+				slug: deprecatedModelId,
+				display_name: "Kimi K2.6 Old",
+				deprecated_at: isoWithinDays(14),
+				...modelProps,
+			},
+			{ slug: "active-model", display_name: "Active Model", ...modelProps },
+		]
+		setupAvailableModels(models)
+		// Multi-model mode: the session starts on an active model but the
+		// orchestrator role model is announced-deprecated. The warning must
+		// still fire — it targets the model the session will actually run on.
+		vi.spyOn(multiModelModule, "setAndPersistMultiModelEnabled").mockReturnValue({
+			value: true,
+		} as unknown as ReturnType<typeof multiModelModule.setAndPersistMultiModelEnabled>)
+		vi.spyOn(modelRolesModule, "getOrchestratorModelRef").mockReturnValue(`kimchi-dev/${deprecatedModelId}`)
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
+		await sessionStart({}, ctx)
+
+		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			"warning",
+		)
+	})
+
+	it("does not warn when the retirement date is beyond the 30-day notice window", async () => {
+		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
+			provider: "kimchi-dev",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 128000, max_output_tokens: 8192 },
+		}
+		const models: ModelMetadata[] = [
+			{
+				slug: "claude-sonnet-5",
+				display_name: "Claude Sonnet 5",
+				deprecated_at: isoWithinDays(365),
+				...modelProps,
+			},
+		]
+		setupAvailableModels(models)
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev/anthropic", id: "claude-sonnet-5" } })
+		await sessionStart({}, ctx)
+
+		expect((ctx.ui.notify as Mock).mock.calls.length).toBe(0)
+	})
+})
+
+describe("orchestrator default remap on session_start", () => {
+	let dir: string
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-remap-"))
+		vi.restoreAllMocks()
+	})
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	function setupAvailableModels(models: readonly ModelMetadata[]) {
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue(models)
+	}
+
+	function buildExtensionWithHandlers() {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const pi = {
+			appendEntry: () => {},
+			registerFlag: () => {},
+			registerCommand: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: () => false,
+		} as unknown as ExtensionAPI
+		promptEnrichmentExtension([])(pi)
+		return {
+			handlers,
+			sessionStart: handlers.get("session_start"),
+		}
+	}
+
+	function remapConfigMock(agentDir: string) {
+		vi.spyOn(config, "loadConfig").mockReturnValue({
+			apiKey: "test-key",
+			agentConfigDir: agentDir,
+			llmEndpoint: "",
+			customLlmEndpoint: undefined,
+			maxToolResultChars: 0,
+			mcpSearchLimit: 5,
+			mcpSearch: {
+				strategy: "bm25" as const,
+				bm25K1: 1.2,
+				bm25B: 0.75,
+				fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+			},
+			onboarding: {},
+			deviceId: "test",
+		})
+	}
+
+	function availableMetadata(slug: string): ModelMetadata {
+		return {
+			slug,
+			display_name: slug,
+			provider: "kimchi-dev",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 128000, max_output_tokens: 8192 },
+		}
+	}
+
+	it("remaps the default orchestrator to the sidecar replacement when the default is unavailable", async () => {
+		writeFileSync(
+			join(dir, "model-deprecations.json"),
+			JSON.stringify({ "kimi-k2.7": { deprecated_at: "2025-01-01T00:00:00Z", replacement_model: "kimi-k3" } }),
+		)
+		remapConfigMock(dir)
+		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
+		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
+		setupAvailableModels([availableMetadata("kimi-k3"), availableMetadata("minimax-m3")])
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
+		await sessionStart({}, ctx)
+
+		expect(saveSpy).toHaveBeenCalledTimes(1)
+		expect(saveSpy.mock.calls[0][0].orchestrator).toBe("kimchi-dev/kimi-k3")
 		const notifyMock = ctx.ui.notify as Mock
-		expect(notifyMock.mock.calls.length).toBe(1)
+		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining('Remapped to "kimchi-dev/kimi-k3"'), "warning")
+	})
+
+	it("respects a user-configured orchestrator override", async () => {
+		writeFileSync(
+			join(dir, "model-deprecations.json"),
+			JSON.stringify({ "kimi-k2.7": { deprecated_at: "2025-01-01T00:00:00Z", replacement_model: "kimi-k3" } }),
+		)
+		remapConfigMock(dir)
+		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({
+			...modelRolesModule.DEFAULT_MODEL_ROLES,
+			orchestrator: "kimchi-dev/custom-model",
+		})
+		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
+		setupAvailableModels([availableMetadata("kimi-k3")])
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
+		await sessionStart({}, ctx)
+
+		expect(saveSpy).not.toHaveBeenCalled()
+	})
+
+	it("does nothing when the default orchestrator is still available", async () => {
+		remapConfigMock(dir)
+		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
+		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
+		setupAvailableModels([availableMetadata("kimi-k2.7")])
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
+		await sessionStart({}, ctx)
+
+		expect(saveSpy).not.toHaveBeenCalled()
+	})
+
+	it("does nothing when the sidecar records no available replacement", async () => {
+		writeFileSync(
+			join(dir, "model-deprecations.json"),
+			JSON.stringify({ "kimi-k2.7": { deprecated_at: "2025-01-01T00:00:00Z" } }),
+		)
+		remapConfigMock(dir)
+		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
+		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
+		setupAvailableModels([availableMetadata("kimi-k3")])
+
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
+		await sessionStart({}, ctx)
+
+		expect(saveSpy).not.toHaveBeenCalled()
+	})
+})
+
+describe("retired model substitution notification", () => {
+	// The gateway annotates transparently rewritten responses with
+	// X-Model-Requested / X-Model-Actual (+ Deprecation/Sunset HTTP-dates).
+	// The warning is driven purely by those headers — no sidecar involved.
+	const retiredModelId = "glm-5.2-fp8"
+	const replacementModelId = "glm-5.3"
+	const sunsetDate = new Date(Date.now() + 30 * 86_400_000)
+
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		_resetDeprecatedNotificationTracking()
+	})
+
+	function buildExtensionWithHandlers() {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const pi = {
+			appendEntry: () => {},
+			registerFlag: () => {},
+			registerCommand: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: () => false,
+		} as unknown as ExtensionAPI
+		promptEnrichmentExtension([])(pi)
+		return { afterProviderResponse: handlers.get("after_provider_response") }
+	}
+
+	function substitutionHeaders(extra: Record<string, string> = {}): Record<string, string> {
+		return {
+			"X-Model-Requested": retiredModelId,
+			"X-Model-Actual": replacementModelId,
+			Sunset: sunsetDate.toUTCString(),
+			...extra,
+		}
+	}
+
+	async function fireSubstitutedResponse(headers: Record<string, string> | Headers) {
+		const { afterProviderResponse } = buildExtensionWithHandlers()
+		if (!afterProviderResponse) throw new Error("after_provider_response handler not registered")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: retiredModelId } })
+		await afterProviderResponse({ type: "after_provider_response", status: 200, headers }, ctx)
+		return ctx.ui.notify as Mock
+	}
+
+	it("warns once that requests are transparently served by the replacement, with the sunset date", async () => {
+		const notifyMock = await fireSubstitutedResponse(substitutionHeaders())
 		expect(notifyMock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated. It may be removed in a future update.`,
+			`Model "${retiredModelId}" is being transparently served as "${replacementModelId}" until ${sunsetDate.toUTCString().slice(0, 10)}. Update your config to "${replacementModelId}".`,
+			"warning",
+		)
+	})
+
+	it("fires once per session and model even when the header appears on every response", async () => {
+		const notifyMock = await fireSubstitutedResponse(substitutionHeaders())
+		expect(notifyMock).toHaveBeenCalledTimes(1)
+		const notifyAgain = await fireSubstitutedResponse(substitutionHeaders())
+		expect(notifyAgain).not.toHaveBeenCalled()
+	})
+
+	it("warns without a sunset clause when the header is absent", async () => {
+		const notifyMock = await fireSubstitutedResponse({
+			"X-Model-Requested": retiredModelId,
+			"X-Model-Actual": replacementModelId,
+		})
+		expect(notifyMock).toHaveBeenCalledWith(
+			`Model "${retiredModelId}" is being transparently served as "${replacementModelId}". Update your config to "${replacementModelId}".`,
+			"warning",
+		)
+	})
+
+	it("stays silent when the gateway echoes the requested model", async () => {
+		const notifyMock = await fireSubstitutedResponse({
+			"X-Model-Requested": retiredModelId,
+			"X-Model-Actual": retiredModelId,
+		})
+		expect(notifyMock).not.toHaveBeenCalled()
+	})
+
+	it("stays silent on plain responses without the gateway headers", async () => {
+		const notifyMock = await fireSubstitutedResponse({})
+		expect(notifyMock).not.toHaveBeenCalled()
+	})
+
+	it("stays silent when only one of the pair is present", async () => {
+		const notifyMock = await fireSubstitutedResponse({ "X-Model-Requested": retiredModelId })
+		expect(notifyMock).not.toHaveBeenCalled()
+	})
+
+	it("reads a Headers instance, the runtime shape pi-ai forwards", async () => {
+		const notifyMock = await fireSubstitutedResponse(new Headers(substitutionHeaders()))
+		expect(notifyMock).toHaveBeenCalledWith(
+			`Model "${retiredModelId}" is being transparently served as "${replacementModelId}" until ${sunsetDate.toUTCString().slice(0, 10)}. Update your config to "${replacementModelId}".`,
 			"warning",
 		)
 	})

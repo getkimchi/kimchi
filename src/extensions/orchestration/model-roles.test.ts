@@ -388,6 +388,27 @@ describe("validateModelRoles", () => {
 		expect(result.unavailable[0].configuredModel).toBe("anthropic/claude-sonnet-4-5")
 	})
 
+	it("includes the supplier replacement hint when the replacements map covers the missing model", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "kimchi-dev/kimi-k2.5",
+		}
+		const replacements = new Map([["kimi-k2.5", "kimi-k3"]])
+		const result = validateModelRoles(roles, available, replacements)
+		expect(result.unavailable).toHaveLength(1)
+		expect(result.unavailable[0].suggestedReplacement).toBe("kimi-k3")
+	})
+
+	it("omits the replacement hint when the replacements map lacks the missing model", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "kimchi-dev/kimi-k2.5",
+		}
+		const result = validateModelRoles(roles, available, new Map())
+		expect(result.unavailable).toHaveLength(1)
+		expect(result.unavailable[0].suggestedReplacement).toBeUndefined()
+	})
+
 	it("flags multiple unavailable roles", () => {
 		const roles: ModelRoles = {
 			orchestrator: "openai/gpt-4o",

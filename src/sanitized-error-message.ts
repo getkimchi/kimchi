@@ -1,4 +1,4 @@
-import { classifyLLMGatewayError, type LLMGatewayErrorReason } from "./llm-gateway-error.js"
+import { classifyLLMGatewayError, type LLMGatewayErrorReason, type ModelRetiredInfo } from "./llm-gateway-error.js"
 
 /**
  * Where the sanitized message is going to be shown. Each context gets a
@@ -65,6 +65,7 @@ const REASON_CATEGORY: Record<LLMGatewayErrorReason, ReasonCategory> = {
 	content_filter: { retryable: false, label: "content filter" },
 	context_window_exceeded: { retryable: false, label: "context window exceeded" },
 	invalid_request_payload: { retryable: false, label: "invalid request payload" },
+	model_retired: { retryable: false, label: "model retired" },
 }
 
 // Auth/billing patterns mirror the classifier's NON_GATEWAY_PROVIDER_VERDICT_RE
@@ -75,18 +76,39 @@ const AUTH_RE = /unauthorized|authentication[_\s]?(?:error|failed)|invalid api k
 const BILLING_RE =
 	/quota|billing|insufficient_quota|out of budget|usage limit|account.{0,40}\b(?:terminated|suspended|deactivated|disabled)\b/i
 
+/** User-facing hint composed from a retired-model verdict's replacement fields. */
+function retiredModelHint(info: ModelRetiredInfo): string {
+	const parts: string[] = []
+	if (info.replacement) parts.push(`The replacement model is "${info.replacement}".`)
+	else if (info.alternatives.length > 0)
+		parts.push(`Available alternatives: ${info.alternatives.map((a) => `"${a}"`).join(", ")}.`)
+	if (info.docs) parts.push(`Details: ${info.docs}`)
+	return parts.join(" ")
+}
+
 /**
- * Resolve a raw provider error to a plain-English category. Classified errors
- * use {@link REASON_CATEGORY}; unclassified errors are split into auth /
- * billing / generic so the user still gets an actionable hint without any
- * provider internals leaking through.
+ * Resolve a raw provider error to a plain-English category plus an optional
+ * retired-model hint. Classified errors use {@link REASON_CATEGORY};
+ * unclassified errors are split into auth / billing / generic so the user
+ * still gets an actionable hint without any provider internals leaking
+ * through.
  */
-function resolveReasonCategory(rawError: string): ReasonCategory {
+function resolveReasonInfo(rawError: string): {
+	readonly category: ReasonCategory
+	readonly retiredHint?: string
+} {
 	const error = classifyLLMGatewayError(rawError)
-	if (error) return REASON_CATEGORY[error.reason]
-	if (AUTH_RE.test(rawError)) return { retryable: false, label: "authentication error" }
-	if (BILLING_RE.test(rawError)) return { retryable: false, label: "billing or quota limit" }
-	return { retryable: false, label: "provider error" }
+	if (error) {
+		const category = REASON_CATEGORY[error.reason]
+		if (error.reason === "model_retired" && error.modelRetiredInfo) {
+			const hint = retiredModelHint(error.modelRetiredInfo)
+			if (hint) return { category, retiredHint: hint }
+		}
+		return { category }
+	}
+	if (AUTH_RE.test(rawError)) return { category: { retryable: false, label: "authentication error" } }
+	if (BILLING_RE.test(rawError)) return { category: { retryable: false, label: "billing or quota limit" } }
+	return { category: { retryable: false, label: "provider error" } }
 }
 
 const CONTEXT_TAIL: Record<ErrorSurfaceContext, string> = {
@@ -112,7 +134,7 @@ export function formatSanitizedErrorMessage(
 	context: ErrorSurfaceContext,
 	opts: FormatSanitizedErrorOptions,
 ): string {
-	const category = resolveReasonCategory(rawError)
+	const { category, retiredHint } = resolveReasonInfo(rawError)
 	const retryable = opts.retryable ?? category.retryable
 	// Non-retryable errors surface immediately — "exhausted" is meaningless.
 	const didExhaust = retryable ? opts.exhausted : true
@@ -127,7 +149,7 @@ export function formatSanitizedErrorMessage(
 				: " after retries were exhausted"
 			: ""
 
-	return `${head} (${category.label})${retryPart}${CONTEXT_TAIL[context]}`
+	return `${head} (${category.label})${retryPart}${retiredHint ? `. ${retiredHint.replace(/\.$/, "")}` : ""}${CONTEXT_TAIL[context]}`
 }
 
 /**

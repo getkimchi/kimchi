@@ -10,6 +10,9 @@ export interface FakeModel {
 	input?: ("text" | "image")[]
 	contextWindow?: number
 	maxTokens?: number
+	/** Extra fields merged verbatim into this model's /v1/models/metadata entry
+	 * (e.g. deprecation protocol fields: deprecated_at, replacement_model). */
+	metadata?: Record<string, unknown>
 }
 
 export interface FakeToolCall {
@@ -111,6 +114,7 @@ export const DEFAULT_MODEL: Required<FakeModel> = {
 	input: ["text"],
 	contextWindow: 8192,
 	maxTokens: 1024,
+	metadata: {},
 }
 
 /** Fill every optional field of a partial model spec from DEFAULT_MODEL. */
@@ -123,6 +127,7 @@ export function withModelDefaults(model: FakeModel): Required<FakeModel> {
 		input: model.input ?? DEFAULT_MODEL.input,
 		contextWindow: model.contextWindow ?? DEFAULT_MODEL.contextWindow,
 		maxTokens: model.maxTokens ?? DEFAULT_MODEL.maxTokens,
+		metadata: model.metadata ?? {},
 	}
 }
 
@@ -196,7 +201,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 							context_window: model.contextWindow,
 							max_output_tokens: model.maxTokens,
 						},
-						status: "active",
+						...model.metadata,
 					})),
 				})
 				return

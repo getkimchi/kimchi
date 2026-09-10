@@ -9,6 +9,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
@@ -27,6 +28,7 @@ import {
 	DEFAULT_MODEL_ROLES,
 	getModelRoles,
 	type ModelRoles,
+	modelIdFromRef,
 	normalizeRoleModels,
 	type RoleModelAssignment,
 	saveModelRoles,
@@ -35,6 +37,23 @@ import {
 
 function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
 	setProcessOrchestratorRef(sessionId, roles.orchestrator)
+}
+
+/**
+ * Picker tags for a model ref: "unavailable" when the API no longer serves
+ * it (gone from /v1/models/metadata), "deprecated" during the announced
+ * deprecation window. The auto-model pseudo-ref is exempt.
+ */
+export function modelRefTags(
+	ref: string,
+	apiSlugs: ReadonlySet<string>,
+	deprecatedSlugs: ReadonlySet<string>,
+): string[] {
+	if (ref === AUTO_MODEL_REF) return []
+	const slug = modelIdFromRef(ref)
+	if (!apiSlugs.has(slug)) return ["unavailable"]
+	if (deprecatedSlugs.has(slug)) return ["deprecated"]
+	return []
 }
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
@@ -216,6 +235,7 @@ function createToggleSelect(
 	refs: string[],
 	selected: Set<string>,
 	done: (result: ToggleSelectResult) => void,
+	annotate: (ref: string) => string = (ref) => ref,
 ): Component {
 	let cachedLines: string[] | undefined
 	const cursor: { index: number } = { index: 0 }
@@ -287,7 +307,7 @@ function createToggleSelect(
 			const checked = selected.has(ref)
 			const box = checked ? "[x]" : "[ ]"
 			const color = isCursor ? "accent" : "text"
-			add(`${prefix}${theme.fg(color, `${box} ${ref}`)}`)
+			add(`${prefix}${theme.fg(color, `${box} ${annotate(ref)}`)}`)
 		}
 
 		lines.push("")
@@ -338,6 +358,15 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 			}
 			availableModelRefs.sort()
+
+			const apiSlugSet = new Set(apiModels.map((m) => m.slug))
+			const deprecatedSlugs = new Set(
+				apiModels.filter((m) => deriveDeprecationState(m) === "announced").map((m) => m.slug),
+			)
+			const refSuffix = (ref: string): string => {
+				const tags = modelRefTags(ref, apiSlugSet, deprecatedSlugs)
+				return tags.length > 0 ? ` (${tags.join(", ")})` : ""
+			}
 
 			const showMainMenu = async (): Promise<void> => {
 				const roleOptions = ROLE_KEYS.map((key) => formatRoleSummaryBlock(key, roles[key]))
@@ -409,6 +438,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					const tags: string[] = []
 					if (isCurrent) tags.push("current")
 					if (isDefault) tags.push("default")
+					tags.push(...modelRefTags(ref, apiSlugSet, deprecatedSlugs))
 					const suffix = tags.length > 0 ? ` (${tags.join(", ")})` : ""
 					return `${ref}${suffix}`
 				})
@@ -448,7 +478,15 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 
 				const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
-					createToggleSelect(tui, theme, info.label, availableModelRefs, selected, done),
+					createToggleSelect(
+						tui,
+						theme,
+						info.label,
+						availableModelRefs,
+						selected,
+						done,
+						(ref) => `${ref}${refSuffix(ref)}`,
+					),
 				)
 
 				if (result.cancelled) return

@@ -30,6 +30,7 @@ import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -51,11 +52,14 @@ import {
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
+	DEFAULT_MODEL_ROLES,
 	extractCustomConfigs,
 	getModelRoles,
 	getOrchestratorModelId,
 	getOrchestratorModelRef,
 	modelIdFromRef,
+	resetModelRolesCache,
+	saveModelRoles,
 	splitModelRef,
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
@@ -90,8 +94,17 @@ function readGitRemote(cwd: string): string | undefined {
 	}
 }
 
-// Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
+// Tracks `${sessionId} ${modelId}` pairs that already received a deprecation
+// notification, so each model warns at most once per session.
 const deprecatedNotificationFired = new Set<string>()
+
+/**
+ * How close a model's retirement must be (in days) before session-start
+ * warnings fire. Anthropic lifecycle dates run 1–2 years out; curated Kimchi
+ * deprecations run on a 30-day deprecation window. 30 days keeps urgent
+ * notices loud and far-future lifespan announcements silent.
+ */
+const DEPRECATION_NOTIFY_WINDOW_DAYS = 30
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
@@ -218,12 +231,25 @@ export default function (skillPathsFromConfig: string[]) {
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 
-		// Build a map of deprecated model IDs for quick lookup during session_start.
-		const deprecatedWarnings = new Map<string, string | undefined>()
+		// Build a map of deprecated model IDs to their deprecation info for quick
+		// lookup during session_start / model_select.
+		// Only retirements within the notice window produce warnings. The API also
+		// announces Anthropic lifecycle retirements 1–2 years ahead (bare dates, no
+		// curated replacement), and warning about those on every session start is
+		// noise — the picker tags and role-remap logic stay ungated regardless.
+		// Evaluated once per process: the notice window, like the rest of the
+		// catalog snapshot, is startup-bound.
+		const notifyCutoff = Date.now() + DEPRECATION_NOTIFY_WINDOW_DAYS * 86_400_000
+		const deprecatedWarnings = new Map<string, { replacement?: string; deprecatedAt?: string; note?: string }>()
 		for (const w of registry.warnings) {
-			if (w.kind === "deprecated_model") {
-				deprecatedWarnings.set(w.modelId, w.replacement)
-			}
+			if (w.kind !== "deprecated_model") continue
+			const deprecatedAtMs = w.deprecatedAt ? Date.parse(w.deprecatedAt) : undefined
+			if (deprecatedAtMs !== undefined && deprecatedAtMs > notifyCutoff) continue
+			deprecatedWarnings.set(w.modelId, {
+				replacement: w.replacement,
+				deprecatedAt: w.deprecatedAt,
+				note: w.note,
+			})
 		}
 
 		if (!subagentMode) {
@@ -233,37 +259,122 @@ export default function (skillPathsFromConfig: string[]) {
 			// would be misleading noise before the user has a usable model.
 			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
 			if (loadConfig().apiKey && availableIds.size > 0) {
-				const validation = validateModelRoles(getModelRoles(), availableIds)
-				for (const { role, configuredModel } of validation.unavailable) {
+				const replacements = new Map<string, string>()
+				for (const [slug, info] of readModelDeprecations(join(loadConfig().agentConfigDir, "models.json"))) {
+					const replacement = pickReplacementSlug(info)
+					if (replacement) replacements.set(slug, replacement)
+				}
+				const validation = validateModelRoles(getModelRoles(), availableIds, replacements)
+				for (const { role, configuredModel, suggestedReplacement } of validation.unavailable) {
+					const hint = suggestedReplacement ? ` Suggested replacement: "${suggestedReplacement}".` : ""
 					console.warn(
-						`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.`,
+						`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.${hint} Update via /multi-model.`,
 					)
 				}
 			}
-			function notifyIfDeprecated(ctx: ExtensionContext) {
-				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
-				if (ctx.model && deprecatedWarnings.has(ctx.model.id) && !deprecatedNotificationFired.has(sessionId)) {
-					deprecatedNotificationFired.add(sessionId)
-					const replacement = deprecatedWarnings.get(ctx.model.id)
-					const replacementAvailable = replacement && registry.getAll().some((m) => m.id === replacement)
-					const message =
-						replacement && replacementAvailable
-							? `Model "${ctx.model.id}" is deprecated. Switch to "${replacement}" for better performance.`
-							: `Model "${ctx.model.id}" is deprecated. It may be removed in a future update.`
-					ctx.ui?.notify(message, "warning")
+			function deprecationMessage(modelId: string): string | undefined {
+				const info = deprecatedWarnings.get(modelId)
+				if (!info) return undefined
+				const { replacement } = info
+				const datePart = info.deprecatedAt ? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}` : ""
+				const notePart = info.note ? ` Docs: ${info.note}` : ""
+				if (replacement && registry.getAll().some((m) => m.id === replacement)) {
+					return `Model "${modelId}" is deprecated${datePart}. Switch to "${replacement}" for better performance.${notePart}`
 				}
+				return `Model "${modelId}" is deprecated${datePart}. It may be removed in a future update.${notePart}`
+			}
+
+			/**
+			 * The single substitution detector. When the gateway transparently
+			 * rewrites requests for a retired model to its curated replacement, it
+			 * annotates the response with X-Model-Requested / X-Model-Actual (plus
+			 * Deprecation/Sunset HTTP-dates). This works regardless of whether the
+			 * harness ever received a catalog announcement — curation can land at
+			 * cutover with zero announce window — so it is the only substitution
+			 * warning. Header presence is the gateway's own translation signal;
+			 * no sidecar lookup or inference is involved.
+			 */
+			pi.on("after_provider_response", async (event, ctx) => {
+				// pi-ai forwards the raw fetch Headers instance here (not a plain
+				// object), so enumerate via forEach when available.
+				const raw = event.headers ?? {}
+				const headers = new Map<string, string>()
+				if (typeof (raw as unknown as Headers).forEach === "function") {
+					;(raw as unknown as Headers).forEach((value, key) => {
+						headers.set(key.toLowerCase(), value)
+					})
+				} else {
+					for (const [key, value] of Object.entries(raw as Record<string, string>)) {
+						headers.set(key.toLowerCase(), String(value))
+					}
+				}
+				const requested = headers.get("x-model-requested")
+				const actual = headers.get("x-model-actual")
+				if (!requested || !actual || requested === actual) return
+				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
+				const key = `${sessionId} ${requested}::substituted`
+				if (deprecatedNotificationFired.has(key)) return
+				deprecatedNotificationFired.add(key)
+				const sunset = headers.get("sunset")
+				const until = sunset ? ` until ${sunset.slice(0, 10)}` : ""
+				ctx.ui?.notify(
+					`Model "${requested}" is being transparently served as "${actual}"${until}. Update your config to "${actual}".`,
+					"warning",
+				)
+			})
+
+			/** Fires once per model per session — at session start for the effective
+			 * model, and on model_select for user-initiated switches. */
+			function notifyIfDeprecated(ctx: ExtensionContext, modelId: string | undefined): void {
+				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
+				const message = modelId ? deprecationMessage(modelId) : undefined
+				if (!modelId || !message) return
+				const key = `${sessionId} ${modelId}`
+				if (deprecatedNotificationFired.has(key)) return
+				deprecatedNotificationFired.add(key)
+				ctx.ui?.notify(message, "warning")
+			}
+
+			/**
+			 * If the hardcoded default orchestrator model disappeared from the API,
+			 * auto-remap the role to the curator-provided replacement recorded in the
+			 * deprecations sidecar, persist it via settings.json, and notify. A
+			 * user-configured orchestrator override always wins.
+			 */
+			function maybeRemapUnavailableOrchestratorDefault(ctx: ExtensionContext): void {
+				const config = loadConfig()
+				if (!config.apiKey) return
+				const defaultRef = DEFAULT_MODEL_ROLES.orchestrator
+				if (getModelRoles().orchestrator !== defaultRef) return
+				const defaultId = modelIdFromRef(defaultRef)
+				const available = new Set(getAvailableModels().map((m) => m.slug))
+				if (available.size === 0 || available.has(defaultId)) return
+				const info = readModelDeprecations(join(config.agentConfigDir, "models.json")).get(defaultId)
+				const replacement = info ? pickReplacementSlug(info) : undefined
+				if (!replacement || !available.has(replacement)) return
+				const provider = splitModelRef(defaultRef)?.provider
+				if (!provider) return
+				const newRef = `${provider}/${replacement}`
+				saveModelRoles({ ...getModelRoles(), orchestrator: newRef })
+				resetModelRolesCache()
+				ctx.ui?.notify(
+					`Default orchestrator model "${defaultRef}" is no longer available. Remapped to "${newRef}". Update via /multi-model.`,
+					"warning",
+				)
 			}
 
 			pi.on("session_shutdown", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId()
-				deprecatedNotificationFired.delete(sessionId)
+				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
+				const prefix = `${sessionId} `
+				for (const key of deprecatedNotificationFired) {
+					if (key.startsWith(prefix)) deprecatedNotificationFired.delete(key)
+				}
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
+				maybeRemapUnavailableOrchestratorDefault(ctx)
 				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
 				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
-
-				notifyIfDeprecated(ctx)
 
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
@@ -279,10 +390,19 @@ export default function (skillPathsFromConfig: string[]) {
 						}
 					}
 				}
+
+				// Deprecation warning against the model the session will actually
+				// run on — in multi-model mode that is the orchestrator role model
+				// (possibly just force-switched above), not the pre-switch ctx.model.
+				const deprecationModelId = multiModelEnabled ? orchestratorModelId : ctx.model?.id
+				notifyIfDeprecated(ctx, deprecationModelId)
 			})
 
 			pi.on("model_select", async (event, ctx) => {
-				notifyIfDeprecated(ctx)
+				// A model is now selected — surface its deprecation notice if it
+				// retires within the notice window. Deduplicated per session+model,
+				// so cycling back and forth warns at most once per model.
+				notifyIfDeprecated(ctx, ctx.model?.id)
 
 				// A user-initiated model switch (UI picker, /model, or cycling)
 				// is a fresh start for tool-calling behaviour from the new model's
