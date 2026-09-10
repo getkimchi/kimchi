@@ -35,6 +35,25 @@ export const DIGEST_MAX_TOKENS = 2_000
  */
 export const MEMORY_CAPTURE_WINDOW_CHARS = 2_000
 
+/**
+ * Windows per capture chunk: extraction runs in parallel within a chunk,
+ * then ONE supersede judge pass per chunk (the judge batch halves the LLM
+ * calls; within a chunk the new facts are presented in chronological
+ * order so value changes supersede in the right direction).
+ */
+export const MEMORY_CAPTURE_CHUNK_WINDOWS = 8
+
+/** Max concurrent extraction calls within a chunk. */
+export const MEMORY_CAPTURE_CONCURRENCY = 4
+
+/**
+ * Uncaptured user messages needed before an incremental mid-session
+ * capture spawns — drains content as it accumulates instead of saving
+ * everything for shutdown, shrinking the next-session staleness race to the
+ * last few turns.
+ */
+export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 10
+
 /** Max NEW facts per progressive turn recall (per re-evaluation). */
 export const TURN_RECALL_MAX_FACTS = 3
 

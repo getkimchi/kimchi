@@ -16,7 +16,7 @@ import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import type { CaptureMessage } from "./capture-worker.js"
-import { digestDbPath } from "./config.js"
+import { digestDbPath, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
 
 export function wireMemoryCapture(pi: ExtensionAPI): void {
 	pi.on("session_before_compact", (event) => {
@@ -25,6 +25,42 @@ export function wireMemoryCapture(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (_event, ctx) => {
 		captureMessages(extractMessages(ctx.sessionManager.getEntries()))
 	})
+}
+
+/**
+ * Extension-side mark for incremental capture: how many user messages the
+ * current runtime has already spawned capture jobs for. Batches are
+ * non-overlapping by construction (slices past the mark); the worker's hash
+ * ledger dedupes across restarts and prior sessions.
+ */
+export interface IncrementalCaptureState {
+	spawnedCount: number
+}
+
+export function createIncrementalCaptureState(): IncrementalCaptureState {
+	return { spawnedCount: 0 }
+}
+
+/**
+ * Lever 3: drain new user messages as they accumulate mid-session instead
+ * of saving everything for shutdown — shrinks the shutdown tail and the
+ * next-session staleness race to the last few turns. Fires when at least
+ * MEMORY_CAPTURE_INCREMENTAL_MESSAGES uncaptured user messages exist since
+ * the last spawn. The mark is runtime-local (not the ledger): reading the
+ * ledger per turn would race the detached workers, and a fresh runtime
+ * re-deriving from zero is safe — the worker's ledger filters already
+ * captured messages.
+ */
+export function incrementalCapture(
+	entries: readonly SessionEntry[],
+	state: IncrementalCaptureState,
+	spawn: (messages: CaptureMessage[]) => void = captureMessages,
+): void {
+	const messages = extractMessages(entries)
+	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
+	const batch = messages.slice(state.spawnedCount)
+	state.spawnedCount = messages.length
+	spawn(batch)
 }
 
 export function extractMessages(entries: readonly SessionEntry[]): CaptureMessage[] {

@@ -33,7 +33,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { createMemoryBackend, type MemoryBackendOptions } from "./backend.js"
-import { messageText, wireMemoryCapture } from "./capture.js"
+import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
 import { DIGEST_SCORE_THRESHOLD, digestDbPath, MEMORY_USER_ID, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
 import { buildMemoryDigest, buildTurnRecall, type DigestComposition, factKey, isCovered } from "./inject.js"
 import { createMemorySearchTool } from "./tools.js"
@@ -89,6 +89,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const deliveredFacts: string[] = []
 		let turnEvaluations = 0
 		let recallFailed = false
+		// Lever 3: mid-session incremental capture — the runtime mark makes
+		// batches non-overlapping; the worker's hash ledger dedupes restarts.
+		let incrementalState = createIncrementalCaptureState()
 
 		const logOnce = (message: string, err: unknown): void => {
 			// Degrade to no-memory; log enough to diagnose (skill: never swallow).
@@ -167,6 +170,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		}
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			// Lever 3: drain new content as it accumulates (sync, cheap — reads
+			// the in-memory entries and spawns a detached worker past the mark).
+			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState)
+
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
 			if (digest === undefined) {
@@ -241,6 +248,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			deliveredKeys.clear()
 			deliveredFacts.length = 0
 			turnEvaluations = 0
+			// Post-compaction entries restructure — re-derive the incremental mark
+			// from zero; the worker's ledger dedupes the re-passed messages.
+			incrementalState = createIncrementalCaptureState()
 		})
 
 		pi.registerTool(
