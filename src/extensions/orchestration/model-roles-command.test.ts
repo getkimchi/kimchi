@@ -7,6 +7,7 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
  */
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
+import { AUTO_MODEL_REF } from "../router/constants.js"
 import type { RoleModelAssignment } from "./model-roles.js"
 import { splitModelRef } from "./model-roles.js"
 import {
@@ -16,6 +17,7 @@ import {
 	formatRoleSummaryBlock,
 	hasMetadataContent,
 	isEqualAssignment,
+	modelRefTags,
 } from "./model-roles-command.js"
 
 // Mock model-metadata module
@@ -363,5 +365,31 @@ describe("hasMetadataContent", () => {
 		expect(hasMetadataContent({ vision: true })).toBe(true)
 		expect(hasMetadataContent({ description: "x" })).toBe(true)
 		expect(hasMetadataContent({ tier: "light", vision: false })).toBe(true)
+	})
+})
+
+describe("modelRefTags", () => {
+	const apiSlugs = new Set(["kimi-k2.7", "glm-5.3"])
+	const deprecatedSlugs = new Set(["kimi-k2.7"])
+
+	it("tags a model missing from the API list as unavailable", () => {
+		expect(modelRefTags("kimchi-dev/glm-5.2", apiSlugs, deprecatedSlugs)).toEqual(["unavailable"])
+	})
+
+	it("tags an available model in the deprecation window as deprecated", () => {
+		expect(modelRefTags("kimchi-dev/kimi-k2.7", apiSlugs, deprecatedSlugs)).toEqual(["deprecated"])
+	})
+
+	it("tags a plain active model with nothing", () => {
+		expect(modelRefTags("kimchi-dev/glm-5.3", apiSlugs, deprecatedSlugs)).toEqual([])
+	})
+
+	it("prefers unavailable over deprecated when the model is gone", () => {
+		const goneAndMarked = new Set(["old-model"])
+		expect(modelRefTags("kimchi-dev/old-model", apiSlugs, goneAndMarked)).toEqual(["unavailable"])
+	})
+
+	it("never tags the auto-model pseudo-ref", () => {
+		expect(modelRefTags(AUTO_MODEL_REF, apiSlugs, deprecatedSlugs)).toEqual([])
 	})
 })
