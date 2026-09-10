@@ -68,11 +68,7 @@ function collectCandidates(hits: MemorySearchHit[]): Candidate[] {
 	return candidates.sort((a, b) => b.score - a.score)
 }
 
-function gateCandidates(
-	ranked: Candidate[],
-	composition: DigestComposition,
-	maxFacts: number,
-): Candidate[] {
+function gateCandidates(ranked: Candidate[], composition: DigestComposition, maxFacts: number): Candidate[] {
 	const kept: Candidate[] = []
 	for (const candidate of ranked) {
 		if (candidate.score < DIGEST_SCORE_THRESHOLD) {
@@ -154,11 +150,63 @@ export function factKey(text: string): string {
 }
 
 const STOPWORDS = new Set([
-	"the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one", "our",
-	"out", "day", "get", "has", "him", "his", "how", "its", "new", "now", "old", "see", "two",
-	"way", "who", "did", "yes", "that", "this", "with", "from", "they", "have", "were",
-	"about", "which", "their", "there", "what", "when", "your", "will", "would", "could",
-	"should", "into", "than", "then", "them", "some", "just", "like", "also", "because",
+	"the",
+	"and",
+	"for",
+	"are",
+	"but",
+	"not",
+	"you",
+	"all",
+	"can",
+	"her",
+	"was",
+	"one",
+	"our",
+	"out",
+	"day",
+	"get",
+	"has",
+	"him",
+	"his",
+	"how",
+	"its",
+	"new",
+	"now",
+	"old",
+	"see",
+	"two",
+	"way",
+	"who",
+	"did",
+	"yes",
+	"that",
+	"this",
+	"with",
+	"from",
+	"they",
+	"have",
+	"were",
+	"about",
+	"which",
+	"their",
+	"there",
+	"what",
+	"when",
+	"your",
+	"will",
+	"would",
+	"could",
+	"should",
+	"into",
+	"than",
+	"then",
+	"them",
+	"some",
+	"just",
+	"like",
+	"also",
+	"because",
 ])
 
 /** Content words (lowercased, ≥3 chars, stopword-filtered) for the cheap gate. */
@@ -200,10 +248,7 @@ export interface TurnRecall {
  * undefined when nothing new clears the bar — the normal outcome when the
  * conversation stays inside delivered territory.
  */
-export function buildTurnRecall(
-	hits: MemorySearchHit[],
-	deliveredKeys: ReadonlySet<string>,
-): TurnRecall | undefined {
+export function buildTurnRecall(hits: MemorySearchHit[], deliveredKeys: ReadonlySet<string>): TurnRecall | undefined {
 	const composition: DigestComposition = {
 		facts: 0,
 		considered: 0,
