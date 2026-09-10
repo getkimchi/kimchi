@@ -10,6 +10,7 @@ import {
 	messageHash,
 	parseFactsResponse,
 	parseIdArray,
+	parseTaggedFacts,
 	windowByBudget,
 } from "./capture-worker.js"
 
@@ -234,6 +235,49 @@ describe("parseFactsResponse", () => {
 
 	it("throws on responses without an array", () => {
 		expect(() => parseFactsResponse("no json here")).toThrow(/no JSON array/)
+	})
+})
+
+describe("parseTaggedFacts (three observed model shapes)", () => {
+	it("parses the object shape", () => {
+		expect(parseTaggedFacts('{"personal": ["a"], "project": ["b"]}')).toEqual({
+			personal: ["a"],
+			project: ["b"],
+		})
+	})
+
+	it("routes the array-of-fact-objects shape by the scope field", () => {
+		const text =
+			'[{"fact": "I prefer vim", "scope": "personal"}, {"fact": "this repo uses vitest", "scope": "project"}]'
+		expect(parseTaggedFacts(text)).toEqual({
+			personal: ["I prefer vim"],
+			project: ["this repo uses vitest"],
+		})
+	})
+
+	it("routes prefixed strings in the bare-array shape", () => {
+		const text = '["[project] We use vitest", "I like concise docs", "[project] pnpm here"]'
+		expect(parseTaggedFacts(text)).toEqual({
+			personal: ["I like concise docs"],
+			project: ["We use vitest", "pnpm here"],
+		})
+	})
+
+	it("parses the markdown-list shape (no JSON at all)", () => {
+		const text = "- [project] We have a plan to add memory functionality\n- [personal] I prefer tight docs"
+		expect(parseTaggedFacts(text)).toEqual({
+			personal: ["I prefer tight docs"],
+			project: ["We have a plan to add memory functionality"],
+		})
+	})
+
+	it("defaults unscoped fact-objects to personal", () => {
+		const text = '[{"fact": "ambiguous fact", "scope": "unsure"}]'
+		expect(parseTaggedFacts(text)).toEqual({ personal: ["ambiguous fact"], project: [] })
+	})
+
+	it("throws on prose with no parseable shape", () => {
+		expect(() => parseTaggedFacts("just talking, nothing durable")).toThrow(/unparseable/)
 	})
 })
 

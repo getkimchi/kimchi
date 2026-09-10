@@ -121,25 +121,91 @@ export interface TaggedFacts {
 }
 
 /**
- * Parse a tagged extraction response: {"personal": [...], "project": [...]}.
- * Tolerates the bare-array shape (no-project jobs) — everything personal.
+ * Parse a tagged extraction response. The model has been observed returning
+ * three shapes (all handled): the requested object
+ * {"personal": [...], "project": [...]}; an array of fact-objects
+ * [{"fact": "...", "scope": "project"}]; and a markdown list of prefixed
+ * strings "- [project] fact...". Unprefixed/unscoped strings default
+ * personal — the correct no-project behavior.
  */
 export function parseTaggedFacts(text: string): TaggedFacts {
-	const objStart = text.indexOf("{")
-	if (objStart !== -1) {
-		const objEnd = text.lastIndexOf("}")
-		if (objEnd > objStart) {
-			const parsed: unknown = JSON.parse(text.slice(objStart, objEnd + 1))
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				const obj = parsed as { personal?: unknown; project?: unknown }
-				const filter = (v: unknown): string[] =>
-					Array.isArray(v) ? v.filter((f): f is string => typeof f === "string" && f.trim().length > 0) : []
-				return { personal: filter(obj.personal), project: filter(obj.project) }
+	const stripPrefix = (f: string): string => f.replace(/^\[(?:personal|project)\]\s*/, "")
+
+	const obj = tryParseObject(text)
+	if (obj) {
+		const filter = (v: unknown): string[] =>
+			Array.isArray(v)
+				? v.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map(stripPrefix)
+				: []
+		return { personal: filter(obj.personal), project: filter(obj.project) }
+	}
+
+	const arr = tryParseArray(text)
+	if (arr) {
+		const strings: string[] = []
+		const factObjects: Array<{ fact?: unknown; scope?: unknown }> = []
+		for (const item of arr) {
+			if (typeof item === "string" && item.trim().length > 0) {
+				strings.push(item)
+			} else if (item && typeof item === "object" && "fact" in item) {
+				factObjects.push(item as { fact?: unknown; scope?: unknown })
 			}
 		}
+		const personal = strings.filter((f) => !f.startsWith("[project]")).map(stripPrefix)
+		const project = strings.filter((f) => f.startsWith("[project]")).map(stripPrefix)
+		for (const o of factObjects) {
+			if (typeof o.fact !== "string" || o.fact.trim().length === 0) continue
+			const fact = stripPrefix(o.fact)
+			;(o.scope === "project" ? project : personal).push(fact)
+		}
+		return { personal, project }
 	}
-	// Bare array (the no-project shape) — all personal.
-	return { personal: parseFactsResponse(text), project: [] }
+
+	// Markdown-list shape: "- [project] fact text" lines, no JSON at all.
+	const personal: string[] = []
+	const project: string[] = []
+	for (const rawLine of text.split("\n")) {
+		const line = rawLine.trim()
+		const m = line.match(/^-\s*\[(personal|project)\]\s*(.+)$/)
+		if (m) {
+			;(m[1] === "project" ? project : personal).push(m[2].trim())
+		}
+	}
+	if (personal.length > 0 || project.length > 0) return { personal, project }
+
+	throw new Error(`tagged extraction response unparseable: ${text.slice(0, 150)}`)
+}
+
+function tryParseObject(text: string): { personal?: unknown; project?: unknown } | null {
+	const start = text.indexOf("{")
+	const end = text.lastIndexOf("}")
+	if (start === -1 || end <= start) return null
+	try {
+		const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+		// Only the tagged-object shape counts — a single fact-object
+		// ({"fact": ..., "scope": ...}) also parses from this slice but must
+		// fall through to the array path. Guard on the tagged fields.
+		return parsed &&
+			typeof parsed === "object" &&
+			!Array.isArray(parsed) &&
+			("personal" in parsed || "project" in parsed)
+			? (parsed as { personal?: unknown; project?: unknown })
+			: null
+	} catch {
+		return null
+	}
+}
+
+function tryParseArray(text: string): unknown[] | null {
+	const start = text.indexOf("[")
+	const end = text.lastIndexOf("]")
+	if (start === -1 || end <= start) return null
+	try {
+		const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+		return Array.isArray(parsed) ? parsed : null
+	} catch {
+		return null
+	}
 }
 
 interface GatewayLlmOptions {
@@ -287,8 +353,18 @@ export async function chatWithRetry<T>(
 const SCOPE_TAG_SECTION = `\n\nTag each fact's scope:\n- "personal" — true regardless of project or codebase: identity, home life, preferences stated generally ("I always...", "everywhere"), cross-cutting tool choices that hold in any repository.\n- "project" — anchored to this repository: its stack, conventions, decisions, architecture, anything referring to this codebase's files or work.\nWhen unsure, tag "project" — a project fact in the wrong store is recoverable; a project fact in the global store pollutes every other project.\n\nCurrent project: `
 
 /** Build the scoped variant of an extraction prompt (tag section + project context). */
+/**
+ * Build the scoped variant of an extraction prompt (tag section + project
+ * context). The base prompt's array-format respond line is REMOVED — the tag
+ * section's object-format instruction replaces it. Conflicting final
+ * instructions make the model return a bare array with tags embedded in the
+ * fact strings (verified in the two-store dogfood: 16 facts with
+ * "[project]" text prefixes, 0 routed to the project store).
+ */
 function scopedPrompt(basePrompt: string, scopeContextLine: string | null | undefined): string {
-	return scopeContextLine ? `${basePrompt}${SCOPE_TAG_SECTION}${scopeContextLine}` : basePrompt
+	if (!scopeContextLine) return basePrompt
+	const stripped = basePrompt.replace(/Respond with ONLY a JSON array of fact strings;.*$/m, "").trimEnd()
+	return `${stripped}${SCOPE_TAG_SECTION}${scopeContextLine}`
 }
 
 async function extractFacts(
