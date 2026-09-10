@@ -38,6 +38,16 @@ export function memoryDbPath(scopeId: string): string {
 	return join(defaultMemoryDir(), scopeId, "memory.db")
 }
 
+/**
+ * History DB path: the same .kimchi memory directory as the vector store.
+ * mem0's default is a cwd-relative memory.db — unconfigured, concurrent
+ * sessions collide on it and local runs litter the cwd (both seen in the
+ * benchmark investigation).
+ */
+export function historyDbPath(dbPath: string): string {
+	return dbPath.endsWith(".db") ? `${dbPath.slice(0, -3)}-history.db` : `${dbPath}-history.db`
+}
+
 export interface MemoryEndpointConfig {
 	baseURL: string
 	apiKey: string
@@ -96,6 +106,12 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 			config: {
 				dbPath: options.dbPath,
 				dimension: MEMORY_EMBEDDING_DIMS,
+			},
+		},
+		historyStore: {
+			provider: "sqlite",
+			config: {
+				historyDbPath: historyDbPath(options.dbPath),
 			},
 		},
 	}

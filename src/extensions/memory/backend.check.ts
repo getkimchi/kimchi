@@ -14,7 +14,7 @@
  * Usage: pnpm run memory:check  (requires KIMCHI_API_KEY or a configured
  * ~/.config/kimchi/config.json)
  */
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createMemoryBackend, disableMem0Telemetry } from "./backend.js"
@@ -127,9 +127,34 @@ async function partB(): Promise<void> {
 	}
 }
 
+async function partC(): Promise<void> {
+	console.log("\n--- PART C: storage concurrency (parallel writers + readers, one store) ---")
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-memory-check-c-"))
+	try {
+		const dbPath = join(dir, "memory.db")
+		const backend = await createMemoryBackend({ dbPath })
+		const userId = "check-user"
+		// Writers and readers race on one store — WAL + busy_timeout must
+		// absorb the contention (the lock failure mode from the investigation).
+		const writers = Array.from({ length: 8 }, (_, i) =>
+			backend.add(`concurrent fact ${i}: the user's favorite number is ${i * 7}`, { userId, infer: false }))
+		const readers = Array.from({ length: 8 }, () =>
+			backend.search("favorite number", { filters: { user_id: userId }, topK: 5 }))
+		await Promise.all([...writers, ...readers])
+		const all = await backend.search("concurrent fact", { filters: { user_id: userId }, topK: 10 })
+		const list = (Array.isArray(all) ? all : (all?.results ?? [])) as Array<{ memory?: string }>
+		check("parallel writes + concurrent reads complete without lock errors", list.length >= 8, `${list.length} facts`)
+		check("history db lives next to the store (scope dir)", existsSync(join(dir, "memory-history.db")))
+		check("no store files created relative to cwd", !existsSync(join(process.cwd(), "memory.db")))
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+}
+
 async function main(): Promise<void> {
 	await partA()
 	await partB()
+	await partC()
 	console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`)
 	process.exitCode = failures === 0 ? 0 : 1
 }

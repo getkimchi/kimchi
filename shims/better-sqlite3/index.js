@@ -58,6 +58,15 @@ class Statement {
 class Database {
 	constructor(path, options) {
 		this.db = new (driver())(path, options)
+		// Concurrency: concurrent kimchi sessions share this store. WAL lets
+		// readers proceed during writes; busy_timeout makes writers wait
+		// (5000ms, the repo's cursor.ts precedent) instead of failing fast
+		// with SQLITE_BUSY. WAL is a no-op for :memory: databases; readonly
+		// connections cannot change the journal mode, so skip it for them.
+		if (!options?.readonly) {
+			this.db.exec("PRAGMA journal_mode=WAL")
+		}
+		this.db.exec("PRAGMA busy_timeout=5000")
 	}
 	prepare(sql) {
 		return new Statement(this.db.prepare(sql))
