@@ -100,4 +100,33 @@ describe("AgentWidget token display", () => {
 		expect(rendered).toContain("3.0k token")
 		expect(rendered).toContain("⟳2")
 	})
+
+	it("running agent lines show the context percent alone when usage totals are absent (old server)", () => {
+		const record = {
+			id: "run-2",
+			type: "general-purpose",
+			description: "working on old server",
+			status: "running",
+			visibility: "user",
+			toolUses: 0,
+			startedAt: Date.now() - 5_000,
+			lifetimeUsage: ZERO_USAGE,
+		}
+		const manager = { listAgents: () => [record] } as unknown as AgentManager
+		const session = {
+			getSessionStats: () => ({
+				tokens: ZERO_USAGE,
+				contextUsage: { percent: 42 },
+			}),
+		}
+		const activity = new Map<string, AgentActivity>([
+			["run-2", { ...makeActivity(ZERO_USAGE), session }],
+		])
+
+		const rendered = renderOnce(manager, activity)
+
+		// Percent renders standalone — no "0 token" placeholder.
+		expect(rendered).toContain("42%")
+		expect(rendered).not.toContain("token")
+	})
 })
