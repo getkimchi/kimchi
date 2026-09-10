@@ -22,7 +22,54 @@ import { type KimchiConfig, loadConfig } from "../../config.js"
 
 export const MEMORY_EMBEDDING_MODEL = "text-embedding-3-small"
 export const MEMORY_EMBEDDING_DIMS = 1536
-export const MEMORY_EXTRACTION_MODEL = "kimi-k3"
+
+/**
+ * Extraction model preference order — resolved against the gateway's live
+ * model list at capture-worker start (models deprecate; per-user gateway
+ * access varies), falling through instead of failing. Flash first: capture
+ * latency is dominated by extraction calls, and the flash tier is ~10x
+ * faster than the reasoning models. Override: KIMCHI_MEMORY_EXTRACTION_MODEL.
+ */
+export const EXTRACTION_MODEL_PREFERENCES = ["glm-5.3-flash", "deepseek-v4-flash-0731", "glm-5.3", "kimi-k3"]
+
+/** Options for {@link resolveExtractionModel}. */
+export interface ExtractionModelOptions {
+	/** Injectable for tests. */
+	fetchImpl?: typeof fetch
+}
+
+/**
+ * Resolve the extraction model: the KIMCHI_MEMORY_EXTRACTION_MODEL override
+ * wins; otherwise the first preference available on the gateway's model
+ * list (one cheap call). If the list itself is unreachable, fall back to the
+ * top preference — a likely-right model beats failing capture entirely.
+ * Throws only when the list is reachable and no preference is on it.
+ */
+export async function resolveExtractionModel(
+	gateway: { baseURL: string; apiKey: string },
+	options: ExtractionModelOptions = {},
+): Promise<string> {
+	const override = process.env.KIMCHI_MEMORY_EXTRACTION_MODEL
+	if (override) return override
+	const fetchImpl = options.fetchImpl ?? fetch
+	const response = await fetchImpl(
+		new URL("models", gateway.baseURL.endsWith("/") ? gateway.baseURL : `${gateway.baseURL}/`),
+		{ headers: { authorization: `Bearer ${gateway.apiKey}` } },
+	)
+	if (!response.ok) {
+		return EXTRACTION_MODEL_PREFERENCES[0]
+	}
+	const body = (await response.json()) as { data?: Array<{ id?: string }> }
+	const available = new Set(
+		(body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"),
+	)
+	for (const preference of EXTRACTION_MODEL_PREFERENCES) {
+		if (available.has(preference)) return preference
+	}
+	throw new Error(
+		`no extraction model available on the gateway (tried ${EXTRACTION_MODEL_PREFERENCES.join(", ")}); set KIMCHI_MEMORY_EXTRACTION_MODEL`,
+	)
+}
 
 export function defaultMemoryDir(): string {
 	return join(homedir(), ".config", "kimchi", "memory")
@@ -82,7 +129,7 @@ function resolveEndpoint(
 export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEndpoint(options.embedder, gateway, MEMORY_EMBEDDING_MODEL)
-	const llm = resolveEndpoint(options.llm, gateway, MEMORY_EXTRACTION_MODEL)
+	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL_PREFERENCES[0])
 	return {
 		embedder: {
 			provider: "openai",
@@ -141,7 +188,7 @@ export async function createMemoryBackend(
 ): Promise<Mem0Memory> {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEndpoint(options.embedder, gateway, MEMORY_EMBEDDING_MODEL)
-	const llm = resolveEndpoint(options.llm, gateway, MEMORY_EXTRACTION_MODEL)
+	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL_PREFERENCES[0])
 	for (const [name, ep] of [
 		["embedder", embedder],
 		["llm", llm],

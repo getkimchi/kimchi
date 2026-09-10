@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { createMemoryBackend, disableMem0Telemetry } from "./backend.js"
+import { createMemoryBackend, disableMem0Telemetry, resolveExtractionModel } from "./backend.js"
 import { MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_USER_ID } from "./config.js"
 import { findSupersededIds } from "./supersede.js"
 
@@ -288,7 +288,12 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	const llm = {
 		baseURL: config.llmEndpoint,
 		apiKey: config.apiKey,
-		model: (await import("./backend.js")).MEMORY_EXTRACTION_MODEL,
+		// Preference-resolved (flash tier first for latency; falls through on
+		// deprecations or per-user gateway access) — never a hardcoded model.
+		model: await resolveExtractionModel(
+			{ baseURL: config.llmEndpoint, apiKey: config.apiKey },
+			{ fetchImpl: options.fetchImpl },
+		),
 		fetchImpl: options.fetchImpl,
 	}
 
