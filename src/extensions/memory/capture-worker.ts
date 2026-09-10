@@ -20,7 +20,12 @@ import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { createMemoryBackend, disableMem0Telemetry, resolveExtractionModel } from "./backend.js"
-import { MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_USER_ID } from "./config.js"
+import {
+	MEMORY_CAPTURE_CHUNK_WINDOWS,
+	MEMORY_CAPTURE_CONCURRENCY,
+	MEMORY_CAPTURE_WINDOW_CHARS,
+	MEMORY_USER_ID,
+} from "./config.js"
 import { findSupersededIds } from "./supersede.js"
 
 export interface CaptureMessage {
@@ -59,6 +64,28 @@ export function windowByBudget(messages: CaptureMessage[], maxChars = MEMORY_CAP
 	}
 	if (current.length > 0) windows.push(current)
 	return windows
+}
+
+/**
+ * Map with bounded concurrency, preserving input order in the results.
+ * Worker pulls the next index — no per-item task pre-allocation.
+ */
+export async function mapWithConcurrency<T, R>(
+	items: readonly T[],
+	concurrency: number,
+	fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(items.length)
+	let next = 0
+	const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
+		while (next < items.length) {
+			const index = next
+			next += 1
+			results[index] = await fn(items[index] as T, index)
+		}
+	})
+	await Promise.all(workers)
+	return results
 }
 
 /**
@@ -169,6 +196,8 @@ Respond with ONLY a JSON array of fact strings; [] when nothing durable appears.
 
 const SUPERSEDE_SYSTEM_PROMPT = `You maintain a memory store and must decide which stored memories a set of NEW facts replaces.
 Rules: delete an existing memory only when a new fact explicitly changes, reverses, or updates it (same subject, different value). Complementary details are not replacements. When unsure, keep the old memory.
+The new facts are listed in chronological order — a later fact reflects the user's more recent state, so when two facts conflict, the EARLIER one is what the later fact replaces.
+An identical or near-identical memory is not a replacement: never delete a fact merely because it also appears among the new facts.
 Respond with ONLY a JSON array of memory ids to delete; [] when nothing is replaced.`
 
 /** Appended on retry when the model ignored the format (seen in the benchmark:
@@ -298,24 +327,37 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	}
 
 	let captured = 0
-	for (const window of windowByBudget(fresh)) {
-		let facts: string[]
-		try {
-			facts = await extractFacts(llm, window)
-		} catch (err) {
-			// One window's extraction failure must not abort the whole job —
-			// log it and leave that window's hashes unmarked, so the next
-			// capture spawn of the same content retries it. Continuing
-			// captures strictly more than aborting.
-			console.error(
-				"[memory-capture] window extraction failed (hashes left unmarked for retry):",
-				err instanceof Error ? err.message : err,
-			)
-			continue
-		}
-		if (facts.length > 0) {
+	const windows = windowByBudget(fresh)
+	for (let start = 0; start < windows.length; start += MEMORY_CAPTURE_CHUNK_WINDOWS) {
+		const chunk = windows.slice(start, start + MEMORY_CAPTURE_CHUNK_WINDOWS)
+		// Lever 1+2: extract the chunk's windows in parallel (bounded) —
+		// windows are independent and order is preserved in the results.
+		const results = await mapWithConcurrency(chunk, MEMORY_CAPTURE_CONCURRENCY, async (window) => {
+			try {
+				return { window, facts: await extractFacts(llm, window) }
+			} catch (err) {
+				// A failed window must not abort the job — log it and leave its
+				// hashes unmarked, so the next capture spawn retries it.
+				console.error(
+					"[memory-capture] window extraction failed (hashes left unmarked for retry):",
+					err instanceof Error ? err.message : err,
+				)
+				return { window, facts: null }
+			}
+		})
+		const chunkFacts = results.flatMap((result) => result.facts ?? [])
+		if (chunkFacts.length > 0) {
+			// Adds first (window order), then ONE supersede judge pass per
+			// chunk. The judge sees the chunk's facts against the store, which
+			// now includes them — the chronological-order and identical-fact
+			// rules in the prompt keep within-chunk supersede directionally
+			// correct and prevent self-deletion.
+			for (const fact of chunkFacts) {
+				await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+				captured += 1
+			}
 			const superseded = await findSupersededIds(
-				facts,
+				chunkFacts,
 				async (fact) => searchAll(fact),
 				async (newFacts, candidates) => {
 					const prompt = `NEW FACTS:\n${newFacts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
@@ -327,13 +369,13 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 			for (const id of superseded) {
 				await backend.delete(id)
 			}
-			for (const fact of facts) {
-				await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
-				captured += 1
+		}
+		// Mark only the successfully extracted windows — a crash resumes here.
+		for (const result of results) {
+			if (result.facts !== null) {
+				for (const message of result.window) hashes.add(messageHash(message))
 			}
 		}
-		// Mark only after the window fully processes — a crash resumes here.
-		for (const message of window) hashes.add(messageHash(message))
 		saveHashes(dbPath, hashes)
 	}
 

@@ -1,10 +1,11 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { extractMessages } from "./capture.js"
+import { createIncrementalCaptureState, extractMessages, incrementalCapture } from "./capture.js"
 import {
 	type CaptureMessage,
 	chatJson,
 	chatWithRetry,
+	mapWithConcurrency,
 	messageHash,
 	parseFactsResponse,
 	parseIdArray,
@@ -44,6 +45,82 @@ describe("windowByBudget", () => {
 
 	it("returns no windows for empty input", () => {
 		expect(windowByBudget([], 2000)).toEqual([])
+	})
+})
+
+describe("mapWithConcurrency", () => {
+	it("preserves input order in the results regardless of completion order", async () => {
+		const results = await mapWithConcurrency([1, 2, 3, 4, 5], 2, async (n) => {
+			await new Promise((r) => setTimeout(r, (5 - n) * 10))
+			return n * 10
+		})
+		expect(results).toEqual([10, 20, 30, 40, 50])
+	})
+
+	it("bounds concurrency to the requested limit", async () => {
+		let active = 0
+		let peak = 0
+		await mapWithConcurrency(
+			Array.from({ length: 9 }, (_, i) => i),
+			3,
+			async () => {
+				active += 1
+				peak = Math.max(peak, active)
+				await new Promise((r) => setTimeout(r, 20))
+				active -= 1
+			},
+		)
+		expect(peak).toBe(3)
+	})
+
+	it("handles empty input", async () => {
+		expect(await mapWithConcurrency([], 4, async (n) => n)).toEqual([])
+	})
+})
+
+describe("incrementalCapture", () => {
+	const msgEntry = (content: string) =>
+		({ type: "message", message: { role: "user", content } }) as unknown as SessionEntry
+
+	it("does not spawn below the threshold", () => {
+		const state = createIncrementalCaptureState()
+		const spawn = vi.fn()
+		incrementalCapture([msgEntry("one"), msgEntry("two")], state, spawn)
+		expect(spawn).not.toHaveBeenCalled()
+		expect(state.spawnedCount).toBe(0)
+	})
+
+	it("spawns the batch at the threshold and advances the mark", () => {
+		const state = createIncrementalCaptureState()
+		const spawn = vi.fn()
+		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, state, spawn)
+		expect(spawn).toHaveBeenCalledTimes(1)
+		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
+		expect(state.spawnedCount).toBe(10)
+		// Below threshold again until 10 more accumulate.
+		incrementalCapture([...entries, msgEntry("one more")], state, spawn)
+		expect(spawn).toHaveBeenCalledTimes(1)
+	})
+
+	it("batches are non-overlapping across spawns", () => {
+		const state = createIncrementalCaptureState()
+		const spawn = vi.fn()
+		const first = Array.from({ length: 10 }, (_, i) => msgEntry(`a${i}`))
+		incrementalCapture(first, state, spawn)
+		const second = [...first, ...Array.from({ length: 12 }, (_, i) => msgEntry(`b${i}`))]
+		incrementalCapture(second, state, spawn)
+		expect(spawn).toHaveBeenCalledTimes(2)
+		const secondBatch = (spawn.mock.calls[1] as CaptureMessage[][])[0]
+		expect(secondBatch.every((m) => m.content.startsWith("b"))).toBe(true)
+	})
+
+	it("a fresh state re-derives from zero — the worker ledger dedupes", () => {
+		const spawn = vi.fn()
+		const entries = Array.from({ length: 15 }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, createIncrementalCaptureState(), spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), spawn)
+		expect(spawn).toHaveBeenCalledTimes(2)
 	})
 })
 
