@@ -101,6 +101,10 @@ export async function chatJson(
 					},
 					body: JSON.stringify({
 						model: options.model,
+						// Deterministic extraction: needle facts must not appear or
+						// disappear between runs of the same haystack (validated: the
+						// gateway default temperature changed captured facts per run).
+						temperature: 0,
 						messages: [
 							{ role: "system", content: system },
 							{ role: "user", content: user },
