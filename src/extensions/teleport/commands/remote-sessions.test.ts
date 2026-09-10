@@ -15,6 +15,7 @@ const {
 	runTerminalMock,
 	ensureIncludeDirectiveMock,
 	syncSshConfigMock,
+	runSyncArgsMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	verifyApiKeyMock: vi.fn(),
@@ -29,6 +30,7 @@ const {
 	runTerminalMock: vi.fn(),
 	ensureIncludeDirectiveMock: vi.fn(),
 	syncSshConfigMock: vi.fn(),
+	runSyncArgsMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({
@@ -55,6 +57,7 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 }))
 vi.mock("../ui/remote-sessions-panel.js", () => ({ pickRemoteSessions: pickRemoteSessionsMock }))
 vi.mock("./attach.js", () => ({ runAttachSession: runAttachSessionMock }))
+vi.mock("./sync.js", () => ({ runSyncArgs: runSyncArgsMock }))
 vi.mock("./terminal.js", () => ({ runTerminal: runTerminalMock }))
 vi.mock("../ssh-config/sync.js", () => ({
 	ensureIncludeDirective: ensureIncludeDirectiveMock,
@@ -184,6 +187,7 @@ beforeEach(() => {
 	runTerminalMock.mockReset().mockResolvedValue(undefined)
 	ensureIncludeDirectiveMock.mockReset().mockResolvedValue(undefined)
 	syncSshConfigMock.mockReset().mockResolvedValue(undefined)
+	runSyncArgsMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe("deriveStatus", () => {
@@ -202,6 +206,15 @@ describe("deriveStatus", () => {
 })
 
 describe("toRow", () => {
+	it("maps a session cwd onto the row", () => {
+		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", cwd: "/remote/proj" }))
+		expect(row.cwd).toBe("/remote/proj")
+	})
+
+	it("omits cwd when the session does not report one", () => {
+		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", cwd: undefined }))
+		expect(row.cwd).toBeUndefined()
+	})
 	it("maps a session onto a SessionRow with workspace foreign keys", () => {
 		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", clientConnected: true }))
 		expect(row).toMatchObject({
@@ -372,6 +385,153 @@ describe("runRemoteSessions", () => {
 		ui.confirm.mockResolvedValue(false)
 		await runRemoteSessions("", ctx)
 		expect(deleteWorkspaceMock).not.toHaveBeenCalled()
+	})
+
+	it("warns that only sessions can be synced on action='sync-workspace'", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({ action: "sync-workspace", node: workspaceNode() })
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(ui.notify).toHaveBeenCalledWith(
+			"Only sessions can be synced. Select a session under workspace alpha and press s.",
+			"warning",
+		)
+		expect(runSyncArgsMock).not.toHaveBeenCalled()
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("runs a sync-up from the questionnaire on action='sync-session'", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Up  (local → remote)")
+		ui.input.mockResolvedValue("")
+		await runRemoteSessions("", ctx)
+		expect(ui.select).toHaveBeenCalledWith("Sync s-1 (alpha)", [
+			"Sync Up  (local → remote)",
+			"Sync Down  (remote → local)",
+		])
+		// Empty submits fall back to the defaults shown in the prompt titles.
+		expect(ui.input).toHaveBeenNthCalledWith(1, "Source path (local, default: /work/proj)")
+		expect(ui.input).toHaveBeenNthCalledWith(2, "Destination path (remote, on the workspace, default: /remote/proj)")
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			{
+				direction: "up",
+				workspace: "w-1",
+				source: "/work/proj",
+				target: "/remote/proj",
+				exclude: [],
+				includeIgnored: false,
+				delete: false,
+				dryRun: false,
+			},
+			ctx,
+		)
+	})
+
+	it("runs a sync-down from the questionnaire and honours edited paths", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Down  (remote → local)")
+		ui.input.mockResolvedValueOnce("/remote/src").mockResolvedValueOnce("/local/dst")
+		await runRemoteSessions("", ctx)
+		expect(ui.input).toHaveBeenNthCalledWith(1, "Source path (remote, on the workspace, default: /remote/proj)")
+		expect(ui.input).toHaveBeenNthCalledWith(2, "Destination path (local, default: /work/proj)")
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			{
+				direction: "down",
+				workspace: "w-1",
+				source: "/remote/src",
+				target: "/local/dst",
+				exclude: [],
+				includeIgnored: false,
+				delete: false,
+				dryRun: false,
+			},
+			ctx,
+		)
+	})
+
+	it("resolves relative paths against the corresponding defaults", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Up  (local → remote)")
+		ui.input.mockResolvedValueOnce("sub/dir").mockResolvedValueOnce("out")
+		await runRemoteSessions("", ctx)
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			{
+				direction: "up",
+				workspace: "w-1",
+				source: "/work/proj/sub/dir",
+				target: "/remote/proj/out",
+				exclude: [],
+				includeIgnored: false,
+				delete: false,
+				dryRun: false,
+			},
+			ctx,
+		)
+	})
+
+	it("skips the sync when the direction picker is dismissed", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue(undefined)
+		await runRemoteSessions("", ctx)
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(runSyncArgsMock).not.toHaveBeenCalled()
 	})
 
 	it("deletes a session after confirmation then re-shows the picker", async () => {
