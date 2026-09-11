@@ -47,9 +47,9 @@ export function createAcpPermissionPrompter(
 				case "allow-once":
 					return { kind: "allow-once" }
 				case "allow-remember":
-					return { kind: "allow-remember", rule: selected.rule }
+					return { kind: "allow-remember", rules: selected.rules }
 				case "allow-remember-wildcard":
-					return { kind: "allow-remember-wildcard", rule: selected.rule }
+					return { kind: "allow-remember-wildcard", rules: selected.rules }
 				case "deny": {
 					const feedback = await uiContext.input("Tell the assistant what to do differently:")
 					const text = feedback?.trim()

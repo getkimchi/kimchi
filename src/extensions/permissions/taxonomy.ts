@@ -84,6 +84,19 @@ export function isReadOnlyTool(toolName: string): boolean {
 	return classifyTool(toolName) === "readOnly"
 }
 
+// cwd-changing programs are read-only, but they are also the directory
+// boundary of a compound: a remembered mutable scope must not float to
+// `cd /production`. The compound gate requires an explicit rule for them
+// (review P1: `cd /production && npm install` must not be blessed by a
+// remembered `npm install:*`).
+export const CWD_CHANGER_PROGRAMS = new Set(["cd", "pushd", "popd"])
+
+/** Is this command's program a cwd-changer (cd/pushd/popd)? */
+export function isDirectoryChangerCommand(command: string): boolean {
+	const segment = parseCommandSegments(command)[0]
+	return segment.tokens.length > 0 && CWD_CHANGER_PROGRAMS.has(segment.tokens[0])
+}
+
 // Programs safe to invoke with any arguments: they read files or system state
 // but cannot execute other programs, write files (beyond stdout), or mutate
 // system state. If you need to add a program here, confirm it has no flag that
@@ -489,6 +502,45 @@ export function bashSegmentForms(command: string): string[] {
 	return parseCommandSegments(command)
 		.map((seg) => seg.tokens.join(" "))
 		.filter((form) => form.length > 0)
+}
+
+// Programs that are pure output filters: they consume stdin, emit stdout, and
+// can neither execute code nor write files. Only these may be normalized away
+// as trailing pipe stages. Excluded on purpose: awk/sed/perl (can execute
+// code), tee (writes files), xargs (executes), sh/bash (execute).
+export const OUTPUT_FILTER_PROGRAMS = new Set(["tail", "head", "wc", "grep", "sort", "uniq", "cut", "tr", "jq"])
+
+/**
+ * When `command` is a pipeline whose every stage after the head is a
+ * whitelisted output filter (and the head carries no operators beyond an
+ * `fd>&fd` merge like `2>&1`), returns the head with its env prefix preserved
+ * and the filter tail dropped (`npm install 2>&1 | tail -40` → `npm install`).
+ * Otherwise returns null. This lets a remembered allow rule for the head match
+ * LLM-generated piped reruns (models habitually append `2>&1 | tail -N`)
+ * WITHOUT widening allow matching to arbitrary pipe tails: `| sh`, `| tee`
+ * still produce no canonical form and therefore cannot match a broad scope.
+ */
+export function stripTrailingOutputFilters(command: string): string | null {
+	if (!command.includes("|") || isCompoundCommand(command)) return null
+	// Command substitution is opaque to segment parsing — never normalize it.
+	if (command.includes("$(") || command.includes("`")) return null
+
+	const segments = parseCommandSegments(command)
+	if (segments.length < 2) return null
+
+	const [head, ...filters] = segments
+	// The head may carry only fd-dup redirects (`2>&1`); file redirects or
+	// other operators mean the tail filter is not what bounded the output.
+	if (head.tokens.length === 0) return null
+	if (head.ops.some((op) => !(op.op === ">&" && op.target && /^[0-9]+$/.test(op.target)))) return null
+
+	for (const stage of filters) {
+		if (stage.ops.length > 0) return null
+		if (stage.tokens.length === 0 || !OUTPUT_FILTER_PROGRAMS.has(stage.tokens[0])) return null
+	}
+
+	const { env } = splitLeadingEnv(command)
+	return [...env, ...head.tokens].join(" ")
 }
 
 export function isReadOnlyBashCommand(command: string): boolean {

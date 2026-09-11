@@ -212,6 +212,46 @@ describe("evaluateRules deny blocks piped commands", () => {
 	})
 })
 
+describe("matchBashRule allows a trailing read-only output-filter pipeline", () => {
+	// LLMs habitually append `2>&1 | tail -N` (or head/wc/grep/sort/uniq/cut/tr)
+	// to bound output. Those trailing stages are pure output filters: they cannot
+	// write files or execute code. The allow matcher normalizes them away so a
+	// remembered head scope (e.g. `npm install:*`) matches the piped shape on
+	// rerun. Non-filter stages (`sh`, `awk`, `tee`, `xargs`) still block
+	// normalization, so the single-segment gate's protections hold.
+
+	it("matches a remembered head scope through `cmd 2>&1 | tail -N`", () => {
+		expect(matchBashRule("npm install:*", "npm install 2>&1 | tail -40")).toBe(true)
+		expect(matchBashRule("npm install:*", "npm install | head -5")).toBe(true)
+	})
+
+	it("matches through chained whitelisted filters", () => {
+		expect(matchBashRule("npm test:*", "npm test 2>&1 | sort -u | head -5")).toBe(true)
+		expect(matchBashRule("go test:*", "go test ./... 2>&1 | grep FAIL | wc -l")).toBe(true)
+	})
+
+	it("does NOT let the wrong head ride on a filter tail", () => {
+		expect(matchBashRule("npm install:*", "npm test | tail -40")).toBe(false)
+	})
+
+	it("still refuses non-filter pipe stages", () => {
+		// sh executes arbitrary code; awk can execute; tee writes files; xargs executes.
+		expect(matchBashRule("npm install:*", "npm install | sh")).toBe(false)
+		expect(matchBashRule("npm install:*", "npm install | tee out.txt")).toBe(false)
+		expect(matchBashRule("npm install:*", "npm install | awk '{print $1}'")).toBe(false)
+		expect(matchBashRule("npm install:*", "npm install | xargs rm")).toBe(false)
+	})
+
+	it("a non-filter stage after a filter stage blocks normalization", () => {
+		expect(matchBashRule("npm install:*", "npm install 2>&1 | tail -40 | sh")).toBe(false)
+	})
+
+	it("deny remains pipeline-wide: normalization never hides a denied stage", () => {
+		expect(matchBashRule("sh:*", "npm install 2>&1 | tail -40 | sh", "deny")).toBe(true)
+		expect(matchBashRule("npm:*", "npm install 2>&1 | tail -40", "deny")).toBe(true)
+	})
+})
+
 describe("matchPathRule", () => {
 	it("exact path", () => {
 		expect(matchPathRule(".env", ".env")).toBe(true)

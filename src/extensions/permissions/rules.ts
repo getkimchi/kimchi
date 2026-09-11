@@ -5,6 +5,7 @@ import {
 	FILE_TOOLS,
 	parseCommandSegments,
 	rememberedScopeTokens,
+	stripTrailingOutputFilters,
 } from "./taxonomy.js"
 import type { Rule, RuleBehavior, RuleSource } from "./types.js"
 
@@ -85,7 +86,11 @@ export function matchBashRule(pattern: string, command: string, behavior: RuleBe
 	if (behavior === "deny") return matchBashDeny(pat, command)
 
 	const raw = command.trim()
-	const canonical = canonicalMatchForm(command)
+	// Pipelines usually yield no canonical (single-segment gate). A head
+	// followed only by whitelisted read-only output-filter stages (the
+	// `2>&1 | tail -N` shape LLMs habitually emit) normalizes to the head,
+	// so a remembered head scope still matches the piped rerun.
+	const canonical = canonicalMatchForm(command) ?? normalizedCanonicalForm(command)
 
 	// Broad scope (legacy `prefix:*` or any wildcard) requires a non-null canonical
 	// so a raw match can't bypass the single-segment gate (`go *` vs `go test | sh`).
@@ -130,6 +135,15 @@ function canonicalMatchForm(command: string): string | null {
 	if (parseCommandSegments(command).length !== 1) return null
 	const tokens = rememberedScopeTokens(command)
 	return tokens.length ? tokens.join(" ") : null
+}
+
+// Canonical form after dropping trailing whitelisted output-filter pipe
+// stages, or null when there is nothing safe to normalize. Deny matching
+// never uses this: matchBashDeny scans every pipe segment on purpose, and
+// normalization must never hide a denied program behind a pipe.
+function normalizedCanonicalForm(command: string): string | null {
+	const head = stripTrailingOutputFilters(command)
+	return head === null ? null : canonicalMatchForm(head)
 }
 
 const REGEX_META = /[.+?^${}()|[\]\\'"]/g
