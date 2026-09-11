@@ -1,4 +1,3 @@
-"use strict"
 // better-sqlite3 compatibility shim over Bun's built-in bun:sqlite.
 //
 // Why this exists: mem0ai requires better-sqlite3 for its SQLite vector
