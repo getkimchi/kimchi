@@ -304,17 +304,15 @@ export class AcpSessionClient {
 
 		this._accumulatedText = ""
 
+		// No upper bound on prompt duration — remote agents can run for tens of
+		// minutes on large repos. A wall-clock timeout cannot distinguish a slow
+		// turn from a dead connection (and wrongly closes a healthy WS), so
+		// transport failure detection is left to the ping keepalive instead.
 		const response: PromptResponse = await this._withAbortRejection(
-			this._withTimeout(
-				this._connection.prompt({
-					sessionId: this._sessionId,
-					prompt: [{ type: "text", text }],
-				}),
-				// No upper bound on prompt duration — remote agents can run for
-				// minutes on large repos. Use a generous default of 10 minutes.
-				10 * 60_000,
-				"prompt",
-			),
+			this._connection.prompt({
+				sessionId: this._sessionId,
+				prompt: [{ type: "text", text }],
+			}),
 		)
 
 		this._turnCount++

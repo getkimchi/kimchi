@@ -602,6 +602,36 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
+		it("does not time out a long-running prompt (no wall-clock cap)", async () => {
+			vi.useFakeTimers()
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("long task")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Regression: prompt() previously rejected with RemoteConnectionError
+			// after 10 minutes ("prompt timed out after 600000ms"), killing healthy
+			// long-running remote turns. There is now no wall-clock cap — dead
+			// connections are detected by the ping keepalive instead.
+			vi.advanceTimersByTime(30 * 60_000)
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			const result = await promptPromise
+			expect(result.stopReason).toBe("end_turn")
+
+			client.close()
+		})
+
 		it("calls onTurnEnd with incremented turn count when prompt resolves", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
