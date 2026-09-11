@@ -8,7 +8,8 @@
 //   node scripts/build-binary.js --target windows-x64   # build for Windows x86-64
 
 import { execSync } from "node:child_process"
-import { rmSync } from "node:fs"
+import { copyFileSync, existsSync, rmSync } from "node:fs"
+import { createRequire } from "node:module"
 import { arch, platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -110,5 +111,33 @@ if (!isCrossCompile && platform() === "darwin") {
 	run("codesign (strip)", `codesign --remove-signature dist/bin/${target.binaryName}`)
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${target.binaryName}`)
 }
+
+// pi's image resize pipeline (pi-coding-agent/dist/utils/photon.js) imports
+// @silvia-odwyer/photon-node, whose CJS entry reads photon_rs_bg.wasm via a
+// build-machine absolute path. pi patches fs.readFileSync to fall back to
+// $execDir/photon_rs_bg.wasm, so the WASM must sit next to the compiled binary.
+// Resolve it the way pi (a regular dependency) sees it; the direct top-level
+// require.resolve only works while pnpm happens to hoist photon-node.
+console.log("\n→ copy photon wasm")
+const piRequire = createRequire(join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"))
+let photonWasmSrc
+try {
+	photonWasmSrc = piRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
+} catch {
+	// pnpm layouts don't always honor deep subpath joins — resolve the package
+	// directory via its package.json and join the WASM filename instead.
+	photonWasmSrc = join(dirname(piRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
+}
+if (!existsSync(photonWasmSrc)) {
+	// Structural regression guard: without this file, every image read in the
+	// compiled binary is silently dropped ("[Image omitted: could not be resized
+	// below the inline image size limit.]"). Fail the build, not the user.
+	throw new Error(
+		`photon_rs_bg.wasm not found (resolved: ${photonWasmSrc}). ` +
+			"@silvia-odwyer/photon-node is missing or changed shape; image inlining " +
+			"would silently break in the compiled binary.",
+	)
+}
+copyFileSync(photonWasmSrc, join(projectRoot, "dist", "bin", "photon_rs_bg.wasm"))
 
 run("copy resources", "node scripts/copy-resources.js")
