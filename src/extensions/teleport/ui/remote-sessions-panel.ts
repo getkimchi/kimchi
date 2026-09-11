@@ -39,6 +39,8 @@ export type RemoteSessionsResult =
 	| { action: "rename-workspace"; node: RemoteWorkspaceNode }
 	| { action: "open-session"; node: RemoteSessionNode }
 	| { action: "delete-session"; node: RemoteSessionNode }
+	| { action: "sync-workspace"; node: RemoteWorkspaceNode }
+	| { action: "sync-session"; node: RemoteSessionNode }
 
 interface PickerTui {
 	requestRender(force?: boolean): void
@@ -210,6 +212,17 @@ export class RemoteSessionsPanel implements Component {
 			} else {
 				if (entry.node.sessionName === "") return
 				this.done({ action: "delete-session", node: entry.node })
+			}
+			return
+		}
+		if (matchesKey(data, "s")) {
+			const entry = this.entries[this.selectedIndex]
+			if (!entry) return
+			if (entry.kind === "workspace") {
+				this.done({ action: "sync-workspace", node: entry.node })
+			} else {
+				if (entry.node.sessionName === "") return
+				this.done({ action: "sync-session", node: entry.node })
 			}
 			return
 		}
@@ -421,7 +434,7 @@ export class RemoteSessionsPanel implements Component {
 		}
 		const hint = this.showDetails
 			? "i: back  esc/q/x: close details"
-			: "↑/↓ j/k: navigate  enter: open  d: delete  r: rename  i: details  esc: close"
+			: "↑/↓ j/k: navigate  enter: open  d: delete  r: rename  s: sync  i: details  esc: close"
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 

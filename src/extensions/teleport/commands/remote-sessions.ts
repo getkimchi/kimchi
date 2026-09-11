@@ -1,4 +1,4 @@
-import { basename } from "node:path"
+import { basename, isAbsolute, join } from "node:path"
 import { authenticateWorkspace, createOrUpdateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
 import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
@@ -10,12 +10,13 @@ import type { Session } from "../../../sandbox/worker/types.js"
 import { isVisibleSession } from "../session-filter.js"
 import { ensureIncludeDirective, syncSshConfig } from "../ssh-config/sync.js"
 import type { TeleportContext } from "../types.js"
-import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
+import type { RemoteSessionNode, RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
 import { pickRemoteSessions } from "../ui/remote-sessions-panel.js"
 import type { CombinedStatus, SessionRow } from "../ui/sessions-table.js"
 import { assignWorkspaceSlugs } from "../workspace-slugs.js"
 import { runAttachSession } from "./attach.js"
 import { info, refuse, status, warn } from "./errors.js"
+import { runSyncArgs } from "./sync.js"
 import { runTerminal } from "./terminal.js"
 
 export async function runRemoteSessions(_args: string, ctx: TeleportContext): Promise<void> {
@@ -78,6 +79,19 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 				ctx,
 			)
 			return
+		}
+
+		if (result.action === "sync-workspace") {
+			warn(
+				ctx,
+				`Only sessions can be synced. Select a session under workspace ${result.node.row.name || result.node.row.id} and press s.`,
+			)
+			continue
+		}
+
+		if (result.action === "sync-session") {
+			await syncSession(result.node, ctx)
+			continue
 		}
 
 		if (result.action === "rename-workspace") {
@@ -205,8 +219,66 @@ export function toRow(ws: Workspace, s: Session): SessionRow {
 		workspaceId: ws.id,
 		workspaceName: ws.name,
 		sessionName: s.name,
+		cwd: s.cwd || undefined,
 		status: deriveStatus(s),
 		clientConnected: s.clientConnected,
 		lastActivityAt: s.lastActivityAt ? new Date(s.lastActivityAt) : undefined,
 	}
+}
+
+const SYNC_UP = "Sync Up  (local → remote)"
+const SYNC_DOWN = "Sync Down  (remote → local)"
+
+/**
+ * Questionnaire behind the remote-sessions `s` hotkey: pick a direction,
+ * then source and destination paths. The local field is prefilled with the
+ * current working dir and the remote field with the session's remote cwd —
+ * for `up` the source is local, for `down` it is remote.
+ */
+async function syncSession(session: RemoteSessionNode, ctx: TeleportContext): Promise<void> {
+	const direction = await ctx.ui.select(
+		`Sync ${session.sessionName} (${session.workspaceName || session.workspaceId})`,
+		[SYNC_UP, SYNC_DOWN],
+	)
+	if (!direction) return
+
+	const up = direction === SYNC_UP
+	const localDefault = ctx.cwd
+	const remoteDefault = session.cwd || "~/"
+
+	const source = await ctx.ui.input(
+		`Source path (${up ? "local" : "remote, on the workspace"}, default: ${up ? localDefault : remoteDefault})`,
+	)
+	if (source === undefined) return
+	const target = await ctx.ui.input(
+		`Destination path (${up ? "remote, on the workspace" : "local"}, default: ${up ? remoteDefault : localDefault})`,
+	)
+	if (target === undefined) return
+
+	// Empty submits fall back to the default shown in the prompt title; relative
+	// paths are resolved against the corresponding default, absolute paths
+	// (and `~`-rooted ones) pass through untouched.
+	const resolve = (raw: string, base: string, local: boolean): string => {
+		const p = raw.trim()
+		if (p === "") return base
+		if (local ? isAbsolute(p) : p.startsWith("/")) return p
+		if (p === "~" || p.startsWith("~/")) return p
+		// Remote targets are always unix — join with a literal `/` (no
+		// platform separator, no `..` normalization).
+		return local ? join(base, p) : `${base.replace(/\/+$/, "")}/${p}`
+	}
+
+	await runSyncArgs(
+		{
+			direction: up ? "up" : "down",
+			workspace: session.workspaceId,
+			source: resolve(source, up ? localDefault : remoteDefault, up),
+			target: resolve(target, up ? remoteDefault : localDefault, !up),
+			exclude: [],
+			includeIgnored: false,
+			delete: false,
+			dryRun: false,
+		},
+		ctx,
+	)
 }
