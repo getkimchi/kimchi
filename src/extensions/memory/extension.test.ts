@@ -65,12 +65,35 @@ describe("memory extension", () => {
 		const ctx = createCommandContext()
 		await command.handler("list --limit 5", ctx)
 		expect(runAdminCommand).toHaveBeenCalledWith(["list", "--limit", "5"], expect.objectContaining({ cwd: ctx.cwd }))
+		// A short result clears any stale view and notifies.
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", undefined)
 		expect(ctx.ui.notify).toHaveBeenCalledWith("single-line result", "info")
 
-		// Multiline output opens the editor viewer instead.
+		// Multiline output renders as a read-only widget — never the editor
+		// (an editable buffer implied edits had an effect).
 		vi.mocked(runAdminCommand).mockResolvedValue({ text: "line 1\nline 2", json: "{}", code: 0, useJson: false })
 		await command.handler("list", ctx)
-		expect(ctx.ui.editor).toHaveBeenCalledWith("Memory", "line 1\nline 2")
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", ["line 1", "line 2"])
+		expect(ctx.ui.editor).not.toHaveBeenCalled()
+
+		// Very long output is capped with a paging hint.
+		const long = Array.from({ length: 40 }, (_, i) => `fact ${i}`).join("\n")
+		vi.mocked(runAdminCommand).mockResolvedValue({ text: long, json: "{}", code: 0, useJson: false })
+		await command.handler("list", ctx)
+		const shown = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1]
+		if (!Array.isArray(shown)) throw new Error("expected widget lines")
+		expect(shown).toHaveLength(30)
+		expect(shown.at(-1)).toContain("10 more lines")
+	})
+
+	it("clears the /memory view when an agent turn resumes", async () => {
+		const search = vi.fn(async () => [{ memory: "fact", score: 0.6 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		await start(startEvent("turn 1"), ctx)
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", undefined)
 	})
 
 	it("carries the digest from the very first start and keeps it byte-stable across turns", async () => {

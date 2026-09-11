@@ -99,6 +99,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 	})
 }
 
+/**
+ * The in-session /memory view: a read-only widget above the input (the
+ * editor-as-viewer it replaced implied edits had an effect). Stays visible
+ * while you type the next command — e.g. /memory delete <id> — and is
+ * cleared when an agent turn resumes.
+ */
+const MEMORY_VIEW_KEY = "memory-view"
+const MEMORY_VIEW_MAX_LINES = 30
+
 export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: ExtensionAPI) => void {
 	const isEnabled = deps.isEnabled ?? (() => getParsedCliArgs().options.memory === true)
 
@@ -118,8 +127,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		wireMemoryCapture(pi)
 
 		// In-session management — the same grammar as `kimchi memory` (admin.ts).
-		// Lists and usage render in the editor viewer; single-line results as
-		// notifications; destructive resets confirm through the native dialog.
+		// Multi-line output renders as a read-only widget above the input;
+		// single-line results as notifications; destructive resets confirm
+		// through the native dialog.
 		pi.registerCommand("memory", {
 			description: "Manage persistent memory (list, search, delete, reset)",
 			handler: async (args, ctx) => {
@@ -132,11 +142,21 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					console.log(output)
 					return
 				}
-				if (output.includes("\n")) {
-					await ctx.ui.editor("Memory", output)
-				} else {
+				const lines = output.split("\n")
+				if (lines.length === 1) {
+					// A short result is a notification; drop any stale view.
+					ctx.ui.setWidget(MEMORY_VIEW_KEY, undefined)
 					ctx.ui.notify(output, result.code === 0 ? "info" : "error")
+					return
 				}
+				const shown =
+					lines.length <= MEMORY_VIEW_MAX_LINES
+						? lines
+						: [
+								...lines.slice(0, MEMORY_VIEW_MAX_LINES - 1),
+								`… ${lines.length - MEMORY_VIEW_MAX_LINES} more lines — narrow with --limit, page with --offset, or run kimchi memory list in a terminal`,
+							]
+				ctx.ui.setWidget(MEMORY_VIEW_KEY, shown)
 			},
 		})
 
@@ -166,6 +186,13 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// what it does. Enough to diagnose, never swallowed (skill rule).
 		const logDegrade = (message: string, err: unknown): void => {
 			console.error(`[memory] ${message}:`, err instanceof Error ? err.message : err)
+		}
+
+		const clearMemoryView = (ctx: ExtensionContext): void => {
+			// The /memory view is transient: clear it once real work resumes
+			// (slash commands don't fire agent turns, so it survives between
+			// management invocations).
+			if (ctx.hasUI) ctx.ui.setWidget(MEMORY_VIEW_KEY, undefined)
 		}
 
 		const getSearcher = async (): Promise<MemorySearcher | undefined> => {
@@ -229,6 +256,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		}
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			clearMemoryView(ctx)
 			// Capture the session cwd once — scopes retrieval to the project store.
 			sessionCwd ??= ctx.cwd
 			// Lever 3: drain new content as it accumulates (sync, cheap — reads
