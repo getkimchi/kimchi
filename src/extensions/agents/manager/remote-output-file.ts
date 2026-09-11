@@ -74,6 +74,26 @@ export function streamRemoteToOutputFile(
 		pendingEntries = []
 	}
 
+	/** Writes the single tool_use transcript entry for a tool call. Deferred to
+	 *  completion/abort so repeated in_progress notifications don't duplicate it
+	 *  and its input carries the fully streamed args. The entry's id prefers the
+	 *  ACP toolCallId (so consumers can correlate tool_use and tool_result),
+	 *  falling back to the display title only if no id arrived (should not
+	 *  happen in practice — toolCallId is present from the first notification). */
+	const writeToolUseEntry = (toolCall: { title: string; toolCallId?: string }) => {
+		writeEntry("assistant", {
+			role: "assistant",
+			content: [
+				{
+					type: "tool_use",
+					name: toolCall.title,
+					id: toolCall.toolCallId ?? toolCall.title,
+					input: pendingRawInput ?? {},
+				},
+			],
+		})
+	}
+
 	const callbacks: AcpSessionCallbacks = {
 		onToolActivity: (activity) => {
 			if (activity.status === "in_progress") {
@@ -81,25 +101,20 @@ export function streamRemoteToOutputFile(
 					writeEntry("assistant", { role: "assistant", content: [{ type: "text", text: pendingAssistantText }] })
 					pendingAssistantText = ""
 				}
-				pendingToolCall = { title: activity.toolName, toolCallId: pendingRawInputId }
-				// Use the actual tool-call ID (from the ACP toolCallId) for the
-				// tool_use entry's id field so consumers can correlate tool_use and
-				// tool_result. Fall back to the display title only if no id arrived
-				// (should not happen in practice — toolCallId is present from the
-				// first tool_call notification).
-				writeEntry("assistant", {
-					role: "assistant",
-					content: [
-						{
-							type: "tool_use",
-							name: activity.toolName,
-							id: pendingRawInputId ?? activity.toolName,
-							input: pendingRawInput ?? {},
-						},
-					],
-				})
+				if (pendingToolCall === undefined) {
+					pendingToolCall = { title: activity.toolName, toolCallId: pendingRawInputId }
+				} else {
+					// Repeated in_progress for the same call — the ACP server re-sends
+					// these as args/title stream in, and cloud agents broadcast them
+					// periodically (~80ms) while a long-running tool executes. Only
+					// refresh the display title; a transcript entry per repeat would
+					// append thousands of identical tool_use lines to the .output
+					// file (observed: 29MB files, ~99% duplicate lines).
+					pendingToolCall.title = activity.toolName
+				}
 			}
 			if (activity.status !== "in_progress" && pendingToolCall) {
+				writeToolUseEntry(pendingToolCall)
 				const outputText =
 					pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : activity.toolName
 				writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })
@@ -114,8 +129,8 @@ export function streamRemoteToOutputFile(
 			}
 			// Forward to the activity tracker at most once per tool call: the ACP
 			// server re-sends in_progress notifications for the same toolCallId as
-			// args/title stream in. The transcript logic above must see every
-			// repeat (it refreshes the pending tool's title/args), but downstream
+			// args/title stream in. The transcript logic above tolerates every
+			// repeat (it refreshes the pending tool's title), but downstream
 			// consumers would stack a duplicate progress-line entry per repeat
 			// ("run_command, run_command, …").
 			if (activity.toolCallId) {
@@ -182,6 +197,9 @@ export function streamRemoteToOutputFile(
 			pendingAssistantText = ""
 		}
 		if (pendingToolCall) {
+			// The tool_use entry is deferred to completion — on abort it has not
+			// been written yet, so write it here with whatever input streamed in.
+			writeToolUseEntry(pendingToolCall)
 			const outputText =
 				pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : pendingToolCall.title
 			writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })

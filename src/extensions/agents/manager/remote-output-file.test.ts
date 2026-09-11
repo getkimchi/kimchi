@@ -43,6 +43,10 @@ function findToolUseEntry(entries: ParsedEntry[]): ParsedEntry | undefined {
 	return entries.find((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "tool_use"))
 }
 
+function findToolUseEntries(entries: ParsedEntry[]): ParsedEntry[] {
+	return entries.filter((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "tool_use"))
+}
+
 function findTextEntry(entries: ParsedEntry[]): ParsedEntry | undefined {
 	return entries.find((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "text"))
 }
@@ -160,13 +164,15 @@ describe("streamRemoteToOutputFile", () => {
 			expect(activities).toContain("completed:Reading file.ts")
 		})
 
-		it("falls back to toolName for id when no toolCallId arrived before start", () => {
+		it("uses the toolCallId that arrives in a later update, before completion", () => {
 			const { callbacks: inner } = makeInnerCallbacks()
 			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
 			setOutputPath(outputPath, "agent-1")
 
 			// onToolActivity fires before any raw notification with toolCallId
 			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command" })
+			// The toolCallId arrives in the completion update — because the
+			// tool_use entry is written at completion, it picks up this id.
 			callbacks.onRawNotification?.(toolCallUpdateNotification("call-456", { status: "completed", rawOutput: "done" }))
 			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command" })
 			callbacks.onTurnEnd?.(1)
@@ -175,7 +181,23 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUseEntry = findToolUseEntry(entries)
 			expect(toolUseEntry).toBeDefined()
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
-			// No toolCallId was seen before start, so falls back to toolName
+			expect(toolUse.id).toBe("call-456")
+		})
+
+		it("falls back to toolName for id when no toolCallId ever arrives", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			// Activity-only flow — no raw notifications carry a toolCallId.
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUseEntry = findToolUseEntry(entries)
+			expect(toolUseEntry).toBeDefined()
+			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
 			expect(toolUse.id).toBe("Shell command")
 		})
 
@@ -294,7 +316,7 @@ describe("streamRemoteToOutputFile", () => {
 	})
 
 	describe("rawInput handling", () => {
-		it("stores rawInput from tool_call_update if it arrives after start", () => {
+		it("captures rawInput from tool_call_update that arrives after start", () => {
 			const { callbacks: inner } = makeInnerCallbacks()
 			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
 			setOutputPath(outputPath, "agent-1")
@@ -318,10 +340,9 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUseEntry = findToolUseEntry(entries)
 			expect(toolUseEntry).toBeDefined()
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
-			// rawInput arrived after start, so it wasn't captured in the tool_use entry
-			// (the entry was already written at "start" time). This is expected behavior —
-			// the input is written at start time using whatever was available.
-			expect(toolUse.input).toEqual({})
+			// The tool_use entry is written once, at completion — so args that
+			// streamed in after start are included.
+			expect(toolUse.input).toEqual({ command: "ls -la" })
 		})
 
 		it("captures rawInput from tool_call notification when it arrives before start", () => {
@@ -346,6 +367,95 @@ describe("streamRemoteToOutputFile", () => {
 			expect(toolUseEntry).toBeDefined()
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
 			expect(toolUse.input).toEqual({ path: "/app/file.ts" })
+		})
+	})
+
+	describe("repeated in_progress dedup", () => {
+		it("writes a single tool_use entry despite repeated in_progress heartbeats", () => {
+			// Regression: cloud agents broadcast identical in_progress
+			// notifications for the same toolCallId periodically (~80ms) while a
+			// long-running tool executes. Each repeat used to append another
+			// assistant tool_use entry — a 30-minute nested Agent call produced
+			// ~5,800 identical lines and a 29MB .output file.
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			const args = { description: "Build Chunk 3 quiz polish", prompt: "You are building Chunk 3…" }
+			callbacks.onRawNotification?.(toolCallNotification("kt.Agent.8", "Agent", "in_progress", { rawInput: args }))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Agent", toolCallId: "kt.Agent.8" })
+
+			// Heartbeat: the server re-broadcasts the same in_progress activity
+			// (with identical args) many times while the tool runs.
+			for (let i = 0; i < 50; i++) {
+				callbacks.onRawNotification?.(
+					toolCallUpdateNotification("kt.Agent.8", { status: "in_progress", rawInput: args }),
+				)
+				callbacks.onToolActivity?.({ status: "in_progress", toolName: "Agent", toolCallId: "kt.Agent.8" })
+			}
+
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("kt.Agent.8", { status: "completed", rawOutput: "done" }),
+			)
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Agent", toolCallId: "kt.Agent.8" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUseEntries = findToolUseEntries(entries)
+			expect(toolUseEntries).toHaveLength(1)
+			const toolUse = getToolUseContent(toolUseEntries[0])
+			expect(toolUse.id).toBe("kt.Agent.8")
+			expect(toolUse.name).toBe("Agent")
+			expect(toolUse.input).toEqual(args)
+			expect(entries.filter((e) => e.type === "toolResult")).toHaveLength(1)
+		})
+
+		it("keeps the latest streamed rawInput in the single tool_use entry", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			// Args stream in across repeated in_progress notifications: partial
+			// first, complete later.
+			callbacks.onRawNotification?.(toolCallNotification("call-stream", "Shell command", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command" })
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("call-stream", { status: "in_progress", rawInput: { command: "ls" } }),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command" })
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("call-stream", { status: "in_progress", rawInput: { command: "ls -la" } }),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-stream", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUseEntries = findToolUseEntries(entries)
+			expect(toolUseEntries).toHaveLength(1)
+			const toolUse = getToolUseContent(toolUseEntries[0])
+			expect(toolUse.input).toEqual({ command: "ls -la" })
+		})
+
+		it("writes one tool_use entry per completed tool call across sequential calls with the same name", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			for (const id of ["call-1", "call-2", "call-3"]) {
+				callbacks.onRawNotification?.(toolCallNotification(id, "Shell command", "in_progress"))
+				callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: id })
+				callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: id })
+				callbacks.onRawNotification?.(toolCallUpdateNotification(id, { status: "completed", rawOutput: "ok" }))
+				callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: id })
+			}
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUseIds = findToolUseEntries(entries).map((e) => getToolUseContent(e).id)
+			expect(toolUseIds).toEqual(["call-1", "call-2", "call-3"])
+			expect(entries.filter((e) => e.type === "toolResult")).toHaveLength(3)
 		})
 	})
 
@@ -482,16 +592,19 @@ describe("streamRemoteToOutputFile", () => {
 			// Tool tracking is cleared — the next tool call starts clean
 			callbacks.onRawNotification?.(toolCallNotification("call-y", "New tool", "in_progress"))
 			callbacks.onToolActivity?.({ status: "in_progress", toolName: "New tool" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-y", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "New tool" })
 			callbacks.onTurnEnd?.(2)
 
 			const after = parseEntries(readJsonl(outputPath))
 			// No degraded title-only toolResult was written for the discarded
 			// pre-disconnect tool call — the recovery backfill supplies the tool's
 			// real output from session.jsonl.
-			expect(findToolResultEntry(after)).toBeUndefined()
+			expect(findToolResultEntry(after)).toBeDefined()
 			// Only the post-reattach tool call is present locally
-			const toolUses = after.filter((e) => e.type === "assistant").flatMap((e) => e.message.content)
-			expect(toolUses.filter((c) => c.type === "tool_use")).toHaveLength(1)
+			const toolUseEntries = findToolUseEntries(after)
+			expect(toolUseEntries).toHaveLength(1)
+			expect(getToolUseContent(toolUseEntries[0]).id).toBe("call-y")
 		})
 
 		it("keeps outputPath and agentId (subsequent flushes still write)", () => {
