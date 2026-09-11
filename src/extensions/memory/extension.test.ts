@@ -5,11 +5,22 @@ import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { MEMORY_SEARCH_TIMEOUT_MS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
+import { MemoryPanel } from "./memory-panel.js"
 
-// The /memory command handler delegates to the admin core; mock it so the
-// handler's arg threading and output routing are testable under Node
-// without constructing real backends.
-vi.mock("./admin.js", () => ({ runAdminCommand: vi.fn() }))
+// The /memory command handler delegates to the admin core; the backend-
+// touching functions are mocked so arg threading, panel mounting, and
+// output routing are testable under Node without real stores.
+// parseAdminArgs stays real — the handler routes on it.
+vi.mock("./admin.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./admin.js")>()
+	return {
+		...actual,
+		runAdminCommand: vi.fn(),
+		adminListFacts: vi.fn(),
+		adminSearchFacts: vi.fn(),
+		adminDeleteFacts: vi.fn(),
+	}
+})
 
 const BASE_PROMPT = "You are kimchi."
 
@@ -56,34 +67,69 @@ describe("memory extension", () => {
 	})
 
 	it("registers the /memory management command and routes its output", async () => {
-		const { runAdminCommand } = await import("./admin.js")
-		vi.mocked(runAdminCommand).mockResolvedValue({ text: "single-line result", json: "{}", code: 0, useJson: false })
+		const admin = await import("./admin.js")
 		const { api, getRegisteredCommand } = createExtensionApi()
 		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
 		const command = getRegisteredCommand("memory")
 		expect(command.description).toContain("Manage persistent memory")
 		const ctx = createCommandContext()
-		await command.handler("list --limit 5", ctx)
-		expect(runAdminCommand).toHaveBeenCalledWith(["list", "--limit", "5"], expect.objectContaining({ cwd: ctx.cwd }))
-		// A short result clears any stale view and notifies.
+
+		// Non-panel results take the text path: a short result notifies and
+		// clears any stale view.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "single-line result",
+			json: "{}",
+			code: 0,
+			useJson: false,
+		})
+		await command.handler("delete abc", ctx)
+		expect(admin.runAdminCommand).toHaveBeenCalledWith(["delete", "abc"], expect.objectContaining({ cwd: ctx.cwd }))
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", undefined)
 		expect(ctx.ui.notify).toHaveBeenCalledWith("single-line result", "info")
 
-		// Multiline output renders as a read-only widget — never the editor
-		// (an editable buffer implied edits had an effect).
-		vi.mocked(runAdminCommand).mockResolvedValue({ text: "line 1\nline 2", json: "{}", code: 0, useJson: false })
-		await command.handler("list", ctx)
+		// Multi-line output renders as a read-only widget — never the editor.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "line 1\nline 2",
+			json: "{}",
+			code: 0,
+			useJson: false,
+		})
+		await command.handler("", ctx)
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", ["line 1", "line 2"])
 		expect(ctx.ui.editor).not.toHaveBeenCalled()
 
-		// Very long output is capped with a paging hint.
+		// Very long output is capped at the TUI's widget limit with a hint.
 		const long = Array.from({ length: 40 }, (_, i) => `fact ${i}`).join("\n")
-		vi.mocked(runAdminCommand).mockResolvedValue({ text: long, json: "{}", code: 0, useJson: false })
-		await command.handler("list", ctx)
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({ text: long, json: "{}", code: 0, useJson: false })
+		await command.handler("", ctx)
 		const shown = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1]
 		if (!Array.isArray(shown)) throw new Error("expected widget lines")
-		expect(shown).toHaveLength(30)
-		expect(shown.at(-1)).toContain("10 more lines")
+		expect(shown).toHaveLength(10)
+		expect(shown.at(-1)).toContain("30 more lines")
+
+		// list opens the interactive panel instead of dumping text.
+		vi.mocked(admin.adminListFacts).mockResolvedValue([
+			{ id: "f1", memory: "the user's dog is named Fred", scopeId: "personal", createdAt: "2026-09-11" },
+		])
+		await command.handler("list", ctx)
+		expect(admin.adminListFacts).toHaveBeenCalledWith({ kind: "all" })
+		expect(ctx.ui.custom).toHaveBeenCalledTimes(1)
+		// Mount the factory as the TUI would and inspect the resulting panel.
+		const factory = vi.mocked(ctx.ui.custom).mock.calls[0]?.[0]
+		const mounted = factory(
+			{ requestRender: () => {}, terminal: { rows: 24 } } as never,
+			{} as never,
+			{} as never,
+			vi.fn(),
+		)
+		if (!(mounted instanceof MemoryPanel)) throw new Error("expected a MemoryPanel")
+		expect(mounted.render(80).join("\n")).toContain("Memory — 1 fact")
+		expect(mounted.render(80).join("\n")).toContain("the user's dog is named Fred")
+
+		// search surfaces fetch failures as an error notification.
+		vi.mocked(admin.adminSearchFacts).mockRejectedValue(new Error("no api key"))
+		await command.handler("search dog", ctx)
+		expect(ctx.ui.notify).toHaveBeenCalledWith("error: no api key", "error")
 	})
 
 	it("clears the /memory view when an agent turn resumes", async () => {

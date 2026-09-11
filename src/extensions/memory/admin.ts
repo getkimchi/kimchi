@@ -336,11 +336,12 @@ function ledgerEntryCount(path: string): number {
 	}
 }
 
-interface ScopedItem extends AdminMemoryItem {
+/** A stored fact with the store it belongs to — what interactive surfaces need. */
+export interface AdminFact extends AdminMemoryItem {
 	scopeId: string
 }
 
-function renderFactLines(page: ScopedItem[]): string[] {
+function renderFactLines(page: AdminFact[]): string[] {
 	const scopeWidth = Math.max(8, ...page.map((p) => p.scopeId.length))
 	return page.map((p) => {
 		const date = recencyKey(p).slice(0, 10) || "-"
@@ -413,13 +414,59 @@ function result(payload: { text: string; code?: number; data: unknown }): Omit<A
 	}
 }
 
-async function loadAllScoped(deps: ResolvedDeps, scope: ScopeFilter): Promise<ScopedItem[]> {
-	const items: ScopedItem[] = []
+async function loadAllScoped(deps: ResolvedDeps, scope: ScopeFilter): Promise<AdminFact[]> {
+	const items: AdminFact[] = []
 	for (const store of selectStores(listStores(deps.memoryRoot), scope)) {
 		const backend = await deps.createBackend(store.dbPath)
 		for (const item of await backend.getAll()) items.push({ ...item, scopeId: store.scopeId })
 	}
 	return items
+}
+
+/** Interactive surfaces (memory-panel): every fact in the selected scopes, newest first. */
+export async function adminListFacts(scope: ScopeFilter, deps?: AdminDeps): Promise<AdminFact[]> {
+	return sortNewestFirst(await loadAllScoped(resolveDeps(deps), scope))
+}
+
+/** Interactive surfaces: ranked search hits in the selected scopes (needs the gateway for the query embedding). */
+export async function adminSearchFacts(
+	query: string,
+	scope: ScopeFilter,
+	deps?: AdminDeps,
+): Promise<Array<AdminFact & { score?: number }>> {
+	const resolved = resolveDeps(deps)
+	const hits: Array<AdminFact & { score?: number }> = []
+	for (const store of selectStores(listStores(resolved.memoryRoot), scope)) {
+		const backend = await resolved.createBackend(store.dbPath)
+		for (const hit of await backend.search(query)) hits.push({ ...hit, scopeId: store.scopeId })
+	}
+	hits.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+	return hits
+}
+
+/** Interactive surfaces: delete facts by id across all stores. Throws on backend failure. */
+export async function adminDeleteFacts(
+	ids: string[],
+	deps?: AdminDeps,
+): Promise<{ deleted: Array<{ id: string; scope: string }>; notFound: string[] }> {
+	const resolved = resolveDeps(deps)
+	const index = new Map<string, { scopeId: string; backend: AdminBackend }>()
+	for (const store of listStores(resolved.memoryRoot)) {
+		const backend = await resolved.createBackend(store.dbPath)
+		for (const item of await backend.getAll()) index.set(item.id, { scopeId: store.scopeId, backend })
+	}
+	const deleted: Array<{ id: string; scope: string }> = []
+	const notFound: string[] = []
+	for (const id of ids) {
+		const hit = index.get(id)
+		if (!hit) {
+			notFound.push(id)
+			continue
+		}
+		await hit.backend.delete(id)
+		deleted.push({ id, scope: hit.scopeId })
+	}
+	return { deleted, notFound }
 }
 
 async function opOverview(deps: ResolvedDeps): Promise<Omit<AdminResult, "useJson">> {
@@ -458,7 +505,7 @@ async function opList(
 	parsed: { scope: ScopeFilter; limit: number | "all"; offset: number },
 	deps: ResolvedDeps,
 ): Promise<Omit<AdminResult, "useJson">> {
-	const all = sortNewestFirst(await loadAllScoped(deps, parsed.scope))
+	const all = await adminListFacts(parsed.scope, deps)
 	const total = all.length
 	const page =
 		parsed.limit === "all" ? all.slice(parsed.offset) : all.slice(parsed.offset, parsed.offset + parsed.limit)
@@ -487,12 +534,7 @@ async function opSearch(
 	parsed: { query: string; scope: ScopeFilter },
 	deps: ResolvedDeps,
 ): Promise<Omit<AdminResult, "useJson">> {
-	const hits: Array<ScopedItem & { score?: number }> = []
-	for (const store of selectStores(listStores(deps.memoryRoot), parsed.scope)) {
-		const backend = await deps.createBackend(store.dbPath)
-		for (const hit of await backend.search(parsed.query)) hits.push({ ...hit, scopeId: store.scopeId })
-	}
-	hits.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+	const hits = await adminSearchFacts(parsed.query, parsed.scope, deps)
 	const data = {
 		query: parsed.query,
 		scope: parsed.scope,
@@ -509,22 +551,7 @@ async function opSearch(
 }
 
 async function opDelete(parsed: { ids: string[] }, deps: ResolvedDeps): Promise<Omit<AdminResult, "useJson">> {
-	const index = new Map<string, { scopeId: string; backend: AdminBackend }>()
-	for (const store of listStores(deps.memoryRoot)) {
-		const backend = await deps.createBackend(store.dbPath)
-		for (const item of await backend.getAll()) index.set(item.id, { scopeId: store.scopeId, backend })
-	}
-	const deleted: Array<{ id: string; scope: string }> = []
-	const notFound: string[] = []
-	for (const id of parsed.ids) {
-		const hit = index.get(id)
-		if (!hit) {
-			notFound.push(id)
-			continue
-		}
-		await hit.backend.delete(id)
-		deleted.push({ id, scope: hit.scopeId })
-	}
+	const { deleted, notFound } = await adminDeleteFacts(parsed.ids, deps)
 	const data = { deleted, notFound }
 	const lines = deleted.map((d) => `Deleted ${d.id} from ${d.scope}.`)
 	if (notFound.length > 0) lines.push(`Not found: ${notFound.join(", ")}`)

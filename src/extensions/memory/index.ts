@@ -34,10 +34,17 @@
  *
  * Opt-in via the `--memory` CLI flag (see cli-args.ts CLI_OPTIONS).
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { runAdminCommand } from "./admin.js"
+import {
+	type AdminCommand,
+	adminDeleteFacts,
+	adminListFacts,
+	adminSearchFacts,
+	parseAdminArgs,
+	runAdminCommand,
+} from "./admin.js"
 import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
 import { DIGEST_SCORE_THRESHOLD, MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
 import {
@@ -48,6 +55,7 @@ import {
 	isCovered,
 	MEMORY_ENABLED_NOTICE,
 } from "./inject.js"
+import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { createMemorySearchTool } from "./tools.js"
 
@@ -100,13 +108,50 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
- * The in-session /memory view: a read-only widget above the input (the
- * editor-as-viewer it replaced implied edits had an effect). Stays visible
- * while you type the next command — e.g. /memory delete <id> — and is
- * cleared when an agent turn resumes.
+ * The in-session /memory fallback view: a read-only widget above the
+ * input for non-panel output (the overview, errors). list|search open the
+ * interactive MemoryPanel instead. The TUI caps string widgets at 10
+ * lines, so the cap keeps our hint line instead of its
+ * "... (widget truncated)". Cleared when an agent turn resumes.
  */
 const MEMORY_VIEW_KEY = "memory-view"
-const MEMORY_VIEW_MAX_LINES = 30
+const MEMORY_VIEW_MAX_LINES = 10
+
+/**
+ * The interactive browser behind /memory list and /memory search: fetches
+ * the facts (search needs the gateway — errors surface as a notification)
+ * and mounts the MemoryPanel through ctx.ui.custom until the user quits.
+ */
+async function openMemoryPanel(
+	parsed: Extract<AdminCommand, { op: "list" | "search" }>,
+	ctx: ExtensionCommandContext,
+): Promise<void> {
+	try {
+		const facts: MemoryPanelFact[] =
+			parsed.op === "search" ? await adminSearchFacts(parsed.query, parsed.scope) : await adminListFacts(parsed.scope)
+		const title =
+			parsed.op === "search"
+				? `Memory — “${parsed.query}” (${facts.length})`
+				: `Memory — ${facts.length} fact${facts.length === 1 ? "" : "s"}`
+		await ctx.ui.custom(
+			(tui, _theme, _keybindings, done) =>
+				new MemoryPanel({
+					title,
+					facts,
+					deleteFact: async (id) => {
+						const outcome = await adminDeleteFacts([id])
+						const hit = outcome.deleted[0]
+						if (!hit) throw new Error("not found")
+						return hit.scope
+					},
+					tui,
+					done: () => done(undefined),
+				}),
+		)
+	} catch (err) {
+		ctx.ui.notify(`error: ${err instanceof Error ? err.message : String(err)}`, "error")
+	}
+}
 
 export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: ExtensionAPI) => void {
 	const isEnabled = deps.isEnabled ?? (() => getParsedCliArgs().options.memory === true)
@@ -127,13 +172,20 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		wireMemoryCapture(pi)
 
 		// In-session management — the same grammar as `kimchi memory` (admin.ts).
-		// Multi-line output renders as a read-only widget above the input;
-		// single-line results as notifications; destructive resets confirm
-		// through the native dialog.
+		// list|search open the interactive MemoryPanel (page through facts,
+		// delete by selection); everything else renders as a read-only widget
+		// (single-line results as notifications); resets confirm through the
+		// native dialog.
 		pi.registerCommand("memory", {
 			description: "Manage persistent memory (list, search, delete, reset)",
 			handler: async (args, ctx) => {
-				const result = await runAdminCommand(args?.trim().split(/\s+/).filter(Boolean) ?? [], {
+				const tokens = args?.trim().split(/\s+/).filter(Boolean) ?? []
+				const parsed = parseAdminArgs(tokens, { cwd: ctx.cwd })
+				if ((parsed.op === "list" || parsed.op === "search") && !parsed.json && ctx.hasUI) {
+					await openMemoryPanel(parsed, ctx)
+					return
+				}
+				const result = await runAdminCommand(tokens, {
 					cwd: ctx.cwd,
 					confirm: async (message) => ctx.ui.confirm("Memory reset", message),
 				})
@@ -154,7 +206,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						? lines
 						: [
 								...lines.slice(0, MEMORY_VIEW_MAX_LINES - 1),
-								`… ${lines.length - MEMORY_VIEW_MAX_LINES} more lines — narrow with --limit, page with --offset, or run kimchi memory list in a terminal`,
+								`… ${lines.length - MEMORY_VIEW_MAX_LINES} more lines — run kimchi memory in a terminal for full output`,
 							]
 				ctx.ui.setWidget(MEMORY_VIEW_KEY, shown)
 			},
