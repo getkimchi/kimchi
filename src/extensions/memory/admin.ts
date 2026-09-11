@@ -10,7 +10,7 @@
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
-import { createMemoryBackend, defaultMemoryDir } from "./backend.js"
+import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
 import { MEMORY_USER_ID } from "./config.js"
 import { acquireCaptureLock } from "./lock.js"
 import { resolveProjectScope, sanitizeScopeId } from "./scope.js"
@@ -255,18 +255,8 @@ async function defaultCreateBackend(dbPath: string): Promise<AdminBackend> {
 			const { results } = await mem0.getAll({ filters: { user_id: MEMORY_USER_ID }, topK: 100_000 })
 			return results
 		},
-		search: async (query) => {
-			const raw = await mem0.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 20 })
-			const list = (Array.isArray(raw) ? raw : (raw?.results ?? [])) as Array<{
-				id?: string
-				memory?: string
-				score?: number
-			}>
-			return list.filter(
-				(r): r is { id: string; memory: string; score?: number; createdAt?: string; updatedAt?: string } =>
-					typeof r.id === "string" && typeof r.memory === "string",
-			)
-		},
+		search: async (query) =>
+			normalizeMem0SearchResults(await mem0.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 20 })),
 		delete: async (id) => {
 			await mem0.delete(id)
 		},

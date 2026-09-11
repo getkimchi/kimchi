@@ -16,6 +16,7 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
@@ -307,6 +308,32 @@ describe("stripMultiModelArgs", () => {
 	it("strips --multi-model when combined with a real --model value", () => {
 		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
 		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	})
+})
+
+describe("stripMemoryArgs (the prompt-eating guard)", () => {
+	// pi-mono's parser treats unknown --flags as greedy: without stripping,
+	// `--memory "prompt"` would eat the prompt as the flag's value.
+	it("removes the bare --memory flag while preserving the prompt", () => {
+		expect(stripMemoryArgs(["--memory", "fix tests"])).toEqual(["fix tests"])
+		expect(stripMemoryArgs(["--memory"])).toEqual([])
+	})
+
+	it("removes the =-form", () => {
+		expect(stripMemoryArgs(["--memory=true", "fix tests"])).toEqual(["fix tests"])
+		expect(stripMemoryArgs(["--memory=false"])).toEqual([])
+	})
+
+	it("preserves positionals, prompts, and other flags", () => {
+		expect(stripMemoryArgs(["--yolo", "--memory", "fix the failing test", "--print"])).toEqual([
+			"--yolo",
+			"fix the failing test",
+			"--print",
+		])
+	})
+
+	it("does not touch other flags that merely contain 'memory'", () => {
+		expect(stripMemoryArgs(["--memory-dir", "/tmp"])).toEqual(["--memory-dir", "/tmp"])
 	})
 })
 

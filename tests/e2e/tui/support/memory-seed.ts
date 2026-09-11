@@ -13,9 +13,7 @@
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import { MemoryVectorStore } from "mem0ai/oss"
-
-/** Matches MEMORY_EMBEDDING_DIMS (src/extensions/memory/backend.ts). */
-const MEMORY_DIMENSION = 1536
+import { MEMORY_EMBEDDING_DIMS } from "../../../../src/extensions/memory/backend.js"
 
 interface SeedFact {
 	id: string
@@ -24,7 +22,7 @@ interface SeedFact {
 
 /** Unit vector with a 1 in position n — deterministic, distinct per fact. */
 function unitVector(n: number): number[] {
-	return Array.from({ length: MEMORY_DIMENSION }, (_, i) => (i === n ? 1 : 0))
+	return Array.from({ length: MEMORY_EMBEDDING_DIMS }, (_, i) => (i === n ? 1 : 0))
 }
 
 if (import.meta.main) {
@@ -35,7 +33,7 @@ if (import.meta.main) {
 		process.exit(1)
 	}
 	mkdirSync(dirname(dbPath), { recursive: true })
-	const store = new MemoryVectorStore({ dimension: MEMORY_DIMENSION, dbPath })
+	const store = new MemoryVectorStore({ dimension: MEMORY_EMBEDDING_DIMS, dbPath })
 	await store.insert(
 		facts.map((_, i) => unitVector(i)),
 		facts.map((f) => f.id),

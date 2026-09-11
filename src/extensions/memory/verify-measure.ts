@@ -14,7 +14,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createMemoryBackend, disableMem0Telemetry } from "./backend.js"
+import { createMemoryBackend, disableMem0Telemetry, normalizeMem0SearchResults } from "./backend.js"
 import { DIGEST_SCORE_THRESHOLD, MEMORY_USER_ID } from "./config.js"
 import { buildMemoryDigest } from "./inject.js"
 
@@ -66,10 +66,7 @@ async function main(): Promise<void> {
 		] as const) {
 			for (const query of queries) {
 				const search = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 8 })
-				const list = (Array.isArray(search) ? search : (search?.results ?? [])) as Array<{
-					memory?: string
-					score?: number
-				}>
+				const list = normalizeMem0SearchResults(search)
 				const digest = buildMemoryDigest(list)
 				results.push({
 					query,

@@ -31,6 +31,7 @@ import {
 	createMemoryBackend,
 	defaultMemoryDir,
 	disableMem0Telemetry,
+	normalizeMem0SearchResults,
 	projectDbPath,
 	resolveExtractionModel,
 } from "./backend.js"
@@ -452,8 +453,23 @@ function saveHashes(hashes: Set<string>): void {
 	renameSync(tmp, path)
 }
 
+/**
+ * The store surface the capture pipeline needs — the injectable seam for
+ * Node-side orchestration tests (the default factory builds mem0 via
+ * createMemoryBackend, which requires the Bun runtime).
+ */
+export interface CaptureBackend {
+	add(fact: string, options: { userId: string; infer: boolean }): Promise<unknown>
+	delete(id: string): Promise<unknown>
+	getAll(config: { filters: { user_id: string } }): Promise<{ results: Array<{ id: string; memory: string }> }>
+	search(query: string, config: { filters: { user_id: string }; topK: number }): Promise<unknown>
+}
+
 /** The store this worker writes to (personal or per-project). */
-type Backend = Awaited<ReturnType<typeof createMemoryBackend>>
+type Backend = CaptureBackend
+
+/** The default store factory: mem0 via createMemoryBackend (Bun-only). */
+const defaultCaptureBackend = (dbPath: string): Promise<CaptureBackend> => createMemoryBackend({ dbPath })
 
 /** Normalized comparison key for exact-duplicate fact detection. */
 export function normalizeFactText(text: string): string {
@@ -482,7 +498,11 @@ async function existingFactTexts(backend: Backend): Promise<Set<string>> {
 export interface RunCaptureWorkerOptions {
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
-	/** Injectable for tests — defaults to process.exit semantics via return value. */
+	/** Injectable for tests — the capture store factory. Default: mem0 via
+	 * createMemoryBackend (requires the Bun runtime). */
+	createBackend?: (dbPath: string) => Promise<CaptureBackend>
+	/** Injectable for tests — skips the config load and model resolution. */
+	llm?: GatewayLlmOptions
 }
 
 /**
@@ -525,24 +545,14 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
 	if (jobFiles.length === 0) return 0
 
-	const config = (await import("../../config.js")).loadConfig()
-	const llm: GatewayLlmOptions = {
-		baseURL: config.llmEndpoint,
-		apiKey: config.apiKey,
-		// Preference-resolved (flash tier first for latency; falls through on
-		// deprecations or per-user gateway access) — never a hardcoded model.
-		model: await resolveExtractionModel(
-			{ baseURL: config.llmEndpoint, apiKey: config.apiKey },
-			{ fetchImpl: options.fetchImpl },
-		),
-		fetchImpl: options.fetchImpl,
-	}
+	const llm = await resolveWorkerLlm(options)
+	const createBackend = options.createBackend ?? defaultCaptureBackend
 
 	let captured = 0
 	let failed = 0
 	for (const jobFile of jobFiles) {
 		try {
-			captured += await processOneJob(jobFile, dbPath, llm)
+			captured += await processOneJob(jobFile, dbPath, llm, createBackend)
 		} catch (err) {
 			failed += 1
 			console.error(
@@ -553,6 +563,24 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	}
 	if (failed > 0) throw new Error(`${failed} capture job(s) failed (${captured} facts captured)`)
 	return captured
+}
+
+/** The worker's LLM: an injected test seam wins; otherwise resolved from
+ * config against the gateway's live model list. */
+async function resolveWorkerLlm(options: RunCaptureWorkerOptions): Promise<GatewayLlmOptions> {
+	if (options.llm) return options.llm
+	const config = (await import("../../config.js")).loadConfig()
+	return {
+		baseURL: config.llmEndpoint,
+		apiKey: config.apiKey,
+		// Preference-resolved (flash tier first for latency; falls through on
+		// deprecations or per-user gateway access) — never a hardcoded model.
+		model: await resolveExtractionModel(
+			{ baseURL: config.llmEndpoint, apiKey: config.apiKey },
+			{ fetchImpl: options.fetchImpl },
+		),
+		fetchImpl: options.fetchImpl,
+	}
 }
 
 /** The reaper: sweep pending jobs too old to be worth retrying — bounds
@@ -577,7 +605,12 @@ function sweepStaleJobs(pendingDir: string): void {
 
 /** Process one capture job under the drain lock. Throws on failure — the
  * caller logs and continues with the next job. */
-async function processOneJob(jobFile: string, dbPath: string, llm: GatewayLlmOptions): Promise<number> {
+async function processOneJob(
+	jobFile: string,
+	dbPath: string,
+	llm: GatewayLlmOptions,
+	createBackend: (dbPath: string) => Promise<CaptureBackend> = defaultCaptureBackend,
+): Promise<number> {
 	let job: CaptureJob
 	try {
 		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob
@@ -602,20 +635,10 @@ async function processOneJob(jobFile: string, dbPath: string, llm: GatewayLlmOpt
 
 	// The --db arg is the personal store; the project store (if any) derives
 	// from the job's project scope. Tagged facts route to their store.
-	const personalBackend = await createMemoryBackend({ dbPath })
-	const projectBackend = job.project ? await createMemoryBackend({ dbPath: projectDbPath(job.project.id) }) : null
-	const makeSearchAll = (backend: Backend) => async (query: string) => {
-		const results = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 5 })
-		const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
-			id?: string
-			memory?: string
-			score?: number
-		}>
-		return list.filter(
-			(r): r is { id: string; memory: string; score?: number } =>
-				typeof r.id === "string" && typeof r.memory === "string",
-		)
-	}
+	const personalBackend = await createBackend(dbPath)
+	const projectBackend = job.project ? await createBackend(projectDbPath(job.project.id)) : null
+	const makeSearchAll = (backend: Backend) => async (query: string) =>
+		normalizeMem0SearchResults(await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 5 }))
 	const judge = async (
 		newFacts: string[],
 		candidates: Array<{ id: string; memory: string; score?: number }>,
