@@ -7,6 +7,7 @@ import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { IMAGE_EXT_TO_MIME } from "../utils/image-utils.js"
+import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
 import { isAutoModel } from "./router/constants.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
@@ -229,9 +230,10 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		updateIndicator()
 		// Linux clipboard detection shells out to wl-paste/xclip, so keep it on-demand.
 		// Polling wl-paste can create transient surfaces that steal focus on Wayland.
-		if (process.platform === "linux") return
-		checkClipboard()
-		clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
+		if (process.platform !== "linux") {
+			checkClipboard()
+			clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
+		}
 	})
 
 	pi.on("session_shutdown", () => {
@@ -247,11 +249,28 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 	pi.on("input", (event) => {
 		const incoming = event.images ?? []
-		const totalImages = incoming.length + pendingImages.length
+		// Local image file paths in the submitted text (typed, pasted, or dropped)
+		// are attached like pasted images. Extraction is intentionally
+		// unconditional: distinguishing paste from typing would require sniffing
+		// raw terminal input, which is unreliable — the UI starts accepting input
+		// before extensions initialize, so early pastes are never observed. The
+		// disk guards keep prose false positives rare (existing file, supported
+		// extension, readable, under the size cap). Vision-less models keep the
+		// text untouched so the read tool remains the fallback (and errors loudly
+		// there). Path images are appended after pasted/attached ones so existing
+		// marker numbering is unchanged.
+		const fromPaths: ImageContent[] = modelSupportsImages(currentCtx?.model)
+			? extractTypedImagePaths(event.text, currentCtx?.cwd ?? process.cwd()).map((match) => ({
+					type: "image" as const,
+					data: Buffer.from(match.image.bytes).toString("base64"),
+					mimeType: match.image.mimeType,
+				}))
+			: []
+		const totalImages = incoming.length + pendingImages.length + fromPaths.length
 
 		if (totalImages === 0) return
 
-		const images = [...incoming, ...pendingImages]
+		const images = [...incoming, ...pendingImages, ...fromPaths]
 		pendingImages = []
 		updateIndicator()
 
