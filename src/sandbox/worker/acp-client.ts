@@ -104,8 +104,15 @@ export interface AcpSessionClientOptions {
 	signal?: AbortSignal
 	/** Working directory for the session (passed to newSession). */
 	cwd?: string
-	/** MCP servers passed to newSession (e.g. host comms tools for external agents). */
-	mcpServers?: Array<{ command: string; args?: string[]; env?: Record<string, string> }>
+	/** MCP servers passed to newSession (e.g. host comms tools for external agents).
+	 *  Wire format: `name` required, `env` a required array of {name, value}
+	 *  pairs on the ACP stdio variant — defaulted to [] at the call sites. */
+	mcpServers?: Array<{
+		name: string
+		command: string
+		args?: string[]
+		env?: Array<{ name: string; value: string }>
+	}>
 	/**
 	 * Existing ACP session id to REATTACH to via `session/load` instead of
 	 * creating a fresh session with `session/new`. Used on reconnect: the
@@ -239,7 +246,7 @@ export class AcpSessionClient {
 						this._connection.loadSession({
 							sessionId: resumeSessionId,
 							cwd: this._options.cwd ?? "/home/sandbox",
-							mcpServers: this._options.mcpServers ?? [],
+							mcpServers: (this._options.mcpServers ?? []).map((s) => ({ ...s, env: s.env ?? [] })),
 							// Opt in to mid-turn attach: this client takes over a
 							// session whose owning connection died. Other clients
 							// keep the strict "cancel it first" guard.
@@ -257,7 +264,7 @@ export class AcpSessionClient {
 				this._withTimeout(
 					this._connection.newSession({
 						cwd: this._options.cwd ?? "/home/sandbox",
-						mcpServers: this._options.mcpServers ?? [],
+						mcpServers: (this._options.mcpServers ?? []).map((s) => ({ ...s, env: s.env ?? [] })),
 					}),
 					30_000,
 					"newSession",

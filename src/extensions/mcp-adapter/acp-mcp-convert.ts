@@ -49,6 +49,15 @@ export function convertAcpMcpServer(server: McpServer): ServerEntry {
 		const entry: ServerEntry = {
 			command: server.command,
 			args: server.args,
+			// Caller-supplied servers must connect eagerly: the ACP client
+			// explicitly requested them for this session, and the lazy default
+			// never registers their tools (no cached metadata for a new server
+			// means the agent can never trigger the lazy connection).
+			lifecycle: "eager",
+			// ... and their tools must be direct: the ACP client explicitly
+			// requested them for this session, so they belong in the agent's
+			// tool list (resolveDirectTools skips servers without a flag).
+			directTools: true,
 		}
 		const env = envArrayToRecord(server.env)
 		if (env) entry.env = env
@@ -64,6 +73,8 @@ export function convertAcpMcpServer(server: McpServer): ServerEntry {
 	if ("url" in server) {
 		const entry: ServerEntry = {
 			url: server.url,
+			lifecycle: "eager",
+			directTools: true,
 		}
 		const headers = headersArrayToRecord(server.headers)
 		if (headers) entry.headers = headers

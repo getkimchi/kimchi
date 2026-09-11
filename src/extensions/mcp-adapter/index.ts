@@ -287,7 +287,10 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 		const promise = initializeMcp(pi, ctx, registerBootstrappedDirectTools)
 		initPromise = promise
 
-		promise
+		// Await so session_start (and ACP newSession, which emits it) resolves
+		// only after MCP tools are registered — the first prompt's tool list
+		// then includes them instead of racing the registration.
+		await promise
 			.then(async (nextState) => {
 				if (generation !== lifecycleGeneration || initPromise !== promise) {
 					try {

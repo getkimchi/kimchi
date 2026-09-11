@@ -122,7 +122,7 @@ export async function runAcpAgent(
 		const ipc = getAgentCommsIpc()
 		const socketPath = ipc.ensureStarted()
 		const token = ipc.registerToken(record.id)
-		mcpServers.push(getAgentInvocation(["--agent-comms-mcp", socketPath, token]))
+		mcpServers.push({ name: "kimchi-agent-comms", ...getAgentInvocation(["--agent-comms-mcp", socketPath, token]) })
 	}
 
 	let turnText = ""

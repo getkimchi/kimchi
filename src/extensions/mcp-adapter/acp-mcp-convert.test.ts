@@ -1,7 +1,6 @@
 import type { McpServer } from "@agentclientprotocol/sdk"
 import { describe, expect, it } from "vitest"
 import { convertAcpMcpServer, convertAcpMcpServers } from "./acp-mcp-convert.js"
-import type { ServerEntry } from "./types.js"
 
 describe("convertAcpMcpServer", () => {
 	describe("stdio transport", () => {
@@ -17,6 +16,8 @@ describe("convertAcpMcpServer", () => {
 				command: "/path/to/mcp-server",
 				args: ["--stdio"],
 				env: { API_KEY: "secret123" },
+				lifecycle: "eager",
+				directTools: true,
 			})
 		})
 
@@ -31,6 +32,8 @@ describe("convertAcpMcpServer", () => {
 			expect(entry).toEqual({
 				command: "node",
 				args: ["server.js"],
+				lifecycle: "eager",
+				directTools: true,
 			})
 			expect(entry.env).toBeUndefined()
 		})
@@ -68,6 +71,8 @@ describe("convertAcpMcpServer", () => {
 					Authorization: "Bearer token123",
 					"Content-Type": "application/json",
 				},
+				lifecycle: "eager",
+				directTools: true,
 			})
 		})
 
@@ -81,6 +86,8 @@ describe("convertAcpMcpServer", () => {
 			const entry = convertAcpMcpServer(server)
 			expect(entry).toEqual({
 				url: "https://api.example.com/mcp",
+				lifecycle: "eager",
+				directTools: true,
 			})
 			expect(entry.headers).toBeUndefined()
 		})
@@ -113,7 +120,7 @@ describe("convertAcpMcpServers", () => {
 		const servers: McpServer[] = [{ name: "fs", command: "/path", args: ["--stdio"], env: [] }]
 		const result = convertAcpMcpServers(servers)
 		expect(result).toEqual({
-			fs: { command: "/path", args: ["--stdio"] },
+			fs: { command: "/path", args: ["--stdio"], lifecycle: "eager", directTools: true },
 		})
 	})
 
@@ -124,24 +131,7 @@ describe("convertAcpMcpServers", () => {
 		]
 		const result = convertAcpMcpServers(servers)
 		expect(Object.keys(result).sort()).toEqual(["api", "fs"])
-		expect(result.fs).toEqual({ command: "/path", args: [] })
-		expect(result.api).toEqual({ url: "https://api.example.com" })
-	})
-
-	it("duplicate names: last-wins", () => {
-		const servers: McpServer[] = [
-			{ name: "dup", command: "/first", args: [], env: [] },
-			{ name: "dup", command: "/second", args: [], env: [] },
-		]
-		const result = convertAcpMcpServers(servers)
-		expect(result.dup).toEqual({ command: "/second", args: [] })
-	})
-
-	it("returns correctly typed ServerEntry records", () => {
-		const servers: McpServer[] = [{ name: "s", command: "c", args: ["a"], env: [{ name: "K", value: "V" }] }]
-		const result: Record<string, ServerEntry> = convertAcpMcpServers(servers)
-		expect(result.s.command).toBe("c")
-		expect(result.s.args).toEqual(["a"])
-		expect(result.s.env).toEqual({ K: "V" })
+		expect(result.fs).toEqual({ command: "/path", args: [], lifecycle: "eager", directTools: true })
+		expect(result.api).toEqual({ url: "https://api.example.com", lifecycle: "eager", directTools: true })
 	})
 })

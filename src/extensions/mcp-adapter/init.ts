@@ -239,6 +239,15 @@ export async function initializeMcp(
 				},
 			)
 			const bootstrapped = bootstrapResults.filter((r) => r.ok).map((r) => r.name)
+			// Eagerly-connected servers (caller-supplied ACP mcpServers and any
+			// config eager/keep-alive servers) also need their direct tools
+			// registered in this session: the eager pass warms the metadata but
+			// the registration below only covers servers bootstrapped here.
+			// Without this, caller-supplied servers connect but their tools
+			// never surface as direct tools.
+			for (const r of results) {
+				if (r.connection && !bootstrapped.includes(r.name)) bootstrapped.push(r.name)
+			}
 			if (bootstrapped.length > 0) {
 				// Try to register direct tools for the just-bootstrapped servers
 				// in the current session. Avoids the historical "restart required"

@@ -41,10 +41,14 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 15 * 60_000
 const CLOSE_GRACE_MS = 5_000
 const STDERR_TAIL_BYTES = 2048
 
-/** MCP server entry passed to newSession — the external agent spawns and connects to it. */
+/** MCP server entry passed to newSession — the external agent spawns and connects to it.
+ *  `name` is required by the ACP protocol (real agents validate it), and
+ *  `env` defaults to [] on the wire — the stdio McpServer marks it required. */
 export interface AcpMcpServer {
+	name: string
 	command: string
 	args?: string[]
+	env?: Array<{ name: string; value: string }>
 }
 
 export interface StdioAcpClientOptions {
@@ -147,7 +151,9 @@ export class StdioAcpClient {
 			this._withTimeout(
 				this._connection.newSession({
 					cwd: this._options.cwd ?? process.cwd(),
-					mcpServers: this._options.mcpServers ?? [],
+					// env defaults to [] on the wire — the ACP stdio McpServer marks
+					// it required and real agents (kimchi --mode acp) reject its absence.
+					mcpServers: (this._options.mcpServers ?? []).map((s) => ({ ...s, env: s.env ?? [] })),
 				}),
 				this._options.newSessionTimeoutMs ?? DEFAULT_NEW_SESSION_TIMEOUT_MS,
 				"newSession",

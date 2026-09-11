@@ -23,9 +23,12 @@ interface McpResponse {
 	error?: { code: number; message: string }
 }
 
-/** Serialize a TypeBox schema the same way the shim does (drops symbol modifiers). */
+/** Serialize a TypeBox schema the same way the shim does (drops symbol
+ *  modifiers, stamps the root object type when missing). */
 function toJsonSchema(schema: object): Record<string, unknown> {
-	return JSON.parse(JSON.stringify(schema)) as Record<string, unknown>
+	const serialized = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>
+	if (serialized.type === undefined) serialized.type = "object"
+	return serialized
 }
 
 describe("agentCommsMcpTools schema fidelity", () => {

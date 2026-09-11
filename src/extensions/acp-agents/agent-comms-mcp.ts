@@ -32,9 +32,14 @@ import {
 import { AgentMessageInputSchema } from "../agents/messages.js"
 import { createJsonLineReader, type IpcResponse } from "./comms-ipc.js"
 
-/** Serialize a TypeBox schema to plain JSON Schema (drops symbol modifiers). */
+/** Serialize a TypeBox schema to plain JSON Schema (drops symbol modifiers).
+ *  MCP requires inputSchema.type === "object" at the root — TypeBox unions
+ *  (anyOf) serialize without a root type, and real MCP clients reject the
+ *  whole tools/list response over it, so stamp the object type when missing. */
 function toJsonSchema(schema: object): Record<string, unknown> {
-	return JSON.parse(JSON.stringify(schema)) as Record<string, unknown>
+	const serialized = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>
+	if (serialized.type === undefined) serialized.type = "object"
+	return serialized
 }
 
 export interface AgentCommsMcpTool {

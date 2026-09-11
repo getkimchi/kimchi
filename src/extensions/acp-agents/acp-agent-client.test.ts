@@ -50,7 +50,9 @@ describe("StdioAcpClient", () => {
 	}
 
 	it("initializes and passes cwd and mcpServers to newSession", async () => {
-		const mcpServers: AcpMcpServer[] = [{ command: "shim-bin", args: ["--agent-comms-mcp", "/sock", "tok"] }]
+		const mcpServers: AcpMcpServer[] = [
+			{ name: "kimchi-agent-comms", command: "shim-bin", args: ["--agent-comms-mcp", "/sock", "tok"] },
+		]
 		const client = makeClient({}, { mcpServers })
 		await client.initialize()
 
@@ -60,7 +62,8 @@ describe("StdioAcpClient", () => {
 		expect(newSession).toBeDefined()
 		const params = newSession?.params as { cwd?: string; mcpServers?: unknown[] }
 		expect(params.cwd).toBe(logDir)
-		expect(params.mcpServers).toEqual(mcpServers)
+		// env is defaulted to [] on the wire (the ACP stdio McpServer requires it)
+		expect(params.mcpServers).toEqual([{ ...mcpServers[0], env: [] }])
 		client.close()
 	})
 
