@@ -122,12 +122,14 @@ function buildChoicesForScope(scope: {
 }
 
 // Compound bash commands are remembered PER SEGMENT: the compound gate
-// (checkCompoundCommand) re-evaluates each segment against rules individually
-// and requires ALL segments allowed, so a single scope derived from the whole
-// command (first segment only — e.g. `cd /tmp:*` for `cd /tmp && npm install`)
-// could never match the compound again and re-prompts forever. Unscopeable
-// compounds (pipe segments, substitution) get no "don't ask again" choice —
-// we never promise remembering we cannot honor.
+// (checkCompoundCommand) re-evaluates each segment against rules individually,
+// so a single scope derived from the whole command (first segment only —
+// e.g. `cd /tmp:*` for `cd /tmp && npm install`) could never match the
+// compound again and re-prompts forever. Compounds containing a segment whose
+// scope can never match again (`| sh`, `| awk`, substitution — piped
+// whitelisted output filters like `| tail -20` DO scope, normalizing to the
+// head) get no "don't ask again" choice: we never promise remembering we
+// cannot honor.
 function buildCompoundBashChoices(command: string): PermissionChoice[] {
 	const { scopes, scopeable } = suggestBashCommandScopes(command)
 	const choices: PermissionChoice[] = [{ kind: "allow-once", label: "Yes — just this call" }]

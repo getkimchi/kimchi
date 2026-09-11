@@ -109,10 +109,12 @@ export function bashSegmentScope(command: string): Scope | null {
 
 /**
  * Per-segment scopes for a possibly-compound bash command. The compound gate
- * (checkCompoundCommand) evaluates rules per segment and requires ALL segments
- * allowed, so remembering a compound only sticks when every segment carries a
- * scope that can match. `scopeable: false` tells callers to not offer a
- * "don't ask again" choice they could not honor.
+ * (checkCompoundCommand) evaluates rules per segment, so a remembered compound
+ * only sticks when every segment that NEEDS a rule carries a scope that can
+ * match (read-only non-cwd segments are implicitly allowed at the gate and
+ * need no rule; cwd-changers like `cd /tmp` always need one). `scopeable:
+ * false` tells callers to not offer a "don't ask again" choice they could
+ * not honor.
  */
 export function suggestBashCommandScopes(command: string): BashCommandScopes {
 	const segments = splitCompoundCommand(command) ?? [command]
