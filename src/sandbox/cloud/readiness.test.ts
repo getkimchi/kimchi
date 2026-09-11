@@ -21,6 +21,7 @@ describe("waitForWorkspaceReady", () => {
 	}
 
 	afterEach(() => {
+		vi.useRealTimers()
 		vi.unstubAllGlobals()
 	})
 
@@ -96,6 +97,20 @@ describe("waitForWorkspaceReady", () => {
 		})
 
 		await expect(promise).rejects.toThrow(/HTTP 503/)
+	})
+
+	it("times out after 10 minutes by default", async () => {
+		vi.useFakeTimers()
+		mockFetch([new Error("nope")])
+
+		const promise = waitForWorkspaceReady({
+			wsUrl: "wss://h.example.com/",
+			connectToken: "tok",
+		})
+		const assertion = expect(promise).rejects.toThrow(/did not become ready within 600s/)
+
+		await vi.advanceTimersByTimeAsync(10 * 60_000 + 5_000)
+		await assertion
 	})
 
 	it("rejects when the abort signal fires", async () => {
