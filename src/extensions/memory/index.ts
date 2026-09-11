@@ -6,14 +6,16 @@
  *   - The retrieval query is grounded in the session's opening prompt (the
  *     first `before_agent_start`'s `event.prompt`), not a standing query.
  *   - Facts must clear the relevance threshold and the top-N / token caps
- *     (inject.ts). When nothing clears the bar, NOTHING is injected — an
- *     empty digest is the normal outcome for unrelated sessions.
+ *     (inject.ts). When nothing clears the bar, NO FACTS are injected — an
+ *     empty digest is the normal outcome for unrelated sessions; only the
+ *     constant enabled-notice section goes out.
  *   - Cache contract: the digest is computed on the first agent start
  *     (turn 1 awaits it) and appended with identical bytes on EVERY start —
  *     the provider-facing prefix is stable from the very first request,
  *     so memory causes zero mid-session cache breaks. It is recomputed
  *     only after a compaction, where the prefix breaks anyway. A session
- *     whose digest came back empty injects nothing at all, ever.
+ *     whose digest came back empty injects only the constant notice — the
+ *     model must know capture is automatic (it has no write tool).
  *   - `memory_search` is the pull-based supplement for anything the digest
  *     did not surface.
  *   - Progressive recall (turns 2+): each new user prompt plus the last
@@ -34,7 +36,14 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
 import { DIGEST_SCORE_THRESHOLD, MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
-import { buildMemoryDigest, buildTurnRecall, type DigestComposition, factKey, isCovered } from "./inject.js"
+import {
+	buildMemoryDigest,
+	buildTurnRecall,
+	type DigestComposition,
+	factKey,
+	isCovered,
+	MEMORY_ENABLED_NOTICE,
+} from "./inject.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { createMemorySearchTool } from "./tools.js"
 
@@ -211,8 +220,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					}
 				}
 				// The digest search already used this prompt — no recall this turn.
-				if (digest === null) return undefined
-				return { systemPrompt: `${event.systemPrompt}${digest.text}` }
+				if (digest === null) {
+					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+				}
+				return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
 			}
 
 			// Turns 2+: progressive recall, only on drift, bounded by the cap.
@@ -266,8 +277,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				}
 			}
 
-			if (digest === null) return undefined
-			return { systemPrompt: `${event.systemPrompt}${digest.text}` }
+			if (digest === null) {
+				return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+			}
+			return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
 		})
 
 		pi.on("session_compact", () => {

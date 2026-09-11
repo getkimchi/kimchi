@@ -69,14 +69,16 @@ describe("memory extension", () => {
 		expect(turn3?.systemPrompt).toBe(turn1?.systemPrompt)
 	})
 
-	it("an empty digest injects nothing ever (drift retries bounded by the cap)", async () => {
+	it("an empty digest injects no facts — only the always-on notice (drift retries bounded by the cap)", async () => {
 		const search = vi.fn(async () => [{ memory: "weak", score: 0.1 }])
 		const { start } = await setup(
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
 		for (let turn = 0; turn < 3; turn++) {
 			const result = await start(startEvent(`turn ${turn}`), fakeCtx)
-			expect(result).toBeUndefined()
+			// The model must know capture is automatic even with no digest.
+			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).not.toContain("weak")
 		}
 		// Turn 1 (digest) + turns 2-3: nothing was delivered, so the gate sees
 		// drift and retries retrieval — the session cap bounds this.
@@ -117,7 +119,7 @@ describe("memory extension", () => {
 			)
 			for (let turn = 0; turn < 2; turn++) {
 				const result = await start(startEvent(`turn ${turn}`), fakeCtx)
-				expect(result).toBeUndefined()
+				expect(result?.systemPrompt).toContain("captured automatically")
 			}
 			expect(consoleError).toHaveBeenCalledTimes(1)
 			expect(consoleError.mock.calls[0]?.[0]).toContain("[memory]")
@@ -142,7 +144,8 @@ describe("memory extension", () => {
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
 			const result = await pending
-			expect(result).toBeUndefined()
+			// Degraded to no facts — the notice is still present.
+			expect(result?.systemPrompt).toContain("captured automatically")
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
 		} finally {
 			vi.useRealTimers()
