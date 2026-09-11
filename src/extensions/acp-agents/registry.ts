@@ -15,10 +15,20 @@
  * `acp:` types may exist, so there is nothing to refresh.
  */
 
+import { isResourceEnabled } from "../../resources/store.js"
 import { setAcpAgents } from "../agents/personas/agent-types.js"
 import type { AgentConfig } from "../agents/personas/types.js"
 import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { ACP_TYPE_PREFIX, acpServerFromType, acpTypeName, loadAcpAgentServers } from "./config.js"
+
+export const ACP_AGENTS_RESOURCE_ID = "extensions.acp-agents" as const
+
+/** True when the ACP feature is enabled via either gate: the
+ *  --enable-experimental-features CLI flag or the /resources
+ *  experimental tab toggle (persisted, restart required). */
+export function isAcpAgentsEnabled(): boolean {
+	return isExperimentalFeaturesEnabled() || isResourceEnabled(ACP_AGENTS_RESOURCE_ID)
+}
 
 /** Build the registry AgentConfig for an ACP agent server. */
 function toAgentConfig(name: string, displayName: string | undefined, transport: string): AgentConfig {
@@ -46,10 +56,10 @@ function toAgentConfig(name: string, displayName: string | undefined, transport:
  * (Re)discover ACP config and refresh the registry's ACP entries. Callers
  * must re-run `registerAgents(...)` afterwards for the merged registry to see
  * the new entries (setAcpAgents only updates the module-level ACP map).
- * No-ops when the experimental flag is off.
+ * No-ops when neither gate is enabled (CLI flag or resource toggle).
  */
 export function refreshAcpAgents(cwd: string): Map<string, AgentConfig> {
-	if (!isExperimentalFeaturesEnabled()) return new Map()
+	if (!isAcpAgentsEnabled()) return new Map()
 	const servers = loadAcpAgentServers(cwd)
 	const map = new Map<string, AgentConfig>()
 	for (const server of servers.values()) {

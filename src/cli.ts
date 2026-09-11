@@ -165,6 +165,7 @@ import {
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
+import { isResourceEnabled } from "./resources/store.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
@@ -683,10 +684,12 @@ try {
 			sessionModeOnboarding,
 			tipsExtension(),
 			// EXPERIMENTAL: ACP external agents as `acp:<name>` subagent types.
+			// Two enable gates: --enable-experimental-features (CLI) or the
+			// /resources experimental tab toggle (persisted, restart required).
 			// Must register BEFORE extensions.agents: the Agent tool builds its
 			// subagent_type description once at registerTool time from
 			// getAvailableTypes(), so the ACP map must be populated first.
-			...(experimentalFeatures ? [acpAgentsExtension] : []),
+			...(experimentalFeatures || isResourceEnabled("extensions.acp-agents") ? [acpAgentsExtension] : []),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 				{ id: "extensions.workflows", factory: piWorkflowsExtension },

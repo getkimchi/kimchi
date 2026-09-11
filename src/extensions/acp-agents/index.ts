@@ -9,24 +9,23 @@
  * host-mediated communication (coordination board + messaging) through
  * host-authorized MCP tools.
  *
- * Gated behind --enable-experimental-features: cli.ts only includes this
- * factory when the flag is set, so with the flag off there are no `acp:`
- * types, no /acp command, and no runner. The internal flag check is
- * belt-and-braces for other registration paths (e.g. tests).
+ * Gated behind --enable-experimental-features or the /resources experimental
+ * tab toggle (extensions.acp-agents, restart required). cli.ts only
+ * includes this factory when either gate is on, so with both off there are
+ * no `acp:` types, no /acp command, and no runner.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
-import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { runAcpAgent } from "./acp-runner.js"
 import { getAgentCommsIpc } from "./comms-ipc.js"
 import { acpTypeName, globalConfigPath, loadAcpAgentServers } from "./config.js"
-import { refreshAcpAgents } from "./registry.js"
+import { isAcpAgentsEnabled, refreshAcpAgents } from "./registry.js"
 
 export { refreshAcpAgents } from "./registry.js"
 
 export default function acpAgentsExtension(pi: ExtensionAPI): void {
-	if (!isExperimentalFeaturesEnabled()) return
+	if (!isAcpAgentsEnabled()) return
 
 	// Initial discovery from the launch cwd — must happen before the agents
 	// extension registers the Agent tool, whose subagent_type description is

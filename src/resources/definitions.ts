@@ -119,6 +119,16 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: false,
 		restartRequired: true,
 	},
+	{
+		id: "extensions.acp-agents",
+		kind: "extensions",
+		experimental: true,
+		label: "ACP external agents",
+		description:
+			"Spawn external ACP-speaking agents (e.g. Gemini CLI) as subagent types (acp:<name>). Configure servers in .kimchi/acp-agents.json.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
 ]
 
 export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]
