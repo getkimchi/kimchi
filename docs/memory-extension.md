@@ -107,7 +107,7 @@ kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes
 - `delete` resolves ids across all stores, so no `--scope` is needed.
 - `reset --scope personal` or `--scope project` wipes that store via mem0 `deleteAll` (the hash ledger is kept — already-captured sessions never re-capture). `--scope all` wipes the whole memory root — stores, history, ledger, pending — under the capture lock, keeping only the lock artifacts. Interactive confirmation unless `--yes`.
 - Deletion is user-only: the model has no write tool, and the enabled notice points users at `/memory` when they ask to forget or review something.
-- In-session output renders as a read-only widget above the input — it stays visible while you type the next command (e.g. `/memory delete <id>`) and clears when you resume chatting. Single-line results appear as notifications.
+- In-session, `list` and `search` open an interactive browser: page through facts with ↑↓/j/k (PgUp/PgDn, g/G), delete the selected fact with `d`, quit with q/Esc/Ctrl+C — no need to copy ids for a separate delete. Other output renders as a read-only widget capped at the TUI's widget height; single-line results appear as notifications, and the view clears when you resume chatting.
 
 ## Verification
 
