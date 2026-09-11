@@ -253,7 +253,7 @@ describe("runRemoteAgent", () => {
 				agentMode: "ACP",
 				yolo: true,
 			}),
-			expect.objectContaining({ timeoutMs: 5 * 60_000 }),
+			expect.objectContaining({ timeoutMs: 10 * 60_000 }),
 		)
 
 		// 4. ACP client — cwd matches the unique session directory
@@ -973,6 +973,14 @@ describe("runRemoteAgent", () => {
 			await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeRecoveryOptions())).rejects.toThrow(
 				"remote session no longer reachable",
 			)
+
+			// Revive readiness waits are capped per attempt (5min), unlike the initial
+			// uncapped wait (10-min default) before the first prompt.
+			const readyCalls = vi.mocked(waitForWorkspaceReady).mock.calls
+			expect(readyCalls[0][0]).not.toHaveProperty("timeoutMs")
+			for (const call of readyCalls.slice(1)) {
+				expect(call[0]).toMatchObject({ timeoutMs: 5 * 60_000 })
+			}
 
 			expect(deleteSession).not.toHaveBeenCalled()
 		})

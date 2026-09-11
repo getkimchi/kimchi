@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { waitForWorkspaceReady } from "./readiness.js"
+import { DEFAULT_READY_TIMEOUT_MS, waitForWorkspaceReady } from "./readiness.js"
 
 describe("waitForWorkspaceReady", () => {
 	function mockFetch(responses: Array<{ ok: boolean; status: number } | Error>) {
@@ -99,7 +99,7 @@ describe("waitForWorkspaceReady", () => {
 		await expect(promise).rejects.toThrow(/HTTP 503/)
 	})
 
-	it("times out after 10 minutes by default", async () => {
+	it("times out after the default timeout when the workspace never becomes ready", async () => {
 		vi.useFakeTimers()
 		mockFetch([new Error("nope")])
 
@@ -107,9 +107,12 @@ describe("waitForWorkspaceReady", () => {
 			wsUrl: "wss://h.example.com/",
 			connectToken: "tok",
 		})
-		const assertion = expect(promise).rejects.toThrow(/did not become ready within 600s/)
+		const defaultTimeoutSeconds = Math.round(DEFAULT_READY_TIMEOUT_MS / 1000)
+		const assertion = expect(promise).rejects.toThrow(
+			new RegExp(`did not become ready within ${defaultTimeoutSeconds}s`),
+		)
 
-		await vi.advanceTimersByTimeAsync(10 * 60_000 + 5_000)
+		await vi.advanceTimersByTimeAsync(DEFAULT_READY_TIMEOUT_MS + 5_000)
 		await assertion
 	})
 
