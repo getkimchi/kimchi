@@ -202,4 +202,40 @@ describe("resolveExtractionModel", () => {
 		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["unrelated-model"])))
 		await expect(resolveExtractionModel(gateway, { fetchImpl })).rejects.toThrow(/no extraction model available/)
 	})
+
+	/** A fetch stub that serves the router (/v1/route) and the gateway models
+	 * list separately. `bestModel` null → router failure; `ids` null → the
+	 * models list is unreachable. */
+	const routerAndModels = (bestModel: string | null, ids: string[] | null) =>
+		vi.fn().mockImplementation((input: RequestInfo | URL) => {
+			const url = String(input)
+			if (url.includes("/v1/route")) {
+				if (bestModel === null) return Promise.resolve(new Response("boom", { status: 503 }))
+				return Promise.resolve(
+					new Response(JSON.stringify({ best_model: bestModel, probabilities: { [bestModel]: 1 } }), { status: 200 }),
+				)
+			}
+			if (ids === null) return Promise.resolve(new Response("boom", { status: 503 }))
+			return Promise.resolve(okModels(ids))
+		})
+
+	it("uses the auto router's recommendation as the primary model", async () => {
+		const fetchImpl = routerAndModels("router-pick", ["router-pick", "glm-5.3-flash"])
+		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("router-pick")
+		// The routing query represents the extraction workload (the fixed task
+		// definition, not any transcript content).
+		const routerCall = fetchImpl.mock.calls.find(([input]) => String(input).includes("/v1/route"))
+		const body = JSON.parse(String(routerCall?.[1]?.body)) as { query: string }
+		expect(body.query).toContain("persistent memory store")
+	})
+
+	it("an off-list router recommendation falls back to the preferences", async () => {
+		const fetchImpl = routerAndModels("mystery-model", ["glm-5.3-flash"])
+		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("glm-5.3-flash")
+	})
+
+	it("uses the router recommendation unvalidated when the model list is unreachable", async () => {
+		const fetchImpl = routerAndModels("router-pick", null)
+		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("router-pick")
+	})
 })

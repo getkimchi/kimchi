@@ -566,15 +566,13 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 }
 
 /** The worker's LLM: an injected test seam wins; otherwise resolved from
- * config against the gateway's live model list. */
+ * config via the auto router (with the flash-tier preference fallback). */
 async function resolveWorkerLlm(options: RunCaptureWorkerOptions): Promise<GatewayLlmOptions> {
 	if (options.llm) return options.llm
 	const config = (await import("../../config.js")).loadConfig()
 	return {
 		baseURL: config.llmEndpoint,
 		apiKey: config.apiKey,
-		// Preference-resolved (flash tier first for latency; falls through on
-		// deprecations or per-user gateway access) — never a hardcoded model.
 		model: await resolveExtractionModel(
 			{ baseURL: config.llmEndpoint, apiKey: config.apiKey },
 			{ fetchImpl: options.fetchImpl },
