@@ -18,6 +18,8 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
 import { type KimchiConfig, loadConfig } from "../../config.js"
+import { routeQuery } from "../router/router-client.js"
+import { DEFAULT_ROUTER_ENDPOINT } from "../router/router-config.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
 export const MEMORY_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -50,11 +52,12 @@ export function normalizeMem0SearchResults(raw: unknown): Mem0SearchHit[] {
 }
 
 /**
- * Extraction model preference order — resolved against the gateway's live
- * model list at capture-worker start (models deprecate; per-user gateway
- * access varies), falling through instead of failing. Flash first: capture
- * latency is dominated by extraction calls, and the flash tier is ~10x
- * faster than the reasoning models. Override: KIMCHI_MEMORY_EXTRACTION_MODEL.
+ * Extraction model fallback order — used when the auto router is
+ * unreachable or recommends a model missing from the gateway's live list
+ * (models deprecate; per-user gateway access varies), falling through
+ * instead of failing. Flash first: capture latency is dominated by
+ * extraction calls, and the flash tier is ~10x faster than the reasoning
+ * models. Override: KIMCHI_MEMORY_EXTRACTION_MODEL.
  */
 export const EXTRACTION_MODEL_PREFERENCES = ["glm-5.3-flash", "deepseek-v4-flash-0731", "glm-5.3", "kimi-k3"]
 
@@ -65,11 +68,24 @@ export interface ExtractionModelOptions {
 }
 
 /**
+ * The routing query for extraction: a fixed, transcript-free representation
+ * of the extraction workload. The router classifies prompts to models, so
+ * the query mirrors the extraction system prompt's task definition — the
+ * stable part of every extraction call, containing no user data. One call
+ * per worker run.
+ */
+const ROUTER_QUERY =
+	"You maintain the user's persistent memory store. Extract durable facts about the user from a conversation transcript (preferences, decisions, personal context) and respond with ONLY a JSON array of fact strings."
+
+/**
  * Resolve the extraction model: the KIMCHI_MEMORY_EXTRACTION_MODEL override
- * wins; otherwise the first preference available on the gateway's model
- * list (one cheap call). If the list itself is unreachable, fall back to the
- * top preference — a likely-right model beats failing capture entirely.
- * Throws only when the list is reachable and no preference is on it.
+ * wins; otherwise the auto router's recommendation — the same /v1/route
+ * service the kimchi-dev/auto model uses interactively — is the primary
+ * choice, validated against the gateway's live model list when reachable.
+ * A router failure or an off-list recommendation degrades to the preference
+ * order; an unreachable list falls back to the top preference — a
+ * likely-right model beats failing capture entirely. Throws only when the
+ * list is reachable and nothing matches.
  */
 export async function resolveExtractionModel(
 	gateway: { baseURL: string; apiKey: string },
@@ -78,21 +94,53 @@ export async function resolveExtractionModel(
 	const override = process.env.KIMCHI_MEMORY_EXTRACTION_MODEL
 	if (override) return override
 	const fetchImpl = options.fetchImpl ?? fetch
-	const response = await fetchImpl(
-		new URL("models", gateway.baseURL.endsWith("/") ? gateway.baseURL : `${gateway.baseURL}/`),
-		{ headers: { authorization: `Bearer ${gateway.apiKey}` } },
-	)
-	if (!response.ok) {
+	const [routed, available] = await Promise.all([
+		routeQuery(
+			ROUTER_QUERY,
+			{
+				endpoint: process.env.KIMCHI_ROUTER_ENDPOINT?.trim() || DEFAULT_ROUTER_ENDPOINT,
+				apiKey: gateway.apiKey,
+			},
+			{ fetchImpl },
+		),
+		fetchAvailableModelIds(gateway, fetchImpl),
+	])
+	if (routed.ok) {
+		const best = routed.recommendation.bestModel
+		// An unreachable list cannot validate the recommendation — a
+		// router-endorsed model is at least as likely-right as the top
+		// hardcoded preference, so use it (same stance as before).
+		if (available === undefined || available.has(best)) return best
+		// Off-list recommendation — fall through to the preferences.
+	}
+	if (available === undefined) {
 		return EXTRACTION_MODEL_PREFERENCES[0]
 	}
-	const body = (await response.json()) as { data?: Array<{ id?: string }> }
-	const available = new Set((body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"))
 	for (const preference of EXTRACTION_MODEL_PREFERENCES) {
 		if (available.has(preference)) return preference
 	}
 	throw new Error(
-		`no extraction model available on the gateway (tried ${EXTRACTION_MODEL_PREFERENCES.join(", ")}); set KIMCHI_MEMORY_EXTRACTION_MODEL`,
+		`no extraction model available on the gateway (tried ${routed.ok ? `the auto router's ${routed.recommendation.bestModel} and ` : ""}the preferences ${EXTRACTION_MODEL_PREFERENCES.join(", ")}); set KIMCHI_MEMORY_EXTRACTION_MODEL`,
 	)
+}
+
+/** The gateway's model ids, or undefined when the list is unreachable. */
+async function fetchAvailableModelIds(
+	gateway: { baseURL: string; apiKey: string },
+	fetchImpl: typeof fetch,
+): Promise<Set<string> | undefined> {
+	try {
+		const response = await fetchImpl(
+			new URL("models", gateway.baseURL.endsWith("/") ? gateway.baseURL : `${gateway.baseURL}/`),
+			{ headers: { authorization: `Bearer ${gateway.apiKey}` } },
+		)
+		if (!response.ok) return undefined
+		const body = (await response.json()) as { data?: Array<{ id?: string }> }
+		return new Set((body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"))
+	} catch {
+		// Unreachable list — the resolution degrades to the preferences.
+		return undefined
+	}
 }
 
 export function defaultMemoryDir(): string {
