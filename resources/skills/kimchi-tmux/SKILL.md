@@ -9,6 +9,12 @@ Use the bundled [controller script](scripts/harness-live.mjs) to start, inspect,
 
 The controller uses `kimchi` on PATH. To test a development checkout, build it with `pnpm run build:binary` and set `KIMCHI_BINARY=/absolute/checkout/dist/bin/kimchi` before `start`. The run saves that executable path for `resume`. No feature resource is required unless testing that feature.
 
+To start in Default mode (Agent tool available; plan mode rejects launch), pass `default` as the third argument. To append extra CLI flags (e.g. experimental features), set `KIMCHI_EXTRA_ARGS` before `start`:
+
+```sh
+KIMCHI_BINARY=/checkout/dist/bin/kimchi KIMCHI_EXTRA_ARGS='--enable-experimental-features' node script start <model> kimchi-dev default
+```
+
 ```sh
 node /absolute/skill/scripts/harness-live.mjs start <model> [provider]
 node /absolute/skill/scripts/harness-live.mjs status <run-dir>

@@ -100,7 +100,13 @@ async function launch(run, resume) {
 	accessSync(run.binary, constants.X_OK)
 	const args = [run.binary, "--session-dir", join(run.directory, "sessions")]
 	if (session) args.push("--session", join(run.directory, "sessions", session))
-	else args.push("--provider", run.provider, "--model", run.model, "--plan=true")
+	else {
+		args.push("--provider", run.provider, "--model", run.model)
+		// --plan starts in Plan mode; omitting it starts in Default (agent-friendly).
+		// KIMCHI_EXTRA_ARGS appends arbitrary flags (e.g. --enable-experimental-features).
+		if (run.mode !== "default") args.push("--plan=true")
+	}
+	if (process.env.KIMCHI_EXTRA_ARGS) args.push(...process.env.KIMCHI_EXTRA_ARGS.split(/\s+/).filter(Boolean))
 	// The selected binary resolves its own resources. A parent harness may use a different build.
 	const command = `unset PI_PACKAGE_DIR; exec ${args.map(quote).join(" ")}`
 	console.log(`Run: ${run.directory}\nBinary: ${run.binary}\nInitial model: ${run.provider}/${run.model}`)
@@ -139,7 +145,7 @@ function status(run) {
 
 try {
 	if (action === "start") {
-		if (!target || text.length > 1) throw new Error("Usage: start <model> [provider]; provider defaults to kimchi-dev")
+		if (!target || text.length > 2) throw new Error("Usage: start <model> [provider] [mode]; provider defaults to kimchi-dev, mode defaults to plan")
 		const binary = findBinary()
 		tmux("-V")
 		const directory = mkdtempSync(join(tmpdir(), "kimchi-harness-live-"))
@@ -150,6 +156,7 @@ try {
 			tmux: `harness-live-${basename(directory)}`,
 			model: target,
 			provider: text[0] ?? "kimchi-dev",
+			mode: text[1],
 			binary,
 		}
 		writeFileSync(join(directory, "live-run.json"), `${JSON.stringify(run, null, 2)}\n`)
@@ -191,7 +198,9 @@ try {
 		if (action && !["help", "--help", "-h"].includes(action))
 			throw new Error("Unknown command or missing arguments; use --help")
 		console.log(
-			`Kimchi development controller (manual/agent use only; not CI):\nRequires Node.js 22+, tmux, kimchi on PATH (or KIMCHI_BINARY=/absolute/binary) and an existing provider login. No feature resource is required. New sessions start in Plan mode.\n  node ${quote(script)} start <model> [provider]\n  node ${quote(script)} type <run-dir> '<text without submitting>'\n  node ${quote(script)} send <run-dir> '<prompt or /command to submit>'\n  node ${quote(script)} key <run-dir> <key> [key ...]\n  node ${quote(script)} status <run-dir>\n  node ${quote(script)} stop <run-dir>\n  node ${quote(script)} resume <run-dir>\nUse - as the text argument to read stdin (for example, send <run-dir> - < prompt.txt).\nKeys: ${KEYS.join(" ")}\nUse send '/model' to open the model menu (C-p cycles models); navigate with Up/Down, select with Enter, dismiss with Escape.\nUses your existing login/settings. Live calls consume inference credits. Keep prompts scoped to the temporary working directory.`,
+			`Kimchi development controller (manual/agent use only; not CI):\nRequires Node.js 22+, tmux, kimchi on PATH (or KIMCHI_BINARY=/absolute/binary) and an existing provider login. No feature resource is required. New sessions start in Plan mode unless mode 'default' is given (default mode exposes the Agent tool; plan mode rejects launch).
+  node ${quote(script)} start <model> [provider] [mode]  — mode: plan (default), default
+  KIMCHI_EXTRA_ARGS='--enable-experimental-features' before start appends extra CLI flags.\n  node ${quote(script)} start <model> [provider]\n  node ${quote(script)} type <run-dir> '<text without submitting>'\n  node ${quote(script)} send <run-dir> '<prompt or /command to submit>'\n  node ${quote(script)} key <run-dir> <key> [key ...]\n  node ${quote(script)} status <run-dir>\n  node ${quote(script)} stop <run-dir>\n  node ${quote(script)} resume <run-dir>\nUse - as the text argument to read stdin (for example, send <run-dir> - < prompt.txt).\nKeys: ${KEYS.join(" ")}\nUse send '/model' to open the model menu (C-p cycles models); navigate with Up/Down, select with Enter, dismiss with Escape.\nUses your existing login/settings. Live calls consume inference credits. Keep prompts scoped to the temporary working directory.`,
 		)
 	}
 } catch (error) {
