@@ -42,6 +42,13 @@ interface AcpClientSurface {
 /** Far-future expiry for synthesized WS credentials (the field is required but unused by the client). */
 const SYNTHETIC_EXPIRES_AT = "2999-01-01T00:00:00.000Z"
 
+/** How long the ACP runner waits for a parent reply to an open question
+ *  thread before giving up (the thread stays open for a later reply). */
+const PARENT_REPLY_WAIT_MS = 120_000
+
+/** Poll interval while waiting for a parent reply. */
+const PARENT_REPLY_POLL_MS = 1_000
+
 function hostFromUrl(url: string): string {
 	try {
 		return new URL(url).host
@@ -140,7 +147,32 @@ export async function runAcpAgent(
 		onRawNotification: (params) => options.onRawNotification?.(params),
 	}
 
-	const client = buildAcpClient(config, record, ctx, callbacks, mcpServers)
+	// Retry transient spawn failures (e.g. Gemini CLI's intermittent "Internal
+	// Error" on first launch). Max 2 retries (3 total attempts); config errors
+	// and aborts are not retried.
+	const MAX_INITIALIZE_ATTEMPTS = 3
+	let client: AcpClientSurface | undefined
+	let initializeError: unknown
+	for (let attempt = 1; attempt <= MAX_INITIALIZE_ATTEMPTS; attempt++) {
+		const retryClient = buildAcpClient(config, record, ctx, callbacks, mcpServers)
+		try {
+			await retryClient.initialize()
+			client = retryClient
+			initializeError = undefined
+			break
+		} catch (err) {
+			retryClient.close()
+			if (record.abortController?.signal.aborted) throw err
+			initializeError = err
+			if (attempt < MAX_INITIALIZE_ATTEMPTS) {
+				// Brief pause between attempts — transient startup races often settle.
+				await new Promise((r) => setTimeout(r, 500 * attempt))
+			}
+		}
+	}
+	if (!client) {
+		throw initializeError instanceof Error ? initializeError : new Error(String(initializeError))
+	}
 	let abortReason: AgentAbortReason | undefined
 	let durationTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -189,6 +221,29 @@ export async function runAcpAgent(
 			const manager = getActiveManager()
 			manager?.completeAcpFollowUp(next.pending)
 			next = options.maxTurns != null && turnsUsed >= options.maxTurns ? undefined : manager?.takeAcpFollowUp(record.id)
+		}
+
+		// Parent-reply wait: the agent asked the user a question and is
+		// waiting for the parent's answer. Stay alive so the reply can be
+		// delivered as a follow-up turn instead of hitting thread_closed.
+		// Poll takeAcpFollowUp — the reply is queued as a pending message
+		// by replyToAgentMessage when the target is running and session-less.
+		const replyDeadline = Date.now() + PARENT_REPLY_WAIT_MS
+		while (Date.now() < replyDeadline) {
+			const manager = getActiveManager()
+			if (!manager?.hasOpenQuestionThreads(record.id)) break
+			if (record.abortController?.signal.aborted) break
+			const reply = manager.takeAcpFollowUp(record.id)
+			if (reply) {
+				const result = await client.prompt(reply.prompt)
+				turnsUsed++
+				if (result.stopReason === "cancelled") cancelled = true
+				if (turnText.trim()) responseText = turnText
+				turnText = ""
+				manager.completeAcpFollowUp(reply.pending)
+				continue
+			}
+			await new Promise((r) => setTimeout(r, PARENT_REPLY_POLL_MS))
 		}
 
 		return {

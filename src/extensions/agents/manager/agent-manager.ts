@@ -1800,6 +1800,18 @@ export class AgentManager {
 		this.emitPendingMessageEvent(pending, "queued_for_running_session")
 	}
 
+	/** True when this agent has open question threads awaiting a parent reply.
+	 *  The ACP runner waits while this is true so parent replies can be
+	 *  delivered as follow-up turns instead of hitting thread_closed. */
+	hasOpenQuestionThreads(agentId: string): boolean {
+		for (const thread of this.messageThreads.values()) {
+			if (thread.state === "open" && thread.sourceAgentId === agentId && thread.recipient.type === "user") {
+				return true
+			}
+		}
+		return false
+	}
+
 	private async drainPendingMessages(record: AgentRecord, session: AgentSession): Promise<void> {
 		while (true) {
 			const pending = this.pendingMessages.get(record.id)?.[0]

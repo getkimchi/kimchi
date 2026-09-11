@@ -240,11 +240,12 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 27-tool set above; in print
+		// The interactive surface is the canonical 26-tool set above
+		// (reply_to_agent_message is toggle-gated, not in the default); in print
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(25)
+		expect(tools.length).toBe(24)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

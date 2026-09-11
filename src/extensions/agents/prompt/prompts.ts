@@ -67,9 +67,9 @@ export const WORKER_COMMUNICATION_PROMPT = `## Communication
 - queued_for_parent is not an answer. Continue safe independent work. If none
   remains, submit a final blocked report with the message ID.
 - If peer delivery is unavailable, send to parent. If parent routing is
-  unavailable, submit a blocked final report. Never wait silently.
+  unavailable, submit a blocked final report. Never wait silently.`
 
-## Coordination board
+export const WORKER_BOARD_PROMPT = `## Coordination board
 
 - The board is a shared, append-only space for notes, work items, findings, and warnings
   visible to the whole group. Use it for durable-in-session context that every group member
@@ -130,6 +130,11 @@ Platform: ${env.platform}`
 	if (contextBlock) extraSections.push(contextBlock)
 	if (hasCommunicationTools(extras?.activeToolNames)) {
 		extraSections.push(WORKER_COMMUNICATION_PROMPT)
+		// Board guidance only for agents that actually have board tools —
+		// parent-mode agents have send/list but no board access (no groupId).
+		if (hasBoardTools(extras?.activeToolNames)) {
+			extraSections.push(WORKER_BOARD_PROMPT)
+		}
 		// The report tool exists only for ferment-linked workers — mention it
 		// only when it is actually registered for this run.
 		if (uniqueToolNames(extras?.activeToolNames).includes(WORKER_REPORT_TOOL_NAME)) {
@@ -232,6 +237,13 @@ function uniqueToolNames(toolNames?: string[]): string[] {
 function hasCommunicationTools(toolNames?: string[]): boolean {
 	const names = new Set(uniqueToolNames(toolNames))
 	return names.has("list_agent_contacts") && names.has("send_agent_message")
+}
+
+/** Board tools are only registered for group-mode agents (they have a groupId).
+ *  Parent-mode agents have send/list but no board access. */
+function hasBoardTools(toolNames?: string[]): boolean {
+	const names = new Set(uniqueToolNames(toolNames))
+	return names.has("post_agent_note") || names.has("read_agent_board")
 }
 
 function stripAvailableToolsSection(prompt: string): string {

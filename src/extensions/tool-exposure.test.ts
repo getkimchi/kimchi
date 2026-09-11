@@ -297,7 +297,8 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"resume_subagent",
 	"get_subagent_result",
 	"steer_subagent",
-	"reply_to_agent_message",
+	// reply_to_agent_message is conditionally registered — only when the
+	// Advanced agent communication toggle is on. Not in the default surface.
 	// tags / skills (the mcp gateway is config-gated — Chunk 5: it registers
 	// only when >=1 MCP server is configured; see the gate-on test below)
 	"set_phase",
@@ -384,13 +385,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 27-tool surface and hides the 17 deferred tools", async () => {
+	it("advertises exactly the documented 26-tool surface and hides the 17 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(27)
+		expect(visible.size).toBe(26)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -418,7 +419,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(25)
+			expect(visible.size).toBe(24)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
