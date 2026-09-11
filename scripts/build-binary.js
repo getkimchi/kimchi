@@ -8,8 +8,7 @@
 //   node scripts/build-binary.js --target windows-x64   # build for Windows x86-64
 
 import { execSync } from "node:child_process"
-import { copyFileSync, existsSync, realpathSync, rmSync } from "node:fs"
-import { createRequire } from "node:module"
+import { rmSync } from "node:fs"
 import { arch, platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -98,10 +97,9 @@ const externalFlags = externals.map((name) => `--external ${name}`).join(" ")
 // Trust the OS certificate store in addition to Bun's bundled roots so users behind
 // TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
-// `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig` disable loading `.env` and `bunfig.toml` files.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --no-compile-autoload-dotenv --no-compile-autoload-bunfig --compile-exec-argv="--use-system-ca" --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
+	`bun scripts/compile-binary.js src/entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.
@@ -111,42 +109,5 @@ if (!isCrossCompile && platform() === "darwin") {
 	run("codesign (strip)", `codesign --remove-signature dist/bin/${target.binaryName}`)
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${target.binaryName}`)
 }
-
-// Bundle pi's photon WASM next to the binary: photon-node reads it via a
-// build-machine path, and pi's readFileSync fallback expects it at $execDir.
-// Resolve through pi's dep graph (same instance bun bundles, so WASM matches
-// pi's JS glue). Anchor on pi's "." entry via import.meta.resolve: pi's
-// exports lack "./package.json" and any require condition, and the entry's
-// realpath sits in .pnpm/<pi>/, whose node_modules links pi's deps — the
-// top-level symlink's ancestor walk doesn't (that trap broke CI once).
-console.log("\n→ copy photon wasm")
-let photonWasmSrc
-try {
-	const piRequire = createRequire(realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))))
-	try {
-		photonWasmSrc = piRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
-	} catch {
-		// Some layouts don't join deep subpaths — resolve the package dir instead.
-		photonWasmSrc = join(dirname(piRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
-	}
-} catch (cause) {
-	// Curated message: the raw resolve error doesn't explain the consequence.
-	throw new Error(
-		"@silvia-odwyer/photon-node could not be resolved through " +
-			"@earendil-works/pi-coding-agent's dependencies. Image inlining would " +
-			"silently break in the compiled binary.",
-		{ cause },
-	)
-}
-if (!existsSync(photonWasmSrc)) {
-	// Without this file every resized image is silently dropped at runtime —
-	// fail the build, not the user.
-	throw new Error(
-		`photon_rs_bg.wasm not found (resolved: ${photonWasmSrc}). ` +
-			"@silvia-odwyer/photon-node is missing or changed shape; image inlining " +
-			"would silently break in the compiled binary.",
-	)
-}
-copyFileSync(photonWasmSrc, join(projectRoot, "dist", "bin", "photon_rs_bg.wasm"))
 
 run("copy resources", "node scripts/copy-resources.js")
