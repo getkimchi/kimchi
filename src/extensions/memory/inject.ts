@@ -149,7 +149,7 @@ export function digestSection(body: string): string {
  * remember (observed live: "I don't currently have a memory-write tool
  * available").
  */
-export const MEMORY_ENABLED_NOTICE = `\n\n## Memory\nPersistent memory is enabled. Durable facts established in this conversation — preferences, decisions, personal context — are captured automatically when the session ends; "remember this" needs no action and there is no write tool to call. The memory_search tool retrieves facts from previous sessions.`
+export const MEMORY_ENABLED_NOTICE = `\n\n## Memory\nPersistent memory is enabled. Durable facts established in this conversation — preferences, decisions, personal context — are captured automatically when the session ends; "remember this" needs no action and there is no write tool to call. The memory_search tool retrieves facts from previous sessions. The user manages what is stored with the /memory command (or \`kimchi memory\` in a terminal) — list, delete, reset; when they ask to forget or review a stored fact, point them there.`
 
 function truncateSection(text: string): string {
 	// Account for the full prefix ("- " included) and the ellipsis so the

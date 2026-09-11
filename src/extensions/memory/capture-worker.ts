@@ -24,20 +24,8 @@
  * duplicate job is a no-op.
  */
 import { createHash } from "node:crypto"
-import {
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
-import { lock } from "proper-lockfile"
 import { fetchWithRetry } from "../../utils/http.js"
 import {
 	createMemoryBackend,
@@ -47,14 +35,13 @@ import {
 	resolveExtractionModel,
 } from "./backend.js"
 import {
-	CAPTURE_LOCK_STALE_MS,
-	CAPTURE_LOCK_UPDATE_MS,
 	MEMORY_CAPTURE_CHUNK_WINDOWS,
 	MEMORY_CAPTURE_CONCURRENCY,
 	MEMORY_CAPTURE_WINDOW_CHARS,
 	MEMORY_USER_ID,
 	PENDING_JOB_MAX_AGE_MS,
 } from "./config.js"
+import { acquireCaptureLock } from "./lock.js"
 import { findSupersededIds } from "./supersede.js"
 
 export interface CaptureMessage {
@@ -515,31 +502,12 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	const dbPath = argv[dbIndex + 1]
 
 	// Serialize drains (the P2 race fix): one worker holds the lock for its
-	// entire run; later spawns wait (5s poll, up to 1h). The mtime refresh
-	// keeps a live run from looking stale; a crashed worker's lock is
-	// stealable after the staleness window.
-	const lockFile = join(defaultMemoryDir(), "capture.lock")
-	mkdirSync(defaultMemoryDir(), { recursive: true })
-	// proper-lockfile resolves the target with realpath, which requires the
-	// file to exist — touch it (same pattern as src/ferment/event-store.ts).
-	if (!existsSync(lockFile)) {
-		closeSync(openSync(lockFile, "a"))
-	}
-	const release = await lock(lockFile, {
-		stale: CAPTURE_LOCK_STALE_MS,
-		update: CAPTURE_LOCK_UPDATE_MS,
-		retries: { retries: 720, factor: 1, minTimeout: 5_000, maxTimeout: 5_000 },
-	})
+	// entire run; later spawns wait — see lock.ts.
+	const release = await acquireCaptureLock(defaultMemoryDir())
 	try {
 		return await drainPendingJobs(dbPath, options)
 	} finally {
-		try {
-			await release()
-		} catch (err) {
-			// Best-effort — e.g. a stale-recovery path already released it;
-			// never mask the drain's result.
-			console.error("[memory-capture] lock release failed:", err instanceof Error ? err.message : err)
-		}
+		await release()
 	}
 }
 

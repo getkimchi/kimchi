@@ -90,6 +90,24 @@ All in `src/extensions/memory/config.ts`.
 | `CAPTURE_LOCK_STALE_MS` / `CAPTURE_LOCK_UPDATE_MS` | 15 min / 30 s | staleness must exceed the worst-case legitimate drain |
 | `PENDING_JOB_MAX_AGE_MS` | 7 days | the reaper |
 
+## Management
+
+`kimchi memory` (or the in-session `/memory` command — same grammar) manages what is stored:
+
+```
+kimchi memory                       overview: storage path, per-store stats, pending jobs
+kimchi memory list [--scope personal|project|all] [--project <owner/name>]
+                    [--limit N|all] [--offset N] [--json]
+kimchi memory search <query>        [--scope ...] [--json]
+kimchi memory delete <id> [...]
+kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes]
+```
+
+- `list` shows the newest 50 facts by default across all stores, scope-labeled, with the ids that `delete` takes; `--limit all` lists everything.
+- `delete` resolves ids across all stores, so no `--scope` is needed.
+- `reset --scope personal` or `--scope project` wipes that store via mem0 `deleteAll` (the hash ledger is kept — already-captured sessions never re-capture). `--scope all` wipes the whole memory root — stores, history, ledger, pending — under the capture lock, keeping only the lock artifacts. Interactive confirmation unless `--yes`.
+- Deletion is user-only: the model has no write tool, and the enabled notice points users at `/memory` when they ask to forget or review something.
+
 ## Verification
 
 - `pnpm run test` — unit tests (co-located `*.test.ts` next to each module).

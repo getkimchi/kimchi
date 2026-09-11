@@ -8,6 +8,7 @@ export function createExtensionApi(): {
 	getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R>
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
 	getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0]
+	getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
@@ -54,6 +55,11 @@ export function createExtensionApi(): {
 			const call = registerTool.mock.calls.find(([tool]) => tool.name === name)
 			if (!call) throw new Error(`Tool ${name} was not registered`)
 			return call[0]
+		},
+		getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1] {
+			const call = registerCommand.mock.calls.find(([cmd]) => cmd === name)
+			if (!call) throw new Error(`Command ${name} was not registered`)
+			return call[1]
 		},
 		sendMessage,
 		setModel,

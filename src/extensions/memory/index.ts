@@ -18,6 +18,9 @@
  *     model must know capture is automatic (it has no write tool).
  *   - `memory_search` is the pull-based supplement for anything the digest
  *     did not surface.
+ *   - In-session management: the `/memory` command (same grammar as the
+ *     `kimchi memory` CLI subcommand — admin.ts) lists, searches, deletes,
+ *     and resets. Deletion is user-only; the model never gets a write tool.
  *   - Progressive recall (turns 2+): each new user prompt plus the last
  *     assistant response (the model may drive the conversation) is a drift
  *     signal; a free lexical-coverage gate decides when a retrieval is
@@ -34,6 +37,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
+import { runAdminCommand } from "./admin.js"
 import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
 import { DIGEST_SCORE_THRESHOLD, MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
 import {
@@ -112,6 +116,29 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		if (!isEnabled()) return
 
 		wireMemoryCapture(pi)
+
+		// In-session management — the same grammar as `kimchi memory` (admin.ts).
+		// Lists and usage render in the editor viewer; single-line results as
+		// notifications; destructive resets confirm through the native dialog.
+		pi.registerCommand("memory", {
+			description: "Manage persistent memory (list, search, delete, reset)",
+			handler: async (args, ctx) => {
+				const result = await runAdminCommand(args?.trim().split(/\s+/).filter(Boolean) ?? [], {
+					cwd: ctx.cwd,
+					confirm: async (message) => ctx.ui.confirm("Memory reset", message),
+				})
+				const output = result.useJson ? result.json : result.text
+				if (!ctx.hasUI) {
+					console.log(output)
+					return
+				}
+				if (output.includes("\n")) {
+					await ctx.ui.editor("Memory", output)
+				} else {
+					ctx.ui.notify(output, result.code === 0 ? "info" : "error")
+				}
+			},
+		})
 
 		// Per-runtime state (closure, like context-assembly's hash fields) —
 		// never module-level: each session runtime gets a fresh instance.
