@@ -112,41 +112,25 @@ if (!isCrossCompile && platform() === "darwin") {
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${target.binaryName}`)
 }
 
-// pi's image resize pipeline (pi-coding-agent/dist/utils/photon.js) imports
-// @silvia-odwyer/photon-node, whose CJS entry reads photon_rs_bg.wasm via a
-// build-machine absolute path. pi patches fs.readFileSync to fall back to
-// $execDir/photon_rs_bg.wasm, so the WASM must sit next to the compiled binary.
-// Resolve the WASM through pi's own dependency graph — the same instance bun
-// bundles into the binary, so the WASM always matches pi's JS glue. pi's
-// exports map does not expose "./package.json" and Node enforces exports (bun
-// is lenient), so anchor the resolver on pi's exported "." entry instead.
-// The "." export is import-condition-only, so a CJS require cannot resolve
-// it — use the ESM resolver (import.meta.resolve), which returns the entry's
-// REAL path inside .pnpm/<pi>/, and the entry's directory chain reaches
-// .pnpm/<pi>/node_modules, where pnpm links pi's direct deps — resolving
-// from the top-level symlink would walk up to the root node_modules, where
-// pi's deps are not linked (this exact trap broke the GH Actions build once
-// already).
+// Bundle pi's photon WASM next to the binary: photon-node reads it via a
+// build-machine path, and pi's readFileSync fallback expects it at $execDir.
+// Resolve through pi's dep graph (same instance bun bundles, so WASM matches
+// pi's JS glue). Anchor on pi's "." entry via import.meta.resolve: pi's
+// exports lack "./package.json" and any require condition, and the entry's
+// realpath sits in .pnpm/<pi>/, whose node_modules links pi's deps — the
+// top-level symlink's ancestor walk doesn't (that trap broke CI once).
 console.log("\n→ copy photon wasm")
 let photonWasmSrc
 try {
-	// pi's exports map does not expose "./package.json" and Node enforces
-	// exports (bun is lenient) — resolve the exported "." entry instead.
-	// The "." export is import-only, so the CJS require resolver cannot see
-	// it; import.meta.resolve returns the entry's realpath, and the entry's
-	// directory chain reaches .pnpm/<pi>/node_modules, where photon-node is
-	// linked.
 	const piRequire = createRequire(realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))))
 	try {
 		photonWasmSrc = piRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
 	} catch {
-		// pnpm layouts don't always honor deep subpath joins — resolve the package
-		// directory via its package.json and join the WASM filename instead.
+		// Some layouts don't join deep subpaths — resolve the package dir instead.
 		photonWasmSrc = join(dirname(piRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
 	}
 } catch (cause) {
-	// Every failure path of this guard must explain the production consequence
-	// — a raw MODULE_NOT_FOUND/ERR_PACKAGE_PATH_NOT_EXPORTED would not.
+	// Curated message: the raw resolve error doesn't explain the consequence.
 	throw new Error(
 		"@silvia-odwyer/photon-node could not be resolved through " +
 			"@earendil-works/pi-coding-agent's dependencies. Image inlining would " +
@@ -155,9 +139,8 @@ try {
 	)
 }
 if (!existsSync(photonWasmSrc)) {
-	// Structural regression guard: without this file, every image read in the
-	// compiled binary is silently dropped ("[Image omitted: could not be resized
-	// below the inline image size limit.]"). Fail the build, not the user.
+	// Without this file every resized image is silently dropped at runtime —
+	// fail the build, not the user.
 	throw new Error(
 		`photon_rs_bg.wasm not found (resolved: ${photonWasmSrc}). ` +
 			"@silvia-odwyer/photon-node is missing or changed shape; image inlining " +
