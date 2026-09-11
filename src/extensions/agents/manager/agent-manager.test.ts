@@ -1846,6 +1846,47 @@ describe("AgentManager communication broker", () => {
 		}
 	})
 
+	it("queues a parent reply for a running session-less (ACP) record as a pending message, not thread_closed", async () => {
+		const manager = new AgentManager(undefined, 0)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			manager.registerParentBridge("root-1", () => true)
+			const source = spawnCommunicatingAgent(manager, "parent")
+			const record = manager.getRecord(source)
+			if (!record) throw new Error("expected source record")
+
+			// ACP record shape: running, session-less, spawned from an ACP server.
+			record.status = "running"
+			record.acp = { server: "fake" }
+
+			// The agent asks the user a question (open user-question thread).
+			const question = createInitialMessage(manager, source, "acp-question", { type: "user" }, "question")
+			expect(manager.registerMessageThread(question)).toEqual({ accepted: true })
+			expect(manager.hasOpenQuestionThreads(source)).toBe(true)
+
+			// The parent replies while the ACP runner is alive (running, no session).
+			const receipt = await manager.replyToAgentMessage("root-1", "acp-question", "acp-reply", "Use option A.", {
+				maxTurns: 2,
+				maxDuration: 30,
+			})
+
+			// Not thread_closed — queued for the runner to pick up.
+			expect(receipt).toMatchObject({ status: "queued_before_session" })
+
+			// The ACP runner picks up the reply via takeAcpFollowUp as a follow-up turn.
+			const followUp = manager.takeAcpFollowUp(source)
+			expect(followUp).toBeDefined()
+			expect(followUp?.prompt).toContain("Use option A.")
+			expect(followUp?.pending).toBeDefined()
+
+			// Delivery completes — the answered question thread closes with the reply.
+			manager.completeAcpFollowUp(followUp?.pending)
+			expect(manager.hasOpenQuestionThreads(source)).toBe(false)
+		} finally {
+			manager.dispose()
+		}
+	})
+
 	it("rejects wrong-root replies before thread lookup and queues one correlated parent answer", async () => {
 		const manager = new AgentManager(undefined, 0)
 		try {
