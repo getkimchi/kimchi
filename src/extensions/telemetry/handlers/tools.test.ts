@@ -230,6 +230,30 @@ describe("handlers/tools", () => {
 			expect(error?.attrs.error_message).toBe("command failed with exit code 1")
 			expect(error?.attrs.model).toBe("claude-3-5-sonnet")
 		})
+
+		it("stamps the request trace context on tool_failure error events", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			ctx.lastTraceContext = { traceId: "aaaabbbbccccddddeeeeffff00001111", spanId: "1122334455667788" }
+			const toolCallId = "tc-bash-err-trace"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "command failed with exit code 1" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const error = events.find((e) => e.eventName === "error")
+			expect(error).toBeDefined()
+			expect(error?.attrs.error_type).toBe("tool_failure")
+			expect(error?.attrs["request.trace_id"]).toBe("aaaabbbbccccddddeeeeffff00001111")
+			expect(error?.attrs["request.span_id"]).toBe("1122334455667788")
+		})
 	})
 
 	// -----------------------------------------------------------------------
