@@ -403,8 +403,7 @@ export function injectExperimentalProvider(modelsJsonPath: string, apiKey: strin
 
 /**
  * Upsert the virtual kimchi-dev/auto model after the managed provider refresh.
- * It is always present so saved sessions/defaults remain restorable; the
- * experimental flag only controls whether Pi exposes it in discovery lists.
+ * It is available to all customers for selection and session restoration.
  */
 export function injectAutoModel(modelsJsonPath: string): void {
 	if (!existsSync(modelsJsonPath)) return

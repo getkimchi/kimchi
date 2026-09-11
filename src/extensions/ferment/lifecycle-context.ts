@@ -2,7 +2,6 @@ import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent
 import { TERMINAL_STEP_STATUSES } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import type { FermentRuntime } from "./runtime.js"
 import { formatNextActionHint } from "./tool-helpers.js"
 
@@ -30,7 +29,7 @@ function stripFermentLifecycleMessages(messages: OrchestratorMessages): Orchestr
  *  transition, breaking prefix-cache stability. Moving it to the transient
  *  context channel keeps the system prompt byte-stable across transitions
  *  while still delivering the same information to the model every turn. */
-function buildFermentLifecycleContext(f: Ferment, multiModelEnabled: boolean): string | undefined {
+function buildFermentLifecycleContext(f: Ferment): string | undefined {
 	const activePhaseStates = f.phases
 		.filter((phase) => phase.status === "active")
 		.map((phase) => {
@@ -38,7 +37,7 @@ function buildFermentLifecycleContext(f: Ferment, multiModelEnabled: boolean): s
 			return `active phase "${phase.id}" ("${phase.name}"), ${terminalSteps}/${phase.steps.length} steps terminal in phase "${phase.id}"`
 		})
 	const stateLine = [`ferment status "${f.status}"`, ...activePhaseStates].join("; ")
-	const nextActionHint = formatNextActionHint(f, multiModelEnabled)
+	const nextActionHint = formatNextActionHint(f)
 
 	const lines = [`## Current lifecycle state`, `- Scoping is COMPLETE (${stateLine}).`]
 	if (nextActionHint) {
@@ -66,7 +65,7 @@ function buildFermentLifecycleContext(f: Ferment, multiModelEnabled: boolean): s
  * sufficient.
  */
 export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: FermentRuntime): void {
-	pi.on("context", async (event, ctx) => {
+	pi.on("context", async (event) => {
 		if (isAgentWorker()) return undefined
 
 		const f = runtime.getActive()
@@ -76,8 +75,7 @@ export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: Ferme
 		// abandoned have their own dedicated prompt blocks or no block at all.
 		if (f.status !== "planned" && f.status !== "running") return undefined
 
-		const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-		const content = buildFermentLifecycleContext(f, multiModelEnabled)
+		const content = buildFermentLifecycleContext(f)
 		if (!content) return undefined
 
 		const messages = stripFermentLifecycleMessages(event.messages)

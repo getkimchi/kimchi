@@ -14,7 +14,7 @@ test("a tool-only submitted plan stays in chat after cancellation and session re
 	const plan = "# Cache migration\n\n- Preserve the public API.\n- Verify rollback before deployment."
 	const fixture = await createKimchiFixture({
 		responses: [
-			{ stream: [], toolCalls: [{ function: { name: "submit_plan", arguments: JSON.stringify({ plan }) } }] },
+			{ stream: [], toolCalls: [{ function: { name: "ExitPlanMode", arguments: JSON.stringify({ plan }) } }] },
 		],
 	})
 	const session = createKimchiSessionController(terminal, fixture, { extraArgs: ["--plan=true", "-c"] })
@@ -54,11 +54,11 @@ test("reworking a plan prints the complete revision and approval keeps it in cha
 			responses: [
 				{
 					stream: [],
-					toolCalls: [{ function: { name: "submit_plan", arguments: JSON.stringify({ plan: original }) } }],
+					toolCalls: [{ function: { name: "ExitPlanMode", arguments: JSON.stringify({ plan: original }) } }],
 				},
 				{
 					stream: [],
-					toolCalls: [{ function: { name: "submit_plan", arguments: JSON.stringify({ plan: revised }) } }],
+					toolCalls: [{ function: { name: "ExitPlanMode", arguments: JSON.stringify({ plan: revised }) } }],
 				},
 				{ stream: ["APPROVED_PLAN_EXECUTION_STARTED"] },
 			],

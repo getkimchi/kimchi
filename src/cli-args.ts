@@ -1,26 +1,31 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
-import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, AUTO_MODEL_REF } from "./extensions/router/constants.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
 export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "./cli-modes.js"
 
-// Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
-// such as `--mode acp`, which upstream pi does not parse.
+// Pre-dispatch scanners still need to skip values for raw scans. Keep the
+// upstream value-taking flags here because pi's parser is not exposed as a
+// value catalog; Kimchi-local string options are derived from CLI_OPTIONS below.
 const PRE_DISPATCH_VALUE_FLAGS = new Set([
 	"--provider",
 	"--model",
 	"--api-key",
 	"--system-prompt",
 	"--append-system-prompt",
+	"--name",
+	"-n",
 	"--session",
+	"--session-id",
 	"--fork",
 	"--session-dir",
 	"--models",
 	"--tools",
 	"-t",
+	"--exclude-tools",
+	"-xt",
 	"--thinking",
 	"--export",
 	"--extension",
@@ -28,45 +33,40 @@ const PRE_DISPATCH_VALUE_FLAGS = new Set([
 	"--skill",
 	"--prompt-template",
 	"--theme",
+	"--tui-mode",
 ])
 
 export function isPreDispatchValueFlag(arg: string): boolean {
-	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
+	if (PRE_DISPATCH_VALUE_FLAGS.has(arg)) return true
+	if (!arg.startsWith("--") || arg.includes("=")) return false
+	const option = CLI_OPTIONS[arg.slice(2)]
+	return option?.type === "string" && option.optional !== true
 }
 
-/**
- * Strip virtual multi-model CLI arguments from the args list before passing
- * them upstream. Upstream pi-mono does not recognize "multi-model" as a model
- * id, so we translate these flags into the multi-model side-channel instead.
- *
- * Recognizes:
- *   --multi-model
- *   --model multi-model
- *   --model=multi-model
- */
-export function stripMultiModelArgs(args: string[]): string[] {
-	const result: string[] = []
+/** Return a removed multi-model flag so startup can fail with a clear message. */
+export function findDeprecatedMultiModelFlag(args: readonly string[]): string | undefined {
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]
-		if (arg === "--multi-model") {
-			continue
+		if (arg === "--") break
+		const selectedModel = arg === "--model" ? args[i + 1] : arg.startsWith("--model=") ? arg.slice(8) : undefined
+		if (
+			selectedModel &&
+			/^(?:(?:orchestration|kimchi-dev)\/)?multi-model(?::(?:off|minimal|low|medium|high|xhigh|max))?$/i.test(
+				selectedModel,
+			)
+		) {
+			return `--model ${selectedModel}`
 		}
-		if (arg === "--model" && i + 1 < args.length && args[i + 1] === MULTI_MODEL_ID) {
+		if (isPreDispatchValueFlag(arg)) {
 			i += 1
 			continue
 		}
-		if (arg === `--model=${MULTI_MODEL_ID}`) {
-			continue
-		}
-		result.push(arg)
+		if (arg === "--multi-model" || arg.startsWith("--multi-model=")) return arg
 	}
-	return result
+	return undefined
 }
 
 export type CliOptionType = "string" | "boolean"
-
-/** Virtual model id that enables multi-model orchestration mode. */
-export const MULTI_MODEL_ID = "multi-model"
 
 export interface CliOptionDef {
 	type: CliOptionType
@@ -96,17 +96,17 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	model: {
 		type: "string",
-		description:
-			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
+		description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`.",
 		placeholder: "<pattern>",
 	},
-	"multi-model": {
-		type: "boolean",
-		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
+	models: {
+		type: "string",
+		description: "Comma-separated model patterns for this session's model cycle",
+		placeholder: "<patterns>",
 	},
 	"enable-experimental-features": {
 		type: "boolean",
-		description: "Enable experimental features, including the kimchi-dev/auto model",
+		description: "Enable experimental features",
 	},
 	thinking: {
 		type: "string",
@@ -210,7 +210,7 @@ export interface SessionCliArgs {
 	options: {
 		provider?: string
 		model?: string
-		"multi-model"?: boolean
+		models?: string
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -248,12 +248,17 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 		...(def.multiple ? { multiple: def.multiple } : {}),
 	}
 }
+// Consume upstream option values so text such as --system-prompt "--model"
+// cannot be mistaken for a model-selection flag by our cached parse.
+for (const flag of PRE_DISPATCH_VALUE_FLAGS) {
+	if (flag.startsWith("--")) PARSE_ARGS_OPTIONS[flag.slice(2)] ??= { type: "string" }
+}
 
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
 const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
-	"multi-model",
+	"models",
 	"thinking",
 	"mode",
 	"print",
@@ -269,8 +274,22 @@ const CACHEABLE_OPTION_NAMES = [
 
 /** Parse args without caching. Exported for tests. */
 export function parseCliArgs(args: string[]): SessionCliArgs {
+	// Pi accepts -xt as a single option, unlike node:util's grouped short flags.
+	// Normalize only option positions; consumed values may themselves look like flags.
+	const shortValueOptions: Record<string, string> = {
+		"-n": "--name",
+		"-e": "--extension",
+		"-t": "--tools",
+		"-xt": "--exclude-tools",
+	}
+	const normalizedArgs = [...args]
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--") break
+		if (shortValueOptions[args[i]]) normalizedArgs[i] = shortValueOptions[args[i]]
+		if (isPreDispatchValueFlag(args[i])) i += 1
+	}
 	const { values, positionals } = parseArgs({
-		args,
+		args: normalizedArgs,
 		options: PARSE_ARGS_OPTIONS,
 		strict: false,
 		allowPositionals: true,
@@ -282,6 +301,14 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		;(options as Record<string, unknown>)[key] = value
 	}
 	return { options, positionals }
+}
+
+/** An inherited model is an explicit launch choice; command-line selection wins. */
+export function applyModelEnvArgs(args: string[], model: string | undefined): string[] {
+	if (!model) return args
+	const { options } = parseCliArgs(args)
+	if (options.model || options.provider || options.models) return args
+	return ["--model", model, ...args]
 }
 
 /**
@@ -296,15 +323,6 @@ export function getParsedCliArgs(): SessionCliArgs {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}
 	return cachedCliArgs
-}
-
-/** True when launch arguments explicitly request the gated Auto model. */
-export function isExplicitAutoModelSelection(args: SessionCliArgs): boolean {
-	const provider = args.options.provider?.toLowerCase()
-	const model = args.options.model?.toLowerCase().replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
-	if (!model) return false
-	if (model === AUTO_MODEL_REF) return true
-	return model === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)
 }
 
 export function normalizeResumeIdArgs(args: string[]): string[] {

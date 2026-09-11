@@ -3,8 +3,7 @@
  */
 
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { ModelTier } from "../../orchestration/model-registry/types.js"
-import type { ModelRole } from "../../orchestration/model-roles.js"
+import type { ModelRole, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
@@ -154,8 +153,8 @@ export interface AgentConfig {
 	/** Where this agent was loaded from */
 	source?: "default" | "project" | "global" | "package"
 	/**
-	 * Task roles this persona is optimized for. Used by the orchestrator
-	 * auto-pick logic when no model is explicitly specified and models[] is empty.
+	 * Task roles this persona is optimized for. Selects role-specific prompt guidance;
+	 * does not select or constrain the model.
 	 */
 	roles?: ModelRole[]
 }

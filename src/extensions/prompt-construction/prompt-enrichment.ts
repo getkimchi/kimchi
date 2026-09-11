@@ -1,15 +1,14 @@
 /**
- * Orchestration prompt enrichment extension.
+ * Prompt enrichment extension.
  *
  * Behavior depends on whether this process is the main model or an Agent worker
  * (detected via Agent worker context or the legacy KIMCHI_SUBAGENT env var).
  *
  * Main model mode:
- * - "input": wraps the user prompt with the current model's own capabilities
- *   and the available delegated-agent models so the model can self-classify the task
- *   and decide which steps to execute itself vs. delegate.
- * - "before_agent_start": injects the self-classification system prompt with
- *   full tool access (read, write, edit, bash, Agent).
+ * - "input": keeps the user prompt intact while the selected model and its
+ *   available tools determine how the task is handled.
+ * - "before_agent_start": injects the single-model system prompt with full
+ *   tool access (read, write, edit, bash, Agent).
  *
  * Subagent mode:
  * - "input": passes through unchanged.
@@ -29,15 +28,12 @@ import { arch, homedir, version as osVersion, platform, userInfo } from "node:os
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../../config.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
-import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
-import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	brandUnmarkedSteers,
 	ContinuationNudge,
@@ -50,16 +46,6 @@ import {
 	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
-import {
-	extractCustomConfigs,
-	getModelRoles,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	modelIdFromRef,
-	splitModelRef,
-	validateModelRoles,
-} from "../orchestration/model-roles.js"
-import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
@@ -95,32 +81,6 @@ const deprecatedNotificationFired = new Set<string>()
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
-}
-
-/**
- * Sync multi-model and orchestrator state to the process side-channel
- * and reconcile persistence. Called from both session_start and
- * before_agent_start for consistency.
- *
- * Returns the effective boolean and orchestrator ref. The boolean
- * comes from resolution.value — setAndPersistMultiModelEnabled returns
- * a MultiModelResolution internally, but callers of this helper
- * only need the boolean.
- */
-function syncSessionModelState(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-): { multiModelEnabled: boolean; orchestratorModelRef: string } {
-	const sessionId = ctx.sessionManager.getSessionId()
-
-	const resolution = setAndPersistMultiModelEnabled(sessionId, ctx.sessionManager, pi)
-
-	const orchestratorModelRef = getOrchestratorModelRef(sessionId)
-	if (getProcessOrchestratorRef(sessionId) !== orchestratorModelRef) {
-		setProcessOrchestratorRef(sessionId, orchestratorModelRef)
-	}
-
-	return { multiModelEnabled: resolution.value, orchestratorModelRef }
 }
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -211,10 +171,6 @@ export default function (skillPathsFromConfig: string[]) {
 			default: process.env.KIMCHI_DEBUG_PROMPTS === "1",
 		})
 
-		if (!subagentMode) {
-			registerModelRolesCommand(pi)
-		}
-
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 
@@ -227,19 +183,6 @@ export default function (skillPathsFromConfig: string[]) {
 		}
 
 		if (!subagentMode) {
-			// Validate model roles against available API models at startup.
-			// Cached model metadata can exist before auth is configured; in that
-			// state startup auth owns the first-run login path, so role warnings
-			// would be misleading noise before the user has a usable model.
-			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
-			if (loadConfig().apiKey && availableIds.size > 0) {
-				const validation = validateModelRoles(getModelRoles(), availableIds)
-				for (const { role, configuredModel } of validation.unavailable) {
-					console.warn(
-						`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.`,
-					)
-				}
-			}
 			function notifyIfDeprecated(ctx: ExtensionContext) {
 				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
 				if (ctx.model && deprecatedWarnings.has(ctx.model.id) && !deprecatedNotificationFired.has(sessionId)) {
@@ -260,25 +203,7 @@ export default function (skillPathsFromConfig: string[]) {
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
-				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
-				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
-
 				notifyIfDeprecated(ctx)
-
-				// In multi-model mode the orchestrator must always be the configured
-				// orchestrator model. Force-switch if the user has a different model
-				// selected via /models.
-				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
-					const ref = splitModelRef(orchestratorModelRef)
-					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
-					if (orchestratorModel) {
-						try {
-							await pi.setModel(orchestratorModel)
-						} catch (err) {
-							console.warn("failed to force orchestrator model:", err)
-						}
-					}
-				}
 			})
 
 			pi.on("model_select", async (event, ctx) => {
@@ -300,7 +225,7 @@ export default function (skillPathsFromConfig: string[]) {
 				}
 			})
 
-			// Detect the inverse of the context-event nudge below: the orchestrator reasons
+			// Detect the inverse of the context-event nudge below: the main agent reasons
 			// in prose, announces it will delegate, and ends its turn without emitting a
 			// delegation tool call. The agent loop would otherwise exit and wait for another
 			// user prompt. Nudge once per user-input cycle, and only when no tool has fired
@@ -384,7 +309,7 @@ export default function (skillPathsFromConfig: string[]) {
 				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
 
 				// Track stall: increment counter each turn so the headless prompt
-				// block can detect when the orchestrator hasn't updated step todos.
+				// block can detect when the main agent hasn't updated step todos.
 				// Scoped to this session so concurrent sessions do not share a counter.
 				bumpStallCounter(sessionId)
 
@@ -454,7 +379,7 @@ export default function (skillPathsFromConfig: string[]) {
 		}
 
 		if (subagentMode) {
-			// Subagents skip orchestrator-specific transforms but still benefit from
+			// Subagents skip main-session transforms but still benefit from
 			// stripping phantom empty-name tool calls. Some models (notably Kimi K2.x
 			// and MiniMax M2.7) emit empty tool calls after a real write/edit call,
 			// which the runtime rejects with a "Tool  not found" result that would
@@ -494,8 +419,6 @@ export default function (skillPathsFromConfig: string[]) {
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
-			syncSessionModelState(pi, ctx)
-
 			const sessionId = ctx.sessionManager.getSessionId()
 			const effectiveModel = getEffectiveModel(ctx)
 
@@ -531,24 +454,15 @@ export default function (skillPathsFromConfig: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const mode: PromptMode = subagentMode
-				? "subagent"
-				: getMultiModelEnabled(ctx.sessionManager)
-					? "orchestrator"
-					: "single"
-			const roles = mode === "orchestrator" ? getModelRoles() : undefined
-			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
+			const mode: PromptMode = subagentMode ? "subagent" : "single"
 
 			let systemPrompt = buildSystemPrompt({
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
 				skills: skills,
-				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
-				registry: registry,
+				currentModelId: effectiveModel?.id,
 				mode,
-				roles,
-				customConfigs,
 				sessionId,
 			})
 
@@ -556,7 +470,7 @@ export default function (skillPathsFromConfig: string[]) {
 			// silently drop --append-system-prompt flag values (and SYSTEM/
 			// APPEND_SYSTEM.md content) collected by pi's resource loader.
 			// Re-append them so per-session prompt extensions keep working,
-			// e.g. orchestrators embedding kimchi as a managed agent.
+			// e.g. a parent process embedding kimchi as a managed agent.
 			const appendSystemPrompt = event.systemPromptOptions?.appendSystemPrompt?.trim()
 			if (appendSystemPrompt) {
 				systemPrompt = `${systemPrompt}\n\n${appendSystemPrompt}`

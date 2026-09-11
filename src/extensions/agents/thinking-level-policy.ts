@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "./personas/types.js"
 
 export type ChunkComplexity = "simple" | "complex"
 
-/** Delegation scopes aligned with Orchestration phases and agent types. */
+/** Delegation scopes aligned with agent personas and work types. */
 export type ThinkingTaskScope =
 	| "explore"
 	| "research"
@@ -97,16 +97,5 @@ export function renderDelegationThinkingLevelTable(): string {
 		...rows.map(
 			([label, agentType, simple, complex, retry]) => `| ${label} | ${agentType} | ${simple} | ${complex} | ${retry} |`,
 		),
-	].join("\n")
-}
-
-export function renderOrchestratorThinkingTable(): string {
-	return [
-		"| Orchestrator activity | thinking |",
-		"|---|---:|",
-		"| Orientation, spawning agents, reading artifact paths | low |",
-		"| Pipeline selection and intent boundaries | medium |",
-		"| Plan self-validation or interpreting NEEDS_REVISION | high |",
-		"| Recovery after agent_outcome ≠ completed (retry) | medium → high |",
 	].join("\n")
 }

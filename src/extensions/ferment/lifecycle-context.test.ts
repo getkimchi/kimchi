@@ -1,19 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
-
-const getMultiModelEnabledMock = vi.fn(() => true)
-vi.mock("../multi-model.js", (importOriginal) => {
-	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
-		...mod,
-		getMultiModelEnabled: () => getMultiModelEnabledMock(),
-	}))
-})
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 
@@ -101,10 +93,6 @@ function extractLifecycleMessage(result: ContextResult): { content?: string } | 
 }
 
 describe("registerFermentLifecycleContext", () => {
-	beforeEach(() => {
-		getMultiModelEnabledMock.mockReturnValue(true)
-	})
-
 	it("injects volatile lifecycle state for a running ferment with an active phase", async () => {
 		const { pi, fireContext } = createHarness()
 		registerFermentLifecycleContext(pi, makeRuntime())
@@ -233,15 +221,12 @@ describe("registerFermentLifecycleContext", () => {
 		expect(second?.messages?.at(-1)?.content).toBe(firstMessage?.content)
 	})
 
-	it("uses the multi-model flag to shape delegation hints", async () => {
+	it("uses direct-first delegation hints", async () => {
 		const { pi, fireContext } = createHarness()
-		getMultiModelEnabledMock.mockReturnValue(false)
 		registerFermentLifecycleContext(pi, makeRuntime())
 
 		const result = await fireContext([])
 		const lifecycle = extractLifecycleMessage(result)
-		// In single-model mode, the next-action suffix tells the planner it should
-		// execute the step directly instead of always spawning a subagent.
 		expect(lifecycle?.content).toContain("Then execute the step directly")
 	})
 })

@@ -14,10 +14,10 @@
  * - `shouldSuppressInteractiveTools()` — TUI-only tools (questionnaire): dead
  *   in EVERY print run, ferment one-shot included (the one-shot judge answers
  *   via ask_user, never the TUI form).
- * - `shouldSuppressFermentModeTools()` — analytics/mode tools (set_phase,
- *   list_ferments + ferment suite): dead in plain print runs, but a
+ * - `shouldSuppressFermentModeTools()` — ferment tools (list_ferments +
+ *   ferment suite): dead in plain print runs, but a
  *   `ferment-oneshot=true` run composes — that session IS a ferment planner
- *   (its toolset includes set_phase + scope_ferment), so suppression lifts.
+ *   (its toolset includes scope_ferment), so suppression lifts.
  *
  * Scope: print mode only. `--mode acp|json|rpc` are protocol modes with real
  * clients (ACP needs ferment, so it is deliberately NOT covered) and
@@ -54,7 +54,7 @@ export function shouldSuppressInteractiveTools(): boolean {
 	return printMode
 }
 
-/** Suppress ferment-mode tools? (set_phase, list_ferments, ferment suite) */
+/** Suppress ferment-mode tools? (list_ferments, ferment suite) */
 export function shouldSuppressFermentModeTools(): boolean {
 	return printMode && !fermentOneshotRequested
 }

@@ -1,41 +1,34 @@
-import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
 import {
 	DEFAULT_BUILD_GUIDELINES,
 	DEFAULT_EXPLORE_GUIDELINES,
 	DEFAULT_PLAN_GUIDELINES,
 	DEFAULT_RESEARCH_GUIDELINES,
 	DEFAULT_REVIEW_GUIDELINES,
-} from "./guidelines/default-phase-guidelines.js"
+} from "./guidelines/default-role-guidelines.js"
 import {
 	KIMI_FAMILY_BUILD,
-	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
 	KIMI_FAMILY_REVIEW,
-	KIMI_K26_ORCHESTRATION,
 	KIMI_K26_PLAN,
 } from "./guidelines/kimi-family.js"
 import {
 	MINIMAX_FAMILY_BUILD,
-	MINIMAX_FAMILY_ORCHESTRATION,
 	MINIMAX_FAMILY_PLAN,
 	MINIMAX_FAMILY_RESEARCH,
 	MINIMAX_FAMILY_REVIEW,
 	MINIMAX_M27_BUILD,
-	MINIMAX_M27_ORCHESTRATION,
 	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
 import {
 	NEMOTRON_3_ULTRA_BUILD,
 	NEMOTRON_3_ULTRA_EXPLORE,
-	NEMOTRON_3_ULTRA_ORCHESTRATION,
 	NEMOTRON_3_ULTRA_RESEARCH,
 	NEMOTRON_FAMILY_BUILD,
 	NEMOTRON_FAMILY_EXPLORE,
-	NEMOTRON_FAMILY_ORCHESTRATION,
 	NEMOTRON_FAMILY_RESEARCH,
 } from "./guidelines/nemotron-family.js"
-import type { ModelCapabilities, Phase } from "./types.js"
+import type { ModelCapabilities, ModelRole } from "./types.js"
 
 /**
  * This map is a local capability knowledge-base keyed by model ID. It acts
@@ -96,18 +89,12 @@ function concatGuidelines(...layers: string[]): string {
 	return layers.filter(Boolean).join("\n\n")
 }
 
-/** Compose guideline layers; returns undefined when all layers are empty
- *  so the resolver falls back to the default constant. */
-function optionalGuidelines(...layers: string[]): string | undefined {
-	return concatGuidelines(...layers) || undefined
-}
-
 /** Build a guidelines record, omitting entries where all layers are empty. */
-function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<Phase, string>>> | undefined {
+function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<ModelRole, string>>> | undefined {
 	const result: Record<string, string> = {}
-	for (const [phase, layers] of Object.entries(entries)) {
+	for (const [role, layers] of Object.entries(entries)) {
 		const value = concatGuidelines(...layers)
-		if (value) result[phase] = value
+		if (value) result[role] = value
 	}
 	return Object.keys(result).length > 0 ? result : undefined
 }
@@ -139,11 +126,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
 				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
 			}),
-			orchestrationGuidelines: optionalGuidelines(
-				DEFAULT_ORCHESTRATION_GUIDELINES,
-				KIMI_FAMILY_ORCHESTRATION,
-				KIMI_K26_ORCHESTRATION,
-			),
 		},
 	],
 	[
@@ -159,7 +141,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
 				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
 			}),
-			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
 		},
 	],
 	["kimi-k2.5", "ignored"],
@@ -176,7 +157,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD],
 				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW],
 			}),
-			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, MINIMAX_FAMILY_ORCHESTRATION),
 		},
 	],
 	[
@@ -190,11 +170,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
 				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
 			}),
-			orchestrationGuidelines: optionalGuidelines(
-				DEFAULT_ORCHESTRATION_GUIDELINES,
-				MINIMAX_FAMILY_ORCHESTRATION,
-				MINIMAX_M27_ORCHESTRATION,
-			),
 		},
 	],
 	[
@@ -209,11 +184,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				research: [DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_ULTRA_RESEARCH],
 				explore: [DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_ULTRA_EXPLORE],
 			}),
-			orchestrationGuidelines: optionalGuidelines(
-				DEFAULT_ORCHESTRATION_GUIDELINES,
-				NEMOTRON_FAMILY_ORCHESTRATION,
-				NEMOTRON_3_ULTRA_ORCHESTRATION,
-			),
 		},
 	],
 	[
@@ -227,8 +197,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				explore: [DEFAULT_EXPLORE_GUIDELINES],
 				research: [DEFAULT_RESEARCH_GUIDELINES],
 			}),
-			orchestrationGuidelines:
-				"When orchestrating (deepseek-v4-flash): No model-specific orchestration overrides — follow the default delegation rules.",
 		},
 	],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.

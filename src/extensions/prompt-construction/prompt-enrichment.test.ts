@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
@@ -277,6 +277,50 @@ describe("prompt enrichment environment context", () => {
 			}
 		}
 	})
+
+	it("ignores legacy orchestration entries without registering or persisting orchestration state", async () => {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const registerCommand = vi.fn()
+		const appendEntry = vi.fn()
+		const setModel = vi.fn()
+		const pi = {
+			appendEntry,
+			registerFlag: () => {},
+			registerCommand,
+			setModel,
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: () => false,
+		} as unknown as ExtensionAPI
+
+		promptEnrichmentExtension([])(pi)
+
+		expect(registerCommand).not.toHaveBeenCalled()
+		const sessionStart = handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const legacyEntries = [
+			{
+				type: "custom",
+				id: "legacy-mode",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				customType: "multi_model_enabled",
+				data: true,
+			},
+		] as SessionEntry[]
+		const ctx = createContext({
+			model: { provider: "kimchi-dev", id: "kimi-k2.7" },
+			sessionManager: { getEntries: () => legacyEntries },
+		})
+
+		await sessionStart({}, ctx)
+
+		expect(appendEntry).not.toHaveBeenCalled()
+		expect(setModel).not.toHaveBeenCalled()
+	})
 })
 
 describe("prompt enrichment skills", () => {
@@ -509,77 +553,6 @@ describe("append system prompt", () => {
 
 		// Whitespace-only should be skipped — prompt unchanged
 		expect(resultBaseline.systemPrompt).toBe(resultWhitespace.systemPrompt)
-	})
-})
-
-describe("model role startup warnings", () => {
-	beforeEach(() => {
-		vi.restoreAllMocks()
-	})
-
-	function modelMetadata(slug: string): ModelMetadata {
-		return {
-			slug,
-			display_name: slug,
-			provider: "kimchi-dev",
-			reasoning: false,
-			input_modalities: ["text"],
-			is_serverless: true,
-			limits: { context_window: 128000, max_output_tokens: 8192 },
-		}
-	}
-
-	it("does not print unavailable role warnings when no models are available yet", () => {
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const pi = {
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-
-		promptEnrichmentExtension([])(pi)
-
-		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning:"))
-	})
-
-	it("does not print unavailable role warnings from cached metadata before auth is configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("cached-model")])
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const pi = {
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-
-		promptEnrichmentExtension([])(pi)
-
-		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning:"))
-	})
-
-	it("keeps unavailable role warnings when Kimchi auth is already configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "test-key" } as ReturnType<typeof config.loadConfig>)
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("different-model")])
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const pi = {
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-
-		promptEnrichmentExtension([])(pi)
-
-		expect(warn).toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning: orchestrator"))
 	})
 })
 

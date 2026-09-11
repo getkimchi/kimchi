@@ -3,9 +3,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../../router/state.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { captureJudgeContext } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
@@ -151,6 +152,10 @@ const passingFermentGates = () => [
 
 beforeEach(() => {
 	vi.restoreAllMocks()
+})
+
+afterEach(() => {
+	clearAutoRoutingState("complete-ferment-auto")
 })
 
 describe("buildFreeformScopingFeedbackMessage", () => {
@@ -1339,9 +1344,19 @@ describe("completeFerment", () => {
 	})
 
 	it("stamps and renders the judge model when resolvable", async () => {
-		captureJudgeContext({ provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>)
+		captureJudgeContext({ provider: "kimchi-dev", id: "stale-model" } as unknown as Model<Api>)
 		const h = createHarness()
 		createTerminalFerment(h)
+		const routedModel = createContext({
+			model: { provider: "kimchi-dev", id: "glm-5.2-fp8", name: "GLM 5.2" },
+		}).model
+		if (!routedModel) throw new Error("expected routed model fixture")
+		const ctx = createContext({
+			model: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+			sessionManager: { getSessionId: () => "complete-ferment-auto" },
+		})
+		setAutoRoutingState("complete-ferment-auto", { status: "resolved", model: routedModel })
+		const capture = vi.spyOn(h.runtime, "captureJudgeContext")
 		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
 			ok: true,
 			grade: "A",
@@ -1352,9 +1367,10 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
-			{ ctx: createContext() },
+			{ ctx },
 		)
 
+		expect(capture).toHaveBeenCalledWith(routedModel, ctx.modelRegistry)
 		expect(okText(result)).toContain("judge: kimchi-dev/glm-5.2-fp8")
 		expect(h.storage.get(h.fermentId)?.grade?.gradedBy).toBe("kimchi-dev/glm-5.2-fp8")
 	})

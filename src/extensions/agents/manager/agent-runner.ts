@@ -16,21 +16,21 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { readTelemetryConfig } from "../../../config.js"
+import { derivePlanTitle, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
-import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { isAutoModel } from "../../router/constants.js"
 import { createAutoModelExtension } from "../../router/index.js"
 import { getEffectiveModel } from "../../router/state.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -278,24 +278,6 @@ function collectResponseText(session: AgentSession) {
 	return { getText: () => text, unsubscribe }
 }
 
-/**
- * Find the worker session's submit_plan tool result and return the saved plan
- * path from the structured `details` payload (`{ submitted: true, planPath }`).
- * pi-mono preserves `details` on stored tool-result messages, so this is the
- * sole extraction path.
- */
-function extractSubmitPlanPath(session: AgentSession): string | undefined {
-	for (let i = session.messages.length - 1; i >= 0; i--) {
-		const msg = session.messages[i]
-		if (msg.role !== "toolResult" || msg.toolName !== "submit_plan") continue
-		const details = msg.details as { submitted?: boolean; planPath?: unknown } | undefined
-		if (details?.submitted === true && typeof details.planPath === "string" && details.planPath) {
-			return details.planPath
-		}
-	}
-	return undefined
-}
-
 function getLastAssistantText(session: AgentSession): string {
 	for (let i = session.messages.length - 1; i >= 0; i--) {
 		const msg = session.messages[i]
@@ -304,6 +286,53 @@ function getLastAssistantText(session: AgentSession): string {
 		if (text) return text
 	}
 	return ""
+}
+
+function getPlanPathFromToolResult(result: unknown): string | undefined {
+	if (!result || typeof result !== "object" || !("details" in result)) return undefined
+	const details = result.details
+	if (!details || typeof details !== "object" || !("planPath" in details)) return undefined
+	const planPath = details.planPath
+	return typeof planPath === "string" ? planPath : undefined
+}
+
+/**
+ * Register the plan-completion tool in a child session without loading the
+ * parent permissions extension. Child Plan agents have no approval UI; the
+ * orchestrator handles approval after receiving the persisted artifact.
+ */
+export function createSubagentPlanExitExtension(cwd: string): InlineExtension {
+	return (pi) => {
+		pi.registerTool({
+			name: "ExitPlanMode",
+			label: "Save Plan",
+			description: "Save the complete plan and return its path to the orchestrator.",
+			promptSnippet: "Save the completed plan",
+			parameters: Type.Object({
+				plan: Type.String({ description: "The complete plan in the shared structure." }),
+			}),
+			execute: async (_toolCallId, params) => {
+				const planText = params.plan.trim()
+				if (!planText) {
+					return {
+						content: [{ type: "text" as const, text: "Provide the complete plan in the `plan` argument." }],
+						details: null,
+					}
+				}
+
+				const planPath = savePlanMarkdown({
+					cwd,
+					name: derivePlanTitle(planText),
+					planText: `${planText}\n`,
+				})
+				return {
+					content: [{ type: "text" as const, text: `Plan saved to ${planPath}.` }],
+					details: { submitted: true, source: "worker", planPath },
+					terminate: true,
+				}
+			},
+		})
+	}
 }
 
 function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
@@ -391,6 +420,9 @@ async function runAgentInner(
 	}
 
 	let toolNames = getToolNamesForType(type)
+	if (type === "Plan" && !toolNames.includes("ExitPlanMode")) {
+		toolNames = [...toolNames, "ExitPlanMode"]
+	}
 
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
@@ -436,7 +468,7 @@ ${skillLines}`
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
-	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
+	const guidelineRole = agentConfig?.roles?.[0]
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
@@ -450,7 +482,7 @@ ${skillLines}`
 
 	const buildSystemPrompt = (activeToolNames: string[], promptModelId = model?.id) => {
 		extras.activeToolNames = activeToolNames
-		const guidelinesBlock = buildPhaseGuidelinesSection(promptModelId, guidelinePhase, getGuidelinesRegistry())
+		const guidelinesBlock = buildRoleGuidelinesSection(promptModelId, guidelineRole, getGuidelinesRegistry())
 		extras.guidelinesBlock = guidelinesBlock
 		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
@@ -512,6 +544,7 @@ ${skillLines}`
 		bashExtension,
 		infrastructureBreakerExtension,
 	]
+	if (type === "Plan") extensionFactories.push(createSubagentPlanExitExtension(effectiveCwd))
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
 	// extension registered in the child session: repo-native extensions wired
 	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
@@ -637,6 +670,7 @@ ${skillLines}`
 	}
 
 	let currentMessageText = ""
+	let planPath: string | undefined
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
 		inactivity.lastActivityAt = Date.now()
 		if (inactivity.steered) inactivity.steered = false
@@ -686,6 +720,10 @@ ${skillLines}`
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
+			if (type === "Plan" && event.toolName === "ExitPlanMode") {
+				const reportedPlanPath = getPlanPathFromToolResult(event.result)
+				if (reportedPlanPath) planPath = reportedPlanPath
+			}
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
 				queueMicrotask(() => hardAbort(session))
@@ -776,13 +814,6 @@ ${skillLines}`
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const sessionId = ctx.sessionManager.getSessionId()
-	const prevPhase = getCurrentPhase(sessionId)
-	const personaPhase = agentConfig?.roles?.[0]
-	if (personaPhase) {
-		setCurrentPhase(sessionId, personaPhase)
-	}
-
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
@@ -801,9 +832,6 @@ ${skillLines}`
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
-		}
-		if (personaPhase) {
-			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 
@@ -826,16 +854,6 @@ ${skillLines}`
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-
-	// A Plan agent completes by calling the submit_plan tool, which saves the
-	// plan itself (see permissions/index.ts) and terminates the turn. Extract
-	// the saved path from the tool result so the parent orchestrator can
-	// surface it. Stays undefined for non-Plan agents and when no submit_plan
-	// call happened.
-	let planPath: string | undefined
-	if (type === "Plan") {
-		planPath = extractSubmitPlanPath(session)
-	}
 
 	return {
 		responseText,

@@ -6,7 +6,7 @@ import {
 	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
 	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
 	hasFermentScopingCompletionSignal,
-	hasPlanSubmitToolCall,
+	hasPlanExitToolCall,
 	isNudgeSuppressed,
 	MAX_PLANNING_STOP_NUDGES,
 	PLAN_MODE_STOP_NUDGE,
@@ -15,25 +15,21 @@ import {
 
 describe("shouldNudge", () => {
 	it("returns true when all conditions met: tool call, stop reason, no completion signal", () => {
-		expect(shouldNudge({ hasToolCall: true, stopReason: "stop", completionSignalPresent: false })).toBe(true)
+		expect(shouldNudge({ hasToolCall: true, stopReason: "stop" })).toBe(true)
 	})
 
 	it("returns false when no tool calls were made", () => {
-		expect(shouldNudge({ hasToolCall: false, stopReason: "stop", completionSignalPresent: false })).toBe(false)
+		expect(shouldNudge({ hasToolCall: false, stopReason: "stop" })).toBe(false)
 	})
 
 	it("returns false when stopReason is not 'stop'", () => {
-		expect(shouldNudge({ hasToolCall: true, stopReason: "end_turn", completionSignalPresent: false })).toBe(false)
-		expect(shouldNudge({ hasToolCall: true, stopReason: undefined, completionSignalPresent: false })).toBe(false)
-		expect(shouldNudge({ hasToolCall: true, stopReason: "tool_use", completionSignalPresent: false })).toBe(false)
-	})
-
-	it("returns false when completion signal is present", () => {
-		expect(shouldNudge({ hasToolCall: true, stopReason: "stop", completionSignalPresent: true })).toBe(false)
+		expect(shouldNudge({ hasToolCall: true, stopReason: "end_turn" })).toBe(false)
+		expect(shouldNudge({ hasToolCall: true, stopReason: undefined })).toBe(false)
+		expect(shouldNudge({ hasToolCall: true, stopReason: "tool_use" })).toBe(false)
 	})
 
 	it("returns false when all conditions are false", () => {
-		expect(shouldNudge({ hasToolCall: false, stopReason: "end_turn", completionSignalPresent: true })).toBe(false)
+		expect(shouldNudge({ hasToolCall: false, stopReason: "end_turn" })).toBe(false)
 	})
 })
 
@@ -54,17 +50,17 @@ describe("isNudgeSuppressed", () => {
 	})
 })
 
-describe("hasPlanSubmitToolCall", () => {
-	it("returns true when submit_plan is in the tool call list", () => {
-		expect(hasPlanSubmitToolCall(["read", "submit_plan"])).toBe(true)
+describe("hasPlanExitToolCall", () => {
+	it("returns true when ExitPlanMode is in the tool call list", () => {
+		expect(hasPlanExitToolCall(["read", "ExitPlanMode"])).toBe(true)
 	})
 
 	it("returns false when only exploration tools are present", () => {
-		expect(hasPlanSubmitToolCall(["read", "grep", "questionnaire"])).toBe(false)
+		expect(hasPlanExitToolCall(["read", "grep", "questionnaire"])).toBe(false)
 	})
 
 	it("returns false for an empty list", () => {
-		expect(hasPlanSubmitToolCall([])).toBe(false)
+		expect(hasPlanExitToolCall([])).toBe(false)
 	})
 })
 
@@ -132,8 +128,8 @@ describe("contentHasToolCall", () => {
 })
 
 describe("PLAN_MODE_STOP_NUDGE", () => {
-	it("instructs the model to call the submit_plan tool", () => {
-		expect(PLAN_MODE_STOP_NUDGE).toContain("`submit_plan`")
+	it("instructs the model to call the ExitPlanMode tool", () => {
+		expect(PLAN_MODE_STOP_NUDGE).toContain("`ExitPlanMode`")
 	})
 
 	it("does not reference the removed plan-completion markers", () => {

@@ -3,7 +3,7 @@
  *
  * Used by:
  * - Plan mode (permissions extension): the model made tool calls, then ended
- *   with stopReason "stop" without calling `submit_plan`.
+ *   with stopReason "stop" without calling `ExitPlanMode`.
  * - Ferment scoping (ferment extension): the model made tool calls during
  *   draft scoping, then ended with stopReason "stop" without calling
  *   scope_ferment or propose_ferment_scoping.
@@ -25,16 +25,11 @@ export const MAX_PLANNING_STOP_NUDGES = 2
  * Returns true when:
  * - The turn had at least one tool call (pure text turns are a different stall)
  * - stopReason is "stop" (model chose to end, not end_turn / tool_use)
- * - The completion signal is absent from the turn text
+ * - The plan-exit tool was not called (tool calls are inspected by the caller)
  */
-export function shouldNudge(opts: {
-	hasToolCall: boolean
-	stopReason: string | undefined
-	completionSignalPresent: boolean
-}): boolean {
+export function shouldNudge(opts: { hasToolCall: boolean; stopReason: string | undefined }): boolean {
 	if (!opts.hasToolCall) return false
 	if (opts.stopReason !== "stop") return false
-	if (opts.completionSignalPresent) return false
 	return true
 }
 
@@ -50,13 +45,13 @@ import { markHarnessSteer } from "../../extensions/steer-marker.js"
 
 /**
  * Nudge text for plan mode (interactive, non-worker session).
- * Instructs the model to finish writing the plan and call `submit_plan`.
+ * Instructs the model to finish writing the plan and call `ExitPlanMode`.
  */
 export const PLAN_MODE_STOP_NUDGE = markHarnessSteer(
 	"You stopped without submitting the plan. Continue now:\n" +
 		"- If you still have open questions, use the questionnaire tool to resolve them.\n" +
-		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then call the `submit_plan` tool with the full plan text as the `plan` parameter.\n" +
-		"- Do NOT stop again until you have called `submit_plan`.",
+		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then call the `ExitPlanMode` tool with the full plan text as the `plan` parameter.\n" +
+		"- Do NOT stop again until you have called `ExitPlanMode`.",
 )
 
 /**
@@ -88,11 +83,11 @@ export const FERMENT_SCOPING_STOP_NUDGE_ONESHOT = markHarnessSteer(
 export const FERMENT_SCOPING_STOP_NUDGE = FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE
 
 /**
- * Returns true if the turn's tool calls include `submit_plan` — the adhoc
+ * Returns true if the turn's tool calls include `ExitPlanMode` — the adhoc
  * plan-mode completion signal. Mirrors {@link hasFermentScopingCompletionSignal}.
  */
-export function hasPlanSubmitToolCall(toolNames: string[]): boolean {
-	return toolNames.includes("submit_plan")
+export function hasPlanExitToolCall(toolNames: string[]): boolean {
+	return toolNames.some((name) => name.toLowerCase() === "exitplanmode")
 }
 
 /**

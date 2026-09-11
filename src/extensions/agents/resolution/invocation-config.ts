@@ -18,8 +18,7 @@ interface AgentInvocationParams {
  *
  * Model selection is pass-through: `params.model` is used as-is when
  * provided, otherwise modelInput is undefined and the caller falls back
- * to the parent model.  The orchestrator LLM is responsible for picking
- * the right model from "Your Team" based on task complexity.
+ * to the parent model.
  *
  * Other fields:
  * - tokenBudget: caller override first, then persona default.

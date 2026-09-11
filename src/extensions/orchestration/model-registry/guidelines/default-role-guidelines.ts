@@ -1,25 +1,25 @@
-import type { Phase } from "../types.js"
+import type { ModelRole } from "../types.js"
 
-export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
+export const DEFAULT_EXPLORE_GUIDELINES = `When exploring:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
 - **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
 - Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full. When you need to read multiple files, issue all \`read\` calls in the same turn — do not make a separate turn for each file.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
-- If you encounter an unfamiliar library, tool, file format, or config schema — or a familiar one whose version or current practice you are assuming (language runtime version, build-tool default, framework convention) — run ONE targeted \`web_search\` (or switch to \`research\` phase) before forming a hypothesis. "I know this" is not the same as "this is current"; stale version assumptions (e.g. defaulting to an older language/runtime version on a greenfield task) are as dangerous as unknown ones.
+- If you encounter an unfamiliar library, tool, file format, or config schema — or a familiar one whose version or current practice you are assuming (language runtime version, build-tool default, framework convention) — run ONE targeted \`web_search\` (or ask the research role) before forming a hypothesis. "I know this" is not the same as "this is current"; stale version assumptions (e.g. defaulting to an older language/runtime version on a greenfield task) are as dangerous as unknown ones.
 - When the task names a specific library, framework, build tool, vendor kit, or protocol you will rely on, run ONE targeted \`web_search\` to confirm the version, install steps, or protocol details before you act. Treat named third-party dependencies as suspect until confirmed, even if they feel familiar.
 - Batch independent tool calls: issue multiple \`read\`, \`grep\`, or \`ls\` calls together when they don't depend on each other's results.
 - **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
 - Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
 
-export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
+export const DEFAULT_RESEARCH_GUIDELINES = `When researching:
 - Use \`web_search\` when your knowledge might be stale. Triggers: a library/framework version you are assuming but have not verified; an API you are not 100% sure exists in the version in use; an error message or behaviour you do not recognise; a "best practice" claim that may be more than ~18 months old; breaking changes, deprecations, or new runtime/build-tool defaults.
 - Do not rely on training memory for the specifics of named libraries, kits, or old framework versions. If the task names a version, vendor, or exact product, verify it before you use it.
 - Prefer \`web_search\` over delegating a simple lookup. Prefer primary sources (official docs, GitHub READMEs, RFCs). Then use \`web_fetch\` on the primary source to confirm details, especially for official docs, changelogs, migration guides, or GitHub source files.
-- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.
+- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next task.
 - Graceful degradation: if \`web_search\` and \`web_fetch\` are not available in your tool list, do not bluff. State the version/API assumption you are relying on explicitly and ask the user to confirm it before continuing.`
 
-export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
+export const DEFAULT_PLAN_GUIDELINES = `When planning:
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
 - Final plans and specs belong at the canonical plan location \`.kimchi/plans/<slug>.md\` — one file per plan, updated in place. The Documents directory stays for research notes, review findings, and verification reports; do not put final plans or specs there.
 - Use the standard plan structure: Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.
@@ -30,13 +30,9 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - If the plan depends on any named third-party library, kit, or tool, you must either cite a verified source or run \`web_search\`/\`web_fetch\` to confirm the specifics. "I remember this" is not a source.
 - Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
 - **Plan self-validation**: After writing the spec, re-read it in a separate turn and cross-check every requirement. Flag gaps — missing features, ambiguous API choices, unhandled edge cases. This is a lightweight self check; it does not replace external verification for complex tasks.
-- **Plan verification (complex tasks only)**: If the plan is complex (3+ files, new architecture, unclear requirements, or any uncertainty), have a Reviewer agent verify the spec before build. See the Orchestration section for skip/verify criteria and verifier selection.`
+- **Plan verification (complex tasks only)**: If the plan is complex (3+ files, new architecture, unclear requirements, or any uncertainty), have a Reviewer agent verify the spec before build.`
 
-/** Co-author trailer appended to every commit message. Defined once here so
- *  it can be referenced consistently from any guideline that mentions commits. */
-export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
-
-export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
+export const DEFAULT_BUILD_GUIDELINES = `When implementing:
 - Read a file before modifying it — unless the orchestrator already provided its contents and path in the task spec, in which case you may proceed directly to editing.
 - **Batch tool calls**: Issue independent tool calls together in the same turn. If a call doesn't depend on the result of a previous one, it belongs in the same turn. Read files in parallel, run independent bash commands together, and pair todo updates with work tool calls. Every extra turn adds to the context window and wastes tokens.
 - Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
@@ -48,14 +44,14 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - If the task names a specific library, framework, build tool, or vendor kit, assume your knowledge may be stale and verify the specific facts (version, API, install step, protocol, current convention) you plan to rely on with a quick \`web_search\`. Do not trust memory just because the name feels familiar. Best practices and defaults (error handling, project layout, testing conventions) drift over time — if your knowledge of a convention is older than ~18 months, verify it before baking it into code.
 - Keep diffs minimal and reviewable.`
 
-export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
+export const DEFAULT_REVIEW_GUIDELINES = `When reviewing:
 - Read the diff or changed files first; then read the surrounding context for any touched function.
 - Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
 - Be specific: quote the exact line and propose the concrete fix.
 - Flag missing tests for behaviour the diff introduces or changes.
 - **Do NOT modify source files.** Do not apply fixes, do not refactor, do not commit changes. Your job is to report findings — never to act on them. The author or a separate build agent applies fixes.`
 
-export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
+export const DEFAULT_ROLE_GUIDELINES: Readonly<Record<ModelRole, string>> = {
 	explore: DEFAULT_EXPLORE_GUIDELINES,
 	research: DEFAULT_RESEARCH_GUIDELINES,
 	plan: DEFAULT_PLAN_GUIDELINES,

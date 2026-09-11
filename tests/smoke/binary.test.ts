@@ -89,14 +89,23 @@ describe("binary smoke tests", () => {
 
 	it("-r with an id is treated as a session selector", () => {
 		const missingSessionId = "019f1780-8034-7435-85aa-3e86037676ee"
-		const result = runBinary({
-			args: ["-r", missingSessionId],
-			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
-			throwOnError: false,
-			timeoutMs: 5_000,
-		})
-		expect(result.status).not.toBe(0)
-		expect(result.stdout + result.stderr).toContain(`No session found matching '${missingSessionId}'`)
+		// Session selection needs no provider. A fresh HOME avoids the API key
+		// persisted by earlier tests and the live model refresh it would trigger.
+		const homeDir = mkdtempSync(join(tmpdir(), "kimchi-smoke-session-selector-"))
+		try {
+			const result = runBinary({
+				args: ["-r", missingSessionId],
+				cwd: homeDir,
+				extraEnv: { HOME: homeDir, KIMCHI_TELEMETRY_ENABLED: "0" },
+				throwOnError: false,
+				timeoutMs: 5_000,
+			})
+			expect(result.error).toBeUndefined()
+			expect(result.status).toBe(1)
+			expect(result.stdout + result.stderr).toContain(`No session found matching '${missingSessionId}'`)
+		} finally {
+			rmSync(homeDir, { recursive: true, force: true })
+		}
 	})
 
 	it("prompt templates are embedded in binary (no extension errors on startup)", { timeout: 35_000 }, () => {

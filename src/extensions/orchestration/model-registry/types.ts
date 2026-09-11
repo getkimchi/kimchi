@@ -1,3 +1,6 @@
+/** Static persona specializations, independent of model selection. */
+export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
+
 /**
  * Relative cost/capability tier used by the Orchestrator to match task
  * difficulty to model weight class.
@@ -12,22 +15,16 @@
  */
 export type ModelTier = "light" | "standard" | "heavy"
 
-export type Phase = "explore" | "research" | "plan" | "build" | "review"
-
 /** Injected into the Orchestrator LLM's context to steer model selection. */
 export interface ModelCapabilities {
 	vision: boolean
 	reasoning: boolean
 	tier: ModelTier
 	description: string
-	/** Phase-specific guideline annexes. If a phase key is present, its value
-	 *  REPLACES the default guideline for that phase. If absent, the default
+	/** Role-specific guideline annexes. If a role key is present, its value
+	 *  REPLACES the default guideline for that role. If absent, the default
 	 *  guideline is used. */
-	guidelines?: Partial<Readonly<Record<Phase, string>>>
-	/** Orchestration-specific guideline annex. Appended to the system prompt
-	 *  when this model acts as the orchestrator. If absent, the default
-	 *  orchestration guideline is used. */
-	orchestrationGuidelines?: string
+	guidelines?: Partial<Readonly<Record<ModelRole, string>>>
 }
 
 /**

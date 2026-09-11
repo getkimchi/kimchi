@@ -20,7 +20,8 @@ import {
 } from "../../shared/planning/plan-review-bus.js"
 import {
 	contentHasToolCall,
-	hasPlanSubmitToolCall,
+	extractTextFromContent,
+	hasPlanExitToolCall,
 	isNudgeSuppressed,
 	PLAN_MODE_STOP_NUDGE,
 	shouldNudge,
@@ -35,21 +36,26 @@ import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
+import { createApplyAndPersist, formatNextActionHint } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
-import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
+import {
+	createToolVisibility,
+	getDisabledToolNames,
+	type ToolVisibilityAPI,
+} from "../prompt-construction/tool-visibility.js"
 import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
+import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
+import { applyWriteTodos, syncTodoWidget } from "../todos/index.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
@@ -129,8 +135,8 @@ const PLAN_MODE_TOOLS = [
 	"web_fetch",
 	"mcp",
 	"questionnaire",
-	"submit_plan",
 	"bash",
+	"exitplanmode",
 	...TODO_TOOL_NAMES,
 	...FERMENT_V2_TOOL_NAMES,
 	// DAP debugger tools — available in plan mode by product decision: the
@@ -161,7 +167,7 @@ const PLAN_MODE_TOOLS = [
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
-// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
+// `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
 // the other two are read-only/control-plane operations on already-approved spawns.
 // `bash_control` is the control-plane companion of a background `bash` call: the
@@ -171,7 +177,6 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 const BUILTIN_ALLOW_TOOL_NAMES = [
-	"set_phase",
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
@@ -271,14 +276,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// turns so rewrites overwrite the same file even if the plan title changes;
 	// released when the plan is approved (execute / start-as-ferment) or the
 	// session restarts.
-	let activePlanSlug: string | undefined
-	// Per-session count of plan-mode stall nudges (model stopped after tool
-	// calls without calling submit_plan). Keyed by session ID so concurrent
-	// sessions don't share a budget. Reset when submit_plan is called, when
-	// the mode leaves plan, and on session restart.
+	const activePlanSlugs = new Map<string, string>()
+	const planModeHiddenTools = new Map<string, string[]>()
+	const planModeSnapshots = new Map<string, { mode: PermissionModeState; activeTools: string[] }>()
 	const planStopNudgeCounts = new Map<string, number>()
-	let planModeApplied = false
-	let planModeHiddenTools: string[] = []
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
@@ -339,39 +340,47 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function isPlanModeTool(name: string): boolean {
-		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
+		return PLAN_MODE_TOOL_SET.has(name.toLowerCase()) || isReadOnlyTool(name)
 	}
 
-	function applyPlanModeTools(): void {
-		if (planModeApplied) return
+	function applyPlanModeTools(ctx: ExtensionContext): void {
+		const sessionId = ctx.sessionManager.getSessionId()
 		try {
 			// Track which tools plan mode is removing so `restoreToolsFromPlanMode`
 			// can re-enable them. Without this snapshot, restore would be a no-op
 			// because `ToolProfileManager.apply` (via `pi.setActiveTools`) does
 			// not preserve the prior active-tool set.
-			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			const hiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			const previouslyHiddenTools = planModeHiddenTools.get(sessionId) ?? []
 			// Register the disable vote with the cooperative visibility layer so
 			// `restoreToolsFromPlanMode`'s `planToolVisibility.enable(...)` call
 			// matches the matching disable vote (and so the snapshot below does
 			// not re-surface these tools when `getDisabledToolNames` is read by
 			// other extensions' `setActiveTools` calls).
-			planToolVisibility.disable(planModeHiddenTools)
+			planToolVisibility.disable(hiddenTools)
 			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
-			planModeApplied = true
+			planModeHiddenTools.set(sessionId, [...new Set([...previouslyHiddenTools, ...hiddenTools])])
 		} catch {
 			// Tool visibility may be unavailable; tool_call handler still enforces the policy.
 		}
 	}
 
-	function restoreToolsFromPlanMode(): void {
-		if (!planModeApplied) return
+	function restoreToolsFromPlanMode(ctx: ExtensionContext, restoreActiveTools = false): void {
+		const sessionId = ctx.sessionManager.getSessionId()
+		const snapshot = sessionId ? planModeSnapshots.get(sessionId) : undefined
+		const hiddenTools = planModeHiddenTools.get(sessionId)
 		try {
-			planToolVisibility.enable(planModeHiddenTools)
+			if (hiddenTools) planToolVisibility.enable(hiddenTools)
+			if (restoreActiveTools) {
+				if (snapshot) {
+					const disabledTools = getDisabledToolNames(pi)
+					pi.setActiveTools(snapshot.activeTools.filter((name) => !disabledTools.has(name)))
+				} else ToolProfileManager.apply("idle", "adhoc", pi)
+			}
 		} catch {
 			// best-effort restore
 		}
-		planModeHiddenTools = []
-		planModeApplied = false
+		planModeHiddenTools.delete(sessionId)
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -402,8 +411,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		next: PermissionModeState,
 		reason: ModeChangeReason,
 		skipNotify?: boolean,
+		restorePlanTools = true,
 	): void {
 		const from = appliedPermissionMode ?? getRuntimePermissionMode()
+		const sessionId = ctx.sessionManager.getSessionId()
+		if (next.mode === "plan" && current !== "plan" && !planModeSnapshots.has(sessionId)) {
+			planModeSnapshots.set(sessionId, { mode: from, activeTools: pi.getActiveTools() })
+		}
 		applyingPermissionMode = true
 		try {
 			setRuntimePermissionMode(ctx, next, skipNotify)
@@ -411,11 +425,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			applyingPermissionMode = false
 		}
 		if (current === "plan" && next.mode !== "plan") {
-			restoreToolsFromPlanMode()
-			activePlanSlug = undefined
-			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
+			restoreToolsFromPlanMode(ctx, restorePlanTools)
+			planStopNudgeCounts.delete(sessionId)
+			activePlanSlugs.delete(sessionId)
+			planModeSnapshots.delete(sessionId)
 		}
-		if (next.mode === "plan") applyPlanModeTools()
+		if (next.mode === "plan") applyPlanModeTools(ctx)
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
@@ -485,6 +500,145 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return { errors }
 	}
 
+	function currentAssistantText(ctx: ExtensionContext): string {
+		const branch = (ctx.sessionManager as SessionManager).getBranch?.() ?? []
+		for (const entry of [...branch].reverse()) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue
+			const text = extractTextFromContent(entry.message.content as unknown[]).trim()
+			if (text) return text
+		}
+		return ""
+	}
+
+	function savePlan(ctx: ExtensionContext, planText: string): string | undefined {
+		const text = planText.trim()
+		if (!text) return undefined
+		const sessionId = ctx.sessionManager.getSessionId()
+		if (!activePlanSlugs.has(sessionId)) activePlanSlugs.set(sessionId, slugifyPlanName(derivePlanTitle(text)))
+		try {
+			return savePlanMarkdown({
+				cwd: ctx.cwd,
+				name: activePlanSlugs.get(sessionId) ?? "untitled-plan",
+				planText,
+			})
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err)
+			if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
+			else console.error(`permissions: failed to save plan file: ${detail}`)
+			return undefined
+		}
+	}
+
+	function seedPlanTodos(ctx: ExtensionContext, planText: string): void {
+		const parsed = parseSharedPlan(planText)
+		if (parsed.chunks.length === 0) return
+		const sessionId = ctx.sessionManager.getSessionId()
+		const details = applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: parsed.chunks.map((chunk) => ({ content: chunk.title, status: "pending" as const })),
+			},
+			sessionId,
+		)
+		pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+		syncTodoWidget(ctx)
+	}
+
+	function compactPlanHandoff(planText: string, planPath: string | undefined): string {
+		const parsed = parseSharedPlan(planText)
+		const chunks = parsed.chunks.map((chunk, index) => `${index + 1}. ${chunk.title}`).join("\n")
+		return [
+			"The user approved the plan. Execute it now.",
+			parsed.goal ? `Goal: ${parsed.goal}` : undefined,
+			parsed.constraints.length > 0 ? `Constraints:\n${parsed.constraints.map((c) => `- ${c}`).join("\n")}` : undefined,
+			chunks ? `Chunks:\n${chunks}` : undefined,
+			planPath ? `Plan path: ${planPath}` : undefined,
+			"Use the approved plan already in the conversation; do not re-plan or resend it.",
+		]
+			.filter(Boolean)
+			.join("\n\n")
+	}
+
+	async function promotePlanToFerment(
+		ctx: ExtensionContext,
+		planText: string,
+		planPath: string | undefined,
+	): Promise<void> {
+		const parsed = parseSharedPlan(planText)
+		const fermentDir = resolveFermentsDir(ctx.cwd)
+		const storage = new FermentEventStore(fermentDir)
+		const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+		const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from plan mode"
+		const draft = createFerment(runtime, {
+			name: fermentName,
+			goal: parsed.goal || planText,
+			hasUI: ctx.hasUI,
+			isOneShot: pi.getFlag("ferment-oneshot") === true,
+		})
+		defaultFermentRuntime.setActive(draft)
+		if (pi.events) emitFermentCreated(pi.events, draft)
+		if (parsed.chunks.length === 0) {
+			appendRefEntry(pi, draft.id)
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			ctx.ui.notify(`Saved draft ferment "${draft.name}". Add a ## Chunks section before activating it.`)
+			return
+		}
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: parsed.goal,
+			successCriteria: parsed.successCriteria,
+			constraints: parsed.constraints,
+			phases: [
+				{
+					name: fermentName,
+					goal: parsed.goal,
+					steps: parsed.chunks.map((chunk) => ({
+						description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
+					})),
+				},
+			],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, {
+			type: "activate_phase",
+			phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
+		})
+		if (!activated.ok) throw new Error(activated.error.message)
+		defaultFermentRuntime.setActive(activated.ferment)
+		setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
+		appendRefEntry(pi, activated.ferment.id)
+		const activePhase = activated.ferment.phases.find((p) => p.status === "active")
+		const nextActionHint = formatNextActionHint(activated.ferment)
+		await safeSendMessage(
+			pi,
+			{
+				customType: "ferment_handoff",
+				content: [
+					{
+						type: "text",
+						text: markHarnessSteer(
+							[
+								`The plan was approved by the user ("Start as ferment"); it was converted to ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+								planPath ? `Approved plan saved to: ${planPath}` : undefined,
+								`The ferment is ALREADY scoped and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE.` : "its first phase is ACTIVE."}`,
+								nextActionHint,
+								"Do not call list_ferments, scope_ferment, or propose_ferment_scoping again. Scope mutations will be rejected after activation; ask_user remains available for genuine execution blockers or recovery.",
+								"Go straight to execution.",
+							]
+								.filter(Boolean)
+								.join("\n"),
+						),
+					},
+				],
+				display: false,
+				details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
+			},
+			{ triggerTurn: true },
+		)
+		changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval", undefined, false)
+	}
+
 	function approvedPlanTitle(planText: string, planPath: string | undefined, planSlug: string | undefined): string {
 		const title = derivePlanTitle(planText)
 		if (title !== "untitled-plan") return title
@@ -523,17 +677,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			return
 		}
-		// Send the approved plan as the execution trigger. No compaction needed —
-		// the plan text is already in context from the planning conversation.
-		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
-		pi.sendMessage(
-			{
-				customType: "plan-execute",
-				content: markHarnessSteer(`The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`),
-				display: false,
-			},
-			{ triggerTurn: true },
-		)
+		await pi.sendUserMessage(compactPlanHandoff(planText, planPath), { deliverAs: "followUp" })
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -542,7 +686,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		appliedPermissionMode = undefined
 		applyingPermissionMode = false
 		cliMode = undefined
-		activePlanSlug = undefined
+		activePlanSlugs.delete(ctx.sessionManager.getSessionId())
 		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
 
@@ -580,8 +724,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
+		const sessionId = ctx.sessionManager.getSessionId()
 		const current = getInitialPermissionMode(ctx.sessionManager)
 		let next = current
+		if (current.mode === "plan") {
+			// A fresh --plan launch has no preceding runtime transition to capture;
+			// use the normal default as its restore target. A resumed plan likewise
+			// falls back to default while retaining the exact pre-gating tool set.
+			planModeSnapshots.set(sessionId, {
+				mode: { mode: "default", source: "config", initiatedBy: "user" },
+				activeTools: pi.getActiveTools(),
+			})
+		}
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// The elevation is persisted at the next before_agent_start as a ferment-owned entry;
 		// resume skips ferment-owned entries, so the session restores the previous user mode.
@@ -597,7 +751,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		changeMode(ctx, current.mode, next, "session_start")
 
-		const sessionId = ctx.sessionManager.getSessionId()
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
 			if (!next || applyingPermissionMode) return
 
@@ -615,6 +768,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("session_shutdown", () => {
+		const sessionId = currentCtx?.sessionManager.getSessionId()
+		if (sessionId) {
+			planModeSnapshots.delete(sessionId)
+			planModeHiddenTools.delete(sessionId)
+		}
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
 		currentCtx = undefined
@@ -658,14 +816,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// Initial modes and temporary Ferment elevation are recorded when work starts.
 	// User-owned changes are also persisted immediately by their transition paths.
 	pi.on("before_agent_start", (_event, ctx) => {
+		if (getRuntimePermissionMode().mode === "plan") applyPlanModeTools(ctx)
 		maybePersistPermissionMode(ctx)
 	})
 
 	// Plan-mode stall recovery: when the model made tool calls in plan mode and
-	// then ended the turn with stopReason "stop" without calling submit_plan,
+	// then ended the turn with stopReason "stop" without calling ExitPlanMode,
 	// the session would stall silently — nudge it to resolve open questions and
 	// submit the plan. Capped per session; agent workers are excluded (they
-	// submit via submit_plan in their own terminate-on-tool-return flow).
+	// submit via ExitPlanMode in their own terminate-on-tool-return flow).
 	pi.on("turn_end", (event, ctx) => {
 		if (isAgentWorker()) return
 		if (getRuntimePermissionMode().mode !== "plan") return
@@ -675,14 +834,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			.filter((c) => (c as { type: string }).type === "toolCall" || (c as { type: string }).type === "tool_use")
 			.map((c) => (c as { name?: unknown }).name)
 			.filter((name): name is string => typeof name === "string")
-		if (hasPlanSubmitToolCall(toolNames)) {
+		if (hasPlanExitToolCall(toolNames)) {
 			// The review flow owns the turn now. Reset the stall budget so a
 			// rework round starts fresh.
 			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 			return
 		}
 		const stopReason = (event.message as { stopReason?: string }).stopReason
-		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason, completionSignalPresent: false })) {
+		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason })) {
 			return
 		}
 		const sessionId = ctx.sessionManager.getSessionId()
@@ -700,29 +859,31 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		)
 	})
 
-	// submit_plan tool — the adhoc plan-mode completion signal.
-	// Visible in both adhoc plan mode and ferment planning phase (via the
-	// tool catalog). The model calls it when the plan is ready for review.
-	// For ferment, the model should call propose_ferment_scoping first (to
-	// populate the structured scope), then submit_plan to trigger the review.
+	// ExitPlanMode submits the plan to the shared user-review flow.
 	pi.registerTool({
-		name: "submit_plan",
-		label: "Submit Plan",
+		name: "ExitPlanMode",
+		label: "Exit plan mode",
+		promptSnippet: "Present the completed plan for approval",
+		promptGuidelines: [
+			"Call ExitPlanMode only after the complete plan is written and all open questions are resolved.",
+		],
 		description:
 			"Submit your completed plan for user review. Call this only after the plan " +
 			"is fully written and all open questions are resolved. The plan will be " +
 			"saved to disk and the user will review it in a visual UI before execution. " +
 			"If the plan is denied with feedback, revise and call this again.",
 		parameters: Type.Object({
-			plan: Type.String({
-				description:
-					"The complete plan as markdown. Must follow the required structure: " +
-					"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
-					"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
-			}),
+			plan: Type.Optional(
+				Type.String({
+					description:
+						"The complete plan as markdown. Must follow the required structure: " +
+						"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
+						"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const planText = (params as { plan?: string })?.plan
+			const planText = params.plan?.trim() ? params.plan : currentAssistantText(ctx)
 			if (!planText?.trim()) {
 				return {
 					content: [{ type: "text", text: "Error: plan text is empty." }],
@@ -741,23 +902,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: "Error: submit_plan is only available during plan mode or in a Plan agent worker.",
+							text: "Error: ExitPlanMode is only available during plan mode or in a Plan agent worker.",
 						},
 					],
 					details: { submitted: false },
 				}
 			}
 
-			// Save plan to disk
-			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-			let planPath: string | undefined
-			try {
-				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
-			} catch (err) {
-				const detail = err instanceof Error ? err.message : String(err)
-				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-				else console.error(`permissions: failed to save plan file: ${detail}`)
-			}
+			const sessionId = ctx.sessionManager.getSessionId()
+			const planPath = savePlan(ctx, planText)
+			const activePlanSlug = activePlanSlugs.get(sessionId)
+			planStopNudgeCounts.delete(sessionId)
 
 			// Agent worker: silent submit. Saves the plan and terminates the turn
 			// with no review emit — workers have no review surface, the parent
@@ -777,25 +932,26 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			// Emit plan-review request once — TUI popup, plannotator browser, and
-			// future integrations all listen on the same channel. Subscribers
-			// self-select: the plannotator adapter skips non-interactive sessions.
+			if (!ctx.hasUI || ctx.mode !== "tui" || pi.getFlag("ferment-oneshot") === true) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: planPath
+								? `Plan saved to ${planPath}. Interactive approval is required before execution.`
+								: "Plan recorded. Interactive approval is required before execution.",
+						},
+					],
+					details: { submitted: true, approved: false, planPath },
+					terminate: true,
+				}
+			}
+
 			emitPlanReviewRequest(
 				pi,
 				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
 				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
 			)
-
-			// Non-TUI / oneshot: no popup to show — end the turn. The emit above
-			// is a no-op today (adapter skips subscribing), but future integrations
-			// (logging, CI reviewers, alternative UIs) can hook in without changes.
-			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
-				return {
-					content: [{ type: "text", text: "Plan submitted." }],
-					details: { submitted: true },
-					terminate: true,
-				}
-			}
 
 			// AbortSignal lets the decision handler dismiss the menu when
 			// plannotator decides first (select returns undefined on abort).
@@ -862,7 +1018,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			return {
 				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
-				details: { submitted: true },
+				details: { submitted: true, planPath },
 				terminate: true,
 			}
 		},
@@ -875,172 +1031,27 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
 		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
+		const sessionId = ctx.sessionManager.getSessionId()
+		const planModeSnapshot = planModeSnapshots.get(sessionId)
+		const restoreMode: PermissionModeState = planModeSnapshot?.mode ?? {
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		}
 
 		if (payload.decision === "execute") {
-			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			seedPlanTodos(ctx, planText)
+			changeMode(ctx, "plan", restoreMode, "plan_approval")
 			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
-			activePlanSlug = undefined
+			activePlanSlugs.delete(sessionId)
 		} else if (payload.decision === "start_ferment") {
-			// Converted into a ferment — same release as the execute path.
-			activePlanSlug = undefined
-			// ── Tool-swap contract ────────────────────────────────────────────────
-			// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
-			// there is no explicit handoff message and no model-visible notification.
-			// `ToolProfileManager.apply("implementation-ferment", "ferment", pi)`
-			// calls `pi.setActiveTools(...)` with the catalog-derived set for that
-			// profile (see `src/shared/planning/tool-catalog.ts`). The model sees the
-			// swap on its next invocation; nothing is queued or deferred.
-			//
-			// Tools REMOVED (adhoc / planning-only, no longer visible):
-			//   - questionnaire          (adhoc-only; superseded by ask_user)
-			//
-			// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
-			// mark_todo, clear_todos) are shared core — they remain visible in
-			// all modes including ferment.
-			//
-			// Tools ADDED (ferment-mode, newly visible):
-			//   - ask_user               (interactive routing — TUI in interactive mode,
-			//                              judge model in oneshot via ferment/ask-user.ts)
-			//   - confirm_ferment_completion_criteria (interactive routing, planning)
-			//   - set_phase              (planning — phase tracker)
-			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
-			//                            (planning — scoping surface)
-			//   - list_ferments          (always-both discovery)
-			//   - activate_ferment_phase (planning → implementation transition)
-			//   - refine/complete/skip/fail/start/complete/verify/skip/fail_ferment_step
-			//                            (implementation — step lifecycle)
-			//   - add_ferment_decision / add_ferment_memory
-			//                            (implementation — knowledge capture)
-			//   - complete_ferment       (implementation — termination)
-			//   - edit / write / Agent / get_subagent_result (implementation write set)
-			//
-			// Tools UNCHANGED (shared core, visible in both modes):
-			//   - read, grep, find, ls, web_fetch, web_search
-			//   - bash (read-only gate still applies — same per-call enforcement)
 			try {
-				// Parse the plan against the shared planning process structure first.
-				// Goal / Constraints / Chunks become structured ferment fields;
-				// Verification Strategy / Decision Log / Risks are metadata and must
-				// not become implementation steps. (PR #683 review nit 3473746281.)
-				const parsed = parseSharedPlan(rawText ?? planText)
-				// Create a storage instance scoped to ctx.cwd so the ferment artifact
-				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
-				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
-				// production these are the same, but tests (and future multi-root setups)
-				// need the explicit scoping.
-				const fermentDir = resolveFermentsDir(ctx.cwd)
-				const storage = new FermentEventStore(fermentDir)
-				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
-
-				// If the plan doesn't follow the shared structure (no `## Chunks`
-				// section), fall back to draft-only: persist the ferment but do NOT
-				// activate a phase or swap to implementation tools. Lossy section
-				// splitting would produce steps named "Goal", "Constraints", "Risks",
-				// etc., which silently misrepresent the plan. The user can resume
-				// the draft via /ferment list when they want to implement it.
-				if (parsed.chunks.length === 0) {
-					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
-					const draft = createFerment(runtime, {
-						name: draftName,
-						goal: parsed.goal || (rawText ?? planText).trim(),
-						hasUI: ctx.hasUI,
-						isOneShot: pi.getFlag("ferment-oneshot") === true,
-					})
-					defaultFermentRuntime.setActive(draft)
-					if (pi.events) emitFermentCreated(pi.events, draft)
-					appendRefEntry(pi, draft.id)
-					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-					ctx.ui?.notify?.(
-						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
-					)
-					return
-				}
-
-				// Create the ferment through the normal storage API so it gets a
-				// proper ID, is visible to runtime.getActive(), the scheduler, and
-				// the compaction / resume paths.
-				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
-				const draft = createFerment(runtime, {
-					name: fermentName,
-					goal: parsed.goal,
-					hasUI: ctx.hasUI,
-					isOneShot: pi.getFlag("ferment-oneshot") === true,
-				})
-				// Set the draft active before emitting STARTED so telemetry can capture
-				// the scoping baseline. Keep planning tools until activation succeeds.
-				defaultFermentRuntime.setActive(draft)
-				if (pi.events) emitFermentCreated(pi.events, draft)
-				// Scope it using the structured fields from the shared plan.
-				const applyAndPersist = createApplyAndPersist(runtime)
-				const scoped = applyAndPersist(draft.id, {
-					type: "scope",
-					goal: parsed.goal,
-					successCriteria: parsed.successCriteria,
-					constraints: parsed.constraints,
-					phases: [
-						{
-							name: fermentName,
-							goal: parsed.goal,
-							// Each chunk becomes one implementation step. Title and body
-							// are joined so the engineer sees the full chunk context.
-							steps: parsed.chunks.map((chunk) => ({
-								description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
-							})),
-						},
-					],
-				})
-				if (!scoped.ok) throw new Error(scoped.error.message)
-				// Activate the first phase so the ferment enters implementation mode.
-				const activated = applyAndPersist(draft.id, {
-					type: "activate_phase",
-					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
-				})
-				if (!activated.ok) throw new Error(activated.error.message)
-				defaultFermentRuntime.setActive(activated.ferment)
-				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
-				appendRefEntry(pi, activated.ferment.id)
-				// Explicit model-visible handoff. Without this, the only post-approval
-				// signal was the hidden `ferment_reference` entry above, and the model
-				// started "from scratch": it re-ran discovery (`list_ferments`) and
-				// re-drafted the whole scope via `scope_ferment`, which the FSM then
-				// rejected (already PHASE_ACTIVE). Tell the model the ferment is
-				// already scoped/active and what the immediate next action is, so "Start
-				// as ferment" goes straight to execution.
-				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
-				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
-				safeSendMessage(
-					pi,
-					{
-						customType: "ferment_handoff",
-						content: [
-							{
-								type: "text",
-								text: markHarnessSteer(
-									[
-										`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
-										planPath ? `Approved plan saved to: ${planPath}` : undefined,
-										`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
-										`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
-										nextActionHint,
-										"Go straight to execution.",
-									]
-										.filter(Boolean)
-										.join("\n"),
-								),
-							},
-						],
-						display: false,
-						details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
-					},
-					{ triggerTurn: true },
-				)
-				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+				await promotePlanToFerment(ctx, rawText ?? planText, planPath)
+				activePlanSlugs.delete(sessionId)
 			} catch (err) {
-				// Promotion failed before activation. Keep the planning profile, clear
-				// the half-set runtime state, and tell the user that they can retry.
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
-				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+				ctx.ui.notify(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`, "warning")
 			}
 		} else if (payload.decision === "start_cloud") {
 			// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
@@ -1048,8 +1059,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// agent completes (or is killed via Ctrl+X). The result is injected
 			// into the local session as a steer message so the local agent has
 			// context for follow-up work.
-			const approvedSlug = activePlanSlug
-			activePlanSlug = undefined
+			const approvedSlug = reviewedPlanSlug
+			activePlanSlugs.delete(sessionId)
 			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
@@ -1062,7 +1073,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// restore plan mode so they can retry.
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
-				activePlanSlug = approvedSlug
+				if (approvedSlug) activePlanSlugs.set(sessionId, approvedSlug)
+				if (planModeSnapshot) planModeSnapshots.set(sessionId, planModeSnapshot)
 				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 			}
 		} else if (payload.decision === "feedback") {

@@ -2761,7 +2761,7 @@ function getMode<T extends string>(value: unknown, allowed: readonly T[], fallba
 	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback
 }
 
-const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit", "set_phase"])
+const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit"])
 
 const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"apply_patch",
@@ -2832,7 +2832,7 @@ function genericToolLabel(name: string): string {
 
 function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Component {
 	ctx.state._openAiPatchFiles = []
-	if (name === "submit_plan") {
+	if (name === "ExitPlanMode") {
 		// The tool call is persisted and replayed; its plan must remain readable even when tools are collapsed.
 		const transcript = new Container()
 		transcript.addChild(new Text(toolHeader("Submit Plan", "", theme, toolStatusDot(ctx, theme)), 0, 0))
@@ -3645,8 +3645,6 @@ export function summarizeOpenAiToolCall(
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
 			return theme.fg("muted", "present plan")
-		case "set_phase":
-			return getStringArg(args, "phase") || theme.fg("muted", "set phase")
 		case "Agent":
 			return summarizeText(getStringArg(args, "description", "prompt") || "launch agent", 72)
 		case "get_subagent_result":

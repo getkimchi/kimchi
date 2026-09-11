@@ -4,7 +4,6 @@ import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../../sanitized-error-message.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { getEffectiveModel } from "../router/state.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -442,7 +441,7 @@ export function registerFermentEvents(
 		removeFermentLock(f.id)
 	})
 
-	pi.on("input", async (event, handler) => {
+	pi.on("input", async (event) => {
 		if (event.source === "interactive") {
 			runtime.markHumanInput()
 		}
@@ -483,7 +482,7 @@ export function registerFermentEvents(
 			)
 			return {
 				action: "transform" as const,
-				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(handler.sessionManager)),
+				text: buildOneshotNudge(updated, intent),
 				images: event.images,
 			}
 		} catch (err) {

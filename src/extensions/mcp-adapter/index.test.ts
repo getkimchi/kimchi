@@ -185,7 +185,7 @@ describe("mcp adapter system prompt block", () => {
 			const result = buildSystemPrompt({
 				tools: pi.getAllTools(),
 				env: testEnv,
-				mode: "orchestrator",
+				mode: "single",
 				sessionId: TEST_SESSION_ID,
 			})
 

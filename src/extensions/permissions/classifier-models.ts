@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { splitModelRef } from "../model-catalog/ref-utils.js"
+import { splitModelRef } from "../orchestration/model-ref-utils.js"
 
 export const DEFAULT_CLASSIFIER_CANDIDATE_REFS = [
 	"kimchi-dev/deepseek-v4-flash-0731",

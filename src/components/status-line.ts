@@ -14,11 +14,10 @@ import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/b
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
-import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
 import { getEffectiveModel } from "../extensions/router/state.js"
-import { getActiveTags, getCurrentPhase } from "../extensions/tags.js"
+import { getActiveTags } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -29,7 +28,6 @@ export type SegmentId =
 	| "agents"
 	| "context"
 	| "usage"
-	| "phase"
 	| "tags"
 	| "team"
 	| "credits"
@@ -46,8 +44,7 @@ export type SegmentId =
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "model"; multiModel: boolean; modelId: string; routedModelId?: string }
-	| { kind: "phase"; phase: string }
+	| { kind: "model"; modelId: string; routedModelId?: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 	| { kind: "ferment-v2"; state: string }
@@ -161,10 +158,6 @@ export function buildScriptPayload(
 		permissions: {
 			mode: getPermissionMode(sessionId),
 		},
-		multi_model: {
-			enabled: getMultiModelEnabled(ctx.sessionManager),
-		},
-		phase: getCurrentPhase(sessionId),
 	}
 }
 
@@ -206,36 +199,8 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 	}
 }
 
-/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(
-	ctx: CompactionContext,
-	multiModel: boolean,
-	modelId: string,
-	routedModelId?: string,
-): Segment {
-	const label = multiModel ? `m-m (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
-	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
-	return {
-		id: "model",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
-	}
-}
-
-/** Compact form for phase: drops the "phase:" prefix, keeps just the value. */
-export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segment {
-	const text = ctx.accent(phase)
-	return {
-		id: "phase",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "phase", phase },
-	}
-}
-
-/** Compaction action for ferment: drop the leading colorized `ferment:`
- *  substring in place. The rest of the segment is unchanged, so no rebuild. */
+/** Drop the `ferment:` prefix from the ferment segment's text, in place.
+ *  Returns true if a ferment segment was found and modified. */
 function dropFermentPrefix(segs: Segment[]): boolean {
 	const idx = segs.findIndex((s) => s.id === "ferment")
 	if (idx === -1) return false
@@ -297,19 +262,8 @@ const STEPS: CompactionStep[] = [
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
 	},
 	{
-		name: "abbrev-model-label",
-		apply: (segs, ctx) =>
-			recompactSegment(segs, "model", "model", (raw) =>
-				buildModelAbbrev(ctx, raw.multiModel, raw.modelId, raw.routedModelId),
-			),
-	},
-	{
 		name: "drop-shortcut-hints",
 		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
-	},
-	{
-		name: "drop-phase-prefix",
-		apply: (segs, ctx) => recompactSegment(segs, "phase", "phase", (raw) => buildPhaseCompact(ctx, raw.phase)),
 	},
 	{
 		name: "drop-ferment-prefix",
@@ -350,7 +304,6 @@ const SHED_ORDER: SegmentId[] = [
 	"lsp",
 	"team",
 	"tags",
-	"phase",
 	"usage",
 	"agents",
 	"thinking",
@@ -444,23 +397,22 @@ function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Se
 }
 
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
-	const multiModel = getMultiModelEnabled(ctx.sessionManager)
 	const selectedModelId = ctx.model?.id ?? "n/a"
 	const modelId = selectedModelId
 	const routedModelId = resolveRoutedModelId(ctx)
-	const label = multiModel ? `multi-model (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
+	const label = routedModelId ? `auto (${routedModelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
 	return {
 		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
+		raw: { kind: "model", modelId, ...(routedModelId ? { routedModelId } : {}) },
 	}
 }
 
 /** Concrete model id chosen by the Auto router, shown next to the `auto` label
- *  in single-model mode. `undefined` before routing resolves (or when the
- *  model isn't Auto / multi-model mode), keeping the plain `auto` label. */
+ *  in Auto mode. `undefined` before routing resolves or for concrete models,
+ *  keeping the plain model label. */
 function resolveRoutedModelId(ctx: ExtensionContext): string | undefined {
 	if (!isAutoModel(ctx.model)) return undefined
 	const effective = getEffectiveModel(ctx)
@@ -522,22 +474,11 @@ function buildContextSegment(ctx: ExtensionContext, theme: Theme, pinned: boolea
 	return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
 }
 
-function buildPhaseSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
-	if (!pinned) return null
-	const phase = getCurrentPhase(ctx.sessionManager.getSessionId())
-	if (!phase) {
-		const text = `${dimText(theme, "phase:")}${dimText(theme, "—")}`
-		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
-	}
-	const text = `${dimText(theme, "phase:")}${accentText(theme, phase)}`
-	return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
-}
-
 type ParsedTag = { key: string; value: string }
 
 function buildTagsSegment(theme: Theme, parsed: ParsedTag[], pinned: boolean): Segment | null {
 	if (!pinned) return null
-	const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
+	const display = parsed.filter((t) => t.key !== "team")
 	if (display.length === 0) {
 		const text = `${dimText(theme, "tags:")} ${dimText(theme, "—")}`
 		return { id: "tags", text, width: visibleWidth(text) }
@@ -698,7 +639,6 @@ export function buildStatusLineSegments(
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildContextSegment(ctx, theme, pinned.has("context")),
 		buildUsageSegment(ctx, theme, pinned.has("usage")),
-		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),
