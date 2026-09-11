@@ -80,6 +80,14 @@ export interface FakeResponseScript {
 	 * Without this, the session has no usage data and compaction gates
 	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
 	usage?: { prompt_tokens: number; completion_tokens: number }
+	/** Hold this response open — no headers, no body — until the promise
+	 * resolves. Test-controlled gate for asserting mid-request process state
+	 * (e.g. a CLI must stay alive and unfinished while a compaction
+	 * summarization call is in flight). The request is recorded before the
+	 * hold, so tests can wait on its arrival and then assert liveness.
+	 * This is a deterministic hold, not a stall simulation — see
+	 * `stallAfterThinking` for that. */
+	holdUntil?: Promise<unknown>
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -222,6 +230,12 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
 				const script = pickResponseScript(request, mainQueue, subagentQueue)
+				if (script.holdUntil) {
+					await script.holdUntil
+					// The client may disconnect while held (cancellation, process exit).
+					// Writing afterwards would throw; there is nobody left to answer.
+					if (res.destroyed || res.writableEnded) return
+				}
 				await writeChatCompletion(res, script, body)
 				return
 			}

@@ -7,6 +7,8 @@ import {
 	estimateTokens as estimatePiMessageTokens,
 } from "@earendil-works/pi-coding-agent"
 import { getCompactionEnabled } from "../settings-watcher.js"
+import { isToolCallInFlight } from "../tool-call-in-flight.js"
+import { INLINE_COMPACT_IN_PROGRESS_MESSAGE } from "../upstream-inline-compact-patch.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
 
@@ -73,11 +75,57 @@ let imagesDetected = false
 /** Module-level flag tracking whether images have been stripped for non-vision model compatibility. */
 let imagesStripped = false
 
-/** Tracks whether the turn_end mid-turn compaction guard triggered ctx.compact().
- *  Set before calling ctx.compact() and consumed by the session_compact handler
- *  so the notification runs against the fresh post-compaction ctx, not the stale
- *  one captured in the turn_end handler's closure. */
-let pendingMidTurnCompaction = false
+/** Mid-turn compaction attempt state, scoped to the current session generation.
+ *  Ownership lives in the turn_end handler — the awaited inline adapter keeps
+ *  the compaction inside the awaited agent run, so no detached task can
+ *  outlive the prompt that print mode awaits. */
+interface MidTurnCompactionState {
+	/** An inline compaction attempt is executing inside this turn_end handler. */
+	inFlight: boolean
+	/** A successful compaction awaits provider-usage validation on the next
+	 *  successful assistant response with positive usage. */
+	awaitingValidation: boolean
+	/** Mid-turn attempts are suppressed for the current pressure episode
+	 *  (failed or ineffective compaction, or the adapter is unavailable). */
+	suppressed: boolean
+	/** One-shot diagnostic for the adapter-unavailable case. */
+	adapterMissingDiagnosed: boolean
+}
+
+const midTurnCompaction: MidTurnCompactionState = {
+	inFlight: false,
+	awaitingValidation: false,
+	suppressed: false,
+	adapterMissingDiagnosed: false,
+}
+
+/** Session generation token: bumped on session_start/session_shutdown so a
+ *  late compaction completion cannot notify or mutate a replacement session. */
+let sessionGeneration = 0
+
+/** Persist a concise mid-turn compaction outcome so headless archives (where
+ *  ui.notify is a no-op) explain what the guard did. Best-effort: appending
+ *  an entry must never break the compaction handler. */
+function appendMidTurnDiagnostic(pi: ExtensionAPI, outcome: string, text: string): void {
+	try {
+		pi.appendEntry("model_guard_compaction", { outcome, text })
+	} catch {
+		// Diagnostics are best-effort only.
+	}
+}
+
+/** The inline adapter rejects with INLINE_COMPACT_IN_PROGRESS_MESSAGE when
+ *  another compaction owns the session — a defer (a later turn retries), not
+ *  a failure. Matched exactly against the adapter's exported constant so a
+ *  wording change there cannot silently break this classification. */
+function isCompetingCompactionError(message: string): boolean {
+	return message === INLINE_COMPACT_IN_PROGRESS_MESSAGE
+}
+
+/** Cancellation (user abort / shutdown) — clean up, never suppress or announce. */
+function isCancellationError(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || /compaction cancelled/i.test(error.message))
+}
 
 /** Reference to the latest context messages (stored for /strip-images command). */
 let latestMessages: ContextEvent["messages"] = []
@@ -141,10 +189,14 @@ export function getLatestMessagesTimestamp(): number {
 function resetSessionState(): void {
 	imagesDetected = false
 	imagesStripped = false
-	pendingMidTurnCompaction = false
 	latestMessages = []
 	latestMessagesTimestamp = 0
 	imageDescriptions.clear()
+	sessionGeneration += 1
+	midTurnCompaction.inFlight = false
+	midTurnCompaction.awaitingValidation = false
+	midTurnCompaction.suppressed = false
+	midTurnCompaction.adapterMissingDiagnosed = false
 }
 
 /**
@@ -362,11 +414,14 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 	_pi.on("session_start", resetSessionState)
 	_pi.on("session_shutdown", resetSessionState)
 
-	// ctx.compact() replaces the session internally, invalidating the ctx
-	// captured in the turn_end handler. The session_compact event fires
-	// afterwards with a fresh ctx, so we notify from there instead of from
-	// the stale onComplete/onError closures.
-	_pi.on("session_compact", async (event, ctx: ExtensionContext) => {
+	// Cache refresh only: after any compaction (this guard's, /compact, or
+	// upstream threshold compaction), refresh the cached context/image state
+	// so model-switch guards see post-compaction reality immediately. Attempt
+	// ownership lives in the turn_end handler — a session_compact event alone
+	// neither proves the next request shrank nor requests a new run. Ordinary
+	// compaction does not replace AgentSession in the pinned upstream, so the
+	// ctx stays valid across it.
+	_pi.on("session_compact", async (_event, ctx: ExtensionContext) => {
 		// Refresh cached state so model-switch guards see post-compaction reality
 		// immediately, rather than waiting for the next context event (which only
 		// fires on the next LLM call). Without this, latestMessages still holds
@@ -391,15 +446,6 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			// the next context event will correct the state.
 			console.warn("[model-guard] session_compact state refresh failed:", err)
 		}
-
-		// Only consume the flag for compactions triggered by this guard's
-		// ctx.compact() call — not for /compact or threshold-triggered ones.
-		if (!pendingMidTurnCompaction || !event.fromExtension) return
-		pendingMidTurnCompaction = false
-		ctx.ui?.notify(
-			`Context compacted (${(event.compactionEntry.tokensBefore ?? 0).toLocaleString()} tokens → summary). Continue to resume.`,
-			"info",
-		)
 	})
 
 	_pi.on("context", async (event, ctx: ExtensionContext) => {
@@ -471,46 +517,126 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		const msg = event.message
 		if (msg.role !== "assistant") return
-		// Only act on tool-use responses — the turn is still in progress.
-		// stop/error/aborted responses are already handled by _handlePostAgentRun.
-		if (msg.stopReason !== "toolUse") return
 
+		const threshold = model.contextWindow - COMPACTION_RESERVE_TOKENS
 		const usage = "usage" in msg ? msg.usage : undefined
-		if (!usage?.totalTokens) return
+		const totalTokens = typeof usage?.totalTokens === "number" ? usage.totalTokens : 0
 
-		// Use the same threshold as upstream auto-compaction: contextWindow - reserveTokens.
-		if (usage.totalTokens <= model.contextWindow - COMPACTION_RESERVE_TOKENS) return
+		// Effectiveness validation runs on every successful assistant response
+		// with positive usage — before the toolUse-only trigger gate below, so the
+		// final-answer turn also validates. Error/aborted responses and zero or
+		// missing usage are not shrinkage evidence; retained pre-compaction usage
+		// and summary-generation usage are never read here.
+		if (totalTokens > 0 && msg.stopReason !== "error" && msg.stopReason !== "aborted") {
+			if (midTurnCompaction.awaitingValidation) {
+				midTurnCompaction.awaitingValidation = false
+				if (totalTokens > threshold) {
+					// Insufficient relief is not proof of a resynchronization bug —
+					// retained content or a large new response can also explain it.
+					// Suppress further mid-turn attempts until a later successful
+					// response lands at/below threshold or the session resets.
+					midTurnCompaction.suppressed = true
+					appendMidTurnDiagnostic(
+						_pi,
+						"insufficient_relief",
+						`Mid-turn compaction insufficient relief: next response still ${totalTokens.toLocaleString()} tokens (threshold ${threshold.toLocaleString()}) — suppressing further mid-turn attempts until a below-threshold response`,
+					)
+				}
+			}
+			// A fresh response at/below threshold clears suppression: later growth
+			// may trigger another compaction; there is no session cap.
+			if (totalTokens <= threshold) {
+				midTurnCompaction.suppressed = false
+			}
+		}
+
+		// Trigger gates — only the in-progress toolUse turn. stop/error/aborted
+		// responses are already handled by _handlePostAgentRun.
+		if (msg.stopReason !== "toolUse") return
+		if (totalTokens <= threshold) return
 
 		// /settings Auto-compact toggle (settings.json compaction.enabled).
-		// ctx.compact() is upstream's manual path and does not check the toggle
-		// itself, so this stopgap must gate on it explicitly — otherwise it
-		// compacts even when the user (or a benchmark harness) disabled
-		// auto-compaction. Project trust is already synced onto the settings
-		// reader by settingsTrustSyncExtension at session_start.
+		// Project trust is already synced onto the settings reader by
+		// settingsTrustSyncExtension at session_start.
 		if (!getCompactionEnabled()) return
 
-		// Threshold exceeded mid-turn. Compact now.
-		//
-		// NOTE: ctx.compact() is the manual compaction path which calls abort() on the
-		// current agent run. This means the in-progress tool-call chain stops here and
-		// the user must send another message to resume. This is worse UX than upstream
-		// auto-compaction (which transparently retries via agent.continue()), but it is
-		// the only option available from an extension — _runAutoCompaction and the
-		// agent.continue() path are not exposed on ExtensionContext.
-		//
-		// The proper upstream fix is to wire _checkCompaction into the agent loop via
-		// shouldStopAfterTurn or after_provider_response so compaction fires inside
-		// the loop with transparent retry. This handler is a pragmatic stopgap.
-		pendingMidTurnCompaction = true
-		ctx.compact({
-			// onComplete fires with a stale ctx after session replacement.
-			// The actual notification is delivered via the session_compact event
-			// handler above, which receives a fresh ctx.
-			onError: (error) => {
-				pendingMidTurnCompaction = false
-				console.warn("[model-guard] mid-turn compaction failed:", error.message)
-			},
-		})
+		if (midTurnCompaction.suppressed) return
+		if (midTurnCompaction.inFlight) return
+
+		// Root-cause guard: compaction must not summarise away an assistant
+		// toolCall whose toolResult is appended later. Read the current branch —
+		// never a cached prior context.
+		let activeMessages: ContextEvent["messages"]
+		try {
+			const branch = await Promise.resolve(ctx.sessionManager.getBranch())
+			activeMessages = buildSessionContext(branch).messages
+		} catch (err) {
+			console.warn("[model-guard] mid-turn compaction branch read failed:", err)
+			return
+		}
+		if (isToolCallInFlight(activeMessages)) return
+
+		// The awaitable inline adapter keeps the compaction inside the awaited
+		// turn_end handler, so the SAME run continues on the compacted context —
+		// the awaited agent.prompt() chain stays the single owner of the work.
+		// The CLI installs the adapter (src/cli.ts → upstream-inline-compact-patch).
+		// Hosts without it get one diagnostic and NO aborting fallback: the detached
+		// manual path cannot provide run continuation (print mode disposes the
+		// runtime before it completes), so upstream run-end compaction remains
+		// their safety net.
+		const inlineCompact = ctx.inlineCompact
+		if (typeof inlineCompact !== "function") {
+			if (!midTurnCompaction.adapterMissingDiagnosed) {
+				midTurnCompaction.adapterMissingDiagnosed = true
+				appendMidTurnDiagnostic(
+					_pi,
+					"adapter_unavailable",
+					"Mid-turn compaction skipped: inline compaction adapter unavailable on this context",
+				)
+			}
+			midTurnCompaction.suppressed = true
+			return
+		}
+
+		const attemptGeneration = sessionGeneration
+		midTurnCompaction.inFlight = true
+		try {
+			const result = await inlineCompact()
+			// A late completion from a replaced session must not notify or
+			// mutate the replacement's state.
+			if (attemptGeneration !== sessionGeneration) return
+			midTurnCompaction.awaitingValidation = true
+			ctx.ui?.notify(
+				`Context compacted (${result.tokensBefore.toLocaleString()} tokens → summary). Continuing automatically.`,
+				"info",
+			)
+			appendMidTurnDiagnostic(
+				_pi,
+				"success",
+				`Mid-turn compaction complete: ${result.tokensBefore.toLocaleString()} tokens before compaction; continuing automatically`,
+			)
+		} catch (error) {
+			if (attemptGeneration !== sessionGeneration) return
+			// Cancellation must end the run: clean up only — never clear the
+			// abort state, enqueue work, or announce success.
+			if (isCancellationError(error)) return
+			const message = error instanceof Error ? error.message : String(error)
+			// A competing compaction is a defer, not a failure — a later turn
+			// may retry once that operation settles.
+			if (isCompetingCompactionError(message)) return
+			midTurnCompaction.suppressed = true
+			appendMidTurnDiagnostic(
+				_pi,
+				"failure",
+				`Mid-turn compaction failed: ${message} — suppressing further attempts for this pressure episode`,
+			)
+		} finally {
+			// Only clear the in-flight guard for the session that owns the
+			// attempt; a replacement session has fresh state.
+			if (attemptGeneration === sessionGeneration) {
+				midTurnCompaction.inFlight = false
+			}
+		}
 	})
 
 	_pi.on("model_select", async () => {

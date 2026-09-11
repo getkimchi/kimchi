@@ -114,6 +114,12 @@ function assertCompactInternalsCompatible(sessionProto: PatchableSessionPrototyp
 	}
 }
 
+/** Rejection message used by inlineCompact when another compaction owns the
+ *  session (an in-flight inline attempt or an active compaction controller).
+ *  Exported so guard code (model-guard) can recognize the defer case without
+ *  duplicating the wording — a change here travels with every matcher. */
+export const INLINE_COMPACT_IN_PROGRESS_MESSAGE = "Compaction already in progress"
+
 async function runInlineCompact(
 	session: PatchableSession,
 	originalCompact: NonNullable<PatchableSessionPrototype["compact"]>,
@@ -124,7 +130,7 @@ async function runInlineCompact(
 		session._compactionAbortController ||
 		session._autoCompactionAbortController
 	) {
-		throw new Error("Compaction already in progress")
+		throw new Error(INLINE_COMPACT_IN_PROGRESS_MESSAGE)
 	}
 
 	// Safety assertion (not deferral — callers wanting deferral must check

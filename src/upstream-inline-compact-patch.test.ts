@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { AgentSession, type CompactionResult, ExtensionRunner } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	INLINE_COMPACT_IN_PROGRESS_MESSAGE,
 	type InlineCompactOptions,
 	type InlineCompactPatchOptions,
 	installInlineCompactPatch,
@@ -454,12 +455,12 @@ describe("installInlineCompactPatch", () => {
 		const session = new FakeSession()
 		session._compactionAbortController = new AbortController()
 
-		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction already in progress")
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow(INLINE_COMPACT_IN_PROGRESS_MESSAGE)
 
 		session._compactionAbortController = undefined
 		session._autoCompactionAbortController = new AbortController()
 
-		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction already in progress")
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow(INLINE_COMPACT_IN_PROGRESS_MESSAGE)
 	})
 
 	it("rejects when the branch has an unpaired toolCall", async () => {
