@@ -525,6 +525,41 @@ describe("telemetryExtension integration", () => {
 		})
 	})
 
+	it("before_provider_headers clears the trace context on a malformed upstream traceparent", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// Seed a valid context first — a malformed header must not leave it stale.
+		const seeded = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(seeded)
+		expect(_getTelemetryCtx()?.lastTraceContext).toBeDefined()
+
+		const event = { headers: { traceparent: "garbage" } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers.traceparent).toBe("garbage") // header itself is preserved untouched
+		expect(_getTelemetryCtx()?.lastTraceContext).toBeUndefined()
+	})
+
+	it("before_provider_headers normalizes uppercase hex in a preserved upstream traceparent", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = {
+			headers: {
+				traceparent: "00-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-BBBBBBBBBBBBBBBB-01",
+			} as Record<string, string>,
+		}
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(_getTelemetryCtx()?.lastTraceContext).toEqual({
+			traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			spanId: "bbbbbbbbbbbbbbbb",
+		})
+	})
+
 	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)

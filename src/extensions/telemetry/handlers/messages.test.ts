@@ -359,6 +359,35 @@ describe("handleMessageEnd", () => {
 			expect.anything(),
 		)
 	})
+
+	it("stamps the request trace context on transport_error events", async () => {
+		const { ctx, piCtx } = makeCtx()
+		ctx.lastTraceContext = { traceId: "aaaabbbbccccddddeeeeffff00001111", spanId: "1122334455667788" }
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, piCtx, {
+			message: {
+				role: "assistant",
+				model: "kimi-k2.6",
+				provider: "kimchi-dev",
+				stopReason: "error",
+				errorMessage: "The socket connection was closed unexpectedly",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+				timestamp: BASE_TS,
+				responseId: "chatcmpl-transport-trace",
+			} as Message,
+		})
+
+		expect(emitSpy).toHaveBeenCalledWith(
+			"error",
+			expect.objectContaining({
+				error_type: "transport_error",
+				"request.trace_id": "aaaabbbbccccddddeeeeffff00001111",
+				"request.span_id": "1122334455667788",
+			}),
+			expect.anything(),
+		)
+	})
 })
 
 describe("handleBeforeAgentStart", () => {

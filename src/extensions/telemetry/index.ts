@@ -954,14 +954,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			} else {
 				// An upstream component supplied the context — record it so
 				// telemetry events still join to whichever trace the request
-				// actually went out under.
+				// actually went out under. Malformed ids leave the context
+				// undefined rather than stamping a stale request's trace.
 				const existing = Object.entries(event.headers).find(
 					([name]) => name.toLowerCase() === TELEMETRY_PROVIDER_HEADER_NAMES.traceparent,
 				)?.[1]
 				const parts = existing?.split("-")
-				if (parts && parts.length === 4) {
-					telemetryCtx.lastTraceContext = { traceId: parts[1], spanId: parts[2] }
-				}
+				const traceId = parts?.length === 4 ? parts[1].toLowerCase() : undefined
+				const spanId = parts?.length === 4 ? parts[2].toLowerCase() : undefined
+				telemetryCtx.lastTraceContext =
+					traceId && /^[0-9a-f]{32}$/.test(traceId) && spanId && /^[0-9a-f]{16}$/.test(spanId)
+						? { traceId, spanId }
+						: undefined
 			}
 		})
 	}
