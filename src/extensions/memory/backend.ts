@@ -23,6 +23,32 @@ import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 export const MEMORY_EMBEDDING_MODEL = "text-embedding-3-small"
 export const MEMORY_EMBEDDING_DIMS = 1536
 
+/** One mem0 search hit, narrowed to the fields memory consumers read. */
+export interface Mem0SearchHit {
+	id: string
+	memory: string
+	score?: number
+}
+
+/**
+ * mem0's search returns either a bare array or { results: [...] } depending
+ * on the version and call path — unwrap and field-filter once, at every
+ * call site, so a mem0 response-shape change is fixed in one place. Hits
+ * without an id or memory are dropped (an id-less hit can never be deleted
+ * or superseded anyway).
+ */
+export function normalizeMem0SearchResults(raw: unknown): Mem0SearchHit[] {
+	const list = (Array.isArray(raw) ? raw : ((raw as { results?: unknown } | undefined)?.results ?? [])) as Array<{
+		id?: string
+		memory?: string
+		score?: number
+	}>
+	return list.filter(
+		(r): r is { id: string; memory: string; score?: number } =>
+			typeof r.id === "string" && typeof r.memory === "string",
+	)
+}
+
 /**
  * Extraction model preference order — resolved against the gateway's live
  * model list at capture-worker start (models deprecate; per-user gateway

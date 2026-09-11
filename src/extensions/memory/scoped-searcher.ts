@@ -5,7 +5,7 @@
  * Bun-only (SQLite backends), same split as backend.ts.
  */
 import type { Memory as Mem0Memory } from "mem0ai/oss"
-import { createMemoryBackend, projectDbPath } from "./backend.js"
+import { createMemoryBackend, normalizeMem0SearchResults, projectDbPath } from "./backend.js"
 import { digestDbPath, MEMORY_USER_ID } from "./config.js"
 import { resolveProjectScope } from "./scope.js"
 
@@ -40,11 +40,7 @@ async function searchOne(
 	topK: number,
 ): Promise<ScopedSearchResult[]> {
 	const results = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK })
-	const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
-		memory?: string
-		score?: number
-	}>
-	return list.map((r) => ({ memory: r.memory, score: r.score, scope: tag }))
+	return normalizeMem0SearchResults(results).map((r) => ({ memory: r.memory, score: r.score, scope: tag }))
 }
 
 /**

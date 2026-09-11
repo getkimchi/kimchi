@@ -121,6 +121,20 @@ describe("MemoryPanel", () => {
 		expect(text).toContain("alpha")
 	})
 
+	it("a failed delete of the last fact restores the original list order", async () => {
+		const deleteFact = vi.fn(async () => {
+			throw new Error("store unavailable")
+		})
+		const { panel } = makePanel([fact("1", "alpha"), fact("2", "beta")], deleteFact)
+		panel.handleInput("G") // select the last fact (arrives as shift+g)
+		panel.handleInput("d")
+		await new Promise((r) => setTimeout(r, 0))
+		const lines = rendered(panel)
+		// Restored at the ORIGINAL index — a delete that did not happen must
+		// not reorder the list the user sees ([beta, alpha] would be the bug).
+		expect(lines.indexOf("alpha")).toBeLessThan(lines.indexOf("beta"))
+	})
+
 	it("deleting the last fact clamps into the empty state", async () => {
 		const { panel } = makePanel([fact("1", "only fact")])
 		panel.handleInput("d")

@@ -126,6 +126,35 @@ describe("memory extension", () => {
 		expect(mounted.render(80).join("\n")).toContain("Memory — 1 fact")
 		expect(mounted.render(80).join("\n")).toContain("the user's dog is named Fred")
 
+		// --json takes the text path instead of opening the panel.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "ignored",
+			json: '{\n  "total": 0\n}',
+			code: 0,
+			useJson: true,
+		})
+		await command.handler("list --json", ctx)
+		expect(admin.adminListFacts).toHaveBeenCalledTimes(1) // not called again for --json
+		expect(ctx.ui.custom).toHaveBeenCalledTimes(1) // unchanged — no second panel
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("memory-view", ["{", '  "total": 0', "}"])
+
+		// A non-UI context (ACP/print mode) prints plainly to the console.
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		try {
+			const plainCtx = { ...createCommandContext(), hasUI: false }
+			vi.mocked(admin.runAdminCommand).mockResolvedValue({
+				text: "plain output",
+				json: "{}",
+				code: 0,
+				useJson: false,
+			})
+			await command.handler("list", plainCtx)
+			expect(admin.adminListFacts).toHaveBeenCalledTimes(1) // panel routing requires a UI
+			expect(logSpy).toHaveBeenCalledWith("plain output")
+		} finally {
+			logSpy.mockRestore()
+		}
+
 		// search surfaces fetch failures as an error notification.
 		vi.mocked(admin.adminSearchFacts).mockRejectedValue(new Error("no api key"))
 		await command.handler("search dog", ctx)
