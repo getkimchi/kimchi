@@ -90,7 +90,14 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		}
 
 		if (result.action === "sync-session") {
-			await syncSession(result.node, ctx)
+			// runSyncArgs signals failures by throwing (refuse), e.g. a missing
+			// API key or an rsync error. Catch here so the browser loop survives
+			// a failed sync and re-shows the picker.
+			try {
+				await syncSession(result.node, ctx)
+			} catch (err) {
+				warn(ctx, `Could not sync session: ${err instanceof Error ? err.message : String(err)}`)
+			}
 			continue
 		}
 
@@ -244,7 +251,11 @@ async function syncSession(session: RemoteSessionNode, ctx: TeleportContext): Pr
 
 	const up = direction === SYNC_UP
 	const localDefault = ctx.cwd
-	const remoteDefault = session.cwd || "~/"
+	// No trailing slash on the remote default: rsync gives a source path with
+	// a trailing slash different semantics (copy contents vs copy the dir
+	// itself), so normalize so the default behaves identically whether or
+	// not the worker reported a cwd.
+	const remoteDefault = (session.cwd || "~").replace(/\/+$/, "")
 
 	const source = await ctx.ui.input(
 		`Source path (${up ? "local" : "remote, on the workspace"}, default: ${up ? localDefault : remoteDefault})`,

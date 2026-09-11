@@ -82,6 +82,7 @@ function makeUi(): ExtensionUIContext & {
 	notify: ReturnType<typeof vi.fn>
 	confirm: ReturnType<typeof vi.fn>
 	input: ReturnType<typeof vi.fn>
+	select: ReturnType<typeof vi.fn>
 	setStatus: ReturnType<typeof vi.fn>
 } {
 	return {
@@ -117,6 +118,7 @@ function makeUi(): ExtensionUIContext & {
 		notify: ReturnType<typeof vi.fn>
 		confirm: ReturnType<typeof vi.fn>
 		input: ReturnType<typeof vi.fn>
+		select: ReturnType<typeof vi.fn>
 		setStatus: ReturnType<typeof vi.fn>
 	}
 }
@@ -509,6 +511,55 @@ describe("runRemoteSessions", () => {
 				delete: false,
 				dryRun: false,
 			},
+			ctx,
+		)
+	})
+
+	it("warns and re-shows the picker when the sync fails", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					cwd: "/remote/proj",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Up  (local → remote)")
+		ui.input.mockResolvedValue("")
+		runSyncArgsMock.mockRejectedValue(new Error("rsync failed"))
+		await expect(runRemoteSessions("", ctx)).resolves.toBeUndefined()
+		expect(ui.notify).toHaveBeenCalledWith("Could not sync session: rsync failed", "warning")
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("falls back to ~ without a trailing slash when the session has no cwd", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "sync-session",
+				node: {
+					workspaceId: "w-1",
+					workspaceName: "alpha",
+					sessionName: "s-1",
+					status: "active",
+					clientConnected: true,
+				},
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.select.mockResolvedValue("Sync Down  (remote → local)")
+		ui.input.mockResolvedValue("")
+		await runRemoteSessions("", ctx)
+		expect(ui.input).toHaveBeenNthCalledWith(1, "Source path (remote, on the workspace, default: ~)")
+		expect(runSyncArgsMock).toHaveBeenCalledWith(
+			expect.objectContaining({ direction: "down", source: "~", target: "/work/proj" }),
 			ctx,
 		)
 	})
