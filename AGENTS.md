@@ -22,6 +22,10 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
+## Live harness checks
+
+Use the bundled `kimchi-tmux` when developing or verifying harness commands, menus, and TUI workflows. Follow the skill for setup, controller usage, and cleanup.
+
 ## CLI arguments
 
 - **Declare Kimchi-local flags in `src/cli-args.ts`:** add them to `CLI_OPTIONS` with `type`, `description`, and an optional `short` alias / `placeholder`. This catalog is the single source of truth for both the parser and help text.
