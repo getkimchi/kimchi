@@ -1,10 +1,15 @@
 import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
-import { createContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { MEMORY_SEARCH_TIMEOUT_MS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
+
+// The /memory command handler delegates to the admin core; mock it so the
+// handler's arg threading and output routing are testable under Node
+// without constructing real backends.
+vi.mock("./admin.js", () => ({ runAdminCommand: vi.fn() }))
 
 const BASE_PROMPT = "You are kimchi."
 
@@ -47,6 +52,25 @@ describe("memory extension", () => {
 		createMemoryExtension({ isEnabled: () => false })(api)
 		expect(api.on).not.toHaveBeenCalled()
 		expect(vi.mocked(api.registerTool)).not.toHaveBeenCalled()
+		expect(vi.mocked(api.registerCommand)).not.toHaveBeenCalled()
+	})
+
+	it("registers the /memory management command and routes its output", async () => {
+		const { runAdminCommand } = await import("./admin.js")
+		vi.mocked(runAdminCommand).mockResolvedValue({ text: "single-line result", json: "{}", code: 0, useJson: false })
+		const { api, getRegisteredCommand } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		const command = getRegisteredCommand("memory")
+		expect(command.description).toContain("Manage persistent memory")
+		const ctx = createCommandContext()
+		await command.handler("list --limit 5", ctx)
+		expect(runAdminCommand).toHaveBeenCalledWith(["list", "--limit", "5"], expect.objectContaining({ cwd: ctx.cwd }))
+		expect(ctx.ui.notify).toHaveBeenCalledWith("single-line result", "info")
+
+		// Multiline output opens the editor viewer instead.
+		vi.mocked(runAdminCommand).mockResolvedValue({ text: "line 1\nline 2", json: "{}", code: 0, useJson: false })
+		await command.handler("list", ctx)
+		expect(ctx.ui.editor).toHaveBeenCalledWith("Memory", "line 1\nline 2")
 	})
 
 	it("carries the digest from the very first start and keeps it byte-stable across turns", async () => {
@@ -76,8 +100,11 @@ describe("memory extension", () => {
 		)
 		for (let turn = 0; turn < 3; turn++) {
 			const result = await start(startEvent(`turn ${turn}`), fakeCtx)
-			// The model must know capture is automatic even with no digest.
+			// The model must know capture is automatic even with no digest, and
+			// where the user manages what is stored.
 			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).toContain("/memory")
+			expect(result?.systemPrompt).toContain("kimchi memory")
 			expect(result?.systemPrompt).not.toContain("weak")
 		}
 		// Turn 1 (digest) + turns 2-3: nothing was delivered, so the gate sees
