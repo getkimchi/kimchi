@@ -51,13 +51,27 @@ test("read tool sends the resized image to the provider instead of the omit mess
 			trace.step("read tool round-trip completed")
 
 			// The tool result must reach the provider as an image part, not the omit message.
-			const withToolResult = fixture.fake.requests.filter(
-				(r) => r.url.includes("/chat/completions") && JSON.stringify(r.body).includes('"role":"tool"'),
+			// Assert on the parsed request structure, not on JSON text formatting.
+			type Message = { role?: string; content?: unknown }
+			const parseBody = (body: unknown): { messages?: Message[] } =>
+				typeof body === "string" ? JSON.parse(body) : ((body ?? {}) as { messages?: Message[] })
+			const bodies = fixture.fake.requests
+				.filter((r) => r.url.includes("/chat/completions"))
+				.map((r) => parseBody(r.body))
+			expect(bodies.some((b) => b.messages?.some((m) => m.role === "tool"))).toBe(true)
+			const parts = bodies.flatMap((b) =>
+				(b.messages ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : [m.content])),
 			)
-			expect(withToolResult.length).toBeGreaterThan(0)
-			const body = JSON.stringify(withToolResult.map((r) => r.body))
-			expect(body).not.toContain("[Image omitted")
-			expect(body).toContain('"type":"image_url"')
+			const texts = parts
+				.map((p) =>
+					typeof p === "string" ? p : typeof p === "object" && p !== null ? (p as { text?: string }).text : "",
+				)
+				.filter((t): t is string => typeof t === "string")
+			expect(texts.join("\n")).not.toContain("[Image omitted")
+			const imageParts = parts.filter(
+				(p) => typeof p === "object" && p !== null && (p as { type?: string }).type === "image_url",
+			)
+			expect(imageParts.length).toBeGreaterThan(0)
 			trace.step("provider request carries the resized image")
 		},
 	)

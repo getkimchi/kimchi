@@ -123,11 +123,21 @@ console.log("\n→ copy photon wasm")
 const buildRequire = createRequire(join(projectRoot, "package.json"))
 let photonWasmSrc
 try {
-	photonWasmSrc = buildRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
-} catch {
-	// pnpm layouts don't always honor deep subpath joins — resolve the package
-	// directory via its package.json and join the WASM filename instead.
-	photonWasmSrc = join(dirname(buildRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
+	try {
+		photonWasmSrc = buildRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
+	} catch {
+		// pnpm layouts don't always honor deep subpath joins — resolve the package
+		// directory via its package.json and join the WASM filename instead.
+		photonWasmSrc = join(dirname(buildRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
+	}
+} catch (cause) {
+	// Every failure path of this guard must explain the production consequence
+	// — a raw MODULE_NOT_FOUND/ERR_PACKAGE_PATH_NOT_EXPORTED would not.
+	throw new Error(
+		"@silvia-odwyer/photon-node could not be resolved. Image inlining would " +
+			"silently break in the compiled binary.",
+		{ cause },
+	)
 }
 if (!existsSync(photonWasmSrc)) {
 	// Structural regression guard: without this file, every image read in the
