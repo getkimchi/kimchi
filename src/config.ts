@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "./utils.js"
 
-const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
+export const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
@@ -494,15 +494,31 @@ export function getAgentConfigDir(): string {
 	return AGENT_CONFIG_DIR
 }
 
+/**
+ * Write a JSON object file atomically: mkdir the parent, write a same-dir tmp
+ * file, rename it into place, and restrict the result to owner-only (0600).
+ * The rename may inherit the tmp file's default umask perms, so chmod
+ * explicitly after the rename lands.
+ *
+ * Shared home of the repo's config-write idiom: every caller writes a file
+ * that holds plaintext credentials or user state (config.json carries the
+ * Cast AI API key and git tokens; the harness mcp.json carries imported
+ * server env/headers), so owner-only is the safe default for all of them.
+ */
+export function writeJsonObjectFile(path: string, value: Record<string, unknown>): void {
+	mkdirSync(dirname(path), { recursive: true })
+	const tmp = `${path}.${process.pid}.tmp`
+	writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
+	renameSync(tmp, path)
+	// Restrict to owner-only (0600) — every caller writes a file that holds
+	// plaintext credentials or user state, and the atomic rename may inherit
+	// the tmp file's default umask perms, so chmod explicitly after the rename
+	// lands.
+	chmodSync(path, 0o600)
+}
+
 function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
-	mkdirSync(dirname(configPath), { recursive: true })
-	const tmp = `${configPath}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, configPath)
-	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
-	// git tokens in plaintext. The atomic rename may inherit the tmp file's
-	// default umask perms, so chmod explicitly after the rename lands.
-	chmodSync(configPath, 0o600)
+	writeJsonObjectFile(configPath, raw)
 }
 
 function updateConfigFile(

@@ -632,16 +632,41 @@ describe("discoverAgent engine", () => {
 				const skillsDir = join(tempDir, "locked")
 				mkdirSync(join(skillsDir, "alpha"), { recursive: true })
 				chmodSync(skillsDir, 0o000)
+				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 				try {
 					const discovery = discoverAgent(makeDef({ skillsDirs: [skillsDir] }), { cwd: tempDir })
 					expect(discovery.skillsDir).toBe(skillsDir)
 					expect(discovery.skillCount).toBe(-1)
 					expect(discovery.skills).toEqual([])
+					// One root cause, one warning: enumeration is skipped when the
+					// listing already failed — loadSkillsFromDir would hit the same
+					// EACCES and emit a second, redundant diagnostic.
+					expect(warnSpy).toHaveBeenCalledTimes(1)
 				} finally {
+					warnSpy.mockRestore()
 					chmodSync(skillsDir, 0o700)
 				}
 			},
 		)
+
+		// S9b: count-only callers (telemetry snapshot, wizards) can skip the
+		// per-call frontmatter parsing — counts stay identical, enumeration is
+		// simply not performed.
+		it("S9b: enumerateSkills false skips frontmatter parsing — counts without enumerating", () => {
+			const skillsDir = join(tempDir, "skills")
+			writeSkill(skillsDir, "deploy", "name: deploy\ndescription: Ship the service")
+			writeSkill(skillsDir, "review", "description: Review the diff")
+			const def = makeDef({ skillsDirs: [skillsDir] })
+
+			const enumerated = discoverAgent(def)
+			expect(enumerated.skillCount).toBe(2)
+			expect(enumerated.skills).toHaveLength(2)
+
+			const countOnly = discoverAgent(def, { enumerateSkills: false })
+			expect(countOnly.skillCount).toBe(2)
+			// Frontmatter is never parsed — no enumerated names, no path work.
+			expect(countOnly.skills).toEqual([])
+		})
 
 		// S10: process.cwd() throws ENOENT (uv_cwd) when the working directory
 		// has been deleted out from under a long-lived process. "home" scope

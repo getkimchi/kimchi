@@ -170,7 +170,9 @@ describe("mcp proxy registration gate", () => {
 				await pi.fireShutdown()
 			}
 		} finally {
-			delete mcpConfigState.config.settings
+			// Preserve the original removal semantics (the key must be absent,
+			// not present-with-undefined) without tripping lint/performance/noDelete.
+			Reflect.deleteProperty(mcpConfigState.config, "settings")
 		}
 	})
 })

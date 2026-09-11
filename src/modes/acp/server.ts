@@ -105,6 +105,7 @@ import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
+import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
@@ -1077,6 +1078,12 @@ export class KimchiAcpAgent implements Agent {
 				// assignable to the string-indexed record the extMethod contract
 				// wants — no cast, no spread.
 				return importDiscover()
+			case AVAILABLE_EXT_METHODS.import_apply:
+				// Sessionless write half of the import (ADR-0043/ADR-0044): copies
+				// selected skills into Kimchi's own skills dir, merges selected MCP
+				// servers conservatively, and satisfies the migration marker. No
+				// session is touched.
+				return { ...handleImportApply({ agentDir: this.agentDir }, params) }
 			default:
 				throw RequestError.methodNotFound(method)
 		}

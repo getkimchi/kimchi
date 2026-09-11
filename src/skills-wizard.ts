@@ -10,7 +10,7 @@ export async function runSkillsWizard(): Promise<string[]> {
 		"First-time setup",
 	)
 
-	const agents = AGENT_DEFINITIONS.map((def) => discoverAgent(def))
+	const agents = AGENT_DEFINITIONS.map((def) => discoverAgent(def, { enumerateSkills: false }))
 	const discoveredDirs = agents
 		.filter((a): a is typeof a & { skillsDir: string } => !!a.skillsDir && a.skillCount > 0)
 		.map((a) => a.skillsDir)

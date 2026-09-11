@@ -24,7 +24,7 @@ interface MergedDiscovery {
 }
 
 function mergeDiscoveries(): MergedDiscovery {
-	const agents = AGENT_DEFINITIONS.map((def) => discoverAgent(def))
+	const agents = AGENT_DEFINITIONS.map((def) => discoverAgent(def, { enumerateSkills: false }))
 	// Merge MCP servers in *reverse* registry order so earlier-registered
 	// agents win on name collisions. Today: CC is registered first → CC
 	// wins, matching previous behaviour.

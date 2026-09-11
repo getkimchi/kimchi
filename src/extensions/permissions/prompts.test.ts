@@ -108,6 +108,7 @@ describe("promptForCompoundApproval", () => {
 	const commands = [{ command: "git status" }, { command: "ls -la" }]
 
 	it("returns deny when ctx.hasUI is false", async () => {
+		// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
 		const ctx = { hasUI: false } as any
 		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
 		expect(result).toEqual({ kind: "deny" })

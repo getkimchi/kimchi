@@ -79,6 +79,13 @@ vi.mock("./ext-methods/import-discover.js", () => ({
 		],
 	})),
 }))
+// Hermetic stub for import_apply: the real handler would write skills, MCP
+// config and the migration marker into the developer's actual home directory.
+vi.mock("./ext-methods/import-apply.js", () => ({
+	handleImportApply: vi.fn(() => ({
+		results: [{ kind: "skill", sourceAppId: "stub-app", name: "stub-skill", path: "/tmp/s", outcome: "imported" }],
+	})),
+}))
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
@@ -8431,12 +8438,29 @@ describe("extMethod dispatch", () => {
 		])
 	})
 
+	it("dispatches the sessionless import_apply method and returns its per-item results", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.import_apply, {
+			skills: [{ sourceAppId: "stub-app", path: "/tmp/s" }],
+		})) as {
+			results: Array<{ kind: string; name: string; outcome: string }>
+		}
+
+		expect(result.results).toEqual([
+			{ kind: "skill", sourceAppId: "stub-app", name: "stub-skill", path: "/tmp/s", outcome: "imported" },
+		])
+	})
+
 	it("rejects unknown extension methods as method-not-found", async () => {
 		const agent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 		})
 
-		await expect(agent.extMethod("_kimchi.dev/import_apply", {})).rejects.toThrow(/Method not found/)
+		await expect(agent.extMethod("_kimchi.dev/no_such_method", {})).rejects.toThrow(/Method not found/)
 	})
 })

@@ -67,6 +67,14 @@ export interface DiscoverAgentOptions {
 	 * long-lived process sees the caller's current directory.
 	 */
 	readonly cwd?: string
+	/**
+	 * Whether to fully enumerate skills (parse every SKILL.md frontmatter).
+	 * Defaults to `true`. Callers that only need `skillCount`/`skillsDir`
+	 * (telemetry snapshot, setup/skills wizards) can pass `false` to skip the
+	 * per-call frontmatter parsing cost that otherwise lands on every
+	 * discovery — bounded by skill count, but recurring for those callers.
+	 */
+	readonly enumerateSkills?: boolean
 }
 
 /**
@@ -187,6 +195,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 	for (const dir of skillsDirs) {
 		if (existsSync(dir)) {
 			skillsDir = dir
+			let readable = true
 			try {
 				skillCount = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length
 			} catch (err) {
@@ -196,8 +205,14 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 				// the client must be able to tell "nothing here" from "couldn't
 				// read what is here".
 				skillCount = -1
+				readable = false
 			}
-			skills = enumerateSkills(dir)
+			// Skip enumeration when the listing already failed — loadSkillsFromDir
+			// would hit the same EACCES and emit a second, redundant warning for
+			// one root cause. Also skipped when the caller only needs counts.
+			if (readable && (options?.enumerateSkills ?? true)) {
+				skills = enumerateSkills(dir)
+			}
 			break
 		}
 	}

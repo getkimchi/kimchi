@@ -99,7 +99,7 @@ function getDefaultPermissionMode(): string {
 function countMcpServers(): number {
 	let count = 0
 	for (const def of AGENT_DEFINITIONS) {
-		count += Object.keys(discoverAgent(def).mcpServers).length
+		count += Object.keys(discoverAgent(def, { enumerateSkills: false }).mcpServers).length
 	}
 	return count
 }
