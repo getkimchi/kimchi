@@ -161,7 +161,7 @@ describe("runCloudAgent", () => {
 
 		expect(res.backgrounded).toBe(true)
 		expect(res.id).toBe("agent-bg")
-		// Should show a 'started in background' notification
+		// Should show a 'started in background' notification (no manager → no transcript path)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			"Cloud agent started in background. You'll be notified when it completes.",
 			"info",
@@ -170,5 +170,26 @@ describe("runCloudAgent", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "cloud_agent_started" }), {
 			triggerTurn: true,
 		})
+	})
+
+	it("includes the transcript file path in the start notification when the record has an outputFile", async () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+		vi.mocked(spawnRemoteAgent).mockResolvedValue({
+			id: "agent-bg",
+			result: "backgrounded",
+			backgrounded: true,
+		})
+		const { getActiveManager } = await import("../agents/index.js")
+		vi.mocked(getActiveManager).mockReturnValue({
+			getRecord: vi.fn(() => ({ outputFile: "/tmp/transcripts/agent-bg.jsonl" })),
+		} as unknown as ReturnType<typeof getActiveManager>)
+
+		await runCloudAgent(pi, ctx, "hello", "desc")
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Cloud agent started in background. You'll be notified when it completes.\nFull transcript: /tmp/transcripts/agent-bg.jsonl",
+			"info",
+		)
 	})
 })

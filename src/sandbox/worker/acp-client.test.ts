@@ -1365,6 +1365,62 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
+		it("passes rawOutput through onToolActivity on completion", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "Run bash",
+						status: "in_progress",
+					},
+				}),
+			)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						status: "completed",
+						rawOutput: { content: [{ type: "text", text: "total 42" }] },
+					},
+				}),
+			)
+
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "Run bash",
+					title: "Run bash",
+					toolCallId: "tc-1",
+					status: "completed",
+					rawOutput: { content: [{ type: "text", text: "total 42" }] },
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+			client.close()
+		})
+
 		it("omits rawInput from the activity payload when the notification has none", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({

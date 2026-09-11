@@ -45,7 +45,9 @@ export async function runCloudAgent(
 	trackRemoteExecution("started", opts?.origin ?? "plan")
 
 	if (backgrounded) {
-		ctx.ui.notify("Cloud agent started in background. You'll be notified when it completes.", "info")
+		const transcriptPath = getActiveManager()?.getRecord(id)?.outputFile
+		const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
+		ctx.ui.notify(`Cloud agent started in background. You'll be notified when it completes.${transcriptNote}`, "info")
 		if (opts?.fermentId) {
 			ctx.ui.notify(
 				"Ferment paused while the cloud agent executes the plan. It will resume or complete when the cloud agent finishes.",

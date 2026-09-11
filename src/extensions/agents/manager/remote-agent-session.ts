@@ -39,6 +39,18 @@ import type { LifetimeUsage, SessionStatsLike } from "./usage.js"
  */
 type RemoteSessionEvent = { type: string; [k: string]: unknown }
 
+/**
+ * Extracts plain-text tool output from an ACP tool_call_update's rawOutput
+ * (pi AgentToolResult — `{ content: ContentBlock[] }`). Returns "" when
+ * it carries no text (e.g. pure diff tools), letting the caller keep its
+ * placeholder status text.
+ */
+export function extractToolOutputText(rawOutput?: unknown): string {
+	const content = (rawOutput as { content?: { text?: string }[] } | undefined)?.content
+	const text = Array.isArray(content) ? content.map((p) => p.text ?? "").join("") : ""
+	return text.trim() ? text : ""
+}
+
 export class RemoteAgentSession {
 	private acpClient: AcpSessionClient | undefined
 	private meta: RemoteSessionMeta | undefined
@@ -257,8 +269,10 @@ export class RemoteAgentSession {
 	 *  `{ role: "toolResult", toolCallId, toolName, content, isError, timestamp }`.
 	 *  Clears the pending-tool dedup so the same tool name can start again.
 	 *  Saves the current accumulated text length so the next assistant message
-	 *  only includes text that came after this tool call. */
-	recordToolCallEnd(toolName: string, toolCallId?: string, isError = false): void {
+	 *  only includes text that came after this tool call.
+	 *  `output` is the tool's actual output text extracted from the ACP
+	 *  notification content/rawOutput (empty when unavailable). */
+	recordToolCallEnd(toolName: string, toolCallId?: string, isError = false, output = ""): void {
 		this._textOffset = this._lastFullTextLength
 		let localId: string | undefined
 		if (toolCallId) {
@@ -275,11 +289,12 @@ export class RemoteAgentSession {
 			}
 		}
 		if (localId) this._pendingToolCalls.delete(localId)
+		const resultText = output.trim() || (isError ? "(tool failed)" : "(completed)")
 		this._messages.push({
 			role: "toolResult",
 			toolCallId: localId ?? toolName,
 			toolName,
-			content: [{ type: "text", text: isError ? "(tool failed)" : "(completed)" }],
+			content: [{ type: "text", text: resultText }],
 			isError,
 			timestamp: Date.now(),
 		})
@@ -287,7 +302,7 @@ export class RemoteAgentSession {
 			type: "tool_execution_end",
 			toolCallId: localId ?? toolName,
 			toolName,
-			result: isError ? "(tool failed)" : "(completed)",
+			result: resultText,
 			isError,
 		})
 	}

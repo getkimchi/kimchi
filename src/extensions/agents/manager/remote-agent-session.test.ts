@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { RemoteAgentSession } from "./remote-agent-session.js"
+import { extractToolOutputText, RemoteAgentSession } from "./remote-agent-session.js"
 
 function makeMockAcpClient() {
 	return {
@@ -357,6 +357,44 @@ describe("RemoteAgentSession", () => {
 			session.recordToolCallEnd("bash")
 			expect(listener).toHaveBeenCalledTimes(1)
 			expect(listener.mock.calls[0][0]).toMatchObject({ type: "tool_execution_end", toolName: "bash" })
+		})
+
+		it("stores the real tool output text when provided", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash", "kt.bash.1")
+			session.recordToolCallEnd("bash", "kt.bash.1", false, "total 42\n-rw-r--r-- file.ts")
+
+			const msg = session.messages[1]
+			expect(msg).toMatchObject({ role: "toolResult", isError: false })
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe("total 42\n-rw-r--r-- file.ts")
+		})
+
+		it("falls back to the placeholder when output is blank or whitespace", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash", undefined, false, "   ")
+			const msg = session.messages[1]
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe("(completed)")
+		})
+
+		it("includes the real output in tool_execution_end events", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+			session.recordToolCallEnd("bash", undefined, false, "hello world")
+			expect(listener.mock.calls[0][0]).toMatchObject({ result: "hello world" })
+		})
+	})
+
+	describe("extractToolOutputText", () => {
+		it("returns text joined from rawOutput content parts", () => {
+			expect(extractToolOutputText({ content: [{ text: "line 1" }, { text: "line 2" }] })).toBe("line 1line 2")
+		})
+
+		it("returns empty string when rawOutput is absent or blank", () => {
+			expect(extractToolOutputText(undefined)).toBe("")
+			expect(extractToolOutputText({ content: [{ text: "  " }] })).toBe("")
+			expect(extractToolOutputText({ content: [] })).toBe("")
 		})
 	})
 
