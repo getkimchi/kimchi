@@ -88,7 +88,6 @@
 		"@microsoft/tui-test": "0.0.4",
 		"@mixmark-io/domino": "^2.2.0",
 		"@modelcontextprotocol/conformance": "0.1.16",
-		"@silvia-odwyer/photon-node": "0.3.4",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^22.19.18",
 		"@types/shell-quote": "^1.7.5",

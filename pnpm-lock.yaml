@@ -119,9 +119,6 @@ importers:
       '@modelcontextprotocol/conformance':
         specifier: 0.1.16
         version: 0.1.16(supports-color@10.2.2)
-      '@silvia-odwyer/photon-node':
-        specifier: 0.3.4
-        version: 0.3.4
       '@types/micromatch':
         specifier: ^4.0.10
         version: 4.0.10

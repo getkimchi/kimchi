@@ -8,7 +8,7 @@
 //   node scripts/build-binary.js --target windows-x64   # build for Windows x86-64
 
 import { execSync } from "node:child_process"
-import { copyFileSync, existsSync, rmSync } from "node:fs"
+import { copyFileSync, existsSync, realpathSync, rmSync } from "node:fs"
 import { createRequire } from "node:module"
 import { arch, platform } from "node:os"
 import { dirname, join } from "node:path"
@@ -116,25 +116,40 @@ if (!isCrossCompile && platform() === "darwin") {
 // @silvia-odwyer/photon-node, whose CJS entry reads photon_rs_bg.wasm via a
 // build-machine absolute path. pi patches fs.readFileSync to fall back to
 // $execDir/photon_rs_bg.wasm, so the WASM must sit next to the compiled binary.
-// photon-node is a direct devDependency: resolving from the project root is the
-// only layout-proof approach — transitive resolution through pi relies on pnpm
-// hoisting internals that differ between installs (and failed in GH Actions).
+// Resolve the WASM through pi's own dependency graph — the same instance bun
+// bundles into the binary, so the WASM always matches pi's JS glue. pi's
+// exports map does not expose "./package.json" and Node enforces exports (bun
+// is lenient), so anchor the resolver on pi's exported "." entry instead.
+// The "." export is import-condition-only, so a CJS require cannot resolve
+// it — use the ESM resolver (import.meta.resolve), which returns the entry's
+// REAL path inside .pnpm/<pi>/, and the entry's directory chain reaches
+// .pnpm/<pi>/node_modules, where pnpm links pi's direct deps — resolving
+// from the top-level symlink would walk up to the root node_modules, where
+// pi's deps are not linked (this exact trap broke the GH Actions build once
+// already).
 console.log("\n→ copy photon wasm")
-const buildRequire = createRequire(join(projectRoot, "package.json"))
 let photonWasmSrc
 try {
+	// pi's exports map does not expose "./package.json" and Node enforces
+	// exports (bun is lenient) — resolve the exported "." entry instead.
+	// The "." export is import-only, so the CJS require resolver cannot see
+	// it; import.meta.resolve returns the entry's realpath, and the entry's
+	// directory chain reaches .pnpm/<pi>/node_modules, where photon-node is
+	// linked.
+	const piRequire = createRequire(realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))))
 	try {
-		photonWasmSrc = buildRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
+		photonWasmSrc = piRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
 	} catch {
 		// pnpm layouts don't always honor deep subpath joins — resolve the package
 		// directory via its package.json and join the WASM filename instead.
-		photonWasmSrc = join(dirname(buildRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
+		photonWasmSrc = join(dirname(piRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
 	}
 } catch (cause) {
 	// Every failure path of this guard must explain the production consequence
 	// — a raw MODULE_NOT_FOUND/ERR_PACKAGE_PATH_NOT_EXPORTED would not.
 	throw new Error(
-		"@silvia-odwyer/photon-node could not be resolved. Image inlining would " +
+		"@silvia-odwyer/photon-node could not be resolved through " +
+			"@earendil-works/pi-coding-agent's dependencies. Image inlining would " +
 			"silently break in the compiled binary.",
 		{ cause },
 	)
