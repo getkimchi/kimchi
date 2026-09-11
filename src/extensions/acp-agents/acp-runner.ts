@@ -231,8 +231,12 @@ export async function runAcpAgent(
 		const replyDeadline = Date.now() + PARENT_REPLY_WAIT_MS
 		while (Date.now() < replyDeadline) {
 			const manager = getActiveManager()
-			if (!manager?.hasOpenQuestionThreads(record.id)) break
+			if (!manager) break
 			if (record.abortController?.signal.aborted) break
+			// Drain the queue FIRST: a queued reply closes the question thread
+			// at reservation time (closeThreadForAnswer), so checking
+			// hasOpenQuestionThreads before draining would break the loop
+			// exactly when the answer we are waiting for just arrived.
 			const reply = manager.takeAcpFollowUp(record.id)
 			if (reply) {
 				const result = await client.prompt(reply.prompt)
@@ -243,6 +247,9 @@ export async function runAcpAgent(
 				manager.completeAcpFollowUp(reply.pending)
 				continue
 			}
+			// No reply queued — keep waiting only while a question thread is
+			// still open (the agent may ask again after a follow-up turn).
+			if (!manager.hasOpenQuestionThreads(record.id)) break
 			await new Promise((r) => setTimeout(r, PARENT_REPLY_POLL_MS))
 		}
 
