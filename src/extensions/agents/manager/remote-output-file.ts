@@ -18,11 +18,25 @@ export function streamRemoteToOutputFile(
 	setOutputPath: (path: string, agentId: string) => void
 	/** Flushes any buffered assistant text and pending entries. Call on cleanup/abort. */
 	flushRemaining: () => void
+	/** Resets text-slice state for a WS reattach. Call on activity_reset. */
+	resetForReattach: () => void
 } {
 	let pendingAssistantText = ""
+	/** Length of text already consumed by previous assistant messages.
+	 *  ACP's onTextDelta sends full accumulated text for the turn — after a
+	 *  tool call, only the text that came after should be shown. */
+	let textOffset = 0
+	/** Length of the last full text seen via onTextDelta — used to set
+	 *  textOffset when a tool completes (pendingAssistantText is already
+	 *  cleared by then, so we track the length separately). */
+	let lastFullTextLength = 0
 	let pendingToolCall: { title: string; rawOutput?: unknown; toolCallId?: string } | undefined
 	let pendingRawInput: unknown
 	let pendingRawInputId: string | undefined
+	/** toolCallIds already forwarded to innerCallbacks as in_progress — used to
+	 *  drop the ACP server's repeated in_progress notifications before they
+	 *  reach the activity tracker. */
+	const forwardedToolCalls = new Set<string>()
 	let outputPath = ""
 	let agentId = ""
 	let pendingEntries: { type: string; message: unknown; timestamp: string }[] = []
@@ -92,19 +106,42 @@ export function streamRemoteToOutputFile(
 				pendingToolCall = undefined
 				pendingRawInput = undefined
 				pendingRawInputId = undefined
+				// Set textOffset so the next onTextDelta only shows text after this tool call.
+				// Use lastFullTextLength (not pendingAssistantText.length) because
+				// pendingAssistantText is cleared when the tool started.
+				textOffset = lastFullTextLength
 				flush()
+			}
+			// Forward to the activity tracker at most once per tool call: the ACP
+			// server re-sends in_progress notifications for the same toolCallId as
+			// args/title stream in. The transcript logic above must see every
+			// repeat (it refreshes the pending tool's title/args), but downstream
+			// consumers would stack a duplicate progress-line entry per repeat
+			// ("run_command, run_command, …").
+			if (activity.toolCallId) {
+				if (activity.status === "in_progress") {
+					if (forwardedToolCalls.has(activity.toolCallId)) return
+					forwardedToolCalls.add(activity.toolCallId)
+				} else {
+					forwardedToolCalls.delete(activity.toolCallId)
+				}
 			}
 			innerCallbacks.onToolActivity?.(activity)
 		},
 		onTextDelta: (delta, fullText) => {
 			pendingAssistantText = fullText
-			innerCallbacks.onTextDelta?.(delta, fullText)
+			lastFullTextLength = fullText.length
+			// Slice from textOffset so the activity tracker shows only the
+			// current text segment, not the entire accumulated turn text.
+			const relevantText = textOffset > 0 ? fullText.slice(textOffset) : fullText
+			innerCallbacks.onTextDelta?.(delta, relevantText)
 		},
 		onTurnEnd: (turnCount) => {
 			if (pendingAssistantText) {
 				writeEntry("assistant", { role: "assistant", content: [{ type: "text", text: pendingAssistantText }] })
 				pendingAssistantText = ""
 			}
+			textOffset = 0
 			flush()
 			innerCallbacks.onTurnEnd?.(turnCount)
 		},
@@ -155,5 +192,26 @@ export function streamRemoteToOutputFile(
 		flush()
 	}
 
-	return { callbacks, setOutputPath, flushRemaining }
+	/** Resets text-slice state when the WS reattaches (activity_reset).
+	 *  The fresh AcpSessionClient restarts full-text accumulation at "" — without
+	 *  this, every post-reattach onTextDelta is sliced against stale pre-disconnect
+	 *  offsets, producing empty or mid-string garbage.
+	 *
+	 *  Pending pre-disconnect state is DISCARDED, not flushed: after a reattach
+	 *  the run finishes via recovery, which backfills the complete remote
+	 *  entries from session.jsonl. A reattach-time flush would stamp the
+	 *  partial segment with the local clock — duplicating it against the
+	 *  backfill's dedup boundary, or degrading a pending tool to a title-only
+	 *  result. Keeps outputPath/agentId. */
+	const resetForReattach = () => {
+		pendingAssistantText = ""
+		pendingToolCall = undefined
+		pendingEntries = []
+		textOffset = 0
+		lastFullTextLength = 0
+		pendingRawInput = undefined
+		pendingRawInputId = undefined
+	}
+
+	return { callbacks, setOutputPath, flushRemaining, resetForReattach }
 }

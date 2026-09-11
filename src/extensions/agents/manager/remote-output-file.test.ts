@@ -348,4 +348,171 @@ describe("streamRemoteToOutputFile", () => {
 			expect(toolUse.input).toEqual({ path: "/app/file.ts" })
 		})
 	})
+
+	describe("in_progress forwarding dedup", () => {
+		it("forwards repeated in_progress notifications for the same toolCallId only once to the tracker", () => {
+			const { callbacks: inner, activities } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			// The ACP server re-sends in_progress for the same call as args/title
+			// stream in — the tracker must only ever see one per tool call, or the
+			// progress line stacks duplicates ("run_command, run_command, …").
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			callbacks.onToolActivity?.({
+				status: "in_progress",
+				toolName: "run_command",
+				toolCallId: "kt.run_command.1",
+				title: "cd /home && curl -sS https://example.com",
+			})
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			expect(activities.filter((a) => a === "in_progress:run_command")).toHaveLength(1)
+
+			// A second concurrent tool call is forwarded independently.
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "read_file", toolCallId: "kt.read_file.2" })
+			expect(activities.filter((a) => a === "in_progress:read_file")).toHaveLength(1)
+
+			// Completion clears the dedup guard — a subsequent call forwards again.
+			callbacks.onToolActivity?.({ status: "completed", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			expect(activities.filter((a) => a === "in_progress:run_command")).toHaveLength(2)
+		})
+	})
+
+	describe("text slicing (textOffset / lastFullTextLength)", () => {
+		it("passes full text through before the first tool call", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const onTextDelta = vi.mocked(inner.onTextDelta)
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onTextDelta?.("Hello ", "Hello ")
+			callbacks.onTextDelta?.("world", "Hello world")
+
+			expect(onTextDelta).toHaveBeenNthCalledWith(1, "Hello ", "Hello ")
+			expect(onTextDelta).toHaveBeenNthCalledWith(2, "world", "Hello world")
+		})
+
+		it("slices post-tool deltas from the offset set at tool completion", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const onTextDelta = vi.mocked(inner.onTextDelta)
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onTextDelta?.("", "Before the tool.")
+			callbacks.onRawNotification?.(toolCallNotification("call-1", "Reading file.ts", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Reading file.ts" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-1", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Reading file.ts" })
+
+			// ACP sends full accumulated text — only post-tool text should pass through
+			callbacks.onTextDelta?.("After", "Before the tool.After")
+
+			expect(onTextDelta).toHaveBeenLastCalledWith("After", "After")
+		})
+
+		it("resets the offset on turn end", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const onTextDelta = vi.mocked(inner.onTextDelta)
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onTextDelta?.("", "turn one text")
+			callbacks.onRawNotification?.(toolCallNotification("call-1", "Reading file.ts", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Reading file.ts" })
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Reading file.ts" })
+			callbacks.onTurnEnd?.(1)
+
+			// New turn: full fresh text passes through unsliced
+			callbacks.onTextDelta?.("New ", "New ")
+			callbacks.onTextDelta?.("turn", "New turn")
+
+			expect(onTextDelta).toHaveBeenNthCalledWith(2, "New ", "New ")
+			expect(onTextDelta).toHaveBeenNthCalledWith(3, "turn", "New turn")
+		})
+	})
+
+	describe("resetForReattach", () => {
+		it("discards pending assistant text and zeroes offsets so fresh full text passes through", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const onTextDelta = vi.mocked(inner.onTextDelta)
+			const { callbacks, setOutputPath, resetForReattach } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			// Pre-disconnect: accumulated text + an offset from a completed tool
+			callbacks.onTextDelta?.("", "Before the tool.")
+			callbacks.onRawNotification?.(toolCallNotification("call-1", "Reading file.ts", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Reading file.ts" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-1", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Reading file.ts" })
+			callbacks.onTextDelta?.("partial", "Before the tool.partial")
+
+			resetForReattach()
+
+			// The pre-disconnect partial is NOT flushed: the post-reattach recovery
+			// backfills the complete remote entries from session.jsonl, and a
+			// reattach-time flush would stamp them with the local clock and
+			// corrupt the backfill's dedup boundary.
+			const entries = parseEntries(readJsonl(outputPath))
+			const texts = entries
+				.filter((e) => e.message.content.some((c) => c.type === "text"))
+				.map((e) => getTextContent(e).text)
+			expect(texts).toContain("Before the tool.")
+			expect(texts).not.toContain("Before the tool.partial")
+
+			// Post-reattach: the fresh client restarts accumulation — full fresh
+			// text arrives and must pass through unsliced (no stale offset).
+			callbacks.onTextDelta?.("fresh ", "fresh ")
+			callbacks.onTextDelta?.("start", "fresh start")
+			expect(onTextDelta).toHaveBeenLastCalledWith("start", "fresh start")
+		})
+
+		it("discards a pending in-progress tool call — the backfill restores the real result", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath, resetForReattach } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(
+				toolCallNotification("call-x", "Reading file.ts", "in_progress", { rawInput: { path: "/app/f.ts" } }),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Reading file.ts" })
+
+			resetForReattach()
+
+			// Tool tracking is cleared — the next tool call starts clean
+			callbacks.onRawNotification?.(toolCallNotification("call-y", "New tool", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "New tool" })
+			callbacks.onTurnEnd?.(2)
+
+			const after = parseEntries(readJsonl(outputPath))
+			// No degraded title-only toolResult was written for the discarded
+			// pre-disconnect tool call — the recovery backfill supplies the tool's
+			// real output from session.jsonl.
+			expect(findToolResultEntry(after)).toBeUndefined()
+			// Only the post-reattach tool call is present locally
+			const toolUses = after.filter((e) => e.type === "assistant").flatMap((e) => e.message.content)
+			expect(toolUses.filter((c) => c.type === "tool_use")).toHaveLength(1)
+		})
+
+		it("keeps outputPath and agentId (subsequent flushes still write)", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath, resetForReattach } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onTextDelta?.("pre", "pre")
+			resetForReattach()
+			callbacks.onTextDelta?.("post", "post")
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const texts = entries.map((e) => getTextContent(e).text)
+			// The pre-disconnect "pre" text is discarded (the backfill restores the
+			// complete remote entry); only post-reattach entries are written.
+			expect(texts).not.toContain("pre")
+			expect(texts).toContain("post")
+			for (const e of readJsonl(outputPath)) {
+				expect(e.agentId).toBe("agent-1")
+			}
+		})
+	})
 })

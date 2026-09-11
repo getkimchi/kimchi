@@ -4,12 +4,16 @@ import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
+import { resolveWorkspaceResources } from "../../../sandbox/cloud/resources.js"
+import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
 import { GitTokenPromptComponent, type GitTokenPromptResult } from "../../teleport/ui/git-token-prompt.js"
 import type {
+	AgentAbortReason,
 	AgentOutcome,
 	AgentRecord,
 	AgentResumeAttempt,
@@ -19,6 +23,8 @@ import type {
 	SubagentType,
 	ThinkingLevel,
 } from "../personas/types.js"
+import { isActiveStatus } from "../personas/types.js"
+import type { RemoteRunState } from "../remote-run-persistence.js"
 import { FERMENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { WorkerReportSubmission } from "../worker-report.js"
 import {
@@ -29,7 +35,12 @@ import {
 	runAgent,
 	type ToolActivity,
 } from "./agent-runner.js"
-import { runRemoteAgent } from "./remote-agent-runner.js"
+import {
+	attachRemoteAgent,
+	isRemoteSessionConnected,
+	type RemoteSessionMeta,
+	runRemoteAgent,
+} from "./remote-agent-runner.js"
 import { RemoteAgentSession } from "./remote-agent-session.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
@@ -67,6 +78,10 @@ interface SpawnOptions {
 	isBackground?: boolean
 	/** When true, runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** Fired when the remote session is established (or re-established after
+	 *  a reattach) — carries the meta + ACP session id needed to persist the
+	 *  run for resume-after-restart. Remote runs only. */
+	onRemoteReady?: (info: { meta: RemoteSessionMeta; acpSessionId: string }) => void
 	/**
 	 * Skip the maxConcurrent queue check for this spawn — start immediately even
 	 * if the configured concurrency limit would otherwise queue it.
@@ -243,117 +258,120 @@ export class AgentManager {
 			record.detachFromParent = undefined
 		}
 
-		const promise = (
-			record.remote
-				? this._runRemote(record, prompt, options, ctx)
-				: runAgent(ctx, type, prompt, {
-						pi,
-						model: options.model,
-						requiresVision: options.requiresVision,
-						maxTurns: options.maxTurns,
-						tokenBudget: options.tokenBudget,
-						inactivityTimeout: options.inactivityTimeout,
-						maxDuration: options.maxDuration,
-						workerReport: record.taskRef
-							? {
-									isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
-									submit: (report) => {
-										const accepted = this.submitReport(id, report) != null
-										return {
-											accepted,
-											message: accepted
-												? "Agent report recorded. Worker run complete."
-												: "Agent report rejected because this worker is no longer active.",
-										}
-									},
-								}
-							: undefined,
-						hardTurnLimit: record.taskRef?.kind === "ferment_step",
-						isolated: options.isolated,
-						inheritContext: options.inheritContext,
-						thinkingLevel: options.thinkingLevel,
-						sessionFile: options.sessionFile,
-						sessionDir: options.sessionDir,
-						signal: record.abortController?.signal,
-						onToolActivity: (activity) => {
-							// Count only terminal statuses — a "pending" notification is
-							// not a completed tool use.
-							if (activity.status === "completed" || activity.status === "failed") record.toolUses++
-							options.onToolActivity?.(activity)
-						},
-						onTurnEnd: (turnCount) => {
-							record.lastTurnCount = turnCount
-							options.onTurnEnd?.(turnCount)
-						},
-						onTextDelta: options.onTextDelta,
-						onAssistantUsage: (usage) => {
-							addUsage(record.lifetimeUsage, usage)
-							options.onAssistantUsage?.(usage)
-						},
-						onCompaction: (info) => {
-							record.compactionCount++
-							this.onCompact?.(record, info)
-							options.onCompaction?.(info)
-						},
-						onRuntimeCleanupRegistered: (cleanup) => {
-							this.runtimeCleanups.set(record, cleanup)
-						},
-						onSessionCreated: (session) => {
-							record.session = session
-							if (record.pendingSteers?.length) {
-								for (const msg of record.pendingSteers) {
-									session.steer(msg).catch(() => {})
-								}
-								record.pendingSteers = undefined
+		const runPromise = record.remote
+			? this._runRemote(record, prompt, options, ctx)
+			: runAgent(ctx, type, prompt, {
+					pi,
+					model: options.model,
+					requiresVision: options.requiresVision,
+					maxTurns: options.maxTurns,
+					tokenBudget: options.tokenBudget,
+					inactivityTimeout: options.inactivityTimeout,
+					maxDuration: options.maxDuration,
+					workerReport: record.taskRef
+						? {
+								isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+								submit: (report) => {
+									const accepted = this.submitReport(id, report) != null
+									return {
+										accepted,
+										message: accepted
+											? "Agent report recorded. Worker run complete."
+											: "Agent report rejected because this worker is no longer active.",
+									}
+								},
 							}
-							options.onSessionCreated?.(session)
-						},
-						onSystemPrompt: (prompt) => {
-							record.systemPrompt = prompt
-						},
+						: undefined,
+					hardTurnLimit: record.taskRef?.kind === "ferment_step",
+					isolated: options.isolated,
+					inheritContext: options.inheritContext,
+					thinkingLevel: options.thinkingLevel,
+					sessionFile: options.sessionFile,
+					sessionDir: options.sessionDir,
+					signal: record.abortController?.signal,
+					onToolActivity: (activity) => {
+						// Count only terminal statuses — a "pending" notification is
+						// not a completed tool use.
+						if (activity.status === "completed" || activity.status === "failed") record.toolUses++
+						options.onToolActivity?.(activity)
+					},
+					onTurnEnd: (turnCount) => {
+						record.lastTurnCount = turnCount
+						options.onTurnEnd?.(turnCount)
+					},
+					onTextDelta: options.onTextDelta,
+					onAssistantUsage: (usage) => {
+						addUsage(record.lifetimeUsage, usage)
+						options.onAssistantUsage?.(usage)
+					},
+					onCompaction: (info) => {
+						record.compactionCount++
+						this.onCompact?.(record, info)
+						options.onCompaction?.(info)
+					},
+					onRuntimeCleanupRegistered: (cleanup) => {
+						this.runtimeCleanups.set(record, cleanup)
+					},
+					onSessionCreated: (session) => {
+						record.session = session
+						if (record.pendingSteers?.length) {
+							for (const msg of record.pendingSteers) {
+								session.steer(msg).catch(() => {})
+							}
+							record.pendingSteers = undefined
+						}
+						options.onSessionCreated?.(session)
+					},
+					onSystemPrompt: (prompt) => {
+						record.systemPrompt = prompt
+					},
+				})
+		// Remote runs (fresh and resumed) share one completion wiring; the
+		// local chain below is the original code, deliberately untouched.
+		const promise = record.remote
+			? this.wireRemoteCompletion(record, runPromise, { detach, maxTurns: options.maxTurns })
+			: runPromise
+					.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
+						if (record.status !== "stopped") {
+							record.status = aborted ? "aborted" : steered ? "steered" : "completed"
+						}
+						record.abortReason = abortReason
+						const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+						record.result = finalText
+						record.session = session
+						record.lastTurnCount = turnsUsed
+						// Preserve the effective, normalized turn cap returned by the runner.
+						record.maxTurns = maxTurns ?? options.maxTurns
+						record.completedAt ??= Date.now()
+						record.latestOutcome = buildAgentOutcome(record)
+
+						if (record.isBackground) {
+							this.runningBackground--
+							this.onComplete?.(record)
+							this.drainQueue()
+						}
+						return finalText
 					})
-		)
-			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
-				if (record.status !== "stopped") {
-					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
-				}
-				record.abortReason = abortReason
-				const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
-				record.result = finalText
-				record.session = session
-				record.lastTurnCount = turnsUsed
-				// Preserve the effective, normalized turn cap returned by the runner.
-				record.maxTurns = maxTurns ?? options.maxTurns
-				record.completedAt ??= Date.now()
-				record.latestOutcome = buildAgentOutcome(record)
+					.catch((err) => {
+						if (record.status !== "stopped") {
+							record.status = "error"
+							record.error = err instanceof Error ? err.message : String(err)
+						}
+						record.completedAt ??= Date.now()
+						record.latestOutcome = buildAgentOutcome(record)
 
-				if (record.isBackground) {
-					this.runningBackground--
-					this.onComplete?.(record)
-					this.drainQueue()
-				}
-				return finalText
-			})
-			.catch((err) => {
-				if (record.status !== "stopped") {
-					record.status = "error"
-					record.error = err instanceof Error ? err.message : String(err)
-				}
-				record.completedAt ??= Date.now()
-				record.latestOutcome = buildAgentOutcome(record)
-
-				if (record.isBackground) {
-					this.runningBackground--
-					this.onComplete?.(record)
-					this.drainQueue()
-				}
-				return ""
-			})
-			.finally(() => {
-				detach()
-				this.cleanupRecordRuntime(record)
-				record.promise = undefined
-			})
+						if (record.isBackground) {
+							this.runningBackground--
+							this.onComplete?.(record)
+							this.drainQueue()
+						}
+						return ""
+					})
+					.finally(() => {
+						detach()
+						this.cleanupRecordRuntime(record)
+						record.promise = undefined
+					})
 
 		record.promise = promise
 	}
@@ -386,6 +404,10 @@ export class AgentManager {
 		const dirName = basename(ctx.cwd) || "kimchi"
 		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
 		const workspaceId = byName?.id ?? randomUUID()
+		// Resource requests (kimchi_workspace.yaml) ride the upsert PUT only
+		// when minting — a name-matched workspace keeps its existing size
+		// (resources are create-time-only and immutable server-side).
+		const workspaceResources = byName ? undefined : resolveWorkspaceResources(loadWorkspaceFile(ctx.cwd)?.resources)
 
 		// Resolve git clone plan from the local repo so the sandbox gets a
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
@@ -421,6 +443,11 @@ export class AgentManager {
 		const remoteSession = new RemoteAgentSession()
 		record.session = remoteSession as unknown as AgentSession
 
+		// Fire onSessionCreated so the activity tracker (in index.ts) can
+		// subscribe to session events — specifically activity_reset which
+		// fires on WS reattach to clear stale tools from the progress line.
+		options.onSessionCreated?.(remoteSession as unknown as AgentSession)
+
 		// Seed the transcript with the user prompt so ConversationViewer shows it
 		// immediately, before any assistant text arrives.
 		remoteSession.setUserPrompt(prompt)
@@ -433,8 +460,25 @@ export class AgentManager {
 			gitCredential,
 			localPath: ctx.cwd,
 			workspaceName: dirName,
+			outputFile: record.outputFile,
+			...(workspaceResources ? { resources: workspaceResources } : {}),
 			onReady: (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
+				// Capture the ACP session id for resume-after-restart persistence
+				// (session/load attaches by id, never by name).
+				const acpSessionId = acpClient.sessionId ?? undefined
+				if (acpSessionId) {
+					record.acpSessionId = acpSessionId
+					record.remoteSession ??= meta
+					options.onRemoteReady?.({ meta, acpSessionId })
+				}
+			},
+			onReconnecting: (reconnecting) => {
+				remoteSession.setReconnecting(reconnecting)
+				// Never resurrect a record the user already stopped or aborted.
+				if (isActiveStatus(record.status)) {
+					record.status = reconnecting ? "reconnecting" : "running"
+				}
 			},
 			callbacks: {
 				onTextDelta: (delta, fullText) => {
@@ -443,7 +487,7 @@ export class AgentManager {
 				},
 				onToolActivity: (activity) => {
 					if (activity.status === "in_progress") {
-						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId)
+						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
 						const isError = activity.status === "failed"
 						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
@@ -468,6 +512,26 @@ export class AgentManager {
 		})
 
 		record.remoteSession = result.remoteSession
+		if (result.recoveryNote) {
+			record.recoveryNote = result.recoveryNote
+		}
+
+		// A failed recovery means the run's outcome is unknown — the run must
+		// not read as completed (the post-completion dropdown would offer
+		// Review/Sync on a result nobody has). Throw so the manager's catch
+		// path marks the record "error" and the failure UX takes over.
+		if (result.stopReason === "recovery_failed") {
+			throw new Error(
+				"the remote run finished during a network disconnect and its result could not be recovered — outcome unknown",
+			)
+		}
+		// Whitelist successful stop reasons: "end_turn" (normal completion) and
+		// "recovered" (result replayed after a disconnect). ACP can also resolve
+		// a prompt with "refusal", "max_tokens", or "max_turn_requests" — those
+		// are failures, not completions. "cancelled" maps to aborted below.
+		if (result.stopReason !== "end_turn" && result.stopReason !== "recovered" && result.stopReason !== "cancelled") {
+			throw new Error(`remote agent stopped unexpectedly (stopReason: ${result.stopReason})`)
+		}
 
 		return {
 			responseText: result.responseText,
@@ -751,7 +815,10 @@ export class AgentManager {
 			return true
 		}
 
-		if (record.status !== "running") return false
+		// "reconnecting" is live remote work (a transport reattach in flight) —
+		// it must be killable too, or a wedged reconnect can never be stopped
+		// (Escape / Ctrl+X both route through here).
+		if (record.status !== "running" && record.status !== "reconnecting") return false
 		record.abortController?.abort()
 		record.status = "stopped"
 		record.completedAt = Date.now()
@@ -788,7 +855,7 @@ export class AgentManager {
 	private cleanup() {
 		const cutoff = Date.now() - 10 * 60_000
 		for (const [id, record] of this.agents) {
-			if (record.status === "running" || record.status === "queued") continue
+			if (isActiveStatus(record.status)) continue
 			if ((record.completedAt ?? 0) >= cutoff) continue
 			this.removeRecord(id, record)
 		}
@@ -796,24 +863,221 @@ export class AgentManager {
 
 	clearCompleted(): void {
 		for (const [id, record] of this.agents) {
-			if (record.status === "running" || record.status === "queued") continue
+			if (isActiveStatus(record.status)) continue
 			this.removeRecord(id, record)
 		}
 	}
 
 	hasRunning(): boolean {
-		return [...this.agents.values()].some((r) => r.status === "running" || r.status === "queued")
+		return [...this.agents.values()].some((r) => isActiveStatus(r.status))
 	}
 
 	getRunningCount(): number {
 		let count = 0
 		for (const r of this.agents.values()) {
-			if (r.status === "running" || r.status === "queued") count++
+			if (isActiveStatus(r.status)) count++
 		}
 		return count
 	}
 
-	abortAll(): number {
+	/** Remote-run completion wiring: maps the run result onto the record and
+	 *  fires onComplete/drainQueue exactly once for background agents (success
+	 *  and failure alike). Shared by the remote spawn path and
+	 *  resumeRemoteRecord — the local runAgent path keeps its own inline
+	 *  chain, deliberately untouched. */
+	private wireRemoteCompletion(
+		record: AgentRecord,
+		runPromise: Promise<{
+			responseText: string
+			session?: AgentSession
+			aborted?: boolean
+			abortReason?: AgentAbortReason
+			steered?: boolean
+			turnsUsed?: number
+			maxTurns?: number
+			planPath?: string
+		}>,
+		options: { detach?: () => void; maxTurns?: number },
+	): Promise<string> {
+		return runPromise
+			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
+				if (record.status !== "stopped") {
+					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
+				}
+				record.abortReason = abortReason
+				const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+				record.result = finalText
+				record.session = session
+				record.lastTurnCount = turnsUsed
+				// Preserve the effective, normalized turn cap returned by the runner.
+				record.maxTurns = maxTurns ?? options.maxTurns
+				record.completedAt ??= Date.now()
+				record.latestOutcome = buildAgentOutcome(record)
+
+				if (record.isBackground) {
+					this.runningBackground--
+					this.onComplete?.(record)
+					this.drainQueue()
+				}
+				return finalText
+			})
+			.catch((err) => {
+				if (record.status !== "stopped") {
+					record.status = "error"
+					record.error = err instanceof Error ? err.message : String(err)
+				}
+				record.completedAt ??= Date.now()
+				record.latestOutcome = buildAgentOutcome(record)
+
+				if (record.isBackground) {
+					this.runningBackground--
+					this.onComplete?.(record)
+					this.drainQueue()
+				}
+				return ""
+			})
+			.finally(() => {
+				options.detach?.()
+				this.cleanupRecordRuntime(record)
+				record.promise = undefined
+			})
+	}
+
+	/** Resumes a remote run that outlived a kimchi restart (shutdown spares
+	 *  remote runs): reconstructs the record from the persisted session state
+	 *  and attaches to the still-running or finished remote session via the
+	 *  shared recovery engine. Completion flows through wireRemoteCompletion —
+	 *  the same wiring as a fresh remote run (the local spawn path keeps its
+	 *  own chain, untouched); onComplete fires with the record and the
+	 *  extension's handler drives the post-completion UX. The optional
+	 *  callbacks receive the live attach events (activity tracking) after the
+	 *  adapter updates.
+	 *
+	 *  Returns "already-watched" (without attaching or registering a record)
+	 *  when another kimchi process already holds a live WebSocket on the
+	 *  remote session — that process owns the run and will surface its
+	 *  completion. */
+	async resumeRemoteRecord(
+		state: RemoteRunState,
+		ctx: ExtensionContext,
+		options?: { callbacks?: AcpSessionCallbacks },
+	): Promise<"resumed" | "already-watched"> {
+		const apiKey = loadConfig().apiKey
+		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+
+		// Guard against double-attach: a live WS on the session means another
+		// kimchi process (typically the one that dispatched the run, or an
+		// earlier resume of it) is still watching it. Best-effort: only a
+		// POSITIVE sighting skips — a failed poll falls through to the attach,
+		// whose recovery machinery handles the real session state.
+		if (
+			await isRemoteSessionConnected(state.remoteSession, apiKey, {
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
+		) {
+			return "already-watched"
+		}
+
+		const abortController = new AbortController()
+		const record: AgentRecord = {
+			id: state.id,
+			type: "Remote-Runner",
+			description: state.description,
+			visibility: "user",
+			status: "running",
+			toolUses: 0,
+			startedAt: state.startedAt,
+			abortController,
+			currentAttemptId: 0,
+			resumeAttempts: [],
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compactionCount: 0,
+			remote: true,
+			remoteSession: state.remoteSession,
+			acpSessionId: state.acpSessionId,
+			remoteOrigin: state.remoteOrigin,
+			fermentId: state.fermentId,
+			outputFile: state.outputFile,
+			spawnCtx: ctx,
+			isBackground: true,
+			triggersRemoteCompletion: true,
+		}
+		this.agents.set(record.id, record)
+		this.runningBackground++
+
+		// The session adapter restores steer_subagent / get_subagent_result and
+		// the activity stream mid-run — same as a normal background remote run.
+		const adapter = new RemoteAgentSession()
+		record.session = adapter as unknown as AgentSession
+
+		const promise = attachRemoteAgent({
+			apiKey,
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: abortController.signal,
+			remoteSession: state.remoteSession,
+			acpSessionId: state.acpSessionId,
+			outputFile: state.outputFile,
+			onReconnecting: (reconnecting) => {
+				// Mirror the attach state onto the record (same as the in-run
+				// reconnecting flow).
+				if (isActiveStatus(record.status)) {
+					record.status = reconnecting ? "reconnecting" : "running"
+				}
+			},
+			onReady: (acpClient, meta) => {
+				adapter.bindClient(acpClient, meta)
+			},
+			callbacks: {
+				onTextDelta: (delta, fullText) => {
+					adapter.appendAssistantText(fullText)
+					options?.callbacks?.onTextDelta?.(delta, fullText)
+				},
+				onToolActivity: (activity) => {
+					if (activity.status === "in_progress") {
+						adapter.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
+					} else {
+						adapter.recordToolCallEnd(activity.toolName, activity.toolCallId, activity.status === "failed")
+						record.toolUses++
+					}
+					options?.callbacks?.onToolActivity?.(activity)
+				},
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
+					adapter.incrementTurnCount()
+					options?.callbacks?.onTurnEnd?.(turnCount)
+				},
+				onAssistantUsage: (usage) => {
+					adapter.addUsage(usage)
+					addUsage(record.lifetimeUsage, usage)
+					options?.callbacks?.onAssistantUsage?.(usage)
+				},
+			},
+		}).then((result) => {
+			record.recoveryNote = result.recoveryNote
+			record.remoteSession = result.remoteSession
+			// Same contract as _runRemote's stopReason whitelist: a failed
+			// recovery means the run's outcome is unknown — the record must not
+			// read as completed (the post-completion dropdown would offer
+			// Review/Sync on a result nobody has).
+			if (result.stopReason === "recovery_failed") {
+				throw new Error(
+					"the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown",
+				)
+			}
+			return {
+				responseText: result.responseText,
+				session: adapter as unknown as AgentSession,
+				turnsUsed: adapter.turnCount,
+			}
+		})
+		record.promise = this.wireRemoteCompletion(record, promise, {})
+		return "resumed"
+	}
+
+	/** Stops all agents. Remote runs are spared when `skipRemote` is set —
+	 *  process shutdown lets them finish on the worker (resumable via
+	 *  kimchi --session); an explicit kill (abort()) still stops them. */
+	abortAll(options?: { skipRemote?: boolean }): number {
 		let count = 0
 		for (const queued of this.queue) {
 			const record = this.agents.get(queued.id)
@@ -825,7 +1089,11 @@ export class AgentManager {
 		}
 		this.queue = []
 		for (const record of this.agents.values()) {
-			if (record.status === "running") {
+			// A spared remote run keeps running on the worker — its promise dies
+			// with the process, and the persisted state lets a resumed session
+			// reattach (remote-run-persistence.ts).
+			if (options?.skipRemote && record.remote) continue
+			if (isActiveStatus(record.status)) {
 				record.abortController?.abort()
 				record.status = "stopped"
 				record.completedAt = Date.now()
@@ -835,12 +1103,15 @@ export class AgentManager {
 		return count
 	}
 
-	async waitForAll(): Promise<void> {
+	async waitForAll(options?: { skipRemote?: boolean }): Promise<void> {
 		while (true) {
 			this.drainQueue()
-			const pending = [...this.agents.values()].flatMap((r) =>
-				[r.promise, this.activeResumePromises.get(r)].filter(Boolean),
-			)
+			const pending = [...this.agents.values()].flatMap((r) => {
+				// Remote runs spared by shutdown never settle — their promises die
+				// with the process while the runs continue on the worker.
+				if (options?.skipRemote && r.remote && isActiveStatus(r.status)) return []
+				return [r.promise, this.activeResumePromises.get(r)].filter(Boolean)
+			})
 			if (pending.length === 0) break
 			await Promise.allSettled(pending)
 		}

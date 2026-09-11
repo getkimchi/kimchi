@@ -5,9 +5,9 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { isKimchiProvider } from "../../kimchi-provider.js"
 import {
 	createLoginChoiceSelector,
-	isKimchiProvider,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	showSubscriptionLoginWithExtensionUI,

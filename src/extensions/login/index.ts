@@ -3,9 +3,9 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { loadConfig, writeApiKey } from "../../config.js"
+import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi, updateModelsConfig, validateApiKey } from "../../models.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
-import { KIMCHI_PROVIDER_ID } from "./flow.js"
 
 export default function loginExtension(pi: ExtensionAPI): void {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR

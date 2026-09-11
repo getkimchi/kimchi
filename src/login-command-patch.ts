@@ -19,14 +19,13 @@ import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
 	createLoginChoiceSelector,
 	formatBrowserLoginMessage,
-	isKimchiProvider,
 	KIMCHI_DEFAULT_ENDPOINT,
-	KIMCHI_PROVIDER_ID,
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice

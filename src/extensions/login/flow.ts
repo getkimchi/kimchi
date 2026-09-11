@@ -11,6 +11,7 @@ import {
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	isTransientModelsError,
 	ModelsFetchError,
@@ -21,13 +22,7 @@ import {
 import { syncPiAuth } from "../../pi-auth.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
-export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
-
-/** True for any kimchi-managed provider (kimchi-dev or kimchi-dev/* sub-providers). */
-export function isKimchiProvider(provider: string): boolean {
-	return provider.startsWith("kimchi-dev")
-}
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"

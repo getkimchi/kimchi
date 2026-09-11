@@ -14,6 +14,11 @@ function isKimchiProvider(providerId: string): boolean {
 	)
 }
 
+/** Remove all Kimchi credentials from auth.json — kimchi-dev, kimchi-dev/*, kimchi-experimental. */
+export async function clearPiAuth(authPath: string): Promise<void> {
+	await syncPiAuth(authPath, "", "")
+}
+
 export async function syncPiAuth(authPath: string, modelsPath: string, apiKey: string): Promise<void> {
 	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 })
 	const release = await lock(authPath, { realpath: false, retries: 10 })

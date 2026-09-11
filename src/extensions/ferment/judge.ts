@@ -21,7 +21,6 @@
 
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { CharterClauseVerdict, FermentCharter, Grade } from "../../ferment/types.js"
-import { omitKimchiMaxTokensFromPayload } from "../omit-kimchi-max-tokens.js"
 import { isAutoModel } from "../router/constants.js"
 import { renderCharterFull } from "./charter.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
@@ -84,9 +83,7 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				signal: AbortSignal.timeout(45_000),
-				...(maxTokens === undefined
-					? { onPayload: (payload: unknown) => omitKimchiMaxTokensFromPayload(payload, model) }
-					: { maxTokens }),
+				...(maxTokens !== undefined && { maxTokens }),
 			},
 		)
 

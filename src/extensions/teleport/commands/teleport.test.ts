@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const {
 	authMock,
 	waitReadyMock,
+	verifyApiKeyMock,
 	listWorkspacesMock,
 	listSessionsMock,
 	createSessionMock,
@@ -32,9 +33,11 @@ const {
 	buildIncludeListMock,
 	buildChangedFilesListMock,
 	sumIncludeListBytesMock,
+	loadWorkspaceFileMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
+	verifyApiKeyMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
 	listSessionsMock: vi.fn(),
 	createSessionMock: vi.fn(),
@@ -68,10 +71,19 @@ const {
 	buildIncludeListMock: vi.fn(),
 	buildChangedFilesListMock: vi.fn(),
 	sumIncludeListBytesMock: vi.fn(),
+	loadWorkspaceFileMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
 vi.mock("../../../sandbox/cloud/readiness.js", () => ({ waitForWorkspaceReady: waitReadyMock }))
+vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
+// resources.js stays real (pure validator); the loader is stubbed, but the
+// real WorkspaceFileError class stays (importOriginal) so instanceof checks
+// in production code behave as in reality.
+vi.mock("../../../sandbox/cloud/workspace-file.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../sandbox/cloud/workspace-file.js")>()),
+	loadWorkspaceFile: loadWorkspaceFileMock,
+}))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/worker/client.js", () => ({
 	WorkerClient: class {},
@@ -142,6 +154,8 @@ vi.mock("../ui/progress.js", () => ({
 	},
 }))
 
+import { RemoteQuotaError } from "../../../sandbox/cloud/types.js"
+import { WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
 import {
@@ -222,6 +236,7 @@ beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), "teleport-test-"))
 	authMock.mockReset().mockResolvedValue(CREDS)
 	waitReadyMock.mockReset().mockResolvedValue(undefined)
+	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	listSessionsMock.mockReset().mockResolvedValue([])
 	createSessionMock.mockReset().mockResolvedValue({ freshClone: true })
@@ -253,6 +268,7 @@ beforeEach(() => {
 	buildIncludeListMock.mockReset().mockResolvedValue(["src/a.ts", ".git/HEAD", ".git/refs/heads/main"])
 	buildChangedFilesListMock.mockReset().mockResolvedValue(["src/a.ts", "README.md"])
 	sumIncludeListBytesMock.mockReset().mockResolvedValue(123)
+	loadWorkspaceFileMock.mockReset().mockReturnValue(undefined)
 })
 
 afterEach(() => {
@@ -302,6 +318,99 @@ describe("runTeleport", () => {
 		// Let auth finish so the rest of runTeleport can complete.
 		releaseAuth(CREDS)
 		await p
+	})
+
+	it("sends kimchi_workspace.yaml resources on the upsert PUT when minting a new workspace", async () => {
+		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: " 500m ", memory: "1Gi" } })
+		// List is empty (default) → empty-list mint = client-minted id.
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		// Outer whitespace trimmed by the real validator.
+		expect(authMock.mock.calls[0][3]).toMatchObject({ resources: { cpu: "500m", memory: "1Gi" } })
+	})
+
+	it("does not send resources when attaching to an existing workspace — the file is never read", async () => {
+		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "500m" } })
+		listWorkspacesMock.mockResolvedValue([
+			{
+				id: "22222222-2222-4222-8222-222222222222",
+				name: "existing-ws",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "active",
+			},
+		])
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		expect(loadWorkspaceFileMock).not.toHaveBeenCalled()
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+	})
+
+	it("treats an unlisted explicit UUID as attach-intent — the file is never read, no resources on the PUT", async () => {
+		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "500m" } })
+		// List is empty (default): the UUID is trusted but was not minted
+		// client-side, so create-time-only resources must not ride its PUT.
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		expect(loadWorkspaceFileMock).not.toHaveBeenCalled()
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+	})
+
+	it("a broken kimchi_workspace.yaml cannot block attaching to an existing workspace", async () => {
+		loadWorkspaceFileMock.mockImplementation(() => {
+			throw new WorkspaceFileError(
+				"Could not parse /work/proj/kimchi_workspace.yaml: bad indentation",
+				"/work/proj/kimchi_workspace.yaml",
+			)
+		})
+		listWorkspacesMock.mockResolvedValue([
+			{
+				id: "22222222-2222-4222-8222-222222222222",
+				name: "existing-ws",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "active",
+			},
+		])
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		expect(loadWorkspaceFileMock).not.toHaveBeenCalled()
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+	})
+
+	it("refuses before the upsert PUT when minting with an invalid resource value", async () => {
+		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "1Gii" } })
+		const { ctx, ui } = makeCtx()
+
+		await expect(runTeleport("mysession", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("cpu"), "error")
+		expect(authMock).not.toHaveBeenCalled()
+	})
+
+	it("refuses before the upsert PUT when minting with a malformed kimchi_workspace.yaml", async () => {
+		loadWorkspaceFileMock.mockImplementation(() => {
+			throw new WorkspaceFileError(
+				"Could not parse /work/proj/kimchi_workspace.yaml: bad indentation",
+				"/work/proj/kimchi_workspace.yaml",
+			)
+		})
+		const { ctx, ui } = makeCtx()
+
+		await expect(runTeleport("mysession", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not parse"), "error")
+		expect(authMock).not.toHaveBeenCalled()
 	})
 
 	it("happy path: creates PTY session, opens overlay", async () => {
@@ -472,6 +581,18 @@ describe("runTeleport", () => {
 
 		await expect(runTeleport("--bogus", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Unknown flag/), "error")
+	})
+
+	it("refuses with the quota message verbatim, without the 'Authentication failed' prefix", async () => {
+		authMock.mockRejectedValueOnce(new RemoteQuotaError("Unable to provision workspace: user CPU limit exceeded", 429))
+		const { ctx, ui } = makeCtx()
+
+		await expect(runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(ui.notify).toHaveBeenCalledWith("Unable to provision workspace: user CPU limit exceeded", "error")
+		expect(waitReadyMock).not.toHaveBeenCalled()
+		expect(overlayMock).not.toHaveBeenCalled()
 	})
 
 	it("generates a default session name when none is given", async () => {

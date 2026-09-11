@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import {
 	injectAutoModel,
 	injectExperimentalProvider,
@@ -61,11 +62,59 @@ describe("updateModelsConfig", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-models-test-"))
 		modelsJsonPath = join(tempDir, "models.json")
 		vi.stubGlobal("fetch", vi.fn())
+		resetCredentialStalenessForTests()
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 		vi.restoreAllMocks()
+	})
+
+	// 401 on refresh = dead key, not absent (presence can't tell);
+	// auth_status must read logged-out for it.
+	describe("credential staleness signaling", () => {
+		it("marks the api key stale when the refresh is rejected with 401", async () => {
+			vi.mocked(fetch).mockResolvedValueOnce({
+				ok: false,
+				status: 401,
+				statusText: "Unauthorized",
+			} as Response)
+
+			// No cache on disk → updateModelsConfig rethrows; the stale mark
+			// must survive either path.
+			await updateModelsConfig(modelsJsonPath, "dead-key", { sleep: async () => {} }).catch(() => {})
+
+			expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(true)
+			// Unrelated keys are untouched.
+			expect(isCredentialStale("some-other-key", "kimchi-dev")).toBe(false)
+		})
+
+		it("does not mark on non-auth failures (500) — a login pane cannot fix those", async () => {
+			vi.mocked(fetch).mockResolvedValueOnce({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+			} as Response)
+
+			await updateModelsConfig(modelsJsonPath, "some-key", { sleep: async () => {} }).catch(() => {})
+
+			expect(isCredentialStale("some-key", "kimchi-dev")).toBe(false)
+		})
+
+		// Re-login success wipes all marks (fresh key + revived OAuth).
+		it("clears all staleness marks for kimchi-dev when a refresh succeeds", async () => {
+			markCredentialStale("dead-key", "kimchi-dev")
+			markCredentialStale(undefined, "kimchi-dev")
+			vi.mocked(fetch).mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+			await updateModelsConfig(modelsJsonPath, "fresh-key", { sleep: async () => {} })
+
+			expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(false)
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+		})
 	})
 
 	it("maps each metadata field into the pi-mono model config", async () => {

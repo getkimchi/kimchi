@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
-import { findNearestAncestorSkillDir } from "../../skill-paths.js"
+import { findNearestAncestorPath } from "../../utils/find-nearest-ancestor.js"
 
 /**
  * Central skill-root resolver — the single place that knows which directories
@@ -93,7 +93,7 @@ export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[
 		const dir = mapConfigPath(p, options.cwd, home)
 		if (existsSync(dir)) roots.push({ dir, kind: "config" })
 	}
-	const projectDir = findNearestAncestorSkillDir(options.cwd, join(".kimchi", "skills"))
+	const projectDir = findNearestAncestorPath(options.cwd, join(".kimchi", "skills"))
 	if (projectDir) roots.push({ dir: projectDir, kind: "project" })
 
 	return roots

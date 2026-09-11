@@ -8,8 +8,8 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //
 // Direction:
 // - pi_* methods are agent→client (the agent calls conn.extMethod on the client).
-// - probe_mcp_server, set_session_title, and steering are client→agent
-//   inbound (the agent's extMethod() handler receives them).
+// - probe_mcp_server, set_session_title, steering, and auth_status are
+//   client→agent inbound (the agent's extMethod() handler receives them).
 //
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
@@ -19,6 +19,7 @@ export const AVAILABLE_EXT_METHODS = {
 	probe_mcp_server: `_${CAPABILITIES_KEY}/probe_mcp_server`,
 	set_session_title: `_${CAPABILITIES_KEY}/set_session_title`,
 	steering: `_${CAPABILITIES_KEY}/steering`,
+	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {

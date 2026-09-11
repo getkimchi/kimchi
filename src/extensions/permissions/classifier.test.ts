@@ -92,13 +92,13 @@ describe("classifyToolCall", () => {
 		expect(completeMock).toHaveBeenCalledTimes(1)
 	})
 
-	it("keeps classifier tags and token limits", async () => {
+	it.each(["deepseek-v4-flash-0731", "kimi-k3"])("keeps classifier tags and token limits (%s)", async (modelId) => {
 		let sentPayload: unknown
 		completeMock.mockImplementation((_model, _context, opts) => {
 			sentPayload = opts.onPayload({ max_completion_tokens: 100, max_tokens: 100, tags: ["existing"] })
 			return response()
 		})
-		await classifyToolCall([primary], createModelRegistry(), call, options)
+		await classifyToolCall([createModel(modelId)], createModelRegistry(), call, options)
 		expect(sentPayload).toEqual({
 			max_completion_tokens: 100,
 			max_tokens: 100,

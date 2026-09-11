@@ -17,6 +17,7 @@ const META = {
 	wsUrl: "wss://worker.example.com",
 	host: "worker.example.com",
 	cwd: "/home/sandbox/acp-test1234",
+	apiKey: "test-api-key",
 }
 
 describe("RemoteAgentSession", () => {
@@ -249,6 +250,33 @@ describe("RemoteAgentSession", () => {
 			expect(listener.mock.calls[0][0]).toMatchObject({ type: "tool_execution_start", toolName: "bash" })
 		})
 
+		it("stores tool arguments (from ACP rawInput) in the transcript and emitted event", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			session.recordToolCallStart("bash", "kt.bash.1", { command: "cd some dir && cat file.txt" })
+
+			const content = session.messages[0].content as Array<{ type: string; arguments?: unknown }>
+			expect(content[0]).toMatchObject({
+				type: "toolCall",
+				name: "bash",
+				arguments: { command: "cd some dir && cat file.txt" },
+			})
+			expect(listener.mock.calls[0][0]).toMatchObject({
+				type: "tool_execution_start",
+				toolName: "bash",
+				args: { command: "cd some dir && cat file.txt" },
+			})
+		})
+
+		it("defaults arguments to {} when no args are provided", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("ls")
+			const content = session.messages[0].content as Array<{ type: string; arguments?: unknown }>
+			expect(content[0].arguments).toEqual({})
+		})
+
 		describe("deduplication", () => {
 			it("skips duplicate in_progress for the same tool name", () => {
 				const session = new RemoteAgentSession()
@@ -358,6 +386,42 @@ describe("RemoteAgentSession", () => {
 			// listener called for every mutation except the initial user prompt
 			// (setUserPrompt emits message_start)
 			expect(listener).toHaveBeenCalledTimes(5)
+		})
+	})
+
+	describe("setReconnecting", () => {
+		it("emits activity_reset on reattach and clears stale tool tracking", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			session.setReconnecting(true)
+			expect(listener).not.toHaveBeenCalled()
+
+			session.setReconnecting(false)
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "activity_reset" })
+		})
+
+		it("keeps tool-call IDs unique across a reconnect", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash") // tc-1
+			session.recordToolCallEnd("bash")
+			session.recordToolCallStart("read") // tc-2
+
+			// Disconnect mid-tool, then reattach — the counter must NOT restart,
+			// or post-reattach ids collide with pre-disconnect toolCall parts.
+			session.setReconnecting(true)
+			session.setReconnecting(false)
+			session.recordToolCallStart("grep") // tc-3, not tc-1
+			session.recordToolCallEnd("grep")
+
+			const toolCalls = session.messages
+				.filter((m) => m.role === "assistant")
+				.flatMap((m) => (m.content as Array<{ type: string; id?: string }>).filter((p) => p.type === "toolCall"))
+			const ids = toolCalls.map((t) => t.id)
+			expect(ids).toEqual(["tc-1", "tc-2", "tc-3"])
+			expect(new Set(ids).size).toBe(3)
 		})
 	})
 

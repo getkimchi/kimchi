@@ -25,7 +25,6 @@ import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from ".
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
-import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
@@ -198,6 +197,10 @@ export interface ToolActivity {
 	toolCallId?: string
 	/** ACP tool-call status — "in_progress" = start, "completed"/"failed" = end. */
 	status: "pending" | "in_progress" | "completed" | "failed"
+	/** Human-readable title describing the call (ACP title). */
+	title?: string
+	/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
+	rawInput?: unknown
 }
 
 export interface RunOptions {
@@ -540,7 +543,6 @@ ${skillLines}`
 		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
-		omitKimchiMaxTokensExtension,
 	]
 	if (type === "Plan") extensionFactories.push(createSubagentPlanExitExtension(effectiveCwd))
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap

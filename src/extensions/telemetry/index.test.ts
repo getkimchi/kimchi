@@ -579,7 +579,10 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
 		events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			sessionId: "original-session",
 			fermentV2Id: "fv2-001",
+			revision: 3,
+			status: "active",
 			verdict: "continue",
 			count: 2,
 			model: "test/judge",
@@ -592,23 +595,93 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 				totalTokens: 36,
 				costUsd: 0.66,
 			},
+			durationMs: 123,
+			timeoutMs: 600_000,
+			providerRequestCount: 2,
+			timeoutCount: 1,
+			correctionCount: 1,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.evaluated")
 		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
+			pi_session_id: "original-session",
+			ferment_id: "fv2-001",
 			ferment_v2_id: "fv2-001",
+			ferment_version: "v2",
+			ferment_revision: "3",
+			status: "active",
 			verdict: "continue",
-			count: "2",
+			evaluation_count: "2",
 			evaluator_model: "test/judge",
-			input_tokens: "20",
-			output_tokens: "10",
+			duration_ms: "123",
+			timeout_ms: "600000",
+			provider_request_count: "2",
+			timeout_count: "1",
+			correction_count: "1",
+			total_input_tokens: "20",
+			total_output_tokens: "10",
 			cache_read_tokens: "4",
 			cache_write_tokens: "2",
 			total_tokens: "36",
-			cost: "0.66",
+			total_cost_usd: "0.66",
 		})
 		expect(attrsOf(rec as NonNullable<typeof rec>).reason).toBeUndefined()
+	})
+
+	it("maps Ferment V2 lifecycle events with bounded fields only", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.REPLACED, {
+			fermentV2Id: "fv2-old",
+			revision: 4,
+			status: "paused",
+			tokensUsed: 55,
+			timeUsedMs: 1_234,
+			tokenBudget: 500,
+			reason: "user",
+			replacementFermentV2Id: "fv2-new",
+			objective: "must not leave process",
+			blockedReason: "free text must not leave process",
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.replaced")
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs).toMatchObject({
+			ferment_id: "fv2-old",
+			ferment_v2_id: "fv2-old",
+			ferment_version: "v2",
+			ferment_revision: "4",
+			status: "paused",
+			tokens_used: "55",
+			duration_ms: "1234",
+			token_budget: "500",
+			reason: "user",
+			replacement_ferment_id: "fv2-new",
+		})
+		expect(attrs.objective).toBeUndefined()
+		expect(attrs.blockedReason).toBeUndefined()
+	})
+
+	it("keeps active Ferment V2 context on session.end until an explicit clear", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.CONTEXT_CHANGED, {
+			fermentV2Id: "fv2-active",
+			revision: 9,
+			status: "active",
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const sessionEnd = extractRecords().find((candidate) => candidate.eventName === "session.end")
+		expect(attrsOf(sessionEnd as NonNullable<typeof sessionEnd>)).toMatchObject({
+			ferment_id: "fv2-active",
+			ferment_v2_id: "fv2-active",
+			ferment_version: "v2",
+			ferment_revision: "9",
+			status: "active",
+		})
 	})
 
 	it("ferment:started → ferment.started OTLP record with ferment_id, name, model", async () => {

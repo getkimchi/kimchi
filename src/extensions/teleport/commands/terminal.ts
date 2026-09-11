@@ -9,7 +9,7 @@ import { provisionGitCredential } from "../provisioning/git-provision.js"
 import { buildProxyCommand } from "../provisioning/proxy-command.js"
 import type { TeleportContext } from "../types.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
-import { info, refuse, status, warn } from "./errors.js"
+import { authFailureMessage, info, refuse, status, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 type RunChildFn = typeof runChildWithTTYHandoffImpl
@@ -52,7 +52,7 @@ export async function runTerminal(
 		if (err instanceof RemoteAuthError) {
 			refuse(ctx, `Authentication failed for ${workspaceId}: ${err.message}`)
 		}
-		refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+		refuse(ctx, authFailureMessage(err))
 	}
 	status(ctx, undefined)
 

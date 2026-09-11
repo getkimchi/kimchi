@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
-import { handleRemoteCompletion } from "./post-completion.js"
+import { handleRemoteCompletion, handleRemoteFailure } from "./post-completion.js"
 
 // Mock all external dependencies — we only care about the steer message
 // that gets injected into the local session via pi.sendMessage.
@@ -291,7 +291,13 @@ describe("handleRemoteCompletion", () => {
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", {
 				fermentId,
-				remoteSession: { workspaceId: "ws-1", sessionName: "s1", wsUrl: "wss://w", host: "w", cwd: "/home/sandbox/s1" },
+				remoteSession: {
+					workspaceId: "ws-1",
+					sessionName: "s1",
+					wsUrl: "wss://w",
+					host: "w",
+					cwd: "/home/sandbox/s1",
+				},
 			})
 
 			// completeFerment resumes, skips non-terminal phases, then completes
@@ -366,5 +372,117 @@ describe("handleRemoteCompletion", () => {
 
 			expect(mockApplyAndPersist).not.toHaveBeenCalled()
 		})
+	})
+})
+
+describe("handleRemoteFailure", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		mockApplyAndPersist.mockReturnValue({ ok: false })
+	})
+
+	it("shows an error notification instead of the completion dropdown (interactive)", () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+
+		handleRemoteFailure(pi, ctx, "plan", { error: "workspace unreachable" })
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: workspace unreachable", "error")
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("includes the recovery note's reason in the interactive notification", () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+
+		handleRemoteFailure(pi, ctx, "plan", {
+			error: "the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown",
+			recoveryNote:
+				"Recovery failed: the replayed session contained no final assistant message. The result of the remote run is unknown — before re-running or re-dispatching anything, ask the user how to proceed.",
+		})
+
+		// Without the reason, this failure mode is undiagnosable from the UI.
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Cloud agent failed: the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown — Recovery failed: the replayed session contained no final assistant message",
+			"error",
+		)
+	})
+
+	it("resumes the paused ferment — a failed cloud run must not leave it paused", () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+
+		handleRemoteFailure(pi, ctx, "ferment plan", { error: "boom", fermentId: "ferment-1" })
+
+		expect(mockApplyAndPersist).toHaveBeenCalledWith("ferment-1", { type: "resume" })
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: boom", "error")
+	})
+
+	it("steers the local agent in headless sessions (a notification would be invisible)", () => {
+		const pi = makePi()
+		const ctx = makeCtx(false)
+
+		handleRemoteFailure(pi, ctx, "plan", {
+			error: "result unknown",
+			recoveryNote: "Recovery failed: no final assistant message.",
+		})
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		const sendMock = pi.sendMessage as ReturnType<typeof vi.fn>
+		expect(sendMock).toHaveBeenCalledTimes(1)
+		const msg = sendMock.mock.calls[0][0]
+		expect(msg.customType).toBe("remote_plan_failed")
+		expect(sendMock.mock.calls[0][1]).toEqual({ triggerTurn: true })
+		const content = typeof msg.content === "string" ? msg.content : String(msg.content)
+		expect(content).toContain("FAILED")
+		expect(content).toContain("result unknown")
+		expect(content).toContain("Recovery failed: no final assistant message.")
+		expect(content).toContain("Ask the user how to proceed")
+	})
+
+	it("still resumes the ferment when no spawn context was captured", () => {
+		const pi = makePi()
+
+		handleRemoteFailure(pi, undefined, "ferment plan", { fermentId: "ferment-2" })
+
+		expect(mockApplyAndPersist).toHaveBeenCalledWith("ferment-2", { type: "resume" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("falls back to 'unknown error' when the record has no error message", () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+
+		handleRemoteFailure(pi, ctx, "plan")
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: unknown error", "error")
+	})
+
+	it("skips the interactive notification for user-initiated stops (the kill handler already announced it)", () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+
+		handleRemoteFailure(pi, ctx, "plan", { stoppedByUser: true })
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("steers headless agents with stopped-by-user wording instead of failure blame", () => {
+		const pi = makePi()
+		const ctx = makeCtx(false)
+
+		handleRemoteFailure(pi, ctx, "ferment plan", { stoppedByUser: true, fermentId: "f-1" })
+
+		const sendMock = pi.sendMessage as ReturnType<typeof vi.fn>
+		expect(sendMock).toHaveBeenCalledTimes(1)
+		const msg = sendMock.mock.calls[0][0]
+		const content = typeof msg.content === "string" ? msg.content : String(msg.content)
+		expect(content).toContain("stopped by the user")
+		expect(content).not.toContain("FAILED")
+		expect(content).not.toContain("Error:")
+		// The paused ferment is still resumed.
+		expect(mockApplyAndPersist).toHaveBeenCalledWith("f-1", { type: "resume" })
 	})
 })

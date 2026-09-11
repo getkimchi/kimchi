@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
@@ -37,6 +37,10 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// Real implementation by default; individual tests use
+		// mockReturnValueOnce to simulate credential-store transitions
+		// (writeApiKey/clearApiKey are mocked, so they never touch disk).
+		loadConfig: vi.fn(actual.loadConfig),
 	}
 })
 // Mock the model cache refresh so tests don't hit the network.
@@ -59,7 +63,8 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, writeApiKey } from "../../config.js"
+import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
+import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
@@ -71,9 +76,11 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { updateModelsConfig } from "../../models.js"
+import { ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
-	ACP_REATTACH_MID_TURN_META_KEY,
+	ACP_SUCCESS_MESSAGE,
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
@@ -179,6 +186,8 @@ class FakeAgentSession {
 		input: ["text"],
 		contextWindow: 200_000,
 	}
+	// Credential state for the -32000 conversions; false = keyless machine.
+	authConfigured = true
 	modelRegistry = {
 		getAvailable: () =>
 			this.model
@@ -192,6 +201,16 @@ class FakeAgentSession {
 				: [],
 		find: (provider: string, id: string) =>
 			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
+		hasConfiguredAuth: (_model: { provider: string }) => this.authConfigured,
+	}
+	// Provider-keyed credential seam mirrors modelRegistry.hasConfiguredAuth.
+	// refresh() stands in for pi's credential re-read: calling it flips the fake
+	// to configured, as a real runtime picks up a freshly-persisted auth.json.
+	modelRuntime = {
+		hasConfiguredAuth: (_providerId: string) => this.authConfigured,
+		refresh: async (_options?: { allowNetwork?: boolean }) => {
+			this.authConfigured = true
+		},
 	}
 	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
@@ -598,6 +617,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
+	// syncPiAuth (not mocked) requires an on-disk models.json; in production
+	// updateModelsConfig (mocked here) writes it.
+	function seedModelsJson(agentDir: string): void {
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
+			}),
+		)
+	}
+
 	describe("authenticate", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-auth"
 
@@ -606,6 +636,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
 			mkdirSync(tempAgentDir, { recursive: true })
+			seedModelsJson(tempAgentDir)
 			vi.mocked(authenticateViaBrowser).mockReset()
 			vi.mocked(writeApiKey).mockReset()
 			vi.mocked(updateModelsConfig).mockReset()
@@ -630,6 +661,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			expect(result).toEqual({})
 			expect(authenticateViaBrowser).toHaveBeenCalledOnce()
+			// The callback page copy is per-context: ACP-initiated logins (Studio's
+			// in-app flow) must not show the terminal `kimchi login` CLI wording.
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({ successMessage: ACP_SUCCESS_MESSAGE })
+			expect(ACP_SUCCESS_MESSAGE).not.toContain("CLI")
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token")
 			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_test-token")
 		})
@@ -670,6 +705,60 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			)
 			expect(writeApiKey).not.toHaveBeenCalled()
 		})
+
+		// The respawn workaround (Studio ADR-0042): authenticate() must leave this
+		// process usable, not just the next one.
+		it("syncs the token into auth.json so freshly created runtimes see it without a respawn", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			const auth = JSON.parse(readFileSync(join(tempAgentDir, "auth.json"), "utf-8")) as Record<
+				string,
+				{ type: string; key: string }
+			>
+			expect(auth["kimchi-dev"]).toEqual({ type: "api_key", key: "castai_v1_test-token" })
+		})
+
+		it("refreshes open sessions' credential snapshots so a re-login works without a respawn", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			const openFake = new FakeAgentSession("session-auth-refresh")
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(openFake),
+			})
+			await testAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+			// Credentials disappeared server-side since session creation.
+			openFake.authConfigured = false
+			const refreshSpy = vi.spyOn(openFake.modelRuntime, "refresh")
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			expect(refreshSpy).toHaveBeenCalledWith({ allowNetwork: false })
+			expect(openFake.authConfigured).toBe(true)
+		})
+
+		it("still succeeds when an open session's runtime refresh fails", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			const openFake = new FakeAgentSession("session-auth-refresh-fail")
+			openFake.modelRuntime.refresh = () => Promise.reject(new Error("stale provider cache"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(openFake),
+			})
+			await testAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			expect(result).toEqual({})
+		})
 	})
 
 	describe("unstable_logout", () => {
@@ -689,13 +778,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			} catch {}
 		})
 
-		it("clears API key from config and OAuth credentials from auth storage", async () => {
-			// Seed auth.json with a kimchi-dev OAuth entry so we can verify
-			// logout actually removes it.
+		// Regression: logout must remove kimchi-dev/* sub-provider entries, not just kimchi-dev.
+		it("clears API key from config and every Kimchi credential from auth storage", async () => {
 			writeFileSync(
 				join(tempAgentDir, "auth.json"),
 				JSON.stringify({
 					"kimchi-dev": { type: "oauth", accessToken: "old-token", refreshToken: "old-refresh" },
+					"kimchi-dev/anthropic": { type: "api_key", key: "old-api-key" },
+					anthropic: { type: "oauth", accessToken: "keep-token", refreshToken: "keep-refresh" },
 				}),
 			)
 
@@ -711,13 +801,214 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// clearApiKey is mocked — verify it was called to clear the config file.
 			expect(clearApiKey).toHaveBeenCalledOnce()
 
-			// AuthStorage.logout("kimchi-dev") should have removed the entry
-			// from auth.json. Read it back and verify.
 			const authJson = JSON.parse(
 				// eslint-disable-next-line no-restricted-syntax
 				await import("node:fs").then((fs) => fs.readFileSync(join(tempAgentDir, "auth.json"), "utf-8")),
 			)
 			expect(authJson["kimchi-dev"]).toBeUndefined()
+			expect(authJson["kimchi-dev/anthropic"]).toBeUndefined()
+			expect(authJson.anthropic).toEqual({
+				type: "oauth",
+				accessToken: "keep-token",
+				refreshToken: "keep-refresh",
+			})
+		})
+	})
+
+	describe("extMethod auth_status", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-auth-status"
+
+		// Full KimchiConfig fixture (required fields) with the apiKey varying
+		// per credential-store state: empty string = unauthenticated.
+		function makeConfig(apiKey: string): ReturnType<typeof loadConfig> {
+			return {
+				apiKey,
+				agentConfigDir: tempAgentDir,
+				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+				customLlmEndpoint: undefined,
+				maxToolResultChars: 12000,
+				mcpSearchLimit: 10,
+				mcpSearch: {
+					strategy: "bm25",
+					bm25K1: 1.2,
+					bm25B: 0.75,
+					fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+				},
+				onboarding: {},
+				deviceId: "test-device-id",
+			}
+		}
+
+		beforeEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+			seedModelsJson(tempAgentDir)
+			vi.mocked(authenticateViaBrowser).mockReset()
+			vi.mocked(loadConfig).mockClear()
+			resetCredentialStalenessForTests()
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("advertises auth_status in the initialize capabilities _meta", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({ auth_status: true })
+		})
+
+		it("reports unauthenticated when the credential store has no API key", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+		})
+
+		it("reports authenticated when the credential store has an API key", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_token"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// Canonical OAuth credential shape ({ type, access, refresh, expires }) —
+		// the credential reader drops malformed entries, which would hide a
+		// broken logout behind a false unauthenticated result.
+		function oauthCredential() {
+			return { type: "oauth", access: "token", refresh: "refresh", expires: Date.now() + 3600_000 }
+		}
+
+		// Regression: the subscription OAuth login persists credentials to
+		// auth.json only (no config.json apiKey), so auth_status must consult
+		// both halves of the credential store.
+		it("reports authenticated when only auth.json holds OAuth credentials", async () => {
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// Present-but-dead key: presence sees it, registry says rejected →
+		// auth_status must read logged-out.
+		it("reports unauthenticated when the configured key was observed stale (401 at refresh)", async () => {
+			markCredentialStale("castai_v1_dead", "kimchi-dev")
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_dead"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+		})
+
+		// auth.json only: no key to blame — provider mark alone must flip status.
+		it("reports unauthenticated when only witnessed provider-level staleness exists (auth.json OAuth)", async () => {
+			markCredentialStale(undefined, "kimchi-dev")
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+		})
+
+		// The OAuth half is fully real here: auth.json is seeded on disk and
+		// unstable_logout() actually deletes the entry — no simulation. Only
+		// the config half is mocked (writeApiKey/clearApiKey never touch disk),
+		// so its transitions are simulated via mockReturnValueOnce.
+		it("reflects unstable_logout() and authenticate() on subsequent status calls", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			// OAuth credentials present, as after a subscription login.
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+
+			await testAgent.unstable_logout({})
+
+			// After logout: the auth.json entry is gone from the real store.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			// After authenticate(): the config half holds the token.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_test-token"))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// Stale key → login screen → session/authenticate on this connection:
+		// marks must clear.
+		it("clears staleness marks after authenticate() succeeds on this connection", async () => {
+			const deadKey = "castai_v1_dead"
+			markCredentialStale(deadKey, "kimchi-dev")
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_fresh-token" })
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// Sanity: while stale, status flips to logged-out even with a key.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(deadKey))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_fresh-token"))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
 		})
 	})
 
@@ -3945,6 +4236,321 @@ describe("assertSessionHasModel", () => {
 	})
 })
 
+// No-auth failures on the ACP surface surface as authRequired (-32000)
+// so clients route to their login UI, not generic -32603 (prompt) or
+// Keyless → rejected at session/new; logout-while-live → prompt paths.
+describe("no-auth failures surface as authRequired (-32000)", () => {
+	const makeNoAuthAgent = (fake: FakeAgentSession) =>
+		new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+	it("session/prompt rejects with -32000 when the active model has no configured auth", async () => {
+		const fake = new FakeAgentSession("session-noauth-prompt")
+		const agent = makeNoAuthAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// Log out after the session exists (session/new would have rejected a
+		// keyless machine up front).
+		fake.authConfigured = false
+		fake.promptImpl = async () => {
+			// pi's plain no-key rejection — message is copy, not contract: the
+			// conversion keys off registry credential state, not this text.
+			throw new Error(
+				"No API key found for the selected model. Use /login to log into a provider via OAuth or API key.",
+			)
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-noauth-prompt", prompt: [{ type: "text", text: "hello" }] })
+			.then(
+				() => {
+					throw new Error("expected prompt to reject")
+				},
+				(e) => e,
+			)
+		expect(err).toMatchObject({ code: -32000 })
+		expect((err as Error).message).toMatch(/auth required/)
+	})
+
+	it("session/prompt propagates the original error unchanged when the provider has configured auth", async () => {
+		const fake = new FakeAgentSession("session-auth-prompt-error")
+		fake.promptImpl = async () => {
+			throw new Error("provider exploded")
+		}
+		const agent = makeNoAuthAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Authenticated paths must be untouched: the raw pi error propagates
+		// (no -32000 conversion) so rate limits / outages surface as-is.
+		const err = await agent
+			.prompt({ sessionId: "session-auth-prompt-error", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect((err as Error).message).toBe("provider exploded")
+		expect((err as { code?: number }).code).toBeUndefined()
+	})
+
+	it("session/new rejects with -32000 when the active model's provider lacks configured auth", async () => {
+		const fake = new FakeAgentSession("session-noauth-create")
+		fake.authConfigured = false
+		const agent = makeNoAuthAgent(fake)
+		const err = await agent.newSession({ cwd: "/tmp", mcpServers: [] }).then(
+			() => {
+				throw new Error("expected session/new to reject")
+			},
+			(e) => e,
+		)
+		expect(err).toMatchObject({ code: -32000 })
+		expect((err as Error).message).toMatch(/auth required/)
+		// The failed session must be unwound, not left registered.
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("does not name the placeholder model pi resolves on keyless machines", async () => {
+		const fake = new FakeAgentSession("session-noauth-placeholder")
+		fake.model = { provider: "unknown", id: "unknown", name: "Unknown" }
+		fake.authConfigured = false
+		const agent = makeNoAuthAgent(fake)
+		const err = await agent.newSession({ cwd: "/tmp", mcpServers: [] }).catch((e) => e)
+		expect(err).toMatchObject({ code: -32000 })
+		expect((err as Error).message).toMatch(/no credentials configured for the selected model/)
+		expect((err as Error).message).not.toMatch(/unknown\/unknown/)
+	})
+
+	// Deliberate carve-out: loadSession stays presence-only so reload after
+	// logout works; the first prompt surfaces -32000.
+	it("loadSession still succeeds on a keyless machine (presence-only gate)", async () => {
+		const fake = new FakeAgentSession("session-noauth-load")
+		fake.authConfigured = false
+		fake.branch = []
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: async () => asSession(fake),
+		})
+		const res = await agent.loadSession({
+			sessionId: "session-noauth-load",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+		expect(res.configOptions).toBeDefined()
+	})
+})
+
+// A turn can die on a provider error (stale credential, quota, outage)
+// without session.prompt() rejecting: pi ends it with stopReason "error"
+// + errorMessage and resolves quietly. Must not report happy end_turn —
+// clients see a "sent" chat with no reply and no error.
+describe("terminal turn errors surface instead of silent end_turn", () => {
+	const makeAgent = (fake: FakeAgentSession) =>
+		new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+	// pi's message_end for a failed response (retries exhausted).
+	function assistantErrorEvent(errorMessage: string): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage,
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	function assistantSuccessEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	// aborted = user-initiated; never a turn error.
+	function assistantAbortedEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	// Presence-check hole: a present-but-dead key passes session/new and
+	// fails only on first request. The 401 must surface as authRequired
+	// (login pane opens), not a silent zero-token end_turn.
+	it("session/prompt rejects with -32000 when the turn dies on a 401 from a stale configured credential", async () => {
+		const fake = new FakeAgentSession("session-stale-cred")
+		// authConfigured stays true: the key exists, it's dead server-side.
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent.prompt({ sessionId: "session-stale-cred", prompt: [{ type: "text", text: "hello" }] }).then(
+			() => {
+				throw new Error("expected prompt to reject")
+			},
+			(e) => e,
+		)
+		expect(err).toMatchObject({ code: -32000 })
+		expect((err as Error).message).toMatch(/auth required/)
+		// Provider text stays in the message: debugging can tell stale from missing.
+		expect((err as Error).message).toMatch(/401/)
+	})
+
+	// Chain second half: the turn-time 401 is the first proof this key is
+	// dead (it passed session/new); later auth_status calls must read
+	// logged-out.
+	it("marks the model's provider stale when the turn dies on a 401, so auth_status flips", async () => {
+		resetCredentialStalenessForTests()
+		const fake = new FakeAgentSession("session-401-marks-stale")
+		fake.model = {
+			provider: "kimchi-dev",
+			id: "some-model",
+			name: "Some Model",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-401-marks-stale", prompt: [{ type: "text", text: "hello" }] })
+			.catch((e) => e)
+		expect(err).toMatchObject({ code: -32000 })
+		// Provider-level mark: the turn's error names no specific key.
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+	})
+
+	it("does not mark staleness on non-auth terminal errors (500)", async () => {
+		resetCredentialStalenessForTests()
+		const fake = new FakeAgentSession("session-500-no-mark")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 500: internal server error"))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId: "session-500-no-mark", prompt: [{ type: "text", text: "hello" }] }).catch(() => {})
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+		expect(isCredentialStale(undefined, "test")).toBe(false)
+	})
+
+	it("session/prompt surfaces a terminal provider error instead of a silent zero-token end_turn", async () => {
+		const fake = new FakeAgentSession("session-provider-500")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 500: internal server error"))
+			fake.emit(agentEnd())
+		}
+
+		const err = await agent
+			.prompt({ sessionId: "session-provider-500", prompt: [{ type: "text", text: "hello" }] })
+			.then(
+				() => {
+					throw new Error("expected prompt to reject")
+				},
+				(e) => e,
+			)
+		// NOT -32000: a login pane cannot fix a provider 500.
+		expect((err as { code?: number }).code).not.toBe(-32000)
+		expect((err as Error).message).toMatch(/internal server error/)
+	})
+
+	// pi auto-retries; only the LAST message's stopReason decides: error →
+	// retry succeeds → must not poison the turn.
+	it("does not fail the turn when pi's internal retry recovers after a failed attempt", async () => {
+		const fake = new FakeAgentSession("session-retry-recovers")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// 429 error → pi auto-retry → successful message_end next.
+			fake.emit(assistantErrorEvent("Request failed with status code 429: rate limited"))
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantSuccessEvent())
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({
+			sessionId: "session-retry-recovers",
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.usage?.inputTokens).toBe(10)
+	})
+
+	it("does not fail the turn when the final assistant message was aborted", async () => {
+		const fake = new FakeAgentSession("session-aborted-msg")
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantAbortedEvent())
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({
+			sessionId: "session-aborted-msg",
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+	})
+})
+
 describe("initializeHeadlessTheme", () => {
 	beforeEach(() => {
 		vi.stubGlobal(THEME_KEY, undefined)
@@ -5794,6 +6400,71 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionLoader: loader,
 		})
 	}
+
+	it("allows loadSession to attach while a turn is in progress (client takeover)", async () => {
+		// The bridge guarantees the previous client is gone before a new
+		// client's frames reach stdin (takeover closes the old WS, and the
+		// child has a single stdin pipe). A load arriving mid-turn can
+		// therefore only mean reconnect-after-disconnect — attach instead of
+		// rejecting; replay history and let the in-flight turn's subsequent
+		// updates flow to the new client via the bridge's active connection.
+		const live = new FakeAgentSession("live-turn")
+		live.branch = [userTextEntry("earlier", "u1", null)]
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// Start a turn that never unwinds (mirrors the post-disconnect wedge).
+		void agent.prompt({
+			sessionId: "live-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		// entry.turn is assigned after an await (skill-command parse) inside
+		// prompt() — give it a macrotask so the turn is firmly in progress.
+		await new Promise((r) => setTimeout(r, 0))
+
+		// Previously this rejected with "has a turn in progress; cancel it first".
+		const res = await agent.loadSession({
+			sessionId: "live-turn",
+			cwd: "/tmp",
+			mcpServers: [],
+			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
+		})
+
+		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		// History was replayed for the attaching client.
+		const replayUpdates = replayOnly(updates)
+		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
+	})
+
+	it("still rejects mid-turn loadSession without the reattach opt-in flag", async () => {
+		// The strict ACP guard stays the default: clients that don't declare
+		// a takeover get the original error and may cancel the turn first.
+		const live = new FakeAgentSession("guarded-turn")
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		void agent.prompt({
+			sessionId: "guarded-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await new Promise((r) => setTimeout(r, 0))
+
+		await expect(agent.loadSession({ sessionId: "guarded-turn", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			"has a turn in progress; cancel it first",
+		)
+	})
 
 	it("advertises loadSession capability in initialize", async () => {
 		const agent = makeAgent(async () => asSession(new FakeAgentSession("unused")))
