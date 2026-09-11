@@ -189,7 +189,16 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			expect(routerRequests[0]?.headers["x-session-id"]).toBe(chatRequests[0]?.headers["x-session-id"])
 			expect(routerRequests[0]?.headers["x-conversation-id"]).toBe(chatRequests[0]?.headers["x-conversation-id"])
 			expect(routerRequests[0]?.headers["x-turn-index"]).toBe(chatRequests[0]?.headers["x-turn-index"])
+			// traceparent is per provider-request header assembly: the router
+			// call inherits the correlation headers of the chat request it
+			// routes (same trace), while the second chat request is a separate
+			// assembly and therefore a fresh trace.
+			const traceparentShape = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/
+			expect(routerRequests[0]?.headers.traceparent).toMatch(traceparentShape)
+			expect(chatRequests[0]?.headers.traceparent).toMatch(traceparentShape)
+			expect(chatRequests[1]?.headers.traceparent).toMatch(traceparentShape)
 			expect(routerRequests[0]?.headers.traceparent).toBe(chatRequests[0]?.headers.traceparent)
+			expect(chatRequests[1]?.headers.traceparent).not.toBe(chatRequests[0]?.headers.traceparent)
 			expect(routerRequests[0]?.headers["x-parent-session-id"]).toBeUndefined()
 
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))

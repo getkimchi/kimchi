@@ -106,6 +106,67 @@ describe("handleMessageEnd", () => {
 		expect(attrs.cost_usd).toBe(0.005)
 	})
 
+	it("stamps the request trace context on api_request when set", async () => {
+		const { ctx, piCtx } = makeCtx()
+		ctx.lastTraceContext = { traceId: "aaaabbbbccccddddeeeeffff00001111", spanId: "1122334455667788" }
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, piCtx, {
+			message: {
+				role: "assistant",
+				responseId: "resp-trace",
+				model: "claude-3-5-sonnet",
+				provider: "anthropic",
+				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+			} as Message,
+		})
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("api_request")
+		expect(attrs["request.trace_id"]).toBe("aaaabbbbccccddddeeeeffff00001111")
+		expect(attrs["request.span_id"]).toBe("1122334455667788")
+	})
+
+	it("omits trace attributes from api_request when no provider request context exists", async () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, piCtx, {
+			message: {
+				role: "assistant",
+				responseId: "resp-no-trace",
+				model: "claude-3-5-sonnet",
+				provider: "anthropic",
+				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+			} as Message,
+		})
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(attrs["request.trace_id"]).toBeUndefined()
+		expect(attrs["request.span_id"]).toBeUndefined()
+	})
+
+	it("stamps the request trace context on error events", async () => {
+		const { ctx, piCtx } = makeCtx()
+		ctx.lastTraceContext = { traceId: "aaaabbbbccccddddeeeeffff00001111", spanId: "1122334455667788" }
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [{ role: "toolResult", isError: true, content: [{ type: "text", text: "boom" }] }],
+		} as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("error")
+		expect(attrs.error_type).toBe("agent_error")
+		expect(attrs["request.trace_id"]).toBe("aaaabbbbccccddddeeeeffff00001111")
+	})
+
 	it("deduplicates messages by responseId", async () => {
 		const { ctx, piCtx } = makeCtx()
 		const emitSpy = vi.spyOn(ctx, "emit")

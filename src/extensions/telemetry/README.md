@@ -100,13 +100,13 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `session.start` | Session begins | `model` |
 | `session.end` | Session ends | `model`, `duration_ms`, `ended_by`, `source`, `mode` |
 | `user_message` | User sends a message | `model`, `message_length` |
-| `api_request` | Assistant response completes | `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cost_usd`, `duration_ms` |
+| `api_request` | Assistant response completes | `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cost_usd`, `duration_ms`, `request.trace_id`, `request.span_id` *(trace of the request that produced it — present when a provider request has been issued)* |
 | `tool_result` | Any tool finishes | `tool_name`, `model`, `success`, `duration_ms` |
 | `file_read` | `read` tool succeeds | `model`, `language`, `file_hash`, `duration_ms` |
 | `file_written` | `write` tool succeeds | `model`, `language`, `file_hash`, `lines_added`, `duration_ms` |
 | `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
-| `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)* |
+| `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)*, `request.trace_id` / `request.span_id` *(when a provider request context exists)* |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
 | `remote_execution.started` | Remote cloud agent successfully spawned | `origin` |
 | `remote_execution.completed` | Remote cloud agent finished successfully | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
