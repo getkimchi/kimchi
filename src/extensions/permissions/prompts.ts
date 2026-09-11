@@ -5,15 +5,16 @@ import { highlightCode } from "../tool-rendering.js"
 import { withWorkingHidden } from "../ui.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
-import { suggestScope } from "./session-memory.js"
+import { bashSegmentScope, suggestBashCommandScopes, suggestScope } from "./session-memory.js"
+import { isCompoundCommand } from "./taxonomy.js"
 import type { RiskScore, Rule } from "./types.js"
 
 export { withWorkingHidden }
 
 export type ApprovalOutcome =
 	| { kind: "allow-once" }
-	| { kind: "allow-remember"; rule: Rule }
-	| { kind: "allow-remember-wildcard"; rule: Rule }
+	| { kind: "allow-remember"; rules: Rule[] }
+	| { kind: "allow-remember-wildcard"; rules: Rule[] }
 	| { kind: "deny-with-feedback"; feedback: string }
 	| { kind: "deny" }
 	| { kind: "aborted" }
@@ -60,19 +61,44 @@ export function terminalPrompter(ctx: ExtensionContext): ToolPermissionPrompter 
 }
 
 export function buildPermissionChoices(toolName: string, input: Record<string, unknown>): PermissionChoice[] {
-	const scope = suggestScope(toolName, input)
+	const lower = toolName.toLowerCase()
+	if (lower === "bash") {
+		const command = typeof input.command === "string" ? input.command : ""
+		if (isCompoundCommand(command)) return buildCompoundBashChoices(command)
+		// Single-command bash still can't be remembered when its scope can
+		// never match again (pipe to a non-filter program like `cat x | sh`):
+		// omit remember choices rather than storing a silently-dead rule.
+		const scope = bashSegmentScope(command)
+		if (!scope)
+			return [
+				{ kind: "allow-once", label: "Yes — just this call" },
+				{ kind: "deny", label: "No — tell the assistant what to do differently" },
+			]
+		return buildChoicesForScope(scope)
+	}
 
+	return buildChoicesForScope(suggestScope(toolName, input))
+}
+
+function buildChoicesForScope(scope: {
+	toolName: string
+	content?: string
+	wildcardContent?: string
+	label: string
+}): PermissionChoice[] {
 	const choices: PermissionChoice[] = [
 		{ kind: "allow-once", label: "Yes — just this call" },
 		{
 			kind: "allow-remember",
 			label: `Yes — don't ask again for ${scope.label} this session`,
-			rule: {
-				toolName: scope.toolName,
-				content: scope.content,
-				behavior: "allow",
-				source: "session",
-			},
+			rules: [
+				{
+					toolName: scope.toolName,
+					content: scope.content,
+					behavior: "allow",
+					source: "session",
+				},
+			],
 		},
 	]
 
@@ -80,17 +106,75 @@ export function buildPermissionChoices(toolName: string, input: Record<string, u
 		choices.push({
 			kind: "allow-remember-wildcard",
 			label: `Yes — don't ask again for ${scope.wildcardContent} this session`,
-			rule: {
-				toolName: scope.toolName,
-				content: `${scope.wildcardContent}`,
-				behavior: "allow",
-				source: "session",
-			},
+			rules: [
+				{
+					toolName: scope.toolName,
+					content: `${scope.wildcardContent}`,
+					behavior: "allow",
+					source: "session",
+				},
+			],
 		})
 	}
 
 	choices.push({ kind: "deny", label: "No — tell the assistant what to do differently" })
 	return choices
+}
+
+// Compound bash commands are remembered PER SEGMENT: the compound gate
+// (checkCompoundCommand) re-evaluates each segment against rules individually,
+// so a single scope derived from the whole command (first segment only —
+// e.g. `cd /tmp:*` for `cd /tmp && npm install`) could never match the
+// compound again and re-prompts forever. Compounds containing a segment whose
+// scope can never match again (`| sh`, `| awk`, substitution — piped
+// whitelisted output filters like `| tail -20` DO scope, normalizing to the
+// head) get no "don't ask again" choice: we never promise remembering we
+// cannot honor.
+function buildCompoundBashChoices(command: string): PermissionChoice[] {
+	const { scopes, scopeable } = suggestBashCommandScopes(command)
+	const choices: PermissionChoice[] = [{ kind: "allow-once", label: "Yes — just this call" }]
+
+	if (scopeable) {
+		choices.push({
+			kind: "allow-remember",
+			label: `Yes — don't ask again for ${joinScopeLabels(scopes.map((s) => s.label))} this session`,
+			rules: scopes.map((s) => ({
+				toolName: s.toolName,
+				content: s.content,
+				behavior: "allow" as const,
+				source: "session" as const,
+			})),
+		})
+
+		const wildcards: string[] = []
+		for (const s of scopes) {
+			if (!s.wildcardContent) break
+			wildcards.push(s.wildcardContent)
+		}
+		if (wildcards.length === scopes.length) {
+			choices.push({
+				kind: "allow-remember-wildcard",
+				label: `Yes — don't ask again for ${joinScopeLabels(wildcards)} this session`,
+				rules: wildcards.map((content) => ({
+					toolName: "bash",
+					content,
+					behavior: "allow" as const,
+					source: "session" as const,
+				})),
+			})
+		}
+	}
+
+	choices.push({ kind: "deny", label: "No — tell the assistant what to do differently" })
+	return choices
+}
+
+// Disclose every remembered scope in the choice label; cap at 3 to keep the
+// prompt readable on long compounds (ACP clients render labels verbatim).
+function joinScopeLabels(labels: string[]): string {
+	const MAX_DISCLOSED = 3
+	if (labels.length <= MAX_DISCLOSED) return labels.join(" + ")
+	return `${labels.slice(0, MAX_DISCLOSED).join(" + ")} + ${labels.length - MAX_DISCLOSED} more`
 }
 
 export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOutcome> {
@@ -122,11 +206,11 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	if (selectedChoice?.kind === "allow-once") return { kind: "allow-once" }
 
 	if (selectedChoice?.kind === "allow-remember") {
-		return { kind: "allow-remember", rule: selectedChoice.rule }
+		return { kind: "allow-remember", rules: selectedChoice.rules }
 	}
 
 	if (selectedChoice?.kind === "allow-remember-wildcard") {
-		return { kind: "allow-remember-wildcard", rule: selectedChoice.rule }
+		return { kind: "allow-remember-wildcard", rules: selectedChoice.rules }
 	}
 
 	if (selectedChoice?.kind === "deny") {
@@ -184,11 +268,24 @@ export async function promptForCompoundApproval(opts: {
 
 	if (selected === compoundChoices[0]) return { kind: "allow-all-once" }
 	if (selected === compoundChoices[1]) {
-		const rules = commands.flatMap<Rule>((cmd) => {
-			const scope = suggestScope(opts.toolName, { command: cmd.command })
-			const content = scope.wildcardContent
-			return content ? [{ toolName: scope.toolName, content, behavior: "allow", source: "session" }] : []
-		})
+		// Narrow per-segment scopes (NOT wildcardContent) — "Allow all from now
+		// on" must not grant more than the subcommands shown on the card.
+		const rules: Rule[] = []
+		const unrememberable: string[] = []
+		for (const cmd of commands) {
+			const scope = bashSegmentScope(cmd.command)
+			if (scope) {
+				rules.push({ toolName: scope.toolName, content: scope.content, behavior: "allow", source: "session" })
+			} else {
+				unrememberable.push(cmd.command)
+			}
+		}
+		if (unrememberable.length > 0) {
+			ctx.ui.notify(
+				`Can't remember some subcommands this session (${unrememberable.join("; ")}); this compound will ask again next time`,
+				"warning",
+			)
+		}
 		return { kind: "allow-all-remember", rules }
 	}
 	if (selected === compoundChoices[2]) return { kind: "pick-per-subcommand" }

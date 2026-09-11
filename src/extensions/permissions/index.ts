@@ -81,6 +81,7 @@ import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
 import {
 	isCompoundCommand,
+	isDirectoryChangerCommand,
 	isHardBlockedBash,
 	isReadOnlyBashCommand,
 	isReadOnlyTool,
@@ -1448,9 +1449,12 @@ export async function handleCompoundConfirm(
 			}
 
 			if (outcome.kind === "pick-per-subcommand") {
-				// For each subcommand, evaluate rules and prompt if needed
+				// For each subcommand, evaluate rules and prompt if needed.
 				for (const subcommand of opts.subcommands) {
-					// Re-evaluate rules (user may have added rules during the prompt)
+					// Re-evaluate rules first (user may have added rules during the prompt).
+					// Rules win over the read-only skip, same precedence as the main gate:
+					// a deny added while the prompt is open must still block a read-only
+					// segment.
 					const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
 						command: subcommand,
 					})
@@ -1463,6 +1467,13 @@ export async function handleCompoundConfirm(
 							reason: `Subcommand blocked by rule: ${subcommand}`,
 						}
 					}
+					// No rule covers this segment: read-only programs (ls, git diff…)
+					// never prompt — a standalone call would skip asking too. The
+					// exception: cwd-changers (cd/pushd/popd) need an explicit rule at
+					// the gate (directory boundary), so the picker prompts for them
+					// directly below. Every remember choice then stores exactly the
+					// scope it displays.
+					if (isReadOnlyBashCommand(subcommand) && !isDirectoryChangerCommand(subcommand)) continue
 
 					// Create a fake bash event for this subcommand
 					const subEvent: ToolCallEvent = {
@@ -1501,11 +1512,11 @@ function applyApprovalOutcome(
 	if (outcome.kind === "aborted") return "aborted"
 	if (outcome.kind === "allow-once") return undefined
 	if (outcome.kind === "allow-remember") {
-		session.add(outcome.rule)
+		session.addMany(outcome.rules)
 		return undefined
 	}
 	if (outcome.kind === "allow-remember-wildcard") {
-		session.add(outcome.rule)
+		session.addMany(outcome.rules)
 		return undefined
 	}
 	if (outcome.kind === "deny-with-feedback") {
@@ -1629,9 +1640,16 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 				deniedReason: `Subcommand blocked by rule: ${subcommand}`,
 			}
 		}
-		if (match.decision !== "allow") {
-			allAllowed = false
-		}
+		if (match.decision === "allow") continue
+		// Read-only segments never ask even standalone (ls/git status…), so
+		// treat them as allowed: remembering only the mutable segments then
+		// settles the compound (picker flow and "Allow all" become equivalent).
+		// Rules were evaluated first, so an explicit deny on a read-only program
+		// still wins. cwd-changing segments (cd/pushd/popd) are EXEMPT: they are
+		// the compound's directory boundary, so a remembered mutable scope must
+		// not float to cd /production (reviewer P1).
+		if (isReadOnlyBashCommand(subcommand) && !isDirectoryChangerCommand(subcommand)) continue
+		allAllowed = false
 	}
 
 	// If all subcommands explicitly allowed by rules, allow the compound
