@@ -459,6 +459,70 @@ describe("streamRemoteToOutputFile", () => {
 		})
 	})
 
+	describe("distinct pending tool calls", () => {
+		it("finalizes a pending call with a degraded result when a different call starts before it completes", () => {
+			// ACP turns can run parallel tool calls (or a call may be abandoned):
+			// in_progress B arrives while A is still pending. A must keep its own
+			// entry — its id must not end up paired with B's title, and B's entry
+			// must be written separately.
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(toolCallNotification("call-a", "Tool A", "in_progress", { rawInput: { a: 1 } }))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Tool A", toolCallId: "call-a" })
+			callbacks.onRawNotification?.(toolCallNotification("call-b", "Tool B", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Tool B", toolCallId: "call-b" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-b", { status: "in_progress", rawInput: { b: 2 } }))
+			// A completes after it was already finalized — an orphan completion
+			// for the now-pending B's slot; its rawOutput must not attach to B
+			// and no third entry may be written.
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-a", { status: "completed", rawOutput: "a out" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Tool A", toolCallId: "call-a" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-b", { status: "completed", rawOutput: "b out" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Tool B", toolCallId: "call-b" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUses = findToolUseEntries(entries).map((e) => getToolUseContent(e))
+			expect(toolUses.map((t) => t.id)).toEqual(["call-a", "call-b"])
+			expect(toolUses[0].name).toBe("Tool A")
+			expect(toolUses[0].input).toEqual({ a: 1 })
+			expect(toolUses[1].name).toBe("Tool B")
+			expect(toolUses[1].input).toEqual({ b: 2 })
+
+			const results = entries.filter((e) => e.type === "toolResult").map((e) => getTextContent(e).text)
+			expect(results).toHaveLength(2)
+			expect(results[0]).toBe("Tool A") // degraded placeholder for the finalized call
+			expect(results[1]).toBe('"b out"') // B's own real output, not A's late one
+		})
+
+		it("does not leak the previous call's rawInput into a call that streamed no args", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(
+				toolCallNotification("call-1", "Shell command", "in_progress", { rawInput: { command: "ls" } }),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-1" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-1", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: "call-1" })
+
+			callbacks.onRawNotification?.(toolCallNotification("call-2", "Shell command", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-2" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-2", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: "call-2" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUses = findToolUseEntries(entries).map((e) => getToolUseContent(e))
+			expect(toolUses).toHaveLength(2)
+			expect(toolUses[0].input).toEqual({ command: "ls" })
+			expect(toolUses[1].input).toEqual({})
+		})
+	})
+
 	describe("in_progress forwarding dedup", () => {
 		it("forwards repeated in_progress notifications for the same toolCallId only once to the tracker", () => {
 			const { callbacks: inner, activities } = makeInnerCallbacks()
