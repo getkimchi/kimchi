@@ -43,6 +43,7 @@ export function createContext(
 			notify: vi.fn(),
 			custom: vi.fn(),
 			setStatus: vi.fn(),
+			setWidget: vi.fn(),
 			setWorkingVisible: vi.fn(),
 			...overrides?.ui,
 		} as unknown as ExtensionUIContext,

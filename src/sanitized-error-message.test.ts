@@ -193,3 +193,28 @@ describe("formatSanitizedErrorMessage", () => {
 		})
 	})
 })
+
+describe("model retired surfacing", () => {
+	it("labels the error as model retired with the replacement hint", () => {
+		const raw =
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "docs": "https://wiki.cast.ai/deprecations/kimi-k2.5"}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). The replacement model is "kimi-k3". Details: https://wiki.cast.ai/deprecations/kimi-k2.5. Please retry your request.',
+		)
+	})
+
+	it("falls back to alternatives when no replacement is named", () => {
+		const raw =
+			'{"error": {"type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"]}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). Available alternatives: "kimi-k2.7", "glm-5.3". Please retry your request.',
+		)
+	})
+
+	it("omits the hint when the body carries no replacement fields", () => {
+		const raw = '{"error": {"code": 410, "type": "model_not_found", "message": "gone"}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			"The request could not be completed (model retired). Please retry your request.",
+		)
+	})
+})
