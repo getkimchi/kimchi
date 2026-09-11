@@ -216,7 +216,7 @@ function getSubcommand(args: string[]): string {
 	// invocations report their own label instead of the generic "harness"; `mcp`
 	// appears here for the same telemetry-accuracy reason even though it is also
 	// a registered command.
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory"].includes(sub)) return sub
 	return "harness"
 }
 
@@ -808,18 +808,13 @@ try {
 			await runAcpMode({
 				extensionFactories,
 				agentDir,
-<<<<<<< HEAD
 				...(mcpAdapterExtensions.length > 0
 					? {
 							mcpExtensionFactory: createKimchiMcpAdapterExtension,
 							mcpProbe: new UpstreamMcpProbe(),
 						}
 					: {}),
-				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
-=======
-				mcpServerManager: new McpServerManager(),
 				appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
->>>>>>> f1afe067f (Memory extension: remediate code review findings (dd71e9c9))
 			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
