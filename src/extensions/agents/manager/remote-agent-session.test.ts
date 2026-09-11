@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { extractToolOutputText, RemoteAgentSession } from "./remote-agent-session.js"
+import { extractToolOutputText, RemoteAgentSession, summarizeToolArgs } from "./remote-agent-session.js"
 
 function makeMockAcpClient() {
 	return {
@@ -260,7 +260,7 @@ describe("RemoteAgentSession", () => {
 			const content = session.messages[0].content as Array<{ type: string; arguments?: unknown }>
 			expect(content[0]).toMatchObject({
 				type: "toolCall",
-				name: "bash",
+				name: "bash command=cd some dir && cat file.txt",
 				arguments: { command: "cd some dir && cat file.txt" },
 			})
 			expect(listener.mock.calls[0][0]).toMatchObject({
@@ -377,12 +377,60 @@ describe("RemoteAgentSession", () => {
 			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe("(completed)")
 		})
 
+		it("stores the real error text (not the placeholder) when a tool fails with output", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash", "kt.bash.1")
+			session.recordToolCallEnd("bash", "kt.bash.1", true, "ls: /missing: No such file or directory")
+
+			const msg = session.messages[1]
+			expect(msg.isError).toBe(true)
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe(
+				"ls: /missing: No such file or directory",
+			)
+		})
+
+		it("caps stored output at 2000 chars", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash", undefined, false, "x".repeat(5000))
+			expect((session.messages[1].content as Array<{ type: string; text: string }>)[0].text).toHaveLength(2000)
+		})
+
 		it("includes the real output in tool_execution_end events", () => {
 			const session = new RemoteAgentSession()
 			const listener = vi.fn()
 			session.subscribe(listener)
 			session.recordToolCallEnd("bash", undefined, false, "hello world")
 			expect(listener.mock.calls[0][0]).toMatchObject({ result: "hello world" })
+		})
+	})
+
+	describe("summarizeToolArgs", () => {
+		it("renders object args as compact key=value pairs", () => {
+			expect(summarizeToolArgs({ command: "ls -la", timeout: 60 })).toBe("command=ls -la timeout=60")
+		})
+
+		it("collapses whitespace in values", () => {
+			expect(summarizeToolArgs({ command: "cd app &&\npnpm run tests" })).toBe("command=cd app && pnpm run tests")
+		})
+
+		it("ellipsizes long values", () => {
+			expect(summarizeToolArgs({ content: "x".repeat(100) })).toBe(`content=${"x".repeat(40)}…`)
+		})
+
+		it("returns empty string for null/undefined/empty args", () => {
+			expect(summarizeToolArgs(undefined)).toBe("")
+			expect(summarizeToolArgs(null)).toBe("")
+			expect(summarizeToolArgs({})).toBe("")
+		})
+
+		it("caps the total summary length", () => {
+			const summary = summarizeToolArgs({ a: "1".repeat(40), b: "2".repeat(40), c: "3".repeat(40), d: "4".repeat(40) })
+			expect(summary.length).toBeLessThanOrEqual(100)
+		})
+
+		it("passes through string args directly", () => {
+			expect(summarizeToolArgs("plain string args")).toBe("plain string args")
 		})
 	})
 
