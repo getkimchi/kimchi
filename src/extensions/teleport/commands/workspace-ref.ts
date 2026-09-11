@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto"
+import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
+import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { TeleportContext } from "../types.js"
@@ -56,12 +58,29 @@ export async function resolveWorkspaceRef(
 	ref: string | undefined,
 	opts: ResolveOpts,
 ): Promise<ResolvedWorkspace> {
+	// Verify once up front; the orgId is shared with the workspace list and the
+	// quota fetch below (both skip their own verifyKey round-trip when given it).
+	let orgId: string
+	try {
+		orgId = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+	} catch (err) {
+		refuse(ctx, `Could not verify API key: ${err instanceof Error ? err.message : String(err)}`)
+	}
+
+	// Quota summary for the picker footer — fired alongside the workspace
+	// list with the shared verified orgId; the picker fills its footer when
+	// the fetch settles instead of blocking on it, and a failed fetch degrades
+	// to no summary (pre-caught here). Only the no-ref path can open the
+	// picker, so the request is skipped entirely when an explicit ref is given.
+	const quotaPromise = ref
+		? undefined
+		: getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(() => undefined)
 	// Always list so we can return the workspace's current name to the caller —
 	// the UUID shortcut is gone because callers now use `resolved.name` to
 	// avoid clobbering the server-stored description on the next PUT.
 	let workspaces: Workspace[]
 	try {
-		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
 	} catch (err) {
 		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
 	}
@@ -103,8 +122,11 @@ export async function resolveWorkspaceRef(
 		lastActivityAt: w.lastActivityAt,
 		host: w.host,
 		sessionCount: "?",
+		cpuMillicores: w.cpuMillicores,
+		ramBytes: w.ramBytes,
+		pvcSizeBytes: w.pvcSizeBytes,
 	}))
-	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true })
+	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true, quota: quotaPromise })
 	if (!choice) {
 		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
 	}

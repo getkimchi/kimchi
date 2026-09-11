@@ -43,6 +43,9 @@ function openSocket(socket: MockSocket): void {
 const CONNECTING = 0
 const OPEN = 1
 
+/** Whether MockWebSocket.ping() auto-responds with pong. Set false to simulate a dead transport. */
+let respondToPing = true
+
 class MockWebSocket {
 	static CONNECTING = CONNECTING
 	static OPEN = OPEN
@@ -100,6 +103,7 @@ class MockWebSocket {
 	ping(): void {
 		// Simulate a real WS: auto-respond with pong so the keepalive
 		// doesn't falsely detect a broken connection in tests.
+		if (!respondToPing) return
 		fireHandlers(this.socket, "pong")
 	}
 
@@ -277,11 +281,13 @@ async function initClientWithLoad(client: AcpSessionClient): Promise<{ socket: M
 
 beforeEach(() => {
 	mockSockets = []
+	respondToPing = true
 })
 
 afterEach(() => {
 	vi.useRealTimers()
 	mockSockets = []
+	respondToPing = true
 })
 
 describe("AcpSessionClient", () => {
@@ -603,6 +609,36 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
+		it("does not time out a long-running prompt (no wall-clock cap)", async () => {
+			vi.useFakeTimers()
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("long task")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Regression: prompt() previously rejected with RemoteConnectionError
+			// after 10 minutes ("prompt timed out after 600000ms"), killing healthy
+			// long-running remote turns. There is now no wall-clock cap — dead
+			// connections are detected by the ping keepalive instead.
+			vi.advanceTimersByTime(30 * 60_000)
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			const result = await promptPromise
+			expect(result.stopReason).toBe("end_turn")
+
+			client.close()
+		})
+
 		it("calls onTurnEnd with incremented turn count when prompt resolves", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
@@ -683,6 +719,32 @@ describe("AcpSessionClient", () => {
 				cacheRead: 50,
 				cacheWrite: 10,
 			})
+
+			client.close()
+		})
+
+		it("rejects a pending prompt when the transport stops answering pings", async () => {
+			vi.useFakeTimers()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+
+			// Half-open connection: WS stays open, messages stop flowing, pings go
+			// unanswered. The keepalive (15s interval, 30s tolerance) must reject
+			// the pending prompt instead of hanging forever.
+			respondToPing = false
+			vi.advanceTimersByTime(31_000)
+
+			await expect(promptPromise).rejects.toThrow(RemoteConnectionError)
+			await expect(promptPromise).rejects.toThrow("ping timeout")
 
 			client.close()
 		})

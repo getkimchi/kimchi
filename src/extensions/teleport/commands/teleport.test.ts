@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const {
 	authMock,
 	waitReadyMock,
+	verifyApiKeyMock,
 	listWorkspacesMock,
 	listSessionsMock,
 	createSessionMock,
@@ -36,6 +37,7 @@ const {
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
+	verifyApiKeyMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
 	listSessionsMock: vi.fn(),
 	createSessionMock: vi.fn(),
@@ -74,6 +76,7 @@ const {
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
 vi.mock("../../../sandbox/cloud/readiness.js", () => ({ waitForWorkspaceReady: waitReadyMock }))
+vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
 // resources.js stays real (pure validator); the loader is stubbed, but the
 // real WorkspaceFileError class stays (importOriginal) so instanceof checks
 // in production code behave as in reality.
@@ -233,6 +236,7 @@ beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), "teleport-test-"))
 	authMock.mockReset().mockResolvedValue(CREDS)
 	waitReadyMock.mockReset().mockResolvedValue(undefined)
+	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	listSessionsMock.mockReset().mockResolvedValue([])
 	createSessionMock.mockReset().mockResolvedValue({ freshClone: true })

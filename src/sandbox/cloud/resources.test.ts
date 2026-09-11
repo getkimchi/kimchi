@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { resolveWorkspaceResources, WorkspaceResourcesError } from "./resources.js"
+import {
+	byteQuantityToBytes,
+	cpuQuantityToMillicores,
+	resolveWorkspaceResources,
+	WorkspaceResourcesError,
+} from "./resources.js"
 
 describe("resolveWorkspaceResources", () => {
 	it("returns undefined for undefined or empty config", () => {
@@ -79,5 +84,52 @@ describe("resolveWorkspaceResources", () => {
 
 	it("a bad value in one field does not hide a good value in another field's error", () => {
 		expect(() => resolveWorkspaceResources({ cpu: "250m", memory: "bogus" })).toThrowError(/memory/)
+	})
+})
+
+describe("cpuQuantityToMillicores", () => {
+	it.each<[string, number]>([
+		["200m", 200],
+		["250m", 250],
+		["1", 1000],
+		["1.5", 1500],
+		["0.25", 250],
+		[".5", 500],
+		["1e1", 10000],
+		["2k", 2_000_000],
+		["2500n", 0],
+	])("parses %j into %d millicores", (raw, expected) => {
+		expect(cpuQuantityToMillicores(raw)).toBe(expected)
+	})
+
+	it("returns undefined for absent, non-string, or invalid values", () => {
+		expect(cpuQuantityToMillicores(undefined)).toBeUndefined()
+		expect(cpuQuantityToMillicores(200)).toBeUndefined()
+		expect(cpuQuantityToMillicores("banana")).toBeUndefined()
+		expect(cpuQuantityToMillicores("")).toBeUndefined()
+	})
+
+	it("trims surrounding whitespace like the config path", () => {
+		expect(cpuQuantityToMillicores(" 200m ")).toBe(200)
+	})
+})
+
+describe("byteQuantityToBytes", () => {
+	it.each<[string, number]>([
+		["512Mi", 536870912],
+		["10Gi", 10737418240],
+		["1.5Gi", 1610612736],
+		["1G", 1_000_000_000],
+		["128Ki", 131072],
+		["1e3", 1000],
+		["2048", 2048],
+	])("parses %j into %d bytes", (raw, expected) => {
+		expect(byteQuantityToBytes(raw)).toBe(expected)
+	})
+
+	it("returns undefined for absent, non-string, or invalid values", () => {
+		expect(byteQuantityToBytes(undefined)).toBeUndefined()
+		expect(byteQuantityToBytes(1024)).toBeUndefined()
+		expect(byteQuantityToBytes("half a gb")).toBeUndefined()
 	})
 })

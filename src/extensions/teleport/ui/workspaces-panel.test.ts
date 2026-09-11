@@ -1,5 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
+import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
+import type { QuotaInput } from "./quota-footer.js"
 import { createWorkspacesPanel, WorkspacesPanel } from "./workspaces-panel.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -33,6 +35,7 @@ function makePanel(
 		allowDelete?: boolean
 		allowRename?: boolean
 		hideSessions?: boolean
+		quota?: QuotaInput
 	},
 ) {
 	const tui = {
@@ -45,6 +48,7 @@ function makePanel(
 		allowDelete: opts?.allowDelete ?? true,
 		allowRename: opts?.allowRename,
 		hideSessions: opts?.hideSessions,
+		quota: opts?.quota,
 	})
 	return { panel, tui, done }
 }
@@ -306,6 +310,54 @@ describe("WorkspacesPanel", () => {
 		})
 	})
 
+	describe("resource columns", () => {
+		it("renders CPU, RAM and PVC headers", () => {
+			const { panel } = makePanel()
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("CPU")
+			expect(text).toContain("RAM")
+			expect(text).toContain("PVC")
+		})
+
+		it("formats known resource requests in the columns", () => {
+			const { panel } = makePanel([
+				makeRow({ name: "alpha", cpuMillicores: 1500, ramBytes: 6442450944, pvcSizeBytes: 21474836480 }),
+			])
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("1500m")
+			expect(text).toContain("6Gi")
+			expect(text).toContain("20Gi")
+		})
+
+		it("renders sub-core CPU requests with the m suffix", () => {
+			const { panel } = makePanel([makeRow({ name: "alpha", cpuMillicores: 250 })])
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("250m")
+		})
+
+		it("renders '-' for absent resource fields", () => {
+			const dashCount = (s: string) => (s.match(/-/g) ?? []).length
+			const withRes = makePanel([makeRow({ cpuMillicores: 1000, ramBytes: 1073741824, pvcSizeBytes: 10737418240 })])
+			const withoutRes = makePanel([makeRow()])
+			const a = withRes.panel.render(120).map(stripAnsi).join("\n")
+			const b = withoutRes.panel.render(120).map(stripAnsi).join("\n")
+			// Exactly the three resource cells turn into dashes; every other
+			// dash source (shortened ids) is identical between the two renders.
+			expect(dashCount(b)).toBe(dashCount(a) + 3)
+		})
+
+		it("keeps the NAME flex column at MIN_COL_WIDTH when the new fixed columns crowd the row", () => {
+			const { panel } = makePanel([makeRow({ name: "abcdefghijklmnop" })])
+			const line = panel
+				.render(60)
+				.map(stripAnsi)
+				.find((l) => l.includes("> "))
+			// The name truncates but never below MIN_COL_WIDTH: a width-8 cell
+			// still shows 7 name characters plus the ellipsis.
+			expect(line).toContain("abcdefg")
+		})
+	})
+
 	describe("narrow terminals", () => {
 		// Regression: border title math produced a negative "─".repeat count
 		// below the title width, crashing with RangeError.
@@ -321,5 +373,79 @@ describe("WorkspacesPanel", () => {
 				}
 			})
 		}
+	})
+
+	describe("quota footer", () => {
+		const quota: QuotaUsage = {
+			userUsage: {
+				currentSandboxes: 3,
+				maxSandboxes: 10,
+				currentCpuMillicores: 4500,
+				maxCpuMillicores: 16000,
+				currentRamBytes: 6442450944,
+				maxRamBytes: 17179869184,
+				currentPvcSizeBytes: 21474836480,
+				maxPvcSizeBytes: 128849018880,
+			},
+			orgUsage: {
+				currentSandboxes: 7,
+				maxSandboxes: 10,
+				currentCpuMillicores: 9000,
+				maxCpuMillicores: 16000,
+				currentRamBytes: 6442450944,
+				maxRamBytes: 17179869184,
+				currentPvcSizeBytes: 32212254720,
+				maxPvcSizeBytes: 429496729600,
+			},
+		}
+
+		const footerLine = (panel: WorkspacesPanel, needle: string): string | undefined =>
+			panel
+				.render(120)
+				.map(stripAnsi)
+				.find((l) => l.includes(needle))
+
+		it("renders the user and org quota on two footer lines", () => {
+			const { panel } = makePanel(testRows, { quota })
+			expect(footerLine(panel, "you:")).toContain(
+				"you: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces",
+			)
+			expect(footerLine(panel, "org:")).toContain(
+				"org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces",
+			)
+		})
+
+		it("omits quota lines (blank rows) when no quota was provided, keeping the line count constant", () => {
+			const withQuota = makePanel(testRows, { quota, termRows: 20 })
+			const without = makePanel(testRows, { termRows: 20 })
+			expect(without.panel.render(120).length).toBe(withQuota.panel.render(120).length)
+			expect(footerLine(without.panel, "you:")).toBeUndefined()
+			expect(footerLine(without.panel, "org:")).toBeUndefined()
+		})
+
+		it("fills the footer in when an in-flight quota fetch settles", async () => {
+			const quotaPromise = Promise.resolve(quota)
+			const { panel, tui } = makePanel(testRows, { quota: quotaPromise })
+			expect(footerLine(panel, "you:")).toBeUndefined()
+			await quotaPromise
+			expect(tui.requestRender).toHaveBeenCalled()
+			expect(footerLine(panel, "you:")).toContain("you: 4500m/16000m CPU")
+		})
+
+		it("keeps the footer empty when the quota promise rejects", async () => {
+			const failing = Promise.reject(new Error("boom"))
+			const { panel } = makePanel(testRows, { quota: failing })
+			await failing.catch(() => undefined)
+			expect(footerLine(panel, "you:")).toBeUndefined()
+		})
+
+		it("ignores a quota fetch that settles after the panel was disposed", async () => {
+			const quotaPromise = Promise.resolve(quota)
+			const { panel, tui } = makePanel(testRows, { quota: quotaPromise })
+			panel.dispose()
+			await quotaPromise
+			expect(tui.requestRender).not.toHaveBeenCalled()
+			expect(footerLine(panel, "you:")).toBeUndefined()
+		})
 	})
 })
