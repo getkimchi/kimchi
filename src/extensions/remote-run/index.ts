@@ -1,18 +1,18 @@
 /**
  * Remote-run extension — registers the `/remote-run` command.
  *
- * Only registered when `KIMCHI_REMOTE_RUN` env var is set, preventing
- * accidental invocation. Spawns a foreground remote agent via the shared
+ * Registered by default; disabled only when `KIMCHI_REMOTE_RUN` is set to an
+ * explicit falsy value ("0" or "false"). Spawns a background remote agent via the shared
  * `runCloudAgent()` helper, which handles the full lifecycle:
  * Ctrl+X kill handler, spawn, notification, and cleanup.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
-import { runCloudAgent } from "./runner.js"
+import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 
 export default function remoteRunExtension(pi: ExtensionAPI): void {
-	if (!process.env.KIMCHI_REMOTE_RUN) return
+	if (!isRemoteRunEnabled()) return
 
 	pi.registerCommand("remote-run", {
 		description: "Run a prompt on a remote sandbox worker via ACP: /remote-run <prompt>",

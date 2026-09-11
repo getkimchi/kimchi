@@ -1,3 +1,4 @@
+import os from "node:os"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
@@ -43,16 +44,55 @@ describe("isRemoteRunEnabled", () => {
 	afterEach(() => {
 		if (orig === undefined) delete process.env.KIMCHI_REMOTE_RUN
 		else process.env.KIMCHI_REMOTE_RUN = orig
+		vi.unstubAllEnvs()
 	})
 
-	it("returns true when KIMCHI_REMOTE_RUN is set", () => {
-		process.env.KIMCHI_REMOTE_RUN = "1"
+	it("returns true when KIMCHI_REMOTE_RUN is unset (enabled by default)", () => {
+		delete process.env.KIMCHI_REMOTE_RUN
 		expect(isRemoteRunEnabled()).toBe(true)
 	})
 
-	it("returns false when KIMCHI_REMOTE_RUN is unset", () => {
-		delete process.env.KIMCHI_REMOTE_RUN
+	it("returns true for legacy opt-in values", () => {
+		process.env.KIMCHI_REMOTE_RUN = "1"
+		expect(isRemoteRunEnabled()).toBe(true)
+		process.env.KIMCHI_REMOTE_RUN = "true"
+		expect(isRemoteRunEnabled()).toBe(true)
+		process.env.KIMCHI_REMOTE_RUN = " true "
+		expect(isRemoteRunEnabled()).toBe(true)
+	})
+
+	it("treats empty string as unset", () => {
+		process.env.KIMCHI_REMOTE_RUN = ""
+		expect(isRemoteRunEnabled()).toBe(true)
+	})
+
+	it("returns false when KIMCHI_REMOTE_RUN explicitly disables it", () => {
+		process.env.KIMCHI_REMOTE_RUN = "0"
 		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = "false"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = "FALSE"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = "False"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = " false "
+		expect(isRemoteRunEnabled()).toBe(false)
+	})
+
+	it("returns false inside the sandbox cluster", () => {
+		delete process.env.KIMCHI_REMOTE_RUN
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
+		expect(isRemoteRunEnabled()).toBe(false)
+	})
+
+	it("returns false on Windows", () => {
+		delete process.env.KIMCHI_REMOTE_RUN
+		const osTypeMock = vi.spyOn(os, "type").mockReturnValue("Windows_NT")
+		try {
+			expect(isRemoteRunEnabled()).toBe(false)
+		} finally {
+			osTypeMock.mockRestore()
+		}
 	})
 })
 

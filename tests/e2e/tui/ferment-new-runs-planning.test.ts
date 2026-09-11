@@ -123,11 +123,13 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 
 			// Stage 5: the plan-review dialog appears after the model's
 			// propose_ferment_scoping call. It renders the full plan markdown
-			// followed by "Proceed with this plan?" with 3 options:
+			// followed by "Proceed with this plan?" with 4 options (remote run
+			// is enabled by default):
 			//   > Start execution
 			//     Start execution in auto mode (run all stages without stopping)
+			//     Start execution in cloud
 			//     Let me say something
-			// (DECISION_OPTIONS at plan-review.ts:16-20).
+			// (getDecisionOptions at plan-review.ts).
 			await waitForText(terminal, "Proceed with this plan?", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})

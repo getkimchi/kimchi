@@ -256,9 +256,12 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			await waitForText(terminal, "Start execution", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("plan-review dialog visible")
 
-			// Stage 6: navigate to "Let me say something" (index 2). The
-			// cursor starts at index 0 ("Start execution"), so two keyDown
-			// presses land on index 2.
+			// Stage 6: navigate to "Let me say something" (last option, index 3).
+			// The cursor starts at index 0 ("Start execution"). With remote run
+			// enabled by default the menu is [Start execution, Start execution in
+			// auto mode, Start execution in cloud, Let me say something], so three
+			// keyDown presses land on the feedback option.
+			terminal.keyDown()
 			terminal.keyDown()
 			terminal.keyDown()
 			trace.step("navigated to 'Let me say something'")
