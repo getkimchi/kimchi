@@ -18,7 +18,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createMemoryBackend, disableMem0Telemetry } from "./backend.js"
+import { createMemoryBackend, disableMem0Telemetry, normalizeMem0SearchResults } from "./backend.js"
 
 // Before any mem0ai import — PART A imports it directly, and the flag is
 // read once at mem0's module scope.
@@ -114,13 +114,10 @@ async function partB(): Promise<void> {
 			filters: { user_id: userId },
 		})
 		console.log(`searched in ${Date.now() - searchT0}ms`)
-		const list = (Array.isArray(results) ? results : (results?.results ?? [])) as Array<{
-			memory?: string
-			score?: number
-		}>
+		const list = normalizeMem0SearchResults(results)
 		check(
 			"search returns the added memory",
-			list.some((r) => (r.memory ?? "").includes("pnpm")),
+			list.some((r) => r.memory.includes("pnpm")),
 			JSON.stringify(list.map((r) => ({ memory: r.memory, score: r.score }))).slice(0, 300),
 		)
 	} finally {

@@ -1,10 +1,31 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
-import { createIncrementalCaptureState, extractMessages, incrementalCapture, spawnCaptureWorker } from "./capture.js"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import {
+	createIncrementalCaptureState,
+	extractMessages,
+	incrementalCapture,
+	spawnCaptureWorker,
+	wireMemoryCapture,
+} from "./capture.js"
 import {
 	ASSISTANT_FACTS_SYSTEM_PROMPT,
+	type CaptureBackend,
 	type CaptureMessage,
 	chatJson,
 	chatWithRetry,
@@ -15,6 +36,7 @@ import {
 	normalizeFactText,
 	parseIdArray,
 	parseTaggedFacts,
+	runCaptureWorker,
 	windowByBudget,
 } from "./capture-worker.js"
 
@@ -198,7 +220,7 @@ describe("extractMessages (user + gated assistant)", () => {
 	})
 
 	it("truncates oversized assistant turns to the bound (needles sit at the start)", () => {
-		const entry = msgEntry("assistant", "The answer is 3 eggs. " + "x".repeat(1500))
+		const entry = msgEntry("assistant", `The answer is 3 eggs. ${"x".repeat(1500)}`)
 		const messages = extractMessages([entry])
 		expect(messages).toHaveLength(1)
 		expect(messages[0]?.content).toHaveLength(1000)
@@ -241,6 +263,30 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 			messages: Array<{ content: string }>
 		}
 		expect(body.messages[0]?.content).toContain("AI agent, not the user")
+	})
+
+	it("the scoped variant swaps the respond line for the scope-tag section", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockImplementation(() =>
+				Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })),
+			)
+		await extractAssistantFacts(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			[msg("user", "which framework?"), msg("assistant", "vitest")],
+			"acme/widgets (path: /repo)",
+		)
+		const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string) as {
+			messages: Array<{ content: string }>
+		}
+		const system = body.messages[0]?.content ?? ""
+		// The tag section replaces the base prompt's respond line —
+		// conflicting final instructions made the model embed "[project]"
+		// prefixes in fact strings instead of routing them (two-store dogfood:
+		// 16 facts with text prefixes, 0 routed to the project store).
+		expect(system).toContain("Tag each fact's scope")
+		expect(system).toContain("acme/widgets")
+		expect(system).not.toContain("Respond with ONLY a JSON array of fact strings")
 	})
 })
 
@@ -427,5 +473,245 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 		expect(parseIdArray('prefix ["x"] suffix')).toEqual(["x"])
 		expect(parseIdArray('["ok", 3, null]')).toEqual(["ok"])
 		expect(() => parseIdArray("no array at all")).toThrow(/no JSON array/)
+	})
+})
+
+describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)", () => {
+	// The pipeline is exercised with an in-memory store and a stubbed gateway
+	// (both seams added for exactly this): job write → drain → extraction →
+	// dedupe → supersede → hash-mark → job removal, against a temp HOME so
+	// the memory root, ledger, and lock are fully isolated.
+	const realHome = process.env.HOME
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-capture-pipeline-"))
+		process.env.HOME = home
+		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		vi.mocked(spawn).mockClear()
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	const pendingDir = () => join(home, ".config", "kimchi", "memory", "pending")
+	const dbPath = () => join(home, ".config", "kimchi", "memory", "personal", "memory.db")
+	const ledgerPath = () => join(home, ".config", "kimchi", "memory", "captured-hashes.json")
+
+	/** In-memory capture backend — the store seam. */
+	function makeFakeBackend(options: { failAdds?: boolean } = {}) {
+		const added: string[] = []
+		const deleted: string[] = []
+		const items: Array<{ id: string; memory: string }> = []
+		let nextId = 0
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				if (options.failAdds) throw new Error("store unavailable")
+				nextId += 1
+				items.push({ id: `m${nextId}`, memory: fact })
+				added.push(fact)
+			},
+			delete: async (id) => {
+				deleted.push(id)
+				const index = items.findIndex((item) => item.id === id)
+				if (index >= 0) items.splice(index, 1)
+			},
+			getAll: async () => ({ results: items.map(({ id, memory }) => ({ id, memory })) }),
+			search: async () => ({ results: items.map(({ id, memory }) => ({ id, memory, score: 0.5 })) }),
+		}
+		return { backend, added, deleted, items }
+	}
+
+	/** Stubbed gateway: extraction returns the window's first message as the
+	 * sole personal fact; the supersede judge deletes nothing. Records the
+	 * extraction transcripts, in call order. */
+	function makeFakeLlm(transcripts: string[]) {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as {
+				messages: Array<{ role: string; content: string }>
+			}
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			transcripts.push(transcript)
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		return { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+	}
+
+	const writeJob = (name: string, messages: CaptureMessage[]): string => {
+		const file = join(pendingDir(), `${name}.json`)
+		writeFileSync(file, JSON.stringify({ messages, project: null }))
+		return file
+	}
+
+	it("drains a job end to end: extract → add → hash-mark → job removal", async () => {
+		const fake = makeFakeBackend()
+		const jobFile = writeJob("job1", [msg("user", "my dog's name is Fred")])
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm([]),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["my dog's name is Fred"])
+		expect(existsSync(jobFile)).toBe(false)
+		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
+		expect(ledger).toHaveLength(1)
+	})
+
+	it("a re-spawned duplicate job is a no-op (ledger idempotence)", async () => {
+		const fake = makeFakeBackend()
+		const transcripts: string[] = []
+		const options = { llm: makeFakeLlm(transcripts), createBackend: () => Promise.resolve(fake.backend) }
+		await runCaptureWorker(["--job", writeJob("job1", [msg("user", "hello world")]), "--db", dbPath()], options)
+		await runCaptureWorker(["--job", writeJob("job2", [msg("user", "hello world")]), "--db", dbPath()], options)
+		expect(fake.added).toEqual(["hello world"]) // captured once, not twice
+		expect(transcripts).toHaveLength(1) // the second drain never reached extraction
+	})
+
+	it("a failed add leaves the job and hashes unmarked — the retry drain reprocesses", async () => {
+		const jobFile = writeJob("job1", [msg("user", "crash marker")])
+		// First drain: the store rejects every add → the job stays, no hash marks.
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		expect(existsSync(jobFile)).toBe(true)
+		expect(existsSync(ledgerPath())).toBe(false)
+		// Retry with a working store: the same job now captures.
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm([]),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["crash marker"])
+		expect(existsSync(jobFile)).toBe(false)
+	})
+
+	it("a poison job file is removed and does not block the rest of the drain", async () => {
+		const poison = join(pendingDir(), "poison.json")
+		writeFileSync(poison, "{not json")
+		const fake = makeFakeBackend()
+		const valid = writeJob("valid", [msg("user", "valid message")])
+		await expect(
+			runCaptureWorker(["--job", valid, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(fake.backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		expect(existsSync(poison)).toBe(false) // removed, not retried forever
+		expect(fake.added).toEqual(["valid message"]) // the valid job still processed
+	})
+
+	it("pending jobs older than 7 days are swept without processing", async () => {
+		const stale = writeJob("stale", [msg("user", "stale message")])
+		const eightDaysAgo = Date.now() - 8 * 86_400_000
+		utimesSync(stale, new Date(eightDaysAgo), new Date(eightDaysAgo))
+		const transcripts: string[] = []
+		const captured = await runCaptureWorker(["--job", stale, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(makeFakeBackend().backend),
+		})
+		expect(captured).toBe(0)
+		expect(existsSync(stale)).toBe(false)
+		expect(transcripts).toHaveLength(0) // never reached extraction
+	})
+
+	it("drains pending jobs oldest first", async () => {
+		const older = writeJob("older", [msg("user", "older job message")])
+		const newer = writeJob("newer", [msg("user", "newer job message")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		const transcripts: string[] = []
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(makeFakeBackend().backend),
+		})
+		expect(transcripts).toEqual(["user: older job message", "user: newer job message"])
+	})
+
+	it("a fact whose normalized text already exists is not re-added", async () => {
+		const fake = makeFakeBackend()
+		fake.items.push({ id: "existing", memory: "The user's dog is named Fred" })
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [
+						{
+							message: {
+								// Same fact after normalization (case + whitespace) — the
+								// exact-duplicate guard must skip the add.
+								content: JSON.stringify({ personal: ["the user's DOG is named   Fred"], project: [] }),
+							},
+						},
+					],
+				}),
+				{ status: 200 },
+			)
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job1", [msg("user", "irrelevant")]), "--db", dbPath()],
+			{
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			},
+		)
+		expect(captured).toBe(0)
+		expect(fake.added).toHaveLength(0)
+	})
+})
+
+describe("wireMemoryCapture — session shutdown job files", () => {
+	const realHome = process.env.HOME
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-capture-wire-"))
+		process.env.HOME = home
+		vi.mocked(spawn).mockClear()
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api)
+		const shutdown = getHandler("session_shutdown")
+		const child = new EventEmitter() as unknown as ChildProcess
+		child.unref = vi.fn()
+		vi.mocked(spawn).mockImplementation(() => child)
+		const entry = { type: "message", message: { role: "user", content: "remember this" } } as unknown as SessionEntry
+		// createContext's cwd (/tmp) is not a git repository → personal scope.
+		const ctx = createContext({ sessionManager: { getEntries: () => [entry] } })
+
+		shutdown({ type: "session_shutdown" }, ctx)
+
+		const pending = readdirSync(join(home, ".config", "kimchi", "memory", "pending"))
+		expect(pending).toHaveLength(1)
+		const job = JSON.parse(
+			readFileSync(join(home, ".config", "kimchi", "memory", "pending", pending[0] as string), "utf-8"),
+		) as {
+			messages: CaptureMessage[]
+			project: unknown
+		}
+		expect(job.messages).toEqual([{ role: "user", content: "remember this" }])
+		expect(job.project).toBeNull()
+		expect(spawn).toHaveBeenCalledTimes(1)
+
+		// The deterministic id: re-invoking with the same content overwrites
+		// the same job file instead of queueing a duplicate.
+		shutdown({ type: "session_shutdown" }, ctx)
+		expect(readdirSync(join(home, ".config", "kimchi", "memory", "pending"))).toHaveLength(1)
 	})
 })

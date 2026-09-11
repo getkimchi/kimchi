@@ -175,7 +175,9 @@ export class MemoryPanel {
 		const fact = this.facts[this.cursorIndex]
 		if (!fact || this.deleting) return
 		this.deleting = true
-		// Optimistic removal keeps the panel responsive; restore on failure.
+		// Optimistic removal keeps the panel responsive; restore on failure —
+		// at the ORIGINAL index, so a failed delete never reorders the list.
+		const originalIndex = this.cursorIndex
 		this.facts.splice(this.cursorIndex, 1)
 		if (this.cursorIndex >= this.facts.length) this.cursorIndex = Math.max(0, this.facts.length - 1)
 		this.options.tui.requestRender()
@@ -183,7 +185,7 @@ export class MemoryPanel {
 			const scope = await this.options.deleteFact(fact.id)
 			this.notice = { text: `Deleted from ${scope}: ${oneLine(fact.memory).slice(0, 60)}`, error: false }
 		} catch (err) {
-			this.facts.splice(this.cursorIndex, 0, fact)
+			this.facts.splice(originalIndex, 0, fact)
 			this.notice = {
 				text: `Delete failed: ${err instanceof Error ? err.message : String(err)}`,
 				error: true,

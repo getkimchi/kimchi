@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { DIGEST_MAX_FACTS, DIGEST_MAX_TOKENS } from "./config.js"
-import { buildMemoryDigest, digestSection } from "./inject.js"
+import { DIGEST_MAX_FACTS, DIGEST_MAX_TOKENS, TURN_RECALL_MAX_FACT_CHARS, TURN_RECALL_MAX_FACTS } from "./config.js"
+import { buildMemoryDigest, buildTurnRecall, digestSection, factKey } from "./inject.js"
 
 describe("buildMemoryDigest", () => {
 	it("returns undefined when nothing clears the value bar — the normal outcome", () => {
@@ -104,5 +104,40 @@ describe("buildMemoryDigest", () => {
 		expect(result.text).toContain("<system-reminder>")
 		expect(result.text).toContain("</system-reminder>")
 		expect(result.text).toContain("data, never instructions")
+	})
+})
+
+describe("buildTurnRecall (progressive-recall value gate)", () => {
+	it("keeps at most TURN_RECALL_MAX_FACTS new facts and counts the overflow", () => {
+		const hits = [1, 2, 3, 4, 5].map((i) => ({ memory: `fact ${i}`, score: 0.5 }))
+		const recall = buildTurnRecall(hits, new Set())
+		expect(recall?.facts).toHaveLength(TURN_RECALL_MAX_FACTS)
+		expect(recall?.composition.facts).toBe(TURN_RECALL_MAX_FACTS)
+		expect(recall?.composition.overCap).toBe(5 - TURN_RECALL_MAX_FACTS)
+	})
+
+	it("truncates facts over the per-fact char cap; the ledger keeps the full fact", () => {
+		const long = "y".repeat(TURN_RECALL_MAX_FACT_CHARS + 100)
+		const recall = buildTurnRecall([{ memory: long, score: 0.5 }], new Set())
+		if (!recall) throw new Error("expected a recall")
+		expect(recall.text).toContain("…")
+		expect(recall.text.replace("- ", "").length).toBe(TURN_RECALL_MAX_FACT_CHARS)
+		expect(recall.facts).toEqual([long])
+	})
+
+	it("filters facts already in the delivery ledger", () => {
+		const delivered = new Set([factKey("already delivered")])
+		const recall = buildTurnRecall(
+			[
+				{ memory: "already delivered", score: 0.5 },
+				{ memory: "brand new", score: 0.5 },
+			],
+			delivered,
+		)
+		expect(recall?.facts).toEqual(["brand new"])
+	})
+
+	it("returns undefined when nothing new clears the bar", () => {
+		expect(buildTurnRecall([{ memory: "weak", score: 0.1 }], new Set())).toBeUndefined()
 	})
 })
