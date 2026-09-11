@@ -116,17 +116,18 @@ if (!isCrossCompile && platform() === "darwin") {
 // @silvia-odwyer/photon-node, whose CJS entry reads photon_rs_bg.wasm via a
 // build-machine absolute path. pi patches fs.readFileSync to fall back to
 // $execDir/photon_rs_bg.wasm, so the WASM must sit next to the compiled binary.
-// Resolve it the way pi (a regular dependency) sees it; the direct top-level
-// require.resolve only works while pnpm happens to hoist photon-node.
+// photon-node is a direct devDependency: resolving from the project root is the
+// only layout-proof approach — transitive resolution through pi relies on pnpm
+// hoisting internals that differ between installs (and failed in GH Actions).
 console.log("\n→ copy photon wasm")
-const piRequire = createRequire(join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"))
+const buildRequire = createRequire(join(projectRoot, "package.json"))
 let photonWasmSrc
 try {
-	photonWasmSrc = piRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
+	photonWasmSrc = buildRequire.resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
 } catch {
 	// pnpm layouts don't always honor deep subpath joins — resolve the package
 	// directory via its package.json and join the WASM filename instead.
-	photonWasmSrc = join(dirname(piRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
+	photonWasmSrc = join(dirname(buildRequire.resolve("@silvia-odwyer/photon-node/package.json")), "photon_rs_bg.wasm")
 }
 if (!existsSync(photonWasmSrc)) {
 	// Structural regression guard: without this file, every image read in the
