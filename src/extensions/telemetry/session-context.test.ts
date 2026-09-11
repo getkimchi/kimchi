@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
@@ -201,6 +202,81 @@ describe("SessionContext", () => {
 		expect(changeAttrs.previous_session_type).toBe("coding")
 		expect(changeAttrs.ferment_id).toBe("f-1")
 		expect(changeAttrs.source).toBe("cli")
+	})
+
+	it("prefers active Ferment V2 attribution over legacy Ferment on ambient events", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-v1" } as never)
+		setTelemetryFermentV2Context({ id: "fv2-active", revision: 7, status: "paused" })
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", {})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.session_type).toBe("ferment")
+		expect(attrMap.ferment_id).toBe("fv2-active")
+		expect(attrMap.ferment_v2_id).toBe("fv2-active")
+		expect(attrMap.ferment_version).toBe("v2")
+		expect(attrMap.ferment_revision).toBe("7")
+		expect(attrMap.status).toBe("paused")
+	})
+
+	it("suppresses raw error message fields only on V2-attributed ambient events", async () => {
+		setTelemetryFermentV2Context({ id: "fv2-active", revision: 7, status: "active" })
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("message.error", {
+			error_message: "raw provider error",
+			"error.message": "raw nested provider error",
+			error_type: "provider",
+			"error.type": "provider",
+		})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.ferment_version).toBe("v2")
+		expect(attrMap.error_type).toBe("provider")
+		expect(attrMap["error.type"]).toBe("provider")
+		expect(attrMap.error_message).toBeUndefined()
+		expect(attrMap["error.message"]).toBeUndefined()
+	})
+
+	it("keeps legacy error message fields when no V2 context is active", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-v1" } as never)
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("message.error", {
+			error_message: "legacy raw error",
+			"error.message": "legacy nested raw error",
+			error_type: "provider",
+		})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrMap.ferment_id).toBe("f-v1")
+		expect(attrMap.ferment_version).toBeUndefined()
+		expect(attrMap.error_message).toBe("legacy raw error")
+		expect(attrMap["error.message"]).toBe("legacy nested raw error")
 	})
 
 	it("does not emit session.type_changed when type stays the same", async () => {

@@ -203,6 +203,10 @@ export interface ToolActivity {
 	toolCallId?: string
 	/** ACP tool-call status — "in_progress" = start, "completed"/"failed" = end. */
 	status: "pending" | "in_progress" | "completed" | "failed"
+	/** Human-readable title describing the call (ACP title). */
+	title?: string
+	/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
+	rawInput?: unknown
 }
 
 export interface RunOptions {

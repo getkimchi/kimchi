@@ -63,11 +63,38 @@ export class RemoteAgentSession {
 	 *  after a tool call, new assistant messages should only get text that came
 	 *  after the tool call, not the full accumulated text. */
 	private _textOffset = 0
+	/** Set to true when the runner enters the reconnecting state. */
+	private _reconnecting = false
 
 	/** Called by _runRemote() via runRemoteAgent's onReady callback. */
 	bindClient(acpClient: AcpSessionClient, meta: RemoteSessionMeta): void {
 		this.acpClient = acpClient
 		this.meta = meta
+	}
+
+	/** Mark the session as reconnecting (or not). Set by the runner.
+	 *  On reattach (false), resets text + tool tracking state so new events
+	 *  from the reattached client are treated as a fresh stream — stale
+	 *  tools from before the disconnect are cleared so they don't accumulate
+	 *  in the progress line. */
+	setReconnecting(v: boolean): void {
+		this._reconnecting = v
+		if (!v) {
+			// Reattach: reset text tracking so new onTextDelta calls from the
+			// fresh AcpSessionClient aren't sliced against stale offsets.
+			this._textOffset = 0
+			this._lastFullTextLength = 0
+			// Clear stale tool tracking — tools that were in_progress before the
+			// disconnect never received their completion events, so they'd
+			// accumulate in the progress line as ghost entries.
+			this._pendingToolCalls.clear()
+			this._pendingToolCallIds.clear()
+			this._acpToLocalId.clear()
+			this._pendingToolName = undefined
+			// _toolCallSeq stays monotonic — pre-disconnect toolCall parts still in
+			// _messages carry tc-N ids; restarting the counter would collide.
+			this.emit({ type: "activity_reset" })
+		}
 	}
 
 	/** Record the user prompt as the first message in the transcript.
@@ -190,8 +217,10 @@ export class RemoteAgentSession {
 	 *  Appends a toolCall content part to the last assistant message (creating
 	 *  one if needed) — matching how local agents structure AssistantMessage.
 	 *  Uses a unique toolCallId so the same tool can run multiple times.
-	 *  Deduplicates repeated in_progress notifications for the same toolCallId. */
-	recordToolCallStart(toolName: string, toolCallId?: string): void {
+	 *  Deduplicates repeated in_progress notifications for the same toolCallId.
+	 *  `args` is the ACP rawInput (full tool arguments) — stored so the
+	 *  conversation viewer can show e.g. the command a bash call runs. */
+	recordToolCallStart(toolName: string, toolCallId?: string, args?: unknown): void {
 		if (toolCallId) {
 			if (this._pendingToolCallIds.has(toolCallId)) return
 			this._pendingToolCallIds.add(toolCallId)
@@ -204,21 +233,22 @@ export class RemoteAgentSession {
 		this._pendingToolCalls.set(localId, toolName)
 		if (toolCallId) this._acpToLocalId.set(toolCallId, localId)
 
+		const argsObj = args ?? {}
 		const last = this._messages[this._messages.length - 1]
 		if (last?.role === "assistant") {
 			const parts = last.content as Array<{ type: string; [k: string]: unknown }>
-			parts.push({ type: "toolCall", id: localId, name: toolName, arguments: {} })
+			parts.push({ type: "toolCall", id: localId, name: toolName, arguments: argsObj })
 		} else {
 			this._messages.push({
 				role: "assistant",
-				content: [{ type: "toolCall", id: localId, name: toolName, arguments: {} }],
+				content: [{ type: "toolCall", id: localId, name: toolName, arguments: argsObj }],
 			})
 		}
 		this.emit({
 			type: "tool_execution_start",
 			toolCallId: localId,
 			toolName,
-			args: {},
+			args: argsObj,
 		})
 	}
 
@@ -264,10 +294,14 @@ export class RemoteAgentSession {
 
 	/**
 	 * Steering is not supported for remote agents — ACP has no dedicated
-	 * steering primitive. This will be implemented later once the ACP
-	 * server supports it.
+	 * steering primitive. When the session is in a reconnecting state,
+	 * throws a specific "agent temporarily unreachable" error so callers
+	 * can distinguish it from a permanent "not supported" rejection.
 	 */
 	async steer(_text: string): Promise<void> {
+		if (this._reconnecting) {
+			throw new Error("agent temporarily unreachable, retrying connection")
+		}
 		throw new Error("Steering is not supported for remote agents")
 	}
 

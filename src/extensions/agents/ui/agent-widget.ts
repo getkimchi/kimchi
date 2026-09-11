@@ -57,7 +57,16 @@ export interface AgentDetails {
 	tokens: string
 	tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	durationMs: number
-	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background"
+	status:
+		| "queued"
+		| "running"
+		| "reconnecting"
+		| "completed"
+		| "steered"
+		| "aborted"
+		| "stopped"
+		| "error"
+		| "background"
 	visibility?: "user" | "system"
 	activity?: string
 	spinnerFrame?: number
@@ -248,7 +257,7 @@ export class AgentWidget {
 
 	private renderWidget(theme: Theme, width: number): string[] {
 		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
-		const running = allAgents.filter((a) => a.status === "running")
+		const running = allAgents.filter((a) => a.status === "running" || a.status === "reconnecting")
 		const queued = allAgents.filter((a) => a.status === "queued")
 		const finished = allAgents.filter(
 			(a) =>
@@ -290,7 +299,13 @@ export class AgentWidget {
 			parts.push(elapsed)
 			const statsText = parts.join(" · ")
 
-			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
+			const activity =
+				a.status === "reconnecting"
+					? "reconnecting…"
+					: bg
+						? describeActivity(bg.activeTools, bg.responseText)
+						: "thinking…"
+			const reconnectingTag = a.status === "reconnecting" ? ` ${theme.fg("warning", "[reconnecting]")}` : ""
 
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
 			const bgTag = a.isBackground ? ` ${theme.fg("muted", "[background]")}` : ""
@@ -302,7 +317,7 @@ export class AgentWidget {
 			const descLine = truncateLine(a.description)
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}${reconnectingTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`) + bgHint + killHint),
 			])
@@ -383,7 +398,7 @@ export class AgentWidget {
 		let queuedCount = 0
 		let hasFinished = false
 		for (const a of allAgents) {
-			if (a.status === "running") {
+			if (a.status === "running" || a.status === "reconnecting") {
 				runningCount++
 			} else if (a.status === "queued") {
 				queuedCount++

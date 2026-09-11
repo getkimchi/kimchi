@@ -7,7 +7,8 @@
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
-import { KIMCHI_PROVIDER_ID } from "../../../extensions/login/flow.js"
+import { isCredentialStale } from "../../../credential-staleness.js"
+import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
 export type AuthStatusResponse = {
 	authenticated: boolean
@@ -50,10 +51,15 @@ export type AuthStatusPaths = {
  * unstable_logout() removes exactly it, so it defines "logged in".
  */
 export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
-	if (loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey) {
+	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
+	// A 401 mark (key-level or provider-level — credential-staleness.ts)
+	// means logged-out, even though the key exists on disk.
+	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
+		return { authenticated: false }
+	}
+	if (apiKey) {
 		return { authenticated: true }
 	}
-
 	const modelRuntime = await ModelRuntime.create({
 		authPath: paths.authPath,
 		modelsPath: paths.modelsPath,

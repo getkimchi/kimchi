@@ -99,6 +99,7 @@ vi.mock("./manager/agent-manager.js", () => {
 				listAgents: vi.fn(() => [...records.values()]),
 				abort: vi.fn(),
 				abortAll: vi.fn(),
+				resumeRemoteRecord: vi.fn(),
 				waitForAll: vi.fn().mockResolvedValue(undefined),
 				clearCompleted: vi.fn(),
 				dispose: vi.fn(),
@@ -140,6 +141,10 @@ vi.mock("../ferment/runtime.js", () => ({
 }))
 
 vi.mock("./telemetry/index.js", () => ({ trackSubagentSpawned: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("../remote-run/post-completion.js", () => ({
+	handleRemoteCompletion: vi.fn().mockResolvedValue(undefined),
+	handleRemoteFailure: vi.fn(),
+}))
 vi.mock("./settings.js", () => ({
 	applyAndEmitLoaded: vi.fn(),
 	saveAndEmitChanged: vi.fn(),
@@ -179,8 +184,10 @@ import { createContext } from "../__mocks__/context.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import type { RemoteRunState } from "./remote-run-persistence.js"
 import type { Theme } from "./ui/agent-widget.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
@@ -205,6 +212,7 @@ function makeMockPi(): ExtensionAPI & {
 		}),
 		registerTool: vi.fn(),
 		registerMessageRenderer: vi.fn(),
+		registerEntryRenderer: vi.fn(),
 		registerCommand: vi.fn(),
 		sendMessage,
 		getFlag,
@@ -341,6 +349,14 @@ describe("session_shutdown nudge race (integration)", () => {
 
 function latestHandler(pi: ReturnType<typeof makeMockPi>, event: string): CapturedHandler {
 	const handler = pi._handlers.get(event)?.at(-1)
+	if (!handler) throw new Error(`expected ${event} handler`)
+	return handler
+}
+
+/** First handler for the event — the communication lifecycle handler is
+ *  registered before master's remote-run resumption handler for session_start. */
+function firstHandler(pi: ReturnType<typeof makeMockPi>, event: string): CapturedHandler {
+	const handler = pi._handlers.get(event)?.[0]
 	if (!handler) throw new Error(`expected ${event} handler`)
 	return handler
 }
@@ -485,7 +501,7 @@ describe("agent communication lifecycle", () => {
 			pi.getFlag.mockReturnValue(scenario.flag ? true : undefined)
 			agentsExtension(pi)
 			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-			const sessionStart = latestHandler(pi, "session_start")
+			const sessionStart = firstHandler(pi, "session_start")
 			await sessionStart(
 				{},
 				makeMockCtx(makeMockModelRegistry([]), undefined, { ...scenario, rootSessionId: scenario.root }),
@@ -502,7 +518,7 @@ describe("agent communication lifecycle", () => {
 		agentsExtension(pi)
 		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 		manager.bindCommunicationRoot.mockReturnValueOnce(true).mockReturnValueOnce(false)
-		const sessionStart = latestHandler(pi, "session_start")
+		const sessionStart = firstHandler(pi, "session_start")
 
 		await sessionStart({}, makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-1" }))
 		await sessionStart({}, makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-2" }))
@@ -523,7 +539,7 @@ describe("agent communication lifecycle", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		const sessionStart = latestHandler(pi, "session_start")
+		const sessionStart = firstHandler(pi, "session_start")
 		await sessionStart({}, makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-1" }))
 		const bridge = manager.registerParentBridge.mock.calls[0]?.[1]
 		if (!bridge) throw new Error("expected parent bridge")
@@ -599,7 +615,7 @@ describe("agent communication lifecycle", () => {
 			agentsExtension(pi)
 
 			// Simulate session_start to set parentCommunicationContext with a known root.
-			const sessionStart = latestHandler(pi, "session_start")
+			const sessionStart = firstHandler(pi, "session_start")
 			await sessionStart(
 				{},
 				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
@@ -647,7 +663,7 @@ describe("agent communication lifecycle", () => {
 			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 			if (!manager) throw new Error("AgentManager not created")
 
-			const sessionStart = latestHandler(pi, "session_start")
+			const sessionStart = firstHandler(pi, "session_start")
 			await sessionStart(
 				{},
 				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
@@ -681,7 +697,7 @@ describe("agent communication lifecycle", () => {
 			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 			if (!manager) throw new Error("AgentManager not created")
 
-			const sessionStart = latestHandler(pi, "session_start")
+			const sessionStart = firstHandler(pi, "session_start")
 			await sessionStart(
 				{},
 				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
@@ -715,7 +731,7 @@ describe("agent communication lifecycle", () => {
 			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 			if (!manager) throw new Error("AgentManager not created")
 
-			const sessionStart = latestHandler(pi, "session_start")
+			const sessionStart = firstHandler(pi, "session_start")
 			await sessionStart(
 				{},
 				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
@@ -751,7 +767,7 @@ describe("agent communication lifecycle", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		const sessionStart = latestHandler(pi, "session_start")
+		const sessionStart = firstHandler(pi, "session_start")
 		await sessionStart(
 			{},
 			makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-ui", hasUI: true, mode: "rpc" }),
@@ -786,7 +802,7 @@ describe("agent communication lifecycle", () => {
 		const headless = makeMockPi()
 		agentsExtension(headless)
 		const headlessManager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		const headlessStart = latestHandler(headless, "session_start")
+		const headlessStart = firstHandler(headless, "session_start")
 		headless.getFlag.mockReturnValue(undefined)
 		await headlessStart(
 			{},
@@ -1371,5 +1387,278 @@ describe("spawnGraderAgent", () => {
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
+	})
+})
+
+describe("user abort suppresses the remote completion dropdown", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.useFakeTimers()
+	})
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	/** Fire every turn_end handler the extension registered. */
+	function fireTurnEnd(pi: ReturnType<typeof makeMockPi>, stopReason: string): void {
+		const handlers = pi._handlers.get("turn_end") ?? []
+		expect(handlers.length).toBeGreaterThan(0)
+		for (const handler of handlers) void handler({ message: { role: "assistant", stopReason }, toolResults: [] })
+	}
+
+	function makeCloudRecord(startedAt: number): Record<string, unknown> {
+		return {
+			id: "cloud-1",
+			type: "general-purpose",
+			description: "cloud: test plan",
+			status: "completed",
+			visibility: "user",
+			resultConsumed: false,
+			result: "remote result",
+			triggersRemoteCompletion: true,
+			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			remoteOrigin: "plan",
+			startedAt,
+			completedAt: Date.now(),
+			toolUses: 3,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}
+	}
+
+	function currentManager(): { onComplete: (record: unknown) => void } {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance as { onComplete: (record: unknown) => void }
+	}
+
+	it("suppresses the dropdown when the user aborted after the agent started", () => {
+		vi.setSystemTime(10_000)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		// Agent started at t=5000; the user aborts the turn at t=10000 (mid-run).
+		fireTurnEnd(pi, "aborted")
+		manager.onComplete(makeCloudRecord(5_000))
+
+		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
+	})
+
+	it("leaves a breadcrumb instead of resuming when the user aborted a ferment cloud run", () => {
+		vi.setSystemTime(10_000)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		// Agent started at t=5000; the user aborts the turn at t=10000 (mid-run).
+		const notify = vi.fn()
+		const record = {
+			...makeCloudRecord(5_000),
+			fermentId: "ferment-1",
+			spawnCtx: { hasUI: true, ui: { notify } },
+		}
+		fireTurnEnd(pi, "aborted")
+		manager.onComplete(record)
+
+		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"), "info")
+	})
+
+	it("still shows the dropdown when no abort happened", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		manager.onComplete(makeCloudRecord(5_000))
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+
+	it("still shows the dropdown when the abort predates the agent start", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		vi.setSystemTime(1_000)
+		fireTurnEnd(pi, "aborted") // lastUserAbortAt = 1000
+		vi.setSystemTime(5_000)
+		manager.onComplete(makeCloudRecord(4_000)) // started after the abort
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+
+	it("ignores non-aborted turn ends", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		fireTurnEnd(pi, "stop")
+		manager.onComplete(makeCloudRecord(5_000))
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("remote run session resume (persisted across kimchi restarts)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	/** Fire every session_start handler the extension registered. */
+	async function fireSessionStart(pi: ReturnType<typeof makeMockPi>, ctx: unknown): Promise<void> {
+		const handlers = pi._handlers.get("session_start") ?? []
+		expect(handlers.length).toBeGreaterThan(0)
+		for (const handler of handlers) await handler({}, ctx)
+	}
+
+	function currentManager(): {
+		onComplete: (record: unknown) => void
+		abortAll: ReturnType<typeof vi.fn>
+		resumeRemoteRecord: ReturnType<typeof vi.fn>
+	} {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance as {
+			onComplete: (record: unknown) => void
+			abortAll: ReturnType<typeof vi.fn>
+			resumeRemoteRecord: ReturnType<typeof vi.fn>
+		}
+	}
+
+	const RUNNING: RemoteRunState = {
+		id: "resumed-1",
+		description: "cloud: test plan",
+		remoteSession: {
+			workspaceId: "ws-1",
+			sessionName: "acp-resume01",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-resume01",
+		},
+		acpSessionId: "remote-acp-1",
+		remoteOrigin: "plan",
+		startedAt: 1_000,
+		status: "running",
+	}
+
+	function entry(data: RemoteRunState): Record<string, unknown> {
+		return { type: "custom", customType: "remote_run:state", data }
+	}
+
+	it("spares remote records on session shutdown", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		await pi.fireShutdown()
+
+		expect(currentManager().abortAll).toHaveBeenCalledWith({ skipRemote: true })
+	})
+
+	it("resumes persisted remote runs on session start", async () => {
+		const notify = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: () => [entry(RUNNING)], getSessionId: () => "remote-test-session" },
+		}
+		await fireSessionStart(pi, ctx)
+
+		expect(currentManager().resumeRemoteRecord).toHaveBeenCalledTimes(1)
+		expect(currentManager().resumeRemoteRecord).toHaveBeenCalledWith(
+			RUNNING,
+			expect.anything(),
+			expect.objectContaining({ callbacks: expect.anything() }),
+		)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Resumed remote cloud agent"))
+	})
+
+	it("does not resume runs already watched by another kimchi session", async () => {
+		const notify = vi.fn()
+		const setStatus = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		// The mocked manager reports the ownership guard's skip outcome.
+		currentManager().resumeRemoteRecord.mockResolvedValue("already-watched")
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify, setStatus },
+			sessionManager: { getBranch: () => [entry(RUNNING)], getSessionId: () => "remote-test-session" },
+		}
+		await fireSessionStart(pi, ctx)
+
+		// The notice is appended as the newest conversation entry (rendered
+		// error-styled by the remote_run:notice renderer) — a toast would drown
+		// in the resume transcript flood.
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"remote_run:notice",
+			expect.objectContaining({ message: expect.stringContaining("already being watched") }),
+		)
+		// The renderer is registered so the entry actually shows in the TUI.
+		expect(pi.registerEntryRenderer).toHaveBeenCalledWith("remote_run:notice", expect.any(Function))
+		// It is also pinned as a persistent footer status line.
+		expect(setStatus).toHaveBeenCalledWith(
+			"remote-run",
+			expect.stringContaining("already being watched by another kimchi session"),
+		)
+		// No toast — the entry and the footer replace it.
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("does not resume runs whose last persisted state is terminal", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify: vi.fn() },
+			sessionManager: {
+				getBranch: () => [entry({ ...RUNNING, status: "completed" })],
+				getSessionId: () => "remote-test-session",
+			},
+		}
+		await fireSessionStart(pi, ctx)
+
+		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
+	})
+
+	it("persists the terminal state when a remote run completes", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const record = {
+			id: "cloud-1",
+			type: "general-purpose",
+			description: "cloud: test plan",
+			status: "completed",
+			visibility: "user",
+			resultConsumed: false,
+			result: "remote result",
+			triggersRemoteCompletion: true,
+			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			remote: true,
+			remoteSession: RUNNING.remoteSession,
+			acpSessionId: "remote-acp-1",
+			remoteOrigin: "plan",
+			startedAt: 5_000,
+			completedAt: Date.now(),
+			toolUses: 3,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}
+		currentManager().onComplete(record)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"remote_run:state",
+			expect.objectContaining({ id: "cloud-1", status: "completed" }),
+		)
 	})
 })

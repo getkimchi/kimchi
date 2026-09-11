@@ -35,7 +35,9 @@ tui-traces/
 *.tui-e2e.log
 
 # Kimchi docs and superpowers
-.kimchi
+# (contents ignored; tag defaults are shared team config — keep them versioned)
+.kimchi/*
+!.kimchi/tags.json
 docs/superpowers
 .benchmark/
 .benchmark-summary/

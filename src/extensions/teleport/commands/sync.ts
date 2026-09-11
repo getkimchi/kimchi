@@ -11,7 +11,7 @@ import type { TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { SyncProgressRow } from "../ui/sync-progress-row.js"
 import { parseSyncArgs, type SyncArgs } from "./args.js"
-import { info, refuse } from "./errors.js"
+import { authFailureMessage, info, refuse } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<void> {
@@ -54,7 +54,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 				endpoint: ctx.endpoint,
 			})
 		} catch (err) {
-			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+			refuse(ctx, authFailureMessage(err))
 		}
 
 		try {

@@ -37,6 +37,7 @@ import {
 import WebSocket from "ws"
 import type { LifetimeUsage } from "../../extensions/agents/manager/usage.js"
 import type { WorkspaceCredentials } from "../cloud/types.js"
+import { ACP_REATTACH_MID_TURN_META_KEY, parseToolCallId } from "./acp-protocol.js"
 
 // Hoisted once — reused across WebSocket frames instead of allocating per message.
 const textEncoder = new TextEncoder()
@@ -46,12 +47,34 @@ const textDecoder = new TextDecoder()
 // Public types
 // ---------------------------------------------------------------------------
 
+/**
+ * Thrown when the WebSocket transport fails (close, error, timeout) during
+ * `initialize()` or `prompt()`. Distinct from ACP protocol errors (which are
+ * legitimate agent responses) and abort signals (which are user-initiated).
+ *
+ * Callers can use `instanceof RemoteConnectionError` to classify a failure
+ * as transport-level — suitable for reconnect/retry logic.
+ */
+export class RemoteConnectionError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options)
+		this.name = "RemoteConnectionError"
+	}
+}
+
 /** Callbacks that mirror a subset of `RunOptions` from `agent-runner.ts`. */
 export interface AcpSessionCallbacks {
 	/** Streaming text delta from the assistant. Receives the delta and the accumulated full text. */
 	onTextDelta?: (delta: string, fullText: string) => void
 	/** Tool activity start/end with the tool's display title and ACP status. */
-	onToolActivity?: (activity: { toolName: string; toolCallId?: string; status: ToolCallStatus }) => void
+	onToolActivity?: (activity: {
+		toolName: string
+		toolCallId?: string
+		status: ToolCallStatus
+		title?: string
+		/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
+		rawInput?: unknown
+	}) => void
 	/** Called at the end of each ACP turn with the cumulative turn count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called with per-turn token usage when a `prompt()` resolves. */
@@ -67,6 +90,16 @@ export interface AcpSessionClientOptions {
 	credentials: WorkspaceCredentials
 	/** Event callbacks translated from ACP session updates. */
 	callbacks?: AcpSessionCallbacks
+	/** Opt in to capturing the session/load replay (exposed via `loadReplay`)
+	 *  for protocol-level result recovery. Leave unset on live/reattached
+	 *  clients — only a dedicated recovery client needs the copy. */
+	captureLoadReplay?: boolean
+	/** Called when a JSON-RPC response arrives whose id matches no request sent
+	 *  on this connection — the ORIGINAL connection's prompt response after a
+	 *  mid-turn takeover, i.e. the remote turn's end. The caller should treat
+	 *  it as the turn-end signal and recover the result immediately (the remote
+	 *  child may be reaped shortly after the session goes idle). */
+	onForeignResponse?: (response: unknown) => void
 	/** Abort signal — when aborted, calls `cancel()` on the remote session. */
 	signal?: AbortSignal
 	/** Working directory for the session (passed to newSession). */
@@ -74,10 +107,28 @@ export interface AcpSessionClientOptions {
 	/** MCP servers passed to newSession (e.g. host comms tools for external agents). */
 	mcpServers?: Array<{ command: string; args?: string[]; env?: Record<string, string> }>
 	/**
+	 * Existing ACP session id to REATTACH to via `session/load` instead of
+	 * creating a fresh session with `session/new`. Used on reconnect: the
+	 * remote session kept running server-side, so re-creating it would
+	 * restart the task from scratch (and duplicate side effects).
+	 */
+	sessionId?: string
+	/**
 	 * Inject a custom WebSocket constructor (for testing). When omitted, uses the `ws` package.
 	 */
 	// biome-ignore lint/suspicious/noExplicitAny: ws types vary between Node and Bun
 	WebSocketImpl?: any
+}
+
+/** Parses a single JSON-RPC frame line; undefined for non-JSON or malformed. */
+function parseJsonRpcFrame(text: string): Record<string, unknown> | undefined {
+	if (!text.startsWith("{")) return undefined
+	try {
+		const parsed = JSON.parse(text) as Record<string, unknown>
+		return typeof parsed === "object" && parsed !== null ? parsed : undefined
+	} catch {
+		return undefined
+	}
 }
 
 /** Result of a single `prompt()` call. */
@@ -105,6 +156,19 @@ export class AcpSessionClient {
 	/** Maps toolCallId → title so tool_call_update events with null title
 	 *  can resolve to the original tool name from the initial tool_call. */
 	private _toolCallTitles = new Map<string, string>()
+	/** True while a session/load request is in flight — the server replays
+	 * the conversation history during load, and those notifications must be
+	 * suppressed (they duplicate events received before the disconnect). */
+	private _loading = false
+	/** Captured session/load replay — the history the server streamed while a
+	 *  load was in flight. Exposed via `loadReplay` for protocol-level result
+	 *  recovery when the transcript file cannot be fetched. */
+	private _loadReplay: SessionNotification[] = []
+	/** WS ping interval — detects broken connections within ~30s instead of minutes. */
+	private _pingTimer: ReturnType<typeof setInterval> | undefined
+	/** Tracks whether we've received any data since the last ping. The WS 'pong'
+	 *  handler sets this to true, proving the connection is alive. */
+	private _awaitingPong = false
 
 	constructor(options: AcpSessionClientOptions) {
 		this._options = options
@@ -158,17 +222,49 @@ export class AcpSessionClient {
 			),
 		)
 
-		const newSessionResponse: NewSessionResponse = await this._withAbortRejection(
-			this._withTimeout(
-				this._connection.newSession({
-					cwd: this._options.cwd ?? "/home/sandbox",
-					mcpServers: this._options.mcpServers ?? [],
-				}),
-				30_000,
-				"newSession",
-			),
-		)
-		this._sessionId = newSessionResponse.sessionId
+		const resumeSessionId = this._options.sessionId
+		if (resumeSessionId) {
+			// Reattach path: load the EXISTING session (the remote agent kept it
+			// alive server-side) instead of creating a fresh one. The server
+			// replays the conversation history as session/update notifications
+			// before responding — the local transcript already received those
+			// events before the disconnect, so dispatch is suppressed while the
+			// load is in flight (_loading).
+			this._sessionId = resumeSessionId
+			this._loadReplay = []
+			this._loading = true
+			try {
+				await this._withAbortRejection(
+					this._withTimeout(
+						this._connection.loadSession({
+							sessionId: resumeSessionId,
+							cwd: this._options.cwd ?? "/home/sandbox",
+							mcpServers: this._options.mcpServers ?? [],
+							// Opt in to mid-turn attach: this client takes over a
+							// session whose owning connection died. Other clients
+							// keep the strict "cancel it first" guard.
+							_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
+						}),
+						30_000,
+						"loadSession",
+					),
+				)
+			} finally {
+				this._loading = false
+			}
+		} else {
+			const newSessionResponse: NewSessionResponse = await this._withAbortRejection(
+				this._withTimeout(
+					this._connection.newSession({
+						cwd: this._options.cwd ?? "/home/sandbox",
+						mcpServers: this._options.mcpServers ?? [],
+					}),
+					30_000,
+					"newSession",
+				),
+			)
+			this._sessionId = newSessionResponse.sessionId
+		}
 
 		// Set permission mode to yolo after session creation. The ACP server's
 		// initial mode resolution doesn't read the --yolo CLI flag (it reads
@@ -191,6 +287,10 @@ export class AcpSessionClient {
 			await this.cancel()
 			return
 		}
+
+		// Start WS ping keepalive — detects broken connections (Wi-Fi drop,
+		// laptop sleep) within ~30s instead of waiting minutes for TCP to timeout.
+		this._startPingKeepalive()
 	}
 
 	/**
@@ -259,6 +359,7 @@ export class AcpSessionClient {
 	close(): void {
 		if (this._closed) return
 		this._closed = true
+		this._stopPingKeepalive()
 		if (this._abortListener) {
 			this._options.signal?.removeEventListener("abort", this._abortListener)
 		}
@@ -268,9 +369,28 @@ export class AcpSessionClient {
 		this._connection = null
 	}
 
+	/**
+	 * Forcefully terminates the WebSocket — used by the poll loop when it
+	 * detects that the connection is broken (e.g. getSession succeeds but
+	 * returns clientConnected=false, or getSession HTTP fails entirely).
+	 * Causes the pending prompt() to reject with RemoteConnectionError so
+	 * the recovery state machine can take over.
+	 */
+	forceDisconnect(reason: string): void {
+		this._stopPingKeepalive()
+		this._rejectPending(new RemoteConnectionError(reason))
+		this._ws?.close()
+	}
+
 	/** Returns the session ID assigned by the remote agent, or null before initialize(). */
 	get sessionId(): string | null {
 		return this._sessionId
+	}
+
+	/** The session/load replay captured during the last initialize() (empty for
+	 *  new sessions and before initialize). Read-only view. */
+	get loadReplay(): readonly SessionNotification[] {
+		return this._loadReplay
 	}
 
 	// -- internal: WebSocket creation ---------------------------------------
@@ -292,6 +412,43 @@ export class AcpSessionClient {
 		return ws
 	}
 
+	// -- internal: WS ping keepalive ---------------------------------------
+
+	/**
+	 * Starts a ping keepalive that sends WS ping frames every 15s. If no
+	 * pong response is received within 30s, the connection is considered
+	 * broken and the pending prompt() is rejected with RemoteConnectionError.
+	 *
+	 * This is critical for detecting Wi-Fi drops and laptop sleep — without
+	 * pings, TCP can take minutes or hours to notice a dead connection.
+	 */
+	private _startPingKeepalive(): void {
+		const PING_INTERVAL_MS = 15_000
+		this._awaitingPong = false
+		this._pingTimer = setInterval(() => {
+			const ws = this._ws
+			if (!ws || ws.readyState !== ws.OPEN) return
+
+			if (this._awaitingPong) {
+				// Previous ping was never answered — connection is dead.
+				this._stopPingKeepalive()
+				this._rejectPending(new RemoteConnectionError("WebSocket ping timeout — connection lost"))
+				ws.close()
+				return
+			}
+
+			this._awaitingPong = true
+			ws.ping()
+		}, PING_INTERVAL_MS)
+	}
+
+	private _stopPingKeepalive(): void {
+		if (this._pingTimer) {
+			clearInterval(this._pingTimer)
+			this._pingTimer = undefined
+		}
+	}
+
 	// -- internal: WebSocket ↔ web stream bridge ---------------------------
 
 	/**
@@ -305,26 +462,56 @@ export class AcpSessionClient {
 		const ws = this._ws
 		if (!ws) throw new Error("WebSocket not created — call initialize() first")
 
+		/** Request ids sent on THIS connection — used to spot foreign responses:
+		 *  the ORIGINAL connection's prompt response arriving after a mid-turn
+		 *  takeover, which signals the remote turn's end. */
+		const sentIds = new Set<number | string>()
+
 		const readable = new ReadableStream<Uint8Array>({
 			start: (controller) => {
 				let finished = false
 				ws.on("message", (data: unknown) => {
 					const text = typeof data === "string" ? data : textDecoder.decode(data as ArrayBuffer)
-					const trimmed = text.trim()
-					if (!trimmed?.startsWith("{")) return
-					controller.enqueue(textEncoder.encode(`${text}\n`))
+					// Foreign-response detection: a RESPONSE frame whose id matches no
+					// request sent on this connection is the previous connection's
+					// prompt response after a takeover — the remote turn's end. When a
+					// callback is set, foreign frames are consumed here (the SDK would
+					// only log "Got response to unknown request" for them); otherwise
+					// they pass through untouched, preserving the SDK's default behavior.
+					const kept: string[] = []
+					for (const line of text.split("\n")) {
+						const trimmedLine = line.trim()
+						if (!trimmedLine.startsWith("{")) continue // non-JSON frames filtered as before
+						const frame = parseJsonRpcFrame(trimmedLine)
+						if (
+							frame &&
+							frame.method === undefined &&
+							("result" in frame || "error" in frame) &&
+							(typeof frame.id === "number" || typeof frame.id === "string") &&
+							!sentIds.has(frame.id)
+						) {
+							this._options.onForeignResponse?.(frame)
+							if (this._options.onForeignResponse) continue
+						}
+						kept.push(line)
+					}
+					if (kept.length > 0) controller.enqueue(textEncoder.encode(`${kept.join("\n")}\n`))
+				})
+
+				ws.on("pong", () => {
+					this._awaitingPong = false
 				})
 
 				ws.on("close", () => {
 					if (!finished) {
 						finished = true
-						controller.close()
+						controller.error(new RemoteConnectionError("WebSocket closed"))
 					}
 				})
 				ws.on("error", (err: Error) => {
 					if (!finished) {
 						finished = true
-						controller.error(err)
+						controller.error(new RemoteConnectionError(`WebSocket error: ${err.message}`, { cause: err }))
 					}
 				})
 			},
@@ -332,12 +519,19 @@ export class AcpSessionClient {
 
 		const writable = new WritableStream<Uint8Array>({
 			write: (chunk) => {
+				// Record request ids for foreign-response detection (see readable).
+				for (const line of textDecoder.decode(chunk).split("\n")) {
+					const frame = parseJsonRpcFrame(line.trim())
+					if (!frame || typeof frame.method !== "string") continue
+					const id = frame.id
+					if (typeof id === "number" || typeof id === "string") sentIds.add(id)
+				}
 				if (ws.readyState !== ws.OPEN) {
-					return Promise.reject(new Error("WebSocket is not open"))
+					return Promise.reject(new RemoteConnectionError("WebSocket is not open"))
 				}
 				return new Promise<void>((resolve, reject) => {
 					ws.send(textDecoder.decode(chunk), (err) => {
-						if (err) reject(err)
+						if (err) reject(new RemoteConnectionError("WebSocket send failed", { cause: err }))
 						else resolve()
 					})
 				})
@@ -350,9 +544,10 @@ export class AcpSessionClient {
 	/** Returns a promise that resolves when the WebSocket emits "open". */
 	private _waitForOpen(): Promise<void> {
 		const ws = this._ws
-		if (!ws) return Promise.reject(new Error("WebSocket not created"))
+		if (!ws) return Promise.reject(new RemoteConnectionError("WebSocket not created"))
 		if (ws.readyState === ws.OPEN) return Promise.resolve()
-		if (ws.readyState >= ws.CLOSING) return Promise.reject(new Error("WebSocket closed before connection established"))
+		if (ws.readyState >= ws.CLOSING)
+			return Promise.reject(new RemoteConnectionError("WebSocket closed before connection established"))
 
 		return new Promise<void>((resolve, reject) => {
 			const cleanup = (): void => {
@@ -365,7 +560,7 @@ export class AcpSessionClient {
 			}
 			const onError = (err: Error): void => {
 				cleanup()
-				reject(err)
+				reject(new RemoteConnectionError("WebSocket failed to open", { cause: err }))
 			}
 			ws.on("open", onOpen)
 			ws.on("error", onError)
@@ -378,7 +573,7 @@ export class AcpSessionClient {
 		const timeout = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				this._ws?.close()
-				reject(new Error(`${label} timed out after ${ms}ms`))
+				reject(new RemoteConnectionError(`${label} timed out after ${ms}ms`))
 			}, ms)
 		})
 		return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
@@ -423,6 +618,14 @@ export class AcpSessionClient {
 	// -- internal: ACP notification handling --------------------------------
 
 	private _handleSessionUpdate(params: SessionNotification): Promise<void> {
+		// session/load replays the entire history — to the local transcript
+		// these are duplicates of events received before the disconnect. The
+		// captured copy is exposed via `loadReplay` for protocol-level result
+		// recovery when the transcript file cannot be fetched.
+		if (this._loading) {
+			if (this._options.captureLoadReplay) this._loadReplay.push(params)
+			return Promise.resolve()
+		}
 		this._options.callbacks?.onRawNotification?.(params)
 		const update = params.update
 		const cb = this._options.callbacks
@@ -441,13 +644,20 @@ export class AcpSessionClient {
 				if (update.title) {
 					this._toolCallTitles.set(update.toolCallId, update.title)
 				}
-				this._dispatchToolActivity(cb, update.status, update.toolCallId, update.title)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, update.title, update.rawInput)
 				break
 			}
 			case "tool_call_update": {
-				// tool_call_update may omit title — resolve from the initial tool_call.
+				// Refresh the title cache when the update carries one: the in_progress
+				// update has the full-args title, superseding the partial title that
+				// streamed in on the pending tool_call. Completed/failed updates carry
+				// no title at all (server only sends status/content/rawOutput), so
+				// they resolve through this cache — and must get the LATEST title.
+				if (update.title) {
+					this._toolCallTitles.set(update.toolCallId, update.title)
+				}
 				const title = update.title ?? this._toolCallTitles.get(update.toolCallId)
-				this._dispatchToolActivity(cb, update.status, update.toolCallId, title)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, title, update.rawInput)
 				break
 			}
 			default:
@@ -462,13 +672,25 @@ export class AcpSessionClient {
 		status: ToolCallStatus | null | undefined,
 		toolCallId: string,
 		title: string | undefined,
+		rawInput?: unknown,
 	): void {
-		if (status === "in_progress") {
-			cb.onToolActivity?.({ toolName: title ?? toolCallId, toolCallId, status })
-		} else if (status === "completed" || status === "failed") {
-			cb.onToolActivity?.({ toolName: title ?? toolCallId, toolCallId, status })
-			this._toolCallTitles.delete(toolCallId)
-		}
+		// pending = model is still streaming the args — nothing is executing yet.
+		if (!status || status === "pending") return
+		// Extract the actual tool name from the ACP toolCallId.
+		// The format is `kt.<toolName>.<counter>` (e.g. kt.bash.1, kt.web_fetch.2).
+		// Fall back to the ACP title, then the raw id.
+		const toolName = parseToolCallId(toolCallId)?.toolName ?? title ?? toolCallId
+		// Attach rawInput only when the notification carries it — keeps the
+		// payload shape stable for notifications without args.
+		cb.onToolActivity?.({
+			toolName,
+			toolCallId,
+			status,
+			title,
+			...(rawInput != null ? { rawInput } : {}),
+		})
+		// completed/failed clears the title cache entry.
+		if (status !== "in_progress") this._toolCallTitles.delete(toolCallId)
 	}
 
 	/**
@@ -490,4 +712,33 @@ export class AcpSessionClient {
 			},
 		})
 	}
+}
+
+/**
+ * Extracts the final assistant message text from a session/load replay.
+ *
+ * The replay carries no timestamps, so this walks the notification stream and
+ * accumulates agent_message_chunk text, resetting at every user message and
+ * tool call — whatever remains when the stream ends is the final assistant
+ * message (the answer). Thought chunks interleave inside a message without
+ * ending it, so they neither reset nor contribute.
+ */
+export function extractFinalAssistantText(notifications: readonly SessionNotification[]): string {
+	let text = ""
+	for (const params of notifications) {
+		const update = params.update
+		switch (update.sessionUpdate) {
+			case "agent_message_chunk":
+				if (update.content.type === "text") text += update.content.text
+				break
+			case "user_message_chunk":
+			case "tool_call":
+			case "tool_call_update":
+				text = ""
+				break
+			default:
+				break
+		}
+	}
+	return text
 }

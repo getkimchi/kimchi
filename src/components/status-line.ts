@@ -7,6 +7,7 @@ import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
+import { parseTag } from "../config/tags.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
@@ -17,7 +18,7 @@ import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
 import { getEffectiveModel } from "../extensions/router/state.js"
-import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
+import { getActiveTags, getCurrentPhase } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =

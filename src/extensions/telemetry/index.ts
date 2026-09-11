@@ -25,13 +25,19 @@ import {
 	type FermentStepStartedPayload,
 	type UserUnblockedPayload,
 } from "../ferment/domain-events.js"
-import { FERMENT_V2_EVENTS, type FermentV2EvaluatedPayload } from "../ferment-v2/domain-events.js"
+import {
+	FERMENT_V2_EVENTS,
+	type FermentV2ContextChangedPayload,
+	type FermentV2EvaluatedPayload,
+	type FermentV2EventName,
+	type FermentV2LifecyclePayload,
+} from "../ferment-v2/domain-events.js"
 import {
 	LOOP_GUARD_EVENTS,
 	type LoopGuardSubagentAbortPayload,
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
-
+import { resetTelemetryFermentV2Context, setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import {
 	emitSessionStartEvent,
@@ -128,6 +134,7 @@ export function _resetFermentTrackingState(): void {
 	fermentSteeringCounts.clear()
 	phaseSteeringSnapshots.clear()
 	stepSteeringSnapshots.clear()
+	resetTelemetryFermentV2Context()
 }
 
 /** @internal — exposed for testing only */
@@ -331,6 +338,78 @@ function onFermentStarted(raw: unknown): void {
 	})
 }
 
+function externalFermentV2EventName(eventName: FermentV2EventName): string | undefined {
+	switch (eventName) {
+		case FERMENT_V2_EVENTS.STARTED:
+			return "ferment_v2.started"
+		case FERMENT_V2_EVENTS.REPLACED:
+			return "ferment_v2.replaced"
+		case FERMENT_V2_EVENTS.EDITED:
+			return "ferment_v2.edited"
+		case FERMENT_V2_EVENTS.RESUMED:
+			return "ferment_v2.resumed"
+		case FERMENT_V2_EVENTS.COMPLETED:
+			return "ferment_v2.completed"
+		case FERMENT_V2_EVENTS.BLOCKED:
+			return "ferment_v2.blocked"
+		case FERMENT_V2_EVENTS.PAUSED:
+			return "ferment_v2.paused"
+		case FERMENT_V2_EVENTS.CLEARED:
+			return "ferment_v2.cleared"
+		case FERMENT_V2_EVENTS.BUDGET_LIMITED:
+			return "ferment_v2.budget_limited"
+		case FERMENT_V2_EVENTS.STALLED:
+			return "ferment_v2.stalled"
+		case FERMENT_V2_EVENTS.AGENT_ERROR:
+			return "ferment_v2.agent_error"
+		case FERMENT_V2_EVENTS.EVALUATED:
+		case FERMENT_V2_EVENTS.CONTEXT_CHANGED:
+			return undefined
+		default: {
+			const _exhaustive: never = eventName
+			return undefined
+		}
+	}
+}
+
+function fermentV2LifecycleTelemetryHandler(eventName: FermentV2EventName, raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const externalName = externalFermentV2EventName(eventName)
+	const payload = raw as Partial<FermentV2LifecyclePayload> | undefined
+	if (!externalName || !payload?.fermentV2Id) return
+	ctx.emitWithIds(externalName, {
+		ferment_id: payload.fermentV2Id,
+		ferment_v2_id: payload.fermentV2Id,
+		ferment_version: "v2",
+		ferment_revision: payload.revision ?? 0,
+		status: payload.status ?? "",
+		tokens_used: payload.tokensUsed ?? 0,
+		duration_ms: payload.timeUsedMs ?? 0,
+		token_budget: payload.tokenBudget ?? 0,
+		completion_confidence: payload.completionConfidence ?? "",
+		reason: payload.reason ?? "",
+		replacement_ferment_id: payload.replacementFermentV2Id ?? "",
+		continuation_count: payload.continuationCount ?? 0,
+		consecutive_error_count: payload.consecutiveErrorCount ?? 0,
+		model: ctx.currentModel,
+	})
+}
+
+function fermentV2ContextChangedTelemetryHandler(raw: unknown): void {
+	const payload = raw as Partial<FermentV2ContextChangedPayload> | undefined
+	if (payload?.fermentV2Id) {
+		setTelemetryFermentV2Context({
+			id: payload.fermentV2Id,
+			revision: payload.revision ?? 0,
+			status: payload.status ?? "active",
+		})
+		return
+	}
+	setTelemetryFermentV2Context(undefined)
+}
+
 function fermentV2EvaluatedTelemetryHandler(raw: unknown): void {
 	if (!isEnabled()) return
 	const ctx = _telemetryCtx
@@ -338,17 +417,29 @@ function fermentV2EvaluatedTelemetryHandler(raw: unknown): void {
 	const payload = raw as Partial<FermentV2EvaluatedPayload> | undefined
 	if (!payload?.fermentV2Id || !payload.verdict) return
 	const usage = payload.usage
-	ctx.emit("ferment_v2.evaluated", {
+	ctx.emitWithIds("ferment_v2.evaluated", {
+		...(payload.sessionId ? { pi_session_id: payload.sessionId } : {}),
+		ferment_id: payload.fermentV2Id,
 		ferment_v2_id: payload.fermentV2Id,
+		ferment_version: "v2",
+		ferment_revision: payload.revision ?? 0,
+		status: payload.status ?? "",
 		verdict: payload.verdict,
-		count: payload.count ?? 1,
+		evaluation_count: payload.count ?? 1,
 		evaluator_model: payload.model ?? "unknown",
-		input_tokens: usage?.input ?? 0,
-		output_tokens: usage?.output ?? 0,
+		duration_ms: payload.durationMs ?? 0,
+		timeout_ms: payload.timeoutMs ?? 0,
+		provider_request_count: payload.providerRequestCount ?? 0,
+		timeout_count: payload.timeoutCount ?? 0,
+		correction_count: payload.correctionCount ?? 0,
+		failure_type: payload.failureType ?? "",
+		http_status_code: payload.httpStatusCode ?? 0,
+		total_input_tokens: usage?.input ?? 0,
+		total_output_tokens: usage?.output ?? 0,
 		cache_read_tokens: usage?.cacheRead ?? 0,
 		cache_write_tokens: usage?.cacheWrite ?? 0,
 		total_tokens: usage?.totalTokens ?? 0,
-		cost: usage?.costUsd ?? 0,
+		total_cost_usd: usage?.costUsd ?? 0,
 	})
 }
 
@@ -743,6 +834,26 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, onStepCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
+		pi.events.on(FERMENT_V2_EVENTS.STARTED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.STARTED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.REPLACED, (raw) =>
+			fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.REPLACED, raw),
+		)
+		pi.events.on(FERMENT_V2_EVENTS.EDITED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.EDITED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.RESUMED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.RESUMED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.COMPLETED, (raw) =>
+			fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.COMPLETED, raw),
+		)
+		pi.events.on(FERMENT_V2_EVENTS.BLOCKED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.BLOCKED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.PAUSED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.PAUSED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.CLEARED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.CLEARED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.BUDGET_LIMITED, (raw) =>
+			fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.BUDGET_LIMITED, raw),
+		)
+		pi.events.on(FERMENT_V2_EVENTS.STALLED, (raw) => fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.STALLED, raw))
+		pi.events.on(FERMENT_V2_EVENTS.AGENT_ERROR, (raw) =>
+			fermentV2LifecycleTelemetryHandler(FERMENT_V2_EVENTS.AGENT_ERROR, raw),
+		)
+		pi.events.on(FERMENT_V2_EVENTS.CONTEXT_CHANGED, fermentV2ContextChangedTelemetryHandler)
 		pi.events.on(FERMENT_V2_EVENTS.EVALUATED, fermentV2EvaluatedTelemetryHandler)
 		pi.events.on(FERMENT_EVENTS.SCOPING_RESUMED, onFermentScopingResumed)
 		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)

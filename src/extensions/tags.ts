@@ -7,11 +7,11 @@
  * - Status line display of active tags with color coding
  * - Integration with before_provider_request hook
  *
- * Tags are stored per-session and persisted via session entries.
+ * Tags are stored per-session and persisted via session entries. Default tags
+ * for new sessions are resolved from the config hierarchy (env > project >
+ * global) by src/config/tags.ts.
  */
 
-import { homedir } from "node:os"
-import { resolve } from "node:path"
 import type { Model } from "@earendil-works/pi-ai"
 import type {
 	CustomEntry,
@@ -24,8 +24,8 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { readJson } from "../config/json.js"
 import { readConfigSetting } from "../config/settings.js"
+import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
@@ -35,7 +35,6 @@ import { isStaleCtxError } from "./stale-ctx.js"
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const STATUS_LINE_TAGS_KEY = "active-tags"
-const TAGS_CONFIG_FILE = resolve(homedir(), ".config", "kimchi", "tags.json")
 const TAGS_SESSION_ENTRY_TYPE = "kimchi_active_tags"
 
 export function readHidePhaseChanges(): boolean {
@@ -52,37 +51,17 @@ export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
 }
 
-// ─── Tag validation ───────────────────────────────────────────────────────────
-
-const TAG_RE = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?:[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/
-
-export function isValidTag(tag: string): boolean {
-	if (!TAG_RE.test(tag)) return false
-	const [key, value] = tag.split(":", 2)
-	return key.length <= 64 && value.length <= 64
-}
-
-export function parseTag(tag: string): { key: string; value: string } | null {
-	if (!isValidTag(tag)) return null
-	const [key, value] = tag.split(":", 2)
-	return { key, value }
-}
-
 // ─── Tag storage ──────────────────────────────────────────────────────────────
-
-interface TagsConfig {
-	tags?: string[]
-}
 
 export type TagAppendEntry = (customType: string, data?: unknown) => void
 
 export class TagManager {
 	private readonly sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">
 	private readonly appendEntry: TagAppendEntry
-	private readonly configFile = TAGS_CONFIG_FILE
 
 	private tags: Set<string> = new Set()
 	private defaultTags: Set<string> = new Set()
+	private tierByTag: Map<string, TagTier> = new Map()
 	private hasSessionTags = false
 
 	constructor(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">, appendEntry: TagAppendEntry) {
@@ -112,30 +91,13 @@ export class TagManager {
 	}
 
 	private loadDefaultTags(): void {
-		// Load from config file (defaults for new sessions)
-		try {
-			const config = readJson(this.configFile) as TagsConfig
-			if (Array.isArray(config.tags)) {
-				for (const tag of config.tags) {
-					if (isValidTag(tag)) {
-						this.defaultTags.add(tag)
-					}
-				}
-			}
-		} catch {
-			// Config file doesn't exist or is invalid, ignore
+		// Defaults for new sessions, resolved from the config hierarchy
+		// (env > project > global) — see src/config/tags.ts.
+		const resolved = resolveDefaultTags()
+		for (const tag of resolved.tags) {
+			this.defaultTags.add(tag)
 		}
-
-		// Load from environment variable (defaults for new sessions)
-		const envTags = process.env.KIMCHI_TAGS
-		if (envTags) {
-			for (const tag of envTags.split(",")) {
-				const trimmed = tag.trim()
-				if (isValidTag(trimmed)) {
-					this.defaultTags.add(trimmed)
-				}
-			}
-		}
+		this.tierByTag = resolved.tierByTag
 	}
 
 	private loadSessionTags(): string[] | undefined {
@@ -208,6 +170,10 @@ export class TagManager {
 
 	isStatic(tag: string): boolean {
 		return this.defaultTags.has(tag)
+	}
+
+	getTier(tag: string): TagTier | undefined {
+		return this.tierByTag.get(tag)
 	}
 
 	getPhaseTag(phase: Phase | undefined): string | undefined {
@@ -353,7 +319,6 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		// List all tags
 		const allTags = tagManager.getAllTags()
 		const userTags = tagManager.getUserTags()
-		const staticTags = tagManager.getStaticTags()
 
 		if (allTags.length === 0) {
 			ctx.ui.notify("No tags configured. Use '/tags add key:value' to add tags.", "info")
@@ -364,8 +329,8 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		lines.push("Active tags:")
 
 		for (const tag of allTags.sort()) {
-			const isDefault = staticTags.includes(tag)
-			const marker = isDefault ? "[default]" : "[user]"
+			const tier = tagManager.getTier(tag)
+			const marker = tier ? `[${tier}]` : "[user]"
 			const colorTag = ctx.ui.theme.fg("accent", tag)
 			const colorMarker = ctx.ui.theme.fg("dim", marker)
 			lines.push(`  ${colorMarker} ${colorTag}`)
@@ -478,7 +443,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		"  /tags remove tag ...       Remove one or more user-defined tags",
 		"  /tags clear                Remove all user-defined tags",
 		"",
-		"Default tags from config/env are applied to new sessions; session changes override them.",
+		"Defaults resolve from the KIMCHI_TAGS env var, the nearest project .kimchi/tags.json, and the global ~/.config/kimchi/tags.json (env > project > global); session changes override them.",
 		`Current default tags: ${tagManager.getStaticTags().length > 0 ? tagManager.getStaticTags().join(", ") : "none"}`,
 	]
 	ctx.ui.notify(helpLines.join("\n"), "info")

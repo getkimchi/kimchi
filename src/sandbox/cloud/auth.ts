@@ -70,6 +70,9 @@ export async function createOrUpdateWorkspace(
 					agentApiKey: apiKey,
 					...(options?.gitToken ? { gitToken: options.gitToken } : {}),
 				},
+				// Create-time-only resource requests — sent verbatim; omitted
+				// entirely when unset so re-auth PUTs stay byte-identical.
+				...(options?.resources ? { resources: options.resources } : {}),
 			}),
 		},
 		fetchImpl,

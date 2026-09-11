@@ -39,6 +39,8 @@ export interface HandleRemoteCompletionOpts {
 	 *  paused during cloud execution; on completion it is completed (sync) or
 	 *  resumed (review/custom/done) so the user can continue locally. */
 	fermentId?: string
+	/** Recovery note when the result was recovered after a network disconnect. */
+	recoveryNote?: string
 }
 
 /**
@@ -111,6 +113,70 @@ export async function handleRemoteCompletion(
 	}
 }
 
+/** Options for handleRemoteFailure. */
+export interface HandleRemoteFailureOpts {
+	/** Why the run failed — surfaced in the error notification / steer message. */
+	error?: string
+	/** Recovery note when the run's result could not be recovered after a disconnect. */
+	recoveryNote?: string
+	/** True when the run was stopped by the user (Escape / Ctrl+X) rather
+	 *  than failing on its own — softens the steer wording and skips the
+	 *  interactive notification (the kill handler already announced the stop). */
+	stoppedByUser?: boolean
+	/** Ferment ID when the cloud agent executed a ferment plan. The ferment is
+	 *  resumed (un-paused) so the user can continue locally. */
+	fermentId?: string
+}
+
+/**
+ * Handles a FAILED remote cloud agent run — the counterpart of
+ * handleRemoteCompletion for errored/aborted runs.
+ *
+ * There is no result to review or sync, so no completion dropdown is shown:
+ * - The ferment paused for cloud execution (if any) is resumed — a failed
+ *   cloud run must not leave it paused forever.
+ * - Interactive sessions get an error notification.
+ * - Headless sessions get a steer message instead (a notification would be
+ *   invisible there): the local agent is still waiting on the completion
+ *   notification promised when the cloud agent was spawned.
+ */
+export function handleRemoteFailure(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext | undefined,
+	promptPrefix: string,
+	opts?: HandleRemoteFailureOpts,
+): void {
+	resumeFerment(opts?.fermentId)
+	if (!ctx) return
+	const detail = opts?.error?.trim() || "unknown error"
+	if (ctx.hasUI) {
+		// A user-initiated stop was already announced by the kill handler
+		// ("Stopped … agent") — don't pile a failure notification on top.
+		if (!opts?.stoppedByUser) {
+			// Include the recovery note's reason (first sentence) — without it, a
+			// failed resume ("result could not be recovered") is undiagnosable
+			// from the UI alone.
+			const reason = opts?.recoveryNote?.split(". ")[0]
+			ctx.ui.notify(`Cloud agent failed: ${detail}${reason ? ` — ${reason}` : ""}`, "error")
+		}
+		return
+	}
+	const recoveryNote = opts?.recoveryNote ? `\n\n${opts.recoveryNote}` : ""
+	const lead = opts?.stoppedByUser
+		? `The remote cloud agent was stopped by the user before finishing the approved ${promptPrefix}.`
+		: `The remote cloud agent FAILED while executing the approved ${promptPrefix}.`
+	const errorLine = opts?.stoppedByUser ? "" : `\n\nError: ${detail}`
+	const steer = `${lead} The ${promptPrefix} was NOT completed — do not assume any changes were made or that a result is available.${recoveryNote}${errorLine}\n\nAsk the user how to proceed: execute the ${promptPrefix} locally, re-dispatch it to the cloud, or abandon it.`
+	pi.sendMessage(
+		{
+			customType: "remote_plan_failed",
+			content: markHarnessSteer(steer),
+			display: false,
+		},
+		{ triggerTurn: true },
+	)
+}
+
 /**
  * Injects the remote agent's result into the local session as a steer message.
  * The transcript path and agent ID are always included when available so the
@@ -129,9 +195,10 @@ function injectRemoteResult(
 	const agentInfo = opts?.agentId
 		? `\nAgent ID: ${opts.agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
 		: ""
+	const recoveryNote = opts?.recoveryNote ? `\n\n${opts.recoveryNote}` : ""
 	const actionSuffix = extra?.actionSuffix ?? ""
 
-	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${actionSuffix}`
+	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${recoveryNote}${actionSuffix}`
 
 	pi.sendMessage(
 		{

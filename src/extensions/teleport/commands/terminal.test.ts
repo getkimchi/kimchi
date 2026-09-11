@@ -8,6 +8,7 @@ const {
 	provisionGitCredentialMock,
 	buildProxyCommandMock,
 	listWorkspacesMock,
+	verifyApiKeyMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	getGitRemoteHostMock: vi.fn(),
@@ -15,9 +16,11 @@ const {
 	provisionGitCredentialMock: vi.fn(),
 	buildProxyCommandMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
+	verifyApiKeyMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
+vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/git-credentials.js", () => ({ getGitRemoteHost: getGitRemoteHostMock }))
 vi.mock("../../../config.js", () => ({ readGitToken: readGitTokenMock }))
@@ -101,6 +104,7 @@ beforeEach(() => {
 	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
 	buildProxyCommandMock.mockReset().mockReturnValue("kimchi --ssh-proxy %h")
 	listWorkspacesMock.mockReset().mockResolvedValue([])
+	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
 })
 
 describe("runTerminal", () => {

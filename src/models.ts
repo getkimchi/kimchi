@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
+import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
+import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -464,12 +466,20 @@ export async function updateModelsConfig(
 	try {
 		fetched = await fetchAvailableModels(apiKey, options)
 	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		// Refresh is an authenticated call: a 401 means the on-disk key is
+		// dead, not absent. Mark before the rethrow decision so the mark
+		// survives the cached-fallback path too.
+		if (isAuthRejectedMessage(message)) {
+			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
+		}
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
-		const message = err instanceof Error ? err.message : String(err)
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return { models: sortModels([...cached, ...otherModels]) }
 	}
+	// Authenticated success clears marks from earlier 401s.
+	clearCredentialStale(KIMCHI_PROVIDER_ID)
 
 	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)
 	if (activeModels.length === 0 && fetched.length > 0) {

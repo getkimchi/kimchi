@@ -5,7 +5,9 @@ import { basename, dirname } from "node:path"
 import { readTeleportCompactHintEnabled, readTeleportHelpSeenAt, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
+import { resolveWorkspaceResources, WorkspaceResourcesError } from "../../../sandbox/cloud/resources.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
+import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { getGitRemoteHost, parseHostFromRemoteUrl, readLocalGitConfig } from "../../../sandbox/git-credentials.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, listSessions } from "../../../sandbox/worker/sessions.js"
@@ -32,7 +34,7 @@ import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import { parseTeleportArgs } from "./args.js"
-import { refuse, warn } from "./errors.js"
+import { authFailureMessage, refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 /** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
@@ -80,6 +82,24 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		resolved = await resolveWorkspaceRef(ctx, args.workspace, { onEmpty: { kind: "mint" } })
 	} finally {
 		ctx.ui.setStatus(STATUS_KEY, undefined)
+	}
+
+	// Resolve workspace resource requests (kimchi_workspace.yaml) only when
+	// this resolution mints the workspace: resources are create-time-only
+	// and immutable server-side — sending them on re-auth is a 400 landmine.
+	// Attaching to an existing workspace never reads the file, so a broken
+	// one cannot block a teleport that would ignore it anyway. Invalid
+	// values or a malformed file refuse before the upsert PUT is sent.
+	let workspaceResources: ReturnType<typeof resolveWorkspaceResources>
+	if (resolved.isNew) {
+		try {
+			workspaceResources = resolveWorkspaceResources(loadWorkspaceFile(ctx.cwd)?.resources)
+		} catch (err) {
+			if (err instanceof WorkspaceFileError || err instanceof WorkspaceResourcesError) {
+				refuse(ctx, err.message)
+			}
+			throw err
+		}
 	}
 	const workspaceId = resolved.id
 	const sessionName = args.name ?? generateSessionName()
@@ -148,10 +168,13 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	try {
 		progress.step("Authenticating")
 		try {
-			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, { endpoint: ctx.endpoint })
+			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, {
+				endpoint: ctx.endpoint,
+				...(workspaceResources ? { resources: workspaceResources } : {}),
+			})
 		} catch (err) {
 			if (signal.aborted) throw err
-			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+			refuse(ctx, authFailureMessage(err))
 		}
 		progress.complete("Authenticated")
 

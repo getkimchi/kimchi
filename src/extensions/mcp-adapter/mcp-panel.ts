@@ -3,8 +3,8 @@ import { fg } from "../../ansi.js"
 import { truncateLinesToWidth } from "../../truncate-lines.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
+import { isToolExcluded } from "./tool-names.js"
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js"
-import { isToolExcluded } from "./types.js"
 
 interface PanelTheme {
 	border: string

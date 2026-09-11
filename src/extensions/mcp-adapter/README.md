@@ -91,7 +91,7 @@ Two calls instead of 26 tools cluttering the context.
 | `idleTimeout` | Minutes before idle disconnect (overrides global) |
 | `exposeResources` | Expose MCP resources as tools (default: true) |
 | `directTools` | `true`, `string[]`, or `false` — register tools individually instead of through proxy |
-| `excludeTools` | `string[]` of tool names to hide (matches original names like `get_screenshot` and prefixed names like `figma_get_screenshot`) |
+| `excludeTools` | `string[]` of tool names to hide (matches original names like `get_screenshot`, prefixed names like `figma_get_screenshot`, and their provider-sanitized forms — invalid characters normalize to `_`) |
 | `debug` | Show server stderr (default: false) |
 
 ### Lifecycle Modes

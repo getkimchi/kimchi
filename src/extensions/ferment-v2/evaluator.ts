@@ -1,11 +1,13 @@
 import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
+import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { objectiveText } from "./objective-file.js"
@@ -70,15 +72,32 @@ Never call tools.
 
 export type FermentV2EvaluatorVerdict = "continue" | "met" | "impossible"
 
+export interface FermentV2EvaluatorDiagnostics {
+	durationMs: number
+	timeoutMs: number
+	providerRequestCount: number
+	timeoutCount: number
+	correctionCount: number
+	failureType?: FermentV2EvaluatorFailureType
+	httpStatusCode?: number
+}
+
 export type FermentV2EvaluationResult =
 	| {
 			verdict: FermentV2EvaluatorVerdict
 			reason: string
 			model: string
 			usage: FermentV2EvaluatorUsage
+			diagnostics: FermentV2EvaluatorDiagnostics
 			acceptedFinalAnswer?: string
 	  }
-	| { verdict: "unavailable"; reason: string; model?: string; usage?: FermentV2EvaluatorUsage }
+	| {
+			verdict: "unavailable"
+			reason: string
+			model?: string
+			usage?: FermentV2EvaluatorUsage
+			diagnostics: FermentV2EvaluatorDiagnostics
+	  }
 
 interface FermentV2EvaluatorCheck {
 	kind?: "work" | "final_answer"
@@ -244,31 +263,67 @@ export async function evaluateFermentV2(
 	input: FermentV2EvaluationInput,
 	ctx: ExtensionContext,
 ): Promise<FermentV2EvaluationResult> {
+	const startedAt = Date.now()
 	const sessionModelRef = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined
 	let modelRef = sessionModelRef
 	let deadline: AbortSignal | undefined
-	let evaluationTimeoutMs: number | undefined
+	const evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
+	let providerRequestCount = 0
+	let timeoutCount = 0
+	let correctionCount = 0
+	let usage: FermentV2EvaluatorUsage | undefined
+	const diagnostics = (
+		failureType?: FermentV2EvaluatorFailureType,
+		httpStatusCode?: number,
+	): FermentV2EvaluatorDiagnostics => ({
+		durationMs: Math.max(0, Date.now() - startedAt),
+		timeoutMs: evaluationTimeoutMs ?? 0,
+		providerRequestCount,
+		timeoutCount,
+		correctionCount,
+		...(failureType ? { failureType } : {}),
+		...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
+	})
+	const unavailable = (
+		reason: string,
+		failureType: FermentV2EvaluatorFailureType,
+		model?: string,
+		httpStatusCode?: number,
+	): FermentV2EvaluationResult => ({
+		verdict: "unavailable",
+		reason,
+		...(model ? { model } : {}),
+		...(usage ? { usage } : {}),
+		diagnostics: diagnostics(failureType, httpStatusCode),
+	})
 	try {
 		const objective = objectiveText(input.objective, ctx.cwd)
 		const model = resolveFermentV2EvaluatorModel(ctx)
-		if (!model) return { verdict: "unavailable", reason: "No evaluator model is available." }
+		if (!model) return unavailable("No evaluator model is available.", "no_model")
 		modelRef = `${model.provider}/${model.id}`
 		const todoState = renderTodoState(input.todos)
 		if (!todoState) {
-			return {
-				verdict: "unavailable",
-				reason: "Current Todo state is too large for a bounded evaluation.",
-				model: modelRef,
-			}
+			return unavailable("Current Todo state is too large for a bounded evaluation.", "todo_state_too_large", modelRef)
 		}
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model)
-		if (!auth.ok) return { verdict: "unavailable", reason: "Evaluator authentication is unavailable.", model: modelRef }
+		let auth: Awaited<ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>>
+		try {
+			auth = await ctx.modelRegistry.getApiKeyAndHeaders(model)
+		} catch {
+			return unavailable("Evaluator authentication is unavailable.", "auth_unavailable", modelRef)
+		}
+		if (!auth.ok) return unavailable("Evaluator authentication is unavailable.", "auth_unavailable", modelRef)
 
 		const transcript = renderRecentTranscript(input.messages)
 		const lessons = renderFermentV2Lessons(input.lessons)
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
 		let prompt = `Objective:\n${objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
-		if (getRedactionConfig().enabled) prompt = await redactTextOrThrow(prompt)
+		if (getRedactionConfig().enabled) {
+			try {
+				prompt = await redactTextOrThrow(prompt)
+			} catch {
+				return unavailable("Evaluator input redaction failed.", "redaction_failed", modelRef)
+			}
+		}
 		const context: Context = {
 			systemPrompt: EVALUATOR_SYSTEM_PROMPT,
 			messages: [
@@ -289,12 +344,13 @@ export async function evaluateFermentV2(
 		evaluatorSession.appendModelChange(model.provider, model.id)
 		evaluatorSession.appendMessage(context.messages[0])
 
-		const timeoutMs = getFermentV2Settings().evaluationTimeoutMs
-		evaluationTimeoutMs = timeoutMs
+		const timeoutMs = evaluationTimeoutMs
 		const request = async (requestContext = context, correcting = false) => {
 			const requestOnce = async () => {
+				input.signal?.throwIfAborted()
 				deadline = AbortSignal.timeout(timeoutMs)
 				const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
+				providerRequestCount++
 				const response = await completeSimple(model, requestContext, {
 					apiKey: auth.apiKey,
 					headers: auth.headers,
@@ -313,18 +369,21 @@ export async function evaluateFermentV2(
 				return await requestOnce()
 			} catch (error) {
 				if (!deadline?.aborted || input.signal?.aborted) throw error
+				timeoutCount++
 				return requestOnce()
 			}
 		}
 		let response = await request()
 		evaluatorSession.appendMessage(response)
-		let usage = toFermentV2EvaluatorUsage(response.usage)
+		usage = toFermentV2EvaluatorUsage(response.usage)
+		if (response.stopReason === "error") throw new Error(response.errorMessage ?? "Evaluator provider error")
 		const responseText = contentParts(response.content)
 		if (
 			!input.signal?.aborted &&
 			!parseFermentV2EvaluatorOutput(responseText) &&
 			(response.stopReason === "aborted" || response.stopReason === "length" || responseText.includes("{"))
 		) {
+			correctionCount++
 			const correction = {
 				role: "user" as const,
 				content: [{ type: "text" as const, text: INVALID_JSON_RETRY_PROMPT }],
@@ -342,6 +401,7 @@ export async function evaluateFermentV2(
 				totalTokens: usage.totalTokens + retriedUsage.totalTokens,
 				costUsd: usage.costUsd + retriedUsage.costUsd,
 			}
+			if (response.stopReason === "error") throw new Error(response.errorMessage ?? "Evaluator provider error")
 		}
 		if (input.signal?.aborted) throw input.signal.reason
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
@@ -358,27 +418,44 @@ export async function evaluateFermentV2(
 					reason: unsupportedReason,
 					model: modelRef,
 					usage,
+					diagnostics: diagnostics(),
 				}
 			}
 			const acceptedFinalAnswer = parsed.checks?.some((check) => check.kind === "final_answer")
 				? proposedAnswer
 				: undefined
-			return { ...decision, model: modelRef, usage, ...(acceptedFinalAnswer ? { acceptedFinalAnswer } : {}) }
+			return {
+				...decision,
+				model: modelRef,
+				usage,
+				diagnostics: diagnostics(),
+				...(acceptedFinalAnswer ? { acceptedFinalAnswer } : {}),
+			}
 		}
 		const reason =
 			response.stopReason === "length"
 				? `Evaluator ${modelRef} response was truncated before it returned a verdict.`
 				: `Evaluator ${modelRef} returned no parseable verdict (${describeUnparseable(response)}).`
-		return { verdict: "unavailable", reason, model: modelRef, usage }
+		return unavailable(reason, response.stopReason === "length" ? "truncated_output" : "invalid_output", modelRef)
 	} catch (error) {
+		if (input.signal?.aborted) {
+			return unavailable(`Evaluator ${modelRef ?? "session model"} was cancelled.`, "cancelled", modelRef)
+		}
+		if (deadline?.aborted) {
+			timeoutCount++
+			return unavailable(
+				`Evaluator ${modelRef ?? "session model"} timed out after ${(evaluationTimeoutMs ?? 0) / 1_000} seconds.`,
+				"timeout",
+				modelRef,
+			)
+		}
+		const classified = classifyLLMGatewayError(errorMessage(error))
 		return {
 			verdict: "unavailable",
-			reason: input.signal?.aborted
-				? `Evaluator ${modelRef ?? "session model"} was cancelled.`
-				: deadline?.aborted
-					? `Evaluator ${modelRef ?? "session model"} timed out after ${(evaluationTimeoutMs ?? 0) / 1_000} seconds.`
-					: `Evaluator ${modelRef ?? "session model"} call failed: ${errorMessage(error)}`,
+			reason: `Evaluator ${modelRef ?? "session model"} call failed: ${errorMessage(error)}`,
 			...(modelRef ? { model: modelRef } : {}),
+			...(usage ? { usage } : {}),
+			diagnostics: diagnostics(classified?.reason ?? "call_failed", classified?.httpStatusCode),
 		}
 	}
 }

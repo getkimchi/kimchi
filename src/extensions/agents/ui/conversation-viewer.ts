@@ -11,17 +11,9 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
+import { getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import type { AgentRecord } from "../personas/types.js"
 import { extractText } from "../prompt/context.js"
-
-// Expand tabs so visibleWidth() (which counts a tab as 1) matches what the
-// terminal actually renders (8 columns). Without this, lines with embedded
-// tabs (common in grep output) overflow the layout box and crash the renderer.
-function expandTabs(s: string): string {
-	return s.replace(/\t/g, "        ")
-}
-
-import { getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import type { Theme } from "./agent-widget.js"
 import {
 	type AgentActivity,
@@ -30,6 +22,13 @@ import {
 	formatSessionTokens,
 	getDisplayName,
 } from "./agent-widget.js"
+
+// Expand tabs so visibleWidth() (which counts a tab as 1) matches what the
+// terminal actually renders (8 columns). Without this, lines with embedded
+// tabs (common in grep output) overflow the layout box and crash the renderer.
+function expandTabs(s: string): string {
+	return s.replace(/\t/g, "        ")
+}
 
 const CHROME_LINES = 6
 const MIN_VIEWPORT = 3
@@ -108,7 +107,7 @@ export class ConversationViewer implements Component {
 		lines.push(hrTop)
 		const name = getDisplayName(this.record.type)
 		const statusIcon =
-			this.record.status === "running"
+			this.record.status === "running" || this.record.status === "reconnecting"
 				? th.fg("accent", "●")
 				: this.record.status === "completed"
 					? th.fg("success", "✓")
@@ -251,7 +250,7 @@ export class ConversationViewer implements Component {
 			needsSeparator = true
 		}
 
-		if (this.record.status === "running" && this.activity) {
+		if ((this.record.status === "running" || this.record.status === "reconnecting") && this.activity) {
 			const act = describeActivity(this.activity.activeTools, this.activity.responseText)
 			lines.push("")
 			lines.push(truncateToWidth(th.fg("accent", "▍ ") + th.fg("dim", act), width))

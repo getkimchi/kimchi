@@ -94,6 +94,38 @@ describe("authenticateWorkspace", () => {
 		expect(putBody.options.agentApiKey).toBe("key1")
 	})
 
+	it("includes resources at the top level of the create/update body when provided", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+		await authenticateWorkspace("ws-1", "key1", "desc", {
+			endpoint: BASE,
+			fetch: mockFetch,
+			resources: { cpu: "250m", memory: "1Gi", pvcSize: "20Gi" },
+		})
+
+		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+		expect(putBody.resources).toEqual({ cpu: "250m", memory: "1Gi", pvcSize: "20Gi" })
+	})
+
+	it("sends only the resource fields that are set", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+		await authenticateWorkspace("ws-1", "key1", "desc", {
+			endpoint: BASE,
+			fetch: mockFetch,
+			resources: { memory: "1Gi" },
+		})
+
+		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+		expect(putBody.resources).toEqual({ memory: "1Gi" })
+	})
+
+	it("omits the resources key entirely when not provided (re-auth stays byte-identical)", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+		await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch })
+
+		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+		expect(Object.keys(putBody).sort()).toEqual(["description", "options"])
+	})
+
 	it("normalizes a bare-hostname URI returned by the server", async () => {
 		const bare = "trusting-titan.remote.kimchi.dev"
 		const mockFetch = mockAuthFlow(bare)

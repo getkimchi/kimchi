@@ -1,78 +1,15 @@
-import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
-import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
+import { asSession, BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
-import { type AcpSessionFactory, KimchiAcpAgent } from "../server.js"
+import { KimchiAcpAgent } from "../server.js"
 
-class FakeAgentSession {
-	sessionId: string
-	disposed = false
-	model = { provider: "test", id: "test-model" }
-	modelRegistry = {
-		getAvailable: () => [{ provider: "test", id: "test-model", name: "Test" }],
-		find: (provider: string, id: string) =>
-			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
-	}
-	sessionManager = {
-		getBranch: () => [],
-		getSessionId: () => this.sessionId,
-		getEntries: () => [],
-		getSessionDir: () => "/tmp",
-		getCwd: () => "/tmp",
-		appendCustomEntry: () => "entry-id",
-	}
-	setSessionName = vi.fn()
-	extensionRunner = { emit: async () => {} }
-	resourceLoader = {
-		getSkills: () => ({ skills: [], diagnostics: [] }),
-		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => undefined,
-		getSystemPromptSource: () => undefined,
-		getAppendSystemPrompt: () => [],
-		getAppendSystemPromptSources: () => [],
-		extendResources: () => {},
-		reload: async () => {},
-	} as unknown as ResourceLoader
-
-	constructor(sessionId: string) {
-		this.sessionId = sessionId
-	}
-
-	getToolDefinition = vi.fn((_name: string) => undefined)
-	setActiveToolsByName = vi.fn()
-	subscribe = () => () => {}
-	async bindExtensions(): Promise<void> {}
-	async prompt(): Promise<void> {}
-	async abort(): Promise<void> {}
-	dispose(): void {
-		this.disposed = true
-	}
-}
-
-function asSession(fake: FakeAgentSession): AgentSession {
-	return fake as unknown as AgentSession
-}
-
-function makeConn(): AgentSideConnection {
-	return {
-		sessionUpdate: async (_p: SessionNotification) => {},
-		extNotification: vi.fn(),
-		extMethod: vi.fn(),
-		requestPermission: vi.fn(),
-		unstable_createElicitation: vi.fn(),
-		closed: Promise.resolve(),
-	} as unknown as AgentSideConnection
-}
+class FakeAgentSession extends BaseFakeAgentSession {}
 
 function makeAgent(session: FakeAgentSession) {
-	const sessionFactory: AcpSessionFactory = async () => asSession(session)
-	return new KimchiAcpAgent(makeConn(), {
+	return new KimchiAcpAgent(makeAcpConn(), {
 		extensionFactories: [],
 		agentDir: "/tmp/fake-agent-dir",
-		sessionFactory,
+		sessionFactory: makeAcpSessionFactory(session),
 	})
 }
 
