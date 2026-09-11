@@ -302,33 +302,35 @@ describe("ACP integration — plan updates from todo writes", () => {
 				stepIsPending,
 				"Ferment phase Todo snapshot did not arrive",
 				8_000,
-			).catch(async () => {
-				if (kickIsStreaming()) {
-					// Kick is running, just slow — wait for the condition, no deadline.
+			)
+				.catch(async () => {
+					if (kickIsStreaming()) {
+						// Kick is running, just slow — wait for the condition, no deadline.
+						return waitForPlanSnapshot(
+							fixture,
+							sessionId,
+							stepIsPending,
+							"Ferment phase Todo snapshot did not arrive from the in-flight resume kick",
+						)
+					}
+					// The kick never ran — drive the phase manually.
+					await prompt(fixture, sessionId, "Continue the Ferment")
 					return waitForPlanSnapshot(
 						fixture,
 						sessionId,
 						stepIsPending,
-						"Ferment phase Todo snapshot did not arrive from the in-flight resume kick",
+						"Prompt-driven Ferment phase Todo snapshot did not arrive",
 					)
-				}
-				// The kick never ran — drive the phase manually.
-				await prompt(fixture, sessionId, "Continue the Ferment")
-				return waitForPlanSnapshot(
-					fixture,
-					sessionId,
-					stepIsPending,
-					"Prompt-driven Ferment phase Todo snapshot did not arrive",
-				)
-			}).catch(async () => {
-				await prompt(fixture, sessionId, "Continue the Ferment")
-				return waitForPlanSnapshot(
-					fixture,
-					sessionId,
-					(entries) => entries.some((entry) => entry.content.includes(STEP_DESCRIPTION)),
-					"Prompt-driven Ferment phase Todo snapshot did not arrive",
-				)
-			})
+				})
+				.catch(async () => {
+					await prompt(fixture, sessionId, "Continue the Ferment")
+					return waitForPlanSnapshot(
+						fixture,
+						sessionId,
+						(entries) => entries.some((entry) => entry.content.includes(STEP_DESCRIPTION)),
+						"Prompt-driven Ferment phase Todo snapshot did not arrive",
+					)
+				})
 			expect(initial.some((entry) => entry.status === "pending" && entry.content.includes(STEP_DESCRIPTION))).toBe(true)
 
 			await prompt(fixture, sessionId, "Start the step")

@@ -119,9 +119,7 @@ describe("AgentWidget token display", () => {
 				contextUsage: { percent: 42 },
 			}),
 		}
-		const activity = new Map<string, AgentActivity>([
-			["run-2", { ...makeActivity(ZERO_USAGE), session }],
-		])
+		const activity = new Map<string, AgentActivity>([["run-2", { ...makeActivity(ZERO_USAGE), session }]])
 
 		const rendered = renderOnce(manager, activity)
 
