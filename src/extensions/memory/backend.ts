@@ -4,11 +4,10 @@
  * the kimchi gateway.
  *
  * The SQLite store is what makes mem0's TS SDK do hybrid retrieval — the
- * langchain adapter is semantic-only (see
- * benchmark/memory-spike/results/sqlite-investigation.md). The store and
- * mem0's history manager both require better-sqlite3, which does not load
- * under Bun; the shims/better-sqlite3 package (pnpm override) provides it
- * over bun:sqlite.
+ * langchain adapter is semantic-only (see docs/memory-extension.md). The
+ * store and mem0's history manager both require better-sqlite3, which does
+ * not load under Bun; the shims/better-sqlite3 package (pnpm override)
+ * provides it over bun:sqlite.
  *
  * Constructing a backend requires the Bun runtime (bun:sqlite through the
  * shim); vitest on Node can still import this module and test the config

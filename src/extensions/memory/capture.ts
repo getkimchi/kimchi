@@ -149,7 +149,7 @@ function captureMessages(messages: CaptureMessage[], cwd: string): void {
 	}
 }
 
-function spawnCaptureWorker(jobFile: string, dbPath: string): void {
+export function spawnCaptureWorker(jobFile: string, dbPath: string): void {
 	const args = ["--job", jobFile, "--db", dbPath]
 	let cmd: string[]
 	if (basename(process.execPath) === "bun") {
@@ -161,5 +161,11 @@ function spawnCaptureWorker(jobFile: string, dbPath: string): void {
 		cmd = [process.execPath, "memory-capture", ...args]
 	}
 	const child = spawn(cmd[0], cmd.slice(1), { detached: true, stdio: "ignore" })
+	// A failed async spawn (e.g. ENOENT) emits 'error' — without a listener
+	// it throws (EventEmitter semantics) and crashes the harness. Log and
+	// move on: memory must never break a session.
+	child.on("error", (err) => {
+		console.error("[memory] capture worker spawn failed:", err instanceof Error ? err.message : err)
+	})
 	child.unref()
 }

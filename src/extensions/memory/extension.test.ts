@@ -1,14 +1,17 @@
 import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { MEMORY_SEARCH_TIMEOUT_MS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 
 const BASE_PROMPT = "You are kimchi."
 
-// Handler ctx: the real ExtensionContext always has a sessionManager; the
-// incremental-capture call reads getEntries() on every before_agent_start.
-const fakeCtx = { sessionManager: { getEntries: () => [] } } as never
+// Handler ctx: the shared mock factory (repo testing rule — no hand-rolled
+// ctx mocks). The incremental-capture call reads getEntries() on every
+// before_agent_start; the factory provides an empty one.
+const fakeCtx = createContext()
 
 function hits(...items: Array<{ memory: string; score: number }>): MemorySearcher {
 	return { search: vi.fn(async () => items) }
@@ -119,6 +122,30 @@ describe("memory extension", () => {
 			expect(consoleError).toHaveBeenCalledTimes(1)
 			expect(consoleError.mock.calls[0]?.[0]).toContain("[memory]")
 		} finally {
+			consoleError.mockRestore()
+		}
+	})
+
+	it("degrades to no-memory when the digest search hangs (bounded timeout)", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const { start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					// A hung gateway call — never resolves.
+					createSearcher: async () => ({
+						search: () => new Promise<Array<{ memory?: string }>>(() => {}),
+					}),
+				}),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			const result = await pending
+			expect(result).toBeUndefined()
+			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
+		} finally {
+			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
 	})

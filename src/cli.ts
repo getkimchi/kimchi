@@ -228,15 +228,8 @@ const originalArgs = process.argv.slice(2)
 // path under `bun run`). Routed before telemetry/session setup so worker
 // invocations are invisible to app_started instrumentation.
 if (originalArgs[0] === "memory-capture") {
-	const { runCaptureWorker } = await import("./extensions/memory/capture-worker.js")
-	try {
-		const captured = await runCaptureWorker(originalArgs.slice(1))
-		console.log(`[memory-capture] captured ${captured} facts`)
-		process.exit(0)
-	} catch (err) {
-		console.error("[memory-capture] failed:", err instanceof Error ? err.message : err)
-		process.exit(1)
-	}
+	const { runCaptureWorkerMain } = await import("./extensions/memory/capture-worker.js")
+	await runCaptureWorkerMain(originalArgs.slice(1))
 }
 
 // Observes provider transport failures in-process (via message_end) so the
@@ -815,6 +808,7 @@ try {
 			await runAcpMode({
 				extensionFactories,
 				agentDir,
+<<<<<<< HEAD
 				...(mcpAdapterExtensions.length > 0
 					? {
 							mcpExtensionFactory: createKimchiMcpAdapterExtension,
@@ -822,6 +816,10 @@ try {
 						}
 					: {}),
 				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
+=======
+				mcpServerManager: new McpServerManager(),
+				appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
+>>>>>>> f1afe067f (Memory extension: remediate code review findings (dd71e9c9))
 			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
