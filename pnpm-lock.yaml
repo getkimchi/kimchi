@@ -9,7 +9,7 @@ patchedDependencies:
     hash: 833908f0ccb469da56b0e90c4b49c47df1048cfa0e3fdfd07fa312d2e7b2765f
     path: patches/@earendil-works__pi-ai@0.84.1.patch
   '@earendil-works/pi-coding-agent@0.84.1':
-    hash: d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d
+    hash: b3e5df8ba697ebdfbe76ec99adab24d7029391a8f8d849034836d9be192112f1
     path: patches/@earendil-works__pi-coding-agent@0.84.1.patch
   '@earendil-works/pi-tui@0.84.1':
     hash: 994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602
@@ -33,13 +33,13 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.1
-        version: 0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+        version: 0.84.1(patch_hash=b3e5df8ba697ebdfbe76ec99adab24d7029391a8f8d849034836d9be192112f1)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.84.1
         version: 0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602)
       '@kimchi-dev/kimchi-workflows':
         specifier: 0.0.9
-        version: 0.0.9(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 0.0.9(@earendil-works/pi-coding-agent@0.84.1(patch_hash=b3e5df8ba697ebdfbe76ec99adab24d7029391a8f8d849034836d9be192112f1)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
@@ -3168,7 +3168,7 @@ snapshots:
     dependencies:
       '@earendil-works/pi-protocol': 0.84.1
 
-  '@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.84.1(patch_hash=b3e5df8ba697ebdfbe76ec99adab24d7029391a8f8d849034836d9be192112f1)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.84.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.84.1(patch_hash=833908f0ccb469da56b0e90c4b49c47df1048cfa0e3fdfd07fa312d2e7b2765f)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
@@ -3339,9 +3339,9 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@kimchi-dev/kimchi-workflows@0.0.9(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
+  '@kimchi-dev/kimchi-workflows@0.0.9(@earendil-works/pi-coding-agent@0.84.1(patch_hash=b3e5df8ba697ebdfbe76ec99adab24d7029391a8f8d849034836d9be192112f1)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
     dependencies:
-      '@earendil-works/pi-coding-agent': 0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent': 0.84.1(patch_hash=b3e5df8ba697ebdfbe76ec99adab24d7029391a8f8d849034836d9be192112f1)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui': 0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602)
       '@types/node': 22.19.18
       cross-spawn: 7.0.6

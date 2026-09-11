@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
@@ -67,7 +68,7 @@ async function syncAutoCapabilities<TApi extends Api>(
 export interface AutoModelExtensionOptions {
 	/** Require a vision-capable recommendation for context forwarded as image paths. */
 	requiresVision?: boolean
-	/** Record main-process CLI model choices before restoring saved Auto state. */
+	/** Apply main-session defaults and CLI choices; leave child model selection to the caller. */
 	handleCliModelSelection?: boolean
 }
 
@@ -80,8 +81,10 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const sessionId = ctx.sessionManager.getSessionId()
 			clearAutoRoutingAttempt(sessionId)
 			const entries = ctx.sessionManager.getEntries()
-			const requestedModel =
-				event.reason === "startup" && options.handleCliModelSelection ? getParsedCliArgs().options.model : undefined
+			const sessionFile = ctx.sessionManager.getSessionFile()
+			const hasPersistedSession = sessionFile !== undefined && existsSync(sessionFile)
+			const cliOptions = options.handleCliModelSelection ? getParsedCliArgs().options : undefined
+			const requestedModel = event.reason === "startup" ? cliOptions?.model : undefined
 			if (
 				requestedModel &&
 				requestedModel !== MULTI_MODEL_ID &&
@@ -96,6 +99,18 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				}
 			}
 			let autoModel = ctx.model
+			const freshSession =
+				event.reason === "new" ||
+				(event.reason === "startup" &&
+					!event.previousSessionFile &&
+					!hasPersistedSession &&
+					!entries.some((entry) => entry.type === "message"))
+			const explicitLaunchChoice =
+				event.reason === "startup" &&
+				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
+			if (options.handleCliModelSelection && freshSession && !explicitLaunchChoice) {
+				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
+			}
 			if (!isAutoModel(autoModel)) {
 				if (!sessionSelectsAuto(entries)) {
 					clearAutoRoutingState(sessionId)

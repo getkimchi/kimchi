@@ -65,7 +65,8 @@ export interface AcpFixtureOptions {
 	routerResponses?: unknown[]
 	providerId?: string
 	defaultProvider?: string
-	defaultModel?: string
+	/** Pin the fake model by default; false exercises unconfigured startup. */
+	defaultModel?: string | false
 	extraArgs?: string[]
 	/** Input modalities advertised by the default deterministic fake model. Ignored when `models` is provided. */
 	modelInput?: ("text" | "image")[]
@@ -344,10 +345,14 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
-		if (defaultProvider && defaultModel) {
+		if (defaultModel !== false) {
 			writeFileSync(
 				join(agentDir, "settings.json"),
-				JSON.stringify({ defaultProvider, defaultModel }, null, "\t"),
+				JSON.stringify(
+					{ defaultProvider: defaultProvider ?? providerId, defaultModel: defaultModel ?? configuredModels[0]?.slug },
+					null,
+					"\t",
+				),
 				"utf-8",
 			)
 		}
@@ -358,7 +363,8 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
 
-		proc = spawn(BINARY_PATH, ["--mode", "acp", ...extraArgs], {
+		const modelArgs = defaultModel === undefined ? ["--model", configuredModels[0].slug] : []
+		proc = spawn(BINARY_PATH, ["--mode", "acp", ...modelArgs, ...extraArgs], {
 			stdio: ["pipe", "pipe", "inherit"],
 			env: {
 				...process.env,

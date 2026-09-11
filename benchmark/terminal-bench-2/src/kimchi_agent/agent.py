@@ -603,6 +603,8 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 self._get_env(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV)
             ),
             "KIMCHI_TAGS": kimchi_tags,
+            # Workflow subprocesses inherit env but do not pass --model.
+            "KIMCHI_MODEL": self.model_name or "",
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }

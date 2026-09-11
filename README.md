@@ -39,16 +39,17 @@ Run `kimchi --help` to see all available subcommands and flags.
 
 ### Model selection
 
-The supported model list is fetched at startup from the kimchi metadata service. Use `/model` or `ctrl+p` in the interactive CLI to switch between available models.
+The supported model list is fetched at startup from the kimchi metadata service. New sessions start in Auto; resumed sessions keep their model. Use `/model` or `ctrl+p` to switch between Auto and concrete models.
 
-Kimchi operates in one of two modes:
+Model choices:
 
 | Mode | Status line indicator | Behavior |
 |------|-----------------|----------|
-| **Multi-model** | `multi-model (orchestrator-id)` | The orchestrator delegates each task to the model assigned for that role |
+| **Auto (default)** | `auto` | The router selects a concrete model for the session |
+| **Legacy multi-model** | `multi-model (orchestrator-id)` | The orchestrator delegates each task to the model assigned for that role |
 | **Single-model** | model name | All work runs on the selected model directly |
 
-Use `ctrl+p` to cycle through models. The last entry in the cycle is `multi-model`. You can also open the `/model` picker and select a specific model or `multi-model` from the list.
+Legacy multi-model is hidden from the model picker, Ctrl+P cycle, command suggestions, help and tips. Existing sessions and explicit legacy commands still work; phases, roles and Ferment integration remain available.
 
 In single-model mode the orchestration system prompt (environment, tools, research rules, guidelines, phase tagging) stays active, but task classification and delegation are disabled. The subagent tool remains available if you explicitly ask the agent to delegate.
 

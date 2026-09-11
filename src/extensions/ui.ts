@@ -25,7 +25,6 @@ import { isBareExitAlias } from "./exit-utils.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -485,7 +484,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		// Register a global terminal input listener so ctrl+p (model cycle forward)
 		// works even when a permission prompt or other dialog has focus.
-		// The cycle includes a virtual "multi-model" entry after the last real model.
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
@@ -535,15 +533,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						const orchRef = getOrchestratorModelRef(sessionId)
-						const orchParsed = splitModelRef(orchRef)
-						const orchestratorModel = orchParsed
-							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
-							: undefined
-
-						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
-						// kimi-k2.6 appears as a regular model AND multi-model appears
-						// as a separate virtual entry right after the last real model.
+						// Legacy sessions may still be in multi-model; cycling leaves that mode.
 						if (getMultiModelEnabled(ctx.sessionManager)) {
 							// Currently on the virtual multi-model entry — wrap to first real model.
 							// Check ALL models (including the orchestrator itself) because we are
@@ -591,25 +581,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 								current,
 							)
 
-							const nextIdx = next ? available.findIndex((m) => modelsAreEqual(m, next)) : -1
-							const wouldWrap = next === undefined || nextIdx <= idx
-
-							if (wouldWrap && orchestratorModel) {
-								// Reached end of real models — enter multi-model.
-								setMultiModelEnabled(sessionId, true)
-								if (modelsAreEqual(orchestratorModel, current)) {
-									// Already on the orchestrator — setModel won't emit model_select
-									// so the status line won't re-render.  Force it.
-									ctx.ui.setStatus("__model_cycle", undefined)
-								} else {
-									pi.setModel(orchestratorModel).catch((err) => {
-										ctx.ui.notify(
-											`Failed to switch to multi-model: ${err instanceof Error ? err.message : String(err)}`,
-											"warning",
-										)
-									})
-								}
-							} else if (next && !modelsAreEqual(next, current)) {
+							if (next && !modelsAreEqual(next, current)) {
 								if (skipped.length > 0) {
 									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 									ctx.ui.notify(

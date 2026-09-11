@@ -172,6 +172,7 @@ async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_pa
 
     command = agent.agent_commands[0]
     assert "--model kimchi-dev/kimi-k2.6" in command
+    assert agent.agent_envs[0]["KIMCHI_MODEL"] == "kimchi-dev/kimi-k2.6"
     assert "--multi-model" not in command
     # Pinned on disk, not just on the CLI: workflow steps run as spawned
     # kimchi subprocesses whose argv carries no --model, and would otherwise
@@ -247,6 +248,7 @@ async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path:
     command = agent.agent_commands[0]
     assert "--model" not in command
     assert "--multi-model" not in command
+    assert agent.agent_envs[0]["KIMCHI_MODEL"] == "multi-model"
     assert "~/.config/kimchi/harness/settings.json" in command
     assert '{"multiModel":true}' in command
     assert "compaction" not in command
