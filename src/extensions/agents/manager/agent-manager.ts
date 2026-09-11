@@ -1141,6 +1141,9 @@ export class AgentManager {
 	}
 
 	private createMessageCapability(record: AgentRecord): AgentMessageCapability | undefined {
+		// Communication is gated at the Agent tool level (the `communication`
+		// param is rejected when the toggle is off), so records reaching here
+		// already have communication authorized by the tool layer.
 		const scope = record.communicationScope
 		if (!record.communication || !scope || record.visibility === "system") return undefined
 		const sourceAgentId = record.id

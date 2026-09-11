@@ -689,7 +689,7 @@ try {
 			// Must register BEFORE extensions.agents: the Agent tool builds its
 			// subagent_type description once at registerTool time from
 			// getAvailableTypes(), so the ACP map must be populated first.
-			...(experimentalFeatures || isResourceEnabled("extensions.acp-agents") ? [acpAgentsExtension] : []),
+			...(experimentalFeatures || isResourceEnabled("extensions.agent-communication") ? [acpAgentsExtension] : []),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 				{ id: "extensions.workflows", factory: piWorkflowsExtension },

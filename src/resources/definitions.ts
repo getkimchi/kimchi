@@ -120,12 +120,12 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
-		id: "extensions.acp-agents",
+		id: "extensions.agent-communication",
 		kind: "extensions",
 		experimental: true,
-		label: "ACP external agents",
+		label: "Advanced agent communication",
 		description:
-			"Spawn external ACP-speaking agents (e.g. Gemini CLI) as subagent types (acp:<name>). Configure servers in .kimchi/acp-agents.json.",
+			"Enable the coordination board, agent-to-agent messaging, peer question/answer routing, and external ACP-speaking agents (acp:<name> types). Subagents can post findings, ask questions, and coordinate through a shared board. Configure external agents in .kimchi/acp-agents.json.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

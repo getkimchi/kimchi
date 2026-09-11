@@ -25,7 +25,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
-import { planAcpSpawn, refreshAcpAgents } from "../acp-agents/registry.js"
+import { isAgentCommunicationEnabled, planAcpSpawn, refreshAcpAgents } from "../acp-agents/registry.js"
 import { resolveAutonomousJudgeRoute } from "../ferment/autonomy.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -833,6 +833,7 @@ export default function (pi: ExtensionAPI) {
 	let parentCommunicationContext: ParentCommunicationContext | undefined
 
 	pi.on("before_agent_start", (event) => {
+		if (!isAgentCommunicationEnabled()) return undefined
 		if (!pi.getActiveTools().includes("reply_to_agent_message")) return undefined
 
 		// Build coordination board digest from the parent communication root (initial state, no per-turn refresh).
@@ -1299,6 +1300,8 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Communication root binding is needed when subagents have communication
+		// set (tests set this directly; the Agent tool gates the param).
 		const rootSessionId = ctx.sessionManager.getSessionId()
 		const bound = manager.bindCommunicationRoot(rootSessionId)
 		if (!bound) {
@@ -1959,6 +1962,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (requestedCommunication != null && !communication) {
 					return textResult('communication must be either "parent" or "group".')
 				}
+				if (communication && !isAgentCommunicationEnabled()) {
+					return textResult(
+						"Agent communication requires the 'Advanced agent communication' feature. Enable it in /resources → experimental, or start with --enable-experimental-features.",
+					)
+				}
 				if (taskRef && (params.max_turns == null || params.max_duration == null || params.token_budget == null)) {
 					return textResult(
 						"Ferment-linked Agent calls require explicit max_turns, max_duration, and token_budget from the shared worker budget policy.",
@@ -2383,40 +2391,42 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 	registerResumeSubagentTool(pi, manager)
 
-	pi.registerTool(
-		defineTool({
-			name: "reply_to_agent_message",
-			label: "Reply to Agent Message",
-			description:
-				"Reply to one correlated agent message. The receipt confirms only queue acceptance or completion of a bounded continuation attempt.",
-			parameters: Type.Object({
-				message_id: Type.String(),
-				answer: Type.String(),
-				answer_kind: Type.Optional(Type.Union([Type.Literal("answer"), Type.Literal("decline")])),
-				max_turns: Type.Integer({ minimum: 1 }),
-				max_duration: Type.Integer({ minimum: 1 }),
-				token_budget: Type.Optional(Type.Integer({ minimum: 1024 })),
-			}),
-			execute: async (toolCallId, params, signal, _onUpdate, ctx) =>
-				textResult(
-					JSON.stringify(
-						await manager.replyToAgentMessage(
-							ctx.sessionManager.getSessionId(),
-							params.message_id,
-							toolCallId,
-							params.answer,
-							{
-								maxTurns: params.max_turns,
-								maxDuration: params.max_duration,
-								tokenBudget: params.token_budget,
-								answerKind: params.answer_kind ?? "answer",
-							},
-							signal,
+	if (isAgentCommunicationEnabled()) {
+		pi.registerTool(
+			defineTool({
+				name: "reply_to_agent_message",
+				label: "Reply to Agent Message",
+				description:
+					"Reply to one correlated agent message. The receipt confirms only queue acceptance or completion of a bounded continuation attempt.",
+				parameters: Type.Object({
+					message_id: Type.String(),
+					answer: Type.String(),
+					answer_kind: Type.Optional(Type.Union([Type.Literal("answer"), Type.Literal("decline")])),
+					max_turns: Type.Integer({ minimum: 1 }),
+					max_duration: Type.Integer({ minimum: 1 }),
+					token_budget: Type.Optional(Type.Integer({ minimum: 1024 })),
+				}),
+				execute: async (toolCallId, params, signal, _onUpdate, ctx) =>
+					textResult(
+						JSON.stringify(
+							await manager.replyToAgentMessage(
+								ctx.sessionManager.getSessionId(),
+								params.message_id,
+								toolCallId,
+								params.answer,
+								{
+									maxTurns: params.max_turns,
+									maxDuration: params.max_duration,
+									tokenBudget: params.token_budget,
+									answerKind: params.answer_kind ?? "answer",
+								},
+								signal,
+							),
 						),
 					),
-				),
-		}),
-	)
+			}),
+		)
+	}
 
 	// ---- get_subagent_result tool ----
 

@@ -170,7 +170,7 @@ describe("mcp proxy registration gate", () => {
 				await pi.fireShutdown()
 			}
 		} finally {
-			delete mcpConfigState.config.settings
+			mcpConfigState.config.settings = undefined
 		}
 	})
 })

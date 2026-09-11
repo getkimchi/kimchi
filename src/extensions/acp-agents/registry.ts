@@ -21,13 +21,15 @@ import type { AgentConfig } from "../agents/personas/types.js"
 import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { ACP_TYPE_PREFIX, acpServerFromType, acpTypeName, loadAcpAgentServers } from "./config.js"
 
-export const ACP_AGENTS_RESOURCE_ID = "extensions.acp-agents" as const
+export const AGENT_COMMUNICATION_RESOURCE_ID = "extensions.agent-communication" as const
 
-/** True when the ACP feature is enabled via either gate: the
- *  --enable-experimental-features CLI flag or the /resources
- *  experimental tab toggle (persisted, restart required). */
-export function isAcpAgentsEnabled(): boolean {
-	return isExperimentalFeaturesEnabled() || isResourceEnabled(ACP_AGENTS_RESOURCE_ID)
+/** True when the advanced agent communication feature is enabled via either
+ *  gate: the --enable-experimental-features CLI flag or the /resources
+ *  experimental tab toggle (persisted, restart required). Controls the full
+ *  communication plane: coordination board, agent messaging, peer routing,
+ *  and external ACP agents. */
+export function isAgentCommunicationEnabled(): boolean {
+	return isExperimentalFeaturesEnabled() || isResourceEnabled(AGENT_COMMUNICATION_RESOURCE_ID)
 }
 
 /** Build the registry AgentConfig for an ACP agent server. */
@@ -59,7 +61,7 @@ function toAgentConfig(name: string, displayName: string | undefined, transport:
  * No-ops when neither gate is enabled (CLI flag or resource toggle).
  */
 export function refreshAcpAgents(cwd: string): Map<string, AgentConfig> {
-	if (!isAcpAgentsEnabled()) return new Map()
+	if (!isAgentCommunicationEnabled()) return new Map()
 	const servers = loadAcpAgentServers(cwd)
 	const map = new Map<string, AgentConfig>()
 	for (const server of servers.values()) {

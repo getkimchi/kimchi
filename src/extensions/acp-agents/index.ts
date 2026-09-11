@@ -20,12 +20,12 @@ import { getActiveManager } from "../agents/index.js"
 import { runAcpAgent } from "./acp-runner.js"
 import { getAgentCommsIpc } from "./comms-ipc.js"
 import { acpTypeName, globalConfigPath, loadAcpAgentServers } from "./config.js"
-import { isAcpAgentsEnabled, refreshAcpAgents } from "./registry.js"
+import { isAgentCommunicationEnabled, refreshAcpAgents } from "./registry.js"
 
 export { refreshAcpAgents } from "./registry.js"
 
 export default function acpAgentsExtension(pi: ExtensionAPI): void {
-	if (!isAcpAgentsEnabled()) return
+	if (!isAgentCommunicationEnabled()) return
 
 	// Initial discovery from the launch cwd — must happen before the agents
 	// extension registers the Agent tool, whose subagent_type description is

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
@@ -389,7 +390,10 @@ function parentNotification(
 }
 
 describe("agent communication lifecycle", () => {
+	// Communication features are gated behind the experimental toggle;
+	// enable for these tests.
 	beforeEach(() => {
+		setExperimentalFeaturesEnabled(true)
 		mockFermentGetActiveId.mockReset()
 		mockFermentGetActiveId.mockReturnValue(undefined)
 		mockFermentGetContinuationPolicy.mockReturnValue("manual")
@@ -978,7 +982,9 @@ describe("Agent tool renderer", () => {
 })
 
 describe("Agent tool multi-mode model guard", () => {
+	// Communication param tests need the feature enabled.
 	beforeEach(() => {
+		setExperimentalFeaturesEnabled(true)
 		vi.useRealTimers()
 		vi.clearAllMocks()
 		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
