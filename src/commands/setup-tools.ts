@@ -9,7 +9,7 @@ import "../integrations/codex.js"
 
 import { resolve } from "node:path"
 import { intro, log, note, outro, spinner } from "@clack/prompts"
-import { isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import { getApiKeyMismatchWarning, isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { all as allTools } from "../integrations/registry.js"
 import { updateModelsConfig } from "../models.js"
@@ -49,6 +49,8 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	}
 
 	intro("kimchi setup-tools")
+	const warning = getApiKeyMismatchWarning()
+	if (warning) log.warn(warning)
 
 	// Select tools.
 	const selection = await promptToolSelection({ backable: false })

@@ -4,6 +4,7 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
+import { loadConfig } from "../config.js"
 import { isBunBinary, isRunningUnderBun } from "../env.js"
 
 function readablePath(path: string): boolean {
@@ -52,6 +53,7 @@ export function spawnKimchiSubprocess(opts: SpawnKimchiOptions): ChildProcess {
 	return spawn(invocation.command, invocation.args, {
 		stdio: ["ignore", opts.stdout ?? "pipe", opts.stderr ?? "pipe"],
 		detached: opts.detached ?? false,
-		env: { ...process.env, ...opts.env },
+		// Only trusted Kimchi children receive the key stripped from the tool environment.
+		env: { ...process.env, KIMCHI_API_KEY: loadConfig().apiKey, ...opts.env },
 	})
 }

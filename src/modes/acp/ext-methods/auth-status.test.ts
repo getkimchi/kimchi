@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearApiKey, writeApiKey } from "../../../config.js"
 import { type AuthStatusPaths, handleAuthStatus } from "./auth-status.js"
 
@@ -14,6 +14,7 @@ describe("handleAuthStatus", () => {
 	let paths: AuthStatusPaths
 
 	beforeEach(() => {
+		vi.stubEnv("KIMCHI_API_KEY", undefined)
 		dir = mkdtempSync(join(tmpdir(), "kimchi-auth-status-"))
 		configPath = join(dir, "config.json")
 		paths = {
@@ -24,6 +25,7 @@ describe("handleAuthStatus", () => {
 	})
 
 	afterEach(() => {
+		vi.unstubAllEnvs()
 		rmSync(dir, { recursive: true, force: true })
 	})
 
@@ -33,6 +35,11 @@ describe("handleAuthStatus", () => {
 
 	it("reports authenticated when config.json holds an API key", async () => {
 		writeApiKey("castai_v1_token", configPath)
+		await expect(handleAuthStatus(paths)).resolves.toEqual({ authenticated: true })
+	})
+
+	it("reports the environment override as authenticated without a saved login", async () => {
+		vi.stubEnv("KIMCHI_API_KEY", "environment-key")
 		await expect(handleAuthStatus(paths)).resolves.toEqual({ authenticated: true })
 	})
 

@@ -1,8 +1,45 @@
+import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { findProxyHelper } from "./ssh-proxy.js"
+
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }))
+
+it("forwards a captured environment credential to proxy-helper without restoring it globally", async () => {
+	vi.resetModules()
+	vi.stubEnv("KIMCHI_API_KEY", "captured-environment-key")
+	const exit = new Error("process exited")
+	vi.spyOn(process, "exit").mockImplementation(() => {
+		throw exit
+	})
+	vi.mocked(spawnSync).mockReturnValue({
+		pid: 1,
+		output: [],
+		stdout: Buffer.alloc(0),
+		stderr: Buffer.alloc(0),
+		status: 0,
+		signal: null,
+	})
+	try {
+		const { captureApiKeyFromEnvironment } = await import("./config.js")
+		captureApiKeyFromEnvironment()
+		const { runProxy } = await import("./ssh-proxy.js")
+		expect(() => runProxy("session-id", "/trusted/proxy-helper")).toThrow(exit)
+		expect(spawnSync).toHaveBeenCalledWith(
+			"/trusted/proxy-helper",
+			["ssh-proxy", "session-id"],
+			expect.objectContaining({
+				env: expect.objectContaining({ KIMCHI_API_KEY: "captured-environment-key" }),
+			}),
+		)
+		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
+	} finally {
+		vi.unstubAllEnvs()
+		vi.restoreAllMocks()
+	}
+})
 
 describe("findProxyHelper", () => {
 	let tmpBase: string

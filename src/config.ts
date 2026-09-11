@@ -10,6 +10,27 @@ const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
+let startupApiKey: string | undefined
+
+/**
+ * Retain the launch-time override privately, then strip it from process.env.
+ * Bash tools and MCP servers inherit that environment; leaving the key there
+ * can expose it through tool output. Do not persist it over the saved login.
+ */
+export function captureApiKeyFromEnvironment(): string | undefined {
+	startupApiKey = process.env.KIMCHI_API_KEY || startupApiKey
+	delete process.env.KIMCHI_API_KEY
+	return startupApiKey
+}
+
+function getEnvironmentApiKey(): string | undefined {
+	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
+}
+
+export function getApiKeySource(): "environment" | "config" {
+	return getEnvironmentApiKey() ? "environment" : "config"
+}
+
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
@@ -397,10 +418,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	// Resolve auth headers: explicit config override takes priority, then API key
 	let headers: Record<string, string>
-	const apiKey =
-		(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
-			? process.env.KIMCHI_API_KEY
-			: undefined) ?? readApiKeyFromConfigFile(path)
+	const apiKey = getEnvironmentApiKey() ?? readApiKeyFromConfigFile(path)
 	if (fileHeaders) {
 		headers = fileHeaders
 	} else {
@@ -439,7 +457,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
  * individual keys, but global fills in any missing keys.
  * For all other fields, project config completely replaces global.
  *
- * Returns `apiKey: ""` when no API key is present in either config file.
+ * Returns `apiKey: ""` when no API key is present in the environment or config.
  */
 export function loadConfig(options?: { configPath?: string; cwd?: string }): KimchiConfig {
 	// Read global config
@@ -469,7 +487,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	}
 
 	return {
-		apiKey: extras.apiKey ?? "",
+		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
 		customLlmEndpoint: extras.llmEndpoint,
@@ -482,6 +500,15 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		deviceId: extras.deviceId ?? "",
 		redaction: extras.redaction,
 	}
+}
+
+/** Explain an environment override without exposing either credential. */
+export function getApiKeyMismatchWarning(
+	savedKey = readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json")) ?? readApiKeyFromConfigFile(),
+): string | undefined {
+	const envKey = getEnvironmentApiKey()
+	if (!envKey || !savedKey || envKey === savedKey) return undefined
+	return "KIMCHI_API_KEY differs from your saved key. Using the environment key."
 }
 
 export function getAgentConfigDir(): string {

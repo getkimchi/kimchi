@@ -54,6 +54,24 @@ const OPUS_46: unknown = {
 	limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
 }
 
+const CUSTOM_PROVIDER = {
+	baseUrl: "https://custom.example/v1",
+	apiKey: "custom-key",
+	api: "openai-completions",
+	authHeader: true,
+	models: [
+		{
+			id: "custom-model",
+			name: "Custom Model",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 1024,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		},
+	],
+}
+
 describe("updateModelsConfig", () => {
 	let tempDir: string
 	let modelsJsonPath: string
@@ -655,6 +673,49 @@ describe("updateModelsConfig", () => {
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("falls back to cached Kimchi models after a 401 without custom providers", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
+		await updateModelsConfig(modelsJsonPath, "saved-key")
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const result = await updateModelsConfig(modelsJsonPath, "rejected-key")
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
+		expect(isCredentialStale("rejected-key", "kimchi-dev")).toBe(true)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it.each([false, true])("preserves custom providers after a Kimchi 401 (Kimchi cache=%s)", async (withKimchiCache) => {
+		if (withKimchiCache) {
+			vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
+			await updateModelsConfig(modelsJsonPath, "saved-key")
+		}
+		const config = withKimchiCache ? JSON.parse(readFileSync(modelsJsonPath, "utf-8")) : { providers: {} }
+		config.providers.custom = CUSTOM_PROVIDER
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+
+		const result = await updateModelsConfig(modelsJsonPath, "expired-kimchi-key")
+
+		expect(result.models.map((model) => model.slug)).toContain("custom-model")
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("rejects invalid credentials during strict discovery even when custom providers exist", async () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { custom: CUSTOM_PROVIDER } }))
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+
+		await expect(
+			updateModelsConfig(modelsJsonPath, "rejected-key", { allowCachedFallback: false }),
+		).rejects.toMatchObject({ status: 401 })
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
 	it("does not overwrite cached models.json when fetch fails", async () => {

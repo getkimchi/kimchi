@@ -1,5 +1,5 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const {
 	authMock,
@@ -108,6 +108,21 @@ beforeEach(() => {
 })
 
 describe("runTerminal", () => {
+	afterEach(() => vi.unstubAllEnvs())
+
+	it("passes the session API key to SSH when startup has stripped the parent environment", async () => {
+		vi.stubEnv("KIMCHI_API_KEY", undefined)
+		const { ctx } = makeCtx({ apiKey: "captured-environment-key" })
+		const runChild = vi.fn().mockResolvedValue(0)
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
+		expect(runChild).toHaveBeenCalledWith(
+			expect.objectContaining({
+				env: expect.objectContaining({ KIMCHI_API_KEY: "captured-environment-key", AUTH_TOKEN: "tok-1" }),
+			}),
+		)
+		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
+	})
+
 	it("builds the expected ssh argv and env, returning on exit 0", async () => {
 		const { ctx } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
