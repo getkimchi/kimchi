@@ -41,7 +41,7 @@ import {
 	type RemoteSessionMeta,
 	runRemoteAgent,
 } from "./remote-agent-runner.js"
-import { extractToolOutputText, RemoteAgentSession } from "./remote-agent-session.js"
+import { RemoteAgentSession } from "./remote-agent-session.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -489,13 +489,7 @@ export class AgentManager {
 					if (activity.status === "in_progress") {
 						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
-						const isError = activity.status === "failed"
-						remoteSession.recordToolCallEnd(
-							activity.toolName,
-							activity.toolCallId,
-							isError,
-							extractToolOutputText(activity.rawOutput),
-						)
+						remoteSession.recordToolCallEndFromActivity(activity)
 						record.toolUses++
 					}
 					options.onToolActivity?.(activity)
@@ -1041,12 +1035,7 @@ export class AgentManager {
 					if (activity.status === "in_progress") {
 						adapter.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
-						adapter.recordToolCallEnd(
-							activity.toolName,
-							activity.toolCallId,
-							activity.status === "failed",
-							extractToolOutputText(activity.rawOutput),
-						)
+						adapter.recordToolCallEndFromActivity(activity)
 						record.toolUses++
 					}
 					options?.callbacks?.onToolActivity?.(activity)

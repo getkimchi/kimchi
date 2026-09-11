@@ -261,6 +261,7 @@ describe("RemoteAgentSession", () => {
 			expect(content[0]).toMatchObject({
 				type: "toolCall",
 				name: "bash command=cd some dir && cat file.txt",
+				toolName: "bash",
 				arguments: { command: "cd some dir && cat file.txt" },
 			})
 			expect(listener.mock.calls[0][0]).toMatchObject({
@@ -389,11 +390,12 @@ describe("RemoteAgentSession", () => {
 			)
 		})
 
-		it("caps stored output at 2000 chars", () => {
+		it("caps stored output at 2000 chars with a truncation marker", () => {
 			const session = new RemoteAgentSession()
 			session.recordToolCallStart("bash")
 			session.recordToolCallEnd("bash", undefined, false, "x".repeat(5000))
-			expect((session.messages[1].content as Array<{ type: string; text: string }>)[0].text).toHaveLength(2000)
+			const text = (session.messages[1].content as Array<{ type: string; text: string }>)[0].text
+			expect(text).toBe(`${"x".repeat(2000)}… (truncated)`)
 		})
 
 		it("includes the real output in tool_execution_end events", () => {
@@ -431,6 +433,31 @@ describe("RemoteAgentSession", () => {
 
 		it("passes through string args directly", () => {
 			expect(summarizeToolArgs("plain string args")).toBe("plain string args")
+		})
+	})
+
+	describe("recordToolCallEndFromActivity", () => {
+		it("maps a failed activity with output to a real-error toolResult", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash", "kt.bash.1")
+			session.recordToolCallEndFromActivity({
+				toolName: "bash",
+				toolCallId: "kt.bash.1",
+				status: "failed",
+				rawOutput: { content: [{ text: "ls: /missing: No such file or directory" }] },
+			})
+
+			const msg = session.messages[1]
+			expect(msg.isError).toBe(true)
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe(
+				"ls: /missing: No such file or directory",
+			)
+		})
+
+		it("maps a completed activity without output to the placeholder", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallEndFromActivity({ toolName: "read", status: "completed" })
+			expect((session.messages[0].content as Array<{ type: string; text: string }>)[0].text).toBe("(completed)")
 		})
 	})
 

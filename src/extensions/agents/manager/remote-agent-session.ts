@@ -39,8 +39,14 @@ import type { LifetimeUsage, SessionStatsLike } from "./usage.js"
  */
 type RemoteSessionEvent = { type: string; [k: string]: unknown }
 
-/** Cap on stored tool result text — raw bash output can be tens of KB. */
-const MAX_RESULT_TEXT_CHARS = 2000
+/** JSON.stringify that never throws on circular structures or bigint values. */
+function safeStringify(v: unknown): string {
+	try {
+		return JSON.stringify(v) ?? ""
+	} catch {
+		return String(v)
+	}
+}
 
 /**
  * Renders tool call arguments as a compact single-line summary for display —
@@ -50,23 +56,27 @@ const MAX_RESULT_TEXT_CHARS = 2000
 export function summarizeToolArgs(args: unknown, max = 100): string {
 	if (args == null) return ""
 	if (typeof args !== "object") {
-		const s = typeof args === "string" ? args : JSON.stringify(args)
-		return (s ?? "").replace(/\s+/g, " ").trim().slice(0, max)
+		const s = typeof args === "string" ? args : safeStringify(args)
+		return s.replace(/\s+/g, " ").trim().slice(0, max)
 	}
 	const parts: string[] = []
 	for (const [k, v] of Object.entries(args)) {
-		const val = (typeof v === "string" ? v : (JSON.stringify(v) ?? "")).replace(/\s+/g, " ").trim()
+		const val = (typeof v === "string" ? v : safeStringify(v)).replace(/\s+/g, " ").trim()
 		if (!val || val === "{}") continue
 		parts.push(`${k}=${val.length > 40 ? `${val.slice(0, 40)}…` : val}`)
 	}
 	return parts.join(" ").slice(0, max)
 }
 
+/** Cap on stored tool result text — raw bash output can be tens of KB. */
+const MAX_RESULT_TEXT_CHARS = 2000
+
 /**
  * Extracts plain-text tool output from an ACP tool_call_update's rawOutput
  * (pi AgentToolResult — `{ content: ContentBlock[] }`). Returns "" when
  * it carries no text (e.g. pure diff tools), letting the caller keep its
- * placeholder status text.
+ * placeholder status text. Parts are joined with no separator to mirror
+ * pi's transcript rendering (blocks carry their own trailing newlines).
  */
 export function extractToolOutputText(rawOutput?: unknown): string {
 	const content = (rawOutput as { content?: { text?: string }[] } | undefined)?.content
@@ -271,17 +281,19 @@ export class RemoteAgentSession {
 		const argsObj = args ?? {}
 		// Bake the args summary into the display name so subscribers (the
 		// conversation viewer) show how the tool was invoked without needing
-		// any renderer-side changes. Structured arguments are still kept.
+		// any renderer-side changes. `name` is therefore a DISPLAY string, not
+		// a stable tool identifier — consumers matching by tool must use the
+		// raw `toolName` field stored alongside.
 		const argsSummary = summarizeToolArgs(argsObj)
 		const displayName = argsSummary ? `${toolName} ${argsSummary}` : toolName
 		const last = this._messages[this._messages.length - 1]
 		if (last?.role === "assistant") {
 			const parts = last.content as Array<{ type: string; [k: string]: unknown }>
-			parts.push({ type: "toolCall", id: localId, name: displayName, arguments: argsObj })
+			parts.push({ type: "toolCall", id: localId, name: displayName, toolName, arguments: argsObj })
 		} else {
 			this._messages.push({
 				role: "assistant",
-				content: [{ type: "toolCall", id: localId, name: displayName, arguments: argsObj }],
+				content: [{ type: "toolCall", id: localId, name: displayName, toolName, arguments: argsObj }],
 			})
 		}
 		this.emit({
@@ -290,6 +302,22 @@ export class RemoteAgentSession {
 			toolName,
 			args: argsObj,
 		})
+	}
+
+	/** Record a tool call completion from a ToolActivity — keeps the
+	 *  isError/rawOutput mapping in one place for both agent-manager call sites. */
+	recordToolCallEndFromActivity(activity: {
+		toolName: string
+		toolCallId?: string
+		status: string
+		rawOutput?: unknown
+	}): void {
+		this.recordToolCallEnd(
+			activity.toolName,
+			activity.toolCallId,
+			activity.status === "failed",
+			extractToolOutputText(activity.rawOutput),
+		)
 	}
 
 	/** Record a tool call completion in the transcript.
@@ -320,11 +348,13 @@ export class RemoteAgentSession {
 		}
 		if (localId) this._pendingToolCalls.delete(localId)
 		const trimmedOutput = output.trim()
-		const resultText = trimmedOutput
-			? trimmedOutput.slice(0, MAX_RESULT_TEXT_CHARS)
-			: isError
+		const resultText = !trimmedOutput
+			? isError
 				? "(tool failed)"
 				: "(completed)"
+			: trimmedOutput.length > MAX_RESULT_TEXT_CHARS
+				? `${trimmedOutput.slice(0, MAX_RESULT_TEXT_CHARS)}… (truncated)`
+				: trimmedOutput
 		this._messages.push({
 			role: "toolResult",
 			toolCallId: localId ?? toolName,
