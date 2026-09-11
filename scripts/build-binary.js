@@ -82,6 +82,10 @@ cleanDist()
 // still typechecks every src change; the benchmarked ref's own CI covers it.
 if (!process.env.KIMCHI_SKIP_TYPECHECK) {
 	run("typecheck", "pnpm run typecheck")
+} else {
+	console.warn(
+		"[build] KIMCHI_SKIP_TYPECHECK set — skipping typecheck (intended for memory-constrained benchmark CI only)",
+	)
 }
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).

@@ -117,7 +117,8 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	memory: {
 		type: "boolean",
-		description: "Enable persistent personal memory (capture + recall across sessions, local-only storage)",
+		description:
+			"Enable persistent personal memory (capture + recall across sessions; facts stored locally, extraction and embedding via the kimchi gateway)",
 	},
 	"enable-experimental-features": {
 		type: "boolean",
@@ -294,8 +295,15 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 	})
 	const options: SessionCliArgs["options"] = {}
 	for (const key of CACHEABLE_OPTION_NAMES) {
-		const value = values[key]
+		let value = values[key]
 		if (value === undefined) continue
+		// node:util parseArgs with strict:false returns the raw string for
+		// `--flag=value` even when the flag is declared boolean — normalize
+		// "true"/"false" so `--memory=true` (and every other boolean flag)
+		// behaves as typed instead of being silently ignored.
+		if (CLI_OPTIONS[key].type === "boolean" && (value === "true" || value === "false")) {
+			value = value === "true"
+		}
 		;(options as Record<string, unknown>)[key] = value
 	}
 	return { options, positionals }

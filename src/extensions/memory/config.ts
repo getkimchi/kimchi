@@ -4,7 +4,7 @@
  */
 import { memoryDbPath } from "./backend.js"
 
-/** Personal scope for the POC; project scope (`app_id`) is plumbed later. */
+/** The personal scope id — the always-present global store. Project scopes are keyed by owner/name (scope.ts). */
 export const MEMORY_SCOPE_ID = "personal"
 
 /** The user_id mem0 filters on within a scope's store. */
@@ -31,7 +31,7 @@ export const DIGEST_MAX_TOKENS = 2_000
  * size (small windows retain needles; the dilution experiment showed
  * bundled content drops them). A single message over the budget extracts
  * whole: it is coherent context and within the gateway's comfortable
- * range. See .kimchi/plans/capture-windowing-design.md.
+ * range. See docs/memory-extension.md.
  */
 export const MEMORY_CAPTURE_WINDOW_CHARS = 2_000
 
@@ -55,11 +55,24 @@ export const MEMORY_CAPTURE_CONCURRENCY = 4
 export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 10
 
 /**
+ * Capture drain lock staleness: a held lock whose mtime is older than this
+ * is considered compromised and stealable. Must exceed the worst-case
+ * legitimate drain duration (several jobs, minutes each).
+ */
+export const CAPTURE_LOCK_STALE_MS = 15 * 60_000
+
+/** Mtime refresh interval while the capture drain lock is held. */
+export const CAPTURE_LOCK_UPDATE_MS = 30_000
+
+/** Pending capture jobs older than this are swept at drain start (the reaper). */
+export const PENDING_JOB_MAX_AGE_MS = 7 * 86_400_000
+
+/**
  * Length bound for the assistant-capture gate: assistant turns enter capture
  * jobs only when pure text (no tool-call blocks, no thinking), ≤ this many
  * characters. Kills the ~93% work-product share of real coding sessions
  * before it costs extraction tokens; the extraction taxonomy decides
- * durability. See .kimchi/plans/assistant-message-memory.md.
+ * durability. See docs/memory-extension.md.
  */
 export const MEMORY_CAPTURE_ASSISTANT_MAX_CHARS = 1_000
 
@@ -71,6 +84,13 @@ export const TURN_RECALL_MAX_FACT_CHARS = 400
 
 /** Hard cap on progressive re-evaluations per session (cost bound). */
 export const TURN_RECALL_MAX_EVALUATIONS = 5
+
+/**
+ * Bounded wait for memory searches on the user-visible critical path (the
+ * turn-1 digest and drift recalls) — a hung gateway call degrades to
+ * no-memory instead of stalling the first prompt.
+ */
+export const MEMORY_SEARCH_TIMEOUT_MS = 10_000
 
 /** Gate condition A: skip retrieval when this fraction of the recent
  * conversation's content words are already covered by delivered facts. */

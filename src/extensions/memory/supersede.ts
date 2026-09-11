@@ -1,7 +1,7 @@
 /**
  * Force-DELETE+ADD supersede: mem0's TS write path is add-only, so a new
  * fact that changes a previously stored value leaves the stale row behind
- * (spike-verified twice — benchmark/memory-spike/results/). Before facts
+ * (spike-verified twice — see docs/memory-extension.md). Before facts
  * are added, related existing memories are judged against them and the
  * explicitly-replaced ones are deleted.
  *

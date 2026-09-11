@@ -359,3 +359,28 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
 	})
 })
+
+describe("boolean =-form normalization", () => {
+	it('enables --memory=true (previously the string "true" — silently ignored)', () => {
+		populateCliArgs(["--memory=true", "fix tests"])
+		expect(getParsedCliArgs().options.memory).toBe(true)
+	})
+
+	it("disables on --memory=false and keeps the bare flag true", () => {
+		populateCliArgs(["--memory=false", "fix tests"])
+		expect(getParsedCliArgs().options.memory).toBe(false)
+		populateCliArgs(["--memory", "fix tests"])
+		expect(getParsedCliArgs().options.memory).toBe(true)
+	})
+
+	it("normalizes every boolean flag's =-form", () => {
+		populateCliArgs(["--yolo=true", "--plan=false"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+		expect(getParsedCliArgs().options.plan).toBe(false)
+	})
+
+	it("leaves non-boolean =-values untouched", () => {
+		populateCliArgs(["--memory=1", "fix tests"])
+		expect(getParsedCliArgs().options.memory).toBe("1")
+	})
+})

@@ -5,8 +5,8 @@
  * Bun-only (SQLite backends), same split as backend.ts.
  */
 import type { Memory as Mem0Memory } from "mem0ai/oss"
-import { createMemoryBackend, memoryDbPath, projectDbPath } from "./backend.js"
-import { MEMORY_USER_ID } from "./config.js"
+import { createMemoryBackend, projectDbPath } from "./backend.js"
+import { digestDbPath, MEMORY_USER_ID } from "./config.js"
 import { resolveProjectScope } from "./scope.js"
 
 export type MemoryScope = "personal" | "project"
@@ -54,7 +54,7 @@ async function searchOne(
  */
 export async function createScopedSearcher(cwd: string): Promise<ScopedSearcher> {
 	const project = resolveProjectScope(cwd)
-	const personal = await createMemoryBackend({ dbPath: memoryDbPath("personal") })
+	const personal = await createMemoryBackend({ dbPath: digestDbPath() })
 	let projectBackend: Backend | null = null
 	if (project) {
 		try {
