@@ -280,7 +280,6 @@ export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeAdapters = detectAdapters("")
 	let missingAdapters = detectMissingAdapters("")
-	let warned = false
 	let ui: ExtensionUIContext | undefined
 
 	// Per-extension-instance registries. Held in closure scope (not module-level)
@@ -356,7 +355,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
 		ui = ctx.ui
-		warned = false
 		goSkillActive = false
 		pythonSkillActive = false
 		tsSkillActive = false
@@ -416,18 +414,6 @@ export default function (pi: ExtensionAPI) {
 			ui.setStatus("dap", undefined)
 			ui = undefined
 		}
-		warned = false
-	})
-
-	// ── Degraded-state warning: notify once on the first agent turn ─────────────
-
-	pi.on("before_agent_start", async () => {
-		updateStatusFooter()
-
-		if (warned || missingAdapters.length === 0 || !ui?.notify) return
-		const lines = missingAdapters.map((a) => `${a.name} — install with: ${a.installHint ?? a.command}`)
-		ui.notify(`DAP unavailable: debug adapter(s) not installed for this project.\n${lines.join("\n")}`, "warning")
-		warned = true
 	})
 
 	// ── On-demand skill injection: activate language skills on first debug tool call ─

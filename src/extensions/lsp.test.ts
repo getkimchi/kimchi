@@ -469,8 +469,8 @@ describe("degraded status (marker present, binary missing)", () => {
 	})
 })
 
-describe("one-time warning on before_agent_start", () => {
-	it("notifies once on the first before_agent_start in a degraded project", async () => {
+describe("no degraded warning notification", () => {
+	it("never notifies on before_agent_start, even when servers are missing", async () => {
 		vi.mocked(serversMod.detectServers).mockReturnValue([])
 		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
 		const notify = vi.fn()
@@ -478,30 +478,6 @@ describe("one-time warning on before_agent_start", () => {
 		lspExtension(pi)
 		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
 		await pi.fireBeforeAgentStart()
-		expect(notify).toHaveBeenCalledTimes(1)
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining(FAKE_GO_SERVER.name), "warning")
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("go install"), "warning")
-	})
-
-	it("does NOT re-notify on a second before_agent_start", async () => {
-		vi.mocked(serversMod.detectServers).mockReturnValue([])
-		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
-		const notify = vi.fn()
-		const pi = makePi()
-		lspExtension(pi)
-		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
-		await pi.fireBeforeAgentStart()
-		await pi.fireBeforeAgentStart()
-		expect(notify).toHaveBeenCalledTimes(1)
-	})
-
-	it("does not notify when not degraded (server present)", async () => {
-		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
-		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([])
-		const notify = vi.fn()
-		const pi = makePi()
-		lspExtension(pi)
-		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
 		await pi.fireBeforeAgentStart()
 		expect(notify).not.toHaveBeenCalled()
 	})
@@ -550,27 +526,6 @@ describe("no regression when a server is present", () => {
 // =============================================================================
 // 4c. Edge cases from PR review
 // =============================================================================
-
-describe("warned flag reset on session_start", () => {
-	it("allows a one-time warning in a new session after session_shutdown", async () => {
-		vi.mocked(serversMod.detectServers).mockReturnValue([])
-		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
-		const notify = vi.fn()
-		const pi = makePi()
-		lspExtension(pi)
-		// First session: warning fires
-		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
-		await pi.fireBeforeAgentStart()
-		expect(notify).toHaveBeenCalledTimes(1)
-		// Shutdown resets warned
-		await pi.fireShutdown()
-		// Second session: warning should fire again
-		const notify2 = vi.fn()
-		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify: notify2 } })
-		await pi.fireBeforeAgentStart()
-		expect(notify2).toHaveBeenCalledTimes(1)
-	})
-})
 
 describe("ui.notify absent", () => {
 	it("does not throw when ui lacks notify method", async () => {
