@@ -7,6 +7,7 @@ import {
 import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
+import { confirm } from "./_helpers.js"
 
 interface UpdateFlags {
 	force: boolean
@@ -318,18 +319,4 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 		console.log(`✓ kimchi updated to ${check.latestVersion}`)
 	}
 	return 0
-}
-
-async function confirm(prompt: string): Promise<boolean> {
-	process.stdout.write(prompt)
-	return new Promise((resolve) => {
-		const onData = (chunk: Buffer) => {
-			process.stdin.off("data", onData)
-			process.stdin.pause()
-			const answer = chunk.toString("utf-8").trim().toLowerCase()
-			resolve(answer === "" || answer === "y" || answer === "yes")
-		}
-		process.stdin.resume()
-		process.stdin.on("data", onData)
-	})
 }

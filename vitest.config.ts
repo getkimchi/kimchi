@@ -15,6 +15,14 @@ export default defineConfig({
 			"**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*",
 			"**/.tui-test/**",
 			".worktrees/**",
+			// TUI E2E suites run through the dedicated tui-test CLI (one file per
+			// process, via `pnpm run test:e2e:tui` / scripts/run-tui-e2e.js) —
+			// their test framework communicates over the worker IPC channel and
+			// collides with vitest's fork-pool protocol (the deterministic
+			// "Unexpected call to process.send()" crash). Never run them inside
+			// plain vitest; skip them here so a bare `vitest run` from the root
+			// cannot trip over them.
+			"tests/e2e/**",
 		],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
@@ -33,5 +41,12 @@ export default defineConfig({
 		},
 		// Isolate test files to prevent mock leakage between tests
 		pool: "forks",
+		// Cap the fork pool. The default (one fork per CPU core) spawns a dozen-plus full Node
+		// processes on a modern laptop — each holding the transformed suite in memory, and (as
+		// observed) lingering after the run finishes until the system runs out of RAM. Four
+		// workers match a standard CI runner, keep local memory bounded, and still leave the
+		// 500+ test files comfortably parallel. Per-invocation overrides (e.g. the pre-pr
+		// workflow's --maxWorkers=1) take priority over this.
+		maxWorkers: 4,
 	},
 })

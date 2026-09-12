@@ -12,6 +12,7 @@ import { runCursor } from "./cursor.js"
 import { runGsd2 } from "./gsd2.js"
 import { runLogin } from "./login.js"
 import { runMcp } from "./mcp.js"
+import { runMemory } from "./memory.js"
 import { runOpenClaw } from "./openclaw.js"
 import { runOpenCode } from "./opencode.js"
 import { runResources } from "./resources.js"
@@ -34,6 +35,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },
 	{ name: "mcp", summary: "MCP server utilities (probe, ...)", run: runMcp },
+	{ name: "memory", summary: "Manage persistent memory (list, search, delete, reset)", run: runMemory },
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 ]
 

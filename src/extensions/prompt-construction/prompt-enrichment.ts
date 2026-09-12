@@ -511,7 +511,6 @@ export default function (skillPathsFromConfig: string[]) {
 			// through resources_discover above.
 			const skills = event.systemPromptOptions?.skills ?? []
 
-			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))
 			if (isGitRepo && cachedGitRemote === null) {
 				cachedGitRemote = readGitRemote(ctx.cwd)
@@ -526,7 +525,12 @@ export default function (skillPathsFromConfig: string[]) {
 				homeDir: cachedHomeDir,
 				cwd: ctx.cwd,
 				documentsDir: join(ctx.cwd, ".kimchi", "docs"),
-				localDate: now.toLocaleDateString("en-CA"),
+				// Opt-in context-date override (KIMCHI_CONTEXT_DATE): benchmark
+				// replay runs anchor the clock to the dataset timeline so
+				// relative-time questions resolve against the baked-in history
+				// rather than the real wall clock. Inert when unset; real-time
+				// consumers (TLS, session timestamps) are unaffected.
+				localDate: process.env.KIMCHI_CONTEXT_DATE ?? new Date().toLocaleDateString("en-CA"),
 				isGitRepo,
 				gitBranch: isGitRepo ? getGitBranch(ctx.cwd) : undefined,
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,

@@ -1,0 +1,8 @@
+{
+	"name": "better-sqlite3",
+	"version": "12.11.1",
+	"private": true,
+	"description": "better-sqlite3 API surface over bun:sqlite — see index.js header for rationale, upstream tracking, and removal criteria",
+	"main": "index.js",
+	"types": "index.d.ts"
+}
