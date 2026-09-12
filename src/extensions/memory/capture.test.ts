@@ -199,23 +199,18 @@ describe("extractMessages (user + gated assistant)", () => {
 		])
 	})
 
-	it("carries the recording date from the session entry timestamp", () => {
-		const datedEntry = {
+	it("derives no recording date — entry timestamps never enter capture jobs", () => {
+		const entry = {
 			type: "message",
 			timestamp: "2026-09-12T12:00:00.000Z",
-			message: { role: "user", content: "planning a trip to Seattle" },
+			message: { role: "user", content: "Quick update from 2023/01/11: we've currently got 30 dozen eggs" },
 		} as unknown as SessionEntry
-		expect(extractMessages([datedEntry])).toEqual([
-			{ role: "user", content: "planning a trip to Seattle", date: "2026-09-12" },
+		const messages = extractMessages([entry])
+		expect(messages).toEqual([
+			{ role: "user", content: "Quick update from 2023/01/11: we've currently got 30 dozen eggs" },
 		])
-		// Absent or unparseable timestamps leave the date undefined.
-		expect(extractMessages([msgEntry("user", "undated")])[0]?.date).toBeUndefined()
-		const brokenEntry = {
-			type: "message",
-			timestamp: "not-a-date",
-			message: { role: "user", content: "broken" },
-		} as unknown as SessionEntry
-		expect(extractMessages([brokenEntry])[0]?.date).toBeUndefined()
+		// No date field at all — recording time never reaches the LLM's input.
+		expect("date" in (messages[0] ?? {})).toBe(false)
 	})
 
 	it("extracts text from block content", () => {
@@ -309,7 +304,7 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 		expect(system).not.toContain("Respond with ONLY a JSON array of fact strings")
 	})
 
-	it("renders the recording-date prefix in the extraction transcript", async () => {
+	it("the extraction transcript carries conversation dates only — no recording-date channel (benchmark framing)", async () => {
 		const fetchImpl = vi
 			.fn()
 			.mockImplementation(() =>
@@ -318,7 +313,7 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 		await extractAssistantFacts(
 			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 			[
-				{ role: "user", content: "Quick update from 2023/05/26", date: "2026-09-12" },
+				{ role: "user", content: "Quick update from 2023/01/11: we've currently got 30 dozen eggs" },
 				{ role: "assistant", content: "Noted." },
 			],
 			null,
@@ -327,9 +322,14 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 			messages: Array<{ content: string }>
 		}
 		const transcript = body.messages[1]?.content ?? ""
-		expect(transcript).toContain("[2026-09-12] user: Quick update from 2023/05/26")
-		// Undated messages render without a prefix.
-		expect(transcript).toContain("assistant: Noted.")
+		// The conversation's own date is the only date signal...
+		expect(transcript).toContain("from 2023/01/11")
+		// ...and no [YYYY-MM-DD] recording-date prefix exists — the channel that
+		// let "currently" anchor to the 2026 wall clock is closed.
+		expect(transcript).not.toMatch(/\[\d{4}-\d{2}-\d{2}\]/)
+		// The prompt no longer offers any recording-date anchor either.
+		const system = body.messages[0]?.content ?? ""
+		expect(system).not.toContain("line prefix")
 	})
 })
 
@@ -341,12 +341,14 @@ describe("extraction prompt guards (injection resistance)", () => {
 
 	it("both extraction prompts carry the date-stamp instruction", () => {
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("As of 2023-05-26")
-		expect(EXTRACTION_SYSTEM_PROMPT).toContain("a date the conversation explicitly states")
-		// Recording dates are never written into fact text — the proxy-divergence
-		// guard (replay/imported history: recording ≠ conversation time).
-		expect(EXTRACTION_SYSTEM_PROMPT).toContain("never write the recording date into the fact")
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("stamp NO date")
+		// Recording dates never enter fact text through any path — no fallback,
+		// no relative anchor, no laundering.
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("never write a date the conversation did not state or imply")
+		expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("line prefix")
 		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).toContain("As of 2023-05-26")
-		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).toContain("never write the recording date into the fact")
+		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).toContain("stamp NO date")
+		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).not.toContain("line prefix")
 	})
 
 	it("the supersede judge prompt carries explicit value-change language", () => {

@@ -71,33 +71,23 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 	// gate (conversation-established facts): pure text only — no tool-call
 	// blocks (work product), no thinking blocks (internal reasoning),
 	// bounded length. The extraction taxonomy makes the final durability
-	// call with the exchange visible. Each message carries its recording
-	// date (YYYY-MM-DD from the entry timestamp) for As-of fact stamping.
+	// call with the exchange visible. Deliberately NO recording date: entry
+	// timestamps are a proxy that diverges from conversation time on replayed
+	// or imported history — recording time never reaches the LLM's input, so
+	// no instruction can launder it into fact text.
 	const messages: CaptureMessage[] = []
 	for (const entry of entries) {
 		if (entry.type !== "message") continue
 		const message = entry.message
-		const date = entryDate(entry)
 		if (message.role === "user") {
 			const content = messageText(message.content)
-			if (content.trim()) messages.push({ role: "user", content, date })
+			if (content.trim()) messages.push({ role: "user", content })
 		} else if (message.role === "assistant") {
 			const content = gatedAssistantText(message.content)
-			if (content) messages.push({ role: "assistant", content, date })
+			if (content) messages.push({ role: "assistant", content })
 		}
 	}
 	return messages
-}
-
-/** Recording date (YYYY-MM-DD) for a session entry's ISO timestamp — local
- * time via the en-CA locale trick (the same format the system prompt's
- * Current-date line uses). Undefined when absent or unparseable. */
-function entryDate(entry: SessionEntry): string | undefined {
-	const timestamp = (entry as { timestamp?: unknown }).timestamp
-	if (typeof timestamp !== "string" || !timestamp) return undefined
-	const parsed = new Date(timestamp)
-	if (Number.isNaN(parsed.getTime())) return undefined
-	return parsed.toLocaleDateString("en-CA")
 }
 
 /**
