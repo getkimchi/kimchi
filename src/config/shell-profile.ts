@@ -1,131 +1,143 @@
-import { readFileSync, realpathSync, statSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
+import { chmodSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir, platform } from "node:os"
 import { basename, join } from "node:path"
-import { writeFileAtomic } from "./json.js"
 
-export type DetectedShell = "zsh" | "bash" | "fish"
-
-export interface ShellProfile {
+interface ShellProfile {
 	path: string
-	shell: DetectedShell
+	shell: "zsh" | "bash" | "fish"
 }
 
-/**
- * Add or update a single export line in the user's shell profile so a value
- * (typically the Kimchi API key) is available in fresh terminals. Returns
- * the path written to, or null when no profile could be detected.
- *
- * Detects the shell from $SHELL with filesystem fallbacks, resolves
- * symlinks before writing so we don't replace a symlink with a regular
- * file, and replaces any existing line for the same key in place to keep
- * the profile tidy.
- */
-export function exportEnvToShellProfile(key: string, value: string): string | null {
-	const detected = detectShellProfile()
-	if (!detected) return null
-
-	let { path } = detected
-	const { shell } = detected
-
-	// Resolve symlinks so tmp+rename targets the real file. realpathSync
-	// throws ENOENT if the file doesn't exist yet; that's fine — we'll
-	// create it.
-	try {
-		path = realpathSync(path)
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-			throw new Error(`resolve symlink ${path}: ${(err as Error).message}`)
-		}
-	}
-
-	const exportLine = shell === "fish" ? `set -gx ${key} ${value}` : `export ${key}=${value}`
-	const matchPrefix = shell === "fish" ? `set -gx ${key} ` : `export ${key}=`
-
-	let content = ""
-	let raw: Buffer | null = null
-	try {
-		raw = readFileSync(path)
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-			throw new Error(`read ${path}: ${(err as Error).message}`)
-		}
-	}
-	if (raw && raw.length > 0) {
-		// Node's "utf-8" decoder is lossy (replaces invalid bytes with U+FFFD),
-		// which would let us silently corrupt a profile that contains, say, a
-		// Latin-1 prompt character. Use TextDecoder with fatal=true so we abort
-		// instead.
-		try {
-			content = new TextDecoder("utf-8", { fatal: true }).decode(raw)
-		} catch {
-			throw new Error(`shell profile ${path} contains non-UTF-8 content, skipping`)
-		}
-	}
-
-	const lines = content.split("\n")
-	let found = false
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].trimStart().startsWith(matchPrefix)) {
-			lines[i] = exportLine
-			found = true
-			break
-		}
-	}
-
-	if (!found) {
-		// Preserve the trailing newline that well-behaved profiles end with.
-		if (lines.length > 0 && lines[lines.length - 1] === "") {
-			lines[lines.length - 1] = exportLine
-			lines.push("")
-		} else {
-			lines.push(exportLine)
-		}
-	}
-
-	writeFileAtomic(path, lines.join("\n"))
-	return path
-}
-
-function detectShellProfile(): ShellProfile | null {
+/** Match the profiles selected by Kimchi's former shell-profile exporter. */
+function detectShellProfile(): ShellProfile | undefined {
 	const home = homedir()
-	if (!home) return null
-
-	const shellEnv = process.env.SHELL ?? ""
-	const shell = basename(shellEnv)
-
-	switch (shell) {
+	switch (basename(process.env.SHELL ?? "")) {
 		case "zsh":
 			return { path: join(home, ".zshrc"), shell: "zsh" }
 		case "bash":
-			// macOS bash sources .bash_profile (not .bashrc) for login shells,
-			// which is what Terminal.app spawns. Linux bash sources .bashrc.
-			return platform() === "darwin"
-				? { path: join(home, ".bash_profile"), shell: "bash" }
-				: { path: join(home, ".bashrc"), shell: "bash" }
+			return { path: join(home, platform() === "darwin" ? ".bash_profile" : ".bashrc"), shell: "bash" }
 		case "fish":
 			return { path: join(home, ".config", "fish", "config.fish"), shell: "fish" }
 	}
-
-	// $SHELL was empty or unrecognised. Fall back to whichever profile
-	// already exists, preferring zsh on macOS where it's been the default
-	// since 10.15.
-	if (platform() === "darwin" && fileExists(join(home, ".zshrc"))) {
-		return { path: join(home, ".zshrc"), shell: "zsh" }
-	}
-	if (fileExists(join(home, ".bashrc"))) {
-		return { path: join(home, ".bashrc"), shell: "bash" }
-	}
-	if (fileExists(join(home, ".bash_profile"))) {
-		return { path: join(home, ".bash_profile"), shell: "bash" }
-	}
-	return null
+	const candidates: ShellProfile[] = [
+		...(platform() === "darwin" ? [{ path: join(home, ".zshrc"), shell: "zsh" as const }] : []),
+		{ path: join(home, ".bashrc"), shell: "bash" },
+		{ path: join(home, ".bash_profile"), shell: "bash" },
+	]
+	return candidates.find(({ path }) => {
+		try {
+			return statSync(path).isFile()
+		} catch {
+			return false
+		}
+	})
 }
 
-function fileExists(path: string): boolean {
+function readProfile(path: string): string {
+	const raw = readFileSync(path)
 	try {
-		statSync(path)
-		return true
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw)
 	} catch {
-		return false
+		throw new Error(`Shell profile ${path} contains non-UTF-8 content; please edit it manually.`)
+	}
+}
+
+function assignmentPrefix(shell: ShellProfile["shell"]): RegExp {
+	// Only migrate the export forms the old installer wrote. Bare assignments
+	// can also be array data and are outside this migration's scope.
+	return shell === "fish" ? /^[\t ]*set[\t ]+-gx[\t ]+KIMCHI_API_KEY[\t ]+/ : /^[\t ]*export[\t ]+KIMCHI_API_KEY=/
+}
+
+function isLiteralKey(value: string): boolean {
+	// Optional matching quotes around a plain key, followed by a token boundary.
+	const literal = /^(['"]?)[\w./+=:@-]*\1(?=$|[\t ;])/.exec(value)
+	if (!literal) return false
+	let suffix = value.slice(literal[0].length).replace(/^[\t ]+|[\t ]+$/g, "")
+	if (suffix.startsWith(";")) suffix = suffix.slice(1).replace(/^[\t ]+/, "")
+	return suffix === "" || suffix.startsWith("#")
+}
+
+/** Parse only: profile commands and substitutions must never run. */
+function hasCompleteSyntax(content: string, shell: ShellProfile["shell"]): boolean {
+	const configuredShell = process.env.SHELL ?? ""
+	const executable = basename(configuredShell) === shell ? configuredShell : shell
+	const args = {
+		bash: ["--noprofile", "--norc", "-pn"],
+		// Short forms can consume the following export despite accepting EOF.
+		zsh: ["-d", "-f", "-n", "-o", "NO_SHORT_LOOPS", "-o", "NO_SHORT_REPEAT"],
+		fish: ["--no-config", "--no-execute"],
+	}[shell]
+	const result = spawnSync(executable, args, {
+		input: content,
+		encoding: "utf-8",
+		timeout: 1_000,
+		// Exclude inherited startup hooks, shell options, and verbose key tracing.
+		env: { PATH: process.env.PATH, HOME: homedir() },
+	})
+	// Some shells report incomplete syntax as a warning with a successful status.
+	// Never forward diagnostics: they may contain a key from the input.
+	return result.status === 0 && result.stdout === "" && result.stderr === ""
+}
+
+/** Build the complete edit first. Undefined means this profile needs manual cleanup. */
+function migrateProfile(content: string, shell: ShellProfile["shell"]): string | undefined {
+	// EOF can silently terminate heredocs or continued commands in syntax-only
+	// mode (including trailing &&/|| in Zsh). Keep skipping these profiles.
+	const code = content.replace(/^[\t ]*#.*$/gm, "")
+	if (/<<|\\\r?\n|\0|[|&][\t ]*(?:#.*)?\r?$/m.test(code)) return undefined
+	const prefix = assignmentPrefix(shell)
+	const beforeExports: string[] = []
+	let before = ""
+	let updated = ""
+	for (const text of content.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+		const line = text.replace(/\r?\n$/, "")
+		if (prefix.test(line)) {
+			if (!isLiteralKey(line.replace(prefix, ""))) return undefined
+			beforeExports.push(before)
+		} else {
+			updated += text
+		}
+		before += text
+	}
+	if (updated === content) return updated
+	// A complete prefix places each export outside blocks, arrays, strings, and
+	// substitutions. Check the original and the entire proposed edit as well.
+	return [content, ...beforeExports, updated].every((part) => hasCompleteSyntax(part, shell)) ? updated : undefined
+}
+
+/** Read files only: never source a profile or evaluate the key's value. */
+export function findShellProfileApiKey(): (ShellProfile & { canRemove: boolean }) | undefined {
+	const profile = detectShellProfile()
+	if (!profile) return undefined
+	let content: string
+	try {
+		content = readProfile(profile.path)
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined
+		throw error
+	}
+	const prefix = assignmentPrefix(profile.shell)
+	if (!content.split("\n").some((line) => prefix.test(line))) return undefined
+	return { ...profile, canRemove: migrateProfile(content, profile.shell) !== undefined }
+}
+
+/** Remove literal assignments without deleting commands sharing the same line. */
+export function removeShellProfileApiKey(profile: ShellProfile): void {
+	// Resolve again and reread after the prompt so edits made while it was open survive.
+	const path = realpathSync(profile.path)
+	const content = readProfile(path)
+	const updated = migrateProfile(content, profile.shell)
+	if (updated === undefined) {
+		throw new Error(`Could not safely remove KIMCHI_API_KEY from ${profile.path}; please edit it manually.`)
+	}
+	if (updated === content) return
+	const tmp = `${path}.${randomUUID()}.tmp`
+	try {
+		writeFileSync(tmp, updated, { flag: "wx", mode: 0o600 })
+		chmodSync(tmp, statSync(path).mode & 0o777)
+		renameSync(tmp, path)
+	} finally {
+		rmSync(tmp, { force: true })
 	}
 }

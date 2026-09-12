@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
+import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -59,7 +60,7 @@ export class ModelsFetchError extends Error {
 }
 
 /** True when `error` is a transient (retryable) model-refresh failure. */
-export function isTransientModelsError(error: unknown): boolean {
+export function isTransientModelsError(error: unknown): error is ModelsFetchError {
 	return error instanceof ModelsFetchError && error.transient
 }
 
@@ -194,7 +195,7 @@ export interface PiModelConfig {
 	headers?: Record<string, string>
 }
 
-function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
+export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 	const rootModels = models.filter((model) => model.provider === "ai-enabler")
 	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
 	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
@@ -249,7 +250,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	}
 }
 
-function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
+export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
 	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
 
@@ -266,7 +267,7 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 		"X-Provider-Type": upstreamProvider,
 	})
 
-	const providers: Record<string, unknown> = {
+	const providers: Record<string, ProviderConfig> = {
 		"kimchi-dev": {
 			baseUrl: chatCompletionsApi(endpoint),
 			apiKey: "$KIMCHI_API_KEY",
@@ -295,6 +296,11 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 
 export interface ModelsConfigResult {
 	models: ModelMetadata[]
+}
+
+export interface DiscoveredModelsConfig extends ModelsConfigResult {
+	/** Managed provider definitions for this discovery, without writing the shared cache. */
+	providers: Record<string, ProviderConfig>
 }
 
 function modelToMetadata(m: PiModelConfig): ModelMetadata {
@@ -439,10 +445,9 @@ export function readExperimentalModels(modelsJsonPath: string): ModelMetadata[] 
 /**
  * Fetch available models from the kimchi metadata API and write the
  * configuration to modelsJsonPath. If no API key is configured, returns
- * cached models (if available) or an empty list without making a network call.
- * If the fetch fails and the previous models.json is still on disk, returns
- * the cached models with a warning. Throws only when a key is present but
- * there is no cache to fall back on.
+ * cached and custom models (if available) without making a network call.
+ * Failed refreshes fall back to existing models with a warning, unless
+ * fallback is disabled or no models exist.
  *
  * User-added providers (anything other than "kimchi-dev") are preserved across
  * updates so custom model configurations are not lost on startup.
@@ -452,14 +457,32 @@ export async function updateModelsConfig(
 	apiKey: string,
 	options: FetchModelsOptions = {},
 ): Promise<ModelsConfigResult> {
-	const dir = dirname(modelsJsonPath)
-	mkdirSync(dir, { recursive: true })
+	const result = await discoverModelsConfig(modelsJsonPath, apiKey, options)
+	if (result.refreshed) {
+		mkdirSync(dirname(modelsJsonPath), { recursive: true })
+		const merged = { providers: { ...readExistingProviders(modelsJsonPath), ...result.providers } }
+		writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
+	}
+	return {
+		models: result.models,
+	}
+}
 
+export async function discoverModelsConfig(
+	modelsJsonPath: string,
+	apiKey: string,
+	options: FetchModelsOptions = {},
+): Promise<DiscoveredModelsConfig & { refreshed: boolean }> {
 	const otherProviders = readExistingProviders(modelsJsonPath)
 	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
 
 	if (!apiKey) {
-		return { models: sortModels([...(readCachedMetadata(modelsJsonPath) ?? []), ...otherModels]) }
+		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		return {
+			models: sortModels([...cached, ...otherModels]),
+			providers: buildModelsConfig(cached, options.endpoint).providers,
+			refreshed: false,
+		}
 	}
 
 	let fetched: ModelMetadata[]
@@ -476,7 +499,11 @@ export async function updateModelsConfig(
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
-		return { models: sortModels([...cached, ...otherModels]) }
+		return {
+			models: sortModels([...cached, ...otherModels]),
+			providers: buildModelsConfig(cached, options.endpoint).providers,
+			refreshed: false,
+		}
 	}
 	// Authenticated success clears marks from earlier 401s.
 	clearCredentialStale(KIMCHI_PROVIDER_ID)
@@ -489,7 +516,9 @@ export async function updateModelsConfig(
 		console.warn("All models from the API are sunset. No active models available.")
 	}
 	const models = sortModels(activeModels)
-	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models, options.endpoint).providers } }
-	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	return { models: sortModels([...activeModels, ...otherModels]) }
+	return {
+		models: sortModels([...activeModels, ...otherModels]),
+		providers: buildModelsConfig(models, options.endpoint).providers,
+		refreshed: true,
+	}
 }

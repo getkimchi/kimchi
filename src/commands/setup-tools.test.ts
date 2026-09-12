@@ -1,3 +1,4 @@
+import { log } from "@clack/prompts"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("./_helpers.js", () => ({
@@ -14,6 +15,7 @@ vi.mock("../setup-wizard/steps/telemetry.js", () => ({
 }))
 
 vi.mock("../config.js", () => ({
+	getApiKeyMismatchWarning: vi.fn(),
 	isTelemetryExplicitlyConfigured: vi.fn(),
 	readTelemetryConfig: vi.fn(),
 }))
@@ -31,7 +33,7 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	drain: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import { getApiKeyMismatchWarning, isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
 import { drain, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
@@ -52,6 +54,7 @@ describe("runSetupTools", () => {
 	beforeEach(() => {
 		vi.resetModules()
 		vi.clearAllMocks()
+		vi.mocked(getApiKeyMismatchWarning).mockReturnValue(undefined)
 		process.env.KIMCHI_API_KEY = undefined
 		vi.mocked(popScope).mockReturnValue("global")
 		// Default: telemetry already configured (most tests don't care about the prompt)
@@ -73,6 +76,18 @@ describe("runSetupTools", () => {
 		expect(result).toBe(1)
 		expect(errSpy).toHaveBeenCalled()
 		errSpy.mockRestore()
+	})
+
+	it("renders a key mismatch through Clack before tool selection", async () => {
+		const warning = "KIMCHI_API_KEY differs from your saved key. Using the environment key."
+		vi.mocked(resolveApiKey).mockReturnValue("environment-key")
+		vi.mocked(getApiKeyMismatchWarning).mockReturnValue(warning)
+		const warn = vi.spyOn(log, "warn").mockImplementation(() => {})
+		vi.mocked(promptToolSelection).mockImplementation(async () => {
+			expect(warn).toHaveBeenCalledExactlyOnceWith(warning)
+			return { kind: "cancel" }
+		})
+		await runSetupTools([])
 	})
 
 	it("exits with code 0 when user selects no tools", async () => {

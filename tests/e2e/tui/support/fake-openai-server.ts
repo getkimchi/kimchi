@@ -93,6 +93,7 @@ export interface FakeOpenAiServer {
 }
 
 interface StartFakeOpenAiServerOptions {
+	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	/** JSON bodies returned by successive `/v1/route` calls. An empty queue returns 503. */
@@ -172,6 +173,10 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		requests.push(recorded)
 
 		try {
+			if (options.rejectedApiKeys?.some((key) => req.headers.authorization === `Bearer ${key}`)) {
+				writeJson(res, 401, { error: "Invalid API key" })
+				return
+			}
 			if (req.method === "POST" && req.url?.startsWith("/v1/route")) {
 				routerRequestCount += 1
 				const response = routerQueue.shift()
