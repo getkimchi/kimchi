@@ -81,7 +81,7 @@ All in `src/extensions/memory/config.ts`.
 | `DIGEST_SCORE_THRESHOLD` | 0.2 | a needle retrieved at 0.197 was dropped by the earlier 0.3 bar, while unrelated-query top scores measured 0.142–0.231 — 0.2 is the tightest cut that admits the confirmed miss. Re-measure with `pnpm run memory:measure` when retuning |
 | `DIGEST_MAX_FACTS` / `DIGEST_MAX_TOKENS` | 5 / 2,000 | digest cost bound |
 | `MEMORY_CAPTURE_WINDOW_CHARS` | 2,000 | the dilution experiment: small windows retain needle facts, bundled content drops them |
-| `MEMORY_CAPTURE_CHUNK_WINDOWS` / `MEMORY_CAPTURE_CONCURRENCY` | 8 / 4 | extraction parallelism per chunk; one supersede judge pass per chunk |
+| `MEMORY_DRAIN_CONCURRENCY` / `MEMORY_SUPERSEDE_BATCH_FACTS` | 6 / 40 | drain-wide extraction parallelism; facts per batched supersede judge call (one chronological view per store across the drain) |
 | `MEMORY_CAPTURE_INCREMENTAL_MESSAGES` | 10 | drains content mid-session, shrinking the shutdown tail and the next-session staleness race |
 | `MEMORY_CAPTURE_ASSISTANT_MAX_CHARS` | 1,000 | an answer's key statement sits at its start — truncate, don't exclude |
 | `TURN_RECALL_MAX_EVALUATIONS` / `MAX_FACTS` / `MAX_FACT_CHARS` | 5 / 3 / 400 | progressive-recall cost bound |

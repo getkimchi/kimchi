@@ -36,15 +36,23 @@ export const DIGEST_MAX_TOKENS = 2_000
 export const MEMORY_CAPTURE_WINDOW_CHARS = 2_000
 
 /**
- * Windows per capture chunk: extraction runs in parallel within a chunk,
- * then ONE supersede judge pass per chunk (the judge batch halves the LLM
- * calls; within a chunk the new facts are presented in chronological
- * order so value changes supersede in the right direction).
+ * Parallel extraction calls across the whole drain (the pipelined worker's
+ * phase B) — the LLM phase is the throughput bottleneck, so windows from
+ * ALL pending jobs extract in one bounded-concurrency queue instead of
+ * per-job chunks. The benchmark's dominant failure cause was serialized
+ * capture (~24s/job) outrunning the drain budget. Override:
+ * KIMCHI_MEMORY_DRAIN_CONCURRENCY.
  */
-export const MEMORY_CAPTURE_CHUNK_WINDOWS = 8
+export const MEMORY_DRAIN_CONCURRENCY = 6
 
-/** Max concurrent extraction calls within a chunk. */
-export const MEMORY_CAPTURE_CONCURRENCY = 4
+/**
+ * Facts per batched supersede judge call (the pipelined worker's phase C):
+ * one judge pass per store across the whole drain, the facts listed
+ * chronologically — bounds the judge prompt size while keeping a single
+ * cross-session view (per-chunk judges never saw two sessions' conflicting
+ * facts side by side).
+ */
+export const MEMORY_SUPERSEDE_BATCH_FACTS = 40
 
 /**
  * Uncaptured user messages needed before an incremental mid-session
