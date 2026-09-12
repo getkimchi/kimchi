@@ -37,6 +37,7 @@ import {
 	parseIdArray,
 	parseTaggedFacts,
 	runCaptureWorker,
+	SUPERSEDE_SYSTEM_PROMPT,
 	windowByBudget,
 } from "./capture-worker.js"
 
@@ -342,6 +343,12 @@ describe("extraction prompt guards (injection resistance)", () => {
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("As of 2023-05-26")
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("prefer a date the conversation explicitly states")
 		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).toContain("As of 2023-05-26")
+	})
+
+	it("the supersede judge prompt carries explicit value-change language", () => {
+		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("A new VALUE for the same subject is a change")
+		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("up from 17")
+		expect(SUPERSEDE_SYSTEM_PROMPT).toContain('LATER "As of" date')
 	})
 })
 
@@ -820,6 +827,49 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		// Shared messages extract once (in job A's window); job B plans only
 		// its genuinely new message.
 		expect(transcripts).toEqual(["user: shared one\n\nuser: shared two", "user: fresh three"])
+	})
+
+	it("deletes the superseded old value across sessions in one drain", async () => {
+		const searchTopKs: number[] = []
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			const user = body.messages[1]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				// The judge deletes the older fact (m1 = first added).
+				return new Response(JSON.stringify({ choices: [{ message: { content: '["m1"]' } }] }), { status: 200 })
+			}
+			// Extraction: each job's message becomes its fact.
+			const fact = (user.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const fake = makeFakeBackend()
+		// Record the supersede candidate search width (topK assertion).
+		const originalSearch = fake.backend.search
+		fake.backend.search = async (query, config) => {
+			searchTopKs.push(config.topK)
+			return originalSearch(query, config)
+		}
+		const older = writeJob("older", [msg("user", "I have 17 new postcards")])
+		const newer = writeJob("newer", [msg("user", "I now have 25 new postcards, up from 17")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		// Both facts were added (chronologically)...
+		expect(fake.added).toEqual(["I have 17 new postcards", "I now have 25 new postcards, up from 17"])
+		// ...then the batched judge deleted the older one — the benchmark's
+		// "two conflicting entries" failure mode.
+		expect(fake.deleted).toEqual(["m1"])
+		expect(fake.items.map((item) => item.memory)).toEqual(["I now have 25 new postcards, up from 17"])
+		// The candidate search uses the widened topK (8).
+		expect(searchTopKs.length).toBeGreaterThan(0)
+		for (const topK of searchTopKs) expect(topK).toBe(8)
 	})
 })
 

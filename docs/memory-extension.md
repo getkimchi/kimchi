@@ -82,6 +82,7 @@ All in `src/extensions/memory/config.ts`.
 | `DIGEST_MAX_FACTS` / `DIGEST_MAX_TOKENS` | 5 / 2,000 | digest cost bound |
 | `MEMORY_CAPTURE_WINDOW_CHARS` | 2,000 | the dilution experiment: small windows retain needle facts, bundled content drops them |
 | `MEMORY_DRAIN_CONCURRENCY` / `MEMORY_SUPERSEDE_BATCH_FACTS` | 6 / 40 | drain-wide extraction parallelism; facts per batched supersede judge call (one chronological view per store across the drain) |
+| `SUPERSEDE_SEARCH_TOPK` | 8 | candidate search width per new fact for the supersede judge |
 | `MEMORY_CAPTURE_INCREMENTAL_MESSAGES` | 10 | drains content mid-session, shrinking the shutdown tail and the next-session staleness race |
 | `MEMORY_CAPTURE_ASSISTANT_MAX_CHARS` | 1,000 | an answer's key statement sits at its start — truncate, don't exclude |
 | `TURN_RECALL_MAX_EVALUATIONS` / `MAX_FACTS` / `MAX_FACT_CHARS` | 5 / 3 / 400 | progressive-recall cost bound |
