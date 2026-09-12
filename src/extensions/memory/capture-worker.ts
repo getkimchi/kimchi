@@ -8,16 +8,26 @@
  * itself rather than the bun runtime.
  *
  * Drain semantics: each spawn acquires the root capture lock and processes
- * ALL pending job files, oldest first (the spawned --job is just the
- * trigger) — serialization makes the concurrent-worker ledger race
- * structurally impossible, and orphaned job files from failed runs get
- * retried by the next spawn. Pending jobs older than 7 days are swept.
+ * ALL pending job files (the spawned --job is just the trigger) —
+ * serialization makes the concurrent-worker ledger race structurally
+ * impossible, and orphaned job files from failed runs get retried by the
+ * next spawn. Pending jobs older than 7 days are swept.
  *
- * Pipeline per job: dedupe against captured-hashes → char-budget windows
- * (MEMORY_CAPTURE_WINDOW_CHARS; a single oversized message extracts whole —
- * there is no message-count cap) → extraction LLM (tuned to durable user
- * facts) → conservative force-DELETE+ADD supersede → add(infer: false) →
- * mark hashes → delete the job file.
+ * Pipelined drain (three phases under the single lock):
+ *   A. Claim pass (sequential, no LLM): each job's messages filter against
+ *      the shared ledger plus this drain's in-memory claims, so overlapping
+ *      jobs (before_compact + its shutdown superset, incremental batches)
+ *      dedupe — the first job to claim a message owns it for this drain.
+ *   B. Parallel extraction: every window from every job in one
+ *      bounded-concurrency queue (MEMORY_DRAIN_CONCURRENCY) — the LLM phase
+ *      is the throughput bottleneck (serialized jobs outran the benchmark's
+ *      drain budget, its dominant failure cause). A failed window retries
+ *      once; a second failure leaves its hashes unmarked for a future drain.
+ *   C. Sequential commit in job order (chronological — supersede
+ *      correctness depends on newer facts arriving after older ones), then
+ *      ONE batched supersede judge pass per store across the whole drain
+ *      (MEMORY_SUPERSEDE_BATCH_FACTS caps the judge prompt) — a single
+ *      chronological view makes cross-session conflicts explicit.
  *
  * Idempotence: message hashes are recorded only after a window fully
  * processes, so a crashed run resumes where it stopped and a re-spawned
@@ -36,9 +46,9 @@ import {
 	resolveExtractionModel,
 } from "./backend.js"
 import {
-	MEMORY_CAPTURE_CHUNK_WINDOWS,
-	MEMORY_CAPTURE_CONCURRENCY,
 	MEMORY_CAPTURE_WINDOW_CHARS,
+	MEMORY_DRAIN_CONCURRENCY,
+	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
 	PENDING_JOB_MAX_AGE_MS,
 } from "./config.js"
@@ -531,9 +541,32 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	}
 }
 
+/** One job's route through the pipelined drain: the claim phase (A) fixes
+ * its fresh windows, the extraction phase (B) fills in the tagged facts, and
+ * the commit phase (C) applies them to the stores in job order. */
+interface JobPlan {
+	jobFile: string
+	project: CaptureJob["project"]
+	windows: CaptureMessage[][]
+	personalFacts: string[]
+	projectFacts: string[]
+	/** Windows whose extraction succeeded — hash-marked at commit (a failed
+	 * window's hashes stay unmarked for a future drain). */
+	extractedWindows: CaptureMessage[][]
+}
+
+/** One extraction unit for phase B: a window with a pointer back to its plan. */
+interface ExtractionTask {
+	plan: JobPlan
+	window: CaptureMessage[]
+}
+
 /**
- * Process every pending capture job, oldest first. A failed job logs and
- * the drain continues; its file remains for the next spawn's retry.
+ * Process every pending capture job, pipelined in three phases (see the
+ * module header): A — sequential claim pass; B — parallel extraction; C —
+ * sequential commit plus one batched supersede judge pass per store. A
+ * failed job logs and the drain continues; its file remains for the next
+ * spawn's retry.
  */
 async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions): Promise<number> {
 	const pendingDir = join(defaultMemoryDir(), "pending")
@@ -543,16 +576,16 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		.filter((name) => name.endsWith(".json"))
 		.map((name) => join(pendingDir, name))
 		.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
-	if (jobFiles.length === 0) return 0
 
-	const llm = await resolveWorkerLlm(options)
-	const createBackend = options.createBackend ?? defaultCaptureBackend
-
-	let captured = 0
+	// Phase A — sequential claim pass (fast, no LLM).
+	const hashes = loadHashes()
+	const claimed = new Set<string>()
+	const plans: JobPlan[] = []
 	let failed = 0
 	for (const jobFile of jobFiles) {
 		try {
-			captured += await processOneJob(jobFile, dbPath, llm, createBackend)
+			const plan = planJob(jobFile, hashes, claimed)
+			if (plan) plans.push(plan)
 		} catch (err) {
 			failed += 1
 			console.error(
@@ -561,6 +594,99 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			)
 		}
 	}
+	if (plans.length === 0) {
+		if (failed > 0) throw new Error(`${failed} capture job(s) failed (0 facts captured)`)
+		return 0
+	}
+
+	const llm = await resolveWorkerLlm(options)
+	const createBackend = options.createBackend ?? defaultCaptureBackend
+
+	// Phase B — parallel extraction across the whole drain. Tasks run in
+	// (job, window) order and the results preserve it, so facts distribute
+	// back onto their plan chronologically.
+	const tasks: ExtractionTask[] = plans.flatMap((plan) => plan.windows.map((window) => ({ plan, window })))
+	const drainConcurrency = Math.max(1, Number(process.env.KIMCHI_MEMORY_DRAIN_CONCURRENCY) || MEMORY_DRAIN_CONCURRENCY)
+	const extractTask = async (task: ExtractionTask): Promise<TaggedFacts | null> => {
+		try {
+			return await extractFacts(llm, task.window, task.plan.project?.contextLine ?? null)
+		} catch (err) {
+			// Fail-soft: hashes stay unmarked so a future drain reprocesses.
+			console.error(
+				"[memory-capture] window extraction failed (hashes left unmarked for retry):",
+				err instanceof Error ? err.message : err,
+			)
+			return null
+		}
+	}
+	const results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
+	// One retry round for transient failures — the pre-pipeline drain relied
+	// on a later superset job re-carrying the messages; the claim pass now
+	// dedupes those, so the retry lives here instead.
+	const retryIndices = results.map((result, index) => (result === null ? index : -1)).filter((index) => index >= 0)
+	if (retryIndices.length > 0) {
+		console.error(`[memory-capture] retrying ${retryIndices.length} window extraction failure(s)`)
+		const retried = await mapWithConcurrency(
+			retryIndices.map((index) => tasks[index] as ExtractionTask),
+			drainConcurrency,
+			extractTask,
+		)
+		for (let k = 0; k < retryIndices.length; k++) {
+			const outcome = retried[k]
+			if (outcome !== null) results[retryIndices[k] as number] = outcome
+		}
+	}
+	// Ordered distribution: walk plans → windows in task order; a window that
+	// failed twice stays unmarked (its plan's facts skip it).
+	{
+		let index = 0
+		for (const plan of plans) {
+			for (const window of plan.windows) {
+				const facts = results[index]
+				index += 1
+				if (facts === null) continue
+				plan.extractedWindows.push(window)
+				plan.personalFacts.push(...facts.personal)
+				plan.projectFacts.push(...facts.project)
+			}
+		}
+	}
+
+	// Phase C — sequential commit in job order (chronological). Stores are
+	// created once per drain and reused across jobs; the added facts collect
+	// per store for the batched supersede pass.
+	const personalBackend = await createBackend(dbPath)
+	const projectBackends = new Map<string, Backend>()
+	const personalAdded: string[] = []
+	const projectAdded = new Map<string, string[]>()
+	let captured = 0
+	for (const plan of plans) {
+		try {
+			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend)
+			personalAdded.push(...added.personal)
+			for (const [projectId, facts] of added.project) {
+				projectAdded.set(projectId, [...(projectAdded.get(projectId) ?? []), ...facts])
+			}
+			captured += added.captured
+		} catch (err) {
+			failed += 1
+			console.error(
+				`[memory-capture] job ${basename(plan.jobFile)} failed (file left for retry):`,
+				err instanceof Error ? err.message : err,
+			)
+		}
+	}
+
+	// Batched supersede: ONE judge pass per store across the whole drain —
+	// a single chronological view makes cross-session conflicts explicit
+	// (per-job judges never saw two sessions' conflicting facts side by
+	// side). Failures are fail-soft: the adds are already committed, and
+	// supersede is a quality pass, not a correctness invariant.
+	await runBatchedSupersede(personalBackend, personalAdded, llm)
+	for (const [projectId, backend] of projectBackends) {
+		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], llm)
+	}
+
 	if (failed > 0) throw new Error(`${failed} capture job(s) failed (${captured} facts captured)`)
 	return captured
 }
@@ -601,14 +727,13 @@ function sweepStaleJobs(pendingDir: string): void {
 	}
 }
 
-/** Process one capture job under the drain lock. Throws on failure — the
- * caller logs and continues with the next job. */
-async function processOneJob(
-	jobFile: string,
-	dbPath: string,
-	llm: GatewayLlmOptions,
-	createBackend: (dbPath: string) => Promise<CaptureBackend> = defaultCaptureBackend,
-): Promise<number> {
+/** Claim one job's fresh windows (phase A): parse, filter against the shared
+ * ledger and this drain's in-memory claims, windowize. The FIRST job to
+ * claim a message owns it for this drain — overlapping jobs (a
+ * before_compact job and its session_shutdown superset, incremental batches)
+ * dedupe here. Returns null when nothing is fresh (the job file is
+ * removed); throws on a poison job (also removed). */
+function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): JobPlan | null {
 	let job: CaptureJob
 	try {
 		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob
@@ -623,92 +748,103 @@ async function processOneJob(
 		rmSync(jobFile, { force: true })
 		throw new Error("job file has no messages array, removed")
 	}
-
-	const hashes = loadHashes()
-	const fresh = job.messages.filter((m) => m.content.trim() && !hashes.has(messageHash(m)))
+	const fresh = job.messages.filter((m) => {
+		if (!m.content.trim()) return false
+		const hash = messageHash(m)
+		if (hashes.has(hash) || claimed.has(hash)) return false
+		claimed.add(hash)
+		return true
+	})
 	if (fresh.length === 0) {
 		rmSync(jobFile, { force: true })
-		return 0
+		return null
 	}
+	return {
+		jobFile,
+		project: job.project ?? null,
+		windows: windowByBudget(fresh),
+		personalFacts: [],
+		projectFacts: [],
+		extractedWindows: [],
+	}
+}
 
-	// The --db arg is the personal store; the project store (if any) derives
-	// from the job's project scope. Tagged facts route to their store.
-	const personalBackend = await createBackend(dbPath)
-	const projectBackend = job.project ? await createBackend(projectDbPath(job.project.id)) : null
-	const makeSearchAll = (backend: Backend) => async (query: string) =>
+/** Commit one job's extracted facts (phase C): adds per store with the
+ * exact-duplicate guard (idempotent adds — a crash between add and
+ * hash-mark does not double-add on the retry drain), hash-marks its
+ * extracted windows, saves the ledger, removes the job file. Throws on a
+ * store failure — the file stays and the next drain reprocesses it. */
+async function commitPlan(
+	plan: JobPlan,
+	personalBackend: Backend,
+	projectBackends: Map<string, Backend>,
+	createBackend: (dbPath: string) => Promise<CaptureBackend>,
+): Promise<{ captured: number; personal: string[]; project: Map<string, string[]> }> {
+	let captured = 0
+	const addAll = async (backend: Backend, facts: string[]): Promise<string[]> => {
+		if (facts.length === 0) return []
+		const existing = await existingFactTexts(backend)
+		const added: string[] = []
+		for (const fact of facts) {
+			if (existing.has(normalizeFactText(fact))) continue
+			await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+			added.push(fact)
+			captured += 1
+		}
+		return added
+	}
+	const personal = await addAll(personalBackend, plan.personalFacts)
+	const project = new Map<string, string[]>()
+	if (plan.project) {
+		let projectBackend = projectBackends.get(plan.project.id)
+		if (!projectBackend) {
+			projectBackend = await createBackend(projectDbPath(plan.project.id))
+			projectBackends.set(plan.project.id, projectBackend)
+		}
+		project.set(plan.project.id, await addAll(projectBackend, plan.projectFacts))
+	}
+	// Mark only the successfully extracted windows — a crash resumes here.
+	const hashes = loadHashes()
+	for (const window of plan.extractedWindows) {
+		for (const message of window) hashes.add(messageHash(message))
+	}
+	saveHashes(hashes)
+	rmSync(plan.jobFile, { force: true })
+	return { captured, personal, project }
+}
+
+/** One batched supersede judge pass per store: the drain's added facts in
+ * ≤MEMORY_SUPERSEDE_BATCH_FACTS chunks, each chunk's facts listed
+ * chronologically (they arrive in job order). A judge failure logs and
+ * leaves the conflicts in place — the adds are already committed and
+ * supersede is a quality pass, not a correctness invariant. */
+async function runBatchedSupersede(backend: Backend, newFacts: string[], llm: GatewayLlmOptions): Promise<void> {
+	if (newFacts.length === 0) return
+	const searchAll = async (query: string) =>
 		normalizeMem0SearchResults(await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 5 }))
 	const judge = async (
-		newFacts: string[],
+		facts: string[],
 		candidates: Array<{ id: string; memory: string; score?: number }>,
 	): Promise<string[]> => {
-		const prompt = `NEW FACTS:\n${newFacts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
+		const prompt = `NEW FACTS:\n${facts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
 			.map((c) => `${c.id}: ${c.memory}`)
 			.join("\n")}`
 		return chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
 	}
-
-	let captured = 0
-	/** Add facts to one store (window order), then a per-store supersede pass. */
-	const storeScope = async (backend: Backend, facts: string[]): Promise<void> => {
-		if (facts.length === 0) return
-		// Exact-duplicate guard: adds are idempotent — a fact whose normalized
-		// text already exists is skipped, so a crash between add and hash-mark
-		// does not double-add on the retry drain.
-		const existing = await existingFactTexts(backend)
-		const freshFacts = facts.filter((fact) => !existing.has(normalizeFactText(fact)))
-		// Adds first (window order), then ONE supersede judge pass per chunk.
-		// The judge sees the chunk's facts against the store, which now includes
-		// them — the chronological-order and identical-fact rules in the prompt
-		// keep within-chunk supersede directionally correct and prevent
-		// self-deletion.
-		for (const fact of freshFacts) {
-			await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
-			captured += 1
-		}
-		const superseded = await findSupersededIds(freshFacts, makeSearchAll(backend), judge)
-		for (const id of superseded) {
-			await backend.delete(id)
+	for (let start = 0; start < newFacts.length; start += MEMORY_SUPERSEDE_BATCH_FACTS) {
+		const batch = newFacts.slice(start, start + MEMORY_SUPERSEDE_BATCH_FACTS)
+		try {
+			const superseded = await findSupersededIds(batch, searchAll, judge)
+			for (const id of superseded) {
+				await backend.delete(id)
+			}
+		} catch (err) {
+			console.error(
+				"[memory-capture] supersede judge failed — conflicting facts left in place:",
+				err instanceof Error ? err.message : err,
+			)
 		}
 	}
-
-	const windows = windowByBudget(fresh)
-	for (let start = 0; start < windows.length; start += MEMORY_CAPTURE_CHUNK_WINDOWS) {
-		const chunk = windows.slice(start, start + MEMORY_CAPTURE_CHUNK_WINDOWS)
-		// Lever 1+2: extract the chunk's windows in parallel (bounded) —
-		// windows are independent and order is preserved in the results.
-		const results = await mapWithConcurrency(chunk, MEMORY_CAPTURE_CONCURRENCY, async (window) => {
-			try {
-				return { window, facts: await extractFacts(llm, window, job.project?.contextLine ?? null) }
-			} catch (err) {
-				// A failed window must not abort the job — log it and leave its
-				// hashes unmarked, so the next capture spawn retries it.
-				console.error(
-					"[memory-capture] window extraction failed (hashes left unmarked for retry):",
-					err instanceof Error ? err.message : err,
-				)
-				return { window, facts: null }
-			}
-		})
-		// Tagged routing: personal facts → the personal store; project facts →
-		// the project store. Supersede runs per store — a project fact never
-		// supersedes a personal one.
-		const personalFacts = results.flatMap((result) => result.facts?.personal ?? [])
-		const projectFacts = results.flatMap((result) => result.facts?.project ?? [])
-		await storeScope(personalBackend, personalFacts)
-		if (projectBackend) {
-			await storeScope(projectBackend, projectFacts)
-		}
-		// Mark only the successfully extracted windows — a crash resumes here.
-		for (const result of results) {
-			if (result.facts !== null) {
-				for (const message of result.window) hashes.add(messageHash(message))
-			}
-		}
-		saveHashes(hashes)
-	}
-
-	rmSync(jobFile, { force: true })
-	return captured
 }
 
 /**

@@ -668,6 +668,111 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(captured).toBe(0)
 		expect(fake.added).toHaveLength(0)
 	})
+
+	it("extracts windows from multiple jobs concurrently (drain-wide parallelism)", async () => {
+		let active = 0
+		let peak = 0
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			active += 1
+			peak = Math.max(peak, active)
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const transcript = body.messages[1]?.content ?? ""
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			await new Promise((r) => setTimeout(r, 30)) // hold both calls in flight
+			active -= 1
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const older = writeJob("older", [msg("user", "older job message")])
+		const newer = writeJob("newer", [msg("user", "newer job message")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		const fake = makeFakeBackend()
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(peak).toBeGreaterThanOrEqual(2) // serialized extraction would peak at 1
+	})
+
+	it("commits in job order even when extraction completes out of order", async () => {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const transcript = body.messages[1]?.content ?? ""
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			// Hold the older job's extraction back — the newer completes first.
+			if (fact.includes("older")) await new Promise((r) => setTimeout(r, 50))
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const older = writeJob("older", [msg("user", "older job message")])
+		const newer = writeJob("newer", [msg("user", "newer job message")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		const fake = makeFakeBackend()
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(fake.added).toEqual(["older job message", "newer job message"]) // chronological
+	})
+
+	it("runs ONE supersede judge per store across the whole drain, chronologically", async () => {
+		const judgeFactBatches: string[][] = []
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				const prompt = body.messages[1]?.content ?? ""
+				const factLines = prompt
+					.split("\n")
+					.filter((line) => line.startsWith("- "))
+					.map((line) => line.slice(2))
+				judgeFactBatches.push(factLines)
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const older = writeJob("older", [msg("user", "older fact")])
+		const newer = writeJob("newer", [msg("user", "newer fact")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		const fake = makeFakeBackend()
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(judgeFactBatches).toHaveLength(1) // one judge pass per store for the whole drain
+		expect(judgeFactBatches[0]).toEqual(["older fact", "newer fact"]) // chronological (job order)
+	})
+
+	it("dedupes messages across overlapping jobs in one drain (claim pass)", async () => {
+		const transcripts: string[] = []
+		// Job A: a before_compact-style subset; job B: the shutdown superset
+		// carrying the same messages plus new ones. The claim pass gives the
+		// shared messages to job A (older) exactly once.
+		const jobA = writeJob("older", [msg("user", "shared one"), msg("user", "shared two")])
+		const jobB = writeJob("newer", [msg("user", "shared one"), msg("user", "shared two"), msg("user", "fresh three")])
+		const now = Date.now()
+		utimesSync(jobA, new Date(now - 10_000), new Date(now - 10_000))
+		const fake = makeFakeBackend()
+		await runCaptureWorker(["--job", jobB, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		// Shared messages extract once (in job A's window); job B plans only
+		// its genuinely new message.
+		expect(transcripts).toEqual(["user: shared one\n\nuser: shared two", "user: fresh three"])
+	})
 })
 
 describe("wireMemoryCapture — session shutdown job files", () => {
