@@ -55,6 +55,13 @@ export const MEMORY_DRAIN_CONCURRENCY = 6
 export const MEMORY_SUPERSEDE_BATCH_FACTS = 40
 
 /**
+ * Candidate search width per new fact for the supersede judge — the old
+ * value must surface as a candidate before the judge can delete it; 8 (was
+ * 5) widens the net for near-miss similarity scores.
+ */
+export const SUPERSEDE_SEARCH_TOPK = 8
+
+/**
  * Uncaptured user messages needed before an incremental mid-session
  * capture spawns — drains content as it accumulates instead of saving
  * everything for shutdown, shrinking the next-session staleness race to the
