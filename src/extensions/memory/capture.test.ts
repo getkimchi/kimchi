@@ -341,14 +341,20 @@ describe("extraction prompt guards (injection resistance)", () => {
 
 	it("both extraction prompts carry the date-stamp instruction", () => {
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("As of 2023-05-26")
-		expect(EXTRACTION_SYSTEM_PROMPT).toContain("prefer a date the conversation explicitly states")
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("a date the conversation explicitly states")
+		// Recording dates are never written into fact text — the proxy-divergence
+		// guard (replay/imported history: recording ≠ conversation time).
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("never write the recording date into the fact")
 		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).toContain("As of 2023-05-26")
+		expect(ASSISTANT_FACTS_SYSTEM_PROMPT).toContain("never write the recording date into the fact")
 	})
 
 	it("the supersede judge prompt carries explicit value-change language", () => {
 		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("A new VALUE for the same subject is a change")
 		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("up from 17")
 		expect(SUPERSEDE_SYSTEM_PROMPT).toContain('LATER "As of" date')
+		// Explicit-over-proxy precedence: conversation dates beat undated/recording signals.
+		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("never superseded by an undated fact or by recording time alone")
 	})
 })
 
