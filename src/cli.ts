@@ -18,6 +18,7 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -88,6 +89,7 @@ import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
@@ -201,11 +203,21 @@ function getSubcommand(args: string[]): string {
 	// invocations report their own label instead of the generic "harness"; `mcp`
 	// appears here for the same telemetry-accuracy reason even though it is also
 	// a registered command.
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory"].includes(sub)) return sub
 	return "harness"
 }
 
 const originalArgs = process.argv.slice(2)
+
+// The memory capture worker runs as a detached child of an exiting session.
+// In compiled binaries process.execPath is the kimchi binary itself, so the
+// worker is routed as a subcommand here (capture.ts takes the bun-script
+// path under `bun run`). Routed before telemetry/session setup so worker
+// invocations are invisible to app_started instrumentation.
+if (originalArgs[0] === "memory-capture") {
+	const { runCaptureWorkerMain } = await import("./extensions/memory/capture-worker.js")
+	await runCaptureWorkerMain(originalArgs.slice(1))
+}
 
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
@@ -502,7 +514,7 @@ try {
 		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+		const rawArgsWithoutMultiModel = stripMemoryArgs(stripMultiModelArgs(rawArgs))
 
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
@@ -691,6 +703,7 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelGuardExtension,
+			memoryExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
 			piiRedactionExtension,
@@ -714,7 +727,7 @@ try {
 				extensionFactories,
 				agentDir,
 				mcpServerManager: new McpServerManager(),
-				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
+				appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
 			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension

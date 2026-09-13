@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ContextUsage,
+	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionUIContext,
 	ModelRegistry,
@@ -43,6 +44,7 @@ export function createContext(
 			notify: vi.fn(),
 			custom: vi.fn(),
 			setStatus: vi.fn(),
+			setWidget: vi.fn(),
 			setWorkingVisible: vi.fn(),
 			...overrides?.ui,
 		} as unknown as ExtensionUIContext,
@@ -56,4 +58,18 @@ export function createContext(
 			...overrides?.sessionManager,
 		} as SessionManager,
 	} as unknown as ExtensionContext
+}
+
+/**
+ * Command-handler ctx — createContext plus the session-control surface
+ * (ExtensionCommandContext). The stubs cover what command tests touch;
+ * the cast mirrors createContext's mock pattern.
+ */
+export function createCommandContext(): ExtensionCommandContext {
+	return {
+		...createContext(),
+		getSystemPromptOptions: vi.fn(),
+		waitForIdle: vi.fn(async () => {}),
+		newSession: vi.fn(async () => ({ cancelled: false })),
+	} as unknown as ExtensionCommandContext
 }

@@ -170,6 +170,9 @@ describe("mcp proxy registration gate", () => {
 				await pi.fireShutdown()
 			}
 		} finally {
+			// Restore prior state: explicit removal of the override key (config.ts
+			// uses the same pattern — deletion is clearer than a stale undefined).
+			// biome-ignore lint/performance/noDelete: intentional key removal
 			delete mcpConfigState.config.settings
 		}
 	})

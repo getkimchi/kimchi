@@ -77,12 +77,54 @@ if (!isCI) {
 }
 
 cleanDist()
-run("typecheck", "pnpm run typecheck")
+// Opt-in skip (KIMCHI_SKIP_TYPECHECK=1): memory-constrained CI pods can OOM
+// tsc before the compile step. Benchmark artifact builds use it — product CI
+// still typechecks every src change; the benchmarked ref's own CI covers it.
+if (!process.env.KIMCHI_SKIP_TYPECHECK) {
+	run("typecheck", "pnpm run typecheck")
+} else {
+	console.warn(
+		"[build] KIMCHI_SKIP_TYPECHECK set — skipping typecheck (intended for memory-constrained benchmark CI only)",
+	)
+}
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
 // If a new dependency causes a build failure, check whether it also needs --external here.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
-const externals = ["chromium-bidi", "electron"]
+// mem0ai's optional provider SDKs are lazily imported per provider; the memory
+// extension uses only the openai embedder/LLM and the built-in SQLite store, so
+// none of these are ever loaded at runtime — but the bundler still resolves
+// them, so they must be external.
+const externals = [
+	"chromium-bidi",
+	"electron",
+	"@azure/identity",
+	"@azure/search-documents",
+	"@elastic/elasticsearch",
+	"@google-cloud/aiplatform",
+	"@huggingface/transformers",
+	"@langchain/core/documents",
+	"@langchain/core/messages",
+	"@mochow/mochow-sdk-node",
+	"@opensearch-project/opensearch",
+	"@pinecone-database/pinecone",
+	"@qdrant/js-client-rest",
+	"@supabase/supabase-js",
+	"@turbopuffer/turbopuffer",
+	"@upstash/vector",
+	"cassandra-driver",
+	"chromadb",
+	"cloudflare",
+	"cohere-ai",
+	"fastembed",
+	"groq-sdk",
+	"iovalkey",
+	"mysql2/promise",
+	"ollama",
+	"oracledb",
+	"weaviate-client",
+	"zeroentropy",
+]
 if (isCrossCompile && target.os === "win32" && platform() !== "win32") {
 	// Linux/macOS installs do not include Windows-only optional native packages.
 	// Release builds run on windows-latest and bundle this dependency; cross-builds

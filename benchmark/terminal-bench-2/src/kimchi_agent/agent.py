@@ -306,6 +306,9 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         disable_multi_model = _coerce_bool_kwarg(kwargs.pop("disable-multi-model", False), "disable-multi-model")
         # Compaction follows kimchi's default (on) unless explicitly disabled.
         disable_compaction = _coerce_bool_kwarg(kwargs.pop("disable-compaction", False), "disable-compaction")
+        # Memory is off by default in kimchi; this kwarg turns the extension on
+        # for the memory-on arm of A/B runs.
+        memory_enabled = _coerce_bool_kwarg(kwargs.pop("memory", False), "memory")
         ferment_v2_enabled = _coerce_bool_kwarg(
             kwargs.pop("ferment-v2", False), "ferment-v2"
         )
@@ -323,6 +326,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             raise ValueError("multi-model selection conflicts with legacy 'disable-multi-model=true'")
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
+        self._memory_enabled = memory_enabled
         self._ferment_v2_enabled = ferment_v2_enabled
         self._llm_params = llm_params
         self._llm_per_model_params = llm_per_model_params
@@ -920,6 +924,14 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             f"mkdir -p {CONTAINER_HARNESS_SKILLS_DIR} && "
             f"{{ cp -a {shlex.quote(self.skills_dir)}/. {CONTAINER_HARNESS_SKILLS_DIR}/ || true; }}"
         )
+
+    def build_cli_flags(self) -> str:
+        # Memory is off by default in kimchi; --memory enables the extension
+        # for the memory-on arm of A/B runs.
+        flags = super().build_cli_flags()
+        if self._memory_enabled:
+            flags = f"{flags} --memory".strip()
+        return flags
 
     def _kimchi_command(self, cli_flags: str) -> str:
         model_flag = ""
