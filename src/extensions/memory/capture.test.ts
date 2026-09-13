@@ -364,6 +364,10 @@ describe("extraction prompt guards (injection resistance)", () => {
 		// failures: "recommend buying what you already own".
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("possessions and resources the user acquires")
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("they anchor future advice")
+		// Captured WITH their stated purpose — the use is the retrieval anchor
+		// ("getting around Tokyo" matches the question; a bare name does not).
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("WITH its stated purpose or use")
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("the use is the retrieval anchor")
 		// Per-occurrence enumeration — the fitness-class/tank failures: each
 		// occurrence is its own dated fact, never merged or dropped.
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("extract EACH occurrence as its own fact with its own date")
