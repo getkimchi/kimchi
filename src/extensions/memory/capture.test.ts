@@ -358,6 +358,20 @@ describe("extraction prompt guards (injection resistance)", () => {
 		// Explicit-over-proxy precedence: conversation dates beat undated/recording signals.
 		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("never superseded by an undated fact or by recording time alone")
 	})
+
+	it("the extraction prompt covers possessions and per-occurrence enumeration (the preference-slice fixes)", () => {
+		// Possessions/resources anchor future advice — the Suica/power-bank
+		// failures: "recommend buying what you already own".
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("possessions and resources the user acquires")
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("they anchor future advice")
+		// Per-occurrence enumeration — the fitness-class/tank failures: each
+		// occurrence is its own dated fact, never merged or dropped.
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("extract EACH occurrence as its own fact with its own date")
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("never merge entries or drop one")
+		// An event described in a dated update carries that update's date —
+		// the bedtime failure: right value, detached from its night.
+		expect(EXTRACTION_SYSTEM_PROMPT).toContain("carries that update's date")
+	})
 })
 
 describe("messageHash", () => {

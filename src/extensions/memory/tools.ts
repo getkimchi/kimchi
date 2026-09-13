@@ -25,7 +25,7 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 		name: "memory_search",
 		label: "Memory search",
 		description:
-			"Search the user's persistent local memory (facts, preferences, and decisions from previous sessions). Use when the user references something from earlier conversations, asks 'what do you know about…', or when a preference would change how you act. Capture is automatic at session end — this tool is read-only; there is nothing to write.",
+			"Search the user's persistent local memory (facts, preferences, and decisions from previous sessions). Use when the user references something from earlier conversations, asks 'what do you know about…', when a preference would change how you act, or when a question asks about a specific item, event, or date that the recalled digest did not surface. Capture is automatic at session end — this tool is read-only; there is nothing to write.",
 		parameters: MemorySearchSchema,
 		execute: async (_toolCallId, params) => {
 			const hits = await deps.search(params.query)
