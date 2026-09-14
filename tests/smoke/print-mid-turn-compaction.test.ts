@@ -321,18 +321,25 @@ it("cancelling during summarization ends the run without scheduling another task
 		// task request is scheduled and no final answer is announced. The held
 		// summary stays held — releasing it is what a broken recovery path would
 		// need to continue, and it never happens here.
+		// Distinguish "SIGINT ended the run" from "had to be force-killed": both
+		// used to surface as code=null, which let a SIGINT-ignoring hang pass.
 		run.kill("SIGINT")
-		const code = await Promise.race([
-			run.exitCode,
-			new Promise<number | null>((resolve) =>
+		const outcome = await Promise.race([
+			run.exitCode.then((code) => ({ kind: "exit" as const, code })),
+			new Promise<{ kind: "timeout" }>((resolve) =>
 				setTimeout(() => {
 					run.kill("SIGKILL")
-					resolve(null)
+					resolve({ kind: "timeout" })
 				}, 15_000),
 			),
 		])
-		const failure = `code=${code}\nstdout=${run.stdout()}\nstderr=${run.stderr()}`
-		expect(code, failure).not.toBe(0)
+		const failure = `outcome=${JSON.stringify(outcome)}\nstdout=${run.stdout()}\nstderr=${run.stderr()}`
+		expect(outcome.kind, `SIGINT must end the run without the SIGKILL backstop\n${failure}`).toBe("exit")
+		if (outcome.kind === "exit") {
+			// A signal death reports code=null — still a valid "ended", just not a
+			// clean exit 0. The load-bearing assertion is that it wasn't success.
+			expect(outcome.code, failure).not.toBe(0)
+		}
 		expect(run.stdout(), failure).not.toContain(FINAL_ANSWER)
 
 		// Grace period after exit: a recovery path scheduled before cancellation

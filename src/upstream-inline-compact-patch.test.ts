@@ -112,6 +112,14 @@ class FakeSession {
 		this._emit({ type: "compaction_start", reason: "manual" })
 		try {
 			if (!this.model) throw new Error("No model selected")
+			// Mirror upstream's routine no-op guards (emitted when prepareCompaction
+			// rejects the branch): pin the wording model-guard's benign-error
+			// classification relies on. Upstream reads pathEntries = getBranch() for
+			// both checks; these never fire with the existing fixtures — the branch
+			// always has ≥1 entry and its last entry is never a compaction.
+			const lastEntry = this.branch[this.branch.length - 1]
+			if ((lastEntry as { type?: string } | undefined)?.type === "compaction") throw new Error("Already compacted")
+			if (this.branch.length === 0) throw new Error("Nothing to compact (session too small)")
 			await this._getCompactionRequestAuth(this.model)
 			this.preparedWithSettings.push(this.settingsManager.getCompactionSettings())
 			this.summarizeCalls.push({ model: this.model, thinkingLevel: this.thinkingLevel, customInstructions })
@@ -248,7 +256,7 @@ describe("installInlineCompactPatch", () => {
 				sessionClass: RewordedSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
 				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
 			}),
-		).toThrow("no longer throws 'Compaction cancelled'")
+		).toThrow("no longer throws expected wording")
 	})
 
 	it("identifies missing AgentSession prototype methods", () => {

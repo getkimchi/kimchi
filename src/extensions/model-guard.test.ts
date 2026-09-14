@@ -949,7 +949,7 @@ describe("turn_end compaction guard", () => {
 	})
 
 	it("defers when the active branch has an unpaired toolCall; a complete pair permits compaction", async () => {
-		const { pi, trigger } = makeMockPI()
+		const { pi, trigger, appendEntry } = makeMockPI()
 		modelGuardExtension(pi)
 		const inlineCompact = vi.fn(async () => makeCompactionResult(1))
 		// Incomplete pair: assistant toolCall with no toolResult — compacting now
@@ -963,10 +963,86 @@ describe("turn_end compaction guard", () => {
 		})
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
 		expect(inlineCompact).not.toHaveBeenCalled()
+		// The defer is observable: one diagnostic per session so headless archives
+		// explain why the guard did not compact.
+		expect(appendEntry).toHaveBeenCalledTimes(1)
+		expect(appendEntry).toHaveBeenCalledWith("model_guard_compaction", expect.objectContaining({ outcome: "deferred" }))
 
 		const completeCtx = makeMidTurnCtx({ inlineCompact })
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), completeCtx)
 		expect(inlineCompact).toHaveBeenCalledOnce()
+	})
+
+	it("a historical leftover toolCall from an aborted run does not block compaction", async () => {
+		const { pi, trigger, appendEntry } = makeMockPI()
+		modelGuardExtension(pi)
+		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
+		// Leftover from an aborted run: an unpaired assistant toolCall BEFORE the
+		// newest user message — its toolResult will never arrive. The pairing
+		// check only scans the current turn, so the leftover must not disarm the
+		// guard for the fresh turn.
+		const ts = new Date().toISOString()
+		const abortedRunLeftover = [
+			{
+				type: "message",
+				id: "e-user-aborted",
+				parentId: null,
+				timestamp: ts,
+				message: { role: "user", content: [{ type: "text", text: "start work (aborted)" }], timestamp: 0 },
+			},
+			{
+				type: "message",
+				id: "e-aborted-assistant",
+				parentId: "e-user-aborted",
+				timestamp: ts,
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", name: "bash", arguments: { command: "sleep 99" }, id: "tcx" }],
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 15,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					api: "openai-completions",
+					provider: "test",
+					stopReason: "toolUse",
+					model: "test",
+					timestamp: 1,
+				},
+			},
+		]
+		const [freshUserEntry, ...freshTurnRest] = makePairedBranchEntries()
+		const leftoverBranch = [
+			...abortedRunLeftover,
+			{ ...freshUserEntry, parentId: "e-aborted-assistant" },
+			...freshTurnRest,
+		] as unknown as SessionEntry[]
+		const ctx = makeMidTurnCtx({
+			inlineCompact,
+			sessionManager: {
+				getBranch: () => leftoverBranch,
+			} as unknown as ExtensionContext["sessionManager"],
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledOnce()
+
+		// Sanity: the scoped pairing check still protects a genuinely in-flight
+		// CURRENT turn — an unpaired toolCall after the last user message defers.
+		// (A below-threshold response first validates the compaction above, so
+		// the guard reaches the pairing check instead of suppressing.)
+		const inFlightCtx = makeMidTurnCtx({
+			inlineCompact,
+			sessionManager: {
+				getBranch: () => makePairedBranchEntries().slice(0, 2),
+			} as unknown as ExtensionContext["sessionManager"],
+		})
+		await trigger("turn_end", makeTurnEndEvent(10_000, "stop"), inFlightCtx)
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), inFlightCtx)
+		expect(inlineCompact).toHaveBeenCalledOnce()
+		expect(appendEntry).toHaveBeenCalledWith("model_guard_compaction", expect.objectContaining({ outcome: "deferred" }))
 	})
 
 	it("does not start a second attempt while one is outstanding", async () => {
@@ -1194,6 +1270,50 @@ describe("turn_end compaction guard", () => {
 		// Competing compaction is a defer, not a failure — a later turn retries.
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
 		expect(inlineCompact).toHaveBeenCalledTimes(2)
+		expect(appendEntry).not.toHaveBeenCalledWith(
+			"model_guard_compaction",
+			expect.objectContaining({ outcome: "failure" }),
+		)
+	})
+
+	it("routine no-op errors skip quietly without suppression", async () => {
+		const { pi, trigger, appendEntry } = makeMockPI()
+		modelGuardExtension(pi)
+		const inlineCompact = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Nothing to compact (session too small)"))
+			.mockResolvedValue(makeCompactionResult(300_000))
+		const ctx = makeMidTurnCtx({ inlineCompact })
+
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledOnce()
+		expect(appendEntry).toHaveBeenCalledWith(
+			"model_guard_compaction",
+			expect.objectContaining({ outcome: "skipped_noop" }),
+		)
+		expect(appendEntry).not.toHaveBeenCalledWith(
+			"model_guard_compaction",
+			expect.objectContaining({ outcome: "failure" }),
+		)
+
+		// No suppression: the guard stays armed, so the next over-threshold turn retries.
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledTimes(2)
+	})
+
+	it("the benign-skip diagnostic fires once per session", async () => {
+		const { pi, trigger, appendEntry } = makeMockPI()
+		modelGuardExtension(pi)
+		const inlineCompact = vi.fn().mockRejectedValue(new Error("Already compacted"))
+		const ctx = makeMidTurnCtx({ inlineCompact })
+
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledTimes(2)
+		const skippedNoopCalls = appendEntry.mock.calls.filter(
+			(call) => call[0] === "model_guard_compaction" && (call[1] as { outcome?: string }).outcome === "skipped_noop",
+		)
+		expect(skippedNoopCalls).toHaveLength(1)
 		expect(appendEntry).not.toHaveBeenCalledWith(
 			"model_guard_compaction",
 			expect.objectContaining({ outcome: "failure" }),

@@ -9,7 +9,7 @@ import {
 import { getCompactionEnabled } from "../settings-watcher.js"
 import { isToolCallInFlight } from "../tool-call-in-flight.js"
 import { INLINE_COMPACT_IN_PROGRESS_MESSAGE } from "../upstream-inline-compact-patch.js"
-import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
+import { COMPACTION_RESERVE_TOKENS, isExpectedCompactionError } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
 
 /** Messages that have a content array we can inspect for images. */
@@ -90,6 +90,10 @@ interface MidTurnCompactionState {
 	suppressed: boolean
 	/** One-shot diagnostic for the adapter-unavailable case. */
 	adapterMissingDiagnosed: boolean
+	/** One-shot diagnostic latch for benign (routine no-op) compaction skips. */
+	benignSkipDiagnosed: boolean
+	/** One-shot diagnostic latch for the unpaired-toolCall defer. */
+	deferDiagnosed: boolean
 }
 
 const midTurnCompaction: MidTurnCompactionState = {
@@ -97,6 +101,8 @@ const midTurnCompaction: MidTurnCompactionState = {
 	awaitingValidation: false,
 	suppressed: false,
 	adapterMissingDiagnosed: false,
+	benignSkipDiagnosed: false,
+	deferDiagnosed: false,
 }
 
 /** Session generation token: bumped on session_start/session_shutdown so a
@@ -197,6 +203,8 @@ function resetSessionState(): void {
 	midTurnCompaction.awaitingValidation = false
 	midTurnCompaction.suppressed = false
 	midTurnCompaction.adapterMissingDiagnosed = false
+	midTurnCompaction.benignSkipDiagnosed = false
+	midTurnCompaction.deferDiagnosed = false
 }
 
 /**
@@ -574,7 +582,20 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			console.warn("[model-guard] mid-turn compaction branch read failed:", err)
 			return
 		}
-		if (isToolCallInFlight(activeMessages)) return
+		if (isToolCallInFlight(activeMessages)) {
+			// Defer rather than compact across an unpaired toolCall — but say so
+			// once per session, or a leftover (e.g. from an aborted run) would
+			// silently disarm the guard with no trace in headless archives.
+			if (!midTurnCompaction.deferDiagnosed) {
+				midTurnCompaction.deferDiagnosed = true
+				appendMidTurnDiagnostic(
+					_pi,
+					"deferred",
+					"Mid-turn compaction deferred: current turn has an unpaired toolCall — a later turn retries",
+				)
+			}
+			return
+		}
 
 		// The awaitable inline adapter keeps the compaction inside the awaited
 		// turn_end handler, so the SAME run continues on the compacted context —
@@ -630,6 +651,22 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			// A competing compaction is a defer, not a failure — a later turn
 			// may retry once that operation settles.
 			if (isCompetingCompactionError(message)) return
+			// Routine no-op outcomes (session too small, already compacted,
+			// nothing summarizable): skip quietly — never suppress, or one
+			// harmless error disables the guard for the rest of an
+			// over-threshold session. One diagnostic so headless archives
+			// explain the skip.
+			if (isExpectedCompactionError(message)) {
+				if (!midTurnCompaction.benignSkipDiagnosed) {
+					midTurnCompaction.benignSkipDiagnosed = true
+					appendMidTurnDiagnostic(
+						_pi,
+						"skipped_noop",
+						`Mid-turn compaction skipped: ${message} — routine no-op, guard stays armed`,
+					)
+				}
+				return
+			}
 			midTurnCompaction.suppressed = true
 			appendMidTurnDiagnostic(
 				_pi,

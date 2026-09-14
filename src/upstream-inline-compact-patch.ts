@@ -112,14 +112,16 @@ function assertCompactInternalsCompatible(sessionProto: PatchableSessionPrototyp
 				"(expected manual compaction to abort first and use _compactionAbortController - upstream internals changed)",
 		)
 	}
-	// model-guard's isCancellationError classifies user-abort rejections by the
-	// "Compaction cancelled" wording; pin it here so an upstream rewording
-	// fails loudly at install/test time instead of silently flipping
-	// cancellation into failure classification there.
-	if (!compactSource.includes("Compaction cancelled")) {
+	// Classification-wording pins: model-guard's isCancellationError and
+	// isExpectedCompactionError classify upstream rejections by these strings;
+	// pin them so an upstream rewording fails loudly here instead of silently
+	// flipping classification there.
+	const pinnedWording = ["Compaction cancelled", "Nothing to compact", "Already compacted"]
+	const missing = pinnedWording.filter((wording) => !compactSource.includes(wording))
+	if (missing.length > 0) {
 		throw new Error(
-			"pi-coding-agent AgentSession.compact() no longer throws 'Compaction cancelled' " +
-				"- update model-guard's isCancellationError classification for the new wording",
+			`pi-coding-agent AgentSession.compact() no longer throws expected wording (${missing.join(", ")}) ` +
+				"- update model-guard's compaction error classification for the new wording",
 		)
 	}
 }
