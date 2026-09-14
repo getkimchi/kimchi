@@ -4987,6 +4987,63 @@ describe("newSession skill commands", () => {
 		})
 	})
 
+	it("re-discovers cwd-local skills contributed during extension binding", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-binding", dir)
+		// Real sessions only learn about .claude/skills, ancestor .kimchi/skills,
+		// harness, and bundled skills when extensions answer pi's
+		// resources_discover event during bindExtensions — the loader is still
+		// empty when the session record is created.
+		const skills: Skill[] = []
+		fake.resourceLoader = makeSkillLoader(skills)
+		fake.bindExtensionsImpl = async () => {
+			skills.push(skill)
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+		await flushDeferredCommands()
+
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		const availableCommands =
+			(update?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+		expect(availableCommands.map((c) => c.name)).toContain(`skill:${skillName}`)
+	})
+
+	it("re-discovers cwd-local skills contributed during extension binding on session load", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-load-binding", dir)
+		const skills: Skill[] = []
+		fake.resourceLoader = makeSkillLoader(skills)
+		fake.bindExtensionsImpl = async () => {
+			skills.push(skill)
+		}
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+		await agent.loadSession({
+			sessionId: "session-skill-load-binding",
+			cwd: dir,
+			mcpServers: [],
+		})
+		await flushDeferredCommands()
+
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		const availableCommands =
+			(update?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+		expect(availableCommands.map((c) => c.name)).toContain(`skill:${skillName}`)
+	})
+
 	it("rewrites a skill command prompt to inject skill content", async () => {
 		const { dir, skillName, skill } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-invoke", dir)

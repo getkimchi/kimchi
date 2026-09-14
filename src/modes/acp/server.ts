@@ -586,7 +586,7 @@ export class KimchiAcpAgent implements Agent {
 				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
+				skillCommands: new Map(),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -596,8 +596,14 @@ export class KimchiAcpAgent implements Agent {
 			)
 			await this.bindAcpExtensions(session, uiContext)
 
+			// Populate skill commands only after binding: extensions contribute
+			// cwd-local skill roots to the loader during resources_discover, so
+			// the palette and /skill: parsing see every skill exactly once.
+			this.populateSkillCommands(session, record)
+
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
+
 			this.startPlanTracker(record, sessionId)
 
 			this.scheduleAvailableCommandsUpdate(sessionId)
@@ -647,6 +653,10 @@ export class KimchiAcpAgent implements Agent {
 				session.setActiveToolsByName([...active, "Skill"])
 			}
 		}
+	}
+
+	private populateSkillCommands(session: AgentSession, record: SessionRecord): void {
+		record.skillCommands = new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s]))
 	}
 
 	/** Start forwarding this session's Todo store writes to the ACP client. */
@@ -812,9 +822,9 @@ export class KimchiAcpAgent implements Agent {
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		const loadedSession = await this.sessionLoader(params)
-		const initialMode = this.getInitialPermissionMode(loadedSession)
-		const sessionId = loadedSession.sessionId
+		const session = await this.sessionLoader(params)
+		const initialMode = this.getInitialPermissionMode(session)
+		const sessionId = session.sessionId
 		try {
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
@@ -823,33 +833,33 @@ export class KimchiAcpAgent implements Agent {
 			// fail with "unknown sessionId" while the file is still held open.
 			// Reject up front and dispose so we don't quietly diverge.
 			if (sessionId !== params.sessionId) {
-				loadedSession.dispose()
+				session.dispose()
 				throw RequestError.invalidParams(
 					undefined,
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
 				)
 			}
 			setCallerMcpServers(sessionId, convertAcpMcpServers(params.mcpServers ?? []))
-			assertSessionHasModel(loadedSession)
+			assertSessionHasModel(session)
 
-			const uiContext = this.createUiContext(loadedSession)
-			registerPermissionFlagController(loadedSession, initialMode, (params) => this.send(params))
+			const uiContext = this.createUiContext(session)
+			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
-				session: loadedSession,
+				session,
 				unsubscribe: () => {},
 				// The session header cwd was validated against params.cwd above, so
 				// the session manager's cwd is the session's true cwd.
-				cwd: loadedSession.sessionManager.getCwd(),
+				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 				streamedText: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(loadedSession.resourceLoader).map((s) => [s.name, s])),
+				skillCommands: new Map(),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -857,10 +867,14 @@ export class KimchiAcpAgent implements Agent {
 					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
 				),
 			)
-			await this.bindAcpExtensions(loadedSession, uiContext)
+			await this.bindAcpExtensions(session, uiContext)
 
-			record.unsubscribe = loadedSession.subscribe((event) => this.onSessionEvent(sessionId, event))
+			// Same post-binding skill population as newSession (see there).
+			this.populateSkillCommands(session, record)
+
+			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
+
 			this.startPlanTracker(record, sessionId)
 			// Restoring the Todo store bypasses its listeners, so publish one
 			// current non-empty list explicitly for the resumed client.
@@ -869,16 +883,16 @@ export class KimchiAcpAgent implements Agent {
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
-			this.seedBlockCounterFromBranch(loadedSession, record)
+			this.seedBlockCounterFromBranch(session, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
-			this.replayTranscript(loadedSession)
+			this.replayTranscript(session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
 
-			const configOptions = buildConfigOptions(loadedSession, initialMode.mode)
+			const configOptions = buildConfigOptions(session, initialMode.mode)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
@@ -894,7 +908,7 @@ export class KimchiAcpAgent implements Agent {
 				existing.planTracker?.stop()
 				existing.unsubscribe()
 			}
-			loadedSession.dispose()
+			session.dispose()
 			throw err
 		}
 	}
