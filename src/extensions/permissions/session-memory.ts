@@ -1,6 +1,7 @@
 import {
 	extractBashProgram,
 	FILE_TOOLS,
+	isReadOnlyBashCommand,
 	parseCommandSegments,
 	splitCompoundCommand,
 	splitLeadingEnv,
@@ -111,8 +112,8 @@ export function bashSegmentScope(command: string): Scope | null {
  * Per-segment scopes for a possibly-compound bash command. The compound gate
  * (checkCompoundCommand) evaluates rules per segment, so a remembered compound
  * only sticks when every segment that NEEDS a rule carries a scope that can
- * match (read-only non-cwd segments are implicitly allowed at the gate and
- * need no rule; cwd-changers like `cd /tmp` always need one). `scopeable:
+ * match (read-only segments, including cd/pushd/popd, are implicitly allowed
+ * at the gate and need no rule). `scopeable:
  * false` tells callers to not offer a "don't ask again" choice they could
  * not honor.
  */
@@ -121,6 +122,7 @@ export function suggestBashCommandScopes(command: string): BashCommandScopes {
 	const scopes: Scope[] = []
 	let scopeable = true
 	for (const segment of segments) {
+		if (isReadOnlyBashCommand(segment)) continue
 		const scope = bashSegmentScope(segment)
 		if (scope) scopes.push(scope)
 		else scopeable = false

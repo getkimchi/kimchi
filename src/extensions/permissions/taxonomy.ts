@@ -84,19 +84,6 @@ export function isReadOnlyTool(toolName: string): boolean {
 	return classifyTool(toolName) === "readOnly"
 }
 
-// cwd-changing programs are read-only, but they are also the directory
-// boundary of a compound: a remembered mutable scope must not float to
-// `cd /production`. The compound gate requires an explicit rule for them
-// (review P1: `cd /production && npm install` must not be blessed by a
-// remembered `npm install:*`).
-export const CWD_CHANGER_PROGRAMS = new Set(["cd", "pushd", "popd"])
-
-/** Is this command's program a cwd-changer (cd/pushd/popd)? */
-export function isDirectoryChangerCommand(command: string): boolean {
-	const segment = parseCommandSegments(command)[0]
-	return segment.tokens.length > 0 && CWD_CHANGER_PROGRAMS.has(segment.tokens[0])
-}
-
 // Programs safe to invoke with any arguments: they read files or system state
 // but cannot execute other programs, write files (beyond stdout), or mutate
 // system state. If you need to add a program here, confirm it has no flag that
@@ -507,8 +494,9 @@ export function bashSegmentForms(command: string): string[] {
 // Programs that are pure output filters: they consume stdin, emit stdout, and
 // can neither execute code nor write files. Only these may be normalized away
 // as trailing pipe stages. Excluded on purpose: awk/sed/perl (can execute
-// code), tee (writes files), xargs (executes), sh/bash (execute).
-export const OUTPUT_FILTER_PROGRAMS = new Set(["tail", "head", "wc", "grep", "sort", "uniq", "cut", "tr", "jq"])
+// code), sort (can write files or execute a compressor), uniq/tee (write
+// files), xargs (executes), sh/bash (execute).
+export const OUTPUT_FILTER_PROGRAMS = new Set(["tail", "head", "wc", "grep", "cut", "tr", "jq"])
 
 /**
  * When `command` is a pipeline whose every stage after the head is a

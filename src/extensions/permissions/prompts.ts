@@ -6,7 +6,7 @@ import { withWorkingHidden } from "../ui.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { bashSegmentScope, suggestBashCommandScopes, suggestScope } from "./session-memory.js"
-import { isCompoundCommand } from "./taxonomy.js"
+import { isCompoundCommand, isReadOnlyBashCommand } from "./taxonomy.js"
 import type { RiskScore, Rule } from "./types.js"
 
 export { withWorkingHidden }
@@ -68,7 +68,7 @@ export function buildPermissionChoices(toolName: string, input: Record<string, u
 		// Single-command bash still can't be remembered when its scope can
 		// never match again (pipe to a non-filter program like `cat x | sh`):
 		// omit remember choices rather than storing a silently-dead rule.
-		const scope = bashSegmentScope(command)
+		const scope = isReadOnlyBashCommand(command) ? null : bashSegmentScope(command)
 		if (!scope)
 			return [
 				{ kind: "allow-once", label: "Yes — just this call" },
@@ -134,7 +134,7 @@ function buildCompoundBashChoices(command: string): PermissionChoice[] {
 	const { scopes, scopeable } = suggestBashCommandScopes(command)
 	const choices: PermissionChoice[] = [{ kind: "allow-once", label: "Yes — just this call" }]
 
-	if (scopeable) {
+	if (scopeable && scopes.length > 0) {
 		choices.push({
 			kind: "allow-remember",
 			label: `Yes — don't ask again for ${joinScopeLabels(scopes.map((s) => s.label))} this session`,
@@ -273,6 +273,7 @@ export async function promptForCompoundApproval(opts: {
 		const rules: Rule[] = []
 		const unrememberable: string[] = []
 		for (const cmd of commands) {
+			if (isReadOnlyBashCommand(cmd.command)) continue
 			const scope = bashSegmentScope(cmd.command)
 			if (scope) {
 				rules.push({ toolName: scope.toolName, content: scope.content, behavior: "allow", source: "session" })

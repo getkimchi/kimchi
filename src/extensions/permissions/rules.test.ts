@@ -213,7 +213,19 @@ describe("evaluateRules deny blocks piped commands", () => {
 })
 
 describe("matchBashRule allows a trailing read-only output-filter pipeline", () => {
-	// LLMs habitually append `2>&1 | tail -N` (or head/wc/grep/sort/uniq/cut/tr)
+	it.each([
+		"sort",
+		"sort -o /tmp/output",
+		"sort --output=/tmp/output",
+		"sort --compress-program=sh",
+		"uniq",
+		"uniq /dev/stdin /tmp/output",
+	])("does not extend remembered approval to %s", (filter) => {
+		expect(matchBashRule("make:*", `make | ${filter}`)).toBe(false)
+		expect(matchBashRule("make:*", `make | ${filter} | head -5`)).toBe(false)
+	})
+
+	// LLMs habitually append `2>&1 | tail -N` (or head/wc/grep/cut/tr)
 	// to bound output. Those trailing stages are pure output filters: they cannot
 	// write files or execute code. The allow matcher normalizes them away so a
 	// remembered head scope (e.g. `npm install:*`) matches the piped shape on
@@ -226,7 +238,7 @@ describe("matchBashRule allows a trailing read-only output-filter pipeline", () 
 	})
 
 	it("matches through chained whitelisted filters", () => {
-		expect(matchBashRule("npm test:*", "npm test 2>&1 | sort -u | head -5")).toBe(true)
+		expect(matchBashRule("npm test:*", "npm test 2>&1 | grep FAIL | head -5")).toBe(true)
 		expect(matchBashRule("go test:*", "go test ./... 2>&1 | grep FAIL | wc -l")).toBe(true)
 	})
 

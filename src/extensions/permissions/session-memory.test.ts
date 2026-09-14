@@ -62,29 +62,37 @@ describe("suggestScope", () => {
 })
 
 describe("suggestBashCommandScopes", () => {
-	it("derives one narrow scope per compound segment", () => {
+	it.each(["cd /tmp", "pushd /tmp", "popd"])("does not generate approval scopes for %s", (directoryCommand) => {
+		expect(suggestBashCommandScopes(`${directoryCommand} && npm install`)).toEqual({
+			scopes: [suggestScope("bash", { command: "npm install" })],
+			scopeable: true,
+		})
+		expect(suggestBashCommandScopes(directoryCommand)).toEqual({ scopes: [], scopeable: true })
+	})
+
+	it("derives scopes only for segments requiring approval", () => {
 		const { scopes, scopeable } = suggestBashCommandScopes("cd /tmp && npm install")
 		expect(scopeable).toBe(true)
-		expect(scopes.map((s) => s.content)).toEqual(["cd /tmp:*", "npm install:*"])
-		expect(scopes.map((s) => s.label)).toEqual(["bash(cd /tmp:*)", "bash(npm install:*)"])
-		expect(scopes.map((s) => s.wildcardContent)).toEqual(["cd *", "npm *"])
+		expect(scopes.map((s) => s.content)).toEqual(["npm install:*"])
+		expect(scopes.map((s) => s.label)).toEqual(["bash(npm install:*)"])
+		expect(scopes.map((s) => s.wildcardContent)).toEqual(["npm *"])
 	})
 
 	it.each(["&&", "||", ";"])("splits on the %s operator", (op) => {
-		const { scopes, scopeable } = suggestBashCommandScopes(`ls ${op} pwd`)
+		const { scopes, scopeable } = suggestBashCommandScopes(`npm install ${op} npm test`)
 		expect(scopeable).toBe(true)
-		expect(scopes.map((s) => s.content)).toEqual(["ls:*", "pwd:*"])
+		expect(scopes.map((s) => s.content)).toEqual(["npm install:*", "npm test:*"])
 	})
 
-	it("matches segments so the compound gate can approve a repeat (all must pass)", () => {
+	it("omits read-only segments from remembered scopes", () => {
 		const { scopes } = suggestBashCommandScopes("cd /app && npm install && git status")
-		expect(scopes).toHaveLength(3)
+		expect(scopes.map((scope) => scope.content)).toEqual(["npm install:*"])
 	})
 
 	it("marks pipe stages that can execute code unscopeable (derived scopes could never match)", () => {
 		const { scopes, scopeable } = suggestBashCommandScopes("cd /tmp && cat server.log | sh")
 		expect(scopeable).toBe(false)
-		expect(scopes.map((s) => s.content)).toEqual(["cd /tmp:*"])
+		expect(scopes.map((s) => s.content)).toEqual([])
 	})
 
 	it("marks an executable pipeline-only command unscopeable", () => {
@@ -96,18 +104,18 @@ describe("suggestBashCommandScopes", () => {
 	it("scopes the head of a trailing read-only output-filter pipeline", () => {
 		const { scopes, scopeable } = suggestBashCommandScopes("cd /tmp && npm install 2>&1 | tail -40")
 		expect(scopeable).toBe(true)
-		expect(scopes.map((s) => s.content)).toEqual(["cd /tmp:*", "npm install:*"])
+		expect(scopes.map((s) => s.content)).toEqual(["npm install:*"])
 	})
 
-	it("treats head + whitelisted filters as one rememberable command", () => {
+	it("does not remember a read-only output-filter pipeline", () => {
 		const { scopes, scopeable } = suggestBashCommandScopes("cat server.log | tail -20")
 		expect(scopeable).toBe(true)
-		// cat scopes to program + first arg, same as `cd /tmp` → `cd /tmp:*`.
-		expect(scopes.map((s) => s.content)).toEqual(["cat server.log:*"])
+		// The entire pipeline is read-only and needs no remembered rule.
+		expect(scopes.map((s) => s.content)).toEqual([])
 	})
 
 	it("scopes the head through chained whitelisted filters", () => {
-		const { scopes, scopeable } = suggestBashCommandScopes("npm test 2>&1 | sort -u | head -5")
+		const { scopes, scopeable } = suggestBashCommandScopes("npm test 2>&1 | grep FAIL | head -5")
 		expect(scopeable).toBe(true)
 		expect(scopes.map((s) => s.content)).toEqual(["npm test:*"])
 	})
@@ -115,7 +123,7 @@ describe("suggestBashCommandScopes", () => {
 	it("keeps a non-filter stage after filters unscopeable", () => {
 		const { scopes, scopeable } = suggestBashCommandScopes("cd /tmp && npm install 2>&1 | tail -40 | sh")
 		expect(scopeable).toBe(false)
-		expect(scopes.map((s) => s.content)).toEqual(["cd /tmp:*"])
+		expect(scopes.map((s) => s.content)).toEqual([])
 	})
 
 	it("keeps substitution unscopeable even with a filter tail", () => {
@@ -131,8 +139,8 @@ describe("suggestBashCommandScopes", () => {
 	})
 
 	it("is identical to suggestScope for a single non-compound command", () => {
-		const single = suggestScope("bash", { command: "git status --short" })
-		const { scopes, scopeable } = suggestBashCommandScopes("git status --short")
+		const single = suggestScope("bash", { command: "npm install --ignore-scripts" })
+		const { scopes, scopeable } = suggestBashCommandScopes("npm install --ignore-scripts")
 		expect(scopeable).toBe(true)
 		expect(scopes).toEqual([single])
 	})

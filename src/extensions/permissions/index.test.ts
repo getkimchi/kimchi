@@ -2077,29 +2077,22 @@ describe("compound command with session rules", () => {
 		expect(result.decision).toBe("deny")
 	})
 
-	it("non-cwd read-only segments are implicitly allowed when the mutable segment is remembered", () => {
+	it("read-only segments are implicitly allowed when the mutable segment is remembered", () => {
 		// ls never asks standalone; the remembered npm install rule settles it.
 		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
 		const result = checkCompoundCommand("ls && npm install", session.all())
 		expect(result.decision).toBe("allow")
 	})
 
-	it("cwd-changing segments still need an explicit rule (the directory boundary)", () => {
-		// cd/pushd/popd are read-only, but they ARE the compound's directory
-		// boundary: a remembered npm install must not float to other paths.
+	it.each(["cd /tmp", "pushd /tmp", "popd"])("implicitly allows %s with a remembered mutable segment", (command) => {
 		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		expect(checkCompoundCommand("cd /tmp && npm install", session.all()).decision).toBe("prompt")
-		session.add({ toolName: "bash", content: "cd /tmp:*", behavior: "allow", source: "session" })
-		expect(checkCompoundCommand("cd /tmp && npm install", session.all()).decision).toBe("allow")
+		expect(checkCompoundCommand(`${command} && npm install`, session.all()).decision).toBe("allow")
 	})
 
-	// Reviewer P1: remembering npm install for cd /tmp must not permit
-	// cd /production && npm install — directory approval is not transferable.
-	it("a directory approval for one path does not bless another (P1)", () => {
-		session.add({ toolName: "bash", content: "cd /tmp:*", behavior: "allow", source: "session" })
+	it.each(["cd /tmp", "pushd /tmp", "popd"])("honors an explicit deny for %s", (command) => {
+		session.add({ toolName: "bash", content: `${command}:*`, behavior: "deny", source: "user" })
 		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		const result = checkCompoundCommand("cd /production && npm install", session.all())
-		expect(result.decision).toBe("prompt")
+		expect(checkCompoundCommand(`${command} && npm install`, session.all()).decision).toBe("deny")
 	})
 
 	it("a deny rule still wins over the implicit read-only allowance", () => {
@@ -2276,9 +2269,7 @@ describe("compound bash permission regressions", () => {
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
 	})
 
-	// The picker prompts for each unapproved segment directly: cd needs a rule
-	// at the gate (directory boundary); other read-only segments are skipped.
-	// Remembering each segment through its own prompt settles the compound.
+	// Only mutable segments prompt; remembering them settles the compound.
 	it("TUI picker: remembering each prompted segment settles the identical compound", async () => {
 		const select = vi.fn(async (_title: string, choices: string[]) => {
 			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
@@ -2292,20 +2283,19 @@ describe("compound bash permission regressions", () => {
 		await harness.fire("session_start", {}, ctx)
 
 		expect(await harness.fire("tool_call", bashCall("first"), ctx)).toBeUndefined()
-		// compound card + one prompt per unapproved segment: cd /tmp, npm install
-		expect(select).toHaveBeenCalledTimes(3)
+		// Compound card + npm install prompt; cd is implicitly read-only.
+		expect(select).toHaveBeenCalledTimes(2)
 
 		// Standalone npm install no longer prompts either.
 		expect(await harness.fire("tool_call", bashCall("npm-alone", "npm install"), ctx)).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(3)
+		expect(select).toHaveBeenCalledTimes(2)
 
 		expect(await harness.fire("tool_call", bashCall("repeat"), ctx)).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(3)
+		expect(select).toHaveBeenCalledTimes(2)
 	})
 
-	// Unapproved cd/pushd/popd segments get their own prompt in the picker (they
-	// need a rule at the gate); other read-only segments are skipped silently.
-	it.each(["approve", "deny"])("TUI picker: prompt cd directly and let the user %s it", async (decision) => {
+	// Directory-changing segments are skipped; approval applies to npm install.
+	it.each(["approve", "deny"])("TUI picker: skip cd and let the user %s npm install", async (decision) => {
 		const select = vi.fn(async (_title: string, choices: string[]) => {
 			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
 			if (picker) return picker
@@ -2324,12 +2314,7 @@ describe("compound bash permission regressions", () => {
 		// Prompt titles embed shiki highlighting; strip ANSI codes before matching.
 		const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
 		const titles = select.mock.calls.slice(1).map(([title]) => title.replace(ansiEscape, ""))
-		// deny stops at the first (cd) prompt; approve continues to npm install.
-		expect(titles).toEqual(
-			decision === "approve"
-				? [expect.stringContaining("cd /tmp"), expect.stringContaining("npm install")]
-				: [expect.stringContaining("cd /tmp")],
-		)
+		expect(titles).toEqual([expect.stringContaining("npm install")])
 	})
 })
 
@@ -2369,15 +2354,15 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["echo a", "whoami"],
+			subcommands: ["npm install", "npm test"],
 		})
 
 		expect(result).toBeUndefined()
 		expect(session.all()).toHaveLength(2)
-		// Narrow scopes, not `echo *` / `whoami *`: remembering must not grant
+		// Narrow scopes, not `npm *`: remembering must not grant
 		// more than the subcommands shown on the card.
-		expect(session.all()[0].content).toBe("echo a:*")
-		expect(session.all()[1].content).toBe("whoami:*")
+		expect(session.all()[0].content).toBe("npm install:*")
+		expect(session.all()[1].content).toBe("npm test:*")
 	})
 
 	it("inputs feedback for deny-with-feedback", async () => {
@@ -2434,7 +2419,11 @@ describe("handleCompoundConfirm", () => {
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
 	})
 
-	it("picker prompts the cd segment directly; each remember choice stores exactly the scope it displays", async () => {
+	it.each([
+		"cd /tmp",
+		"pushd /tmp",
+		"popd",
+	])("picker skips %s and remembers only the mutable command", async (command) => {
 		const select = vi.fn(async (_title: string, choices: string[]) => {
 			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
 			if (picker) return picker
@@ -2447,31 +2436,22 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["cd /tmp", "npm install"],
+			subcommands: [command, "npm install"],
 		})
 
 		expect(result).toBeUndefined()
-		// compound card + one prompt per unapproved segment (cd first, then npm);
-		// every remember choice displays — and stores — exactly its own scope.
-		expect(select).toHaveBeenCalledTimes(3)
-		const cdChoices = select.mock.calls[1][1] as string[]
-		const cdRemember = cdChoices.find((choice) => choice.includes("don't ask again"))
-		expect(cdRemember).toContain("cd /tmp:*")
-		expect(cdRemember).not.toContain("npm install:")
-		const npmChoices = select.mock.calls[2][1] as string[]
+		expect(select).toHaveBeenCalledTimes(2)
+		const npmChoices = select.mock.calls[1][1]
 		const npmRemember = npmChoices.find((choice) => choice.includes("don't ask again"))
 		expect(npmRemember).toContain("npm install:*")
-		expect(npmRemember).not.toContain("cd /tmp:")
-		expect(session.all()).toContainEqual(
-			expect.objectContaining({ toolName: "bash", content: "cd /tmp:*", behavior: "allow", source: "session" }),
-		)
-		expect(session.all()).toContainEqual(
-			expect.objectContaining({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" }),
-		)
+		expect(npmRemember).not.toContain(command)
+		expect(session.all()).toEqual([
+			{ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" },
+		])
 	})
 
 	it("picker stores NOTHING on allow-once for every segment", async () => {
-		const ctx = createMockContext(["Pick permissions per subcommand", "Yes — just this call", "Yes — just this call"])
+		const ctx = createMockContext(["Pick permissions per subcommand", "Yes — just this call"])
 		const event = createMockEvent()
 		const result = await handleCompoundConfirm(event, {
 			ctx,
@@ -2485,7 +2465,7 @@ describe("handleCompoundConfirm", () => {
 		expect(session.all()).toEqual([])
 	})
 
-	it("picker stores NOTHING when the cd prompt is denied", async () => {
+	it("picker stores NOTHING when the mutable command is denied", async () => {
 		const select = vi.fn(async (_title: string, choices: string[]) => {
 			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
 			if (picker) return picker
@@ -2502,40 +2482,31 @@ describe("handleCompoundConfirm", () => {
 			subcommands: ["cd /tmp", "npm install"],
 		})
 
-		// Denied at the cd prompt: npm never asks, nothing is stored.
+		// cd is skipped; denying npm install stores nothing.
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
 		expect(select).toHaveBeenCalledTimes(2)
 		expect(session.all()).toEqual([])
 	})
 
-	it("picker prompts an unapproved cd segment even when every mutable segment is rule-allowed", async () => {
-		// npm install is already remembered; the only unapproved segment is the
-		// cd. Without a direct prompt for it, identical compounds re-prompt
-		// forever and the directory change gets no explicit decision.
-		session.add({ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" })
-		const select = vi.fn(async (_title: string, choices: string[]) => {
-			const picker = choices.find((choice) => choice.includes("Pick permissions per subcommand"))
-			if (picker) return picker
-			return choices.find((choice) => choice.includes("don't ask again"))
-		})
-		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select } })
-		const event = createMockEvent()
-		const result = await handleCompoundConfirm(event, {
+	it.each([
+		"cd /new",
+		"pushd /new",
+		"popd",
+	])("picker skips %s when the mutable segment is already approved", async (command) => {
+		const rule: Rule = { toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" }
+		session.add(rule)
+		const ctx = createMockContext(["Pick permissions per subcommand"])
+		const result = await handleCompoundConfirm(createMockEvent(), {
 			ctx,
 			session,
 			pi,
 			activeAborts,
-			subcommands: ["cd /new", "npm install"],
+			subcommands: [command, "npm install"],
 		})
 
 		expect(result).toBeUndefined()
-		expect(select).toHaveBeenCalledTimes(2)
-		const cdPromptChoices = select.mock.calls[1][1] as string[]
-		const rememberLabel = cdPromptChoices.find((choice) => choice.includes("don't ask again"))
-		expect(rememberLabel).toContain("cd /new:*")
-		expect(session.all()).toContainEqual(
-			expect.objectContaining({ toolName: "bash", content: "cd /new:*", behavior: "allow", source: "session" }),
-		)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+		expect(session.all()).toEqual([rule])
 	})
 
 	// Regression: the read-only shortcut bypasses deny rules added while the picker is open.

@@ -81,7 +81,6 @@ import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
 import {
 	isCompoundCommand,
-	isDirectoryChangerCommand,
 	isHardBlockedBash,
 	isReadOnlyBashCommand,
 	isReadOnlyTool,
@@ -1467,13 +1466,9 @@ export async function handleCompoundConfirm(
 							reason: `Subcommand blocked by rule: ${subcommand}`,
 						}
 					}
-					// No rule covers this segment: read-only programs (ls, git diff…)
-					// never prompt — a standalone call would skip asking too. The
-					// exception: cwd-changers (cd/pushd/popd) need an explicit rule at
-					// the gate (directory boundary), so the picker prompts for them
-					// directly below. Every remember choice then stores exactly the
-					// scope it displays.
-					if (isReadOnlyBashCommand(subcommand) && !isDirectoryChangerCommand(subcommand)) continue
+					// Read-only segments, including cd/pushd/popd, need no approval
+					// or remembered rule, just as in standalone calls.
+					if (isReadOnlyBashCommand(subcommand)) continue
 
 					// Create a fake bash event for this subcommand
 					const subEvent: ToolCallEvent = {
@@ -1645,14 +1640,13 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 		// treat them as allowed: remembering only the mutable segments then
 		// settles the compound (picker flow and "Allow all" become equivalent).
 		// Rules were evaluated first, so an explicit deny on a read-only program
-		// still wins. cwd-changing segments (cd/pushd/popd) are EXEMPT: they are
-		// the compound's directory boundary, so a remembered mutable scope must
-		// not float to cd /production (reviewer P1).
-		if (isReadOnlyBashCommand(subcommand) && !isDirectoryChangerCommand(subcommand)) continue
+		// still wins. This includes cd/pushd/popd; command rules do not scope
+		// approval to the directory where a command runs.
+		if (isReadOnlyBashCommand(subcommand)) continue
 		allAllowed = false
 	}
 
-	// If all subcommands explicitly allowed by rules, allow the compound
+	// Allow when every segment is rule-allowed or implicitly read-only.
 	if (allAllowed) {
 		return { decision: "allow" }
 	}

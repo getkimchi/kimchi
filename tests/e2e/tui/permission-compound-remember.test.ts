@@ -37,7 +37,7 @@ const MAIN_MODEL = {
 }
 
 // Actual card copy from prompts.ts (promptForCompoundApproval).
-const COMPOUND_CARD_HEADER = "The assistant wants to run a compound command with 2 subcommand(s):"
+const COMPOUND_CARD_HEADER = "The assistant wants to run a compound command with 4 subcommand(s):"
 const COMPOUND_CARD_QUESTION = "Allow the assistant to run this?"
 const REMEMBER_OPTION = "Allow all from now on"
 const UNREMEMBERABLE_WARNING = "Can't remember some subcommands"
@@ -46,7 +46,7 @@ function bashToolCall(command: string) {
 	return { function: { name: "bash", arguments: JSON.stringify({ command }) } }
 }
 
-test("default mode: remembered compound is not re-asked for arg variants (colleague repro)", async ({ terminal }) => {
+test("default mode: remember the mutable command without approving directory changes", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -58,12 +58,13 @@ test("default mode: remembered compound is not re-asked for arg variants (collea
 			env: { KIMCHI_PERMISSIONS: "default" },
 			seedHome(_homeDir, workDir) {
 				mkdirSync(join(workDir, "src"), { recursive: true })
+				mkdirSync(join(workDir, "other"), { recursive: true })
 			},
 			responses: [
 				// Turn 1: main model issues the transcript-shaped compound.
 				{
 					stream: ["Checking helm history."],
-					toolCalls: [bashToolCall("cd src && helm history postgresql -n console 2>&1 | tail -40")],
+					toolCalls: [bashToolCall("cd src && pushd . && popd && helm history postgresql -n console 2>&1 | tail -40")],
 				},
 				// Tool result returns (helm is not installed in the fixture, that is
 				// fine — the permission decision happens before execution); the
@@ -73,7 +74,9 @@ test("default mode: remembered compound is not re-asked for arg variants (collea
 				// colleague ran repeatedly (`helm history …`, args varying).
 				{
 					stream: ["Now the same query with different args."],
-					toolCalls: [bashToolCall("cd src && helm history postgresql -n console --max 10 2>&1 | tail -25")],
+					toolCalls: [
+						bashToolCall("cd other && pushd . && popd && helm history postgresql -n console --max 10 2>&1 | tail -25"),
+					],
 				},
 				{ stream: ["Variant done."] },
 			],
@@ -94,10 +97,18 @@ test("default mode: remembered compound is not re-asked for arg variants (collea
 			expect(cardView).not.toContain(UNREMEMBERABLE_WARNING)
 			trace.step("card header + question visible, no unrememberable warning")
 
-			// Choose "Allow all from now on" (second option of the compound card).
+			// Pick individual permissions: directory changes should be skipped.
+			terminal.keyDown()
 			terminal.keyDown()
 			terminal.submit("")
-			trace.step("picked 'Allow all from now on'")
+			await waitForText(terminal, "don't ask again for bash(helm history:*)", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).not.toContain("bash(cd")
+			expect(viewText(terminal)).not.toContain("bash(pushd")
+			expect(viewText(terminal)).not.toContain("bash(popd")
+			trace.step("picker asks only for helm history")
+			terminal.keyDown()
+			terminal.submit("")
+			trace.step("remembered helm history")
 
 			// Follow-up text after the (expected 127) tool result — reachable ONLY
 			// because the card was answered. This is the sequencing proof.
@@ -106,7 +117,7 @@ test("default mode: remembered compound is not re-asked for arg variants (collea
 
 			// Second turn: same programs, different args. The follow-up text
 			// "Variant done." can only render if NO prompt blocked the tool call.
-			terminal.submit("Same again, but limit output")
+			terminal.submit("Same again in the other directory, but limit output")
 			trace.step("submitted second prompt")
 			await waitForText(terminal, "Variant done.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("second compound executed without another prompt")
