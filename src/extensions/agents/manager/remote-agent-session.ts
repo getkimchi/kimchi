@@ -419,8 +419,11 @@ export class RemoteAgentSession {
 		if (status === "promptRequired") {
 			throw new Error("the remote turn already finished — send a follow-up prompt instead of steering")
 		}
-		this._messages.push({ role: "user", content: text })
-		this.emit({ type: "message_start", message: { role: "user", content: text } })
+		// Mirror exactly what was steered: steered images belong in the local
+		// transcript too, not just the text.
+		const content = images && images.length > 0 ? [{ type: "text", text }, ...images] : text
+		this._messages.push({ role: "user", content })
+		this.emit({ type: "message_start", message: { role: "user", content } })
 	}
 
 	/** Abort = cancel the in-progress remote turn. */

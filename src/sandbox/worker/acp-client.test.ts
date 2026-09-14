@@ -2187,6 +2187,25 @@ describe("AcpSessionClient steer", () => {
 		client.close()
 	})
 
+	it("throws on a malformed/empty steering response instead of reporting false success", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, {}))
+
+		await expect(steerPromise).rejects.toThrow("unexpected steering status")
+		client.close()
+	})
+
 	it("throws when the client is not initialized", async () => {
 		const client = new AcpSessionClient({
 			sessionName: "sess-1",

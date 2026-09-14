@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { authenticateWorkspace, authenticateWorkspaceProbe } from "./auth.js"
-import { RemoteAuthError, RemoteNetworkError } from "./types.js"
+import { RemoteAuthError, RemoteNetworkError, RemoteQuotaError } from "./types.js"
 
 const BASE = "https://api.example.com"
 
@@ -343,6 +343,41 @@ describe("authenticateWorkspace", () => {
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 		// The token exchange (4th call) must not run after a failed resume.
 		expect(mockFetch).toHaveBeenCalledTimes(3)
+	})
+
+	it("preserves the RemoteQuotaError classification when resume quota-checks reject (regression)", async () => {
+		// resumeWorkspace consumes the body for its 'not suspended' check —
+		// checkResponse must still see it (clone), or the 429 quota message is
+		// lost and the typed quota error degrades to a generic network error.
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ organizationId: "org-1" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ uri: "wss://h.example.com" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ message: "quota exceeded: user CPU limit exceeded" }), {
+					status: 429,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		const err = await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }).then(
+			(result) => {
+				expect.unreachable(`expected quota failure, got credentials ${JSON.stringify(result)}`)
+			},
+			(e: unknown) => e,
+		)
+		expect(err).toBeInstanceOf(RemoteQuotaError)
+		expect((err as Error).message).toContain("user CPU limit exceeded")
 	})
 
 	it("propagates resume transport failures as RemoteNetworkError", async () => {

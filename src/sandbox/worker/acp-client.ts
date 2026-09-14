@@ -394,7 +394,14 @@ export class AcpSessionClient {
 				prompt: text,
 				...(images && images.length > 0 ? { attachments: images } : {}),
 			})
-			return response?.status as SteeringStatus
+			// Validate before returning: a malformed/empty server payload must
+			// surface as an honest error — an unchecked cast would resolve with
+			// undefined, which callers treat as successful injection.
+			const status = response?.status
+			if (status !== "injected" && status !== "promptRequired") {
+				throw new Error(`unexpected steering status from remote: ${JSON.stringify(status)}`)
+			}
+			return status
 		} catch (err) {
 			// Older remote servers have no steering case in their extMethod
 			// dispatch — they answer with JSON-RPC method-not-found.

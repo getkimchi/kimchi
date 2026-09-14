@@ -55,6 +55,25 @@ describe("RemoteAgentSession", () => {
 			expect(listener.mock.calls[0][0]).toMatchObject({ type: "message_start" })
 		})
 
+		it("records steered images in the transcript, not just the text", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			session.bindClient(client as never, META)
+			const images = [{ type: "image", data: "aGk=", mimeType: "image/png" }] as never
+
+			await session.steer("look at this", images)
+
+			expect(client.steer).toHaveBeenCalledWith("look at this", images)
+			const last = session.messages[session.messages.length - 1]
+			expect(last).toEqual({
+				role: "user",
+				content: [
+					{ type: "text", text: "look at this" },
+					{ type: "image", data: "aGk=", mimeType: "image/png" },
+				],
+			})
+		})
+
 		it("uses the client most recently bound by bindClient (post-reattach)", async () => {
 			const session = new RemoteAgentSession()
 			const stale = makeMockAcpClient()

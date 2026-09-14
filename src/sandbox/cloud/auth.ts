@@ -105,6 +105,12 @@ async function resumeWorkspace(
 
 	if (resp.ok) return
 
+	// Clone BEFORE consuming the body: checkResponse re-reads resp.text(),
+	// and undici answers a second read with "Body is unusable" — checkResponse
+	// would then build the error from an empty body, losing the server's
+	// message and the RemoteQuotaError classification for 429s.
+	const rest = resp.clone()
+
 	// "Not suspended" = workspace already running — desired end state. Other
 	// FailedPrecondition rejections carry different messages (e.g. sandbox
 	// creation disabled) and must surface.
@@ -113,7 +119,7 @@ async function resumeWorkspace(
 		return
 	}
 
-	await checkResponse(resp, url)
+	await checkResponse(rest, url)
 }
 
 /**
