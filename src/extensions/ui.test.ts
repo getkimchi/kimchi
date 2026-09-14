@@ -1,6 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import uiExtension, {
@@ -8,8 +9,24 @@ import uiExtension, {
 	ctrlCCascadeDecision,
 	findNextCompatibleModel,
 	holdWorkedForMessage,
+	holdWorkingIndicator,
 	withWorkingHidden,
 } from "./ui.js"
+
+function theme(): Theme {
+	return {
+		fg: vi.fn((_color: string, text: string) => text),
+		bg: vi.fn((_color: string, text: string) => text),
+		bold: vi.fn((text: string) => text),
+		getFgAnsi: vi.fn(),
+		getBgAnsi: vi.fn(),
+		fgColors: {},
+		bgColors: {},
+		mode: "dark",
+		preproc: vi.fn(),
+		extensions: {},
+	} as unknown as Theme
+}
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
@@ -125,6 +142,104 @@ describe("worked-for message hold", () => {
 		release()
 		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
 		expect(setWorkingMessage.mock.lastCall?.[0]).toContain("Worked for")
+	})
+})
+
+describe("held working indicator", () => {
+	afterEach(() => {
+		__setWorkingAnimatorForTest(undefined)
+		vi.useRealTimers()
+	})
+
+	function fakeCtx() {
+		const setWidget = vi.fn()
+		const setWorkingVisible = vi.fn()
+		const ctx = createContext({
+			ui: {
+				theme: theme(),
+				setWorkingIndicator: vi.fn(),
+				setWorkingMessage: vi.fn(),
+				setWorkingVisible,
+				setWidget,
+			},
+		})
+		return { ctx, setWidget, setWorkingVisible }
+	}
+
+	it("renders a held cooking frame in a widget after the turn settles", async () => {
+		vi.useFakeTimers()
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const { ctx, setWidget, setWorkingVisible } = fakeCtx()
+
+		await harness.getHandler("turn_start")({ type: "turn_start" } as never, ctx)
+		const release = holdWorkingIndicator(ctx)
+		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
+		vi.advanceTimersByTime(1)
+
+		expect(
+			setWidget.mock.calls.some(
+				([key, content]) => key === "kimchi-held-working-indicator" && typeof content === "function",
+			),
+		).toBe(false)
+		const widgetLine = setWidget.mock.calls.find(
+			([key, content]) => key === "kimchi-held-working-indicator" && Array.isArray(content) && content.length > 0,
+		)
+		expect(widgetLine?.[1]?.join(" ")).toMatch(/Stirring|Marinating|Chopping/)
+		expect(setWorkingVisible).toHaveBeenLastCalledWith(false)
+
+		release()
+		expect(setWidget).toHaveBeenLastCalledWith("kimchi-held-working-indicator", undefined, {
+			placement: "aboveEditor",
+		})
+	})
+
+	it("hides a settled held widget while an interactive prompt has focus", async () => {
+		vi.useFakeTimers()
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const { ctx, setWidget } = fakeCtx()
+
+		await harness.getHandler("turn_start")({ type: "turn_start" } as never, ctx)
+		const release = holdWorkingIndicator(ctx)
+		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
+		vi.advanceTimersByTime(1)
+		const beforePrompt = setWidget.mock.calls.length
+
+		await withWorkingHidden(ctx, async () => undefined)
+		expect(setWidget.mock.calls.slice(beforePrompt)).toContainEqual([
+			"kimchi-held-working-indicator",
+			undefined,
+			{ placement: "aboveEditor" },
+		])
+		vi.advanceTimersByTime(200)
+		expect(setWidget.mock.calls.at(-1)?.[1]).toEqual(
+			expect.arrayContaining([expect.stringMatching(/Stirring|Marinating|Chopping/)]),
+		)
+		release()
+	})
+
+	it("keeps the held widget across a new turn", async () => {
+		vi.useFakeTimers()
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const { ctx, setWidget } = fakeCtx()
+
+		await harness.getHandler("turn_start")({ type: "turn_start" } as never, ctx)
+		const release = holdWorkingIndicator(ctx)
+		await harness.getHandler("turn_end")({ type: "turn_end" } as never, ctx)
+		vi.advanceTimersByTime(1)
+		const callsBeforeNextTurn = setWidget.mock.calls.length
+
+		await harness.getHandler("turn_start")({ type: "turn_start" } as never, ctx)
+		vi.advanceTimersByTime(200)
+
+		expect(
+			setWidget.mock.calls
+				.slice(callsBeforeNextTurn)
+				.some(([key, content]) => key === "kimchi-held-working-indicator" && content === undefined),
+		).toBe(false)
+		release()
 	})
 })
 

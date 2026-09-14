@@ -130,19 +130,38 @@ let workingAnimator: WorkingAnimator | undefined
 let workingAnimationPauseDepth = 0
 const workingIndicatorHolds = new Set<symbol>()
 const workedForMessageHolds = new Set<symbol>()
+const HELD_WORKING_WIDGET_KEY = "kimchi-held-working-indicator"
+let heldWorkingUi: Pick<ExtensionContext, "ui"> | undefined
+
+function clearHeldWorkingWidget(): void {
+	heldWorkingUi?.ui.setWidget(HELD_WORKING_WIDGET_KEY, undefined, { placement: "aboveEditor" })
+	heldWorkingUi = undefined
+}
+
+function mountHeldWorkingWidget(ctx: Pick<ExtensionContext, "ui">): void {
+	heldWorkingUi = ctx
+	// The upstream loader is gated on session.isStreaming. Replace it with the
+	// same animator output in a single widget while a settled-turn hold exists.
+	ctx.ui.setWorkingVisible(false)
+	ctx.ui.setWidget(HELD_WORKING_WIDGET_KEY, [], { placement: "aboveEditor" })
+}
 
 // Module-level so `holdWorkingIndicator` can re-arm the animator itself when it
 // isn't already running — extension handler order relative to this file's
 // `message_end` (which stops the animator) isn't guaranteed, so a caller taking
 // a hold can't assume the animator is still alive.
 function startWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): void {
-	ctx.ui.setWorkingVisible(true)
+	ctx.ui.setWorkingVisible(!heldWorkingUi)
 	workingAnimator?.stop()
 	workingAnimationPauseDepth = 0
 	workingAnimator = createWorkingAnimator((char, message) => {
 		const accent = resolvedAccentFg(ctx.ui.theme)
-		ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-		ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
+		const frame = `${accent}${char}${RST_FG}`
+		const text = `${accent}${message}${RST_FG}`
+		ctx.ui.setWorkingIndicator({ frames: [frame] })
+		ctx.ui.setWorkingMessage(text)
+		if (heldWorkingUi)
+			heldWorkingUi.ui.setWidget(HELD_WORKING_WIDGET_KEY, [`${frame} ${text}`], { placement: "aboveEditor" })
 	})
 }
 
@@ -151,6 +170,7 @@ function stopWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): void {
 	workingAnimator?.stop()
 	workingAnimator = undefined
 	workingAnimationPauseDepth = 0
+	clearHeldWorkingWidget()
 	ctx.ui.setWorkingVisible(false)
 }
 
@@ -159,6 +179,7 @@ export function holdWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): () => v
 	workingIndicatorHolds.add(hold)
 	if (workingAnimator) ctx.ui.setWorkingVisible(true)
 	else startWorkingIndicator(ctx)
+	mountHeldWorkingWidget(ctx)
 	return () => {
 		if (!workingIndicatorHolds.delete(hold)) return
 		if (workingIndicatorHolds.size > 0) return
@@ -177,6 +198,7 @@ export function holdWorkedForMessage(): () => void {
 export function pauseWorkingAnimation(): void {
 	if (workingAnimationPauseDepth === 0) {
 		workingAnimator?.pause()
+		if (heldWorkingUi) heldWorkingUi.ui.setWidget(HELD_WORKING_WIDGET_KEY, undefined, { placement: "aboveEditor" })
 	}
 	workingAnimationPauseDepth++
 }
@@ -198,6 +220,7 @@ export function __setWorkingAnimatorForTest(controller: WorkingAnimator | undefi
 	workingAnimator = controller
 	workingIndicatorHolds.clear()
 	workedForMessageHolds.clear()
+	heldWorkingUi = undefined
 }
 
 /** Cascade: text → clear, streaming → abort, otherwise → exit. */
@@ -389,6 +412,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		setSessionModeOnboardingStatusLineSuppressed(false)
+		clearHeldWorkingWidget()
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()
@@ -565,6 +589,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
+		clearHeldWorkingWidget()
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()
