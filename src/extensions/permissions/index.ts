@@ -1054,7 +1054,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
-			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
+			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
 			} catch (err) {

@@ -305,7 +305,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			}
 			const planMarkdown = reviewCtx.planText
 			const cloudPrompt = buildRemotePlanPrompt(planMarkdown, { origin: "ferment" })
-			const cloudDescription = `cloud: ${planMarkdown.slice(0, 60)}${planMarkdown.length > 60 ? "..." : ""}`
+			const cloudDescription = `${planMarkdown.slice(0, 60)}${planMarkdown.length > 60 ? "..." : ""}`
 			const ui = reviewCtx.ctx?.ui
 			void runCloudAgent(pi, reviewCtx.ctx, cloudPrompt, cloudDescription, {
 				background: true,
