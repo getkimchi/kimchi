@@ -91,6 +91,19 @@ All in `src/extensions/memory/config.ts`.
 | `CAPTURE_LOCK_STALE_MS` / `CAPTURE_LOCK_UPDATE_MS` | 15 min / 30 s | staleness must exceed the worst-case legitimate drain |
 | `PENDING_JOB_MAX_AGE_MS` | 7 days | the reaper |
 
+## Embedding endpoint configuration
+
+The embedder is env-configurable for testing other embedding providers (e.g. OpenRouter); unset, everything stays on the gateway.
+
+| Env var | Meaning |
+| --- | --- |
+| `MEMORY_EMBEDDING_BASE_URL` | custom embedding base URL; switches the key resolution below |
+| `MEMORY_EMBEDDING_API_KEY` | embedding API key (only honored with a custom base URL) |
+| `MEMORY_EMBEDDING_MODEL` | embedding model (applies in both modes; default `text-embedding-3-small`) |
+| `MEMORY_EMBEDDING_DIMS` | vector dimensions — must match the model's output; feeds both the embedder config and the store schema (default 1536) |
+
+The key fallback is **coupled to the base URL**: when `MEMORY_EMBEDDING_BASE_URL` is set, the key comes from `MEMORY_EMBEDDING_API_KEY` → `OPENROUTER_API_KEY` — never the gateway key; without it, everything stays on the gateway and `MEMORY_EMBEDDING_API_KEY` is ignored. That prevents accidentally sending a gateway request with an OpenRouter key, or vice versa. The usage-tracking tag (`memory:embedding`) is likewise gateway-only — custom embedding endpoints never receive it. The extraction LLM is not env-configurable; it always resolves against the gateway.
+
 ## Management
 
 `kimchi memory` (or the in-session `/memory` command — same grammar) manages what is stored:

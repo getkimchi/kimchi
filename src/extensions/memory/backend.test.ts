@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
 import type { KimchiConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
@@ -88,6 +88,90 @@ describe("buildMemoryConfig", () => {
 	})
 })
 
+describe("embedding endpoint env configuration", () => {
+	const EMBEDDING_ENV_VARS = [
+		"MEMORY_EMBEDDING_MODEL",
+		"MEMORY_EMBEDDING_BASE_URL",
+		"MEMORY_EMBEDDING_API_KEY",
+		"MEMORY_EMBEDDING_DIMS",
+		"OPENROUTER_API_KEY",
+	] as const
+
+	// Ambient env (e.g. a developer with OPENROUTER_API_KEY exported) must
+	// not leak into these tests — each one starts from a clean slate.
+	beforeEach(() => {
+		for (const name of EMBEDDING_ENV_VARS) delete process.env[name]
+	})
+	afterEach(() => {
+		for (const name of EMBEDDING_ENV_VARS) delete process.env[name]
+	})
+
+	it("custom base URL with explicit key uses both; the LLM stays on the gateway", () => {
+		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
+		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.embedder.config.baseURL).toBe("https://openrouter.ai/api/v1")
+		expect(config.embedder.config.apiKey).toBe("or-key")
+		expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
+		expect(config.llm.config.baseURL).toBe("https://gateway.test/openai/v1")
+		expect(config.llm.config.apiKey).toBe("test-key")
+	})
+
+	it("custom base URL falls back to OPENROUTER_API_KEY", () => {
+		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
+		process.env.OPENROUTER_API_KEY = "or-key"
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.embedder.config.apiKey).toBe("or-key")
+	})
+
+	it("custom base URL with no key anywhere throws", () => {
+		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
+		expect(() => buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())).toThrow(
+			/MEMORY_EMBEDDING_BASE_URL is set but no embedding API key/,
+		)
+	})
+
+	it("a custom key without a custom base URL is ignored — gateway stays on gateway credentials", () => {
+		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
+		expect(config.embedder.config.apiKey).toBe("test-key")
+	})
+
+	it("model override applies in gateway mode", () => {
+		process.env.MEMORY_EMBEDDING_MODEL = "text-embedding-3-large"
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.embedder.config.model).toBe("text-embedding-3-large")
+		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
+		expect(config.embedder.config.apiKey).toBe("test-key")
+	})
+
+	it("dims override reaches the embedder and the vector store together", () => {
+		process.env.MEMORY_EMBEDDING_DIMS = "3072"
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.embedder.config.embeddingDims).toBe(3072)
+		expect(config.vectorStore.config.dimension).toBe(3072)
+	})
+
+	it("invalid dims throw a clear error", () => {
+		process.env.MEMORY_EMBEDDING_DIMS = "not-a-number"
+		expect(() => buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())).toThrow(
+			/MEMORY_EMBEDDING_DIMS must be a positive integer/,
+		)
+	})
+
+	it("programmatic overrides win over the env layer", () => {
+		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
+		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
+		const config = buildMemoryConfig(
+			{ dbPath: "/tmp/mem.db", embedder: { baseURL: "http://127.0.0.1:9/v1", apiKey: "stub-key" } },
+			testConfig(),
+		)
+		expect(config.embedder.config.baseURL).toBe("http://127.0.0.1:9/v1")
+		expect(config.embedder.config.apiKey).toBe("stub-key")
+	})
+})
+
 describe("memory paths", () => {
 	it("scopes databases under the kimchi memory dir", () => {
 		expect(memoryDbPath("personal")).toBe(join(defaultMemoryDir(), "personal", "memory.db"))
@@ -168,7 +252,7 @@ describe("createMemoryBackend", () => {
 		})
 	})
 	describe("tagEmbeddingRequests", () => {
-		it("adds the usage-tracking tag to /embeddings request bodies only", async () => {
+		it("tags gateway /embeddings requests only — custom endpoints stay untouched", async () => {
 			const originalFetch = globalThis.fetch
 			const seen: Array<{ url: string; body: Record<string, unknown> }> = []
 			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -176,19 +260,26 @@ describe("createMemoryBackend", () => {
 				return new Response("{}", { status: 200 })
 			})
 			try {
-				tagEmbeddingRequests()
-				tagEmbeddingRequests() // idempotent — no double-wrap
+				tagEmbeddingRequests("https://gw.test/v1")
+				tagEmbeddingRequests("https://gw.test/v1") // idempotent — no double-wrap
 				await globalThis.fetch("https://gw.test/v1/embeddings", {
 					method: "POST",
 					headers: { authorization: "Bearer k" },
 					body: JSON.stringify({ input: ["text"], model: "text-embedding-3-small" }),
 				})
+				await globalThis.fetch("https://openrouter.ai/api/v1/embeddings", {
+					method: "POST",
+				headers: { authorization: "Bearer k" },
+					body: JSON.stringify({ input: ["text"], model: "openai/text-embedding-3-small" }),
+				})
 				await globalThis.fetch("https://gw.test/v1/models", { method: "GET" })
-				expect(seen).toHaveLength(2)
-				// The embeddings request got the tag
+				expect(seen).toHaveLength(3)
+				// The gateway embeddings request got the tag
 				expect(seen[0]?.body.tags).toEqual(["memory:embedding"])
-				// The models request is untouched
+				// A custom embedding endpoint must not receive the usage-tracking tag
 				expect(seen[1]?.body.tags).toBeUndefined()
+				// The models request is untouched
+				expect(seen[2]?.body.tags).toBeUndefined()
 			} finally {
 				globalThis.fetch = originalFetch
 			}
