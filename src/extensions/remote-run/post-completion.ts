@@ -2,9 +2,9 @@
  * Post-completion handler for remote plan execution.
  *
  * After the remote agent finishes, shows a dropdown asking the user
- * what to do next. Options:
- * - "Show the agent's results in the local session" — injects result + triggers turn
- * - "Download the Remote Agent's output to the local folder" — rsyncs changed files from sandbox to local
+ * what to do next. Options (in display order):
+ * - "Pull the changes to my machine and finish" — rsyncs changed files from sandbox to local
+ * - "Review the remote agent's results in the local session" — injects result + triggers turn
  * - "Describe what to do next" — injects result + triggers turn with custom action
  */
 
@@ -23,8 +23,8 @@ import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
-const REVIEW = "Show the agent's results in the local session"
-const SYNC = "Download the Remote Agent's output to the local folder"
+const REVIEW = "Review the remote agent's results in the local session"
+const SYNC = "Pull the changes to my machine and finish"
 const CUSTOM = "Describe what to do next"
 
 /** Options for handleRemoteCompletion. */
@@ -34,8 +34,9 @@ export interface HandleRemoteCompletionOpts {
 	/** Remote session metadata — when present, sync reuses the connection directly. */
 	remoteSession?: RemoteSessionMeta
 	/** Ferment ID when the remote agent executed a ferment plan. The ferment is
-	 *  paused during cloud execution; on completion it is completed (sync) or
-	 *  resumed (review/custom/done) so the user can continue locally. */
+	 *  paused during remote execution; on completion it is completed (sync) or
+	 *  resumed (review/custom), or stays paused on dismiss, so the user can
+	 *  continue locally. */
 	fermentId?: string
 }
 
@@ -66,11 +67,11 @@ export async function handleRemoteCompletion(
 
 	const choice = await withBlocked(pi.events, "Remote execution complete", () =>
 		withWorkingHidden(ctx.ui, () =>
-			ctx.ui.select("Remote agent run finished. What would you like to do with its output?", [REVIEW, SYNC, CUSTOM]),
+			ctx.ui.select("Remote agent run finished. What would you like to do next?", [SYNC, REVIEW, CUSTOM]),
 		),
 	)
 
-	// No selection (escape/dismiss) → treat as Done
+	// No selection (escape/dismiss) → no-op; a paused ferment stays paused
 	if (!choice) return
 
 	switch (choice) {
@@ -205,13 +206,13 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 }
 
 /**
- * Completes the ferment after a successful cloud execution + sync.
+ * Completes the ferment after a successful remote execution + sync.
  * The ferment was paused when the remote agent was spawned; syncing means
  * the user accepted the remote work, so we mark the ferment as complete.
  *
- * The ferment was never locally activated (no phase ran locally) — the cloud
+ * The ferment was never locally activated (no phase ran locally) — the remote
  * agent handled everything. So we resume (un-pause), skip all non-terminal
- * phases (they were executed in the cloud), then complete the ferment.
+ * phases (they were executed remotely), then complete the ferment.
  */
 function completeFerment(fermentId?: string): void {
 	if (!fermentId) return

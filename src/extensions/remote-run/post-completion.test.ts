@@ -63,7 +63,9 @@ describe("handleRemoteCompletion", () => {
 	it("always injects transcript path into steer message when user picks Review", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Show the agent's results in the local session")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+			"Review the remote agent's results in the local session",
+		)
 
 		await handleRemoteCompletion(pi, ctx, "remote result text", "plan", {
 			transcriptPath: "/tmp/transcripts/agent-1.jsonl",
@@ -81,9 +83,7 @@ describe("handleRemoteCompletion", () => {
 	it("injects transcript path even when user picks Sync", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
-			"Download the Remote Agent's output to the local folder",
-		)
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
 			transcriptPath: "/tmp/transcripts/agent-sync.jsonl",
@@ -113,7 +113,9 @@ describe("handleRemoteCompletion", () => {
 	it("injects result even when transcriptPath is undefined", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Show the agent's results in the local session")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+			"Review the remote agent's results in the local session",
+		)
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -198,9 +200,7 @@ describe("handleRemoteCompletion", () => {
 		it("uses remoteSession metadata directly — authenticates with known workspaceId", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
-				"Download the Remote Agent's output to the local folder",
-			)
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
@@ -216,9 +216,7 @@ describe("handleRemoteCompletion", () => {
 		it("rsyncs from the unique remoteSession.cwd with .git and secrets excluded", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
-				"Download the Remote Agent's output to the local folder",
-			)
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
@@ -237,9 +235,7 @@ describe("handleRemoteCompletion", () => {
 		it("notifies error and does not sync when remoteSession is absent", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
-				"Download the Remote Agent's output to the local folder",
-			)
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -253,9 +249,7 @@ describe("handleRemoteCompletion", () => {
 		it("notifies error when sync fails", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
-				"Download the Remote Agent's output to the local folder",
-			)
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 			vi.mocked(runRsync).mockRejectedValue(new Error("rsync connection refused"))
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
@@ -284,9 +278,7 @@ describe("handleRemoteCompletion", () => {
 		it("completes the ferment when user picks Sync", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
-				"Download the Remote Agent's output to the local folder",
-			)
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", {
 				fermentId,
@@ -310,7 +302,9 @@ describe("handleRemoteCompletion", () => {
 		it("resumes the ferment when user picks Review and confirms", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Show the agent's results in the local session")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+				"Review the remote agent's results in the local session",
+			)
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
@@ -322,7 +316,9 @@ describe("handleRemoteCompletion", () => {
 		it("does not resume the ferment when user picks Review but declines confirm", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Show the agent's results in the local session")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+				"Review the remote agent's results in the local session",
+			)
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(false)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
@@ -345,7 +341,9 @@ describe("handleRemoteCompletion", () => {
 		it("does not call applyAndPersist when no fermentId is provided", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Show the agent's results in the local session")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+				"Review the remote agent's results in the local session",
+			)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
