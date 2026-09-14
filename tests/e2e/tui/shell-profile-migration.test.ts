@@ -8,7 +8,7 @@ import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from ".
 
 test.use(TUI_TEST_CONFIG)
 
-const MIGRATION_PROMPT = "We detected KIMCHI_API_KEY in your shell profile. Do you want to remove it?"
+const MIGRATION_PROMPT = "We detected an unnecessary KIMCHI_API_KEY in your shell profile. Do you want to remove it?"
 const MANUAL_PROMPT = "Possible old API key in"
 const PROFILE_NAME = platform() === "darwin" ? ".bash_profile" : ".bashrc"
 const EXIT_MARKER = "KIMCHI_MIGRATION_SESSION_EXITED"
