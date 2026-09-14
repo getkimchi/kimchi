@@ -81,8 +81,8 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 			// be neither readable nor a meaningful integrity check.
 			const confirmed = await withWorkingHidden(ctx.ui, () =>
 				ctx.ui.confirm(
-					"Dispatch to cloud agent?",
-					"The briefing from the message above will be executed by a cloud agent on a remote sandbox. Your local changes are synced to the sandbox; this conversation's history is not.",
+					"Dispatch to remote agent?",
+					"A self-contained task brief will be sent to the remote agent. Conversation history is not transferred. Your local changes will be synced to the sandbox.",
 				),
 			)
 			if (!confirmed) {

@@ -64,8 +64,9 @@ describe("registerDispatchToCloudAgentTool", () => {
 		const result = await callExecute(tool, ctx, { task: "Implement the auth feature", description: "cloud: auth" })
 
 		const [title, message] = confirm.mock.calls[0]
-		expect(title).toBe("Dispatch to cloud agent?")
-		expect(message).toContain("briefing from the message above")
+		expect(title).toBe("Dispatch to remote agent?")
+		expect(message).toContain("A self-contained task brief will be sent to the remote agent")
+		expect(message).toContain("Conversation history is not transferred")
 		// The dialog references the chat-presented briefing; it must NOT
 		// embed the task itself — chat is the reading surface.
 		expect(message).not.toContain("Implement the auth feature")
