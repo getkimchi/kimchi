@@ -229,7 +229,10 @@ const originalArgs = process.argv.slice(2)
 // invocations are invisible to app_started instrumentation.
 if (originalArgs[0] === "memory-capture") {
 	const { runCaptureWorkerMain } = await import("./extensions/memory/capture-worker.js")
-	await runCaptureWorkerMain(originalArgs.slice(1))
+	// Exit at the dispatch site: the worker returns an exit code, and
+	// falling through into the interactive bootstrap below (telemetry,
+	// session setup) must never happen for worker invocations.
+	process.exit(await runCaptureWorkerMain(originalArgs.slice(1)))
 }
 
 // Observes provider transport failures in-process (via message_end) so the

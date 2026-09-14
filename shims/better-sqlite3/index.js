@@ -24,6 +24,8 @@
 /** @type {any} */
 let BunDatabase = null
 
+const { existsSync } = require("node:fs")
+
 function driver() {
 	if (BunDatabase) return BunDatabase
 	try {
@@ -56,6 +58,12 @@ class Statement {
 
 class Database {
 	constructor(path, options) {
+		// bun:sqlite has no fileMustExist option (it would create the file);
+		// real better-sqlite3 throws when the flag is set and the file is
+		// absent — enforce it so the declared surface is honest.
+		if (options?.fileMustExist && path !== ":memory:" && !existsSync(path)) {
+			throw new Error(`unable to open database file: ${path} (fileMustExist)`)
+		}
 		this.db = new (driver())(path, options)
 		// Concurrency: concurrent kimchi sessions share this store. WAL lets
 		// readers proceed during writes; busy_timeout makes writers wait
