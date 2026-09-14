@@ -1,4 +1,4 @@
-import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
+import type { AgentConfig, JoinMode, ThinkingLevel } from "../personas/types.js"
 
 interface AgentInvocationParams {
 	model?: string
@@ -10,21 +10,21 @@ interface AgentInvocationParams {
 	run_in_background?: boolean
 	inherit_context?: boolean
 	isolated?: boolean
-	isolation?: IsolationMode
 }
 
 /**
  * Resolves agent invocation config by merging caller params with persona defaults.
  *
- * Model selection is pass-through: `params.model` is used as-is when
- * provided, otherwise modelInput is undefined and the caller falls back
- * to the parent model.
+ * Model selection is pass-through: an explicit `params.model` wins, then
+ * the persona's first configured model, otherwise modelInput is undefined
+ * and the caller falls back to the parent model. The caller decides how to
+ * handle an unavailable configured model versus an unavailable explicit one.
  *
  * Other fields:
  * - tokenBudget: caller override first, then persona default.
  * - thinking: caller override first, then persona default (orchestrator selects per delegation).
- * - maxTurns, isolation, inheritContext, runInBackground: persona
- *   policy first, then caller value.
+ * - maxTurns, inheritContext, runInBackground: persona policy first, then
+ *   caller value.
  */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,
@@ -39,7 +39,6 @@ export function resolveAgentInvocationConfig(
 	inheritContext: boolean
 	runInBackground: boolean
 	isolated: boolean
-	isolation?: IsolationMode
 } {
 	let modelInput: string | undefined
 	let modelFromParams = false
@@ -47,6 +46,8 @@ export function resolveAgentInvocationConfig(
 	if (params.model) {
 		modelInput = params.model
 		modelFromParams = true
+	} else {
+		modelInput = agentConfig?.models?.[0]
 	}
 
 	return {
@@ -59,7 +60,6 @@ export function resolveAgentInvocationConfig(
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
 		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,
-		isolation: agentConfig?.isolation ?? params.isolation,
 	}
 }
 

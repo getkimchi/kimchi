@@ -100,9 +100,6 @@ export const DEFAULT_AGENT_NAMES = [
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local"
 
-/** Isolation mode for agent execution. */
-export type IsolationMode = "worktree"
-
 /** Re-export orchestration types used in agent configs. */
 export type { ModelRole, ModelTier }
 
@@ -144,8 +141,6 @@ export interface AgentConfig {
 	includeCoreGuidelines?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
 	memory?: MemoryScope
-	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
-	isolation?: IsolationMode
 	/** true = this is an embedded default agent (informational) */
 	isDefault?: boolean
 	/** false = agent is hidden from the registry */
