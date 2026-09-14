@@ -122,20 +122,23 @@ export const MEMORY_EMBEDDING_TAG = "memory:embedding"
  * Tag the OpenAI embedder's gateway requests for usage tracking. mem0's
  * OpenAI embedder doesn't support extra body fields through its config
  * (the constructor only picks apiKey and baseURL), so the tag is injected
- * by wrapping globalThis.fetch — narrowly: only /embeddings requests get
- * the tag added to their JSON body, in the same payload field the /tags
- * extension sets on session LLM requests, so billing attributes memory
- * traffic through one mechanism. Idempotent (won't double-wrap). Applied
- * at every backend creation since the OpenAI SDK may capture the fetch
- * reference at client construction.
+ * by wrapping globalThis.fetch — narrowly: only /embeddings requests to
+ * the kimchi gateway get the tag added to their JSON body, in the same
+ * payload field the /tags extension sets on session LLM requests, so
+ * billing attributes memory traffic through one mechanism. A custom
+ * embedding endpoint (MEMORY_EMBEDDING_BASE_URL, e.g. OpenRouter) must
+ * not receive our usage-tracking tag, so requests are matched by origin.
+ * Idempotent (won't double-wrap). Applied at every backend creation since
+ * the OpenAI SDK may capture the fetch reference at client construction.
  */
-export function tagEmbeddingRequests(): void {
+export function tagEmbeddingRequests(gatewayBaseUrl: string): void {
 	const current = globalThis.fetch as typeof fetch & { _memoryEmbeddingTagged?: boolean }
 	if (current._memoryEmbeddingTagged) return
 	const original = globalThis.fetch
+	const gatewayOrigin = requestOrigin(gatewayBaseUrl)
 	const tagged: typeof fetch & { _memoryEmbeddingTagged?: boolean } = async (input, init) => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input?.url ?? "")
-		if (url.includes("/embeddings") && init?.body) {
+		if (url.includes("/embeddings") && init?.body && requestOrigin(url) === gatewayOrigin) {
 			try {
 				const body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
 				const tags = Array.isArray(body.tags) ? [...body.tags] : []
@@ -149,6 +152,14 @@ export function tagEmbeddingRequests(): void {
 	}
 	tagged._memoryEmbeddingTagged = true
 	globalThis.fetch = tagged
+}
+
+function requestOrigin(url: string): string | undefined {
+	try {
+		return new URL(url).origin
+	} catch {
+		return undefined
+	}
 }
 
 export function defaultMemoryDir(): string {
@@ -194,6 +205,65 @@ export interface MemoryEndpointConfig {
 	model: string
 }
 
+/** Embedding endpoint plus its vector dimension (the two must move together). */
+export interface EmbeddingEndpointConfig extends MemoryEndpointConfig {
+	dims: number
+}
+
+function parseEmbeddingDims(raw: string | undefined): number {
+	if (raw === undefined) return MEMORY_EMBEDDING_DIMS
+	const parsed = Number.parseInt(raw, 10)
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error(`MEMORY_EMBEDDING_DIMS must be a positive integer, got ${JSON.stringify(raw)}`)
+	}
+	return parsed
+}
+
+/**
+ * Env-configurable embedding endpoint — for testing other embedding
+ * providers (e.g. OpenRouter). The API-key fallback is coupled to the base
+ * URL: when MEMORY_EMBEDDING_BASE_URL is set, the key comes from
+ * MEMORY_EMBEDDING_API_KEY → OPENROUTER_API_KEY — never the gateway key;
+ * without it, everything stays on the gateway and MEMORY_EMBEDDING_API_KEY
+ * is ignored. That prevents accidentally sending a gateway request with
+ * an OpenRouter key, or vice versa. MEMORY_EMBEDDING_MODEL and
+ * MEMORY_EMBEDDING_DIMS apply in both modes (dims must match the model's
+ * output). Programmatic overrides (tests, check scripts) win per-field over
+ * the env layer.
+ */
+export function resolveEmbeddingEndpoint(
+	override: Partial<MemoryEndpointConfig> | undefined,
+	gateway: { baseURL: string; apiKey: string },
+	env: NodeJS.ProcessEnv = process.env,
+): EmbeddingEndpointConfig {
+	const envBase = env.MEMORY_EMBEDDING_BASE_URL?.trim() || undefined
+	const envModel = env.MEMORY_EMBEDDING_MODEL?.trim() || undefined
+	const envKey = env.MEMORY_EMBEDDING_API_KEY?.trim() || undefined
+	const dims = parseEmbeddingDims(env.MEMORY_EMBEDDING_DIMS?.trim() || undefined)
+	if (envBase !== undefined) {
+		const apiKey = override?.apiKey ?? envKey ?? env.OPENROUTER_API_KEY
+		if (!apiKey) {
+			throw new Error(
+				"MEMORY_EMBEDDING_BASE_URL is set but no embedding API key is available — set MEMORY_EMBEDDING_API_KEY or OPENROUTER_API_KEY",
+			)
+		}
+		return {
+			baseURL: override?.baseURL ?? envBase,
+			apiKey,
+			model: override?.model ?? envModel ?? MEMORY_EMBEDDING_MODEL,
+			dims,
+		}
+	}
+	// Gateway mode: everything stays on the gateway; MEMORY_EMBEDDING_API_KEY
+	// is ignored so a custom key can't ride the gateway base URL.
+	return {
+		baseURL: override?.baseURL ?? gateway.baseURL,
+		apiKey: override?.apiKey ?? gateway.apiKey,
+		model: override?.model ?? envModel ?? MEMORY_EMBEDDING_MODEL,
+		dims,
+	}
+}
+
 export interface MemoryBackendOptions {
 	/** SQLite database path for the vector store (see memoryDbPath). */
 	dbPath: string
@@ -221,7 +291,7 @@ function resolveEndpoint(
  */
 export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
-	const embedder = resolveEndpoint(options.embedder, gateway, MEMORY_EMBEDDING_MODEL)
+	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway)
 	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL_PREFERENCES[0])
 	return {
 		embedder: {
@@ -230,7 +300,7 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 				model: embedder.model,
 				baseURL: embedder.baseURL,
 				apiKey: embedder.apiKey,
-				embeddingDims: MEMORY_EMBEDDING_DIMS,
+				embeddingDims: embedder.dims,
 			},
 		},
 		llm: {
@@ -245,7 +315,7 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 			provider: "memory",
 			config: {
 				dbPath: options.dbPath,
-				dimension: MEMORY_EMBEDDING_DIMS,
+				dimension: embedder.dims,
 			},
 		},
 		historyStore: {
@@ -280,7 +350,7 @@ export async function createMemoryBackend(
 	config: KimchiConfig = loadConfig(),
 ): Promise<Mem0Memory> {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
-	const embedder = resolveEndpoint(options.embedder, gateway, MEMORY_EMBEDDING_MODEL)
+	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway)
 	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL_PREFERENCES[0])
 	for (const [name, ep] of [
 		["embedder", embedder],
@@ -295,7 +365,7 @@ export async function createMemoryBackend(
 	// egress to third parties. An explicitly set value wins, so an operator
 	// who opts in deliberately keeps it.
 	disableMem0Telemetry()
-	tagEmbeddingRequests()
+	tagEmbeddingRequests(config.llmEndpoint)
 	const { Memory } = await import("mem0ai/oss")
 	return new Memory(buildMemoryConfig(options, config))
 }
