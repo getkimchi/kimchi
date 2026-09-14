@@ -1959,6 +1959,28 @@ describe("permissions ACP prompter", () => {
 })
 
 describe("checkCompoundCommand", () => {
+	it.each([false, true])("honors a whole-command deny with explicit segment allows: %s", (allowSegments) => {
+		const rules: Rule[] = [{ toolName: "bash", content: "ls && pwd", behavior: "deny", source: "user" }]
+		if (allowSegments) {
+			rules.push(
+				{ toolName: "bash", content: "ls", behavior: "allow", source: "user" },
+				{ toolName: "bash", content: "pwd", behavior: "allow", source: "user" },
+			)
+		}
+
+		const result = checkCompoundCommand("ls && pwd", rules)
+		expect(result.decision).toBe("deny")
+		expect(result.deniedReason).toContain("ls && pwd")
+	})
+
+	it("preserves higher-priority whole-command allows over lower-priority denies", () => {
+		const rules: Rule[] = [
+			{ toolName: "bash", content: "ls && pwd", behavior: "deny", source: "user" },
+			{ toolName: "bash", content: "ls && pwd", behavior: "allow", source: "session" },
+		]
+		expect(checkCompoundCommand("ls && pwd", rules).decision).toBe("allow")
+	})
+
 	it("returns prompt for compound command with no rules", () => {
 		// npm install is mutable: without rules the compound must prompt
 		// (read-only segments are implicitly allowed and cannot prompt it).

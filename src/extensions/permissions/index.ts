@@ -1612,6 +1612,15 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 		return { decision: "prompt" }
 	}
 
+	// Honor whole-command denies before segment approval can bypass the normal rule check.
+	const match = evaluateRules(rules, "bash", { command })
+	if (match.decision === "deny") {
+		return {
+			decision: "deny",
+			deniedReason: `Command blocked by rule: ${command}`,
+		}
+	}
+
 	// Split into subcommands
 	const subcommands = splitCompoundCommand(command)
 	if (!subcommands || subcommands.length === 0) {
