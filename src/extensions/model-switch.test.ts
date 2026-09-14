@@ -236,13 +236,16 @@ describe("modelSwitchExtension", () => {
 			const result = await h.exec("kimchi-dev/kimi-k2.6")
 
 			expect(h.setModel).toHaveBeenCalledTimes(1)
-			expect(h.setModel).toHaveBeenCalledWith({
-				id: "kimi-k2.6",
-				provider: "kimchi-dev",
-				name: "Kimi K2.6",
-				input: ["text", "image"],
-				contextWindow: 200_000,
-			})
+			expect(h.setModel).toHaveBeenCalledWith(
+				{
+					id: "kimi-k2.6",
+					provider: "kimchi-dev",
+					name: "Kimi K2.6",
+					input: ["text", "image"],
+					contextWindow: 200_000,
+				},
+				{ persist: true },
+			)
 			expect(textOf(result)).toBe("Switched to model kimchi-dev/kimi-k2.6 (Kimi K2.6)")
 			expect(result.details).toBeNull()
 		})
@@ -251,13 +254,16 @@ describe("modelSwitchExtension", () => {
 			const h = createHarness()
 			const result = await h.exec("anthropic/claude-sonnet-4-20250514")
 
-			expect(h.setModel).toHaveBeenCalledWith({
-				id: "claude-sonnet-4-20250514",
-				provider: "anthropic",
-				name: "Claude Sonnet 4",
-				input: ["text", "image"],
-				contextWindow: 200_000,
-			})
+			expect(h.setModel).toHaveBeenCalledWith(
+				{
+					id: "claude-sonnet-4-20250514",
+					provider: "anthropic",
+					name: "Claude Sonnet 4",
+					input: ["text", "image"],
+					contextWindow: 200_000,
+				},
+				{ persist: true },
+			)
 			expect(textOf(result)).toBe("Switched to model anthropic/claude-sonnet-4-20250514 (Claude Sonnet 4)")
 		})
 
@@ -265,13 +271,16 @@ describe("modelSwitchExtension", () => {
 			const h = createHarness()
 			const result = await h.exec("kimchi-dev/openai/gpt-5.6-sol")
 
-			expect(h.setModel).toHaveBeenCalledWith({
-				id: "gpt-5.6-sol",
-				provider: "kimchi-dev/openai",
-				name: "GPT 5.6 Sol",
-				input: ["text", "image"],
-				contextWindow: 1_050_000,
-			})
+			expect(h.setModel).toHaveBeenCalledWith(
+				{
+					id: "gpt-5.6-sol",
+					provider: "kimchi-dev/openai",
+					name: "GPT 5.6 Sol",
+					input: ["text", "image"],
+					contextWindow: 1_050_000,
+				},
+				{ persist: true },
+			)
 			expect(textOf(result)).toBe("Switched to model kimchi-dev/openai/gpt-5.6-sol (GPT 5.6 Sol)")
 		})
 	})
