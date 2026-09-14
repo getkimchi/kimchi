@@ -8,7 +8,7 @@
 
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createBashControlToolDefinition } from "./bash-control-tool.js"
+import { type BashControlInput, createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry } from "./process-registry.js"
 
 // ─── Fake BashOperations ─────────────────────────────────────────────────────
@@ -67,12 +67,7 @@ function setup() {
 
 async function callExecute(
 	tool: ReturnType<typeof createBashControlToolDefinition>,
-	params: {
-		handle: string
-		action: "continue" | "stop" | "detach"
-		extend_seconds?: number
-		checkin_interval?: number
-	},
+	params: Pick<BashControlInput, "handle" | "action" | "extend_seconds" | "checkin_interval">,
 ) {
 	const result = await tool.execute("call-1", params as never, undefined, undefined, undefined as never)
 	return result
@@ -90,13 +85,18 @@ describe("createBashControlToolDefinition — shape", () => {
 		expect(tool.name).toBe("bash_control")
 	})
 
-	it("schema has handle, action (continue|stop), optional extend_seconds and checkin_interval", () => {
+	it("schema has handle, action (continue|stop|detach), optional extend_seconds and checkin_interval", () => {
 		const tool = createBashControlToolDefinition(() => undefined)
-		const schema = tool.parameters as unknown as { properties: Record<string, unknown> }
+		const schema = tool.parameters as unknown as {
+			properties: Record<string, { anyOf?: { const: string }[] }>
+		}
 		expect(schema.properties).toHaveProperty("handle")
 		expect(schema.properties).toHaveProperty("action")
 		expect(schema.properties).toHaveProperty("extend_seconds")
 		expect(schema.properties).toHaveProperty("checkin_interval")
+		// The action union accepts exactly continue | stop | detach.
+		const actions = (schema.properties.action?.anyOf ?? []).map((literal) => literal.const)
+		expect(actions).toEqual(["continue", "stop", "detach"])
 	})
 
 	it("description distinguishes checkin_interval (cadence) from extend_seconds (deadline)", () => {
