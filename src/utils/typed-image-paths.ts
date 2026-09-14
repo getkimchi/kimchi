@@ -26,7 +26,7 @@ export interface TypedImagePathMatch {
 // Quoted spans (double, single, backtick) are single tokens so paths with
 // spaces and inline code spans attach; everything else is whitespace-split
 // (\s covers \r, so CRLF line breaks need no special handling).
-const TOKEN_RE = /"([^"\n]+)"|'([^'\n]+)'|`([^`\n]+)`|(\S+)/g
+const TOKEN_RE = /("(?:[^"\n]+)"|'(?:[^'\n]+)'|`(?:[^`\n]+)`)|(\S+)/g
 
 // Prose punctuation clinging to the edges of a typed path in chat text.
 const LEADING_JUNK_RE = /^[([{<'"`]+/
@@ -40,9 +40,8 @@ interface Token {
 function tokenize(text: string): Token[] {
 	const tokens: Token[] = []
 	for (const m of text.matchAll(TOKEN_RE)) {
-		const quoted = m[1] ?? m[2] ?? m[3]
-		if (quoted !== undefined) tokens.push({ raw: quoted, quoted: true })
-		else if (m[4] !== undefined) tokens.push({ raw: m[4], quoted: false })
+		if (m[1] !== undefined) tokens.push({ raw: m[1].slice(1, -1), quoted: true })
+		else tokens.push({ raw: m[2], quoted: false })
 	}
 	return tokens
 }
