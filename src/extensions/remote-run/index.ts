@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
+import { createDispatchGate } from "./dispatch-gate.js"
 import { DISPATCH_TO_CLOUD_AGENT_TOOL, registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
 import { buildRemoteSessionDispatchInstruction, parseRemoteSessionTrigger } from "./remote-session-trigger.js"
 import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
@@ -23,7 +24,14 @@ import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 export default function remoteRunExtension(pi: ExtensionAPI): void {
 	if (!isRemoteRunEnabled()) return
 
-	registerDispatchToCloudAgentTool(pi)
+	// Session-scoped one-shot consent latch for the dispatch tool — armed only
+	// by an explicit user confirmation below, consumed by the first real
+	// dispatch, and expired at turn end so a stray latch can never fire in a
+	// later (potentially injection-steered) turn. See dispatch-gate.ts.
+	const gate = createDispatchGate()
+	pi.on("turn_end", () => gate.disarm())
+
+	registerDispatchToCloudAgentTool(pi, gate)
 
 	// Prompt-based dispatch: trigger phrases (REMOTE_SESSION_TRIGGERS) with
 	// an optional focus. After a confirm dialog, the prompt is transformed
@@ -50,6 +58,9 @@ export default function remoteRunExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Staying in this session.", "info")
 			return { action: "handled" as const }
 		}
+		// Arm the dispatch gate only AFTER explicit confirmation — this is the
+		// single point where consent converts into dispatch capability.
+		gate.arm()
 		return {
 			action: "transform" as const,
 			text: buildRemoteSessionDispatchInstruction(event.text, trigger.focus),
