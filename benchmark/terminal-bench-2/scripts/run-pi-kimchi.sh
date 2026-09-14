@@ -13,7 +13,7 @@
 # Usage examples:
 #   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
 #   MODEL=kimchi-dev/minimax-m3 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git -k 3
-#   PI_VERSION=0.84.1 MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
+#   PI_VERSION=0.85.1 MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
 set -euo pipefail
 
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
