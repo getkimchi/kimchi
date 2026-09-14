@@ -4891,6 +4891,27 @@ describe("newSession available commands", () => {
 			input: { hint: expect.any(String) },
 		})
 	})
+
+	it("does not send available_commands_update when the session is torn down before the flush", async () => {
+		const fake = new FakeAgentSession("session-torn-down")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Tear the session down before the deferred broadcast fires — the
+		// dead-session guard must suppress the send.
+		const sessions = (agent as unknown as { sessions: Map<string, unknown> }).sessions
+		sessions.delete("session-torn-down")
+
+		await flushDeferredCommands()
+
+		expect(updates.find((u) => u.update.sessionUpdate === "available_commands_update")).toBeUndefined()
+	})
 })
 
 describe("loadSession available commands", () => {

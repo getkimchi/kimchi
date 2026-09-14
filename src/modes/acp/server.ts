@@ -1734,12 +1734,12 @@ export class KimchiAcpAgent implements Agent {
 	 */
 	private scheduleAvailableCommandsUpdate(sessionId: string): void {
 		setImmediate(() => {
-			// The session may have been torn down between the response and the
-			// deferred send (e.g. instant disconnect); don't broadcast a palette
-			// for a dead session.
-			if (!this.sessions.has(sessionId)) return
+			// The session may have been torn down between the response and
+			// the deferred send (e.g. instant disconnect); don't broadcast a
+			// palette for a dead session.
 			const record = this.sessions.get(sessionId)
-			const skillCommands = record ? buildSkillAvailableCommands(Array.from(record.skillCommands.values())) : []
+			if (!record) return
+			const skillCommands = buildSkillAvailableCommands(Array.from(record.skillCommands.values()))
 			this.send({
 				sessionId,
 				update: {
