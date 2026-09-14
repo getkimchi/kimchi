@@ -70,11 +70,16 @@ whole conversation.)
 - Peer registry lives at `<agentDir>/peers/` (`<sessionId>.json` records, pruned by pid
   liveness on read; `names.json` persists `/agent-name`). The agent dir is inferred from
   the live session-file path so all sessions converge on one registry.
+- **Single source of truth**: the extension ships as the pinned npm dependency
+  `pi-agent-colab` (upstream `getkimchi/pi-agent-colab`, `github:…#v0.1.0`). At startup —
+  before extension discovery — `src/integrations/agent-colab.ts` mirrors its TypeScript
+  files into `<agentDir>/extensions/agent-colab` and stamps the installed version (the
+  same write-into-extensions-dir pattern as the herdr bridge; pi's loader aliases bare
+  imports like `typebox`/`pi-tui` to its bundled copies, so the mirrored files need no
+  node_modules). Version-stamp gate: same version → no-op.
 - New/late/reloaded peers need no registration step: the registry is read fresh on every
   `list_peers` and `/colab`. Linked workers survive peer restarts — links re-attach by
   persisted name at the next agent turn.
-- A standalone pi-package build of this extension lives at
-  `getkimchi/pi-agent-colab` for vanilla-pi users.
 
 ## Tests
 

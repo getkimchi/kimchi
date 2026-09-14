@@ -43,7 +43,6 @@ import {
 } from "./config.js"
 import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
-import agentColabExtension from "./extensions/agent-colab/index.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
@@ -146,6 +145,7 @@ import {
 	createInfrastructureErrorTracker,
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
+import { ensureAgentColabExtension } from "./integrations/agent-colab.js"
 import {
 	injectAutoModel,
 	injectExperimentalProvider,
@@ -355,6 +355,10 @@ try {
 		if (!agentDir) {
 			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 		}
+		// Sync the pi-agent-colab extension (pinned dependency, upstream
+		// getkimchi/pi-agent-colab) into pi's discovered extensions dir BEFORE
+		// extension discovery runs — same version stamp → no-op. Best-effort.
+		ensureAgentColabExtension(agentDir)
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
 		let currentApiKey = apiKey
@@ -594,10 +598,6 @@ try {
 			statsExtension,
 			budgetCommandExtension,
 			branchCommandExtension,
-			// Live session-to-session collaboration: /colab, /agent-name, and the
-			// list/link/ask/message_peer tools. Binds a loopback A2A inbox per TUI
-			// session (bearer-token gated); TUI-only, disable with AGENT_COLAB=off.
-			agentColabExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,
