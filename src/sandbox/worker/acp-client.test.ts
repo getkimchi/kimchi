@@ -1,6 +1,12 @@
-import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
+import { PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { type AcpSessionCallbacks, AcpSessionClient } from "./acp-client.js"
+import {
+	type AcpSessionCallbacks,
+	AcpSessionClient,
+	extractFinalAssistantText,
+	RemoteConnectionError,
+	STEERING_UNSUPPORTED_MESSAGE,
+} from "./acp-client.js"
 
 // ---------------------------------------------------------------------------
 // Mock WebSocket — mirrors the pattern from websocket-transport.test.ts
@@ -37,6 +43,9 @@ function openSocket(socket: MockSocket): void {
 
 const CONNECTING = 0
 const OPEN = 1
+
+/** Whether MockWebSocket.ping() auto-responds with pong. Set false to simulate a dead transport. */
+let respondToPing = true
 
 class MockWebSocket {
 	static CONNECTING = CONNECTING
@@ -92,8 +101,17 @@ class MockWebSocket {
 		}
 	}
 
+	ping(): void {
+		// Simulate a real WS: auto-respond with pong so the keepalive
+		// doesn't falsely detect a broken connection in tests.
+		if (!respondToPing) return
+		fireHandlers(this.socket, "pong")
+	}
+
 	close(): void {
+		this.socket.readyState = 3 // CLOSED
 		this.socket.close()
+		fireHandlers(this.socket, "close")
 	}
 
 	set binaryType(v: string) {
@@ -181,6 +199,7 @@ function makeCallbacks(): { callbacks: AcpSessionCallbacks; calls: ReturnType<ty
 		onTextDelta: vi.fn(),
 		onToolActivity: vi.fn(),
 		onTurnEnd: vi.fn(),
+		onContextUsage: vi.fn(),
 		onAssistantUsage: vi.fn(),
 	}
 	return { callbacks, calls }
@@ -228,17 +247,48 @@ async function initClient(client: AcpSessionClient): Promise<{ socket: MockSocke
 	return { socket }
 }
 
+/** initialize() through the session/load path (options.sessionId set). */
+async function initClientWithLoad(client: AcpSessionClient): Promise<{ socket: MockSocket }> {
+	const initPromise = client.initialize()
+	await vi.waitFor(() => expect(mockSockets).toHaveLength(1))
+	const socket = currentSocket()
+	openSocket(socket)
+
+	await vi.waitFor(() => {
+		expect(getSentMessages(socket).some((m) => m.method === "initialize")).toBe(true)
+	})
+	const initReq = findRequest(getSentMessages(socket), "initialize")
+	serverSendMessage(socket, rpcResponse(initReq.id, { protocolVersion: PROTOCOL_VERSION }))
+
+	await vi.waitFor(() => {
+		expect(getSentMessages(socket).some((m) => m.method === "session/load")).toBe(true)
+	})
+	const loadReq = findRequest(getSentMessages(socket), "session/load")
+	serverSendMessage(socket, rpcResponse(loadReq.id, {}))
+
+	await vi.waitFor(() => {
+		expect(getSentMessages(socket).some((m) => m.method === "session/set_config_option")).toBe(true)
+	})
+	const configReq = findRequest(getSentMessages(socket), "session/set_config_option")
+	serverSendMessage(socket, rpcResponse(configReq.id, {}))
+
+	await initPromise
+	return { socket }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
 	mockSockets = []
+	respondToPing = true
 })
 
 afterEach(() => {
 	vi.useRealTimers()
 	mockSockets = []
+	respondToPing = true
 })
 
 describe("AcpSessionClient", () => {
@@ -275,6 +325,201 @@ describe("AcpSessionClient", () => {
 			const initReq = sent.find((m) => m.method === "initialize")
 			expect(initReq).toBeDefined()
 			expect((initReq?.params as Record<string, unknown>)?.protocolVersion).toBe(1)
+
+			client.close()
+		})
+
+		it("resumes an existing session via session/load when options.sessionId is set", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				cwd: "/repo",
+				sessionId: "existing-acp-id",
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const { socket } = await initClientWithLoad(client)
+
+			const sent = getSentMessages(socket)
+			// session/new must NOT be sent — we attach to the existing session.
+			expect(sent.some((m) => m.method === "session/new")).toBe(false)
+			const loadReq = findRequest(sent, "session/load")
+			expect(loadReq.params).toMatchObject({ sessionId: "existing-acp-id", cwd: "/repo", mcpServers: [] })
+			// Opt-in flag lets the remote attach mid-turn (client takeover).
+			expect((loadReq.params as { _meta?: unknown })._meta).toEqual({ "kimchi/reattachMidTurn": true })
+			expect(client.sessionId).toBe("existing-acp-id")
+
+			client.close()
+		})
+
+		it("captures the load replay in loadReplay (live updates excluded)", async () => {
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				sessionId: "existing-acp-id",
+				captureLoadReplay: true,
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const initPromise = client.initialize()
+			await vi.waitFor(() => expect(mockSockets).toHaveLength(1))
+			const socket = currentSocket()
+			openSocket(socket)
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "initialize")).toBe(true)
+			})
+			serverSendMessage(
+				socket,
+				rpcResponse(findRequest(getSentMessages(socket), "initialize").id, {
+					protocolVersion: PROTOCOL_VERSION,
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/load")).toBe(true)
+			})
+			const loadReq = findRequest(getSentMessages(socket), "session/load")
+
+			// Historical updates streamed BEFORE the load response are the replay.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "existing-acp-id",
+					update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "history" } },
+				}),
+			)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "existing-acp-id",
+					update: { sessionUpdate: "tool_call", toolCallId: "kt.bash.1", status: "completed", title: "run" },
+				}),
+			)
+			serverSendMessage(socket, rpcResponse(loadReq.id, {}))
+
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/set_config_option")).toBe(true)
+			})
+			const configReq = findRequest(getSentMessages(socket), "session/set_config_option")
+			serverSendMessage(socket, rpcResponse(configReq.id, {}))
+
+			await initPromise
+
+			// A live update AFTER the load is not part of the captured replay.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "existing-acp-id",
+					update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "live" } },
+				}),
+			)
+
+			expect(client.loadReplay).toHaveLength(2)
+			expect(client.loadReplay.map((n) => n.update.sessionUpdate)).toEqual(["agent_message_chunk", "tool_call"])
+			client.close()
+		})
+
+		it("delivers foreign-id responses to onForeignResponse and consumes them", async () => {
+			// After a mid-turn takeover, the ORIGINAL connection's prompt response
+			// arrives with an id this connection never sent — the turn-end signal.
+			// It must be delivered to the callback AND consumed (the SDK would
+			// otherwise log "Got response to unknown request" for it).
+			const onForeignResponse = vi.fn()
+			const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				onForeignResponse,
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const { socket } = await initClient(client)
+
+			// A response whose id matches no request sent on this connection.
+			serverSendMessage(socket, rpcResponse(999, { stopReason: "end_turn" }))
+
+			await vi.waitFor(() => expect(onForeignResponse).toHaveBeenCalledTimes(1))
+			const frame = onForeignResponse.mock.calls[0]?.[0] as { id: number }
+			expect(frame.id).toBe(999)
+			// Known-id responses (the initialize/newSession handshake above)
+			// never fired it — exactly one callback for the foreign frame.
+			expect(onForeignResponse).toHaveBeenCalledTimes(1)
+			// Consumed: the SDK never sees the foreign frame, so no error log.
+			await new Promise((r) => setTimeout(r, 20))
+			expect(errSpy).not.toHaveBeenCalled()
+			errSpy.mockRestore()
+			client.close()
+		})
+
+		it("suppresses replayed history during session/load, then dispatches live updates", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				sessionId: "existing-acp-id",
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const initPromise = client.initialize()
+			await vi.waitFor(() => expect(mockSockets).toHaveLength(1))
+			const socket = currentSocket()
+			openSocket(socket)
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "initialize")).toBe(true)
+			})
+			serverSendMessage(
+				socket,
+				rpcResponse(findRequest(getSentMessages(socket), "initialize").id, {
+					protocolVersion: PROTOCOL_VERSION,
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/load")).toBe(true)
+			})
+			const loadReq = findRequest(getSentMessages(socket), "session/load")
+
+			// Replay: the server streams historical updates BEFORE responding to load.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "existing-acp-id",
+					update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "duplicated history" } },
+				}),
+			)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "existing-acp-id",
+					update: { sessionUpdate: "tool_call", toolCallId: "tc-9", title: "old tool", status: "in_progress" },
+				}),
+			)
+			serverSendMessage(socket, rpcResponse(loadReq.id, {}))
+
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/set_config_option")).toBe(true)
+			})
+			serverSendMessage(socket, rpcResponse(findRequest(getSentMessages(socket), "session/set_config_option").id, {}))
+			await initPromise
+
+			// Replayed history must NOT reach user-facing callbacks — the local
+			// transcript already received these events before the disconnect.
+			expect(callbacks.onTextDelta).not.toHaveBeenCalled()
+			expect(callbacks.onToolActivity).not.toHaveBeenCalled()
+
+			// Replay capture is opt-in: without captureLoadReplay nothing is kept.
+			expect(client.loadReplay).toHaveLength(0)
+
+			// After the load resolves, fresh updates dispatch normally.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "existing-acp-id",
+					update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "new text" } },
+				}),
+			)
+			await vi.waitFor(() => expect(callbacks.onTextDelta).toHaveBeenCalled())
 
 			client.close()
 		})
@@ -365,6 +610,36 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
+		it("does not time out a long-running prompt (no wall-clock cap)", async () => {
+			vi.useFakeTimers()
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("long task")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Regression: prompt() previously rejected with RemoteConnectionError
+			// after 10 minutes ("prompt timed out after 600000ms"), killing healthy
+			// long-running remote turns. There is now no wall-clock cap — dead
+			// connections are detected by the ping keepalive instead.
+			vi.advanceTimersByTime(30 * 60_000)
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			const result = await promptPromise
+			expect(result.stopReason).toBe("end_turn")
+
+			client.close()
+		})
+
 		it("calls onTurnEnd with incremented turn count when prompt resolves", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
@@ -444,6 +719,116 @@ describe("AcpSessionClient", () => {
 				output: 200,
 				cacheRead: 50,
 				cacheWrite: 10,
+			})
+
+			client.close()
+		})
+
+		it("rejects a pending prompt when the transport stops answering pings", async () => {
+			vi.useFakeTimers()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+
+			// Half-open connection: WS stays open, messages stop flowing, pings go
+			// unanswered. The keepalive (15s interval, 30s tolerance) must reject
+			// the pending prompt instead of hanging forever.
+			respondToPing = false
+			vi.advanceTimersByTime(31_000)
+
+			await expect(promptPromise).rejects.toThrow(RemoteConnectionError)
+			await expect(promptPromise).rejects.toThrow("ping timeout")
+
+			client.close()
+		})
+
+		it("reports lifetime usage deltas from usage_update _meta and only the remainder from PromptResponse", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Mid-run usage_update with cumulative lifetime totals — first
+			// snapshot reports everything seen so far as one delta.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					_meta: { "kimchi/lifetimeUsage": { input: 100, output: 50, cacheRead: 10, cacheWrite: 5 } },
+					update: { sessionUpdate: "usage_update", used: 5000, size: 128000 },
+				}),
+			)
+			// Second snapshot — only the growth since the last one is reported.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					_meta: { "kimchi/lifetimeUsage": { input: 150, output: 80, cacheRead: 10, cacheWrite: 5 } },
+					update: { sessionUpdate: "usage_update", used: 6000, size: 128000 },
+				}),
+			)
+			await new Promise((resolve) => setImmediate(resolve))
+
+			expect(callbacks.onContextUsage).toHaveBeenCalledTimes(2)
+			expect(callbacks.onContextUsage).toHaveBeenNthCalledWith(1, 5000, 128000)
+			expect(callbacks.onContextUsage).toHaveBeenNthCalledWith(2, 6000, 128000)
+			expect(callbacks.onAssistantUsage).toHaveBeenCalledTimes(2)
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(1, {
+				input: 100,
+				output: 50,
+				cacheRead: 10,
+				cacheWrite: 5,
+			})
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(2, {
+				input: 50,
+				output: 30,
+				cacheRead: 0,
+				cacheWrite: 0,
+			})
+
+			// Prompt resolves with the final totals — only the remainder (output
+			// grew 80 → 90) is emitted, so consumers never double-count the turn.
+			serverSendMessage(
+				socket,
+				rpcResponse(promptReq.id, {
+					stopReason: "end_turn",
+					usage: {
+						inputTokens: 150,
+						outputTokens: 90,
+						cachedReadTokens: 10,
+						cachedWriteTokens: 5,
+						totalTokens: 335,
+					},
+				}),
+			)
+			const result = await p
+
+			// The returned usage is still the full turn's totals.
+			expect(result.usage).toEqual({ input: 150, output: 90, cacheRead: 10, cacheWrite: 5 })
+			expect(callbacks.onAssistantUsage).toHaveBeenCalledTimes(3)
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(3, {
+				input: 0,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
 			})
 
 			client.close()
@@ -678,6 +1063,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					toolName: "Reading file.ts",
+					title: "Reading file.ts",
 					toolCallId: "tc-1",
 					status: "in_progress",
 				})
@@ -720,6 +1106,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					toolName: "Reading file.ts",
+					title: "Reading file.ts",
 					toolCallId: "tc-1",
 					status: "completed",
 				})
@@ -762,6 +1149,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					toolName: "Running tests",
+					title: "Running tests",
 					toolCallId: "tc-1",
 					status: "failed",
 				})
@@ -805,6 +1193,7 @@ describe("AcpSessionClient", () => {
 					toolName: "tc-1",
 					toolCallId: "tc-1",
 					status: "in_progress",
+					title: undefined,
 				})
 			})
 
@@ -845,6 +1234,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					toolName: "Updated title",
+					title: "Updated title",
 					toolCallId: "tc-1",
 					status: "completed",
 				})
@@ -887,6 +1277,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					toolName: "pnpm run typecheck",
+					title: "pnpm run typecheck",
 					toolCallId: "tc-1",
 					status: "in_progress",
 				})
@@ -907,6 +1298,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					toolName: "pnpm run typecheck",
+					title: "pnpm run typecheck",
 					toolCallId: "tc-1",
 					status: "completed",
 				})
@@ -918,7 +1310,244 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
-		it("ignores agent_thought_chunk, usage_update, plan, and other updates", async () => {
+		it("resolves title-less completed update from the LATEST update title, not the pending one", async () => {
+			// Real wire sequence from the ACP server (src/modes/acp/server.ts):
+			//   1. tool_call(pending, title from PARTIAL streaming args)
+			//   2. tool_call_update(in_progress, title from full args)
+			//   3. tool_call_update(completed, NO title)
+			// The completed dispatch must carry the full (latest) title — the
+			// stale pending title must not shadow it.
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "ec", // partial title from streaming args
+						status: "pending",
+					},
+				}),
+			)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						title: "echo hello && cat file.ts", // full title
+						status: "in_progress",
+					},
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "echo hello && cat file.ts",
+					title: "echo hello && cat file.ts",
+					toolCallId: "tc-1",
+					status: "in_progress",
+				})
+			})
+
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						status: "completed",
+					},
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "echo hello && cat file.ts",
+					title: "echo hello && cat file.ts",
+					toolCallId: "tc-1",
+					status: "completed",
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+			client.close()
+		})
+
+		it("passes rawInput (tool args) through onToolActivity", async () => {
+			// Real wire path: in_progress arrives as tool_call_update (after a
+			// pending tool_call) — rawInput must flow through THAT case too.
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// 1. pending announcement (args still streaming)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "Run bash",
+						status: "pending",
+					},
+				}),
+			)
+			// 2. execution starts — full args arrive on the UPDATE
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						title: "cd some dir && cat file.txt",
+						status: "in_progress",
+						rawInput: { command: "cd some dir && cat file.txt" },
+					},
+				}),
+			)
+
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "cd some dir && cat file.txt",
+					title: "cd some dir && cat file.txt",
+					toolCallId: "tc-1",
+					status: "in_progress",
+					rawInput: { command: "cd some dir && cat file.txt" },
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+			client.close()
+		})
+
+		it("passes rawOutput through onToolActivity on completion", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "Run bash",
+						status: "in_progress",
+					},
+				}),
+			)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						status: "completed",
+						rawOutput: { content: [{ type: "text", text: "total 42" }] },
+					},
+				}),
+			)
+
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "Run bash",
+					title: "Run bash",
+					toolCallId: "tc-1",
+					status: "completed",
+					rawOutput: { content: [{ type: "text", text: "total 42" }] },
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+			client.close()
+		})
+
+		it("omits rawInput from the activity payload when the notification has none", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "Run bash",
+						status: "in_progress",
+					},
+				}),
+			)
+
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalled()
+			})
+			const activity = (callbacks.onToolActivity as ReturnType<typeof vi.fn>).mock.calls[0][0]
+			expect("rawInput" in activity).toBe(false)
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+			client.close()
+		})
+
+		it("ignores agent_thought_chunk and plan updates; usage_update only reports context usage", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
 				sessionName: "sess-1",
@@ -970,9 +1599,14 @@ describe("AcpSessionClient", () => {
 			// Yield so the async stream pipeline can process the notifications
 			await new Promise((resolve) => setImmediate(resolve))
 
-			// None of these should trigger any callback
+			// Thought/plan chunks trigger no callback at all.
 			expect(callbacks.onTextDelta).not.toHaveBeenCalled()
 			expect(callbacks.onToolActivity).not.toHaveBeenCalled()
+			// usage_update without _meta lifetime totals (old server) surfaces
+			// only the context-window state — no usage deltas.
+			expect(callbacks.onContextUsage).toHaveBeenCalledTimes(1)
+			expect(callbacks.onContextUsage).toHaveBeenCalledWith(5000, 128000)
+			expect(callbacks.onAssistantUsage).not.toHaveBeenCalled()
 
 			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
 			await p
@@ -1295,5 +1929,361 @@ describe("AcpSessionClient", () => {
 
 			client.close()
 		})
+	})
+
+	describe("typed connectivity errors", () => {
+		it("throws RemoteConnectionError when WS errors mid-initialize", async () => {
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const initPromise = client.initialize()
+			await vi.waitFor(() => expect(mockSockets).toHaveLength(1))
+			const socket = currentSocket()
+			openSocket(socket)
+
+			fireHandlers(socket, "error", new Error("connection refused"))
+
+			await expect(initPromise).rejects.toThrow("connection refused")
+			// Verify it's specifically a RemoteConnectionError, not a generic Error
+			try {
+				await initPromise
+			} catch (err) {
+				expect(err).toBeInstanceOf(RemoteConnectionError)
+			}
+
+			client.close()
+		})
+
+		it("throws RemoteConnectionError when WS closes mid-prompt", async () => {
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("hello")
+
+			// Wait for the prompt request to be sent
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+
+			// Simulate WS close — the readable stream errors, the ACP connection's
+			// pending prompt() promise should reject with RemoteConnectionError.
+			socket.readyState = 3 // CLOSED
+			fireHandlers(socket, "close")
+
+			await expect(promptPromise).rejects.toThrow()
+			try {
+				await promptPromise
+			} catch (err) {
+				expect(err).toBeInstanceOf(RemoteConnectionError)
+			}
+
+			client.close()
+		})
+
+		it("does NOT throw RemoteConnectionError for ACP error stopReason", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+
+			// Respond with an error stopReason — this is a legitimate agent response,
+			// not a transport error
+			const req = findRequest(getSentMessages(socket), "session/prompt")
+			serverSendMessage(socket, rpcResponse(req.id, { stopReason: "error" }))
+
+			const result = await p
+			expect(result.stopReason).toBe("error")
+			// The prompt resolved normally — no RemoteConnectionError thrown
+
+			client.close()
+		})
+
+		it("throws plain Error 'Aborted' (not RemoteConnectionError) on abort signal", async () => {
+			const controller = new AbortController()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				signal: controller.signal,
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const initPromise = client.initialize()
+			await vi.waitFor(() => expect(mockSockets).toHaveLength(1))
+			openSocket(currentSocket())
+
+			controller.abort()
+
+			await expect(initPromise).rejects.toThrow("Aborted")
+			try {
+				await initPromise
+			} catch (err) {
+				expect(err).not.toBeInstanceOf(RemoteConnectionError)
+				expect(err).toBeInstanceOf(Error)
+			}
+
+			client.close()
+		})
+
+		it("throws RemoteConnectionError on timeout", async () => {
+			vi.useFakeTimers()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				WebSocketImpl: MockWebSocket,
+			})
+
+			const initPromise = client.initialize()
+			await vi.waitFor(() => expect(mockSockets).toHaveLength(1))
+			const socket = currentSocket()
+			openSocket(socket)
+
+			// Wait for initialize request to be sent, then advance past the 30s timeout
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "initialize")).toBe(true)
+			})
+
+			vi.advanceTimersByTime(31_000)
+
+			try {
+				await initPromise
+				expect.unreachable("initPromise should have rejected")
+			} catch (err) {
+				expect(err).toBeInstanceOf(RemoteConnectionError)
+				expect(err instanceof Error && err.message).toContain("timed out")
+			}
+
+			client.close()
+		})
+	})
+})
+
+describe("AcpSessionClient steer", () => {
+	const STEER_METHOD = "_kimchi.dev/steering"
+
+	it("sends the steering ext request with sessionId + prompt and returns injected", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("actually, do it differently")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		expect(steerReq.params).toEqual({ sessionId: "session-abc", prompt: "actually, do it differently" })
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "injected" }))
+
+		await expect(steerPromise).resolves.toBe("injected")
+		client.close()
+	})
+
+	it("forwards image attachments as ACP image blocks", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const images = [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" }]
+		const steerPromise = client.steer("this is the screen I meant", images)
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		expect(steerReq.params).toEqual({
+			sessionId: "session-abc",
+			prompt: "this is the screen I meant",
+			attachments: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+		})
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "injected" }))
+		await expect(steerPromise).resolves.toBe("injected")
+		client.close()
+	})
+
+	it("passes promptRequired through when no remote turn is active", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("adjust course")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "promptRequired" }))
+
+		await expect(steerPromise).resolves.toBe("promptRequired")
+		client.close()
+	})
+
+	it("maps a method-not-found response to the unsupported error", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		// initClient's initialize response carries no _meta — the probe path.
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, {
+			jsonrpc: "2.0",
+			id: steerReq.id,
+			error: { code: -32601, message: "Method not found" },
+		})
+
+		await expect(steerPromise).rejects.toThrow(STEERING_UNSUPPORTED_MESSAGE)
+		client.close()
+	})
+
+	it("propagates non-method-not-found RPC errors unchanged (invalid params, etc.)", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, {
+			jsonrpc: "2.0",
+			id: steerReq.id,
+			error: { code: -32602, message: "invalid params" },
+		})
+
+		await expect(steerPromise).rejects.not.toThrow(STEERING_UNSUPPORTED_MESSAGE)
+		await expect(steerPromise).rejects.toThrow()
+		client.close()
+	})
+
+	it("throws on a malformed/empty steering response instead of reporting false success", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, {}))
+
+		await expect(steerPromise).rejects.toThrow("unexpected steering status")
+		client.close()
+	})
+
+	it("throws when the client is not initialized", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		await expect(client.steer("go")).rejects.toThrow("not initialized")
+	})
+
+	it("does not clobber a pending prompt's disconnect/abort handle (regression)", async () => {
+		// Steer is only meaningful mid-turn — while prompt() holds the
+		// single-slot pending-reject used by forceDisconnect and abort. If the
+		// steer registered there, its settlement would leave the prompt with no
+		// reject handle, silently disabling recovery for the rest of the turn.
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		// A turn runs (prompt request pending)...
+		const promptPromise = client.prompt("work")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+		})
+
+		// ...a steer arrives and resolves mid-turn...
+		const steerPromise = client.steer("adjust course")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "injected" }))
+		await expect(steerPromise).resolves.toBe("injected")
+
+		// ...then the transport dies. The still-pending prompt MUST reject with
+		// RemoteConnectionError so the recovery state machine can take over.
+		const promptSettled = expect(promptPromise).rejects.toBeInstanceOf(RemoteConnectionError)
+		client.forceDisconnect("worker reports client is disconnected")
+		await promptSettled
+		client.close()
+	})
+})
+
+describe("extractFinalAssistantText", () => {
+	const chunk = (text: string): SessionNotification =>
+		({
+			update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+		}) as unknown as SessionNotification
+	const thought = (text: string): SessionNotification =>
+		({
+			update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text } },
+		}) as unknown as SessionNotification
+	const toolCall = (): SessionNotification =>
+		({
+			update: { sessionUpdate: "tool_call", toolCallId: "kt.bash.1", status: "completed" },
+		}) as unknown as SessionNotification
+	const userChunk = (text: string): SessionNotification =>
+		({
+			update: { sessionUpdate: "user_message_chunk", content: { type: "text", text } },
+		}) as unknown as SessionNotification
+
+	it("returns the text after the last tool call", () => {
+		expect(extractFinalAssistantText([chunk("early text"), toolCall(), chunk("The "), chunk("answer")])).toBe(
+			"The answer",
+		)
+	})
+
+	it("resets on user messages", () => {
+		expect(extractFinalAssistantText([chunk("stale"), userChunk("again"), chunk("fresh")])).toBe("fresh")
+	})
+
+	it("ignores interleaved thought chunks without ending the message", () => {
+		expect(extractFinalAssistantText([toolCall(), chunk("a"), thought("hmm"), chunk("b")])).toBe("ab")
+	})
+
+	it("returns empty string when there is no assistant text", () => {
+		expect(extractFinalAssistantText([userChunk("go"), toolCall()])).toBe("")
 	})
 })

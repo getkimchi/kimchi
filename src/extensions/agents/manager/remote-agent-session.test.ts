@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { RemoteAgentSession } from "./remote-agent-session.js"
+import { extractToolOutputText, RemoteAgentSession, summarizeToolArgs } from "./remote-agent-session.js"
 
 function makeMockAcpClient() {
 	return {
@@ -7,6 +7,7 @@ function makeMockAcpClient() {
 		cancel: vi.fn().mockResolvedValue(undefined),
 		close: vi.fn(),
 		initialize: vi.fn().mockResolvedValue(undefined),
+		steer: vi.fn().mockResolvedValue("injected"),
 		sessionId: "test-session-id",
 	}
 }
@@ -17,6 +18,7 @@ const META = {
 	wsUrl: "wss://worker.example.com",
 	host: "worker.example.com",
 	cwd: "/home/sandbox/acp-test1234",
+	apiKey: "test-api-key",
 }
 
 describe("RemoteAgentSession", () => {
@@ -35,19 +37,89 @@ describe("RemoteAgentSession", () => {
 	})
 
 	describe("steer", () => {
-		it("throws 'not supported' error", async () => {
+		it("forwards the steer to the bound ACP client and records it in the transcript", async () => {
 			const session = new RemoteAgentSession()
 			const client = makeMockAcpClient()
 			session.bindClient(client as never, META)
-			await expect(session.steer("do something")).rejects.toThrow("Steering is not supported for remote agents")
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			await session.steer("do something")
+
+			expect(client.steer).toHaveBeenCalledTimes(1)
+			expect(client.steer).toHaveBeenCalledWith("do something", undefined)
+			expect(client.prompt).not.toHaveBeenCalled()
+			const last = session.messages[session.messages.length - 1]
+			expect(last).toEqual({ role: "user", content: "do something" })
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "message_start" })
 		})
 
-		it("does not call acpClient.prompt", async () => {
+		it("records steered images in the transcript, not just the text", async () => {
 			const session = new RemoteAgentSession()
 			const client = makeMockAcpClient()
 			session.bindClient(client as never, META)
-			await expect(session.steer("msg")).rejects.toThrow()
-			expect(client.prompt).not.toHaveBeenCalled()
+			const images = [{ type: "image", data: "aGk=", mimeType: "image/png" }] as never
+
+			await session.steer("look at this", images)
+
+			expect(client.steer).toHaveBeenCalledWith("look at this", images)
+			const last = session.messages[session.messages.length - 1]
+			expect(last).toEqual({
+				role: "user",
+				content: [
+					{ type: "text", text: "look at this" },
+					{ type: "image", data: "aGk=", mimeType: "image/png" },
+				],
+			})
+		})
+
+		it("uses the client most recently bound by bindClient (post-reattach)", async () => {
+			const session = new RemoteAgentSession()
+			const stale = makeMockAcpClient()
+			session.bindClient(stale as never, META)
+			const reattached = makeMockAcpClient()
+			session.bindClient(reattached as never, META)
+
+			await session.steer("msg")
+
+			expect(reattached.steer).toHaveBeenCalledTimes(1)
+			expect(stale.steer).not.toHaveBeenCalled()
+		})
+
+		it("throws 'temporarily unreachable' while reconnecting, without touching the client", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			session.bindClient(client as never, META)
+			session.setReconnecting(true)
+
+			await expect(session.steer("msg")).rejects.toThrow("agent temporarily unreachable, retrying connection")
+			expect(client.steer).not.toHaveBeenCalled()
+		})
+
+		it("throws when no client is bound yet", async () => {
+			const session = new RemoteAgentSession()
+			await expect(session.steer("msg")).rejects.toThrow("still initializing")
+		})
+
+		it("rejects with an honest error when the remote turn already finished (promptRequired)", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			client.steer.mockResolvedValue("promptRequired")
+			session.bindClient(client as never, META)
+
+			await expect(session.steer("msg")).rejects.toThrow("remote turn already finished")
+			// Not recorded in the transcript — the steer never landed.
+			expect(session.messages.some((m) => m.role === "user")).toBe(false)
+		})
+
+		it("propagates client-level errors (unsupported remote, transport failure)", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			client.steer.mockRejectedValue(new Error("the remote agent does not support steering"))
+			session.bindClient(client as never, META)
+
+			await expect(session.steer("msg")).rejects.toThrow("does not support steering")
 		})
 	})
 
@@ -93,6 +165,19 @@ describe("RemoteAgentSession", () => {
 			stats1.tokens.input = 999
 			const stats2 = session.getSessionStats()
 			expect(stats2.tokens.input).toBe(100)
+		})
+	})
+
+	describe("setContextUsage", () => {
+		it("getSessionStats reports a null percent before any usage_update", () => {
+			const session = new RemoteAgentSession()
+			expect(session.getSessionStats().contextUsage?.percent).toBeNull()
+		})
+
+		it("getSessionStats computes the percent from the last usage_update", () => {
+			const session = new RemoteAgentSession()
+			session.setContextUsage(50_000, 200_000)
+			expect(session.getSessionStats().contextUsage?.percent).toBe(25)
 		})
 	})
 
@@ -249,6 +334,34 @@ describe("RemoteAgentSession", () => {
 			expect(listener.mock.calls[0][0]).toMatchObject({ type: "tool_execution_start", toolName: "bash" })
 		})
 
+		it("stores tool arguments (from ACP rawInput) in the transcript and emitted event", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			session.recordToolCallStart("bash", "kt.bash.1", { command: "cd some dir && cat file.txt" })
+
+			const content = session.messages[0].content as Array<{ type: string; arguments?: unknown }>
+			expect(content[0]).toMatchObject({
+				type: "toolCall",
+				name: "bash command=cd some dir && cat file.txt",
+				toolName: "bash",
+				arguments: { command: "cd some dir && cat file.txt" },
+			})
+			expect(listener.mock.calls[0][0]).toMatchObject({
+				type: "tool_execution_start",
+				toolName: "bash",
+				args: { command: "cd some dir && cat file.txt" },
+			})
+		})
+
+		it("defaults arguments to {} when no args are provided", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("ls")
+			const content = session.messages[0].content as Array<{ type: string; arguments?: unknown }>
+			expect(content[0].arguments).toEqual({})
+		})
+
 		describe("deduplication", () => {
 			it("skips duplicate in_progress for the same tool name", () => {
 				const session = new RemoteAgentSession()
@@ -330,6 +443,118 @@ describe("RemoteAgentSession", () => {
 			expect(listener).toHaveBeenCalledTimes(1)
 			expect(listener.mock.calls[0][0]).toMatchObject({ type: "tool_execution_end", toolName: "bash" })
 		})
+
+		it("stores the real tool output text when provided", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash", "kt.bash.1")
+			session.recordToolCallEnd("bash", "kt.bash.1", false, "total 42\n-rw-r--r-- file.ts")
+
+			const msg = session.messages[1]
+			expect(msg).toMatchObject({ role: "toolResult", isError: false })
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe("total 42\n-rw-r--r-- file.ts")
+		})
+
+		it("falls back to the placeholder when output is blank or whitespace", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash", undefined, false, "   ")
+			const msg = session.messages[1]
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe("(completed)")
+		})
+
+		it("stores the real error text (not the placeholder) when a tool fails with output", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash", "kt.bash.1")
+			session.recordToolCallEnd("bash", "kt.bash.1", true, "ls: /missing: No such file or directory")
+
+			const msg = session.messages[1]
+			expect(msg.isError).toBe(true)
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe(
+				"ls: /missing: No such file or directory",
+			)
+		})
+
+		it("caps stored output at 2000 chars with a truncation marker", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash", undefined, false, "x".repeat(5000))
+			const text = (session.messages[1].content as Array<{ type: string; text: string }>)[0].text
+			expect(text).toBe(`${"x".repeat(2000)}… (truncated)`)
+		})
+
+		it("includes the real output in tool_execution_end events", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+			session.recordToolCallEnd("bash", undefined, false, "hello world")
+			expect(listener.mock.calls[0][0]).toMatchObject({ result: "hello world" })
+		})
+	})
+
+	describe("summarizeToolArgs", () => {
+		it("renders object args as compact key=value pairs", () => {
+			expect(summarizeToolArgs({ command: "ls -la", timeout: 60 })).toBe("command=ls -la timeout=60")
+		})
+
+		it("collapses whitespace in values", () => {
+			expect(summarizeToolArgs({ command: "cd app &&\npnpm run tests" })).toBe("command=cd app && pnpm run tests")
+		})
+
+		it("ellipsizes long values", () => {
+			expect(summarizeToolArgs({ content: "x".repeat(100) })).toBe(`content=${"x".repeat(40)}…`)
+		})
+
+		it("returns empty string for null/undefined/empty args", () => {
+			expect(summarizeToolArgs(undefined)).toBe("")
+			expect(summarizeToolArgs(null)).toBe("")
+			expect(summarizeToolArgs({})).toBe("")
+		})
+
+		it("caps the total summary length", () => {
+			const summary = summarizeToolArgs({ a: "1".repeat(40), b: "2".repeat(40), c: "3".repeat(40), d: "4".repeat(40) })
+			expect(summary.length).toBeLessThanOrEqual(100)
+		})
+
+		it("passes through string args directly", () => {
+			expect(summarizeToolArgs("plain string args")).toBe("plain string args")
+		})
+	})
+
+	describe("recordToolCallEndFromActivity", () => {
+		it("maps a failed activity with output to a real-error toolResult", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash", "kt.bash.1")
+			session.recordToolCallEndFromActivity({
+				toolName: "bash",
+				toolCallId: "kt.bash.1",
+				status: "failed",
+				rawOutput: { content: [{ text: "ls: /missing: No such file or directory" }] },
+			})
+
+			const msg = session.messages[1]
+			expect(msg.isError).toBe(true)
+			expect((msg.content as Array<{ type: string; text: string }>)[0].text).toBe(
+				"ls: /missing: No such file or directory",
+			)
+		})
+
+		it("maps a completed activity without output to the placeholder", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallEndFromActivity({ toolName: "read", status: "completed" })
+			expect((session.messages[0].content as Array<{ type: string; text: string }>)[0].text).toBe("(completed)")
+		})
+	})
+
+	describe("extractToolOutputText", () => {
+		it("returns text joined from rawOutput content parts", () => {
+			expect(extractToolOutputText({ content: [{ text: "line 1" }, { text: "line 2" }] })).toBe("line 1line 2")
+		})
+
+		it("returns empty string when rawOutput is absent or blank", () => {
+			expect(extractToolOutputText(undefined)).toBe("")
+			expect(extractToolOutputText({ content: [{ text: "  " }] })).toBe("")
+			expect(extractToolOutputText({ content: [] })).toBe("")
+		})
 	})
 
 	describe("full conversation flow", () => {
@@ -358,6 +583,42 @@ describe("RemoteAgentSession", () => {
 			// listener called for every mutation except the initial user prompt
 			// (setUserPrompt emits message_start)
 			expect(listener).toHaveBeenCalledTimes(5)
+		})
+	})
+
+	describe("setReconnecting", () => {
+		it("emits activity_reset on reattach and clears stale tool tracking", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			session.setReconnecting(true)
+			expect(listener).not.toHaveBeenCalled()
+
+			session.setReconnecting(false)
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "activity_reset" })
+		})
+
+		it("keeps tool-call IDs unique across a reconnect", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash") // tc-1
+			session.recordToolCallEnd("bash")
+			session.recordToolCallStart("read") // tc-2
+
+			// Disconnect mid-tool, then reattach — the counter must NOT restart,
+			// or post-reattach ids collide with pre-disconnect toolCall parts.
+			session.setReconnecting(true)
+			session.setReconnecting(false)
+			session.recordToolCallStart("grep") // tc-3, not tc-1
+			session.recordToolCallEnd("grep")
+
+			const toolCalls = session.messages
+				.filter((m) => m.role === "assistant")
+				.flatMap((m) => (m.content as Array<{ type: string; id?: string }>).filter((p) => p.type === "toolCall"))
+			const ids = toolCalls.map((t) => t.id)
+			expect(ids).toEqual(["tc-1", "tc-2", "tc-3"])
+			expect(new Set(ids).size).toBe(3)
 		})
 	})
 

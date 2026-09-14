@@ -9,6 +9,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
+import { getTelemetryFermentV2Context, resetTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
@@ -24,6 +25,7 @@ export const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 export const METRICS_FLUSH_INTERVAL_MS = 30_000
 export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
+const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message"])
 
 // ---------------------------------------------------------------------------
 // Process-level ID + shared accumulators
@@ -53,6 +55,7 @@ function getOrCreateAccumulator(telemetryId: string): CumulativeState {
 export function _resetSharedAccumulators(): void {
 	if (telemetryId) sharedAccumulators.delete(telemetryId)
 	telemetryId = undefined
+	resetTelemetryFermentV2Context()
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +77,15 @@ export class TelemetryContext {
 	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
 	 */
 	turnIndex = 0
+	/**
+	 * W3C trace context of the most recent provider request, stored by the
+	 * before_provider_headers handler (generated per request, or parsed from an
+	 * externally supplied traceparent). Requested events (api_request, error)
+	 * stamp this so they join to the exact request trace. Provider requests
+	 * within one TelemetryContext are sequential (agent loop; in-process
+	 * subagents have their own context), so a single slot is sufficient.
+	 */
+	lastTraceContext: { traceId: string; spanId: string } | undefined
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
@@ -121,6 +133,7 @@ export class TelemetryContext {
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
+		this.lastTraceContext = undefined
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
@@ -138,6 +151,16 @@ export class TelemetryContext {
 		if (this.shuttingDown) return
 		this.inFlight.add(p)
 		p.finally(() => this.inFlight.delete(p))
+	}
+
+	/**
+	 * Trace-context attributes stamped on request-scoped events (api_request,
+	 * error) so they join to the exact provider request's trace. Empty when no
+	 * provider request has happened yet (or the traceparent was malformed).
+	 */
+	getTraceAttributes(): TelemetryAttributes {
+		if (!this.lastTraceContext) return {}
+		return { "request.trace_id": this.lastTraceContext.traceId, "request.span_id": this.lastTraceContext.spanId }
 	}
 
 	/**
@@ -172,6 +195,11 @@ export class TelemetryContext {
 
 	emit(eventName: string, attrs?: TelemetryAttributes, ctx?: ExtensionContext): void {
 		const ferment = getActiveFerment()
+		const fermentV2 = getTelemetryFermentV2Context()
+		const eventAttrs: TelemetryAttributes =
+			fermentV2 && attrs
+				? Object.fromEntries(Object.entries(attrs).filter(([key]) => !V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key)))
+				: { ...(attrs ?? {}) }
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
 		const parentAttr = this.getParentSessionAttribute()
 
@@ -181,7 +209,7 @@ export class TelemetryContext {
 				session_type,
 				previous_session_type: this.lastSessionType,
 				source,
-				ferment_id: ferment?.id ?? "",
+				...fermentTelemetryAttributes(ferment?.id, fermentV2),
 				"telemetry.cli_version": getVersion(),
 				...(parentAttr ?? {}),
 			})
@@ -190,11 +218,11 @@ export class TelemetryContext {
 		this.lastSessionType = session_type
 
 		const merged: TelemetryAttributes = {
-			...attrs,
+			...eventAttrs,
 			...this.osMetadata,
 			source,
 			session_type,
-			ferment_id: ferment?.id ?? "",
+			...fermentTelemetryAttributes(ferment?.id, fermentV2),
 			"user.account_uuid": this.userId ?? "",
 			...commonAttrs,
 			...(parentAttr ?? {}),
@@ -326,4 +354,20 @@ export class TelemetryContext {
 			])
 		}
 	}
+}
+
+function fermentTelemetryAttributes(
+	fermentId: string | undefined,
+	fermentV2: ReturnType<typeof getTelemetryFermentV2Context>,
+): TelemetryAttributes {
+	if (fermentV2) {
+		return {
+			ferment_id: fermentV2.id,
+			ferment_v2_id: fermentV2.id,
+			ferment_version: "v2",
+			ferment_revision: fermentV2.revision,
+			status: fermentV2.status,
+		}
+	}
+	return { ferment_id: fermentId ?? "" }
 }

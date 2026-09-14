@@ -19,19 +19,25 @@ export interface AgentDefinition {
 	 * are silently skipped; files that exist but fail to read or parse
 	 * emit a warning and the loop continues to the next path. Empty
 	 * array → no config to read.
+	 *
+	 * Invariant: entries must be home-level absolute paths — discovery has
+	 * no cwd parameter for configs, so a relative entry would silently
+	 * resolve against the ambient process working directory (and is dropped
+	 * with a warning under "home" scope). Use a `{ projectRelative }`
+	 * candidate on skillsDirs/commandsDirs for cwd-dependent locations.
 	 */
 	readonly configPaths: readonly string[]
 	/**
 	 * Skills directory candidates tried in order. The first existing
 	 * directory wins. Empty array → no skills concept for this agent.
 	 */
-	readonly skillsDirs: readonly string[]
+	readonly skillsDirs: readonly DirCandidate[]
 	/**
 	 * Commands directory candidates tried in order. The first existing
 	 * directory wins. Commands are .md files that can be migrated as
 	 * prompts. Empty array → no commands concept for this agent.
 	 */
-	readonly commandsDirs: readonly string[]
+	readonly commandsDirs: readonly DirCandidate[]
 	/**
 	 * Parse the raw config file contents. Defaults to JSON.parse if omitted.
 	 * OpenCode uses a JSONC parser; CC uses plain JSON.
@@ -60,11 +66,48 @@ export interface AgentDefinition {
 	readonly transformServer: (raw: unknown, name: string, meta?: unknown) => ServerEntry | undefined
 }
 
+/**
+ * A directory a source app may keep skills or commands in.
+ *
+ * - A plain string is a home-level absolute path. `homedir()` is stable for
+ *   the process lifetime, so freezing it at module load is safe.
+ * - A `{ projectRelative }` candidate is resolved against a working directory
+ *   per discovery call (`discoverAgent`'s `cwd` option, defaulting to
+ *   `process.cwd()` read at call time). Resolving per call matters for
+ *   long-lived processes: a harness spawned by a desktop app inherits the
+ *   app's working directory, and freezing it at module load bakes in a value
+ *   that is meaningless (and possibly permission-prompting) later.
+ */
+export type DirCandidate = string | { readonly projectRelative: string }
+
+/** One skill found under a source app's skills directory. */
+export interface DiscoveredSkill {
+	/** Invocation name (frontmatter `name`, falling back to the skill directory name). */
+	readonly name: string
+	/** Human-readable description from the skill's frontmatter. */
+	readonly description: string
+	/** Absolute path to the skill's SKILL.md. */
+	readonly path: string
+}
+
 export interface AgentDiscovery {
 	readonly id: string
 	readonly displayName: string
 	readonly mcpServers: Record<string, ServerEntry>
+	/**
+	 * Number of subdirectories in the winning skills directory, or -1 when the
+	 * directory exists but could not be read (e.g. EACCES) — distinct from 0
+	 * ("empty") so consumers can tell "nothing here" from "couldn't read what
+	 * is here".
+	 */
 	readonly skillCount: number
+	/**
+	 * Enumerated skills from the winning skills directory. Added alongside
+	 * `skillCount` (which still counts every subdirectory, valid or not) so
+	 * the terminal wizard and the telemetry snapshot behave identically.
+	 * A skill whose SKILL.md cannot be read or parsed is omitted.
+	 */
+	readonly skills: readonly DiscoveredSkill[]
 	readonly skillsDir?: string
 	readonly commandsCount: number
 	readonly commandsDir?: string

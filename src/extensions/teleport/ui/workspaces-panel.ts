@@ -1,9 +1,11 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
-import type { WorkspaceStatus } from "../../../sandbox/cloud/types.js"
+import type { QuotaUsage, WorkspaceStatus } from "../../../sandbox/cloud/types.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
+import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
+import { type QuotaInput, quotaLines, settleQuota } from "./quota-footer.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -16,8 +18,8 @@ const MAX_HEIGHT_PCT = 0.8
 // Lines outside the scrollable body:
 //   top border (1) + header (1) + divider (1)
 //   + top scroll indicator (1) + bottom scroll indicator (1)
-//   + empty row (1) + hint (1) + bottom border (1)
-const CHROME_LINES = 8
+//   + quota summary or empty rows (2) + hint (1) + bottom border (1)
+const CHROME_LINES = 9
 
 export type WorkspacePickerResult =
 	| { action: "select"; row: WorkspaceRow }
@@ -34,6 +36,9 @@ export interface WorkspacesPanelOptions {
 	allowRename?: boolean
 	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
 	hideSessions?: boolean
+	/** Org/user quota for the two-line footer — a settled value or an in-flight
+	 *  (pre-caught) fetch that fills the footer when it settles; undefined omits it. */
+	quota?: QuotaInput
 }
 
 interface PickerTui {
@@ -89,6 +94,9 @@ const HEADERS = {
 	created: "CREATED",
 	lastActivity: "LAST ACTIVITY",
 	sessions: "SESSIONS",
+	cpu: "CPU",
+	ram: "RAM",
+	pvc: "PVC",
 	host: "HOST",
 }
 
@@ -109,6 +117,8 @@ export class WorkspacesPanel implements Component {
 	private readonly allowDelete: boolean
 	private readonly allowRename: boolean
 	private readonly hideSessions: boolean
+	private quota: QuotaUsage | undefined
+	private disposed = false
 
 	constructor(
 		private readonly rows: WorkspaceRow[],
@@ -120,6 +130,13 @@ export class WorkspacesPanel implements Component {
 		this.allowDelete = opts.allowDelete ?? false
 		this.allowRename = opts.allowRename ?? false
 		this.hideSessions = opts.hideSessions ?? false
+		settleQuota(opts.quota, {
+			isDisposed: () => this.disposed,
+			set: (q) => {
+				this.quota = q
+			},
+			requestRender: () => this.tui.requestRender(),
+		})
 		const rowEntries: Entry[] = rows.map((row) => ({ kind: "row", row }))
 		this.entries = this.allowNew ? [...rowEntries, { kind: "new" }] : rowEntries
 	}
@@ -178,6 +195,9 @@ export class WorkspacesPanel implements Component {
 		const lastLabel = (r: WorkspaceRow) => (r.lastActivityAt ? formatRelativeTime(r.lastActivityAt, this.now) : "-")
 		const sessionsLabel = (r: WorkspaceRow) => (r.sessionCount === "?" ? "?" : String(r.sessionCount))
 		const hostLabel = (r: WorkspaceRow) => r.host || "-"
+		const cpuLabel = (r: WorkspaceRow) => (r.cpuMillicores !== undefined ? formatMillicores(r.cpuMillicores) : "-")
+		const ramLabel = (r: WorkspaceRow) => (r.ramBytes !== undefined ? formatK8sBytes(r.ramBytes) : "-")
+		const pvcLabel = (r: WorkspaceRow) => (r.pvcSizeBytes !== undefined ? formatK8sBytes(r.pvcSizeBytes) : "-")
 
 		const idWidth = Math.max(HEADERS.id.length, ID_SHORT_LEN)
 		const statusWidth = Math.max(HEADERS.status.length, ...rows.map((r) => STATUS_LABEL[r.status].length))
@@ -186,6 +206,9 @@ export class WorkspacesPanel implements Component {
 		const sessionsWidth = hideSessions
 			? 0
 			: Math.max(HEADERS.sessions.length, ...rows.map((r) => sessionsLabel(r).length))
+		const cpuWidth = Math.max(HEADERS.cpu.length, ...rows.map((r) => cpuLabel(r).length))
+		const ramWidth = Math.max(HEADERS.ram.length, ...rows.map((r) => ramLabel(r).length))
+		const pvcWidth = Math.max(HEADERS.pvc.length, ...rows.map((r) => pvcLabel(r).length))
 
 		const nameWidth = Math.max(HEADERS.name.length, ...rows.map((r) => nameLabel(r).length))
 		const hostWidth = Math.max(HEADERS.host.length, ...rows.map((r) => hostLabel(r).length))
@@ -200,7 +223,13 @@ export class WorkspacesPanel implements Component {
 			createdWidth +
 			1 +
 			lastWidth +
-			(hideSessions ? 0 : 1 + sessionsWidth)
+			(hideSessions ? 0 : 1 + sessionsWidth) +
+			1 +
+			cpuWidth +
+			1 +
+			ramWidth +
+			1 +
+			pvcWidth
 		const availableForFlex = Math.max(2 * MIN_COL_WIDTH + 1, contentW - fixedNoFlex)
 		const desiredFlex = nameWidth + 1 + hostWidth
 		let nameW = nameWidth
@@ -218,6 +247,9 @@ export class WorkspacesPanel implements Component {
 			pad(HEADERS.created, createdWidth),
 			pad(HEADERS.lastActivity, lastWidth),
 			...(hideSessions ? [] : [pad(HEADERS.sessions, sessionsWidth)]),
+			pad(HEADERS.cpu, cpuWidth),
+			pad(HEADERS.ram, ramWidth),
+			pad(HEADERS.pvc, pvcWidth),
 			HEADERS.host,
 		]
 		const headerLine = headerCells.join(" ")
@@ -235,6 +267,7 @@ export class WorkspacesPanel implements Component {
 			const host = truncate(hostLabel(r), hostW)
 			const cells = [name, id, status, created, last]
 			if (!hideSessions) cells.push(pad(sessionsLabel(r), sessionsWidth))
+			cells.push(pad(cpuLabel(r), cpuWidth), pad(ramLabel(r), ramWidth), pad(pvcLabel(r), pvcWidth))
 			cells.push(host)
 			return cells.join(" ")
 		}
@@ -255,6 +288,11 @@ export class WorkspacesPanel implements Component {
 				styledCells.push(sessionsPad)
 				plainCells.push(sessionsPad)
 			}
+			const cpu = pad(cpuLabel(r), cpuWidth)
+			const ram = pad(ramLabel(r), ramWidth)
+			const pvc = pad(pvcLabel(r), pvcWidth)
+			styledCells.push(cpu, ram, pvc)
+			plainCells.push(cpu, ram, pvc)
 			styledCells.push(host)
 			plainCells.push(host)
 			return { styled: styledCells.join(" "), plainLen: plainCells.join(" ").length }
@@ -327,7 +365,17 @@ export class WorkspacesPanel implements Component {
 			}
 		}
 
-		lines.push(emptyRow())
+		// Reserved footer lines: the quota summary (user line + org line) when
+		// available, otherwise empty rows — the panel always emits the same
+		// line count either way.
+		for (const line of quotaLines(this.quota)) {
+			if (line) {
+				const text = truncate(`  ${line}`, contentW)
+				lines.push(ansiRow(dim(text), text.length))
+			} else {
+				lines.push(emptyRow())
+			}
+		}
 		const hintParts = ["↑/↓ j/k: navigate", "enter: select"]
 		if (this.allowNew) hintParts.push("n: new")
 		if (this.allowRename) hintParts.push("r: rename")
@@ -341,7 +389,9 @@ export class WorkspacesPanel implements Component {
 	}
 
 	invalidate(): void {}
-	dispose(): void {}
+	dispose(): void {
+		this.disposed = true
+	}
 }
 
 export function createWorkspacesPanel(

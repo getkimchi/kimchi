@@ -15,16 +15,15 @@ vi.mock("node:os", async (importOriginal) => {
 	}
 })
 
-import tagsExtension, {
-	getActiveTags,
-	getCurrentPhase,
-	isValidTag,
-	parseTag,
-	setCurrentPhase,
-	TagManager,
-} from "./tags.js"
+import { isValidTag, parseTag } from "../config/tags.js"
+import tagsExtension, { getActiveTags, getCurrentPhase, setCurrentPhase, TagManager } from "./tags.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
+
+// Pin process.cwd() to MOCK_HOME so the project-tier ancestor walk
+// (resolveDefaultTags → findNearestAncestorPath) never picks up the real
+// repo's .kimchi directory while these tests run.
+const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(MOCK_HOME)
 
 type FakeSessionEntry = {
 	type: "custom"
@@ -370,6 +369,110 @@ describe("TagManager persistence", () => {
 
 		const { manager: loaded } = makeTagManager()
 		expect(loaded.getAllTags()).toEqual([])
+	})
+})
+
+describe("TagManager config hierarchy", () => {
+	beforeEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
+		vi.stubEnv("KIMCHI_TAGS", "")
+		clearSessionEntriesStore()
+	})
+
+	afterEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	function writeGlobalTags(tags: string[]): void {
+		const path = join(MOCK_HOME, ".config", "kimchi", "tags.json")
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, JSON.stringify({ tags }))
+	}
+
+	function writeProjectTags(tags: string[]): void {
+		const path = join(MOCK_HOME, ".kimchi", "tags.json")
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, JSON.stringify({ tags }))
+	}
+
+	it("loads project tags as defaults for new sessions", () => {
+		writeProjectTags(["repo:api"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["repo:api"])
+		expect(manager.getTier("repo:api")).toBe("project")
+	})
+
+	it("resolves key collisions with project beating global", () => {
+		writeGlobalTags(["team:backend", "env:prod"])
+		writeProjectTags(["team:frontend"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["env:prod", "team:frontend"])
+	})
+
+	it("env tags beat project and global tags", () => {
+		writeGlobalTags(["team:backend"])
+		writeProjectTags(["team:frontend"])
+		vi.stubEnv("KIMCHI_TAGS", "team:override")
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:override"])
+		expect(manager.getTier("team:override")).toBe("env")
+	})
+
+	it("session entries still fully override the hierarchy", () => {
+		writeGlobalTags(["team:backend"])
+		writeProjectTags(["team:frontend"])
+		appendEntryForSession(TEST_SESSION_ID, "kimchi_active_tags", ["team:mine"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:mine"])
+	})
+
+	it("/tags add coexists with project-defined keys (current behaviour)", () => {
+		writeProjectTags(["team:proj"])
+		const { manager } = makeTagManager()
+		const result = manager.add("team:user")
+		expect(result).toEqual({ success: true })
+		expect(manager.getAllTags()).toEqual(["team:proj", "team:user"])
+	})
+
+	it("finds the project config from a nested working directory", () => {
+		writeProjectTags(["repo:api"])
+		const nested = join(MOCK_HOME, "packages", "app")
+		mkdirSync(nested, { recursive: true })
+		cwdSpy.mockReturnValue(nested)
+		try {
+			const { manager } = makeTagManager()
+			expect(manager.getAllTags()).toEqual(["repo:api"])
+		} finally {
+			cwdSpy.mockReturnValue(MOCK_HOME)
+		}
+	})
+
+	it("shows tier markers in the /tags list", async () => {
+		writeProjectTags(["repo:api"])
+		vi.stubEnv("KIMCHI_TAGS", "env:tag")
+		const messages: string[] = []
+		const ctx = createContext({
+			hasUI: false,
+			sessionManager: makeSessionManager("marker-session"),
+			ui: {
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+				} as unknown as ExtensionUIContext["theme"],
+				notify: ((message: string) => {
+					messages.push(message)
+				}) as unknown as ExtensionUIContext["notify"],
+			},
+		})
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "", ctx)
+
+		const list = messages.join("\n")
+		expect(list).toContain("[project] repo:api")
+		expect(list).toContain("[env] env:tag")
 	})
 })
 

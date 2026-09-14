@@ -84,6 +84,7 @@ export interface SeedHomeResult {
 }
 
 export interface CreateKimchiFixtureOptions {
+	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	routerResponses?: unknown[]
@@ -131,6 +132,10 @@ export interface CreateKimchiFixtureOptions {
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
 	artifactName: string
+	/** Marker printed after exit for scenarios that relaunch Kimchi in the same terminal. */
+	exitMarker?: string
+	/** Expected startup text; override for scenarios that exit before showing the editor. */
+	startupText?: string
 	/**
 	 * Optional hook that runs AFTER launch but BEFORE the PROMPT_READY wait.
 	 * Use to dismiss startup dialogs (e.g. a ferment resume dialog triggered
@@ -341,7 +346,7 @@ export async function runKimchiSession(
 	options: RunKimchiSessionOptions,
 	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
-	const { artifactName, beforeReady, ...fixtureOptions } = options
+	const { artifactName, beforeReady, exitMarker, startupText = PROMPT_READY, ...fixtureOptions } = options
 	const fixture = await createKimchiFixture(fixtureOptions)
 	let artifactWritten = false
 	const steps: TuiStepSnapshot[] = []
@@ -352,10 +357,16 @@ export async function runKimchiSession(
 	}
 
 	try {
-		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [], { ...fixtureOptions.env, ...fixture.seedEnv })
+		launchKimchi(
+			terminal,
+			fixture,
+			fixtureOptions.extraArgs ?? [],
+			{ ...fixtureOptions.env, ...fixture.seedEnv },
+			{ exitMarker },
+		)
 		if (beforeReady) await beforeReady(terminal)
-		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
-		trace.step("ready prompt visible")
+		await waitForText(terminal, startupText, { timeoutMs: STARTUP_TIMEOUT_MS })
+		trace.step(startupText === PROMPT_READY ? "ready prompt visible" : "expected startup text visible")
 		await body(fixture, trace)
 		trace.step("scenario body completed")
 	} catch (error) {

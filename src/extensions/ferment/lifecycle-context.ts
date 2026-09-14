@@ -1,35 +1,26 @@
-import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
+
+type SessionManagerHandle = Pick<SessionManager, "getEntries" | "getSessionId">
+
 import { TERMINAL_STEP_STATUSES } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
+import { registerStateBlockPersistence } from "../state-block-persistence.js"
+import { markHarnessSteer } from "../steer-marker.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { formatNextActionHint } from "./tool-helpers.js"
 
-type OrchestratorMessages = ContextEvent["messages"]
-
-const FERMENT_LIFECYCLE_CUSTOM_TYPE = "ferment-lifecycle"
-
-/** Strips prior ferment-lifecycle injections from a transient message array
- *  so we never double-stack if the handler chain runs more than once. */
-function stripFermentLifecycleMessages(messages: OrchestratorMessages): OrchestratorMessages {
-	return messages.filter(
-		(m) =>
-			!(
-				m.role === "custom" &&
-				"customType" in m &&
-				(m as { customType: string }).customType === FERMENT_LIFECYCLE_CUSTOM_TYPE
-			),
-	)
-}
+export const FERMENT_LIFECYCLE_CUSTOM_TYPE = "ferment-lifecycle"
 
 /** Renders the volatile part of the ferment lifecycle state: active phase
  *  details with step-progress counts, and the next-action hint. This is the
  *  content that was previously baked into the system prompt by
- *  `buildCurrentStateSection` but which changes on every step/phase
- *  transition, breaking prefix-cache stability. Moving it to the transient
- *  context channel keeps the system prompt byte-stable across transitions
- *  while still delivering the same information to the model every turn. */
+ *  `buildCurrentStateSection` (which broke system-prompt prefix stability),
+ *  and later pushed transiently at the request tail (which broke the
+ *  request-level cache breakpoint). It is now persisted once per actual
+ *  transition — see `registerFermentLifecycleContext`. */
 function buildFermentLifecycleContext(f: Ferment, multiModelEnabled: boolean): string | undefined {
 	const activePhaseStates = f.phases
 		.filter((phase) => phase.status === "active")
@@ -47,48 +38,58 @@ function buildFermentLifecycleContext(f: Ferment, multiModelEnabled: boolean): s
 	return lines.join("\n")
 }
 
+/** Channels that can change the rendered block (or the planned/running gate). */
+const LIFECYCLE_CHANGE_EVENTS = [
+	FERMENT_EVENTS.PHASE_STARTED,
+	FERMENT_EVENTS.STEP_STARTED,
+	FERMENT_EVENTS.STEP_COMPLETED,
+	FERMENT_EVENTS.STEP_FAILED,
+	FERMENT_EVENTS.PHASE_COMPLETED,
+	FERMENT_EVENTS.SUSPENDED,
+	FERMENT_EVENTS.RESUMED,
+	FERMENT_EVENTS.SCOPING_COMPLETE,
+] as const
+
 /**
- * Registers a `context` event handler that injects the volatile ferment
- * lifecycle state (active phase, step progress, next-action hint) at the tail
- * of the message array on every LLM call. This is transient — the injected
- * message lives only in the single LLM request, never in the persistent
- * session history, and never touches the system prompt.
+ * Persist-on-change delivery of the ferment lifecycle state block. Machinery
+ * (dedupe, busy-run deferral, settle flush, history replay dedupe,
+ * strip-only context view) lives in the shared `state-block-persistence`
+ * registrar — see its module comment for the cache-breakpoint rationale.
  *
- * This is the volatile counterpart to the static `## Current lifecycle state`
- * section in `buildFermentPromptBlock` (prompt-block.ts). The static section
- * (scoping is COMPLETE, no-replanning guidance) stays in the system prompt;
- * only the parts that change across step/phase transitions move here, keeping
- * the system prompt byte-stable for prefix caching.
+ * Ferment-specific bits retained here: the render source (active phase
+ * progress + next-action hint), the planned/running gate (draft, paused,
+ * complete, and abandoned have their own dedicated prompt blocks or no
+ * block — a transition out persists nothing; the last running block remains
+ * in history), the agent-worker suppression, and the domain-event channels
+ * as the change source.
  *
- * Registered once at extension init — the handler reads the active ferment
- * from `runtime.getActive()` and no-ops when no ferment is planned/running.
- * The TUI is a single-session process, so a single global registration is
- * sufficient.
+ * Registered once at extension init; the TUI is a single-session process.
  */
 export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: FermentRuntime): void {
-	pi.on("context", async (event, ctx) => {
-		if (isAgentWorker()) return undefined
+	/** Latest session handle, used to resolve the multi-model flag. */
+	let sessionManager: SessionManagerHandle | undefined
 
-		const f = runtime.getActive()
-		if (!f) return undefined
-
-		// Only inject for planned/running states — draft, paused, complete, and
-		// abandoned have their own dedicated prompt blocks or no block at all.
-		if (f.status !== "planned" && f.status !== "running") return undefined
-
-		const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-		const content = buildFermentLifecycleContext(f, multiModelEnabled)
-		if (!content) return undefined
-
-		const messages = stripFermentLifecycleMessages(event.messages)
-		messages.push({
-			role: "custom",
-			customType: FERMENT_LIFECYCLE_CUSTOM_TYPE,
-			content,
-			display: false,
-			timestamp: Date.now(),
-		})
-
-		return { messages }
+	registerStateBlockPersistence(pi, {
+		customType: FERMENT_LIFECYCLE_CUSTOM_TYPE,
+		onSessionEvent: (ctx: ExtensionContext) => {
+			sessionManager = ctx.sessionManager
+		},
+		render: () => {
+			if (isAgentWorker()) return undefined
+			const f = runtime.getActive()
+			if (!f) return undefined
+			if (f.status !== "planned" && f.status !== "running") return undefined
+			if (!sessionManager) return undefined
+			const content = buildFermentLifecycleContext(f, getMultiModelEnabled(sessionManager))
+			if (!content) return undefined
+			return markHarnessSteer(content)
+		},
+		subscribe: (notify) => {
+			for (const channel of LIFECYCLE_CHANGE_EVENTS) {
+				pi.events.on(channel, () => {
+					notify()
+				})
+			}
+		},
 	})
 }

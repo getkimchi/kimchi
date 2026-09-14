@@ -135,7 +135,6 @@ function runOnce(): Promise<{ exit: number | string | null; output: string; time
 					PATH: process.env.PATH ?? "",
 					HOME: homeDir,
 					PI_PACKAGE_DIR: PACKAGE_DIR,
-					KIMCHI_API_KEY: "fake",
 					KIMCHI_TELEMETRY_ENABLED: "0",
 				},
 				stdio: ["ignore", "pipe", "pipe"],

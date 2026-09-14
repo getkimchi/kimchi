@@ -4,7 +4,14 @@ import { oauthErrorHtml, oauthSuccessHtml } from "../utils/oauth-page.js"
 
 const CALLBACK_PATH = "/callback"
 const CALLBACK_TIMEOUT_MS = 300_000 // 5 minutes
+// Default success copy for terminal-initiated logins (`kimchi login`). Flows
+// launched by other clients override it via CallbackServerOptions.
 const SUCCESS_MESSAGE = "Your CLI is now connected. You can close this window and start using Kimchi."
+
+export interface CallbackServerOptions {
+	/** Copy shown on the success page. Defaults to the terminal CLI message. */
+	successMessage?: string
+}
 
 export interface CallbackResult {
 	token?: string
@@ -27,7 +34,10 @@ export interface CallbackServer {
  * - Returns a success or error HTML page to the browser
  * - Times out after 5 minutes if no callback arrives
  */
-export function startCallbackServer(expectedState: string): Promise<CallbackServer> {
+export function startCallbackServer(
+	expectedState: string,
+	options: CallbackServerOptions = {},
+): Promise<CallbackServer> {
 	return new Promise<CallbackServer>((resolveStart, rejectStart) => {
 		let server: Server | undefined
 		let resolved = false
@@ -109,7 +119,7 @@ export function startCallbackServer(expectedState: string): Promise<CallbackServ
 
 				// Success
 				res.writeHead(200, { "Content-Type": "text/html", Connection: "close" })
-				res.end(oauthSuccessHtml(SUCCESS_MESSAGE))
+				res.end(oauthSuccessHtml(options.successMessage ?? SUCCESS_MESSAGE))
 				finish({ token })
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err)

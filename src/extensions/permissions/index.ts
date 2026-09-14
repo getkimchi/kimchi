@@ -1449,9 +1449,12 @@ export async function handleCompoundConfirm(
 			}
 
 			if (outcome.kind === "pick-per-subcommand") {
-				// For each subcommand, evaluate rules and prompt if needed
+				// For each subcommand, evaluate rules and prompt if needed.
 				for (const subcommand of opts.subcommands) {
-					// Re-evaluate rules (user may have added rules during the prompt)
+					// Re-evaluate rules first (user may have added rules during the prompt).
+					// Rules win over the read-only skip, same precedence as the main gate:
+					// a deny added while the prompt is open must still block a read-only
+					// segment.
 					const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
 						command: subcommand,
 					})
@@ -1464,6 +1467,9 @@ export async function handleCompoundConfirm(
 							reason: `Subcommand blocked by rule: ${subcommand}`,
 						}
 					}
+					// Read-only segments, including cd/pushd/popd, need no approval
+					// or remembered rule, just as in standalone calls.
+					if (isReadOnlyBashCommand(subcommand)) continue
 
 					// Create a fake bash event for this subcommand
 					const subEvent: ToolCallEvent = {
@@ -1502,11 +1508,11 @@ function applyApprovalOutcome(
 	if (outcome.kind === "aborted") return "aborted"
 	if (outcome.kind === "allow-once") return undefined
 	if (outcome.kind === "allow-remember") {
-		session.add(outcome.rule)
+		session.addMany(outcome.rules)
 		return undefined
 	}
 	if (outcome.kind === "allow-remember-wildcard") {
-		session.add(outcome.rule)
+		session.addMany(outcome.rules)
 		return undefined
 	}
 	if (outcome.kind === "deny-with-feedback") {
@@ -1607,6 +1613,15 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 		return { decision: "prompt" }
 	}
 
+	// Honor whole-command denies before segment approval can bypass the normal rule check.
+	const match = evaluateRules(rules, "bash", { command })
+	if (match.decision === "deny") {
+		return {
+			decision: "deny",
+			deniedReason: `Command blocked by rule: ${command}`,
+		}
+	}
+
 	// Split into subcommands
 	const subcommands = splitCompoundCommand(command)
 	if (!subcommands || subcommands.length === 0) {
@@ -1630,12 +1645,18 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 				deniedReason: `Subcommand blocked by rule: ${subcommand}`,
 			}
 		}
-		if (match.decision !== "allow") {
-			allAllowed = false
-		}
+		if (match.decision === "allow") continue
+		// Read-only segments never ask even standalone (ls/git status…), so
+		// treat them as allowed: remembering only the mutable segments then
+		// settles the compound (picker flow and "Allow all" become equivalent).
+		// Rules were evaluated first, so an explicit deny on a read-only program
+		// still wins. This includes cd/pushd/popd; command rules do not scope
+		// approval to the directory where a command runs.
+		if (isReadOnlyBashCommand(subcommand)) continue
+		allAllowed = false
 	}
 
-	// If all subcommands explicitly allowed by rules, allow the compound
+	// Allow when every segment is rule-allowed or implicitly read-only.
 	if (allAllowed) {
 		return { decision: "allow" }
 	}

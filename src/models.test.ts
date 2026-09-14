@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import {
 	injectAutoModel,
 	injectExperimentalProvider,
@@ -53,6 +54,24 @@ const OPUS_46: unknown = {
 	limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
 }
 
+const CUSTOM_PROVIDER = {
+	baseUrl: "https://custom.example/v1",
+	apiKey: "custom-key",
+	api: "openai-completions",
+	authHeader: true,
+	models: [
+		{
+			id: "custom-model",
+			name: "Custom Model",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 1024,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		},
+	],
+}
+
 describe("updateModelsConfig", () => {
 	let tempDir: string
 	let modelsJsonPath: string
@@ -61,11 +80,59 @@ describe("updateModelsConfig", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-models-test-"))
 		modelsJsonPath = join(tempDir, "models.json")
 		vi.stubGlobal("fetch", vi.fn())
+		resetCredentialStalenessForTests()
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 		vi.restoreAllMocks()
+	})
+
+	// 401 on refresh = dead key, not absent (presence can't tell);
+	// auth_status must read logged-out for it.
+	describe("credential staleness signaling", () => {
+		it("marks the api key stale when the refresh is rejected with 401", async () => {
+			vi.mocked(fetch).mockResolvedValueOnce({
+				ok: false,
+				status: 401,
+				statusText: "Unauthorized",
+			} as Response)
+
+			// No cache on disk → updateModelsConfig rethrows; the stale mark
+			// must survive either path.
+			await updateModelsConfig(modelsJsonPath, "dead-key", { sleep: async () => {} }).catch(() => {})
+
+			expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(true)
+			// Unrelated keys are untouched.
+			expect(isCredentialStale("some-other-key", "kimchi-dev")).toBe(false)
+		})
+
+		it("does not mark on non-auth failures (500) — a login pane cannot fix those", async () => {
+			vi.mocked(fetch).mockResolvedValueOnce({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+			} as Response)
+
+			await updateModelsConfig(modelsJsonPath, "some-key", { sleep: async () => {} }).catch(() => {})
+
+			expect(isCredentialStale("some-key", "kimchi-dev")).toBe(false)
+		})
+
+		// Re-login success wipes all marks (fresh key + revived OAuth).
+		it("clears all staleness marks for kimchi-dev when a refresh succeeds", async () => {
+			markCredentialStale("dead-key", "kimchi-dev")
+			markCredentialStale(undefined, "kimchi-dev")
+			vi.mocked(fetch).mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+			await updateModelsConfig(modelsJsonPath, "fresh-key", { sleep: async () => {} })
+
+			expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(false)
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+		})
 	})
 
 	it("maps each metadata field into the pi-mono model config", async () => {
@@ -150,7 +217,7 @@ describe("updateModelsConfig", () => {
 		expect(model).not.toHaveProperty("thinkingLevelMap")
 	})
 
-	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
+	it("sets X-Provider-Type header at the provider level for all kimchi providers", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [SONNET_46, KIMI] }),
@@ -159,8 +226,9 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		// base kimchi-dev provider does NOT have the header
-		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBeUndefined()
+		// base kimchi-dev provider routes ai-enabler models
+		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBe("ai-enabler")
+		expect(config.providers["kimchi-dev"].headers["User-Agent"]).toMatch(/^kimchi\//)
 
 		// anthropic sub-provider has the header
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
@@ -606,6 +674,49 @@ describe("updateModelsConfig", () => {
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("falls back to cached Kimchi models after a 401 without custom providers", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
+		await updateModelsConfig(modelsJsonPath, "saved-key")
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const result = await updateModelsConfig(modelsJsonPath, "rejected-key")
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
+		expect(isCredentialStale("rejected-key", "kimchi-dev")).toBe(true)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it.each([false, true])("preserves custom providers after a Kimchi 401 (Kimchi cache=%s)", async (withKimchiCache) => {
+		if (withKimchiCache) {
+			vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
+			await updateModelsConfig(modelsJsonPath, "saved-key")
+		}
+		const config = withKimchiCache ? JSON.parse(readFileSync(modelsJsonPath, "utf-8")) : { providers: {} }
+		config.providers.custom = CUSTOM_PROVIDER
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+
+		const result = await updateModelsConfig(modelsJsonPath, "expired-kimchi-key")
+
+		expect(result.models.map((model) => model.slug)).toContain("custom-model")
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("rejects invalid credentials during strict discovery even when custom providers exist", async () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { custom: CUSTOM_PROVIDER } }))
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+
+		await expect(
+			updateModelsConfig(modelsJsonPath, "rejected-key", { allowCachedFallback: false }),
+		).rejects.toMatchObject({ status: 401 })
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
 	it("does not overwrite cached models.json when fetch fails", async () => {

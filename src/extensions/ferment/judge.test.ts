@@ -1144,10 +1144,7 @@ describe("judgeApiCall", () => {
 		captureJudgeContext(undefined, undefined, false)
 	})
 
-	it.each([
-		["kimi-k3", true],
-		["judge-x", false],
-	])("preserves an explicit Kimchi judge token limit (strips Pi defaults only for kimi-k3; model=%s)", async (modelId, shouldOmit) => {
+	it.each(["kimi-k3", "judge-x"])("sends Pi token limits to the judge model (%s)", async (modelId) => {
 		const model = {
 			provider: "kimchi-dev",
 			id: modelId,
@@ -1166,9 +1163,12 @@ describe("judgeApiCall", () => {
 		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)
 
-		expect(requests[0].onPayload?.({ max_completion_tokens: 100, max_tokens: 100, messages: [] })).toEqual(
-			shouldOmit ? { messages: [] } : { max_completion_tokens: 100, max_tokens: 100, messages: [] },
-		)
+		// No explicit limit: neither onPayload nor maxTokens is set — Pi sends the
+		// model's maxTokens from models.json as max_completion_tokens, unstripped
+		// (the omit-kimchi-max-tokens extension was removed).
+		expect(requests[0].onPayload).toBeUndefined()
+		expect(requests[0].maxTokens).toBeUndefined()
+		// Explicit limit: passed straight through.
 		expect(requests[1]).toMatchObject({ maxTokens: 100 })
 		expect(requests[1].onPayload).toBeUndefined()
 	})

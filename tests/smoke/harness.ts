@@ -7,11 +7,13 @@
  * path for tests that need to place settings files there.
  */
 
-import { type SpawnSyncReturns, spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { type ChildProcess, type SpawnSyncReturns, spawn, spawnSync } from "node:child_process"
+import { once } from "node:events"
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { type IPty, spawn as ptySpawn } from "node-pty"
 import { afterAll, beforeAll } from "vitest"
 
@@ -21,8 +23,30 @@ export const BINARY_PATH = resolve("dist/bin/kimchi")
 export const PACKAGE_DIR = resolve("dist/share/kimchi")
 
 let tempHome: string | undefined
+let modelServer: ChildProcess | undefined
+let modelServerUrl = ""
 
-beforeAll(() => {
+beforeAll(async () => {
+	// A separate process can serve requests while runBinary blocks in spawnSync.
+	// Dummy-key tests must not depend on live 401 responses being ignored.
+	const serverModule = pathToFileURL(resolve("tests/e2e/tui/support/fake-openai-server.ts")).href
+	modelServer = spawn(
+		process.execPath,
+		[
+			"--import",
+			"tsx",
+			"--input-type=module",
+			"-e",
+			`
+		import { startFakeOpenAiServer } from ${JSON.stringify(serverModule)};
+		const server = await startFakeOpenAiServer({ responses: [] });
+		process.send(server.baseUrl);
+	`,
+		],
+		{ stdio: ["ignore", "ignore", "inherit", "ipc"] },
+	)
+	const [serverUrl] = await once(modelServer, "message")
+	modelServerUrl = String(serverUrl)
 	tempHome = mkdtempSync(join(tmpdir(), "kimchi-smoke-home-"))
 	const configDir = join(tempHome, ".config", "kimchi")
 	mkdirSync(configDir, { recursive: true })
@@ -31,9 +55,7 @@ beforeAll(() => {
 		JSON.stringify({ skillPaths: [], migrationState: "done" }, null, 2),
 		"utf-8",
 	)
-	// Pre-seed models.json so updateModelsConfig has a cache to fall back to when
-	// the dummy KIMCHI_API_KEY gets a 401 from the live metadata endpoint. Without
-	// this, interactive smoke tests would fail to boot the binary in CI.
+	// Pre-seed a model catalog for commands that do not fetch metadata.
 	const agentDir = join(tempHome, ".config", "kimchi", "harness")
 	mkdirSync(agentDir, { recursive: true })
 	writeFileSync(
@@ -68,6 +90,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
+	modelServer?.kill()
 	if (tempHome) {
 		rmSync(tempHome, { recursive: true, force: true })
 	}
@@ -99,6 +122,14 @@ export function ensureAgentDir(): string {
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
+function configureSmokeEndpoint(apiKey: string | undefined): void {
+	const configPath = join(getTempHome(), ".config", "kimchi", "config.json")
+	const config = JSON.parse(readFileSync(configPath, "utf-8"))
+	if (apiKey === "smoke-test-dummy") config.llmEndpoint = modelServerUrl
+	else if (config.llmEndpoint === modelServerUrl) config.llmEndpoint = undefined
+	writeFileSync(configPath, JSON.stringify(config))
+}
+
 interface RunBinaryOptions {
 	args?: string[]
 	cwd?: string
@@ -111,6 +142,7 @@ interface RunBinaryOptions {
 export function runBinary(opts: RunBinaryOptions = {}): SpawnSyncReturns<string> {
 	const { args = [], cwd, extraEnv = {}, timeoutMs = DEFAULT_TIMEOUT_MS, throwOnError = true } = opts
 	const home = getTempHome()
+	configureSmokeEndpoint(extraEnv.KIMCHI_API_KEY)
 	const result = spawnSync(BINARY_PATH, args, {
 		cwd,
 		encoding: "utf-8",
@@ -188,6 +220,7 @@ export interface InteractiveSession {
 export function spawnInteractive(opts: RunInteractiveOptions = {}): InteractiveSession {
 	const { cols = 120, rows = 40, extraEnv = {} } = opts
 	const home = getTempHome()
+	configureSmokeEndpoint(extraEnv.KIMCHI_API_KEY ?? "smoke-test-dummy")
 	const pty = ptySpawn(BINARY_PATH, [], {
 		name: "xterm-256color",
 		cols,

@@ -4,6 +4,7 @@ import type { TelemetryConfig } from "../../config.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
 import { createContext } from "../__mocks__/context.js"
 import telemetryExtension, {
+	_getTelemetryCtx,
 	trackRemoteExecution,
 	trackSubagentSpawned,
 	trackSurveyAnswered,
@@ -437,7 +438,7 @@ describe("telemetryExtension integration", () => {
 		expect(event.headers["X-Parent-Session-Id"]).toBeUndefined()
 	})
 
-	it("before_provider_headers injects W3C traceparent derived from session id", async () => {
+	it("before_provider_headers injects a fresh per-request W3C traceparent", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, ctx)
@@ -445,18 +446,19 @@ describe("telemetryExtension integration", () => {
 		const event = { headers: {} as Record<string, string> }
 		getHandler(handlers, "before_provider_headers")(event)
 
-		const sessionId = event.headers["X-Session-Id"]
 		const traceparent = event.headers.traceparent
 		expect(traceparent).toBeDefined()
 		const [version, traceId, spanId, flags] = traceparent.split("-")
 		expect(version).toBe("00")
-		expect(traceId).toBe(sessionId.replace(/-/g, "").toLowerCase())
 		expect(traceId).toMatch(/^[0-9a-f]{32}$/)
 		expect(spanId).toMatch(/^[0-9a-f]{16}$/)
 		expect(flags).toBe("01")
+		// Deliberately NOT derived from the session id — a per-request trace
+		// must not join session-scoped identity.
+		expect(traceId).not.toBe(event.headers["X-Session-Id"].replace(/-/g, "").toLowerCase())
 	})
 
-	it("before_provider_headers generates a fresh span id on each request", async () => {
+	it("before_provider_headers generates a fresh trace and span id on each request", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, ctx)
@@ -466,9 +468,8 @@ describe("telemetryExtension integration", () => {
 		getHandler(handlers, "before_provider_headers")(event1)
 		getHandler(handlers, "before_provider_headers")(event2)
 
-		const spanId1 = event1.headers.traceparent.split("-")[2]
-		const spanId2 = event2.headers.traceparent.split("-")[2]
-		expect(spanId1).not.toBe(spanId2)
+		expect(event2.headers.traceparent.split("-")[1]).not.toBe(event1.headers.traceparent.split("-")[1])
+		expect(event2.headers.traceparent.split("-")[2]).not.toBe(event1.headers.traceparent.split("-")[2])
 	})
 
 	it("before_provider_headers preserves an existing traceparent header", async () => {
@@ -494,6 +495,69 @@ describe("telemetryExtension integration", () => {
 
 		expect(event.headers.Traceparent).toBe(existingTraceparent)
 		expect(event.headers.traceparent).toBeUndefined()
+	})
+
+	it("before_provider_headers stamps the trace context on the telemetry context", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const [, traceId, spanId] = event.headers.traceparent.split("-")
+		expect(_getTelemetryCtx()?.lastTraceContext).toEqual({ traceId, spanId })
+	})
+
+	it("before_provider_headers stamps a preserved upstream traceparent", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = {
+			headers: { Traceparent: "00-11111111111111111111111111111111-2222222222222222-01" } as Record<string, string>,
+		}
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(_getTelemetryCtx()?.lastTraceContext).toEqual({
+			traceId: "11111111111111111111111111111111",
+			spanId: "2222222222222222",
+		})
+	})
+
+	it("before_provider_headers clears the trace context on a malformed upstream traceparent", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// Seed a valid context first — a malformed header must not leave it stale.
+		const seeded = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(seeded)
+		expect(_getTelemetryCtx()?.lastTraceContext).toBeDefined()
+
+		const event = { headers: { traceparent: "garbage" } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers.traceparent).toBe("garbage") // header itself is preserved untouched
+		expect(_getTelemetryCtx()?.lastTraceContext).toBeUndefined()
+	})
+
+	it("before_provider_headers normalizes uppercase hex in a preserved upstream traceparent", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = {
+			headers: {
+				traceparent: "00-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-BBBBBBBBBBBBBBBB-01",
+			} as Record<string, string>,
+		}
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(_getTelemetryCtx()?.lastTraceContext).toEqual({
+			traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			spanId: "bbbbbbbbbbbbbbbb",
+		})
 	})
 
 	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
@@ -579,7 +643,10 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
 		events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			sessionId: "original-session",
 			fermentV2Id: "fv2-001",
+			revision: 3,
+			status: "active",
 			verdict: "continue",
 			count: 2,
 			model: "test/judge",
@@ -592,23 +659,93 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 				totalTokens: 36,
 				costUsd: 0.66,
 			},
+			durationMs: 123,
+			timeoutMs: 600_000,
+			providerRequestCount: 2,
+			timeoutCount: 1,
+			correctionCount: 1,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.evaluated")
 		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
+			pi_session_id: "original-session",
+			ferment_id: "fv2-001",
 			ferment_v2_id: "fv2-001",
+			ferment_version: "v2",
+			ferment_revision: "3",
+			status: "active",
 			verdict: "continue",
-			count: "2",
+			evaluation_count: "2",
 			evaluator_model: "test/judge",
-			input_tokens: "20",
-			output_tokens: "10",
+			duration_ms: "123",
+			timeout_ms: "600000",
+			provider_request_count: "2",
+			timeout_count: "1",
+			correction_count: "1",
+			total_input_tokens: "20",
+			total_output_tokens: "10",
 			cache_read_tokens: "4",
 			cache_write_tokens: "2",
 			total_tokens: "36",
-			cost: "0.66",
+			total_cost_usd: "0.66",
 		})
 		expect(attrsOf(rec as NonNullable<typeof rec>).reason).toBeUndefined()
+	})
+
+	it("maps Ferment V2 lifecycle events with bounded fields only", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.REPLACED, {
+			fermentV2Id: "fv2-old",
+			revision: 4,
+			status: "paused",
+			tokensUsed: 55,
+			timeUsedMs: 1_234,
+			tokenBudget: 500,
+			reason: "user",
+			replacementFermentV2Id: "fv2-new",
+			objective: "must not leave process",
+			blockedReason: "free text must not leave process",
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.replaced")
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs).toMatchObject({
+			ferment_id: "fv2-old",
+			ferment_v2_id: "fv2-old",
+			ferment_version: "v2",
+			ferment_revision: "4",
+			status: "paused",
+			tokens_used: "55",
+			duration_ms: "1234",
+			token_budget: "500",
+			reason: "user",
+			replacement_ferment_id: "fv2-new",
+		})
+		expect(attrs.objective).toBeUndefined()
+		expect(attrs.blockedReason).toBeUndefined()
+	})
+
+	it("keeps active Ferment V2 context on session.end until an explicit clear", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.CONTEXT_CHANGED, {
+			fermentV2Id: "fv2-active",
+			revision: 9,
+			status: "active",
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const sessionEnd = extractRecords().find((candidate) => candidate.eventName === "session.end")
+		expect(attrsOf(sessionEnd as NonNullable<typeof sessionEnd>)).toMatchObject({
+			ferment_id: "fv2-active",
+			ferment_v2_id: "fv2-active",
+			ferment_version: "v2",
+			ferment_revision: "9",
+			status: "active",
+		})
 	})
 
 	it("ferment:started → ferment.started OTLP record with ferment_id, name, model", async () => {

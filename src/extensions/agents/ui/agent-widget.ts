@@ -57,7 +57,16 @@ export interface AgentDetails {
 	tokens: string
 	tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	durationMs: number
-	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background"
+	status:
+		| "queued"
+		| "running"
+		| "reconnecting"
+		| "completed"
+		| "steered"
+		| "aborted"
+		| "stopped"
+		| "error"
+		| "background"
 	visibility?: "user" | "system"
 	activity?: string
 	spinnerFrame?: number
@@ -78,12 +87,16 @@ export function formatTokens(count: number): string {
 	return `${count} token`
 }
 
+export function formatContextPercent(percent: number, theme: Theme): string {
+	const color = percent >= 85 ? "error" : percent >= 70 ? "warning" : "dim"
+	return theme.fg(color, `${Math.round(percent)}%`)
+}
+
 export function formatSessionTokens(tokens: number, percent: number | null, theme: Theme, compactions = 0): string {
 	const tokenStr = formatTokens(tokens)
 	const annot: string[] = []
 	if (percent !== null) {
-		const color = percent >= 85 ? "error" : percent >= 70 ? "warning" : "dim"
-		annot.push(theme.fg(color, `${Math.round(percent)}%`))
+		annot.push(formatContextPercent(percent, theme))
 	}
 	if (compactions > 0) {
 		annot.push(theme.fg("dim", `↻${compactions}`))
@@ -207,6 +220,7 @@ export class AgentWidget {
 			error?: string
 			abortReason?: AgentAbortReason
 			modelId?: string
+			lifetimeUsage?: LifetimeUsage
 		},
 		theme: Theme,
 	): string {
@@ -239,6 +253,10 @@ export class AgentWidget {
 		const activity = this.agentActivity.get(a.id)
 		if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns))
 		if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`)
+		// Same order as the running line: turns · tool uses · tokens · duration.
+		// Reads the manager record (activity entries are dropped on completion).
+		const tokens = getLifetimeTotal(a.lifetimeUsage)
+		if (tokens > 0) parts.push(formatTokens(tokens))
 		parts.push(duration)
 
 		const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
@@ -248,7 +266,7 @@ export class AgentWidget {
 
 	private renderWidget(theme: Theme, width: number): string[] {
 		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
-		const running = allAgents.filter((a) => a.status === "running")
+		const running = allAgents.filter((a) => a.status === "running" || a.status === "reconnecting")
 		const queued = allAgents.filter((a) => a.status === "queued")
 		const finished = allAgents.filter(
 			(a) =>
@@ -281,7 +299,15 @@ export class AgentWidget {
 			const toolUses = bg?.toolUses ?? a.toolUses
 			const tokens = getLifetimeTotal(bg?.lifetimeUsage)
 			const contextPercent = getSessionContextPercent(bg?.session)
-			const tokenText = tokens > 0 ? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount) : ""
+			// Combined "45.2k token (23%)" once usage flows; standalone "23%" when
+			// totals are absent (e.g. an older sandbox server that doesn't attach
+			// _meta lifetime totals but still streams usage_update used/size).
+			const tokenText =
+				tokens > 0
+					? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount)
+					: contextPercent !== null
+						? formatContextPercent(contextPercent, theme)
+						: ""
 
 			const parts: string[] = []
 			if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns))
@@ -290,7 +316,13 @@ export class AgentWidget {
 			parts.push(elapsed)
 			const statsText = parts.join(" · ")
 
-			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
+			const activity =
+				a.status === "reconnecting"
+					? "reconnecting…"
+					: bg
+						? describeActivity(bg.activeTools, bg.responseText)
+						: "thinking…"
+			const reconnectingTag = a.status === "reconnecting" ? ` ${theme.fg("warning", "[reconnecting]")}` : ""
 
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
 			const bgTag = a.isBackground ? ` ${theme.fg("muted", "[background]")}` : ""
@@ -302,7 +334,7 @@ export class AgentWidget {
 			const descLine = truncateLine(a.description)
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}${reconnectingTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`) + bgHint + killHint),
 			])
@@ -383,7 +415,7 @@ export class AgentWidget {
 		let queuedCount = 0
 		let hasFinished = false
 		for (const a of allAgents) {
-			if (a.status === "running") {
+			if (a.status === "running" || a.status === "reconnecting") {
 				runningCount++
 			} else if (a.status === "queued") {
 				queuedCount++

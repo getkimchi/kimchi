@@ -19,6 +19,7 @@ export function createModel(id: string, provider = "kimchi-dev"): Model<Api> {
 
 export function createModelRegistry(models: Model<Api>[] = []) {
 	return {
+		refresh: vi.fn<ModelRegistry["refresh"]>().mockResolvedValue({ aborted: false, errors: new Map() }),
 		find: vi.fn((provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id)),
 		getAvailable: vi.fn(() => models),
 		getApiKeyAndHeaders: vi.fn<ModelRegistry["getApiKeyAndHeaders"]>().mockResolvedValue({

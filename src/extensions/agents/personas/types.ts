@@ -169,7 +169,7 @@ export interface AgentRecord {
 	description: string
 	/** user = visible in UI/notifications; system = hidden technical/background work. */
 	visibility: AgentVisibility
-	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
+	status: "queued" | "running" | "reconnecting" | "completed" | "steered" | "aborted" | "stopped" | "error"
 	modelId?: string
 	abortReason?: AgentAbortReason
 	taskRef?: AgentTaskRef
@@ -209,6 +209,11 @@ export interface AgentRecord {
 	remote?: boolean
 	/** Remote session metadata (workspace, host, cwd) — set by _runRemote, used by post-completion sync. */
 	remoteSession?: RemoteSessionMeta
+	/** ACP session id for the remote run — captured at onReady; needed to
+	 *  persist the run for resume-after-restart (session/load attaches by id). */
+	acpSessionId?: string
+	/** Recovery note when the result was recovered after a network disconnect. */
+	recoveryNote?: string
 	/** ExtensionContext captured at spawn time — used by the completion handler when
 	 *  currentCtx is undefined (background agent completing between turns). */
 	spawnCtx?: ExtensionContext
@@ -231,6 +236,12 @@ export interface AgentRecord {
 	lifetimeUsage: LifetimeUsage
 	/** Number of times this agent's session has compacted. Initialized to 0 at spawn. */
 	compactionCount: number
+}
+
+/** Whether a record status counts as active (live work): running, queued, or reconnecting.
+ *  Reconnecting counts as active — a remote transport reattach is live work, not a finished agent. */
+export function isActiveStatus(status: AgentRecord["status"]): boolean {
+	return status === "running" || status === "queued" || status === "reconnecting"
 }
 
 /** Details attached to custom notification messages for visual rendering. */

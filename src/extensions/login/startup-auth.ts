@@ -4,10 +4,10 @@ import type {
 	ExtensionFactory,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../../config.js"
+import { getApiKeySource, loadConfig } from "../../config.js"
+import { isKimchiProvider } from "../../kimchi-provider.js"
 import {
 	createLoginChoiceSelector,
-	isKimchiProvider,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	showSubscriptionLoginWithExtensionUI,
@@ -60,7 +60,11 @@ export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 	let kimchiAuthSynchronized = configKey.length === 0
 	try {
 		if (configKey) {
-			await syncKimchiAuth(ctx.modelRegistry, configKey)
+			if (getApiKeySource() === "environment") {
+				await ctx.modelRegistry.refresh()
+			} else {
+				await syncKimchiAuth(ctx.modelRegistry, configKey)
+			}
 			kimchiAuthSynchronized = true
 		} else {
 			await ctx.modelRegistry.refresh()

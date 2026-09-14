@@ -17,6 +17,7 @@ import {
 	resolveDirectTools,
 } from "./direct-tools.js"
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.js"
+import { logger } from "./logger.js"
 import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.js"
 import { loadMetadataCache, overwriteMetadataCache, purgeStaleEntries } from "./metadata-cache.js"
 import {
@@ -110,8 +111,10 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			directSpecs.length === 0 ||
 			missingConfiguredDirectToolServers.length > 0)
 
-	// Track all registered tool names to avoid double-registration
-	const registeredToolNames = new Set<string>()
+	// Track registered wire tool names -> origin (server, original tool name):
+	// guards double-registration and detects wire-name collisions — sanitization
+	// can collapse distinct tools onto one wire name (see tool-names.ts).
+	const registeredToolOrigins = new Map<string, { serverName: string; originalName: string }>()
 	const directToolVisibility = createDirectToolVisibility(pi)
 
 	/**
@@ -163,7 +166,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 				{ ...spec, metadata },
 			),
 		})
-		registeredToolNames.add(spec.prefixedName)
+		registeredToolOrigins.set(spec.prefixedName, { serverName: spec.serverName, originalName: spec.originalName })
 		directToolVisibility.markPermanent([spec.prefixedName])
 	}
 
@@ -195,7 +198,14 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 		const newNames: string[] = []
 		const alreadyRegistered: string[] = []
 		for (const spec of specs) {
-			if (registeredToolNames.has(spec.prefixedName)) {
+			const existing = registeredToolOrigins.get(spec.prefixedName)
+			if (existing) {
+				if (existing.serverName !== spec.serverName || existing.originalName !== spec.originalName) {
+					logger.warn(
+						`MCP: wire tool name collision — "${spec.prefixedName}" from ${spec.serverName}/${spec.originalName} collides with ${existing.serverName}/${existing.originalName}; skipping the new tool (rename one of them)`,
+						{ server: spec.serverName, tool: spec.originalName },
+					)
+				}
 				alreadyRegistered.push(spec.prefixedName)
 				continue
 			}
@@ -211,7 +221,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					ctx,
 				),
 			})
-			registeredToolNames.add(spec.prefixedName)
+			registeredToolOrigins.set(spec.prefixedName, { serverName: spec.serverName, originalName: spec.originalName })
 			newNames.push(spec.prefixedName)
 		}
 		const allInjected = [...alreadyRegistered, ...newNames]

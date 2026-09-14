@@ -6,6 +6,7 @@ const {
 	verifyApiKeyMock,
 	listWorkspacesMock,
 	deleteWorkspaceMock,
+	getQuotaUsageMock,
 	createOrUpdateWorkspaceMock,
 	listSessionsMock,
 	deleteSessionMock,
@@ -19,6 +20,7 @@ const {
 	verifyApiKeyMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
 	deleteWorkspaceMock: vi.fn(),
+	getQuotaUsageMock: vi.fn(),
 	createOrUpdateWorkspaceMock: vi.fn(),
 	listSessionsMock: vi.fn(),
 	deleteSessionMock: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock("../../../sandbox/cloud/auth.js", () => ({
 	createOrUpdateWorkspace: createOrUpdateWorkspaceMock,
 }))
 vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
+vi.mock("../../../sandbox/cloud/quota.js", () => ({ getQuotaUsage: getQuotaUsageMock }))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({
 	listWorkspaces: listWorkspacesMock,
 	deleteWorkspace: deleteWorkspaceMock,
@@ -58,7 +61,7 @@ vi.mock("../ssh-config/sync.js", () => ({
 	syncSshConfig: syncSshConfigMock,
 }))
 
-import type { Workspace } from "../../../sandbox/cloud/types.js"
+import type { QuotaUsage, Workspace } from "../../../sandbox/cloud/types.js"
 import type { Session } from "../../../sandbox/worker/types.js"
 import type { TeleportContext } from "../types.js"
 import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
@@ -172,6 +175,7 @@ beforeEach(() => {
 	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	deleteWorkspaceMock.mockReset().mockResolvedValue(undefined)
+	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
 	createOrUpdateWorkspaceMock.mockReset().mockResolvedValue({ uri: "u", description: "d" })
 	listSessionsMock.mockReset().mockResolvedValue([])
 	deleteSessionMock.mockReset().mockResolvedValue(undefined)
@@ -256,6 +260,28 @@ describe("buildTree", () => {
 		const nodes = await buildTree([ws("w-1", "alpha"), ws("w-2", "beta")], ctx, "proj")
 		expect(nodes[0]?.row.displayName).toBe("alpha")
 		expect(nodes[1]?.row.displayName).toBe("beta")
+	})
+
+	it("attaches resource request fields to workspace rows", async () => {
+		const { ctx } = makeCtx()
+		const nodes = await buildTree(
+			[{ ...ws("w-1", "alpha"), cpuMillicores: 1500, ramBytes: 6442450944, pvcSizeBytes: 21474836480 }],
+			ctx,
+			"proj",
+		)
+		expect(nodes[0]?.row).toMatchObject({
+			cpuMillicores: 1500,
+			ramBytes: 6442450944,
+			pvcSizeBytes: 21474836480,
+		})
+	})
+
+	it("leaves resource fields undefined on workspace rows when the server omits them", async () => {
+		const { ctx } = makeCtx()
+		const nodes = await buildTree([ws("w-1", "alpha")], ctx, "proj")
+		expect(nodes[0]?.row.cpuMillicores).toBeUndefined()
+		expect(nodes[0]?.row.ramBytes).toBeUndefined()
+		expect(nodes[0]?.row.pvcSizeBytes).toBeUndefined()
 	})
 })
 
@@ -367,5 +393,51 @@ describe("runRemoteSessions", () => {
 		await runRemoteSessions("", ctx)
 		expect(deleteSessionMock).toHaveBeenCalledWith(expect.anything(), "s-1", undefined)
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("passes quota usage into the picker alongside the workspace tree", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		const quota: QuotaUsage = {
+			userUsage: {
+				currentSandboxes: 1,
+				maxSandboxes: 5,
+				currentCpuMillicores: 1500,
+				maxCpuMillicores: 16000,
+				currentRamBytes: 6442450944,
+				maxRamBytes: 17179869184,
+			},
+		}
+		getQuotaUsageMock.mockResolvedValue(quota)
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await runRemoteSessions("", ctx)
+		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
+		await expect(quotaArg).resolves.toBe(quota)
+		expect(getQuotaUsageMock).toHaveBeenCalledWith(
+			ctx.apiKey,
+			expect.objectContaining({ endpoint: ctx.endpoint, orgId: "org-1" }),
+		)
+		// The cached orgId is also shared with the refresh loop's list call so
+		// listWorkspaces skips its own duplicate verifyKey round-trip.
+		expect(listWorkspacesMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+	})
+
+	it("still opens the picker when the quota fetch fails (summary omitted)", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getQuotaUsageMock.mockRejectedValue(new Error("quota down"))
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await expect(runRemoteSessions("", ctx)).resolves.toBeUndefined()
+		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
+		await expect(quotaArg).resolves.toBeUndefined()
+	})
+
+	it("opens the picker without waiting for a slow quota fetch", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getQuotaUsageMock.mockReturnValue(new Promise(() => {})) // never settles
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(1)
 	})
 })

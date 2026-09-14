@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	type AgentSession,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -34,7 +35,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
-import { handleRemoteCompletion } from "../remote-run/post-completion.js"
+import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -55,8 +56,10 @@ import {
 	createBudgetRetryBlockFromCompletion,
 	shouldBlockBudgetRetry,
 } from "./manager/budget-retry-guard.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import type { RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
@@ -83,6 +86,7 @@ import {
 	type NotificationDetails,
 	type SubagentType,
 } from "./personas/types.js"
+import { findResumableRemoteRuns, persistRemoteRunState } from "./remote-run-persistence.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
@@ -780,6 +784,15 @@ export default function (pi: ExtensionAPI) {
 		return new Text(all.map(renderOne).join("\n"), 0, 0)
 	})
 
+	// Renders the "already watched elsewhere" resume notice in the
+	// conversation flow — error-styled, because another kimchi process owning
+	// the cloud run (and the double-opened session that implies) is a warning,
+	// not info. Custom entries do not participate in LLM context.
+	pi.registerEntryRenderer<{ message: string }>("remote_run:notice", (entry, _options, theme) => {
+		if (!entry.data) return undefined
+		return new Text(`${theme.fg("error", "✗")} ${theme.bold(entry.data.message)}`, 0, 0)
+	})
+
 	const reloadCustomAgents = (cwd: string = process.cwd()) => {
 		const userAgents = loadCustomAgents(cwd)
 		registerAgents(userAgents)
@@ -948,6 +961,18 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// When the user last aborted a main turn (Escape during a streaming run — the
+	// turn ends with stopReason "aborted"; the same signal the ferment extension
+	// uses to pause ferments on Esc). Background cloud agents check this at
+	// completion: a run the user aborted out of still finishes on its own, but
+	// its completion must not surface the dropdown.
+	let lastUserAbortAt: number | undefined
+	pi.on("turn_end", (event) => {
+		const message = event.message
+		if (message.role !== "assistant" || message.stopReason !== "aborted") return
+		lastUserAbortAt = Date.now()
+	})
+
 	const manager = new AgentManager(
 		(record) => {
 			const retryCandidate = budgetRetryCandidates.get(record.id)
@@ -963,6 +988,26 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			appendSubagentRecord(record)
+			// Overwrite the persisted running state with the terminal outcome — a
+			// later session resume must not reattach to a finished run.
+			if (record.remote && record.acpSessionId && record.remoteSession) {
+				persistRemoteRunState(pi, {
+					id: record.id,
+					description: record.description,
+					remoteSession: record.remoteSession,
+					acpSessionId: record.acpSessionId,
+					remoteOrigin: record.remoteOrigin,
+					fermentId: record.fermentId,
+					outputFile: record.outputFile,
+					startedAt: record.startedAt,
+					status:
+						record.status === "error"
+							? "error"
+							: record.status === "completed" || record.status === "steered"
+								? "completed"
+								: "stopped",
+				})
+			}
 
 			if (record.resultConsumed) {
 				agentActivity.delete(record.id)
@@ -994,23 +1039,47 @@ export default function (pi: ExtensionAPI) {
 					record.remoteOrigin ?? "plan",
 					buildRemoteExecutionStats(record),
 				)
-				// spawnCtx is captured at spawn time and is always valid for this
-				// agent — don't fall back to a stale global context.
+				// spawnCtx is captured at spawn time — don't fall back to a stale
+				// global context.
 				const completionCtx = record.spawnCtx
-				if (completionCtx) {
+				// A user abort (Escape) after this agent started means the user opted
+				// out of the cloud run — it finishes on its own, but its completion is
+				// surfaced nowhere.
+				const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
+				if (isError) {
+					// Errored runs have no result to review/sync — no completion
+					// dropdown. handleRemoteFailure notifies the user (or steers a
+					// headless agent, which would otherwise see nothing) and resumes
+					// the ferment paused for cloud execution.
+					handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
+						error: record.error,
+						recoveryNote: record.recoveryNote,
+						fermentId: record.fermentId,
+						stoppedByUser: record.status === "stopped",
+					})
+				} else if (!userAbortedRun && completionCtx) {
 					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
 						remoteSession: record.remoteSession,
 						fermentId: record.fermentId,
+						recoveryNote: record.recoveryNote,
 					}).catch((err) => {
 						currentUi?.notify(
 							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
 							"warning",
 						)
 					})
-				} else {
+				} else if (!userAbortedRun) {
 					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				} else if (record.fermentId) {
+					// Suppressed by a user abort — no dropdown, no steer, no state change.
+					// Esc is the product's ferment-pause signal (the ferment extension
+					// pauses and says "Run /ferment resume to continue"), so the ferment
+					// stays paused. Only leave a breadcrumb so the finished run isn't
+					// forgotten.
+					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
+					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
 				}
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
@@ -1080,6 +1149,7 @@ export default function (pi: ExtensionAPI) {
 			callbacks: transcriptCallbacks,
 			setOutputPath,
 			flushRemaining,
+			resetForReattach,
 		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
 
 		const spawnOpts = {
@@ -1088,6 +1158,41 @@ export default function (pi: ExtensionAPI) {
 			remote: true,
 			maxTurns: 1,
 			...transcriptCallbacks,
+			// The streamer wrapper only forwards AcpSessionCallbacks, so the
+			// activity tracker's onSessionCreated is wired here too. _runRemote
+			// fires this with the RemoteAgentSession; activity_reset fires exactly
+			// on WS reattach — reset the streamer's text-slice offsets so
+			// post-reattach deltas aren't sliced against stale pre-disconnect
+			// lengths (cast: activity_reset is not in the AgentSessionEvent union).
+			onSessionCreated: (session: AgentSession) => {
+				bgCallbacks.onSessionCreated?.(session)
+				const s = session as unknown as {
+					subscribe?: (fn: (e: { type: string }) => void) => () => void
+				}
+				if (typeof s?.subscribe === "function") {
+					s.subscribe((ev) => {
+						if (ev.type === "activity_reset") resetForReattach()
+					})
+				}
+			},
+			// Persist the run for resume-after-restart: the entry rides the session
+			// transcript, so a resumed kimchi (kimchi --session) can find and
+			// reattach (remote-run-persistence.ts). Written once the remote session
+			// is ready — the meta + ACP id only exist then.
+			onRemoteReady: ({ meta, acpSessionId }: { meta: RemoteSessionMeta; acpSessionId: string }) => {
+				const rec = manager.getRecord(id)
+				persistRemoteRunState(pi, {
+					id,
+					description: desc,
+					remoteSession: meta,
+					acpSessionId,
+					remoteOrigin: opts?.origin ?? "plan",
+					fermentId: opts?.fermentId,
+					outputFile: rec?.outputFile,
+					startedAt: rec?.startedAt ?? Date.now(),
+					status: "running",
+				})
+			},
 		}
 		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
 
@@ -1174,7 +1279,9 @@ export default function (pi: ExtensionAPI) {
 		unsubKill?.()
 		unsubKill = undefined
 		currentUi = undefined
-		manager.abortAll()
+		// Remote runs survive the process — they are owned by the worker and
+		// resumable via kimchi --session (remote-run-persistence.ts).
+		manager.abortAll({ skipRemote: true })
 		budgetRetryCandidates.clear()
 		if (batchFinalizeTimer) {
 			clearTimeout(batchFinalizeTimer)
@@ -1184,6 +1291,46 @@ export default function (pi: ExtensionAPI) {
 		await waitForSubagentShutdown(manager)
 		widget.dispose()
 		manager.dispose()
+	})
+
+	// Remote runs that outlived the previous kimchi process (shutdown spares
+	// them) are persisted in the session transcript — resume them here so the
+	// user sees the still-running cloud agent (and gets the completion
+	// dropdown once it finishes).
+	pi.on("session_start", async (_event, ctx) => {
+		// Subagent sessions don't own remote runs — the dispatch happens in the
+		// main session, whose transcript holds the remote_run:state entries.
+		if (process.env[PARENT_SESSION_ID_ENV_KEY]) return
+		const resumable = findResumableRemoteRuns(ctx.sessionManager)
+		if (resumable.length === 0) return
+		// The widget needs a UI context to render at all — normally the remote
+		// dispatch (spawnRemoteAgentFn) or the first local tool_execution_start
+		// provides it; a freshly resumed session has neither yet.
+		widget.setUICtx(ctx.ui as UICtx)
+		for (const run of resumable) {
+			const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
+			const outcome = await manager.resumeRemoteRecord(run, ctx, { callbacks: bgCallbacks })
+			if (outcome === "already-watched") {
+				// Another kimchi process still holds a live connection to this
+				// run — it owns the completion. Not resuming here.
+				const message = `Cloud agent "${run.description}" is already being watched by another kimchi session — not resuming it here`
+				// A toast drowns in the resume transcript flood — append the notice
+				// as the newest conversation entry (error-styled, see the
+				// remote_run:notice renderer) so it is visible at the end of the
+				// conversation after the scroll-down, AND pin it as a persistent
+				// footer status line (same pattern as the startup-update
+				// "Update available!" nag).
+				pi.appendEntry("remote_run:notice", { message })
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("remote-run", message)
+				}
+				continue
+			}
+			agentActivity.set(run.id, bgState)
+			ctx.ui.notify?.(`Resumed remote cloud agent: ${run.description} — still running in the sandbox`)
+		}
+		widget.ensureTimer()
+		widget.update()
 	})
 
 	let defaultJoinMode: JoinMode = "smart"
@@ -2808,7 +2955,9 @@ async function waitForSubagentShutdown(manager: AgentManager): Promise<void> {
 	let timeout: ReturnType<typeof setTimeout> | undefined
 	try {
 		await Promise.race([
-			manager.waitForAll(),
+			// Remote runs were spared by shutdown — never wait on their
+			// (never-settling) promises; they die with the process.
+			manager.waitForAll({ skipRemote: true }),
 			new Promise<void>((resolve) => {
 				timeout = setTimeout(resolve, SUBAGENT_SHUTDOWN_WAIT_MS)
 				timeout.unref?.()

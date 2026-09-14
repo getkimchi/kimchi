@@ -10,7 +10,8 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { loadConfig, writeApiKey } from "../../config.js"
+import { getApiKeyMismatchWarning, getApiKeySource, loadConfig, writeApiKey } from "../../config.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	isTransientModelsError,
 	ModelsFetchError,
@@ -21,13 +22,7 @@ import {
 import { syncPiAuth } from "../../pi-auth.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
-export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
-
-/** True for any kimchi-managed provider (kimchi-dev or kimchi-dev/* sub-providers). */
-export function isKimchiProvider(provider: string): boolean {
-	return provider.startsWith("kimchi-dev")
-}
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
@@ -209,7 +204,7 @@ export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: st
 
 	if (!modelRegistry.getApiKeyForProvider) return
 	const unresolvedProviders: string[] = []
-	const expectedKey = token || undefined
+	const expectedKey = (getApiKeySource() === "environment" ? loadConfig().apiKey : token) || undefined
 	for (const providerId of getKimchiProviderIds(modelRegistry)) {
 		const resolvedKey = await modelRegistry.getApiKeyForProvider(providerId)
 		if (resolvedKey !== expectedKey) {
@@ -302,6 +297,8 @@ async function configureKimchiToken(
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		const warning = getApiKeyMismatchWarning(token)
+		if (warning) host.addFeedback?.(warning)
 		return true
 	}
 

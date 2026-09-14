@@ -16,9 +16,10 @@ import {
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"
 import type { McpExtensionState } from "./state.js"
 import { buildToolMetadata, findToolByName, formatSchema, getToolNames, isReadOnlyMcpTool } from "./tool-metadata.js"
+import { getServerPrefix } from "./tool-names.js"
 import { transformMcpContent } from "./tool-registrar.js"
 import type { DirectToolSpec, McpContent, ToolMetadata } from "./types.js"
-import { getServerPrefix, parseUiPromptHandoff } from "./types.js"
+import { parseUiPromptHandoff } from "./types.js"
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js"
 import { truncateAtWord } from "./utils.js"
 

@@ -80,6 +80,7 @@ describe("buildConfigSnapshot", () => {
 				} as unknown as AgentDiscovery["mcpServers"][string],
 			},
 			skillCount: 0,
+			skills: [],
 			commandsCount: 0,
 		}
 		vi.spyOn(agentDiscovery, "discoverAgent").mockReturnValue(fakeDiscovery)

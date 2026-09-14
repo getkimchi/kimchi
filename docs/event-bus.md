@@ -121,7 +121,37 @@ Typed payloads defined in the source file.
 
 ---
 
-## 4. Bash Tool Guard Events
+## 4. Ferment V2 Domain Events
+
+**Source:** `src/extensions/ferment-v2/domain-events.ts`
+
+Typed payloads defined in the source file. External telemetry events carry bounded IDs, lifecycle state, lifecycle reason, numeric counters, evaluator verdict/failure type, HTTP status, tokens, and cost. They must not carry objectives, evaluator explanations, blocked free text, prompts, filenames, or raw provider errors.
+
+| Channel | Payload type | When |
+|---|---|---|
+| `ferment-v2:started` | `FermentV2LifecyclePayload` | New V2 run starts |
+| `ferment-v2:replaced` | `FermentV2LifecyclePayload` | Outgoing V2 run is replaced; includes `replacementFermentV2Id` |
+| `ferment-v2:edited` | `FermentV2LifecyclePayload` | Active V2 objective/revision is edited |
+| `ferment-v2:resumed` | `FermentV2LifecyclePayload` | Paused V2 run resumes |
+| `ferment-v2:completed` | `FermentV2LifecyclePayload` | Accepted final answer has been delivered |
+| `ferment-v2:blocked` | `FermentV2LifecyclePayload` | Agent or evaluator marks the run blocked |
+| `ferment-v2:paused` | `FermentV2LifecyclePayload` | Run pauses for user, agent abort, no progress, unavailable evaluator, delivery failure, or repeated agent errors |
+| `ferment-v2:cleared` | `FermentV2LifecyclePayload` | User clears the active V2 run |
+| `ferment-v2:budget_limited` | `FermentV2LifecyclePayload` | Work token budget is reached |
+| `ferment-v2:stalled` | `FermentV2LifecyclePayload` | Repeated no-progress continuation is detected |
+| `ferment-v2:agent_error` | `FermentV2LifecyclePayload` | A failed agent run settles while V2 is active |
+| `ferment-v2:evaluated` | `FermentV2EvaluatedPayload` | Evaluator invocation finishes, including unavailable and cancelled outcomes |
+| `ferment-v2:context_changed` | `FermentV2ContextChangedPayload` | Internal-only ambient telemetry attribution context changes |
+
+Replacement emits `ferment-v2:replaced` for the outgoing ID before `ferment-v2:started` for the incoming ID, giving every V2 ID exactly one cohort start. `ferment-v2:context_changed` is consumed only by built-in telemetry to attach V2 ID/version/revision/status to ambient session, error, and tool events while active.
+
+Evaluated events are emitted once at invocation settlement, before applying the verdict. Their `sessionId` (external `pi_session_id`), V2 ID, revision, and status describe the invocation snapshot; `count` is the captured applied-evaluation count plus one, even when the result is discarded. Lifecycle events describe the committed outcome.
+
+**Consumers:** `telemetry/index.ts`
+
+---
+
+## 5. Bash Tool Guard Events
 
 **Source:** `src/extensions/bash-tool-guard-events.ts`
 
@@ -137,7 +167,7 @@ Payloads carry category, tool, count — no raw command text (privacy).
 
 ---
 
-## 5. Loop Guard Events
+## 6. Loop Guard Events
 
 **Source:** `src/extensions/loop-guard-events.ts`
 
@@ -152,7 +182,7 @@ Payloads carry detector, count, is_subagent — no raw tool args.
 
 ---
 
-## 6. Workflow Telemetry
+## 7. Workflow Telemetry
 
 **Source:** `src/extensions/telemetry/workflow-events.ts`
 
@@ -168,7 +198,7 @@ Emitted by `@kimchi-dev/kimchi-workflows` (external package). This file is a mir
 
 ---
 
-## 7. Notification Channel
+## 8. Notification Channel
 
 **Source:** Generic (emitted by multiple extensions)
 

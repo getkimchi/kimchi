@@ -1,7 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { omitKimchiMaxTokensFromPayload } from "../omit-kimchi-max-tokens.js"
 import { DEFAULT_CONFIG } from "./constants.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierFailureCode, ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
@@ -163,7 +162,7 @@ async function runClassifier(
 							const existing = Array.isArray(p.tags) ? (p.tags as string[]) : []
 							p.tags = [CLASSIFIER_REQUEST_TAG, ...existing]
 						}
-						return omitKimchiMaxTokensFromPayload(payload, model)
+						return payload
 					},
 				},
 			),

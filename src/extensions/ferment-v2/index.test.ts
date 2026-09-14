@@ -63,6 +63,13 @@ const EVALUATOR_USAGE = {
 	totalTokens: 18,
 	costUsd: 0.33,
 }
+const EVALUATOR_DIAGNOSTICS = {
+	durationMs: 123,
+	timeoutMs: 600_000,
+	providerRequestCount: 1,
+	timeoutCount: 0,
+	correctionCount: 0,
+}
 
 type ExtensionHandler = (event: never, ctx: ExtensionContext) => unknown | Promise<unknown>
 type CommandConfig = {
@@ -98,6 +105,7 @@ describe("Ferment V2 extension", () => {
 			reason: "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
 		cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-edit-")))
@@ -175,10 +183,23 @@ describe("Ferment V2 extension", () => {
 		const replacement = harness.currentFermentV2()
 		expect(replacement).toMatchObject({ revision: 1, objective: "ship feature B", status: "active" })
 		expect(replacement?.id).not.toBe(first?.id)
-		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			FERMENT_V2_EVENTS.REPLACED,
-			expect.objectContaining({ fermentV2Id: replacement?.id, revision: 1, status: "active" }),
+		const emitted = harness.events.emit.mock.calls.map(([name, payload]) => ({ name, payload }))
+		const replacedIndex = emitted.findIndex(
+			(call) =>
+				call.name === FERMENT_V2_EVENTS.REPLACED &&
+				(call.payload as { fermentV2Id?: string }).fermentV2Id === first?.id,
 		)
+		const startedIndex = emitted.findIndex(
+			(call) =>
+				call.name === FERMENT_V2_EVENTS.STARTED &&
+				(call.payload as { fermentV2Id?: string }).fermentV2Id === replacement?.id,
+		)
+		expect(replacedIndex).toBeGreaterThanOrEqual(0)
+		expect(startedIndex).toBeGreaterThan(replacedIndex)
+		expect(emitted[replacedIndex]?.payload).toMatchObject({
+			fermentV2Id: first?.id,
+			replacementFermentV2Id: replacement?.id,
+		})
 	})
 
 	it("waits for a headless Ferment V2 turn before resolving the command", async () => {
@@ -308,6 +329,73 @@ describe("Ferment V2 extension", () => {
 		expect(JSON.stringify(harness.ui.notify.mock.calls)).not.toMatch(/ferment[- ]v2/i)
 		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Plan execution: running · Cache plan")
+	})
+
+	it.each(["pause", "replace"] as const)("retains a cancelled invocation after Plan mode %s", async (action) => {
+		await harness.command("original private objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const original = harness.currentFermentV2()
+		const { release, settled, signal } = await holdEvaluation(harness)
+		harness.events.emit.mockClear()
+		if (action === "pause") {
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+			harness.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { to: { mode: "plan" } })
+		} else {
+			const executor = getFermentV2PlanExecutor(harness.pi)
+			if (!executor) throw new Error("expected approved-plan executor")
+			await executor(
+				{
+					objective: "private replacement objective",
+					title: "Private plan title",
+					planText: "Private plan contents",
+					planPath: "/tmp/private-plan.md",
+				},
+				harness.ctx,
+			)
+		}
+		expect(signal?.aborted).toBe(true)
+		release({
+			verdict: "met",
+			reason: "private evaluator explanation",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
+		await settled
+		const events = harness.events.emit.mock.calls.filter(([name]) => name.startsWith("ferment-v2:"))
+		const lifecycle = events.filter(([name]) => name !== FERMENT_V2_EVENTS.CONTEXT_CHANGED)
+		expect(lifecycle.map(([name]) => name)).toEqual(
+			action === "pause"
+				? [FERMENT_V2_EVENTS.PAUSED, FERMENT_V2_EVENTS.EVALUATED]
+				: [FERMENT_V2_EVENTS.REPLACED, FERMENT_V2_EVENTS.STARTED, FERMENT_V2_EVENTS.EVALUATED],
+		)
+		expect(lifecycle.at(-1)?.[1]).toMatchObject({
+			sessionId: TEST_SESSION_ID,
+			fermentV2Id: original?.id,
+			revision: original?.revision,
+			status: "active",
+			verdict: "unavailable",
+			failureType: "cancelled",
+			count: 1,
+			usage: EVALUATOR_USAGE,
+		})
+		const current = harness.currentFermentV2()
+		expect(current?.evaluationCount).toBeUndefined()
+		expect(current?.status).toBe(action === "pause" ? "paused" : "active")
+		expect(events.filter(([name]) => name === FERMENT_V2_EVENTS.CONTEXT_CHANGED).at(-1)?.[1]).toEqual({
+			fermentV2Id: current?.id,
+			revision: current?.revision,
+			status: current?.status,
+		})
+		if (action === "replace") {
+			expect(current?.id).not.toBe(original?.id)
+			expect(lifecycle[0]?.[1]).toMatchObject({
+				fermentV2Id: original?.id,
+				replacementFermentV2Id: current?.id,
+			})
+			expect(lifecycle[1]?.[1]).toMatchObject({ fermentV2Id: current?.id })
+		}
+		expect(JSON.stringify(events)).not.toMatch(/private|Private/)
 	})
 
 	it("fails an automatic approved-plan start silently when its required tools are unavailable", async () => {
@@ -613,7 +701,13 @@ describe("Ferment V2 extension", () => {
 		expect(resolved).toBe(false)
 
 		headless.setActiveTools([])
-		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		release({
+			verdict: "continue",
+			reason: "More work is required.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
 		await settled
 
 		const TIMED_OUT = Symbol("timed out")
@@ -636,7 +730,13 @@ describe("Ferment V2 extension", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10))
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
 
-		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		release({
+			verdict: "continue",
+			reason: "More work is required.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
 		await settled
 	})
 
@@ -806,7 +906,69 @@ describe("Ferment V2 extension", () => {
 		})
 	})
 
-	it("starts evaluation when the current response settles the Todo list", async () => {
+	it("records a cancelled completion-candidate evaluation exactly once", async () => {
+		await harness.command("ship feature A")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const active = harness.currentFermentV2()
+		const message = assistantTextMessage("finishing now", "toolUse")
+		await harness.fire("message_start", { type: "message_start", message })
+		await completeVisibleTodo(harness)
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
+		await harness.fire("message_end", { type: "message_end", message })
+		let release!: (result: Awaited<ReturnType<typeof evaluateFermentV2>>) => void
+		evaluateFermentV2Mock.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					release = resolve
+				}),
+		)
+		const ended = harness.fire("agent_end", { type: "agent_end", messages: [] })
+		await vi.waitFor(() => expect(evaluateFermentV2Mock).toHaveBeenCalledOnce())
+		const pause = harness.command("pause")
+		await vi.waitFor(() => expect(evaluateFermentV2Mock.mock.calls[0]?.[0].signal?.aborted).toBe(true))
+		release({
+			verdict: "continue",
+			reason: "private evaluator explanation",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
+		await Promise.all([ended, pause])
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		const events = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
+		expect(events).toHaveLength(1)
+		expect(events[0]?.[1]).toMatchObject({
+			sessionId: "session-a",
+			fermentV2Id: active?.id,
+			revision: active?.revision,
+			status: "active",
+			verdict: "unavailable",
+			failureType: "cancelled",
+			usage: EVALUATOR_USAGE,
+		})
+		expect(JSON.stringify(events)).not.toContain("private evaluator explanation")
+	})
+
+	it("records an evaluation once when required tools disappear before application", async () => {
+		await harness.command("ship feature A")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const { release, settled } = await holdEvaluation(harness)
+		harness.setActiveTools([])
+		release({
+			verdict: "continue",
+			reason: "more",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
+		await settled
+		const events = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
+		expect(events).toHaveLength(1)
+		expect(events[0]?.[1]).toMatchObject({ verdict: "continue", count: 1, usage: EVALUATOR_USAGE })
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
+	})
+
+	it("records a completion-candidate evaluation once across agent_end and agent_settled", async () => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const message = assistantTextMessage("finishing now", "toolUse")
@@ -818,12 +980,16 @@ describe("Ferment V2 extension", () => {
 			reason: "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 
 		await harness.fire("message_end", { type: "message_end", message })
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 
 		expect(evaluateFermentV2Mock).toHaveBeenCalledOnce()
+		expect(harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)).toHaveLength(1)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)).toHaveLength(1)
 	})
 
 	it.each([
@@ -895,6 +1061,7 @@ describe("Ferment V2 extension", () => {
 			reason: "All requirements are evidenced.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 			acceptedFinalAnswer: "Accepted answer.",
 		})
 
@@ -1078,6 +1245,7 @@ describe("Ferment V2 extension", () => {
 			reason: "All requirements are evidenced.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 			acceptedFinalAnswer: "Accepted answer.",
 		})
 
@@ -1115,6 +1283,7 @@ describe("Ferment V2 extension", () => {
 			reason: "All requirements are evidenced.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 			acceptedFinalAnswer: "Accepted answer.",
 		})
 		await harness.fire("agent_end", { type: "agent_end", messages: [ended.message] })
@@ -2577,6 +2746,7 @@ describe("Ferment V2 extension", () => {
 			reason: "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		await settled
 		await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -2636,6 +2806,7 @@ describe("Ferment V2 extension", () => {
 			reason: "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		await settled
 
@@ -2693,6 +2864,7 @@ describe("Ferment V2 extension", () => {
 			reason: verdict === "met" ? "All requirements are evidenced." : "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 
 		await headless.fire("agent_end", { type: "agent_end", messages: [] })
@@ -2732,6 +2904,7 @@ describe("Ferment V2 extension", () => {
 			reason: "Needs a user-owned credential.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		harness.appendEntry.mockClear()
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
@@ -2764,6 +2937,10 @@ describe("Ferment V2 extension", () => {
 			evaluationCount: 1,
 			lastEvaluation: { verdict: "unavailable", reason: "No evaluator model is available." },
 		})
+		expect(harness.events.emit).toHaveBeenCalledWith(
+			FERMENT_V2_EVENTS.EVALUATED,
+			expect.objectContaining({ verdict: "unavailable", failureType: "no_model" }),
+		)
 		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused: No evaluator model is available.", "warning")
 		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
 	})
@@ -2840,6 +3017,7 @@ describe("Ferment V2 extension", () => {
 		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
 		expect(evaluated).toHaveLength(2)
 		for (const [, payload] of evaluated) expect(payload).toMatchObject({ usage: EVALUATOR_USAGE })
+		expect(evaluated.map(([, payload]) => payload.count)).toEqual([1, 2])
 	})
 
 	it("does not label an agent error as an evaluator verdict", async () => {
@@ -2989,6 +3167,7 @@ describe("Ferment V2 extension", () => {
 			reason: "late success",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 			acceptedFinalAnswer: "STALE_FINAL_MUST_NOT_APPEAR",
 		})
 		await Promise.all([mutation, settled])
@@ -3002,6 +3181,7 @@ describe("Ferment V2 extension", () => {
 	it("does not start a coding-agent turn when paused while only the evaluator is deciding", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const active = harness.currentFermentV2()
 		harness.sendMessage.mockClear()
 		harness.setIdle(true)
 
@@ -3011,14 +3191,30 @@ describe("Ferment V2 extension", () => {
 		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 
-		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		release({
+			verdict: "continue",
+			reason: "More work is required.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
 		await Promise.all([pause, settled])
 		expect(harness.currentFermentV2()?.status).toBe("paused")
+		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
+		expect(evaluated).toHaveLength(1)
+		expect(evaluated[0]?.[1]).toMatchObject({
+			fermentV2Id: active?.id,
+			revision: active?.revision,
+			status: "active",
+			verdict: "unavailable",
+			failureType: "cancelled",
+		})
 	})
 
 	it("does not start a coding-agent turn when cleared while only the evaluator is deciding", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const active = harness.currentFermentV2()
 		harness.sendMessage.mockClear()
 		harness.setIdle(true)
 
@@ -3028,9 +3224,29 @@ describe("Ferment V2 extension", () => {
 		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 
-		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		release({
+			verdict: "continue",
+			reason: "More work is required.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
 		await Promise.all([clear, settled])
 		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(
+			harness.events.emit.mock.calls
+				.map(([name]) => name)
+				.filter((name) => name === FERMENT_V2_EVENTS.EVALUATED || name === FERMENT_V2_EVENTS.CLEARED),
+		).toEqual([FERMENT_V2_EVENTS.EVALUATED, FERMENT_V2_EVENTS.CLEARED])
+		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
+		expect(evaluated).toHaveLength(1)
+		expect(evaluated[0]?.[1]).toMatchObject({
+			fermentV2Id: active?.id,
+			revision: active?.revision,
+			status: "active",
+			verdict: "unavailable",
+			failureType: "cancelled",
+		})
 	})
 
 	it("drops a late evaluator result after pause and resume", async () => {
@@ -3041,7 +3257,13 @@ describe("Ferment V2 extension", () => {
 
 		const pause = harness.command("pause")
 		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
-		release({ verdict: "continue", reason: "late result", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		release({
+			verdict: "continue",
+			reason: "late result",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
 		await Promise.all([pause, settled])
 		expect(signal?.aborted).toBe(true)
 		await harness.command("resume")
@@ -3092,6 +3314,7 @@ describe("Ferment V2 extension", () => {
 			reason: "old result",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		await Promise.all([edit, settled])
 
@@ -3112,8 +3335,14 @@ describe("Ferment V2 extension", () => {
 			reason: "old result",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		await Promise.all([replacement, settled])
+		expect(
+			harness.events.emit.mock.calls
+				.map(([name]) => name)
+				.filter((name) => name === FERMENT_V2_EVENTS.EVALUATED || name === FERMENT_V2_EVENTS.REPLACED),
+		).toEqual([FERMENT_V2_EVENTS.EVALUATED, FERMENT_V2_EVENTS.REPLACED])
 	})
 
 	it("aborts an evaluation held across a session_tree rewind that lands on the same Ferment V2 revision", async () => {
@@ -3140,6 +3369,7 @@ describe("Ferment V2 extension", () => {
 			reason: "All requirements are evidenced.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		await settled
 
@@ -3160,8 +3390,38 @@ describe("Ferment V2 extension", () => {
 			reason: "old result",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		await settled
+	})
+
+	it("retains invocation identity when the session switches during evaluation", async () => {
+		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const active = harness.currentFermentV2()
+		const { release, settled } = await holdEvaluation(harness)
+		harness.setSession("session-b", [])
+		await harness.fire("session_start", { type: "session_start", reason: "new" })
+		await harness.command("new objective")
+		release({
+			verdict: "continue",
+			reason: "old result",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
+		await settled
+		const events = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
+		expect(events).toHaveLength(1)
+		expect(events[0]?.[1]).toMatchObject({
+			sessionId: "session-a",
+			fermentV2Id: active?.id,
+			revision: active?.revision,
+			verdict: "unavailable",
+			failureType: "cancelled",
+		})
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "new objective" })
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
 	it("pauses after three continuation turns without recorded todo progress", async () => {
@@ -3736,10 +3996,14 @@ describe("Ferment V2 extension", () => {
 
 		harness.sendMessage.mockClear()
 		harness.ui.notify.mockClear()
+		harness.events.emit.mockClear()
 
 		await harness.command("resume")
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		const budgetLimited = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.BUDGET_LIMITED)
+		expect(budgetLimited).toHaveLength(1)
+		expect(budgetLimited[0]?.[1]).toMatchObject({ reason: "token_budget", status: "budget_limited" })
 		expect(harness.ui.notify).toHaveBeenCalledWith(
 			"Ferment V2 token budget is exhausted. Start a replacement Ferment V2 with a new budget.",
 			"warning",
@@ -3776,6 +4040,35 @@ describe("Ferment V2 extension", () => {
 		expect(resolved).toBe(true)
 		expect(headless.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
 		expect(headless.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("emits resumed once when manual compaction resumes a paused run", async () => {
+		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("aborted", { input: 8, output: 2 }))
+		expect(harness.currentFermentV2()?.status).toBe("paused")
+		harness.events.emit.mockClear()
+		await harness.fire("session_compact", { type: "session_compact", reason: "manual" })
+		await harness.fire("session_compact", { type: "session_compact", reason: "manual" })
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		const resumed = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.RESUMED)
+		expect(resumed).toHaveLength(1)
+		expect(resumed[0]?.[1]).toMatchObject({ status: "active", reason: "user" })
+	})
+
+	it("emits budget_limited when manual compaction resumes a paused over-budget run", async () => {
+		await harness.command("--tokens 100 keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
+
+		harness.events.emit.mockClear()
+		await harness.fire("session_compact", { type: "session_compact", reason: "manual" })
+
+		expect(harness.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		const budgetLimited = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.BUDGET_LIMITED)
+		expect(budgetLimited).toHaveLength(1)
+		expect(budgetLimited[0]?.[1]).toMatchObject({ reason: "token_budget", status: "budget_limited" })
 	})
 
 	it("serializes edit and agent-end so no old-revision continuation is scheduled", async () => {
@@ -4322,12 +4615,17 @@ async function settleFermentV2(
 ): Promise<void> {
 	evaluateFermentV2Mock.mockResolvedValueOnce(
 		verdict === "unavailable"
-			? { verdict, reason: "No evaluator model is available." }
+			? {
+					verdict,
+					reason: "No evaluator model is available.",
+					diagnostics: { ...EVALUATOR_DIAGNOSTICS, failureType: "no_model" },
+				}
 			: {
 					verdict,
 					reason: reason ?? (verdict === "met" ? "All requirements are evidenced." : "More work is required."),
 					model: "test/evaluator",
 					usage: EVALUATOR_USAGE,
+					diagnostics: EVALUATOR_DIAGNOSTICS,
 					...(acceptedFinalAnswer ? { acceptedFinalAnswer } : {}),
 				},
 	)

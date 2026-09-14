@@ -1,58 +1,19 @@
-import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
 import type { ImageContent } from "@earendil-works/pi-ai"
-import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
-import { type AcpSessionFactory, KimchiAcpAgent } from "../server.js"
+import { KimchiAcpAgent } from "../server.js"
 
-class FakeAgentSession {
-	sessionId: string
-	disposed = false
-	model = { provider: "test", id: "test-model" }
-	modelRegistry = {
-		getAvailable: () => [{ provider: "test", id: "test-model", name: "Test" }],
-		find: (provider: string, id: string) =>
-			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
-	}
-	sessionManager = {
-		getBranch: () => [],
-		getSessionId: () => this.sessionId,
-		getEntries: () => [],
-		getSessionDir: () => "/tmp",
-		getCwd: () => "/tmp",
-		appendCustomEntry: () => "entry-id",
-	}
-	setSessionName = vi.fn()
+class FakeAgentSession extends BaseFakeAgentSession {
 	steer = vi.fn(async (_text: string, _images?: ImageContent[]) => {})
 	clearQueue = vi.fn(() => ({ steering: [] as string[], followUp: [] as string[] }))
-	extensionRunner = { emit: async () => {} }
-	getToolDefinition = vi.fn((_name: string) => undefined)
 	getContextUsage = () => undefined
-	resourceLoader = {
-		getSkills: () => ({ skills: [], diagnostics: [] }),
-		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => undefined,
-		getSystemPromptSource: () => undefined,
-		getAppendSystemPrompt: () => [],
-		getAppendSystemPromptSources: () => [],
-		extendResources: () => {},
-		reload: async () => {},
-	} as unknown as ResourceLoader
 
 	// Tests control when (or whether) the turn finishes to exercise the
 	// active-turn / race paths.
 	private promptResolve: (() => void) | undefined
 
-	constructor(sessionId: string) {
-		this.sessionId = sessionId
-	}
-
-	subscribe = () => () => {}
-	async bindExtensions(): Promise<void> {}
-	prompt(): Promise<void> {
+	override prompt(): Promise<void> {
 		return new Promise<void>((resolve) => {
 			this.promptResolve = resolve
 		})
@@ -63,34 +24,18 @@ class FakeAgentSession {
 	// abort() deliberately does NOT finish the turn: real pi-mono has a window
 	// between cancel and turn teardown where entry.turn is still defined but
 	// already cancelled — tests use finishTurn() to end it explicitly.
-	async abort(): Promise<void> {}
-	dispose(): void {
+	override async abort(): Promise<void> {}
+	override dispose(): void {
 		this.finishTurn()
-		this.disposed = true
+		super.dispose()
 	}
 }
 
-function asSession(fake: FakeAgentSession): AgentSession {
-	return fake as unknown as AgentSession
-}
-
-function makeConn(): AgentSideConnection {
-	return {
-		sessionUpdate: async (_p: SessionNotification) => {},
-		extNotification: vi.fn(),
-		extMethod: vi.fn(),
-		requestPermission: vi.fn(),
-		unstable_createElicitation: vi.fn(),
-		closed: Promise.resolve(),
-	} as unknown as AgentSideConnection
-}
-
 function makeAgent(session: FakeAgentSession) {
-	const sessionFactory: AcpSessionFactory = async () => asSession(session)
-	return new KimchiAcpAgent(makeConn(), {
+	return new KimchiAcpAgent(makeAcpConn(), {
 		extensionFactories: [],
 		agentDir: "/tmp/fake-agent-dir",
-		sessionFactory,
+		sessionFactory: makeAcpSessionFactory(session),
 	})
 }
 

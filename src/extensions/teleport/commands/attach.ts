@@ -8,7 +8,7 @@ import type { Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
 import type { TeleportContext } from "../types.js"
 import { createTeleportProgress } from "../ui/progress.js"
-import { refuse } from "./errors.js"
+import { authFailureMessage, refuse } from "./errors.js"
 
 export interface AttachArgs {
 	workspaceId: string
@@ -34,7 +34,7 @@ export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): 
 		try {
 			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, { endpoint: ctx.endpoint })
 		} catch (err) {
-			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+			refuse(ctx, authFailureMessage(err))
 		}
 		progress.complete("Authenticated")
 
