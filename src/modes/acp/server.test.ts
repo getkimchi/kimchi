@@ -409,6 +409,10 @@ function makeRecordingConn(): {
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+// newSession/loadSession schedule available_commands_update via setImmediate so
+// it lands after the session/new|load response; flush it before asserting on it.
+const flushDeferredCommands = () => new Promise<void>((r) => setImmediate(r))
+
 function agentEnd(): AgentSessionEvent {
 	return { type: "agent_end", messages: [], willRetry: false }
 }
@@ -4865,6 +4869,11 @@ describe("newSession available commands", () => {
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
+		// The palette broadcast is deferred past the response: it must NOT be on
+		// the wire when the newSession handler returns.
+		expect(updates.find((u) => u.update.sessionUpdate === "available_commands_update")).toBeUndefined()
+		await flushDeferredCommands()
+
 		// Find the available_commands_update notification
 		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 		expect(update).toBeDefined()
@@ -4902,6 +4911,10 @@ describe("loadSession available commands", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
+
+		// Deferred past the response, like newSession.
+		expect(updates.find((u) => u.update.sessionUpdate === "available_commands_update")).toBeUndefined()
+		await flushDeferredCommands()
 
 		// loadSessionFresh re-broadcasts the command palette on resume.
 		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
@@ -4960,6 +4973,7 @@ describe("newSession skill commands", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: dir, mcpServers: [] })
+		await flushDeferredCommands()
 
 		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 		expect(update).toBeDefined()
@@ -7682,6 +7696,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
+		await flushDeferredCommands()
 
 		// The only update expected here is a no-op surface commands update
 		expect(updates).toHaveLength(1)
@@ -7734,6 +7749,10 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
+		// Flush the deferred palette broadcast: post-response, it lands after
+		// the replayed transcript.
+		await flushDeferredCommands()
+
 		// Order is significant: tool_call must precede tool_call_update, and
 		// the post-skipped-entries assistant text must land last.
 		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
@@ -8278,7 +8297,8 @@ describe("KimchiAcpAgent session event handlers", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
-		updates.length = 0 // clear the available_commands_update from newSession
+		await flushDeferredCommands()
+		updates.length = 0 // clear the deferred available_commands_update from newSession
 	})
 
 	describe("session_info_changed event", () => {

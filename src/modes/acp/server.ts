@@ -600,7 +600,7 @@ export class KimchiAcpAgent implements Agent {
 			this.sessions.set(sessionId, record)
 			this.startPlanTracker(record, sessionId)
 
-			this.sendAvailableCommandsUpdate(sessionId)
+			this.scheduleAvailableCommandsUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(session, initialMode.mode)
 			return {
@@ -783,7 +783,7 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
 			this.replayTranscript(existing.session)
-			this.sendAvailableCommandsUpdate(sessionId)
+			this.scheduleAvailableCommandsUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
@@ -876,7 +876,7 @@ export class KimchiAcpAgent implements Agent {
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
 			this.replayTranscript(loadedSession)
-			this.sendAvailableCommandsUpdate(sessionId)
+			this.scheduleAvailableCommandsUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(loadedSession, initialMode.mode)
 			return {
@@ -1699,15 +1699,40 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	private sendAvailableCommandsUpdate(sessionId: string): void {
-		const record = this.sessions.get(sessionId)
-		const skillCommands = record ? buildSkillAvailableCommands(Array.from(record.skillCommands.values())) : []
-		this.send({
-			sessionId,
-			update: {
-				sessionUpdate: "available_commands_update",
-				availableCommands: [...AVAILABLE_COMMANDS, ...skillCommands],
-			},
+	/**
+	 * Broadcast the command palette AFTER the pending session/new or
+	 * session/load response, not while the handler is still building it. The
+	 * SDK writes the response only once the handler's returned promise
+	 * resolves, so sending inside the handler puts the notification on the
+	 * wire BEFORE the client learns the session id — and clients drop
+	 * session/update notifications for sessions they haven't registered yet
+	 * (https://github.com/zed-industries/zed/issues/53161). A setImmediate
+	 * macrotask outlasts the SDK's response-writing microtask chain, and the
+	 * outbound writeQueue then keeps notification after response (see `send`),
+	 * so the update lands strictly after the response.
+	 *
+	 * This is the ecosystem-wide pattern: the reference claude-agent-acp
+	 * adapter defers with setTimeout(0) under a "Needs to happen after we
+	 * return the session" comment (with the same dead-session guard)
+	 * (https://github.com/agentclientprotocol/claude-agent-acp/blob/main/src/acp-agent.ts),
+	 * and prime-agent (https://github.com/PrimeIntellect-ai/prime-agent/pull/1308),
+	 * pi-acp, and hermes-agent all schedule the same way.
+	 */
+	private scheduleAvailableCommandsUpdate(sessionId: string): void {
+		setImmediate(() => {
+			// The session may have been torn down between the response and the
+			// deferred send (e.g. instant disconnect); don't broadcast a palette
+			// for a dead session.
+			if (!this.sessions.has(sessionId)) return
+			const record = this.sessions.get(sessionId)
+			const skillCommands = record ? buildSkillAvailableCommands(Array.from(record.skillCommands.values())) : []
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "available_commands_update",
+					availableCommands: [...AVAILABLE_COMMANDS, ...skillCommands],
+				},
+			})
 		})
 	}
 
