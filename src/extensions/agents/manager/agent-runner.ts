@@ -14,7 +14,6 @@ import {
 	type ModelRuntime,
 	type ModelRegistry as PiModelRegistry,
 	SessionManager,
-	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { readTelemetryConfig } from "../../../config.js"
@@ -53,6 +52,7 @@ import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
 import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
+import { createChildSettings } from "./child-settings.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
@@ -216,7 +216,7 @@ export interface RunOptions {
 	isolated?: boolean
 	inheritContext?: boolean
 	thinkingLevel?: ThinkingLevel
-	/** Override working directory (e.g. for worktree isolation). */
+	/** Override the child session's working directory. */
 	cwd?: string
 	/** Persist this agent run to a pre-created session file. Omit for in-memory sessions. */
 	sessionFile?: string
@@ -558,9 +558,11 @@ ${skillLines}`
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
+	const settingsManager = createChildSettings(effectiveCwd, agentDir, ctx)
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
+		settingsManager,
 		noExtensions: effectiveExtensions === false,
 		noSkills,
 		noPromptTemplates: true,
@@ -574,7 +576,6 @@ ${skillLines}`
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
-	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
 	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
 	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
 

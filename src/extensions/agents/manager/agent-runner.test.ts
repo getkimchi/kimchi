@@ -14,14 +14,15 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 			inMemory: vi.fn().mockReturnValue({}),
 			open: vi.fn().mockReturnValue({}),
 		},
-		SettingsManager: {
-			create: vi.fn().mockReturnValue({ applyOverrides: vi.fn() }),
-		},
 		createAgentSession: vi.fn(),
 		defineTool: vi.fn((tool) => tool),
 		getAgentDir: vi.fn().mockReturnValue("/fake-agent-dir"),
 	}
 })
+
+vi.mock("./child-settings.js", () => ({
+	createChildSettings: vi.fn().mockReturnValue({}),
+}))
 
 vi.mock("../../env.js", () => ({
 	detectEnv: vi.fn().mockResolvedValue({ os: "linux", shell: "bash" }),
@@ -139,6 +140,7 @@ import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
+import { createChildSettings } from "./child-settings.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
@@ -369,6 +371,9 @@ describe("runAgent — telemetry extension", () => {
 
 		expect(mockDefaultResourceLoader).toHaveBeenCalledTimes(1)
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(createChildSettings).toHaveBeenCalledWith(ctx.cwd, "/fake-agent-dir", ctx)
+		expect(ctorArg?.settingsManager).toBe(vi.mocked(createChildSettings).mock.results.at(-1)?.value)
+		expect(mockCreateAgentSession.mock.calls[0]?.[0]?.settingsManager).toBe(ctorArg?.settingsManager)
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
 		expect(ctorArg?.extensionFactories).toHaveLength(3)

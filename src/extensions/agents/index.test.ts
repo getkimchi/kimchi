@@ -120,6 +120,11 @@ vi.mock("./manager/agent-manager.js", () => {
 	}
 })
 
+const customAgentsState = vi.hoisted(() => ({ agents: new Map<string, Record<string, unknown>>() }))
+vi.mock("./personas/custom-agents.js", () => ({
+	loadCustomAgents: vi.fn(() => customAgentsState.agents),
+}))
+
 vi.mock("./telemetry/index.js", () => ({ trackSubagentSpawned: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("../remote-run/post-completion.js", () => ({
 	handleRemoteCompletion: vi.fn().mockResolvedValue(undefined),
@@ -408,8 +413,21 @@ describe("Agent tool model selection", () => {
 	beforeEach(() => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
+		customAgentsState.agents.clear()
 		vi.mocked(sessionHasImages).mockReturnValue(false)
 	})
+
+	function addCustomAgent(name: string, fields: Record<string, unknown> = {}): void {
+		customAgentsState.agents.set(name, {
+			name,
+			description: name,
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "replace",
+			...fields,
+		})
+	}
 
 	it("calls spawn with an explicitly selected model", async () => {
 		const pi = makeMockPi()
@@ -519,6 +537,124 @@ describe("Agent tool model selection", () => {
 			"General-Purpose",
 			expect.any(String),
 			expect.objectContaining({ model: parentModel }),
+		)
+	})
+
+	it("uses a configured persona model when available and no explicit model is supplied", async () => {
+		addCustomAgent("Configured", { models: ["openai/configured"] })
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "parent", name: "Parent", provider: "kimchi-dev", input: ["text"] },
+			{ id: "configured", name: "Configured", provider: "openai", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "parent", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-configured-model",
+			{ prompt: "do work", description: "test", subagent_type: "Configured", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"Configured",
+			expect.any(String),
+			expect.objectContaining({ model: expect.objectContaining({ provider: "openai", id: "configured" }) }),
+		)
+	})
+
+	it("falls back to the parent model when a configured persona model is unavailable", async () => {
+		addCustomAgent("Configured", { models: ["missing/no-such-model"] })
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const parentModel = { id: "parent", provider: "kimchi-dev", name: "Parent" }
+		const registry = makeMockModelRegistry([{ id: "parent", name: "Parent", provider: "kimchi-dev", input: ["text"] }])
+		const ctx = makeMockCtx(registry, parentModel)
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-configured-model-fallback",
+			{ prompt: "do work", description: "test", subagent_type: "Configured", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"Configured",
+			expect.any(String),
+			expect.objectContaining({ model: parentModel }),
+		)
+	})
+
+	it("explicit model overrides a configured persona model", async () => {
+		addCustomAgent("Configured", { models: ["openai/configured"] })
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "parent", name: "Parent", provider: "kimchi-dev", input: ["text"] },
+			{ id: "configured", name: "Configured", provider: "openai", input: ["text"] },
+			{ id: "explicit", name: "Explicit", provider: "openai", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "parent", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-explicit-over-configured",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "Configured",
+				model: "openai/explicit",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"Configured",
+			expect.any(String),
+			expect.objectContaining({ model: expect.objectContaining({ provider: "openai", id: "explicit" }) }),
+		)
+	})
+
+	it("retains supported isolated persona behavior", async () => {
+		addCustomAgent("Isolated", { isolated: true })
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([{ id: "parent", name: "Parent", provider: "kimchi-dev", input: ["text"] }])
+		const ctx = makeMockCtx(registry, { id: "parent", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-isolated",
+			{ prompt: "do work", description: "test", subagent_type: "Isolated", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"Isolated",
+			expect.any(String),
+			expect.objectContaining({ isolated: true }),
 		)
 	})
 

@@ -21,16 +21,25 @@ describe("resolveAgentInvocationConfig — model selection", () => {
 		expect(result.modelFromParams).toBe(true)
 	})
 
-	it("modelInput is undefined when params.model is omitted", () => {
-		const result = resolveAgentInvocationConfig(agent, {})
-		expect(result.modelInput).toBeUndefined()
+	it("uses the persona's first configured model when params.model is omitted", () => {
+		const result = resolveAgentInvocationConfig({ ...agent, models: ["openai/gpt-4o", "openai/gpt-4.1"] }, {})
+		expect(result.modelInput).toBe("openai/gpt-4o")
 		expect(result.modelFromParams).toBe(false)
 	})
 
-	it("modelInput is undefined when params.model is empty string", () => {
-		const result = resolveAgentInvocationConfig(agent, { model: "" })
-		expect(result.modelInput).toBeUndefined()
+	it("uses the persona model when params.model is empty string", () => {
+		const result = resolveAgentInvocationConfig({ ...agent, models: ["openai/gpt-4o"] }, { model: "" })
+		expect(result.modelInput).toBe("openai/gpt-4o")
 		expect(result.modelFromParams).toBe(false)
+	})
+
+	it("explicit params.model overrides the persona model", () => {
+		const result = resolveAgentInvocationConfig(
+			{ ...agent, models: ["openai/gpt-4o"] },
+			{ model: "kimchi-dev/kimi-k2.7" },
+		)
+		expect(result.modelInput).toBe("kimchi-dev/kimi-k2.7")
+		expect(result.modelFromParams).toBe(true)
 	})
 })
 

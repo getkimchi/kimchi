@@ -2501,7 +2501,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 		if (cfg.runInBackground) fmFields.push("run_in_background: true")
 		if (cfg.isolated) fmFields.push("isolated: true")
 		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`)
-		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`)
 
 		const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`
 
