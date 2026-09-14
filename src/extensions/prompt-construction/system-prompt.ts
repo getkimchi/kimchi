@@ -203,7 +203,7 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Do NOT introduce security vulnerabilities.
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
-- Always wrap shell commands with a timeout (default 60s) — e.g. \`timeout 60 <cmd>\` — to prevent hangs.
+- Always bound shell commands with the bash tool's \`timeout\` parameter (default 60s) to prevent hangs — never wrap commands in the GNU \`timeout\` binary (missing on macOS and Windows).
 - Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
 - **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
