@@ -785,3 +785,158 @@ describe("formatGateBlockReason", () => {
 		expect(reason).toContain("all pending processes")
 	})
 })
+
+/** bash_control result with detach semantics (process keeps running, gate released). */
+function detachResult(handle: string): Record<string, unknown> {
+	return {
+		type: "tool_result",
+		toolName: "bash_control",
+		toolCallId: "c2",
+		input: { handle, action: "detach" },
+		content: [{ type: "text", text: "[Process detached…]" }],
+		isError: false,
+		details: { handle, detached: true, exited: false, exitCode: null, action: "detach" },
+	}
+}
+
+describe("bashControlExtension — detach (session-scoped services)", () => {
+	it("detach releases the gate while the process keeps running", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+
+		// Gate closed before detach.
+		expect((await fireToolCall(pi, "bash"))?.block).toBe(true)
+
+		await fireToolResult(pi, detachResult("h1"))
+
+		// Gate open for every tool after detach.
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+		expect((await fireToolCall(pi, "read"))?.block).toBeFalsy()
+	})
+
+	it("partial detach keeps the gate closed for the remaining pending handle", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
+		await fireSessionStart(pi)
+		await fireToolResult(pi, checkinResult("h1"))
+		await fireToolResult(pi, checkinResult("h2"))
+
+		await fireToolResult(pi, detachResult("h1"))
+
+		const result = await fireToolCall(pi, "bash")
+		expect(result?.block).toBe(true)
+		expect(result?.reason).toContain("h2")
+		expect(result?.reason).not.toContain("h1")
+	})
+
+	it("a detached process exiting on its own emits one informational steer and keeps the gate open", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+
+		registry.resolveExit("h1", 1)
+		await flush()
+
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("was detached")
+		expect(steers[0]?.content[0]?.text).toContain("exit code 1")
+		expect(steers[0]?.options).toEqual({ deliverAs: "steer" })
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+
+		// The notice fires once — no repeats after the handle is consumed.
+		registry.resolveExit("h1", 1)
+		await flush()
+		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+	})
+
+	it("a stop in flight suppresses the detached exit steer (control result is authoritative)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+
+		await fireToolExecutionStart(pi, "tcStop", "bash_control", { handle: "h1", action: "stop" })
+		registry.resolveExit("h1", null)
+		await flush()
+
+		expect(messages(pi)).toHaveLength(0)
+
+		// The stop result itself resolves the handle; end-of-call bookkeeping
+		// must not produce a stray notice either.
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "tcStop",
+			input: { handle: "h1", action: "stop" },
+			content: [{ type: "text", text: "[Process stopped]" }],
+			isError: false,
+			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
+		})
+		await fireToolExecutionEnd(pi, "tcStop", "bash_control")
+		expect(messages(pi)).toHaveLength(0)
+	})
+
+	it("continue after detach re-pends the handle (gate closes again)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "c3",
+			input: { handle: "h1", action: "continue" },
+			content: [{ type: "text", text: "[Background process still running…]" }],
+			isError: false,
+			details: { handle: "h1", checkin: true, exited: false, exitCode: null, action: "continue" },
+		})
+
+		const blocked = await fireToolCall(pi, "bash")
+		expect(blocked?.block).toBe(true)
+		expect(blocked?.reason).toContain("h1")
+
+		// A detached-handle exit notice must NOT fire while the handle pends
+		// again — the pending path owns the steer.
+		registry.resolveExit("h1", 0)
+		await flush()
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("Call bash_control with this handle")
+		expect(steers[0]?.content[0]?.text).not.toContain("was detached")
+	})
+
+	it("user input releases the gate but keeps detached-exit notices live", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+		// Re-pend, then the human takes over.
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "c4",
+			input: { handle: "h1", action: "continue" },
+			content: [{ type: "text", text: "still running" }],
+			isError: false,
+			details: { handle: "h1", checkin: true, exited: false, exitCode: null, action: "continue" },
+		})
+		await fireInput(pi)
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+
+		// Detach again after the input clear, then the process dies: the
+		// death notice still reaches the model.
+		await fireToolResult(pi, detachResult("h1"))
+		registry.resolveExit("h1", 137)
+		await flush()
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("was detached")
+		expect(steers[0]?.content[0]?.text).toContain("exit code 137")
+	})
+})

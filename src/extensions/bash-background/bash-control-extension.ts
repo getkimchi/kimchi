@@ -48,6 +48,15 @@
  *    notification, so the watcher claims it silently. If that call then
  *    throws before emitting a resolved result, `tool_execution_end`
  *    releases the handle without steering.
+ *  - A `bash_control` result with `detached: true` RELEASES the handle from
+ *    the pending set WITHOUT killing the process: the registry entry (and
+ *    its deadline) stays live, the gate reopens, and the exit watcher keeps
+ *    watching — a detached process that exits on its own produces a
+ *    non-blocking informational steer (the model needs to know its
+ *    port-forward died), unless a control call is already in flight for
+ *    the handle. `session_start`/`session_shutdown` clear the detached
+ *    set; user `input` does not (typing releases the gate, not liveness
+ *    tracking). A `continue` result re-pends the handle.
  *  - The watcher also captures the registry it subscribed to and bails when
  *    the accessor no longer returns it (session shutdown unpublishes the
  *    registry before draining it, so teardown never steers a closing
@@ -77,6 +86,7 @@ interface BackgroundResultDetails {
 	handle?: string
 	checkin?: boolean
 	exited?: boolean
+	detached?: boolean
 }
 
 /** Runtime-guarded read of tool_result `details` (typed `unknown` upstream). */
@@ -87,6 +97,7 @@ function readDetails(raw: unknown): BackgroundResultDetails {
 		handle: typeof d.handle === "string" ? d.handle : undefined,
 		checkin: d.checkin === true,
 		exited: d.exited === true,
+		detached: d.detached === true,
 	}
 }
 
@@ -129,6 +140,10 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// set is non-empty. Per-session: rebuilt on session_start (this factory
 	// runs once per session, but resume/fork re-enters session_start).
 	let pendingHandles = new Set<string>()
+	// Handles released via bash_control "detach": running unmanaged-in-session,
+	// gate stays open, but a natural exit still earns an informational steer
+	// (e.g. the agent must learn its port-forward died).
+	let detachedHandles = new Set<string>()
 	// bash_control executions currently in flight: toolCallId -> handle.
 	// Used so the exit watcher can distinguish an unattended natural exit
 	// (steer) from an exit an active control call is about to report (its
@@ -142,6 +157,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 
 	pi.on("session_start", () => {
 		pendingHandles = new Set()
+		detachedHandles = new Set()
 		activeControlCalls = new Map()
 		claimedExits = new Map()
 		disposed = false
@@ -174,7 +190,30 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 				if (getRegistry() !== registry) return
 				// Already resolved via bash_control or the input safety net —
 				// bash_control's own result carried the final state, so no notice.
-				if (!pendingHandles.has(handle)) return
+				if (!pendingHandles.has(handle)) {
+					// Detached handles aren't gated, but a natural exit still earns
+					// one informational steer so the model learns its service (e.g.
+					// port-forward) died. Silent while a control call owns the exit.
+					if (detachedHandles.delete(handle) && !controlCallFor(handle)) {
+						const codeText = exitCode !== null ? ` (exit code ${exitCode})` : ""
+						pi.sendMessage(
+							{
+								customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+								content: [
+									{
+										type: "text",
+										text: markHarnessSteer(
+											`[Background bash process ${handle} exited on its own${codeText}. It was detached, so no tools are blocked. Call bash_control with this handle to retrieve the final output.]`,
+										),
+									},
+								],
+								display: false,
+							},
+							{ deliverAs: "steer" },
+						)
+					}
+					return
+				}
 				// An in-flight bash_control call owns this exit: its promise
 				// settles before the call emits its result (kill/exit settles
 				// execPromise first, so watcher reactions run first), and without
@@ -221,11 +260,21 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// on. Reveal in the same handler that closes the gate, so the tool is
 		// visible before any gate block reason can name it.
 		revealBashControl()
+		// Detach: release the gate WITHOUT killing the process. The handle
+		// moves to the detached set; the exit watcher armed during the pending
+		// phase now serves as the exit notice.
+		if (details.detached && !details.exited) {
+			pendingHandles.delete(details.handle)
+			detachedHandles.add(details.handle)
+			return
+		}
 		if (details.checkin && !details.exited) {
 			// Mid-run checkin (from bash's first result, or a bash_control
 			// continue that found the process still running): handle awaits
-			// a decision. Arm the watcher only when the handle is new — a
-			// repeat checkin for the same handle must not arm duplicates.
+			// a decision. A continue-after-detach re-pends the handle. Arm the
+			// watcher only when the handle is new — a repeat checkin for the
+			// same handle must not arm duplicates.
+			detachedHandles.delete(details.handle)
 			if (!pendingHandles.has(details.handle)) {
 				pendingHandles.add(details.handle)
 				armExitWatcher(details.handle)
@@ -237,6 +286,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// (e.g. bash_control's graceful "unknown handle" error result).
 		if (details.exited) {
 			pendingHandles.delete(details.handle)
+			detachedHandles.delete(details.handle)
 			claimedExits.delete(details.handle)
 		}
 		// checkin:false + exited:false is ambiguous (transient error that
@@ -287,6 +337,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	pi.on("session_shutdown", () => {
 		disposed = true
 		pendingHandles.clear()
+		detachedHandles.clear()
 		activeControlCalls.clear()
 		claimedExits.clear()
 	})
