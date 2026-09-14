@@ -116,6 +116,41 @@ async function fetchAvailableModelIds(
 	}
 }
 
+export const MEMORY_EMBEDDING_TAG = "memory:embedding"
+
+/**
+ * Tag the OpenAI embedder's gateway requests for usage tracking. mem0's
+ * OpenAI embedder doesn't support extra body fields through its config
+ * (the constructor only picks apiKey and baseURL), so the tag is injected
+ * by wrapping globalThis.fetch — narrowly: only /embeddings requests get
+ * the tag added to their JSON body, in the same payload field the /tags
+ * extension sets on session LLM requests, so billing attributes memory
+ * traffic through one mechanism. Idempotent (won't double-wrap). Applied
+ * at every backend creation since the OpenAI SDK may capture the fetch
+ * reference at client construction.
+ */
+export function tagEmbeddingRequests(): void {
+	const current = globalThis.fetch as typeof fetch & { _memoryEmbeddingTagged?: boolean }
+	if (current._memoryEmbeddingTagged) return
+	const original = globalThis.fetch
+	const tagged: typeof fetch & { _memoryEmbeddingTagged?: boolean } = async (input, init) => {
+		const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input?.url ?? "")
+		if (url.includes("/embeddings") && init?.body) {
+			try {
+				const body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
+				const tags = Array.isArray(body.tags) ? [...body.tags] : []
+				if (!tags.includes(MEMORY_EMBEDDING_TAG)) tags.push(MEMORY_EMBEDDING_TAG)
+				return original(input, { ...init, body: JSON.stringify({ ...body, tags }) })
+			} catch {
+				// Not a JSON body — pass through untouched
+			}
+		}
+		return original(input, init)
+	}
+	tagged._memoryEmbeddingTagged = true
+	globalThis.fetch = tagged
+}
+
 export function defaultMemoryDir(): string {
 	return join(homedir(), ".config", "kimchi", "memory")
 }
@@ -260,6 +295,7 @@ export async function createMemoryBackend(
 	// egress to third parties. An explicitly set value wins, so an operator
 	// who opts in deliberately keeps it.
 	disableMem0Telemetry()
+	tagEmbeddingRequests()
 	const { Memory } = await import("mem0ai/oss")
 	return new Memory(buildMemoryConfig(options, config))
 }

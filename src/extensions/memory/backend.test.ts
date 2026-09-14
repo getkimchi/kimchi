@@ -13,6 +13,7 @@ import {
 	memoryDbPath,
 	projectDbPath,
 	resolveExtractionModel,
+	tagEmbeddingRequests,
 } from "./backend.js"
 
 function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
@@ -163,6 +164,33 @@ describe("createMemoryBackend", () => {
 				expect(process.env.MEM0_TELEMETRY).toBe("true")
 			} finally {
 				restore(prev)
+			}
+		})
+	})
+	describe("tagEmbeddingRequests", () => {
+		it("adds the usage-tracking tag to /embeddings request bodies only", async () => {
+			const originalFetch = globalThis.fetch
+			const seen: Array<{ url: string; body: Record<string, unknown> }> = []
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				seen.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> })
+				return new Response("{}", { status: 200 })
+			})
+			try {
+				tagEmbeddingRequests()
+				tagEmbeddingRequests() // idempotent — no double-wrap
+				await globalThis.fetch("https://gw.test/v1/embeddings", {
+					method: "POST",
+					headers: { authorization: "Bearer k" },
+					body: JSON.stringify({ input: ["text"], model: "text-embedding-3-small" }),
+				})
+				await globalThis.fetch("https://gw.test/v1/models", { method: "GET" })
+				expect(seen).toHaveLength(2)
+				// The embeddings request got the tag
+				expect(seen[0]?.body.tags).toEqual(["memory:embedding"])
+				// The models request is untouched
+				expect(seen[1]?.body.tags).toBeUndefined()
+			} finally {
+				globalThis.fetch = originalFetch
 			}
 		})
 	})

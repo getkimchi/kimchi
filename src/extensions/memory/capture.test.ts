@@ -457,6 +457,16 @@ describe("parseTaggedFacts (three observed model shapes)", () => {
 })
 
 describe("chatJson retry behavior", () => {
+	it("tags extraction requests with a usage-tracking tag in the body", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 }))
+		await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		const init = fetchImpl.mock.calls[0]?.[1] as RequestInit
+		const body = JSON.parse(String(init.body)) as { tags?: string[] }
+		expect(body.tags).toContain("memory:extraction")
+	})
+
 	it("returns content on the first success", async () => {
 		const fetchImpl = vi
 			.fn()
