@@ -229,6 +229,28 @@ describe("installInlineCompactPatch", () => {
 		).toThrow("expected manual compaction to abort first and use _compactionAbortController")
 	})
 
+	it("rejects a session class whose compact() reworded the cancellation error", () => {
+		// Mirrors the pinned abort/controller internals but rewords the
+		// cancellation throw — the canary must fire loudly so model-guard's
+		// isCancellationError classification gets updated for the new wording.
+		class RewordedSession {
+			_compactionAbortController?: AbortController
+			async abort(): Promise<void> {}
+			async compact(): Promise<void> {
+				await this.abort()
+				this._compactionAbortController = new AbortController()
+				if (this._compactionAbortController.signal.aborted) throw new Error("Compaction aborted")
+			}
+			_bindExtensionCore(): void {}
+		}
+		expect(() =>
+			installInlineCompactPatch({
+				sessionClass: RewordedSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
+				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
+			}),
+		).toThrow("no longer throws 'Compaction cancelled'")
+	})
+
 	it("identifies missing AgentSession prototype methods", () => {
 		class MissingCompactSession {
 			_bindExtensionCore(): void {}

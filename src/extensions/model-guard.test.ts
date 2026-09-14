@@ -1105,6 +1105,33 @@ describe("turn_end compaction guard", () => {
 		expect(getLatestMessages().length).toBeGreaterThan(0)
 	})
 
+	it("a throwing notify does not reclassify a successful compaction as failure", async () => {
+		const { pi, trigger, appendEntry } = makeMockPI()
+		modelGuardExtension(pi)
+		const inlineCompact = vi.fn(async () => makeCompactionResult(270_274))
+		const notify = vi.fn(() => {
+			throw new Error("ui bridge exploded")
+		})
+		const ctx = makeMidTurnCtx({
+			inlineCompact,
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledOnce()
+		expect(appendEntry).toHaveBeenCalledWith("model_guard_compaction", expect.objectContaining({ outcome: "success" }))
+		expect(appendEntry).not.toHaveBeenCalledWith(
+			"model_guard_compaction",
+			expect.objectContaining({ outcome: "failure" }),
+		)
+
+		// The episode is not suppressed: after the below-threshold validation
+		// response, later growth compacts again.
+		await trigger("turn_end", makeTurnEndEvent(10_000, "stop"), ctx)
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledTimes(2)
+	})
+
 	it("records one diagnostic and skips the episode when the adapter is unavailable", async () => {
 		const { pi, trigger, appendEntry } = makeMockPI()
 		modelGuardExtension(pi)

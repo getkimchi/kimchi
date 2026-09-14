@@ -606,10 +606,16 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			// mutate the replacement's state.
 			if (attemptGeneration !== sessionGeneration) return
 			midTurnCompaction.awaitingValidation = true
-			ctx.ui?.notify(
-				`Context compacted (${result.tokensBefore.toLocaleString()} tokens → summary). Continuing automatically.`,
-				"info",
-			)
+			try {
+				ctx.ui?.notify(
+					`Context compacted (${result.tokensBefore.toLocaleString()} tokens → summary). Continuing automatically.`,
+					"info",
+				)
+			} catch {
+				// Display is best-effort — a throwing UI bridge must not leak into
+				// the failure classification below and mislabel a successful
+				// compaction as a failure.
+			}
 			appendMidTurnDiagnostic(
 				_pi,
 				"success",
