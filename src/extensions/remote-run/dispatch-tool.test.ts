@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createDispatchGate, type DispatchGate } from "./dispatch-gate.js"
 import { DISPATCH_TO_CLOUD_AGENT_TOOL, registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
 import { runCloudAgent } from "./runner.js"
 
@@ -8,6 +7,8 @@ vi.mock("./runner.js", () => ({
 	runCloudAgent: vi.fn(),
 	isRemoteRunEnabled: vi.fn(() => true),
 }))
+
+vi.mock("../ferment/prompt-ui.js", () => ({ withWorkingHidden: vi.fn((_ui, fn) => fn()) }))
 
 interface RegisteredTool {
 	name: string
@@ -20,26 +21,29 @@ interface RegisteredTool {
 	) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>
 }
 
-function makePi(): { pi: ExtensionAPI; tools: RegisteredTool[] } {
+function setup(confirmResult = true): {
+	tool: RegisteredTool
+	ctx: ExtensionContext
+	confirm: ReturnType<typeof vi.fn>
+} {
 	const tools: RegisteredTool[] = []
 	const pi = {
 		registerTool: (tool: RegisteredTool) => {
 			tools.push(tool)
 		},
 	} as unknown as ExtensionAPI
-	return { pi, tools }
+	registerDispatchToCloudAgentTool(pi)
+	const confirm = vi.fn(async () => confirmResult)
+	const ctx = { hasUI: true, ui: { confirm, notify: vi.fn() } } as unknown as ExtensionContext
+	return { tool: tools[0], ctx, confirm }
 }
 
-const ctx = { ui: { notify: vi.fn() } } as unknown as ExtensionContext
-
-function setup(): { tools: RegisteredTool[]; gate: DispatchGate; tool: RegisteredTool } {
-	const { pi, tools } = makePi()
-	const gate = createDispatchGate()
-	registerDispatchToCloudAgentTool(pi, gate)
-	return { tools, gate, tool: tools[0] }
-}
-
-async function callExecute(tool: RegisteredTool, params: Record<string, unknown>, signal?: AbortSignal) {
+async function callExecute(
+	tool: RegisteredTool,
+	ctx: ExtensionContext,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+) {
 	return tool.execute("call-1", params, signal, undefined, ctx)
 }
 
@@ -49,27 +53,22 @@ describe("registerDispatchToCloudAgentTool", () => {
 	})
 
 	it("registers a tool named dispatch_to_cloud_agent", () => {
-		const { tools } = setup()
-		expect(tools.map((t) => t.name)).toEqual([DISPATCH_TO_CLOUD_AGENT_TOOL])
-	})
-
-	it("refuses to dispatch when the gate is not armed", async () => {
 		const { tool } = setup()
-
-		const result = await callExecute(tool, { task: "Implement the auth feature" })
-
-		expect(runCloudAgent).not.toHaveBeenCalled()
-		expect(result.content[0].text).toContain("user-confirmed request")
-		expect(result.details).toEqual({ error: "not_armed" })
+		expect(tool.name).toBe(DISPATCH_TO_CLOUD_AGENT_TOOL)
 	})
 
-	it("dispatches via runCloudAgent in background with remote session origin when armed", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+	it("shows a pure decision dialog with no briefing content, and dispatches on confirmation", async () => {
+		const { tool, ctx, confirm } = setup(true)
 		vi.mocked(runCloudAgent).mockResolvedValue({ id: "agent-7", result: "backgrounded", backgrounded: true })
 
-		const result = await callExecute(tool, { task: "Implement the auth feature", description: "cloud: auth" })
+		const result = await callExecute(tool, ctx, { task: "Implement the auth feature", description: "cloud: auth" })
 
+		const [title, message] = confirm.mock.calls[0]
+		expect(title).toBe("Dispatch to cloud agent?")
+		expect(message).toContain("briefing from the message above")
+		// The dialog references the chat-presented briefing; it must NOT
+		// embed the task itself — chat is the reading surface.
+		expect(message).not.toContain("Implement the auth feature")
 		expect(runCloudAgent).toHaveBeenCalledWith(expect.anything(), ctx, "Implement the auth feature", "cloud: auth", {
 			background: true,
 			origin: "remote session",
@@ -78,12 +77,24 @@ describe("registerDispatchToCloudAgentTool", () => {
 		expect(result.details).toEqual({ agentId: "agent-7" })
 	})
 
+	it("long briefings: dialog stays content-free, full text is dispatched unchanged", async () => {
+		const { tool, ctx, confirm } = setup(true)
+		vi.mocked(runCloudAgent).mockResolvedValue({ id: "agent-11", result: "backgrounded", backgrounded: true })
+		const lines = Array.from({ length: 10 }, (_, i) => `section ${i + 1} of the plan`)
+		const task = lines.join("\n")
+
+		await callExecute(tool, ctx, { task })
+
+		const [, message] = confirm.mock.calls[0]
+		expect(message).not.toContain("section 1 of the plan")
+		expect(runCloudAgent).toHaveBeenCalledWith(expect.anything(), ctx, task, expect.any(String), expect.anything())
+	})
+
 	it("derives the description from the task when omitted", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+		const { tool, ctx } = setup(true)
 		vi.mocked(runCloudAgent).mockResolvedValue({ id: "agent-8", result: "backgrounded", backgrounded: true })
 
-		await callExecute(tool, { task: "Fix the flaky login test" })
+		await callExecute(tool, ctx, { task: "Fix the flaky login test" })
 
 		expect(runCloudAgent).toHaveBeenCalledWith(
 			expect.anything(),
@@ -94,74 +105,76 @@ describe("registerDispatchToCloudAgentTool", () => {
 		)
 	})
 
-	it("consumes the gate on dispatch — a second call refuses", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
-		vi.mocked(runCloudAgent).mockResolvedValue({ id: "agent-9", result: "backgrounded", backgrounded: true })
+	it("declined dialog: no spawn, model is told not to retry", async () => {
+		const { tool, ctx } = setup(false)
 
-		await callExecute(tool, { task: "Do the thing" })
-		const second = await callExecute(tool, { task: "Do it again" })
+		const result = await callExecute(tool, ctx, { task: "Implement the auth feature" })
 
-		expect(runCloudAgent).toHaveBeenCalledTimes(1)
-		expect(gate.isArmed()).toBe(false)
-		expect(second.details).toEqual({ error: "not_armed" })
+		expect(runCloudAgent).not.toHaveBeenCalled()
+		expect(result.content[0].text).toContain("declined")
+		expect(result.content[0].text).toContain("Do NOT retry")
+		expect(result.details).toEqual({ error: "declined" })
 	})
 
-	it("rejects an empty task without dispatching — and does not consume the gate", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+	it("refuses when there is no UI to confirm with", async () => {
+		const { tool } = setup(true)
+		const ctx = { hasUI: false, ui: { confirm: vi.fn(), notify: vi.fn() } } as unknown as ExtensionContext
 
-		const result = await callExecute(tool, { task: "   " })
+		const result = await callExecute(tool, ctx, { task: "Implement the auth feature" })
 
+		expect(runCloudAgent).not.toHaveBeenCalled()
+		expect(result.content[0].text).toContain("no interactive UI")
+		expect(result.details).toEqual({ error: "no_ui" })
+	})
+
+	it("rejects an empty task before showing any dialog", async () => {
+		const { tool, ctx, confirm } = setup(true)
+
+		const result = await callExecute(tool, ctx, { task: "   " })
+
+		expect(confirm).not.toHaveBeenCalled()
 		expect(runCloudAgent).not.toHaveBeenCalled()
 		expect(result.content[0].text).toContain("must not be empty")
 		expect(result.details).toEqual({ error: "empty_task" })
-		expect(gate.isArmed()).toBe(true)
 	})
 
 	it("rejects a non-string task without throwing (schema-validation bypass)", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+		const { tool, ctx, confirm } = setup(true)
 
-		const result = await callExecute(tool, { task: 42 })
+		const result = await callExecute(tool, ctx, { task: 42 })
 
-		expect(runCloudAgent).not.toHaveBeenCalled()
+		expect(confirm).not.toHaveBeenCalled()
 		expect(result.details).toEqual({ error: "empty_task" })
-		expect(gate.isArmed()).toBe(true)
 	})
 
-	it("returns 'Dispatch cancelled' when the signal is already aborted — without consuming the gate", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+	it("returns 'Dispatch cancelled' when the signal is already aborted — before any dialog", async () => {
+		const { tool, ctx, confirm } = setup(true)
 		const aborted = new AbortController()
 		aborted.abort()
 
-		const result = await callExecute(tool, { task: "Do the thing" }, aborted.signal)
+		const result = await callExecute(tool, ctx, { task: "Do the thing" }, aborted.signal)
 
+		expect(confirm).not.toHaveBeenCalled()
 		expect(runCloudAgent).not.toHaveBeenCalled()
 		expect(result.content[0].text).toBe("Dispatch cancelled.")
 		expect(result.details).toEqual({ error: "cancelled" })
-		expect(gate.isArmed()).toBe(true)
 	})
 
-	it("returns a model-visible error instead of throwing when the spawn fails — and consumes the gate", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+	it("returns a model-visible error instead of throwing when the spawn fails", async () => {
+		const { tool, ctx } = setup(true)
 		vi.mocked(runCloudAgent).mockRejectedValue(new Error("workspace unreachable"))
 
-		const result = await callExecute(tool, { task: "Do the thing" })
+		const result = await callExecute(tool, ctx, { task: "Do the thing" })
 
 		expect(result.content[0].text).toContain("Could not dispatch the cloud agent: workspace unreachable")
 		expect(result.details).toEqual({ error: "workspace unreachable" })
-		expect(gate.isArmed()).toBe(false)
 	})
 
 	it("does not crash on a non-string description", async () => {
-		const { tool, gate } = setup()
-		gate.arm()
+		const { tool, ctx } = setup(true)
 		vi.mocked(runCloudAgent).mockResolvedValue({ id: "agent-10", result: "backgrounded", backgrounded: true })
 
-		const result = await callExecute(tool, { task: "Do the thing", description: 123 })
+		const result = await callExecute(tool, ctx, { task: "Do the thing", description: 123 })
 
 		expect(runCloudAgent).toHaveBeenCalledWith(
 			expect.anything(),

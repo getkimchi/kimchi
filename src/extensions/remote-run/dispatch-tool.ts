@@ -6,11 +6,17 @@
  * returns early otherwise). The tool is part of the default tool set; plan
  * mode and ferment profiles swap it out via the tool catalog, so it is only
  * callable when direct dispatch is valid.
+ *
+ * Consent is structural and lives HERE, in the tool: the model may recognize
+ * dispatch intent from any phrasing (or from injected content), but every
+ * call — regardless of how it originated — waits on a user confirmation
+ * dialog showing the actual briefing before a spawn happens. There is no
+ * execution path that skips the human.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import type { DispatchGate } from "./dispatch-gate.js"
+import { withWorkingHidden } from "../ferment/prompt-ui.js"
 import { runCloudAgent } from "./runner.js"
 
 export const DISPATCH_TO_CLOUD_AGENT_TOOL = "dispatch_to_cloud_agent"
@@ -29,30 +35,15 @@ const DispatchToCloudAgentSchema = Type.Object({
 	),
 })
 
-export function registerDispatchToCloudAgentTool(pi: ExtensionAPI, gate: DispatchGate): void {
+export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: DISPATCH_TO_CLOUD_AGENT_TOOL,
 		label: "Dispatch to cloud agent",
 		description:
-			"Dispatch a fully self-contained task to a remote cloud agent running on a cloud sandbox. Only call this when the user explicitly asked to continue in a remote session / run the task in the cloud — the harness transforms such requests into rewrite instructions for you. The remote agent runs in the background; the user is notified on completion.",
+			"Dispatch a fully self-contained task to a remote cloud agent running on a cloud sandbox. Use this when the user asks to run, delegate, or implement something remotely — e.g. 'continue in remote session', 'using the cloud agent', 'do this in the cloud / on a sandbox'. IMPORTANT: before calling this tool, present the complete briefing verbatim in your message text so the user can read it in the chat; then call this tool with exactly that text as `task`. The briefing must be fully self-contained: the remote agent sees ONLY the task text plus the repository, never this conversation. Every call shows the user a confirmation dialog before anything is sent — do not call speculatively, and if the user declines, do not call again unless they explicitly re-ask. The remote agent runs in the background; the user is notified on completion.",
 		promptSnippet: "Dispatch a self-contained task to a remote cloud agent",
 		parameters: DispatchToCloudAgentSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			// Structural consent: refuse unless the user confirmed a dispatch
-			// request (trigger phrase + dialog) in this turn. This is what keeps
-			// indirect prompt injection from launching remote compute — prose in
-			// the tool description alone is not enforceable.
-			if (!gate.isArmed()) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: "Dispatch requires an explicit, user-confirmed request. Ask the user to start a prompt with a remote-session trigger phrase (e.g. 'continue in remote session') and confirm the dialog, then retry.",
-						},
-					],
-					details: { error: "not_armed" },
-				}
-			}
 			// Defense in depth: schema validation should guarantee a string, but
 			// malformed model calls can bypass it — don't throw a raw TypeError.
 			if (typeof params.task !== "string" || !params.task.trim()) {
@@ -62,18 +53,49 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI, gate: Dispatc
 				}
 			}
 			const task = params.task.trim()
-			// Aborted mid-call (turn cancelled while the tool was queued): don't
-			// launch remote compute the user just killed. Not a consumption — the
-			// latch is cleared by turn_end anyway.
+			// Aborted before we get to run (e.g. turn cancelled while the tool
+			// was queued): don't launch remote compute the user just killed.
 			if (signal?.aborted) {
 				return {
 					content: [{ type: "text" as const, text: "Dispatch cancelled." }],
 					details: { error: "cancelled" },
 				}
 			}
-			// One-shot: consume the confirmation as we commit to the spawn. Any
-			// further dispatch needs a fresh explicit confirmation.
-			gate.disarm()
+			// Consent requires a dialog; without a UI there is no safe path.
+			if (!ctx.hasUI) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "Cannot dispatch: this session has no interactive UI to confirm with. Tell the user to re-run interactively or use the /remote-run command.",
+						},
+					],
+					details: { error: "no_ui" },
+				}
+			}
+			// Mid-turn confirm: hide the working animation so it doesn't render
+			// behind the dialog (same wrapper the other in-turn prompts use).
+			// Pure decision dialog — no briefing content. The model presents the
+			// full briefing in chat before calling (see description), and the
+			// transcript is the only sane reading surface; recapping here would
+			// be neither readable nor a meaningful integrity check.
+			const confirmed = await withWorkingHidden(ctx.ui, () =>
+				ctx.ui.confirm(
+					"Dispatch to cloud agent?",
+					"The briefing from the message above will be executed by a cloud agent on a remote sandbox. Your local changes are synced to the sandbox; this conversation's history is not.",
+				),
+			)
+			if (!confirmed) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "The user declined the remote dispatch. Do NOT retry dispatch_to_cloud_agent unless the user explicitly re-asks. Ask how to proceed — e.g. continue locally, or adjust the task.",
+						},
+					],
+					details: { error: "declined" },
+				}
+			}
 			const providedDescription = typeof params.description === "string" ? params.description.trim() : undefined
 			const description =
 				providedDescription ||
