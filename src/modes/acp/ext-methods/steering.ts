@@ -58,7 +58,7 @@ function parseSteeringImages(attachments: unknown): ImageContent[] {
  * message was queued, or "promptRequired" when no turn is in progress (this
  * handler must never start a new turn).
  *
- * Error handling is deliberately narrow, matched against pi-mono 0.84.1's
+ * Error handling is deliberately narrow, matched against pi-mono 0.85.1's
  * actual steer() failure surface: steer() only throws when the text is an
  * extension command ("Extension command ... cannot be queued") — a caller
  * input error mapped to invalidParams. There is no idle-race throw in this
