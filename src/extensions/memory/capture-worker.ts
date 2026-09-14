@@ -709,7 +709,8 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 }
 
 /** The worker's LLM: an injected test seam wins; otherwise resolved from
- * config via the auto router (with the flash-tier preference fallback). */
+ * config against the gateway's live model list (the flash-tier preference
+ * order — see backend.ts). */
 async function resolveWorkerLlm(options: RunCaptureWorkerOptions): Promise<GatewayLlmOptions> {
 	if (options.llm) return options.llm
 	const config = (await import("../../config.js")).loadConfig()
