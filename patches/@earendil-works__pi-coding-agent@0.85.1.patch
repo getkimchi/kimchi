@@ -30,8 +30,12 @@
 #     flows through interactive-mode's selectModel(model, persist) closure with
 #     persist: true for user selection (0.84.1 semantics) instead of
 #     setDefaultModelAndProvider.
-#   - DROPPED: the exportToJsonl `await` hunk (stale - exportToJsonl is
-#     synchronous in both versions; hunk was dead code).
+#   - RETAINED: the exportToJsonl `await` hunk. exportToJsonl IS synchronous in
+#     both upstream versions, but src/cli.ts monkey-patches the prototype with an
+#     async wrapper (trace-ID injection + awaited PII redaction, fail-closed on
+#     error). The hunk is the paired second half of that contract; dropping it is
+#     a regression (prints [object Promise], returns before redaction completes).
+#     Verified live via tmux harness before restore.
 #   - DROPPED: the pasteToEditor handleInput routing hunk. The TS patch
 #     src/paste-to-editor-patch.ts (handleTerminalInput) is the single home for
 #     that fix; two patches racing was last-writer-wins.
@@ -670,7 +674,7 @@ index 2e04903..0cb75bb 100644
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..65e4c9c 100644
+index a1e7d98..304960d 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1900,6 +1900,7 @@ export class InteractiveMode {
@@ -767,3 +771,17 @@ index a1e7d98..65e4c9c 100644
              return { component: selector, focus: selector };
          });
      }
+@@ -5051,7 +5095,12 @@ export class InteractiveMode {
+         const outputPath = this.getPathCommandArgument(text, "/export");
+         try {
+             if (outputPath?.endsWith(".jsonl")) {
+-                const filePath = this.session.exportToJsonl(outputPath);
++                // kimchi-dev: await is REQUIRED. src/cli.ts monkey-patches
++                // AgentSession.prototype.exportToJsonl with an async wrapper that
++                // injects trace IDs and awaits PII redaction before returning the
++                // path; without this await /export prints [object Promise] and
++                // returns before redaction completes.
++                const filePath = await this.session.exportToJsonl(outputPath);
+                 this.showStatus(`Session exported to: ${filePath}`);
+             }
+             else {
