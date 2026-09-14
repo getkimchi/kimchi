@@ -65,6 +65,7 @@ export async function handleMessageEnd(
 				cache_creation_tokens: cacheWrite,
 				cost_usd: costTotal,
 				duration_ms: durationMs,
+				...tm.getTraceAttributes(),
 			},
 			ctx,
 		)
@@ -117,6 +118,7 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 			error_type: "agent_error",
 			error_message: text.slice(0, 300),
 			turn_index: tm.turnIndex,
+			...tm.getTraceAttributes(),
 		},
 		ctx,
 	)

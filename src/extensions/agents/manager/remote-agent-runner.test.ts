@@ -253,7 +253,7 @@ describe("runRemoteAgent", () => {
 				agentMode: "ACP",
 				yolo: true,
 			}),
-			expect.objectContaining({ timeoutMs: 5 * 60_000 }),
+			expect.objectContaining({ timeoutMs: 10 * 60_000 }),
 		)
 
 		// 4. ACP client — cwd matches the unique session directory
@@ -426,12 +426,13 @@ describe("runRemoteAgent", () => {
 		expect(capturedOptions?.signal).toBe(controller.signal)
 	})
 
-	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification callbacks", async () => {
+	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification, onContextUsage callbacks", async () => {
 		const callbacks = {
 			onToolActivity: vi.fn(),
 			onTurnEnd: vi.fn(),
 			onAssistantUsage: vi.fn(),
 			onRawNotification: vi.fn(),
+			onContextUsage: vi.fn(),
 		}
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks }))
 
@@ -442,6 +443,7 @@ describe("runRemoteAgent", () => {
 		expect(typeof captured.onTurnEnd).toBe("function")
 		expect(typeof captured.onAssistantUsage).toBe("function")
 		expect(typeof captured.onRawNotification).toBe("function")
+		expect(typeof captured.onContextUsage).toBe("function")
 
 		// Verify forwarding
 		captured.onToolActivity({ status: "completed", toolName: "Read" })
@@ -457,6 +459,9 @@ describe("runRemoteAgent", () => {
 		const rawNotif = { update: { sessionUpdate: "tool_call" } }
 		captured.onRawNotification(rawNotif)
 		expect(callbacks.onRawNotification).toHaveBeenCalledWith(rawNotif)
+
+		captured.onContextUsage(5000, 128000)
+		expect(callbacks.onContextUsage).toHaveBeenCalledWith(5000, 128000)
 	})
 
 	it("forwards gitDetails to createSession with targetDirectory cleared so clone goes into session cwd", async () => {
@@ -973,6 +978,14 @@ describe("runRemoteAgent", () => {
 			await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeRecoveryOptions())).rejects.toThrow(
 				"remote session no longer reachable",
 			)
+
+			// Revive readiness waits are capped per attempt (5min), unlike the initial
+			// uncapped wait (10-min default) before the first prompt.
+			const readyCalls = vi.mocked(waitForWorkspaceReady).mock.calls
+			expect(readyCalls[0][0]).not.toHaveProperty("timeoutMs")
+			for (const call of readyCalls.slice(1)) {
+				expect(call[0]).toMatchObject({ timeoutMs: 5 * 60_000 })
+			}
 
 			expect(deleteSession).not.toHaveBeenCalled()
 		})

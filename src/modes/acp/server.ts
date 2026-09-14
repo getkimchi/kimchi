@@ -92,14 +92,21 @@ import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
-import { ACP_REATTACH_MID_TURN_META_KEY, buildToolCallId } from "../../sandbox/worker/acp-protocol.js"
+import {
+	ACP_LIFETIME_USAGE_META_KEY,
+	ACP_REATTACH_MID_TURN_META_KEY,
+	buildToolCallId,
+} from "../../sandbox/worker/acp-protocol.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
+import { handleImportApply } from "./ext-methods/import-apply.js"
+import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -1011,6 +1018,11 @@ export class KimchiAcpAgent implements Agent {
 					authPath: join(this.agentDir, "auth.json"),
 					modelsPath: join(this.agentDir, "models.json"),
 				})
+			case AVAILABLE_EXT_METHODS.set_onboarding_flag:
+				// Write the shared config per call through the harness's
+				// read-modify-write helper so sibling onboarding keys set by other
+				// Kimchi surfaces survive.
+				return handleSetOnboardingFlag({}, params)
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.steering:
@@ -1023,6 +1035,19 @@ export class KimchiAcpAgent implements Agent {
 					const turnActive = entry.turn !== undefined && !entry.turn.cancelled
 					return { session: entry.session, turnActive }
 				}, params)
+			case AVAILABLE_EXT_METHODS.import_discover:
+				// Sessionless, read-only source-app discovery for the import screen
+				// (ADR-0043/ADR-0044): nothing is written to disk and no session is
+				// touched. ImportDiscoverResult is a type alias, so it is directly
+				// assignable to the string-indexed record the extMethod contract
+				// wants — no cast, no spread.
+				return importDiscover()
+			case AVAILABLE_EXT_METHODS.import_apply:
+				// Sessionless write half of the import (ADR-0043/ADR-0044): copies
+				// selected skills into Kimchi's own skills dir, merges selected MCP
+				// servers conservatively, and satisfies the migration marker. No
+				// session is touched.
+				return { ...handleImportApply({ agentDir: this.agentDir }, params) }
 			default:
 				throw RequestError.methodNotFound(method)
 		}
@@ -1258,7 +1283,7 @@ export class KimchiAcpAgent implements Agent {
 					// the session's estimate just moved. Emit here (subject to
 					// emitUsageUpdate's undefined/null skip) so clients track the
 					// context window across chained steps, not just at turn end.
-					this.emitUsageUpdate(entry)
+					this.emitUsageUpdate(entry.session, turn.usage)
 				}
 				return
 			}
@@ -1657,15 +1682,30 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
-	private emitUsageUpdate(entry: SessionRecord): void {
-		const session = entry.session
+	private emitUsageUpdate(session: AgentSession, lifetime: TurnUsage): void {
 		const ctx = session.getContextUsage()
 		// Per the issue doc: skip when getContextUsage() returns undefined or
 		// tokens is null (e.g. right after compaction). ACP requires both `used`
 		// and `size`, so there is no null-safe emission.
 		if (!ctx || ctx.tokens === null) return
+		// Piggyback the turn's cumulative lifetime token totals on the
+		// notification via _meta — usage_update's used/size only describe the
+		// context window, so long-running remote clients would otherwise see no
+		// token consumption until the PromptResponse resolves. Cumulative (not
+		// per-update) totals keep client-side delta computation idempotent across
+		// session/load replays.
+		const usageMeta =
+			lifetime.messages > 0
+				? {
+						input: lifetime.input,
+						output: lifetime.output,
+						cacheRead: lifetime.cacheRead,
+						cacheWrite: lifetime.cacheWrite,
+					}
+				: undefined
 		this.send({
 			sessionId: session.sessionId,
+			...(usageMeta ? { _meta: { [ACP_LIFETIME_USAGE_META_KEY]: usageMeta } } : {}),
 			update: {
 				sessionUpdate: "usage_update",
 				used: ctx.tokens,
@@ -1679,7 +1719,7 @@ export class KimchiAcpAgent implements Agent {
 		if (!turn) return
 		entry.turn = undefined
 		try {
-			this.emitUsageUpdate(entry)
+			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
 			const response: PromptResponse = { stopReason }
 			// usage is v1/experimental-only on PromptResponse (v2 drops it in favor

@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, relative, resolve } from "node:path"
+import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
+import { writeJson } from "./config/json.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -78,6 +79,7 @@ export interface OnboardingConfig {
 	sessionModeWizardSeenAt?: string
 	hideSessionModeDialog?: boolean
 	teleportHelpSeenAt?: string
+	studioOnboardingSeenAt?: string
 }
 
 export interface SurveyConfig {
@@ -340,11 +342,16 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
 	const teleportHelpSeenAt =
 		typeof raw.teleportHelpSeenAt === "string" && raw.teleportHelpSeenAt.length > 0 ? raw.teleportHelpSeenAt : undefined
+	const studioOnboardingSeenAt =
+		typeof raw.studioOnboardingSeenAt === "string" && raw.studioOnboardingSeenAt.length > 0
+			? raw.studioOnboardingSeenAt
+			: undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
+		...(studioOnboardingSeenAt ? { studioOnboardingSeenAt } : {}),
 	}
 }
 
@@ -488,17 +495,6 @@ export function getAgentConfigDir(): string {
 	return AGENT_CONFIG_DIR
 }
 
-function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
-	mkdirSync(dirname(configPath), { recursive: true })
-	const tmp = `${configPath}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, configPath)
-	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
-	// git tokens in plaintext. The atomic rename may inherit the tmp file's
-	// default umask perms, so chmod explicitly after the rename lands.
-	chmodSync(configPath, 0o600)
-}
-
 function updateConfigFile(
 	configPath: string,
 	update: (raw: Record<string, unknown>) => void,
@@ -508,7 +504,7 @@ function updateConfigFile(
 	if (!raw && options?.createIfMissing === false) return
 	const next = raw ?? {}
 	update(next)
-	writeConfigObject(configPath, next)
+	writeJson(configPath, next)
 }
 
 function writeConfigField(key: string, value: unknown, configPath: string): void {
@@ -570,6 +566,17 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.sessionModeWizardSeenAt = seenAt
+	})
+}
+
+export function readStudioOnboardingSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.studioOnboardingSeenAt
+}
+
+export function writeStudioOnboardingSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.studioOnboardingSeenAt = seenAt
 	})
 }
 

@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ServerEntry } from "../../extensions/mcp-adapter/types.js"
 import { hasBearerAuthorizationHeader } from "../engine.js"
-import type { AgentDefinition } from "../index.js"
+import type { AgentDefinition, DirCandidate } from "../index.js"
 import { parseJsonc } from "../jsonc.js"
 
 type SchemaHint = "modern" | "legacy"
@@ -117,8 +117,8 @@ function transformLegacyServer(raw: LegacyServerRaw): ServerEntry {
 
 export function makeOpenCodeDefinition(overrides?: {
 	configPaths?: string[]
-	skillsDirs?: string[]
-	commandsDirs?: string[]
+	skillsDirs?: DirCandidate[]
+	commandsDirs?: DirCandidate[]
 }): AgentDefinition {
 	const configPaths = overrides?.configPaths ?? DEFAULT_OC_CONFIG_PATHS
 	const skillsDirs = overrides?.skillsDirs ?? DEFAULT_OC_SKILLS_DIRS

@@ -281,21 +281,56 @@ describe("ACP integration — plan updates from todo writes", () => {
 			fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
 
 			const sessionId = await newSession(fixture, fixture.workDir)
+			// A streaming model chunk means the auto-resume kick is in flight — it
+			// streams from the moment the prompt starts, long before the plan
+			// snapshot arrives at tool completion. Prompting while the kick runs
+			// would consume the next scripted model response and start the step
+			// early (this was the CI flake: an 8s deadline fired while the kick
+			// was merely slow on a loaded runner).
+			const kickIsStreaming = () =>
+				fixture.client.sessionUpdates.some(
+					(u) =>
+						u.sessionId === sessionId &&
+						(u.update.sessionUpdate === "agent_message_chunk" || u.update.sessionUpdate === "agent_thought_chunk"),
+				)
+			const stepIsPending = (entries: PlanEntryLike[]) =>
+				entries.some((entry) => entry.status === "pending" && entry.content.includes(STEP_DESCRIPTION))
+
 			const initial = await waitForPlanSnapshot(
 				fixture,
 				sessionId,
-				(entries) => entries.some((entry) => entry.content.includes(STEP_DESCRIPTION)),
+				stepIsPending,
 				"Ferment phase Todo snapshot did not arrive",
 				8_000,
-			).catch(async () => {
-				await prompt(fixture, sessionId, "Continue the Ferment")
-				return waitForPlanSnapshot(
-					fixture,
-					sessionId,
-					(entries) => entries.some((entry) => entry.content.includes(STEP_DESCRIPTION)),
-					"Prompt-driven Ferment phase Todo snapshot did not arrive",
-				)
-			})
+			)
+				.catch(async () => {
+					if (kickIsStreaming()) {
+						// Kick is running, just slow — wait for the condition, no deadline.
+						return waitForPlanSnapshot(
+							fixture,
+							sessionId,
+							stepIsPending,
+							"Ferment phase Todo snapshot did not arrive from the in-flight resume kick",
+						)
+					}
+					// The kick never ran — drive the phase manually.
+					await prompt(fixture, sessionId, "Continue the Ferment")
+					return waitForPlanSnapshot(
+						fixture,
+						sessionId,
+						stepIsPending,
+						"Prompt-driven Ferment phase Todo snapshot did not arrive",
+					)
+				})
+				.catch(async () => {
+					await prompt(fixture, sessionId, "Continue the Ferment")
+					return waitForPlanSnapshot(
+						fixture,
+						sessionId,
+						(entries) => entries.some((entry) => entry.content.includes(STEP_DESCRIPTION)),
+						"Prompt-driven Ferment phase Todo snapshot did not arrive",
+					)
+				})
 			expect(initial.some((entry) => entry.status === "pending" && entry.content.includes(STEP_DESCRIPTION))).toBe(true)
 
 			await prompt(fixture, sessionId, "Start the step")

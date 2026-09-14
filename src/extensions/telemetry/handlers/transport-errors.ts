@@ -32,6 +32,7 @@ export function handleTransportError(
 		{
 			error_type: "transport_error",
 			error_message: (msg.errorMessage ?? "").slice(0, 300),
+			...tm.getTraceAttributes(),
 		},
 		ctx,
 	)

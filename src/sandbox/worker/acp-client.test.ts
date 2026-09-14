@@ -43,6 +43,9 @@ function openSocket(socket: MockSocket): void {
 const CONNECTING = 0
 const OPEN = 1
 
+/** Whether MockWebSocket.ping() auto-responds with pong. Set false to simulate a dead transport. */
+let respondToPing = true
+
 class MockWebSocket {
 	static CONNECTING = CONNECTING
 	static OPEN = OPEN
@@ -100,6 +103,7 @@ class MockWebSocket {
 	ping(): void {
 		// Simulate a real WS: auto-respond with pong so the keepalive
 		// doesn't falsely detect a broken connection in tests.
+		if (!respondToPing) return
 		fireHandlers(this.socket, "pong")
 	}
 
@@ -194,6 +198,7 @@ function makeCallbacks(): { callbacks: AcpSessionCallbacks; calls: ReturnType<ty
 		onTextDelta: vi.fn(),
 		onToolActivity: vi.fn(),
 		onTurnEnd: vi.fn(),
+		onContextUsage: vi.fn(),
 		onAssistantUsage: vi.fn(),
 	}
 	return { callbacks, calls }
@@ -276,11 +281,13 @@ async function initClientWithLoad(client: AcpSessionClient): Promise<{ socket: M
 
 beforeEach(() => {
 	mockSockets = []
+	respondToPing = true
 })
 
 afterEach(() => {
 	vi.useRealTimers()
 	mockSockets = []
+	respondToPing = true
 })
 
 describe("AcpSessionClient", () => {
@@ -602,6 +609,36 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
+		it("does not time out a long-running prompt (no wall-clock cap)", async () => {
+			vi.useFakeTimers()
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("long task")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Regression: prompt() previously rejected with RemoteConnectionError
+			// after 10 minutes ("prompt timed out after 600000ms"), killing healthy
+			// long-running remote turns. There is now no wall-clock cap — dead
+			// connections are detected by the ping keepalive instead.
+			vi.advanceTimersByTime(30 * 60_000)
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			const result = await promptPromise
+			expect(result.stopReason).toBe("end_turn")
+
+			client.close()
+		})
+
 		it("calls onTurnEnd with incremented turn count when prompt resolves", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
@@ -681,6 +718,116 @@ describe("AcpSessionClient", () => {
 				output: 200,
 				cacheRead: 50,
 				cacheWrite: 10,
+			})
+
+			client.close()
+		})
+
+		it("rejects a pending prompt when the transport stops answering pings", async () => {
+			vi.useFakeTimers()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const promptPromise = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+
+			// Half-open connection: WS stays open, messages stop flowing, pings go
+			// unanswered. The keepalive (15s interval, 30s tolerance) must reject
+			// the pending prompt instead of hanging forever.
+			respondToPing = false
+			vi.advanceTimersByTime(31_000)
+
+			await expect(promptPromise).rejects.toThrow(RemoteConnectionError)
+			await expect(promptPromise).rejects.toThrow("ping timeout")
+
+			client.close()
+		})
+
+		it("reports lifetime usage deltas from usage_update _meta and only the remainder from PromptResponse", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Mid-run usage_update with cumulative lifetime totals — first
+			// snapshot reports everything seen so far as one delta.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					_meta: { "kimchi/lifetimeUsage": { input: 100, output: 50, cacheRead: 10, cacheWrite: 5 } },
+					update: { sessionUpdate: "usage_update", used: 5000, size: 128000 },
+				}),
+			)
+			// Second snapshot — only the growth since the last one is reported.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					_meta: { "kimchi/lifetimeUsage": { input: 150, output: 80, cacheRead: 10, cacheWrite: 5 } },
+					update: { sessionUpdate: "usage_update", used: 6000, size: 128000 },
+				}),
+			)
+			await new Promise((resolve) => setImmediate(resolve))
+
+			expect(callbacks.onContextUsage).toHaveBeenCalledTimes(2)
+			expect(callbacks.onContextUsage).toHaveBeenNthCalledWith(1, 5000, 128000)
+			expect(callbacks.onContextUsage).toHaveBeenNthCalledWith(2, 6000, 128000)
+			expect(callbacks.onAssistantUsage).toHaveBeenCalledTimes(2)
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(1, {
+				input: 100,
+				output: 50,
+				cacheRead: 10,
+				cacheWrite: 5,
+			})
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(2, {
+				input: 50,
+				output: 30,
+				cacheRead: 0,
+				cacheWrite: 0,
+			})
+
+			// Prompt resolves with the final totals — only the remainder (output
+			// grew 80 → 90) is emitted, so consumers never double-count the turn.
+			serverSendMessage(
+				socket,
+				rpcResponse(promptReq.id, {
+					stopReason: "end_turn",
+					usage: {
+						inputTokens: 150,
+						outputTokens: 90,
+						cachedReadTokens: 10,
+						cachedWriteTokens: 5,
+						totalTokens: 335,
+					},
+				}),
+			)
+			const result = await p
+
+			// The returned usage is still the full turn's totals.
+			expect(result.usage).toEqual({ input: 150, output: 90, cacheRead: 10, cacheWrite: 5 })
+			expect(callbacks.onAssistantUsage).toHaveBeenCalledTimes(3)
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(3, {
+				input: 0,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
 			})
 
 			client.close()
@@ -1303,6 +1450,62 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
+		it("passes rawOutput through onToolActivity on completion", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "Run bash",
+						status: "in_progress",
+					},
+				}),
+			)
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						status: "completed",
+						rawOutput: { content: [{ type: "text", text: "total 42" }] },
+					},
+				}),
+			)
+
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					toolName: "Run bash",
+					title: "Run bash",
+					toolCallId: "tc-1",
+					status: "completed",
+					rawOutput: { content: [{ type: "text", text: "total 42" }] },
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+			client.close()
+		})
+
 		it("omits rawInput from the activity payload when the notification has none", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
@@ -1343,7 +1546,7 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
-		it("ignores agent_thought_chunk, usage_update, plan, and other updates", async () => {
+		it("ignores agent_thought_chunk and plan updates; usage_update only reports context usage", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
 				sessionName: "sess-1",
@@ -1395,9 +1598,14 @@ describe("AcpSessionClient", () => {
 			// Yield so the async stream pipeline can process the notifications
 			await new Promise((resolve) => setImmediate(resolve))
 
-			// None of these should trigger any callback
+			// Thought/plan chunks trigger no callback at all.
 			expect(callbacks.onTextDelta).not.toHaveBeenCalled()
 			expect(callbacks.onToolActivity).not.toHaveBeenCalled()
+			// usage_update without _meta lifetime totals (old server) surfaces
+			// only the context-window state — no usage deltas.
+			expect(callbacks.onContextUsage).toHaveBeenCalledTimes(1)
+			expect(callbacks.onContextUsage).toHaveBeenCalledWith(5000, 128000)
+			expect(callbacks.onAssistantUsage).not.toHaveBeenCalled()
 
 			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
 			await p

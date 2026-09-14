@@ -16,7 +16,9 @@
  * | `tool_call` (completed/failed)  | `onToolActivity({ status: "completed"/"failed" })` |
  * | `tool_call_update` (→completed) | `onToolActivity({ status: "completed"/"failed" })` |
  * | `prompt()` resolves             | `onTurnEnd(++turnCount)`          |
- * | `PromptResponse.usage`          | `onAssistantUsage({...})`         |
+ * | `usage_update`                  | `onContextUsage(used, size)`      |
+ * | `usage_update` (+ `_meta` totals)| `onAssistantUsage(delta)`         |
+ * | `PromptResponse.usage`          | `onAssistantUsage({remainder})`   |
  *
  * Designed to be plugged into a `runRemoteAgent()` function that mirrors `runAgent()`'s
  * callback contract but sources events from this client instead of a local `AgentSession`.
@@ -37,7 +39,7 @@ import {
 import WebSocket from "ws"
 import type { LifetimeUsage } from "../../extensions/agents/manager/usage.js"
 import type { WorkspaceCredentials } from "../cloud/types.js"
-import { ACP_REATTACH_MID_TURN_META_KEY, parseToolCallId } from "./acp-protocol.js"
+import { ACP_REATTACH_MID_TURN_META_KEY, parseToolCallId, readLifetimeUsageMeta } from "./acp-protocol.js"
 
 // Hoisted once — reused across WebSocket frames instead of allocating per message.
 const textEncoder = new TextEncoder()
@@ -74,10 +76,16 @@ export interface AcpSessionCallbacks {
 		title?: string
 		/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
 		rawInput?: unknown
+		/** Structured tool result (ACP rawOutput — the pi AgentToolResult). */
+		rawOutput?: unknown
 	}) => void
 	/** Called at the end of each ACP turn with the cumulative turn count. */
 	onTurnEnd?: (turnCount: number) => void
-	/** Called with per-turn token usage when a `prompt()` resolves. */
+	/** Called on each usage_update with the context-window state (used/size). */
+	onContextUsage?: (used: number, size: number) => void
+	/** Called with per-turn token usage when a `prompt()` resolves, and — when
+	 *  the server attaches cumulative lifetime totals to usage_update `_meta` —
+	 *  incrementally during the turn as deltas. */
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	/** Receives every raw SessionNotification before dispatch to typed callbacks. */
 	onRawNotification?: (params: SessionNotification) => void
@@ -162,6 +170,10 @@ export class AcpSessionClient {
 	 *  load was in flight. Exposed via `loadReplay` for protocol-level result
 	 *  recovery when the transcript file cannot be fetched. */
 	private _loadReplay: SessionNotification[] = []
+	/** Last cumulative lifetime usage totals seen via usage_update `_meta` —
+	 *  the baseline for delta computation. Reset per prompt() so consecutive
+	 *  prompts on one session don't suppress each other's usage. */
+	private _lastLifetimeUsage: LifetimeUsage | undefined
 	/** WS ping interval — detects broken connections within ~30s instead of minutes. */
 	private _pingTimer: ReturnType<typeof setInterval> | undefined
 	/** Tracks whether we've received any data since the last ping. The WS 'pong'
@@ -303,18 +315,17 @@ export class AcpSessionClient {
 		}
 
 		this._accumulatedText = ""
+		this._lastLifetimeUsage = undefined
 
+		// No upper bound on prompt duration — remote agents can run for tens of
+		// minutes on large repos. A wall-clock timeout cannot distinguish a slow
+		// turn from a dead connection (and wrongly closes a healthy WS), so
+		// transport failure detection is left to the ping keepalive instead.
 		const response: PromptResponse = await this._withAbortRejection(
-			this._withTimeout(
-				this._connection.prompt({
-					sessionId: this._sessionId,
-					prompt: [{ type: "text", text }],
-				}),
-				// No upper bound on prompt duration — remote agents can run for
-				// minutes on large repos. Use a generous default of 10 minutes.
-				10 * 60_000,
-				"prompt",
-			),
+			this._connection.prompt({
+				sessionId: this._sessionId,
+				prompt: [{ type: "text", text }],
+			}),
 		)
 
 		this._turnCount++
@@ -328,7 +339,14 @@ export class AcpSessionClient {
 				cacheRead: response.usage.cachedReadTokens ?? 0,
 				cacheWrite: response.usage.cachedWriteTokens ?? 0,
 			}
-			this._options.callbacks?.onAssistantUsage?.(usage)
+			if (this._lastLifetimeUsage) {
+				// Mid-run usage_update notifications already reported the turn's
+				// consumption via _meta deltas — emit only the remainder so the
+				// turn's totals aren't double-counted.
+				this._emitLifetimeDelta(usage)
+			} else {
+				this._options.callbacks?.onAssistantUsage?.(usage)
+			}
 		}
 
 		return {
@@ -645,7 +663,16 @@ export class AcpSessionClient {
 					this._toolCallTitles.set(update.toolCallId, update.title)
 				}
 				const title = update.title ?? this._toolCallTitles.get(update.toolCallId)
-				this._dispatchToolActivity(cb, update.status, update.toolCallId, title, update.rawInput)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, title, update.rawInput, update.rawOutput)
+				break
+			}
+			case "usage_update": {
+				cb.onContextUsage?.(update.used, update.size)
+				// Servers that fold lifetime totals into _meta let clients show
+				// live token counts during long remote runs. Cumulative totals
+				// make the delta idempotent across session/load replays.
+				const totals = readLifetimeUsageMeta(params._meta)
+				if (totals) this._emitLifetimeDelta(totals)
 				break
 			}
 			default:
@@ -661,6 +688,7 @@ export class AcpSessionClient {
 		toolCallId: string,
 		title: string | undefined,
 		rawInput?: unknown,
+		rawOutput?: unknown,
 	): void {
 		// pending = model is still streaming the args — nothing is executing yet.
 		if (!status || status === "pending") return
@@ -676,9 +704,28 @@ export class AcpSessionClient {
 			status,
 			title,
 			...(rawInput != null ? { rawInput } : {}),
+			...(rawOutput != null ? { rawOutput } : {}),
 		})
 		// completed/failed clears the title cache entry.
 		if (status !== "in_progress") this._toolCallTitles.delete(toolCallId)
+	}
+
+	/** Reports the increase of cumulative lifetime usage totals over the last
+	 *  seen snapshot as an onAssistantUsage delta. All-zero deltas are swallowed
+	 *  (idempotent replays); the snapshot is recorded even when swallowed so a
+	 *  later decrease (fresh turn) can't fabricate negative counts. */
+	private _emitLifetimeDelta(totals: LifetimeUsage): void {
+		const last = this._lastLifetimeUsage
+		const delta: LifetimeUsage = {
+			input: Math.max(0, totals.input - (last?.input ?? 0)),
+			output: Math.max(0, totals.output - (last?.output ?? 0)),
+			cacheRead: Math.max(0, totals.cacheRead - (last?.cacheRead ?? 0)),
+			cacheWrite: Math.max(0, totals.cacheWrite - (last?.cacheWrite ?? 0)),
+		}
+		this._lastLifetimeUsage = totals
+		if (delta.input > 0 || delta.output > 0 || delta.cacheRead > 0 || delta.cacheWrite > 0) {
+			this._options.callbacks?.onAssistantUsage?.(delta)
+		}
 	}
 
 	/**

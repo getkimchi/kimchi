@@ -4,7 +4,7 @@
 //   - session_start detects adapters and sets the status footer
 //     (`DAP: <names>` / `DAP: <names> not installed` / partial)
 //   - session_shutdown calls clearAllSessions + shutdownAll and clears footer
-//   - before_agent_start fires a one-time degraded warning when adapters missing
+//   - no before_agent_start handler: degraded state lives in the footer only
 //   - system prompt block renders `## Debugger (DAP)` only when adapters active
 //   - Layer 1 tools are registered on session_start
 //
@@ -291,31 +291,6 @@ describe("DAP extension entry point", () => {
 			expect(clientState.clearAllCalled).toBe(true)
 			expect(clientState.shutdownAllCalled).toBe(true)
 			expect(startCtx.ui?.setStatus).toHaveBeenCalledWith("dap", undefined)
-		})
-	})
-
-	describe("before_agent_start — degraded warning", () => {
-		it("fires a warning once when adapters are missing", async () => {
-			adapterState.missing = [DEBUGPY]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-			await mock.handlers.before_agent_start?.()
-			await mock.handlers.before_agent_start?.()
-
-			expect(ctx.ui?.notify).toHaveBeenCalledTimes(1)
-			const call = (ctx.ui?.notify as ReturnType<typeof vi.fn>).mock.calls[0]
-			expect(call[0]).toContain("DAP unavailable")
-			expect(call[0]).toContain("debugpy")
-			expect(call[1]).toBe("warning")
-		})
-
-		it("does not fire a warning when no adapters are missing", async () => {
-			adapterState.active = [JS_DEBUG]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-			await mock.handlers.before_agent_start?.()
-
-			expect(ctx.ui?.notify).not.toHaveBeenCalled()
 		})
 	})
 

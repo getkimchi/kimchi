@@ -13,6 +13,7 @@ import {
 	readApiKeyFromConfigFile,
 	readGitToken,
 	readHideTips,
+	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	upgradeLegacyRetrySettings,
@@ -21,6 +22,7 @@ import {
 	writeGitToken,
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
+	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
 } from "./config.js"
 
@@ -547,6 +549,49 @@ describe("writeSessionModeWizardSeenAt", () => {
 	})
 })
 
+describe("readStudioOnboardingSeenAt / writeStudioOnboardingSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips onboarding.studioOnboardingSeenAt", () => {
+		expect(readStudioOnboardingSeenAt(configPath)).toBeUndefined()
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T10:00:00.000Z")
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z", otherMarker: true },
+			}),
+		)
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+				otherMarker: true,
+				studioOnboardingSeenAt: "2026-09-11T10:00:00.000Z",
+			},
+		})
+	})
+})
+
 describe("readHideTips / writeHideTips", () => {
 	let tempDir: string
 	let configPath: string
@@ -769,7 +814,7 @@ describe("permissions", () => {
 		expect(mode).toBe(0o600)
 	})
 
-	it("writeConfigObject (via writeApiKey) chmods even when pre-existing file is loose", () => {
+	it("writeApiKey tightens a loose pre-existing config.json to 0600", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "old" }), { mode: 0o644 })
 		chmodSync(configPath, 0o644)
 		expect(statSync(configPath).mode & 0o777).toBe(0o644)

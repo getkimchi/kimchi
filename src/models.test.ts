@@ -199,7 +199,7 @@ describe("updateModelsConfig", () => {
 		expect(model).not.toHaveProperty("thinkingLevelMap")
 	})
 
-	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
+	it("sets X-Provider-Type header at the provider level for all kimchi providers", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [SONNET_46, KIMI] }),
@@ -208,8 +208,9 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		// base kimchi-dev provider does NOT have the header
-		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBeUndefined()
+		// base kimchi-dev provider routes ai-enabler models
+		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBe("ai-enabler")
+		expect(config.providers["kimchi-dev"].headers["User-Agent"]).toMatch(/^kimchi\//)
 
 		// anthropic sub-provider has the header
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")

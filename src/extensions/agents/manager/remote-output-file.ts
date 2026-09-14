@@ -74,6 +74,47 @@ export function streamRemoteToOutputFile(
 		pendingEntries = []
 	}
 
+	/** Writes the single tool_use transcript entry for a tool call. Deferred to
+	 *  completion/abort so repeated in_progress notifications don't duplicate it
+	 *  and its input carries the fully streamed args. This means no entry exists
+	 *  for a call while it runs — live progress is surfaced via the forwarded
+	 *  activity callbacks, not this file. The entry's id prefers the ACP
+	 *  toolCallId (so consumers can correlate tool_use and tool_result), falling
+	 *  back to the display title only if no id arrived (should not happen in
+	 *  practice — toolCallId is present from the first notification). */
+	const writeToolUseEntry = (toolCall: { title: string; toolCallId?: string }) => {
+		writeEntry("assistant", {
+			role: "assistant",
+			content: [
+				{
+					type: "tool_use",
+					name: toolCall.title,
+					id: toolCall.toolCallId ?? toolCall.title,
+					input: pendingRawInput ?? {},
+				},
+			],
+		})
+	}
+
+	/** Two channel ids refer to the same call when either side is missing
+	 *  (can't disprove identity) or they match. */
+	const sameCall = (a: string | undefined, b: string | undefined) => a === undefined || b === undefined || a === b
+
+	/** Finalizes the pending tool call: writes its single tool_use entry plus a
+	 *  toolResult (the real rawOutput if it arrived, otherwise the title as a
+	 *  degraded placeholder), then clears the pending state. Does NOT flush —
+	 *  the caller decides when to write to disk. */
+	const finalizePendingToolCall = () => {
+		if (!pendingToolCall) return
+		writeToolUseEntry(pendingToolCall)
+		const outputText =
+			pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : pendingToolCall.title
+		writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })
+		pendingToolCall = undefined
+		pendingRawInput = undefined
+		pendingRawInputId = undefined
+	}
+
 	const callbacks: AcpSessionCallbacks = {
 		onToolActivity: (activity) => {
 			if (activity.status === "in_progress") {
@@ -81,31 +122,34 @@ export function streamRemoteToOutputFile(
 					writeEntry("assistant", { role: "assistant", content: [{ type: "text", text: pendingAssistantText }] })
 					pendingAssistantText = ""
 				}
-				pendingToolCall = { title: activity.toolName, toolCallId: pendingRawInputId }
-				// Use the actual tool-call ID (from the ACP toolCallId) for the
-				// tool_use entry's id field so consumers can correlate tool_use and
-				// tool_result. Fall back to the display title only if no id arrived
-				// (should not happen in practice — toolCallId is present from the
-				// first tool_call notification).
-				writeEntry("assistant", {
-					role: "assistant",
-					content: [
-						{
-							type: "tool_use",
-							name: activity.toolName,
-							id: pendingRawInputId ?? activity.toolName,
-							input: pendingRawInput ?? {},
-						},
-					],
-				})
+				if (pendingToolCall === undefined) {
+					pendingToolCall = { title: activity.toolName, toolCallId: pendingRawInputId ?? activity.toolCallId }
+				} else if (sameCall(activity.toolCallId, pendingToolCall.toolCallId)) {
+					// Repeated in_progress for the same call — the ACP server re-sends
+					// these as args/title stream in, and cloud agents broadcast them
+					// periodically (~80ms) while a long-running tool executes. Only
+					// refresh the display state; a transcript entry per repeat would
+					// append thousands of identical tool_use lines to the .output
+					// file (observed: 29MB files, ~99% duplicate lines).
+					pendingToolCall.title = activity.toolName
+					pendingToolCall.toolCallId ??= activity.toolCallId
+				} else {
+					// A different tool call started before this one completed
+					// (parallel tool use, or a call abandoned without a completion
+					// event) — finalize the pending call with a degraded result so
+					// its entry keeps its own id and title, then start fresh.
+					finalizePendingToolCall()
+					pendingToolCall = { title: activity.toolName, toolCallId: pendingRawInputId ?? activity.toolCallId }
+				}
 			}
-			if (activity.status !== "in_progress" && pendingToolCall) {
-				const outputText =
-					pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : activity.toolName
-				writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })
-				pendingToolCall = undefined
-				pendingRawInput = undefined
-				pendingRawInputId = undefined
+			// Ignores completions for a call that was already finalized via the
+			// mismatch path above (late completion of a parallel/abandoned call).
+			if (
+				activity.status !== "in_progress" &&
+				pendingToolCall &&
+				sameCall(activity.toolCallId, pendingToolCall.toolCallId)
+			) {
+				finalizePendingToolCall()
 				// Set textOffset so the next onTextDelta only shows text after this tool call.
 				// Use lastFullTextLength (not pendingAssistantText.length) because
 				// pendingAssistantText is cleared when the tool started.
@@ -114,8 +158,8 @@ export function streamRemoteToOutputFile(
 			}
 			// Forward to the activity tracker at most once per tool call: the ACP
 			// server re-sends in_progress notifications for the same toolCallId as
-			// args/title stream in. The transcript logic above must see every
-			// repeat (it refreshes the pending tool's title/args), but downstream
+			// args/title stream in. The transcript logic above tolerates every
+			// repeat (it refreshes the pending tool's title), but downstream
 			// consumers would stack a duplicate progress-line entry per repeat
 			// ("run_command, run_command, …").
 			if (activity.toolCallId) {
@@ -154,9 +198,14 @@ export function streamRemoteToOutputFile(
 				// tool_call_update, but toolCallId is present from the first notification.
 				if (u.toolCallId != null) {
 					pendingRawInputId = u.toolCallId
-					if (pendingToolCall) pendingToolCall.toolCallId = u.toolCallId
+					// Attach state to the pending call only when it plausibly belongs
+					// to it — under parallel tool use, updates for a different call
+					// must not overwrite the pending call's id or output.
+					if (pendingToolCall && sameCall(pendingToolCall.toolCallId, u.toolCallId)) {
+						pendingToolCall.toolCallId = u.toolCallId
+					}
 				}
-				if (u.rawOutput != null && pendingToolCall) {
+				if (u.rawOutput != null && pendingToolCall && sameCall(pendingToolCall.toolCallId, u.toolCallId)) {
 					pendingToolCall.rawOutput = u.rawOutput
 				}
 				if (u.rawInput != null) {
@@ -181,14 +230,10 @@ export function streamRemoteToOutputFile(
 			writeEntry("assistant", { role: "assistant", content: [{ type: "text", text: pendingAssistantText }] })
 			pendingAssistantText = ""
 		}
-		if (pendingToolCall) {
-			const outputText =
-				pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : pendingToolCall.title
-			writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })
-			pendingToolCall = undefined
-			pendingRawInput = undefined
-			pendingRawInputId = undefined
-		}
+		// The tool_use entry is deferred to completion — on abort it has not
+		// been written yet, so finalize writes it with whatever input
+		// streamed in before the abort.
+		finalizePendingToolCall()
 		flush()
 	}
 

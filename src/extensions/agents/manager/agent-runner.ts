@@ -201,6 +201,8 @@ export interface ToolActivity {
 	title?: string
 	/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
 	rawInput?: unknown
+	/** Structured tool result (ACP rawOutput — the pi AgentToolResult). */
+	rawOutput?: unknown
 }
 
 export interface RunOptions {

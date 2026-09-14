@@ -39,6 +39,51 @@ import type { LifetimeUsage, SessionStatsLike } from "./usage.js"
  */
 type RemoteSessionEvent = { type: string; [k: string]: unknown }
 
+/** JSON.stringify that never throws on circular structures or bigint values. */
+function safeStringify(v: unknown): string {
+	try {
+		return JSON.stringify(v) ?? ""
+	} catch {
+		return String(v)
+	}
+}
+
+/**
+ * Renders tool call arguments as a compact single-line summary for display —
+ * e.g. `command=ls -la timeout=60`. Object values become key=value pairs
+ * (long values ellipsized); anything else is stringified.
+ */
+export function summarizeToolArgs(args: unknown, max = 100): string {
+	if (args == null) return ""
+	if (typeof args !== "object") {
+		const s = typeof args === "string" ? args : safeStringify(args)
+		return s.replace(/\s+/g, " ").trim().slice(0, max)
+	}
+	const parts: string[] = []
+	for (const [k, v] of Object.entries(args)) {
+		const val = (typeof v === "string" ? v : safeStringify(v)).replace(/\s+/g, " ").trim()
+		if (!val || val === "{}") continue
+		parts.push(`${k}=${val.length > 40 ? `${val.slice(0, 40)}…` : val}`)
+	}
+	return parts.join(" ").slice(0, max)
+}
+
+/** Cap on stored tool result text — raw bash output can be tens of KB. */
+const MAX_RESULT_TEXT_CHARS = 2000
+
+/**
+ * Extracts plain-text tool output from an ACP tool_call_update's rawOutput
+ * (pi AgentToolResult — `{ content: ContentBlock[] }`). Returns "" when
+ * it carries no text (e.g. pure diff tools), letting the caller keep its
+ * placeholder status text. Parts are joined with no separator to mirror
+ * pi's transcript rendering (blocks carry their own trailing newlines).
+ */
+export function extractToolOutputText(rawOutput?: unknown): string {
+	const content = (rawOutput as { content?: { text?: string }[] } | undefined)?.content
+	const text = Array.isArray(content) ? content.map((p) => p.text ?? "").join("") : ""
+	return text.trim() ? text : ""
+}
+
 export class RemoteAgentSession {
 	private acpClient: AcpSessionClient | undefined
 	private meta: RemoteSessionMeta | undefined
@@ -65,6 +110,11 @@ export class RemoteAgentSession {
 	private _textOffset = 0
 	/** Set to true when the runner enters the reconnecting state. */
 	private _reconnecting = false
+	/** Last context-window usage reported by the remote agent (usage_update).
+	 *  Null until the first notification arrives — getSessionStats reports a
+	 *  null percent so the widget omits the annotation instead of guessing. */
+	private _contextUsed: number | null = null
+	private _contextSize: number | null = null
 
 	/** Called by _runRemote() via runRemoteAgent's onReady callback. */
 	bindClient(acpClient: AcpSessionClient, meta: RemoteSessionMeta): void {
@@ -126,7 +176,12 @@ export class RemoteAgentSession {
 	getSessionStats(): SessionStatsLike {
 		return {
 			tokens: { ...this._usage },
-			contextUsage: { percent: null },
+			contextUsage: {
+				percent:
+					this._contextUsed != null && this._contextSize != null && this._contextSize > 0
+						? (this._contextUsed / this._contextSize) * 100
+						: null,
+			},
 		}
 	}
 
@@ -155,6 +210,14 @@ export class RemoteAgentSession {
 		this._usage.output += delta.output
 		this._usage.cacheRead += delta.cacheRead
 		this._usage.cacheWrite += delta.cacheWrite
+	}
+
+	/** Track the remote context-window usage (ACP usage_update used/size).
+	 *  Surfaced via getSessionStats() so the agent widget can show a live
+	 *  context percent for cloud agents, matching local agents. */
+	setContextUsage(used: number, size: number): void {
+		this._contextUsed = used
+		this._contextSize = size
 	}
 
 	/** Track streaming state. */
@@ -234,14 +297,21 @@ export class RemoteAgentSession {
 		if (toolCallId) this._acpToLocalId.set(toolCallId, localId)
 
 		const argsObj = args ?? {}
+		// Bake the args summary into the display name so subscribers (the
+		// conversation viewer) show how the tool was invoked without needing
+		// any renderer-side changes. `name` is therefore a DISPLAY string, not
+		// a stable tool identifier — consumers matching by tool must use the
+		// raw `toolName` field stored alongside.
+		const argsSummary = summarizeToolArgs(argsObj)
+		const displayName = argsSummary ? `${toolName} ${argsSummary}` : toolName
 		const last = this._messages[this._messages.length - 1]
 		if (last?.role === "assistant") {
 			const parts = last.content as Array<{ type: string; [k: string]: unknown }>
-			parts.push({ type: "toolCall", id: localId, name: toolName, arguments: argsObj })
+			parts.push({ type: "toolCall", id: localId, name: displayName, toolName, arguments: argsObj })
 		} else {
 			this._messages.push({
 				role: "assistant",
-				content: [{ type: "toolCall", id: localId, name: toolName, arguments: argsObj }],
+				content: [{ type: "toolCall", id: localId, name: displayName, toolName, arguments: argsObj }],
 			})
 		}
 		this.emit({
@@ -252,13 +322,33 @@ export class RemoteAgentSession {
 		})
 	}
 
+	/** Record a tool call completion from a ToolActivity — keeps the
+	 *  isError/rawOutput mapping in one place for both agent-manager call sites. */
+	recordToolCallEndFromActivity(activity: {
+		toolName: string
+		toolCallId?: string
+		status: string
+		rawOutput?: unknown
+	}): void {
+		this.recordToolCallEnd(
+			activity.toolName,
+			activity.toolCallId,
+			activity.status === "failed",
+			extractToolOutputText(activity.rawOutput),
+		)
+	}
+
 	/** Record a tool call completion in the transcript.
 	 *  Adds a toolResult message matching the local agent ToolResultMessage shape:
 	 *  `{ role: "toolResult", toolCallId, toolName, content, isError, timestamp }`.
 	 *  Clears the pending-tool dedup so the same tool name can start again.
 	 *  Saves the current accumulated text length so the next assistant message
-	 *  only includes text that came after this tool call. */
-	recordToolCallEnd(toolName: string, toolCallId?: string, isError = false): void {
+	 *  only includes text that came after this tool call.
+	 *  `output` is the tool's actual output text extracted from the ACP
+	 *  notification content/rawOutput (empty when unavailable). Capped at
+	 *  MAX_RESULT_TEXT_CHARS — bash output can be tens of KB, and messages
+	 *  live in memory for the whole run (viewers truncate display anyway). */
+	recordToolCallEnd(toolName: string, toolCallId?: string, isError = false, output = ""): void {
 		this._textOffset = this._lastFullTextLength
 		let localId: string | undefined
 		if (toolCallId) {
@@ -275,11 +365,19 @@ export class RemoteAgentSession {
 			}
 		}
 		if (localId) this._pendingToolCalls.delete(localId)
+		const trimmedOutput = output.trim()
+		const resultText = !trimmedOutput
+			? isError
+				? "(tool failed)"
+				: "(completed)"
+			: trimmedOutput.length > MAX_RESULT_TEXT_CHARS
+				? `${trimmedOutput.slice(0, MAX_RESULT_TEXT_CHARS)}… (truncated)`
+				: trimmedOutput
 		this._messages.push({
 			role: "toolResult",
 			toolCallId: localId ?? toolName,
 			toolName,
-			content: [{ type: "text", text: isError ? "(tool failed)" : "(completed)" }],
+			content: [{ type: "text", text: resultText }],
 			isError,
 			timestamp: Date.now(),
 		})
@@ -287,7 +385,7 @@ export class RemoteAgentSession {
 			type: "tool_execution_end",
 			toolCallId: localId ?? toolName,
 			toolName,
-			result: isError ? "(tool failed)" : "(completed)",
+			result: resultText,
 			isError,
 		})
 	}

@@ -132,8 +132,9 @@ export interface RemoteRunResult {
 	recoveryNote?: string
 }
 
-/** Per-call timeout for createSession: 5min — large repos take a while to clone. */
-const SESSION_CREATE_TIMEOUT_MS = 5 * 60_000
+/** Per-call timeout for createSession: 10min — large repos take a while to clone
+ *  into a freshly-bound PVC. Matches DEFAULT_READY_TIMEOUT_MS in readiness.ts. */
+const SESSION_CREATE_TIMEOUT_MS = 10 * 60_000
 
 /** Reconnect backoff schedule (2s, 4s, 8s) — one delay per reattach attempt. */
 const DEFAULT_RECONNECT_BACKOFFS_MS = [2_000, 4_000, 8_000]
@@ -146,6 +147,12 @@ const POLL_INTERVAL_MS = 15_000
 const POLL_JITTER_MS = 5_000
 /** Cap on re-auth + readiness attempts when a session is reported `!alive`. */
 const REVIVE_MAX_ATTEMPTS = 3
+/** Per-attempt readiness timeout when reviving a workspace. Smaller than the
+ *  10-min first-create default (readiness.ts): server-side re-provisioning
+ *  persists across attempts (re-auth is an idempotent upsert), so 3 × 5min
+ *  keeps the pre-change ~15-min aggregate — bounding how long a genuinely dead
+ *  workspace can hang recovery before failing honestly with "result unknown". */
+const REVIVE_READY_TIMEOUT_MS = 5 * 60_000
 /** Consecutive failed status polls before the recovery loop refreshes
  *  credentials and rebuilds the HTTP client — covers expired connect tokens
  *  (spec Q6: re-auth on 401/403) and wedged transports. */
@@ -263,7 +270,12 @@ async function tryReviveWorkspace(st: RemoteRecoveryState, config: RecoveryConfi
 					endpoint: config.endpoint,
 				}),
 			)
-			await waitForWorkspaceReady({ wsUrl: st.creds.wsUrl, connectToken: st.creds.connectToken, signal: config.signal })
+			await waitForWorkspaceReady({
+				wsUrl: st.creds.wsUrl,
+				connectToken: st.creds.connectToken,
+				signal: config.signal,
+				timeoutMs: REVIVE_READY_TIMEOUT_MS,
+			})
 			await st.client.close().catch(() => {})
 			st.client = new WorkerClient(st.creds)
 			const s = await getSession(st.client, config.sessionName, config.signal)
