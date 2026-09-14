@@ -885,18 +885,18 @@ async function runBatchedSupersede(backend: Backend, newFacts: string[], llm: Ga
  * in cli.ts. The routing deliberately sits pre-registry and pre-telemetry
  * so worker invocations are invisible to app_started instrumentation.
  */
-export async function runCaptureWorkerMain(argv: string[]): Promise<void> {
+export async function runCaptureWorkerMain(argv: string[]): Promise<number> {
 	try {
 		const captured = await runCaptureWorker(argv)
 		console.log(`[memory-capture] captured ${captured} facts`)
-		process.exit(0)
+		return 0
 	} catch (err: unknown) {
 		console.error("[memory-capture] failed:", err instanceof Error ? err.message : err)
-		process.exit(1)
+		return 1
 	}
 }
 
 // Executed directly via `bun run .../capture-worker.ts` (dev spawn path).
 if (import.meta.main) {
-	runCaptureWorkerMain(process.argv.slice(2))
+	process.exit(await runCaptureWorkerMain(process.argv.slice(2)))
 }

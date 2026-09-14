@@ -267,7 +267,7 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 }
 
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
-const CACHEABLE_OPTION_NAMES = [
+export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"multi-model",
@@ -301,7 +301,7 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		// `--flag=value` even when the flag is declared boolean — normalize
 		// "true"/"false" so `--memory=true` (and every other boolean flag)
 		// behaves as typed instead of being silently ignored.
-		if (CLI_OPTIONS[key].type === "boolean" && (value === "true" || value === "false")) {
+		if (CLI_OPTIONS[key]?.type === "boolean" && (value === "true" || value === "false")) {
 			value = value === "true"
 		}
 		;(options as Record<string, unknown>)[key] = value

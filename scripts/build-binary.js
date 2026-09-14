@@ -95,6 +95,17 @@ const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 // extension uses only the openai embedder/LLM and the built-in SQLite store, so
 // none of these are ever loaded at runtime — but the bundler still resolves
 // them, so they must be external.
+// `natural` and `compromise` are mem0ai peer deps required lazily inside
+// try/catch guards (keyword stemming / NLP artifact filtering). Measured
+// (2026-09-14): they are NOT bundled — the bundler leaves their requires
+// as runtime lookups that fail into mem0's guards (the BM25 path falls
+// back to its built-in simpleStem), and natural's own deps (mongoose,
+// pg, redis) never enter the graph. The externals entries pin that: a
+// future pnpm layout change that makes the bundler start resolving them
+// must not silently pull their trees into the binary. `pg` IS bundled —
+// it is required EAGERLY at the top of mem0's bundle (pgvector store),
+// so it cannot be externalized without breaking the mem0ai import; its
+// size cost is accepted.
 const externals = [
 	"chromium-bidi",
 	"electron",
@@ -116,10 +127,12 @@ const externals = [
 	"chromadb",
 	"cloudflare",
 	"cohere-ai",
+	"compromise",
 	"fastembed",
 	"groq-sdk",
 	"iovalkey",
 	"mysql2/promise",
+	"natural",
 	"ollama",
 	"oracledb",
 	"weaviate-client",

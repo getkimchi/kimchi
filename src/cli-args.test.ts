@@ -3,6 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+	CACHEABLE_OPTION_NAMES,
+	CLI_OPTIONS,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -409,5 +411,15 @@ describe("boolean =-form normalization", () => {
 	it("leaves non-boolean =-values untouched", () => {
 		populateCliArgs(["--memory=1", "fix tests"])
 		expect(getParsedCliArgs().options.memory).toBe("1")
+	})
+})
+
+describe("cacheable option coverage", () => {
+	it("every CACHEABLE_OPTION_NAMES entry is declared in CLI_OPTIONS", () => {
+		// parseCliArgs dereferences CLI_OPTIONS[key].type for each of these;
+		// a name missing from the catalog is a startup crash, not a silent
+		// miss, so the invariant is enforced here.
+		const missing = CACHEABLE_OPTION_NAMES.filter((name) => !CLI_OPTIONS[name])
+		expect(missing).toEqual([])
 	})
 })

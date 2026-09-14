@@ -16,15 +16,12 @@ export interface Statement {
 	all(...params: unknown[]): unknown[]
 }
 
-export interface Database {
+export declare class Database {
+	constructor(path: string, options?: { readonly?: boolean; fileMustExist?: boolean })
 	prepare(sql: string): Statement
 	exec(sql: string): void
 	transaction<F extends (...args: never[]) => unknown>(fn: F): F
 	close(): void
-}
-
-declare const Database: {
-	new (path: string, options?: { readonly?: boolean; fileMustExist?: boolean }): Database
 }
 
 export default Database
