@@ -38,7 +38,7 @@ interface ModelLike {
 
 interface SessionLike {
 	modelRuntime: ModelRuntime
-	setModel(model: ModelLike): Promise<void>
+	setModel(model: ModelLike, options?: { persist?: boolean }): Promise<void>
 }
 
 /** Wraps `session.modelRuntime` (a `ModelRuntime`) in a `ModelRegistry` so the login
@@ -159,7 +159,8 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 	await performKimchiBrowserLogin({
 		modelRegistry: asLoginRegistry(runtime),
-		setModel: (model) => session.setModel(model),
+		// User chose this model at login - persist it (0.84.1 semantics).
+		setModel: (model) => session.setModel(model, { persist: true }),
 		showStatus,
 		showError,
 		addFeedback: (message) => addLoginFeedback(im, message),
@@ -197,7 +198,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	await performKimchiApiKeyLogin(
 		{
 			modelRegistry: registry,
-			setModel: (model) => session.setModel(model),
+			setModel: (model) => session.setModel(model, { persist: true }),
 			showStatus,
 			showError,
 			addFeedback: (message) => addLoginFeedback(im, message),

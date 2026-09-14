@@ -6,7 +6,7 @@ type StartNewSessionWithModel = (model: Model<Api>) => void
 interface InteractiveModelSession {
 	sessionManager: object
 	runtimeHost: { newSession(): Promise<{ cancelled: boolean }> }
-	session: { setModel(model: Model<Api>): Promise<void> }
+	session: { setModel(model: Model<Api>, options?: { persist?: boolean }): Promise<void> }
 	showError(message: string): void
 	showStatus(message: string): void
 }
@@ -27,7 +27,7 @@ export function registerInteractiveModelSession(mode: InteractiveModelSession): 
 			void (async () => {
 				const result = await mode.runtimeHost.newSession()
 				if (result.cancelled) return
-				await mode.session.setModel(model)
+				await mode.session.setModel(model, { persist: true })
 				mode.showStatus(`Started a new session with ${model.provider}/${model.id}.`)
 			})().catch((error) => mode.showError(error instanceof Error ? error.message : String(error)))
 		}, 0)

@@ -249,7 +249,7 @@ describe("startup auth gate", () => {
 			"/tmp/kimchi-startup-auth-test/models.json",
 			"kimchi-token",
 		)
-		expect(harness.api.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" })
+		expect(harness.api.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 		expect(harness.state.authenticated).toBe(true)
 	})
 
