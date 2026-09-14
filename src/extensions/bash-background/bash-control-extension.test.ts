@@ -786,17 +786,26 @@ describe("formatGateBlockReason", () => {
 	})
 })
 
-/** bash_control result with detach semantics (process keeps running, gate released). */
-function detachResult(handle: string): Record<string, unknown> {
+/** Generic bash_control tool_result payload (continue/stop/detach shapes). */
+function controlResult(
+	handle: string,
+	action: "continue" | "stop" | "detach",
+	details: Record<string, unknown> = {},
+): Record<string, unknown> {
 	return {
 		type: "tool_result",
 		toolName: "bash_control",
-		toolCallId: "c2",
-		input: { handle, action: "detach" },
-		content: [{ type: "text", text: "[Process detached…]" }],
+		toolCallId: "ctl-1",
+		input: { handle, action },
+		content: [{ type: "text", text: `[${action}]` }],
 		isError: false,
-		details: { handle, detached: true, exited: false, exitCode: null, action: "detach" },
+		details: { handle, exitCode: null, action, ...details },
 	}
+}
+
+/** bash_control result with detach semantics (process keeps running, gate released). */
+function detachResult(handle: string): Record<string, unknown> {
+	return controlResult(handle, "detach", { detached: true, exited: false })
 }
 
 describe("bashControlExtension — detach (session-scoped services)", () => {
@@ -867,15 +876,7 @@ describe("bashControlExtension — detach (session-scoped services)", () => {
 
 		// The stop result itself resolves the handle; end-of-call bookkeeping
 		// must not produce a stray notice either.
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "tcStop",
-			input: { handle: "h1", action: "stop" },
-			content: [{ type: "text", text: "[Process stopped]" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
-		})
+		await fireToolResult(pi, controlResult("h1", "stop", { exited: true }))
 		await fireToolExecutionEnd(pi, "tcStop", "bash_control")
 		expect(messages(pi)).toHaveLength(0)
 	})
@@ -887,15 +888,7 @@ describe("bashControlExtension — detach (session-scoped services)", () => {
 		await fireToolResult(pi, detachResult("h1"))
 		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
 
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c3",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "[Background process still running…]" }],
-			isError: false,
-			details: { handle: "h1", checkin: true, exited: false, exitCode: null, action: "continue" },
-		})
+		await fireToolResult(pi, controlResult("h1", "continue", { checkin: true, exited: false }))
 
 		const blocked = await fireToolCall(pi, "bash")
 		expect(blocked?.block).toBe(true)
@@ -917,15 +910,7 @@ describe("bashControlExtension — detach (session-scoped services)", () => {
 		await startGatedSession(pi, registry)
 		await fireToolResult(pi, detachResult("h1"))
 		// Re-pend, then the human takes over.
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c4",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "still running" }],
-			isError: false,
-			details: { handle: "h1", checkin: true, exited: false, exitCode: null, action: "continue" },
-		})
+		await fireToolResult(pi, controlResult("h1", "continue", { checkin: true, exited: false }))
 		await fireInput(pi)
 		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
 

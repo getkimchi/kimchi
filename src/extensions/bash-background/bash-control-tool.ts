@@ -28,6 +28,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
+import type { ProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
@@ -74,6 +75,38 @@ export interface BashControlDetails {
 }
 
 export const BASH_CONTROL_TOOL_NAME = "bash_control"
+
+/**
+ * Shared terminal path for `continue`/`detach` on a process that has already
+ * exited: snapshot the final output (throwing on deadline / non-zero exit
+ * via `throwIfTerminal`) and remove the registry entry so the handle can't
+ * be reused. Both actions resolve identically apart from the `action` tag.
+ */
+async function terminalResult(
+	registry: ProcessRegistry,
+	handle: string,
+	action: "continue" | "detach",
+	deadlineSeconds: number,
+): Promise<{
+	content: { type: "text"; text: string }[]
+	details: BashControlDetails
+}> {
+	const final = registry.finalSnapshot(handle)
+	const snapshot = registry.snapshotTail(handle)
+	await registry.remove(handle).catch(() => {})
+	const fullOutput = final?.content ?? snapshot.text
+	throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
+	return {
+		content: [{ type: "text", text: fullOutput }],
+		details: {
+			handle,
+			exited: true,
+			exitCode: snapshot.exitCode,
+			action,
+			reason: snapshot.reason,
+		},
+	}
+}
 
 export const BASH_CONTROL_TOOL_DESCRIPTION = `Control a background bash process started by the \`bash\` tool.
 
@@ -187,21 +220,7 @@ export function createBashControlToolDefinition(
 			// Already exited between the previous checkin and this call: resolve
 			// with the final output, mirroring the continue terminal path.
 			if (entry.state !== "running") {
-				const final = registry.finalSnapshot(handle)
-				const snapshot = registry.snapshotTail(handle)
-				await registry.remove(handle).catch(() => {})
-				const fullOutput = final?.content ?? snapshot.text
-				throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-				return {
-					content: [{ type: "text", text: fullOutput }],
-					details: {
-						handle,
-						exited: true,
-						exitCode: snapshot.exitCode,
-						action: "detach",
-						reason: snapshot.reason,
-					},
-				}
+				return terminalResult(registry, handle, "detach", entry.deadlineSeconds)
 			}
 
 			// Optionally push the deadline out before walking away (detaching
@@ -231,21 +250,7 @@ export function createBashControlToolDefinition(
 		// If the process already exited (e.g. between the previous checkin and
 		// this call), return the final output immediately.
 		if (entry.state !== "running") {
-			const final = registry.finalSnapshot(handle)
-			const snapshot = registry.snapshotTail(handle)
-			await registry.remove(handle).catch(() => {})
-			const fullOutput = final?.content ?? snapshot.text
-			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-				},
-			}
+			return terminalResult(registry, handle, "continue", entry.deadlineSeconds)
 		}
 
 		// Optionally extend the deadline BEFORE re-arming, so an imminent
@@ -278,20 +283,7 @@ export function createBashControlToolDefinition(
 		}
 		const exited = snapshot.state !== "running"
 		if (exited) {
-			const final = registry.finalSnapshot(handle)
-			await registry.remove(handle).catch(() => {})
-			const fullOutput = final?.content ?? snapshot.text
-			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-				},
-			}
+			return terminalResult(registry, handle, "continue", entry.deadlineSeconds)
 		}
 
 		// Process still running — return tail window + handle.
