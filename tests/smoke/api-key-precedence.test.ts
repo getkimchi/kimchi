@@ -79,8 +79,8 @@ it.each([false, true])("honors the environment override in headless mode (reject
 		} else {
 			const { stdout, stderr } = await run
 			expect(stdout).toContain("CI authentication works.")
-			expect(stdout).not.toContain("KIMCHI_API_KEY differs")
-			expect(stderr).toContain("Warning: KIMCHI_API_KEY differs from your saved key")
+			expect(stdout).not.toContain("KIMCHI_API_KEY in your environment differs")
+			expect(stderr).toContain("Warning: KIMCHI_API_KEY in your environment differs from your saved key in config")
 			// Every chat request must authenticate with the env key, never the
 			// saved one, and tool subprocesses must not observe the override.
 			const chats = fake.requests.filter((request) => request.url.includes("chat/completions"))

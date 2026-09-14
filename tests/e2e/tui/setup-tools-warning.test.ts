@@ -23,7 +23,8 @@ for (const [command, question] of [
 			},
 			async (_fixture, trace) => {
 				const output = fullText(terminal)
-				const warning = "KIMCHI_API_KEY differs from your saved key. Using the environment key."
+				const warning =
+					"KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
 				expect(output).toContain(warning)
 				expect(output).not.toContain(`Warning: ${warning}`)
 				expect(output.split(warning)).toHaveLength(2)

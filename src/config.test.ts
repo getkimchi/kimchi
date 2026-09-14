@@ -80,7 +80,9 @@ describe("loadConfig", () => {
 		vi.stubEnv("KIMCHI_API_KEY", envKey)
 		const warning = getApiKeyMismatchWarning("saved-key")
 		if (envKey === "different-key") {
-			expect(warning).toContain("Using the environment key")
+			expect(warning).toBe(
+				"KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key.",
+			)
 			expect(warning).not.toContain("unset")
 			expect(warning).not.toContain("saved-key")
 			expect(warning).not.toContain(envKey)

@@ -20,7 +20,7 @@ function seedProfile(homeDir: string) {
 }
 
 test("API key mismatch warning appears only after answering the migration dialog", async ({ terminal }) => {
-	const warning = "KIMCHI_API_KEY differs from your saved key. Using the environment key."
+	const warning = "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
 	await runKimchiSession(
 		terminal,
 		{

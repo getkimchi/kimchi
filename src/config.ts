@@ -508,7 +508,7 @@ export function getApiKeyMismatchWarning(
 ): string | undefined {
 	const envKey = getEnvironmentApiKey()
 	if (!envKey || !savedKey || envKey === savedKey) return undefined
-	return "KIMCHI_API_KEY differs from your saved key. Using the environment key."
+	return "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
 }
 
 export function getAgentConfigDir(): string {

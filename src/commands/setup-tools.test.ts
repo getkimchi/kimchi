@@ -79,7 +79,8 @@ describe("runSetupTools", () => {
 	})
 
 	it("renders a key mismatch through Clack before tool selection", async () => {
-		const warning = "KIMCHI_API_KEY differs from your saved key. Using the environment key."
+		const warning =
+			"KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
 		vi.mocked(resolveApiKey).mockReturnValue("environment-key")
 		vi.mocked(getApiKeyMismatchWarning).mockReturnValue(warning)
 		const warn = vi.spyOn(log, "warn").mockImplementation(() => {})

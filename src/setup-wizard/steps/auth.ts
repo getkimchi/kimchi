@@ -50,7 +50,7 @@ export async function runAuthStep(state: WizardState, opts: { backable: boolean 
 			s.stop(`Saved key failed validation: ${result.error ?? "unknown error"}`)
 			console.log("  Replace it below, press Esc to go back, or Ctrl-C to abort.")
 		} else if (fromEnv) {
-			console.log("  Note: KIMCHI_API_KEY will override your new saved key.")
+			console.log("  Note: KIMCHI_API_KEY in your environment will override your newly saved key in config.")
 		}
 	}
 

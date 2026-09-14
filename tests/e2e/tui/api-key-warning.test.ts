@@ -25,7 +25,9 @@ test("shows the environment override warning in the ready editor and uses that k
 			},
 		},
 		async (fixture, trace) => {
-			await expect(terminal.getByText("KIMCHI_API_KEY differs from your saved key.")).toBeVisible()
+			await expect(
+				terminal.getByText("KIMCHI_API_KEY in your environment differs from your saved key in config."),
+			).toBeVisible()
 			trace.step("warning remains visible after startup screen clear")
 			terminal.submit("Say hello")
 			await waitForText(terminal, "Environment authentication works.")
