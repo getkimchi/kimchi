@@ -382,6 +382,43 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
 			expect(toolUse.arguments).toEqual({ path: "/app/file.ts" })
 		})
+		it("parses a JSON-encoded string rawInput into arguments", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(
+				toolCallNotification("call-str", "Shell command", "in_progress", {
+					rawInput: JSON.stringify({ command: "ls -la" }),
+				}),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-str" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-str", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: "call-str" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUse = getToolUseContent(findToolUseEntry(entries) as ParsedEntry)
+			expect(toolUse.arguments).toEqual({ command: "ls -la" })
+		})
+
+		it("plain-string rawOutput is written verbatim, not JSON-quoted", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(toolCallNotification("call-txt", "Shell command", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-txt" })
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("call-txt", { status: "completed", rawOutput: "command not found" }),
+			)
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: "call-txt" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolResultEntry = findToolResultEntry(entries)
+			expect(getTextContent(toolResultEntry as ParsedEntry).text).toBe("command not found")
+		})
 	})
 
 	describe("native pi-mono transcript shape", () => {
@@ -566,7 +603,7 @@ describe("streamRemoteToOutputFile", () => {
 			const results = entries.filter((e) => e.type === "toolResult").map((e) => getTextContent(e).text)
 			expect(results).toHaveLength(2)
 			expect(results[0]).toBe("Tool A") // degraded placeholder for the finalized call
-			expect(results[1]).toBe('"b out"') // B's own real output, not A's late one
+			expect(results[1]).toBe("b out") // B's own real output, not A's late one
 		})
 
 		it("does not leak the previous call's rawInput into a call that streamed no args", () => {

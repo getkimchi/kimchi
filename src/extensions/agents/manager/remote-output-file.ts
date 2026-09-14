@@ -75,6 +75,23 @@ export function streamRemoteToOutputFile(
 		pendingEntries = []
 	}
 
+	/** Coerces the streamed ACP rawInput into `ToolCall.arguments`. A
+	 *  JSON-encoded string is parsed first; anything that still isn't a plain
+	 *  object falls back to {} (arrays/scalars are not valid arguments). */
+	const toArguments = (raw: unknown): Record<string, unknown> => {
+		let value = raw
+		if (typeof value === "string") {
+			try {
+				value = JSON.parse(value)
+			} catch {
+				// Not JSON — fall through to the shape check below.
+			}
+		}
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: {}
+	}
+
 	/** Writes the single tool-call transcript entry for a tool call, in the
 	 *  native pi-mono shape (`ToolCall` content block) so the export HTML
 	 *  template and other transcript consumers render it without conversion.
@@ -94,10 +111,7 @@ export function streamRemoteToOutputFile(
 					type: "toolCall",
 					name: toolCall.title,
 					id: toolCall.toolCallId ?? toolCall.title,
-					arguments:
-						typeof pendingRawInput === "object" && pendingRawInput !== null && !Array.isArray(pendingRawInput)
-							? pendingRawInput
-							: {},
+					arguments: toArguments(pendingRawInput),
 				},
 			],
 		})
@@ -126,7 +140,12 @@ export function streamRemoteToOutputFile(
 			content = agentToolResult.content
 			details = agentToolResult.details
 		} else {
-			content = [{ type: "text", text: raw != null ? JSON.stringify(raw) : pendingToolCall.title }]
+			content = [
+				{
+					type: "text",
+					text: raw == null ? pendingToolCall.title : typeof raw === "string" ? raw : JSON.stringify(raw),
+				},
+			]
 		}
 		writeEntry("toolResult", {
 			role: "toolResult",
