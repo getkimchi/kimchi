@@ -721,7 +721,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
 			"warning",
 		)
 	})
@@ -846,7 +846,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
 			"warning",
 		)
 	})
@@ -887,7 +887,7 @@ describe("deprecated model notification", () => {
 		const cycleOneCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await modelSelect({ source: "cycle" }, cycleOneCtx)
 		expect(cycleOneCtx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
 			"warning",
 		)
 
@@ -905,7 +905,7 @@ describe("deprecated model notification", () => {
 		const cycleTwoCtx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.5-old" } })
 		await modelSelect({ source: "cycle" }, cycleTwoCtx)
 		expect(cycleTwoCtx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "kimi-k2.5-old" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			`Model "kimi-k2.5-old" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
 			"warning",
 		)
 	})
@@ -951,7 +951,7 @@ describe("deprecated model notification", () => {
 		const switchCtx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await modelSelect({ source: "cycle" }, switchCtx)
 		expect(switchCtx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
 			"warning",
 		)
 
@@ -992,7 +992,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. It may be removed in a future update.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement via /model.`,
 			"warning",
 		)
 	})

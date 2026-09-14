@@ -83,7 +83,7 @@ test("session start on an announced-deprecated model without a replacement uses 
 			trace.step("deprecation date visible")
 			// The notification wraps at the terminal width — assert contiguous
 			// fragments so line breaks can't split a longer expected string.
-			await waitForText(terminal, "It may be removed in a future update.", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Pick a replacement via /model.", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("fallback deprecation warning visible")
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("prompt ready")

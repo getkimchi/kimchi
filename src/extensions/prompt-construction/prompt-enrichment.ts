@@ -281,7 +281,7 @@ export default function (skillPathsFromConfig: string[]) {
 				if (replacement && registry.getAll().some((m) => m.id === replacement)) {
 					return `Model "${modelId}" is deprecated${datePart}. Switch to "${replacement}" via /model.${notePart}`
 				}
-				return `Model "${modelId}" is deprecated${datePart}. It may be removed in a future update.${notePart}`
+				return `Model "${modelId}" is deprecated${datePart}. Pick a replacement via /model.${notePart}`
 			}
 
 			/**
