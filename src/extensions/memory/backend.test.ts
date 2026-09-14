@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { KimchiConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
@@ -269,7 +269,7 @@ describe("createMemoryBackend", () => {
 				})
 				await globalThis.fetch("https://openrouter.ai/api/v1/embeddings", {
 					method: "POST",
-				headers: { authorization: "Bearer k" },
+					headers: { authorization: "Bearer k" },
 					body: JSON.stringify({ input: ["text"], model: "openai/text-embedding-3-small" }),
 				})
 				await globalThis.fetch("https://gw.test/v1/models", { method: "GET" })
