@@ -5,6 +5,7 @@ import { toolNamesFromSection } from "../prompt-construction/test-utils.js"
 import mcpAdapter from "./index.js"
 import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
+import { formatToolName } from "./tool-names.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
 
 // Gate tests need control over the REGISTERED
@@ -106,14 +107,8 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 function makeMetadata(rawName: string, serverName: string, prefix: "server" | "none" | "short"): ToolMetadata {
-	// Mirrors what buildToolMetadata in tool-metadata.ts produces
-	const p =
-		prefix === "none"
-			? ""
-			: prefix === "short"
-				? serverName.replace(/-?mcp$/i, "").replace(/-/g, "_") || "mcp"
-				: serverName.replace(/-/g, "_")
-	const prefixedName = p ? `${p}_${rawName}` : rawName
+	// Mirrors what buildToolMetadata in tool-metadata.ts produces (same name construction)
+	const prefixedName = formatToolName(rawName, serverName, prefix)
 	return {
 		name: prefixedName,
 		originalName: rawName,
@@ -175,7 +170,9 @@ describe("mcp proxy registration gate", () => {
 				await pi.fireShutdown()
 			}
 		} finally {
-			delete mcpConfigState.config.settings
+			// Preserve the original removal semantics (the key must be absent,
+			// not present-with-undefined) without tripping lint/performance/noDelete.
+			Reflect.deleteProperty(mcpConfigState.config, "settings")
 		}
 	})
 })

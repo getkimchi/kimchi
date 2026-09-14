@@ -1,5 +1,5 @@
 /**
- * Shared lifecycle wrapper for spawning remote cloud agents.
+ * Shared lifecycle wrapper for spawning remote agents.
  *
  * Named `runCloudAgent` (not `runRemoteAgent`) to avoid collision
  * with the low-level `runRemoteAgent()` in `agents/manager/remote-agent-runner.ts`,
@@ -40,7 +40,7 @@ export function isRemoteRunEnabled(): boolean {
 }
 
 /**
- * Spawns a remote cloud agent as a background agent.
+ * Spawns a remote agent as a background agent.
  *
  * The agent runs on a remote sandbox via ACP. The function returns immediately
  * with the agent ID. `handleRemoteCompletion` fires automatically when the agent
@@ -61,19 +61,21 @@ export async function runCloudAgent(
 	trackRemoteExecution("started", opts?.origin ?? "plan")
 
 	if (backgrounded) {
-		ctx.ui.notify("Cloud agent started in background. You'll be notified when it completes.", "info")
+		const transcriptPath = getActiveManager()?.getRecord(id)?.outputFile
+		const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
+		ctx.ui.notify(`Remote agent started in background. You'll be notified when it completes.${transcriptNote}`, "info")
 		if (opts?.fermentId) {
 			ctx.ui.notify(
-				"Ferment paused while the cloud agent executes the plan. It will resume or complete when the cloud agent finishes.",
+				"Ferment paused while the remote agent executes the plan. It will resume or complete when the remote agent finishes.",
 				"info",
 			)
 		}
 		pi.sendMessage(
 			{
 				customType: "cloud_agent_started",
-				content: `A cloud agent has been started in the background to execute the plan. It is running on a remote sandbox. You will be notified when it completes —${
+				content: `A remote agent has been started in the background to execute the plan. It is running on a remote sandbox. You will be notified when it completes —${
 					opts?.fermentId
-						? " do not re-plan, re-execute, create todos, or call activate_ferment_phase. The ferment is paused while the cloud agent works."
+						? " do not re-plan, re-execute, create todos, or call activate_ferment_phase. The ferment is paused while the remote agent works."
 						: " do not re-plan or re-execute."
 				} Wait for the completion notification. The agent ID is ${id}.`,
 				display: false,

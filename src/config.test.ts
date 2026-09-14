@@ -8,11 +8,14 @@ import {
 	clearApiKey,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	getApiKeyMismatchWarning,
+	getApiKeySource,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
 	readGitToken,
 	readHideTips,
+	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	upgradeLegacyRetrySettings,
@@ -21,6 +24,7 @@ import {
 	writeGitToken,
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
+	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
 } from "./config.js"
 
@@ -31,10 +35,63 @@ describe("loadConfig", () => {
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
 		configPath = join(tempDir, "config.json")
+		vi.stubEnv("KIMCHI_API_KEY", "")
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("prefers the environment key without replacing the saved login", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "saved-key" }))
+		vi.stubEnv("KIMCHI_API_KEY", "environment-key")
+		expect(getApiKeySource()).toBe("environment")
+		expect(loadConfig({ configPath }).apiKey).toBe("environment-key")
+		expect(readApiKeyFromConfigFile(configPath)).toBe("saved-key")
+		vi.stubEnv("KIMCHI_API_KEY", "")
+		expect(getApiKeySource()).toBe("config")
+		expect(loadConfig({ configPath }).apiKey).toBe("saved-key")
+	})
+
+	it.each([
+		undefined,
+		"",
+		"environment-key",
+	])("strips the environment key while retaining its override (%s)", async (envKey) => {
+		vi.resetModules()
+		const config = await import("./config.js")
+		writeFileSync(configPath, JSON.stringify({ apiKey: "saved-key" }))
+		vi.stubEnv("KIMCHI_API_KEY", envKey)
+		const warning = config.getApiKeyMismatchWarning("saved-key")
+
+		expect(config.captureApiKeyFromEnvironment()).toBe(envKey || undefined)
+		expect(config.getApiKeySource()).toBe(envKey ? "environment" : "config")
+		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
+		expect(Object.hasOwn(process.env, "KIMCHI_API_KEY")).toBe(false)
+		expect(config.loadConfig({ configPath }).apiKey).toBe(envKey || "saved-key")
+		expect(config.readTelemetryConfig(configPath).headers.Authorization).toBe(`Bearer ${envKey || "saved-key"}`)
+		expect(config.getApiKeyMismatchWarning("saved-key")).toBe(warning)
+		if (envKey) expect(config.getApiKeyMismatchWarning("saved-key")).toContain("Using the environment key")
+		expect(config.readApiKeyFromConfigFile(configPath)).toBe("saved-key")
+		// Repeated initialization must not lose a key already removed from process.env.
+		expect(config.captureApiKeyFromEnvironment()).toBe(envKey || undefined)
+	})
+
+	it.each(["", "saved-key", "different-key"])("warns only for a differing nonempty environment key (%s)", (envKey) => {
+		vi.stubEnv("KIMCHI_API_KEY", envKey)
+		const warning = getApiKeyMismatchWarning("saved-key")
+		if (envKey === "different-key") {
+			expect(warning).toBe(
+				"KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key.",
+			)
+			expect(warning).not.toContain("unset")
+			expect(warning).not.toContain("saved-key")
+			expect(warning).not.toContain(envKey)
+		} else {
+			expect(warning).toBeUndefined()
+		}
+		expect(getApiKeyMismatchWarning("")).toBeUndefined()
 	})
 
 	it("reads apiKey from config file", () => {
@@ -547,6 +604,49 @@ describe("writeSessionModeWizardSeenAt", () => {
 	})
 })
 
+describe("readStudioOnboardingSeenAt / writeStudioOnboardingSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips onboarding.studioOnboardingSeenAt", () => {
+		expect(readStudioOnboardingSeenAt(configPath)).toBeUndefined()
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T10:00:00.000Z")
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z", otherMarker: true },
+			}),
+		)
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+				otherMarker: true,
+				studioOnboardingSeenAt: "2026-09-11T10:00:00.000Z",
+			},
+		})
+	})
+})
+
 describe("readHideTips / writeHideTips", () => {
 	let tempDir: string
 	let configPath: string
@@ -769,7 +869,7 @@ describe("permissions", () => {
 		expect(mode).toBe(0o600)
 	})
 
-	it("writeConfigObject (via writeApiKey) chmods even when pre-existing file is loose", () => {
+	it("writeApiKey tightens a loose pre-existing config.json to 0600", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "old" }), { mode: 0o644 })
 		chmodSync(configPath, 0o644)
 		expect(statSync(configPath).mode & 0o777).toBe(0o644)

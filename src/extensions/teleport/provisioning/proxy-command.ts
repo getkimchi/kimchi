@@ -1,6 +1,6 @@
 import { basename } from "node:path"
-import { readApiKeyFromConfigFile } from "../../../config.js"
-import { findProxyHelper } from "../../../ssh-proxy.js"
+import { quote } from "shell-quote"
+import { getAgentInvocation } from "../../../utils/spawn-kimchi-subprocess.js"
 
 /**
  * Builds an SSH ProxyCommand string for use with Teleport.
@@ -8,8 +8,9 @@ import { findProxyHelper } from "../../../ssh-proxy.js"
  * When running as a compiled binary (i.e. not under `node` or `bun`), the
  * command delegates back to the current executable via `--ssh-proxy`.
  *
- * In dev mode (running under `node`/`bun`), falls back to locating the
- * standalone proxy helper script and injects the API key via the environment.
+ * In dev mode (running under `node`/`bun`), invokes Kimchi through its runtime.
+ * The proxy entry point resolves the inherited API key or saved configuration.
+ * Keep credentials out of this string: it is also persisted in SSH config.
  *
  * When `target` is "%h" (default), the proxy-helper receives the SSH host name
  * at connect time and resolves it via the listing endpoint. When `target` is a
@@ -21,10 +22,6 @@ export function buildProxyCommand(target = "%h"): string {
 		return `${binaryName} --ssh-proxy ${target}`
 	}
 
-	// Fallback for when running in dev mode.
-
-	const proxyHelper = findProxyHelper()
-	const apiKey = process.env.KIMCHI_API_KEY ?? readApiKeyFromConfigFile()
-
-	return `env KIMCHI_API_KEY=${apiKey} ${proxyHelper} ssh-proxy ${target}`
+	const invocation = getAgentInvocation(["--ssh-proxy", target])
+	return quote([invocation.command, ...invocation.args])
 }

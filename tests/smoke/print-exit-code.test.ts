@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, it } from "vitest"
@@ -7,9 +7,9 @@ import {
 	DEFAULT_MODEL,
 	type FakeOpenAiServer,
 	type FakeResponseScript,
-	resolveModels,
 	startFakeOpenAiServer,
 } from "../e2e/tui/support/fake-openai-server.js"
+import { writeKimchiConfig } from "./print-config.js"
 
 const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
@@ -19,46 +19,6 @@ const KIMCHI_INFRA_ERROR_EXIT_CODE = 74
 
 function infraErrorResponse(): FakeResponseScript {
 	return { status: 503, body: { error: "Service Unavailable" } }
-}
-
-function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
-	const configDir = join(homeDir, ".config", "kimchi")
-	const harnessDir = join(configDir, "harness")
-	mkdirSync(harnessDir, { recursive: true })
-	writeFileSync(
-		join(configDir, "config.json"),
-		JSON.stringify({ apiKey: "fake", llmEndpoint: fakeBaseUrl, skillPaths: [], migrationState: "done" }),
-	)
-	writeFileSync(
-		join(harnessDir, "settings.json"),
-		JSON.stringify({
-			multiModel: false,
-			resources: {},
-			retry: { maxRetries: 1, baseDelayMs: 10 },
-		}),
-	)
-	writeFileSync(
-		join(harnessDir, "models.json"),
-		JSON.stringify({
-			providers: {
-				fake: {
-					baseUrl: `${fakeBaseUrl}/openai/v1`,
-					apiKey: "fake",
-					api: "openai-completions",
-					authHeader: true,
-					models: resolveModels(undefined).map((model) => ({
-						id: model.slug,
-						name: model.displayName,
-						reasoning: model.reasoning,
-						input: model.input,
-						contextWindow: model.contextWindow,
-						maxTokens: model.maxTokens,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					})),
-				},
-			},
-		}),
-	)
 }
 
 function runPrint(homeDir: string, workDir: string, sessionPath: string, prompt: string) {

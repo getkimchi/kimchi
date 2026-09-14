@@ -1,6 +1,7 @@
 import { basename } from "node:path"
 import { authenticateWorkspace, createOrUpdateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
+import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { deleteWorkspace, listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
@@ -24,7 +25,9 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	const fallbackName = basename(ctx.cwd) || "kimchi"
 
-	// Verify once for orgId; cache for the loop (needed for rename/delete workspace).
+	// Verify once for orgId; cache for the loop (needed for rename/delete
+	// workspace) — also shared with listWorkspaces/getQuotaUsage below so both
+	// skip their own duplicate verifyKey round-trip.
 	let orgId: string
 	try {
 		orgId = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
@@ -34,9 +37,18 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	while (true) {
 		status(ctx, "Loading…")
+		// Quota footer fills in asynchronously: fire it alongside the workspace
+		// list and hand the promise to the picker — its footer rows are reserved
+		// either way and populate when the fetch settles. Failures degrade to
+		// "no summary" (pre-caught so the picker never sees a rejection), and a
+		// slow quota endpoint never delays the picker. Reuse the orgId verified
+		// above to skip a duplicate verifyKey round-trip.
+		const quotaPromise = getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(
+			() => undefined,
+		)
 		let workspaces: Workspace[]
 		try {
-			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
 		} catch (err) {
 			status(ctx, undefined)
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
@@ -48,7 +60,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		const nodes = await buildTree(workspaces, ctx, fallbackName)
 		status(ctx, undefined)
 
-		const result = await pickRemoteSessions(ctx, nodes)
+		const result = await pickRemoteSessions(ctx, nodes, quotaPromise)
 		if (!result) return
 
 		if (result.action === "open-terminal") {
@@ -165,6 +177,9 @@ export async function buildTree(
 				lastActivityAt: ws.lastActivityAt,
 				host: ws.host,
 				sessionCount: reachable ? sessions.length : "?",
+				cpuMillicores: ws.cpuMillicores,
+				ramBytes: ws.ramBytes,
+				pvcSizeBytes: ws.pvcSizeBytes,
 			},
 			sessions,
 			unreachable: !reachable,

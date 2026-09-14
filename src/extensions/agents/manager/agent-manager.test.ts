@@ -17,6 +17,15 @@ vi.mock("../../../sandbox/cloud/workspaces.js", () => ({
 	listWorkspaces: vi.fn().mockResolvedValue([]),
 }))
 
+const { loadWorkspaceFileMock } = vi.hoisted(() => ({ loadWorkspaceFileMock: vi.fn() }))
+
+// resources.js stays real (pure validator); the loader is stubbed, but the
+// real WorkspaceFileError class stays (importOriginal) so behavior matches reality.
+vi.mock("../../../sandbox/cloud/workspace-file.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../sandbox/cloud/workspace-file.js")>()),
+	loadWorkspaceFile: loadWorkspaceFileMock,
+}))
+
 vi.mock("../../teleport/provisioning/clone-plan.js", () => ({
 	resolveClonePlan: vi.fn(),
 }))
@@ -40,6 +49,8 @@ vi.mock("../../teleport/provisioning/git-token.js", () => ({
 }))
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
+import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import type { AgentRecord } from "../personas/types.js"
@@ -55,6 +66,8 @@ const mockResolveGitToken = vi.mocked(resolveGitToken)
 const mockRunRemoteAgent = vi.mocked(runRemoteAgent)
 const mockAttachRemoteAgent = vi.mocked(attachRemoteAgent)
 const mockIsRemoteSessionConnected = vi.mocked(isRemoteSessionConnected)
+const mockListWorkspaces = vi.mocked(listWorkspaces)
+const mockLoadWorkspaceFile = vi.mocked(loadWorkspaceFile)
 
 function fakePi(): ExtensionAPI {
 	return {} as ExtensionAPI
@@ -1023,6 +1036,8 @@ describe("AgentManager remote git credential resolution", () => {
 			branch: "main",
 		})
 		mockResolveGitToken.mockResolvedValue(undefined)
+		mockListWorkspaces.mockResolvedValue([])
+		mockLoadWorkspaceFile.mockReturnValue(undefined)
 		mockRunRemoteAgent.mockResolvedValue({
 			responseText: "done",
 			stopReason: "end_turn",
@@ -1056,6 +1071,60 @@ describe("AgentManager remote git credential resolution", () => {
 				gitCredential: { host: "gitlab.com", token: "glpat-cached-token" },
 			}),
 		)
+	})
+
+	it("forwards kimchi_workspace.yaml resources to runRemoteAgent when minting a workspace", async () => {
+		mockLoadWorkspaceFile.mockReturnValue({ resources: { cpu: " 500m ", pvcSize: "20Gi" } })
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		// No name-matched workspace (listWorkspaces → []) → mint → resources ride.
+		// Outer whitespace trimmed by the real validator.
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({ resources: { cpu: "500m", pvcSize: "20Gi" } }),
+		)
+	})
+
+	it("broken kimchi_workspace.yaml surfaces as an agent error and never starts a remote run", async () => {
+		mockLoadWorkspaceFile.mockImplementation(() => {
+			throw new WorkspaceFileError(
+				"Could not parse /work/myrepo/kimchi_workspace.yaml: bad indentation",
+				"/work/myrepo/kimchi_workspace.yaml",
+			)
+		})
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(record.status).toBe("error")
+		expect(record.error).toContain("Could not parse /work/myrepo/kimchi_workspace.yaml")
+		expect(mockRunRemoteAgent).not.toHaveBeenCalled()
+	})
+
+	it("does not forward resources when a name-matched workspace is reused", async () => {
+		mockLoadWorkspaceFile.mockReturnValue({ resources: { cpu: "500m" } })
+		mockListWorkspaces.mockResolvedValue([
+			{ id: "ws-existing", name: "myrepo", createdAt: new Date(), lastActivityAt: new Date(), status: "active" },
+		])
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(record.status).toBe("completed")
+		expect(mockLoadWorkspaceFile).not.toHaveBeenCalled()
+		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("resources")
 	})
 
 	it("passes undefined gitCredential when no token is resolved (non-interactive mode)", async () => {

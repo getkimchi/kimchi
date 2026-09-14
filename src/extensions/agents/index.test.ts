@@ -167,6 +167,7 @@ import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-
 import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import { RemoteAgentSession } from "./manager/remote-agent-session.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import type { Theme } from "./ui/agent-widget.js"
 
@@ -1040,5 +1041,83 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 			"remote_run:state",
 			expect.objectContaining({ id: "cloud-1", status: "completed" }),
 		)
+	})
+})
+
+describe("steer_subagent on a remote (cloud) record", () => {
+	/** Retrieve a registered tool by name from the pi.registerTool mock calls. */
+	function getRegisteredTool(pi: ReturnType<typeof makeMockPi>, name: string) {
+		const calls = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
+		const tool = calls.map((c: unknown[]) => c[0]).find((t: unknown) => (t as { name?: string }).name === name)
+		expect(tool).toBeDefined()
+		return tool as unknown as {
+			execute: (
+				id: string,
+				params: Record<string, unknown>,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { type: string; text: string }[] }>
+		}
+	}
+
+	/** Spawn a running remote record whose session is a real RemoteAgentSession
+	 *  bound to a stub ACP client — the shape _runRemote produces in production. */
+	function spawnRemoteRecord(pi: ReturnType<typeof makeMockPi>) {
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(manager).toBeDefined()
+
+		const session = new RemoteAgentSession()
+		const acpClient = {
+			steer: vi.fn().mockResolvedValue("injected"),
+			cancel: vi.fn().mockResolvedValue(undefined),
+		}
+		session.bindClient(acpClient as never, {
+			workspaceId: "ws-1",
+			sessionName: "acp-test1234",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-test1234",
+		})
+
+		const id = manager.spawn(pi, undefined, "Remote-Runner", "prompt", {
+			toolUses: 2,
+			lifetimeUsage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+			compactionCount: 0,
+			session,
+		})
+		return { id, acpClient, session }
+	}
+
+	it("forwards the steer to the remote ACP session and reports it sent", async () => {
+		const pi = makeMockPi()
+		const { id, acpClient, session } = spawnRemoteRecord(pi)
+		const tool = getRegisteredTool(pi, "steer_subagent")
+
+		const result = await tool.execute("tc", { agent_id: id, message: "adjust course" }, undefined, undefined, undefined)
+
+		// The tool wraps the message with the orchestrator marker, then the
+		// adapter forwards it verbatim to the bound ACP client.
+		expect(acpClient.steer).toHaveBeenCalledTimes(1)
+		expect((acpClient.steer.mock.calls[0] as unknown[])[0]).toContain("adjust course")
+		expect(result.content[0].text).toContain(`Steering message sent to agent ${id}`)
+		// The steer lands in the transcript, mirroring local agents.
+		const last = session.messages[session.messages.length - 1]
+		expect(last.role).toBe("user")
+		expect(String(last.content)).toContain("adjust course")
+	})
+
+	it("surfaces the 'temporarily unreachable' error while the remote run is reconnecting", async () => {
+		const pi = makeMockPi()
+		const { id, acpClient, session } = spawnRemoteRecord(pi)
+		session.setReconnecting(true)
+		const tool = getRegisteredTool(pi, "steer_subagent")
+
+		const result = await tool.execute("tc", { agent_id: id, message: "adjust course" }, undefined, undefined, undefined)
+
+		expect(acpClient.steer).not.toHaveBeenCalled()
+		expect(result.content[0].text).toContain("Failed to steer agent")
+		expect(result.content[0].text).toContain("temporarily unreachable")
 	})
 })

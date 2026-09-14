@@ -6,8 +6,8 @@ import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { logger } from "./logger.js"
 import { resourceNameToToolName } from "./resource-tools.js"
+import { formatToolName, isToolExcluded } from "./tool-names.js"
 import type { McpResource, McpTool, ServerEntry, ToolMetadata } from "./types.js"
-import { formatToolName, isToolExcluded } from "./types.js"
 import { extractToolUiStreamMode, getAgentDir } from "./utils.js"
 
 const CACHE_VERSION = 1

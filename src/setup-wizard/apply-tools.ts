@@ -2,6 +2,7 @@ import { log, spinner } from "@clack/prompts"
 import type { ConfigScope } from "../config/scope.js"
 import { byId } from "../integrations/registry.js"
 import type { ToolId } from "../integrations/types.js"
+import type { ModelMetadata } from "../models.js"
 import type { ConfigMode } from "./state.js"
 
 export interface ApplyOutcome {
@@ -25,7 +26,7 @@ export async function applyToolConfigs(options: {
 	scope: ConfigScope
 	mode: ConfigMode
 	telemetryEnabled: boolean
-	models: readonly import("../models.js").ModelMetadata[]
+	models: readonly ModelMetadata[]
 }): Promise<ApplyOutcome> {
 	const { selectedTools, apiKey, scope, mode, telemetryEnabled, models } = options
 	const outcome: ApplyOutcome = { successes: [], failures: [] }

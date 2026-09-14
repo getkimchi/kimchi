@@ -22,6 +22,7 @@ import {
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
+import { isKnownCommand } from "./commands/registry.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -30,9 +31,11 @@ import "./login-command-patch.js"
 import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import {
+	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	getApiKeyMismatchWarning,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
@@ -42,8 +45,10 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
+import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
@@ -115,6 +120,7 @@ import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
+import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -269,6 +275,21 @@ const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 class SetupCancelled extends Error {}
 
 try {
+	const apiKeyWarning = helpOrVersion ? undefined : getApiKeyMismatchWarning()
+	const terminalIo = {
+		stdinIsTTY: process.stdin.isTTY === true,
+		stdoutIsTTY: process.stdout.isTTY === true,
+	}
+	// Only chat TUI sessions load the warning extension after startup dialogs.
+	// Setup commands render their own Clack warning; other subcommands exit before extensions load.
+	if (
+		apiKeyWarning &&
+		originalArgs[0] !== "setup-tools" &&
+		originalArgs[0] !== "setup" &&
+		(isKnownCommand(originalArgs[0]) || !isTerminalUiMode(originalArgs, terminalIo))
+	) {
+		console.warn(`Warning: ${apiKeyWarning}`)
+	}
 	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
@@ -297,12 +318,7 @@ try {
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
 		let config = loadConfig()
 
-		const envKey = process.env.KIMCHI_API_KEY || undefined
-		delete process.env.KIMCHI_API_KEY
-		if (envKey && !config.apiKey) {
-			writeApiKey(envKey)
-			config = loadConfig()
-		}
+		const envKey = captureApiKeyFromEnvironment()
 
 		// Capture the frozen launch-time metadata (OS + config snapshot incl.
 		// multimodel) for injection into JSONL/HTML exports. Decoupled from the
@@ -311,7 +327,7 @@ try {
 		captureSessionStart(config, telemetryConfig.enabled)
 
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
-		// Sent after loadConfig() + env-key reload so the config snapshot reflects
+		// Sent after loadConfig() so the config snapshot reflects
 		// real values rather than defaults.
 		if (telemetryConfig.enabled) {
 			sendPreSessionEvent(telemetryConfig, "harness_launched", {
@@ -357,20 +373,40 @@ try {
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
 		let currentApiKey = apiKey
+		const rejectedEnvironmentKeyMessage =
+			"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+		let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
 		try {
-			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.customLlmEndpoint }))
-			if (experimentalFeatures) {
-				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
-				models = [...models, ...readExperimentalModels(modelsJsonPath)]
+			if (envKey) {
+				const discover = () =>
+					discoverEnvironmentModels(modelsJsonPath, envKey, {
+						endpoint: config.customLlmEndpoint,
+						experimental: experimentalFeatures,
+					})
+				const discovered = await discover()
+				models = discovered.models
+				environmentOllamaModels = discovered.ollamaModels
+				installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
+			} else {
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+					endpoint: config.customLlmEndpoint,
+				}))
+				if (experimentalFeatures) {
+					injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
+					models = [...models, ...readExperimentalModels(modelsJsonPath)]
+				}
+				injectAutoModel(modelsJsonPath)
+				// Auto-discover a local Ollama server and merge its models into the
+				// registry. Probe is silent on failure — startup is never blocked.
+				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			}
-			injectAutoModel(modelsJsonPath)
-			// Auto-discover a local Ollama server and merge its models into the
-			// registry. Probe is silent on failure — startup is never blocked.
-			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
-			models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
+			if (is401 && envKey) {
+				throw new Error(rejectedEnvironmentKeyMessage)
+			}
 			if (is401 && process.stdin.isTTY) {
 				console.warn("API key is invalid or expired. Redirecting to setup...")
 				writeApiKey("")
@@ -384,7 +420,9 @@ try {
 				currentApiKey = wizardResult.apiKey ?? ""
 				writeApiKey(currentApiKey)
 				config = loadConfig()
-				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.customLlmEndpoint }))
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+					endpoint: config.customLlmEndpoint,
+				}))
 				if (experimentalFeatures) {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
@@ -404,7 +442,9 @@ try {
 				throw err
 			}
 		}
-		await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+		// Keep saved Kimchi credentials aligned with config.json, including after
+		// cached-model fallback. Environment keys remain session-only.
+		if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -417,7 +457,7 @@ try {
 		// Wire Ollama-discovered models into the explorer / reviewer / builder
 		// role pools. Runs after setAvailableModels so the resolved roles
 		// singleton reflects the same model list the picker exposes.
-		const ollamaModelsForRoles = readOllamaModelsFromConfig(modelsJsonPath)
+		const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
 		if (ollamaModelsForRoles.length > 0) {
 			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
 		}
@@ -504,10 +544,6 @@ try {
 		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
-		const terminalIo = {
-			stdinIsTTY: process.stdin.isTTY === true,
-			stdoutIsTTY: process.stdout.isTTY === true,
-		}
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
@@ -596,6 +632,9 @@ try {
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,
+			shellProfileMigrationExtension,
+			// session_start handlers are awaited in order; warn after the migration dialog closes.
+			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,

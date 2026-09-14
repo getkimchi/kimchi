@@ -98,7 +98,7 @@ export interface PermissionAfterDecisionPayload {
 // Plan approved
 // ---------------------------------------------------------------------------
 
-/** Emitted when the user approves a plan-mode plan (the "Execute the plan"
+/** Emitted when the user approves a plan-mode plan (the "Execute the plan locally"
  *  path). Subscribers use this to gate plan-progress reporting: pre-approval
  *  planning todos are the agent's scratchpad, not the plan itself. */
 export interface PermissionPlanApprovedPayload {

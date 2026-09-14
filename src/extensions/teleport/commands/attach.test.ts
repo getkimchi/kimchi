@@ -48,6 +48,7 @@ vi.mock("../ui/progress.js", () => ({
 	},
 }))
 
+import { RemoteQuotaError } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
 import { runAttachSession } from "./attach.js"
 import { TeleportRefusal } from "./errors.js"
@@ -172,6 +173,17 @@ describe("runAttachSession", () => {
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Authentication failed.*auth boom/), "error")
 		expect(waitReadyMock).not.toHaveBeenCalled()
 		expect(listSessionsMock).not.toHaveBeenCalled()
+	})
+
+	it("refuses with the quota message verbatim, without the 'Authentication failed' prefix", async () => {
+		authMock.mockRejectedValueOnce(new RemoteQuotaError("Unable to provision workspace: user CPU limit exceeded", 429))
+		const { ctx, ui } = makeCtx()
+
+		await expect(runAttachSession({ workspaceId: "w-1", sessionName: "x" }, ctx)).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(ui.notify).toHaveBeenCalledWith("Unable to provision workspace: user CPU limit exceeded", "error")
+		expect(waitReadyMock).not.toHaveBeenCalled()
 	})
 
 	it("refuses when waitForWorkspaceReady fails", async () => {

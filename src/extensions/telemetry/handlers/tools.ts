@@ -192,6 +192,7 @@ export function handleToolExecutionEnd(
 				tool_name: toolName,
 				error_message: errorMsg,
 				turn_index: tm.turnIndex,
+				...tm.getTraceAttributes(),
 			},
 			ctx,
 		)

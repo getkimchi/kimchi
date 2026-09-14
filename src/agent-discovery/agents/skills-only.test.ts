@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -9,7 +9,9 @@ describe("skills-only agents", () => {
 	let tempDir: string
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-skills-only-"))
+		// realpath: on macOS tmpdir() is a /var symlink, and resolved candidates
+		// after chdir report the /private prefix
+		tempDir = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-skills-only-")))
 	})
 
 	afterEach(() => {
@@ -53,10 +55,20 @@ describe("skills-only agents", () => {
 		expect(discovery.skillCount).toBe(0)
 	})
 
-	it("defaults to the project-local skills dir first, then the global fallback", () => {
+	it("defaults to the project-relative skills dir first, then the global fallback", () => {
 		const def = makeSkillsOnlyAgent("codex", "Codex", ".codex")
-		expect(def.skillsDirs[0]).toBe(join(process.cwd(), ".codex", "skills"))
+		// The project-relative candidate is resolved per discovery call against
+		// the caller's cwd (see discoverAgent), never frozen at module load.
+		expect(def.skillsDirs[0]).toEqual({ projectRelative: join(".codex", "skills") })
 		expect(def.skillsDirs[1]).toBe(join(homedir(), ".codex", "skills"))
+	})
+
+	it("resolves the default project-relative candidate against the discovery cwd", () => {
+		mkdirSync(join(tempDir, ".codex", "skills", "alpha"), { recursive: true })
+		const def = makeSkillsOnlyAgent("codex", "Codex", ".codex")
+		const discovery = discoverAgent(def, { cwd: tempDir })
+		expect(discovery.skillsDir).toBe(join(tempDir, ".codex", "skills"))
+		expect(discovery.skillCount).toBe(1)
 	})
 
 	it("registers the converged skills directories in AGENT_DEFINITIONS", () => {

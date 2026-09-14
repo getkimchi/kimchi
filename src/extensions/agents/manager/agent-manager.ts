@@ -4,6 +4,8 @@ import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
+import { resolveWorkspaceResources } from "../../../sandbox/cloud/resources.js"
+import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
@@ -402,6 +404,10 @@ export class AgentManager {
 		const dirName = basename(ctx.cwd) || "kimchi"
 		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
 		const workspaceId = byName?.id ?? randomUUID()
+		// Resource requests (kimchi_workspace.yaml) ride the upsert PUT only
+		// when minting — a name-matched workspace keeps its existing size
+		// (resources are create-time-only and immutable server-side).
+		const workspaceResources = byName ? undefined : resolveWorkspaceResources(loadWorkspaceFile(ctx.cwd)?.resources)
 
 		// Resolve git clone plan from the local repo so the sandbox gets a
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
@@ -455,6 +461,7 @@ export class AgentManager {
 			localPath: ctx.cwd,
 			workspaceName: dirName,
 			outputFile: record.outputFile,
+			...(workspaceResources ? { resources: workspaceResources } : {}),
 			onReady: (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
 				// Capture the ACP session id for resume-after-restart persistence
@@ -482,8 +489,7 @@ export class AgentManager {
 					if (activity.status === "in_progress") {
 						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
-						const isError = activity.status === "failed"
-						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
+						remoteSession.recordToolCallEndFromActivity(activity)
 						record.toolUses++
 					}
 					options.onToolActivity?.(activity)
@@ -498,6 +504,7 @@ export class AgentManager {
 					addUsage(record.lifetimeUsage, usage)
 					options.onAssistantUsage?.(usage)
 				},
+				onContextUsage: (used, size) => remoteSession.setContextUsage(used, size),
 				onRawNotification: (params) => {
 					options.onRawNotification?.(params)
 				},
@@ -1029,7 +1036,7 @@ export class AgentManager {
 					if (activity.status === "in_progress") {
 						adapter.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
-						adapter.recordToolCallEnd(activity.toolName, activity.toolCallId, activity.status === "failed")
+						adapter.recordToolCallEndFromActivity(activity)
 						record.toolUses++
 					}
 					options?.callbacks?.onToolActivity?.(activity)
@@ -1044,6 +1051,7 @@ export class AgentManager {
 					addUsage(record.lifetimeUsage, usage)
 					options?.callbacks?.onAssistantUsage?.(usage)
 				},
+				onContextUsage: (used, size) => adapter.setContextUsage(used, size),
 			},
 		}).then((result) => {
 			record.recoveryNote = result.recoveryNote

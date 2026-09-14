@@ -116,7 +116,7 @@ export function getConfig(type: string): {
 } {
 	if (type === "Remote-Runner") {
 		return {
-			displayName: "Cloud Agent",
+			displayName: "Remote Agent",
 			description: "Remote agent running on a sandbox worker via ACP",
 			builtinToolNames: [],
 			extensions: false,

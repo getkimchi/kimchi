@@ -63,7 +63,9 @@ describe("handleRemoteCompletion", () => {
 	it("always injects transcript path into steer message when user picks Review", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+			"Review the remote agent's results in the local session",
+		)
 
 		await handleRemoteCompletion(pi, ctx, "remote result text", "plan", {
 			transcriptPath: "/tmp/transcripts/agent-1.jsonl",
@@ -78,23 +80,10 @@ describe("handleRemoteCompletion", () => {
 		expect(content).toContain("remote result text")
 	})
 
-	it("does not inject result when user picks Done", async () => {
-		const pi = makePi()
-		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done")
-
-		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
-			transcriptPath: "/tmp/transcripts/agent-done.jsonl",
-			agentId: "agent-done",
-		})
-
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
 	it("injects transcript path even when user picks Sync", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
 			transcriptPath: "/tmp/transcripts/agent-sync.jsonl",
@@ -124,7 +113,9 @@ describe("handleRemoteCompletion", () => {
 	it("injects result even when transcriptPath is undefined", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+			"Review the remote agent's results in the local session",
+		)
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -155,7 +146,7 @@ describe("handleRemoteCompletion", () => {
 	it("injects custom action text when user picks Custom", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Give a custom instruction")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Describe what to do next")
 		;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("write a summary")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
@@ -173,7 +164,7 @@ describe("handleRemoteCompletion", () => {
 	it("does not inject when user picks Custom but cancels input", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Give a custom instruction")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Describe what to do next")
 		;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
@@ -209,7 +200,7 @@ describe("handleRemoteCompletion", () => {
 		it("uses remoteSession metadata directly — authenticates with known workspaceId", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
@@ -225,7 +216,7 @@ describe("handleRemoteCompletion", () => {
 		it("rsyncs from the unique remoteSession.cwd with .git and secrets excluded", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
@@ -244,7 +235,7 @@ describe("handleRemoteCompletion", () => {
 		it("notifies error and does not sync when remoteSession is absent", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -258,7 +249,7 @@ describe("handleRemoteCompletion", () => {
 		it("notifies error when sync fails", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 			vi.mocked(runRsync).mockRejectedValue(new Error("rsync connection refused"))
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
@@ -287,7 +278,7 @@ describe("handleRemoteCompletion", () => {
 		it("completes the ferment when user picks Sync", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Pull the changes to my machine and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", {
 				fermentId,
@@ -317,7 +308,9 @@ describe("handleRemoteCompletion", () => {
 		it("resumes the ferment when user picks Review and confirms", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+				"Review the remote agent's results in the local session",
+			)
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
@@ -329,7 +322,9 @@ describe("handleRemoteCompletion", () => {
 		it("does not resume the ferment when user picks Review but declines confirm", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+				"Review the remote agent's results in the local session",
+			)
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(false)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
@@ -337,24 +332,10 @@ describe("handleRemoteCompletion", () => {
 			expect(mockApplyAndPersist).not.toHaveBeenCalledWith(fermentId, { type: "resume" })
 		})
 
-		it("completes the ferment when user picks Done", async () => {
-			const pi = makePi()
-			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done")
-
-			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
-
-			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, { type: "resume" })
-			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, {
-				type: "complete_ferment",
-				finalSummary: "Executed in cloud sandbox",
-			})
-		})
-
 		it("resumes the ferment when user picks Custom and confirms", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Give a custom instruction")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Describe what to do next")
 			;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("write tests")
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
 
@@ -366,7 +347,9 @@ describe("handleRemoteCompletion", () => {
 		it("does not call applyAndPersist when no fermentId is provided", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(
+				"Review the remote agent's results in the local session",
+			)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -388,7 +371,7 @@ describe("handleRemoteFailure", () => {
 		handleRemoteFailure(pi, ctx, "plan", { error: "workspace unreachable" })
 
 		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: workspace unreachable", "error")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Remote agent failed: workspace unreachable", "error")
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -404,7 +387,7 @@ describe("handleRemoteFailure", () => {
 
 		// Without the reason, this failure mode is undiagnosable from the UI.
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Cloud agent failed: the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown — Recovery failed: the replayed session contained no final assistant message",
+			"Remote agent failed: the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown — Recovery failed: the replayed session contained no final assistant message",
 			"error",
 		)
 	})
@@ -416,7 +399,7 @@ describe("handleRemoteFailure", () => {
 		handleRemoteFailure(pi, ctx, "ferment plan", { error: "boom", fermentId: "ferment-1" })
 
 		expect(mockApplyAndPersist).toHaveBeenCalledWith("ferment-1", { type: "resume" })
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: boom", "error")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Remote agent failed: boom", "error")
 	})
 
 	it("steers the local agent in headless sessions (a notification would be invisible)", () => {
@@ -456,7 +439,7 @@ describe("handleRemoteFailure", () => {
 
 		handleRemoteFailure(pi, ctx, "plan")
 
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: unknown error", "error")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Remote agent failed: unknown error", "error")
 	})
 
 	it("skips the interactive notification for user-initiated stops (the kill handler already announced it)", () => {

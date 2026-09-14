@@ -8,9 +8,9 @@ import { isServerCacheValid } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpExtensionState } from "./state.js"
 import { formatSchema } from "./tool-metadata.js"
+import { formatToolName, isToolExcluded } from "./tool-names.js"
 import { transformMcpContent } from "./tool-registrar.js"
 import type { DirectToolSpec, McpConfig, McpContent } from "./types.js"
-import { formatToolName, isToolExcluded } from "./types.js"
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js"
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"])

@@ -112,7 +112,25 @@ function assertCompactInternalsCompatible(sessionProto: PatchableSessionPrototyp
 				"(expected manual compaction to abort first and use _compactionAbortController - upstream internals changed)",
 		)
 	}
+	// Classification-wording pins: model-guard's isCancellationError and
+	// isExpectedCompactionError classify upstream rejections by these strings;
+	// pin them so an upstream rewording fails loudly here instead of silently
+	// flipping classification there.
+	const pinnedWording = ["Compaction cancelled", "Nothing to compact", "Already compacted"]
+	const missing = pinnedWording.filter((wording) => !compactSource.includes(wording))
+	if (missing.length > 0) {
+		throw new Error(
+			`pi-coding-agent AgentSession.compact() no longer throws expected wording (${missing.join(", ")}) ` +
+				"- update model-guard's compaction error classification for the new wording",
+		)
+	}
 }
+
+/** Rejection message used by inlineCompact when another compaction owns the
+ *  session (an in-flight inline attempt or an active compaction controller).
+ *  Exported so guard code (model-guard) can recognize the defer case without
+ *  duplicating the wording — a change here travels with every matcher. */
+export const INLINE_COMPACT_IN_PROGRESS_MESSAGE = "Compaction already in progress"
 
 async function runInlineCompact(
 	session: PatchableSession,
@@ -124,7 +142,7 @@ async function runInlineCompact(
 		session._compactionAbortController ||
 		session._autoCompactionAbortController
 	) {
-		throw new Error("Compaction already in progress")
+		throw new Error(INLINE_COMPACT_IN_PROGRESS_MESSAGE)
 	}
 
 	// Safety assertion (not deferral — callers wanting deferral must check

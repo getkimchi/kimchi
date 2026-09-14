@@ -5,9 +5,10 @@ import { createContext } from "../../__mocks__/context.js"
 import type { TelemetryContext } from "../session-context.js"
 import { handleTransportError } from "./transport-errors.js"
 
-function mockSessionCtx(): Pick<TelemetryContext, "emit"> {
+function mockSessionCtx(): Pick<TelemetryContext, "emit" | "getTraceAttributes"> {
 	return {
 		emit: vi.fn(),
+		getTraceAttributes: () => ({}),
 	}
 }
 

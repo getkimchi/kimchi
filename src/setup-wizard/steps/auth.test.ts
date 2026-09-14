@@ -123,6 +123,21 @@ describe("runAuthStep", () => {
 		expect(state.apiKey).toBe("new-key-abc")
 	})
 
+	it("identifies the environment key that will override a newly saved config key", async () => {
+		process.env.KIMCHI_API_KEY = "environment-key"
+		confirmMock.mockResolvedValue({ kind: "next", value: false })
+		passwordMock.mockResolvedValue({ kind: "next", value: "new-key" })
+		validateApiKeyMock.mockResolvedValue({ valid: true })
+
+		await runAuthStep(state, { backable: true })
+
+		expect(console.log).toHaveBeenCalledWith(
+			"  Note: KIMCHI_API_KEY in your environment will override your newly saved key in config.",
+		)
+		expect(writeApiKeyMock).toHaveBeenCalledWith("new-key")
+		expect(state.apiKey).toBe("new-key")
+	})
+
 	it("sets state.back when user presses Esc in the prompt", async () => {
 		readApiKeyFromConfigFileMock.mockReturnValue(undefined)
 		passwordMock.mockResolvedValue({ kind: "back" })

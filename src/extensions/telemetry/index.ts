@@ -150,6 +150,11 @@ let _telemetryCtx: TelemetryContext | undefined
 let _telemetryConfig: TelemetryConfig = { enabled: false, endpoint: "", metricsEndpoint: "", headers: {}, apiKey: "" }
 let sessionStartEmitted = false
 
+/** @internal — exposed for testing only */
+export function _getTelemetryCtx(): TelemetryContext | undefined {
+	return _telemetryCtx
+}
+
 function isEnabled(): boolean {
 	return !!(_telemetryCtx && _telemetryConfig.enabled && _telemetryConfig.endpoint)
 }
@@ -932,23 +937,35 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId] = parentSessionId
 			}
 
-			// Inject W3C Trace Context (if not already present) derived from
-			// the session id so that downstream distributed tracing spans
-			// join the same trace. Header names are case-insensitive, so
-			// check all keys rather than a single property name.
-			// Example:
-			//   session id: 85a2d4f5-9f9f-49fb-890e-522a10e4a1e8
-			//   trace id:   85a2d4f59f9f49fb890e522a10e4a1e8
-			//   span id:    <new random 16-hex value per request>
+			// Inject W3C Trace Context (if not already present) with a fresh
+			// per-request trace id so each LLM request forms its own small,
+			// bounded downstream trace instead of every request of a multi-hour
+			// session piling into one giant trace.
+			// Session grouping stays in the X-Session-Id header above. Header names are case-insensitive, so check all
+			// keys rather than a single property name.
 			const hasTraceparent = Object.keys(event.headers).some(
 				(name) => name.toLowerCase() === TELEMETRY_PROVIDER_HEADER_NAMES.traceparent,
 			)
 			if (!hasTraceparent) {
-				const traceId = telemetryCtx.telemetryId.replace(/-/g, "").toLowerCase()
-				if (traceId.length === 32) {
-					const spanId = randomBytes(8).toString("hex")
-					event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.traceparent] = `00-${traceId}-${spanId}-01`
-				}
+				const traceId = randomBytes(16).toString("hex")
+				const spanId = randomBytes(8).toString("hex")
+				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.traceparent] = `00-${traceId}-${spanId}-01`
+				telemetryCtx.lastTraceContext = { traceId, spanId }
+			} else {
+				// An upstream component supplied the context — record it so
+				// telemetry events still join to whichever trace the request
+				// actually went out under. Malformed ids leave the context
+				// undefined rather than stamping a stale request's trace.
+				const existing = Object.entries(event.headers).find(
+					([name]) => name.toLowerCase() === TELEMETRY_PROVIDER_HEADER_NAMES.traceparent,
+				)?.[1]
+				const parts = existing?.split("-")
+				const traceId = parts?.length === 4 ? parts[1].toLowerCase() : undefined
+				const spanId = parts?.length === 4 ? parts[2].toLowerCase() : undefined
+				telemetryCtx.lastTraceContext =
+					traceId && /^[0-9a-f]{32}$/.test(traceId) && spanId && /^[0-9a-f]{16}$/.test(spanId)
+						? { traceId, spanId }
+						: undefined
 			}
 		})
 	}

@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ServerEntry } from "../../extensions/mcp-adapter/types.js"
 import { hasBearerAuthorizationHeader } from "../engine.js"
-import type { AgentDefinition } from "../index.js"
+import type { AgentDefinition, DirCandidate } from "../index.js"
 
 const CC_CONFIG_PATH = join(homedir(), ".claude.json")
 const CC_SKILLS_DIR = join(homedir(), ".claude", "skills")
@@ -41,8 +41,8 @@ function makeTransformServer(raw: CcServerRaw): ServerEntry {
 
 export function makeClaudeCodeDefinition(overrides?: {
 	configPaths?: string[]
-	skillsDirs?: string[]
-	commandsDirs?: string[]
+	skillsDirs?: DirCandidate[]
+	commandsDirs?: DirCandidate[]
 }): AgentDefinition {
 	const configPaths = overrides?.configPaths ?? [CC_CONFIG_PATH]
 	const skillsDirs = overrides?.skillsDirs ?? [CC_SKILLS_DIR]

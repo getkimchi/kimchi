@@ -382,6 +382,21 @@ Hand off an in-progress session to a cloud sandbox with `/teleport` — the agen
 | `--no-git-token` | Skip git credentials prompt |
 | `--skip-session` | Start remote agent fresh (don't upload current session history) |
 
+### Workspace sizing (`kimchi_workspace.yaml`)
+
+Declare CPU, memory, and disk requests for the sandboxes your project creates — workspaces minted by `/teleport` and headless cloud agents alike — in a `kimchi_workspace.yaml` at the **root of your project**:
+
+```yaml
+# kimchi_workspace.yaml — safe to commit; no secrets belong here
+resources:
+  cpu: "250m"
+  memory: "1Gi"
+  pvcSize: "20Gi"
+```
+
+Values are Kubernetes quantity strings (`500m`, `1Gi`, `20Gi`) — quote them: unquoted plain numbers (`cpu: 2`) are read as numbers by YAML and refused, naming the field. Omit a field to inherit the org default. Unknown fields under `resources:` are likewise refused rather than silently ignored. When you run kimchi from a subdirectory, the file is looked up walking toward the repository root.
+
+Sizing applies **only when a workspace is created** — resources are immutable once provisioned. Editing the file later won't resize an existing workspace: delete it (`/remote-sessions`) and re-teleport to pick up new values. Invalid values stop the command before anything is sent, naming the offending field.
 
 Once teleported, you're in the **PTY overlay** — a fullscreen tabbed terminal. Use `Ctrl+B c` / `n` / `p` to open and switch tabs. Press `Ctrl+D` to drop back to local kimchi; the sandbox and agent keep running.
 

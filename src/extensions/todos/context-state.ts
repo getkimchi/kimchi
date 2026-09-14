@@ -1,57 +1,45 @@
-import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { registerStateBlockPersistence } from "../state-block-persistence.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { renderTodoStateMarkdown } from "./state-markdown.js"
+import { subscribeTodoStore } from "./store.js"
 
-type OrchestratorMessages = ContextEvent["messages"]
+export const TODO_STATE_CUSTOM_TYPE = "todo-state"
 
-const TODO_STATE_CUSTOM_TYPE = "todo-state"
+/** Block persisted when the todo list is cleared after a state block was
+ *  already persisted. Constant, so repeated clears dedupe. */
+const TODO_CLEARED_MARKDOWN = "## Current Todos\n\nThe todo list was cleared."
 
-/**
- * Messages helper that knows how to strip todo-state injections from a
- * transient message array. Follows the same pattern as `stripStaleNudges`
- * in continuation-nudge.ts but targets this extension's custom type.
- */
-function stripTodoStateMessages(messages: OrchestratorMessages): OrchestratorMessages {
-	return messages.filter(
-		(m) =>
-			!(
-				m.role === "custom" &&
-				"customType" in m &&
-				(m as { customType: string }).customType === TODO_STATE_CUSTOM_TYPE
-			),
-	)
+function renderForPersist(sessionId: string): string | undefined {
+	const markdown = renderTodoStateMarkdown(sessionId)
+	return markdown === undefined ? undefined : markHarnessSteer(markdown)
 }
 
 /**
- * Registers a `context` event handler that injects the current todo state
- * at the tail of the message array on every LLM call. This is transient —
- * the injected message lives only in the single LLM request, never in the
- * persistent session history, and never touches the system prompt.
+ * Persist-on-change delivery of the todo state block. Machinery (dedupe,
+ * busy-run deferral, settle flush, history replay dedupe, strip-only
+ * context view) lives in the shared `state-block-persistence` registrar —
+ * see its module comment for the cache-breakpoint rationale.
  *
- * Replaces the previous `before_agent_start` system-prompt injection for
- * the state block. The `## Todos` guidance block stays in the system
- * prompt (static, cache-friendly); only the dynamic state moves here.
+ * Todo-specific bits retained here: the render source (`renderTodoStateMarkdown`,
+ * a pure function of the store), the cleared-list retraction marker
+ * (history is append-only, so a cleared list must persist a fixed marker or
+ * the strip-only view keeps showing stale todos), and the store
+ * subscription as the change source.
  */
-export function registerTodoContextState(pi: ExtensionAPI): void {
-	pi.on("context", async (event, ctx) => {
-		const sessionId = ctx.sessionManager.getSessionId()
-		const stateMarkdown = renderTodoStateMarkdown(sessionId)
-		if (!stateMarkdown) return undefined
-
-		// Defensive strip: if another handler in the chain already injected
-		// an older copy of todo-state, drop it so we never double-stack.
-		const messages = stripTodoStateMessages(event.messages)
-
-		messages.push({
-			role: "custom",
-			customType: TODO_STATE_CUSTOM_TYPE,
-			// Brand harness-injected state so the model can distinguish it from
-			// user-authored text (upstream flattens custom messages to user role).
-			content: markHarnessSteer(stateMarkdown),
-			display: false,
-			timestamp: Date.now(),
-		})
-
-		return { messages }
+export function registerTodoStatePersistence(pi: ExtensionAPI): void {
+	registerStateBlockPersistence(pi, {
+		customType: TODO_STATE_CUSTOM_TYPE,
+		render: (sessionId, previous) => {
+			const content = renderForPersist(sessionId)
+			if (content !== undefined) return content
+			// The list was cleared after a block was persisted: retract it.
+			return previous === undefined ? undefined : markHarnessSteer(TODO_CLEARED_MARKDOWN)
+		},
+		subscribe: (notify) => {
+			subscribeTodoStore((_details, sessionId) => {
+				notify(sessionId)
+			})
+		},
 	})
 }
