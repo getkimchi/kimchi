@@ -33,7 +33,7 @@ export default function shellProfileMigrationExtension(pi: ExtensionAPI): void {
 				return
 			}
 			const choice = await ctx.ui.select(
-				`We detected KIMCHI_API_KEY in your shell profile. Do you want to remove it?\n${profile.path}`,
+				`We detected an unnecessary KIMCHI_API_KEY in your shell profile. Do you want to remove it? Removing it will not disrupt any existing Kimchi applications.\n${profile.path}`,
 				["Yes", "No", "No, don't ask again"],
 			)
 			if (choice === "No, don't ask again") {

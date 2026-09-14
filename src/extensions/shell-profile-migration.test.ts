@@ -30,7 +30,7 @@ describe("shell profile migration extension", () => {
 		const { ctx, start } = setup("Yes")
 		await start()
 		expect(ctx.ui.select).toHaveBeenCalledWith(
-			"We detected KIMCHI_API_KEY in your shell profile. Do you want to remove it?\n/test/.zshrc",
+			"We detected an unnecessary KIMCHI_API_KEY in your shell profile. Do you want to remove it? Removing it will not disrupt any existing Kimchi applications.\n/test/.zshrc",
 			["Yes", "No", "No, don't ask again"],
 		)
 		expect(removeShellProfileApiKey).toHaveBeenCalledWith(profile)
