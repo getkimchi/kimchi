@@ -79,6 +79,10 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 		{
 			artifactName: "ferment-new-runs-planning",
 			gitInit: true,
+			// Opt back into the default-on remote run (the fixture pins
+			// KIMCHI_REMOTE_RUN=0) so Stage 5's menu matches the 4-option
+			// list described below.
+			env: { KIMCHI_REMOTE_RUN: "1" },
 			responses: [
 				// Turn 1: emit orientation text first then call propose_ferment_scoping.
 				{

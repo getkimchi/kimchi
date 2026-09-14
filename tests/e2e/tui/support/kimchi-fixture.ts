@@ -268,6 +268,13 @@ export function launchKimchi(
 		// session boots without background HTTP or synchronous tar/exec
 		// work. Keeps the TUI e2e hermetic and its timing deterministic.
 		"KIMCHI_NO_UPDATE_CHECK=1",
+		// Remote run is enabled by default in the app, but TUI E2E must stay
+		// hermetic: CI has no remote-run credentials, and the extra
+		// "Execute the plan in a remote workspace" menu option shifts the
+		// keyDown indices existing plan-menu tests navigate by. Tests that
+		// deliberately cover the remote-run menu opt in via
+		// `env: { KIMCHI_REMOTE_RUN: "1" }`.
+		"KIMCHI_REMOTE_RUN=0",
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",

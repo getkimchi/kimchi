@@ -206,6 +206,11 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 		{
 			artifactName: "plan-review-dismissal-feedback",
 			gitInit: true,
+			// Opt back into the default-on remote run (the fixture pins
+			// KIMCHI_REMOTE_RUN=0): the extra "Execute the plan in a remote
+			// workspace" menu option is what Stage 6's three keyDown presses
+			// navigate past.
+			env: { KIMCHI_REMOTE_RUN: "1" },
 			// Large context window prevents pi-mono's built-in compaction from
 			// firing mid-test and consuming scripted responses.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
