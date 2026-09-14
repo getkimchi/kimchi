@@ -695,7 +695,7 @@ describe("deprecated model notification", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Switch to "${replacementModelId}" for better performance.`,
+			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Switch to "${replacementModelId}" via /model.`,
 			"warning",
 		)
 	})

@@ -279,7 +279,7 @@ export default function (skillPathsFromConfig: string[]) {
 				const datePart = info.deprecatedAt ? ` and will be retired on ${info.deprecatedAt.slice(0, 10)}` : ""
 				const notePart = info.note ? ` Docs: ${info.note}` : ""
 				if (replacement && registry.getAll().some((m) => m.id === replacement)) {
-					return `Model "${modelId}" is deprecated${datePart}. Switch to "${replacement}" for better performance.${notePart}`
+					return `Model "${modelId}" is deprecated${datePart}. Switch to "${replacement}" via /model.${notePart}`
 				}
 				return `Model "${modelId}" is deprecated${datePart}. It may be removed in a future update.${notePart}`
 			}

@@ -49,7 +49,7 @@ test("session start on an announced-deprecated model warns with retirement date 
 			// The notification wraps at the terminal width — assert contiguous
 			// fragments so line breaks can't split a longer expected string.
 			await waitForText(terminal, 'Switch to "fake-new"', { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "for better", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "via /model", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("replacement hint visible")
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("prompt ready")
