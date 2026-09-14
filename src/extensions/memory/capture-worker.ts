@@ -265,6 +265,10 @@ export async function chatJson(
 				// disappear between runs of the same haystack (validated: the
 				// gateway default temperature changed captured facts per run).
 				temperature: 0,
+				// Usage-tracking tag — the same payload field the /tags extension
+				// sets on session LLM requests — so billing can attribute
+				// background memory traffic.
+				tags: ["memory:extraction"],
 				messages: [
 					{ role: "system", content: system },
 					{ role: "user", content: user },
