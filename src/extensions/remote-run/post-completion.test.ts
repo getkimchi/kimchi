@@ -371,7 +371,7 @@ describe("handleRemoteFailure", () => {
 		handleRemoteFailure(pi, ctx, "plan", { error: "workspace unreachable" })
 
 		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: workspace unreachable", "error")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Remote agent failed: workspace unreachable", "error")
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -387,7 +387,7 @@ describe("handleRemoteFailure", () => {
 
 		// Without the reason, this failure mode is undiagnosable from the UI.
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Cloud agent failed: the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown — Recovery failed: the replayed session contained no final assistant message",
+			"Remote agent failed: the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown — Recovery failed: the replayed session contained no final assistant message",
 			"error",
 		)
 	})
@@ -399,7 +399,7 @@ describe("handleRemoteFailure", () => {
 		handleRemoteFailure(pi, ctx, "ferment plan", { error: "boom", fermentId: "ferment-1" })
 
 		expect(mockApplyAndPersist).toHaveBeenCalledWith("ferment-1", { type: "resume" })
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: boom", "error")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Remote agent failed: boom", "error")
 	})
 
 	it("steers the local agent in headless sessions (a notification would be invisible)", () => {
@@ -439,7 +439,7 @@ describe("handleRemoteFailure", () => {
 
 		handleRemoteFailure(pi, ctx, "plan")
 
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Cloud agent failed: unknown error", "error")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Remote agent failed: unknown error", "error")
 	})
 
 	it("skips the interactive notification for user-initiated stops (the kill handler already announced it)", () => {
