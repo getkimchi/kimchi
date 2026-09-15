@@ -41,7 +41,7 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 		label: "Dispatch to remote agent",
 		description:
 			"Dispatch a fully self-contained task to a remote cloud agent running on a cloud sandbox. Use this when the user asks to run, delegate, or implement something remotely — e.g. 'continue in remote session', 'using the cloud agent', 'do this in the cloud / on a sandbox'. IMPORTANT: before calling this tool, present the complete briefing verbatim in your message text so the user can read it in the chat; then call this tool with exactly that text as `task`. The briefing must be fully self-contained: the remote agent sees ONLY the task text plus the repository, never this conversation. Every call shows the user a confirmation dialog before anything is sent — do not call speculatively, and if the user declines, do not call again unless they explicitly re-ask. The remote agent runs in the background; the user is notified on completion.",
-		promptSnippet: "Dispatch a self-contained task to a remote cloud agent",
+		promptSnippet: "Dispatch a self-contained task to a remote agent",
 		parameters: DispatchToCloudAgentSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			// Defense in depth: schema validation should guarantee a string, but
