@@ -2645,6 +2645,28 @@ describe("Ferment V2 extension", () => {
 		expect(result.messages).toContain(other)
 	})
 
+	it.each([false, true])("stops injecting completed objectives into later requests (replay: %s)", async (replay) => {
+		await harness.command("finish this objective")
+		const activeContext = (await harness.fire("context", { type: "context", messages: [] })) as ContextEvent
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await completeVisibleTodo(harness)
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()?.status).toBe("complete")
+		if (replay) await harness.fire("session_start", { type: "session_start", reason: "resume" })
+
+		const user = { role: "user" as const, content: "Now work on something else", timestamp: Date.now() }
+		const result = (await harness.fire("context", {
+			type: "context",
+			messages: [...activeContext.messages, user],
+		})) as ContextEvent
+		expect(result.messages).toEqual([user])
+		expect(await harness.fire("context", { type: "context", messages: [user] })).toBeUndefined()
+		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toMatchObject({
+			status: "complete",
+			objective: "finish this objective",
+		})
+	})
+
 	it("keeps the Ferment V2 context stable while only accounting changes", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("keep the handoff stable")
