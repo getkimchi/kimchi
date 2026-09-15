@@ -100,6 +100,10 @@ interface FakeRegistry {
 	watched(handle: string): boolean
 	/** How many times whenExited was called for a handle. */
 	watchCalls(handle: string): number
+	/** getEntry stub — the watcher reads the kill reason for deadline detection. */
+	getEntry(handle: string): { state: string; exitCode: number | null; reason: string | null } | undefined
+	/** Set the reason getEntry reports (simulates deadline auto-kills). */
+	setEntryReason(handle: string, reason: string | null): void
 }
 
 function makeFakeRegistry(): FakeRegistry {
@@ -108,6 +112,7 @@ function makeFakeRegistry(): FakeRegistry {
 		{ promise: Promise<{ exitCode: number | null }>; resolve: (v: { exitCode: number | null }) => void }
 	>()
 	const calls = new Map<string, number>()
+	const entryReasons = new Map<string, string | null>()
 	const registry: FakeRegistry = {
 		whenExited(handle: string) {
 			calls.set(handle, (calls.get(handle) ?? 0) + 1)
@@ -130,6 +135,13 @@ function makeFakeRegistry(): FakeRegistry {
 		},
 		watchCalls(handle: string) {
 			return calls.get(handle) ?? 0
+		},
+		getEntry(handle: string) {
+			if (!entryReasons.has(handle)) return undefined
+			return { state: "stopped", exitCode: null, reason: entryReasons.get(handle) ?? null }
+		},
+		setEntryReason(handle: string, reason: string | null) {
+			entryReasons.set(handle, reason)
 		},
 	}
 	return registry
@@ -783,5 +795,235 @@ describe("formatGateBlockReason", () => {
 		expect(reason).toContain("processes awaiting")
 		expect(reason).toContain("h1, h2")
 		expect(reason).toContain("all pending processes")
+	})
+})
+
+/** Generic bash_control tool_result payload (continue/stop/detach shapes). */
+function controlResult(
+	handle: string,
+	action: "continue" | "stop" | "detach",
+	details: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		type: "tool_result",
+		toolName: "bash_control",
+		toolCallId: "ctl-1",
+		input: { handle, action },
+		content: [{ type: "text", text: `[${action}]` }],
+		isError: false,
+		details: { handle, exitCode: null, action, ...details },
+	}
+}
+
+/** bash_control result with detach semantics (process keeps running, gate released). */
+function detachResult(handle: string): Record<string, unknown> {
+	return controlResult(handle, "detach", { detached: true, exited: false })
+}
+
+describe("bashControlExtension — detach (session-scoped services)", () => {
+	it("detach releases the gate while the process keeps running", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+
+		// Gate closed before detach.
+		expect((await fireToolCall(pi, "bash"))?.block).toBe(true)
+
+		await fireToolResult(pi, detachResult("h1"))
+
+		// Gate open for every tool after detach.
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+		expect((await fireToolCall(pi, "read"))?.block).toBeFalsy()
+	})
+
+	it("partial detach keeps the gate closed for the remaining pending handle", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
+		await fireSessionStart(pi)
+		await fireToolResult(pi, checkinResult("h1"))
+		await fireToolResult(pi, checkinResult("h2"))
+
+		await fireToolResult(pi, detachResult("h1"))
+
+		const result = await fireToolCall(pi, "bash")
+		expect(result?.block).toBe(true)
+		expect(result?.reason).toContain("h2")
+		expect(result?.reason).not.toContain("h1")
+	})
+
+	it("a detached process exiting on its own emits one informational steer and keeps the gate open", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+
+		registry.resolveExit("h1", 1)
+		await flush()
+
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("no longer blocks your other tools")
+		expect(steers[0]?.content[0]?.text).toContain("exit code 1")
+		expect(steers[0]?.options).toEqual({ deliverAs: "steer" })
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+
+		// The notice fires once — no repeats after the handle is consumed.
+		registry.resolveExit("h1", 1)
+		await flush()
+		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+	})
+
+	it("a deadline-killed detached process is reported as a deadline kill, not a natural exit", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+
+		registry.setEntryReason("h1", "deadline")
+		registry.resolveExit("h1", null)
+		await flush()
+
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("deadline auto-kill")
+		expect(steers[0]?.content[0]?.text).not.toContain("exited on its own")
+	})
+
+	it("the detached-exit notice names still-pending handles instead of claiming the gate is open", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
+		await fireSessionStart(pi)
+		await fireToolResult(pi, checkinResult("h1"))
+		await fireToolResult(pi, checkinResult("h2"))
+		await fireToolResult(pi, detachResult("h1"))
+
+		registry.resolveExit("h1", 1)
+		await flush()
+
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("1 background process still pending")
+		expect(steers[0]?.content[0]?.text).toContain("no longer blocks your other tools")
+		// The gate stays closed on the remaining handle.
+		const blocked = await fireToolCall(pi, "bash")
+		expect(blocked?.block).toBe(true)
+		expect(blocked?.reason).toContain("h2")
+	})
+
+	it("a process dying while its own detach call is in flight still notifies (watcher fires first)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+
+		await fireToolExecutionStart(pi, "tcD", "bash_control", { handle: "h1", action: "detach" })
+		// Process dies inside the detach call's execute window (before its
+		// stale result is processed).
+		registry.resolveExit("h1", 1)
+		await flush()
+
+		// The pending-path steer fires despite the in-flight detach call —
+		// a detach call never owns the exit.
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("exited on its own")
+
+		// The stale detach result (state checked before death) must not
+		// double-notify nor re-close the gate.
+		await fireToolResult(pi, controlResult("h1", "detach", { detached: true, exited: false }))
+		await fireToolExecutionEnd(pi, "tcD", "bash_control")
+		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+	})
+
+	it("a stale detach result processed before the watcher fires still notifies (result first)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+
+		await fireToolExecutionStart(pi, "tcD", "bash_control", { handle: "h1", action: "detach" })
+		// Stale detach result lands BEFORE the watcher runs: the handle moves
+		// to the detached set while the process is already dead.
+		await fireToolResult(pi, controlResult("h1", "detach", { detached: true, exited: false }))
+		registry.resolveExit("h1", 1)
+		await flush()
+
+		// The detached-path steer fires despite the still-active detach call.
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("exited on its own")
+		expect(steers[0]?.content[0]?.text).toContain("no longer blocks your other tools")
+
+		await fireToolExecutionEnd(pi, "tcD", "bash_control")
+		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+	})
+
+	it("a stop in flight suppresses the detached exit steer (control result is authoritative)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+
+		await fireToolExecutionStart(pi, "tcStop", "bash_control", { handle: "h1", action: "stop" })
+		registry.resolveExit("h1", null)
+		await flush()
+
+		expect(messages(pi)).toHaveLength(0)
+
+		// The stop result itself resolves the handle; end-of-call bookkeeping
+		// must not produce a stray notice either.
+		await fireToolResult(pi, controlResult("h1", "stop", { exited: true }))
+		await fireToolExecutionEnd(pi, "tcStop", "bash_control")
+		expect(messages(pi)).toHaveLength(0)
+	})
+
+	it("continue after detach re-pends the handle (gate closes again)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+
+		await fireToolResult(pi, controlResult("h1", "continue", { checkin: true, exited: false }))
+
+		const blocked = await fireToolCall(pi, "bash")
+		expect(blocked?.block).toBe(true)
+		expect(blocked?.reason).toContain("h1")
+
+		// A detached-handle exit notice must NOT fire while the handle pends
+		// again — the pending path owns the steer.
+		registry.resolveExit("h1", 0)
+		await flush()
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("Call bash_control with this handle")
+		expect(steers[0]?.content[0]?.text).not.toContain("no longer blocks")
+
+		// The re-pend must not stack a second watcher on the same exit
+		// promise — the pending-phase watcher is still live.
+		expect(registry.watchCalls("h1")).toBe(1)
+	})
+
+	it("user input releases the gate but keeps detached-exit notices live", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry)
+		await fireToolResult(pi, detachResult("h1"))
+		// Re-pend, then the human takes over.
+		await fireToolResult(pi, controlResult("h1", "continue", { checkin: true, exited: false }))
+		await fireInput(pi)
+		expect((await fireToolCall(pi, "bash"))?.block).toBeFalsy()
+
+		// Detach again after the input clear, then the process dies: the
+		// death notice still reaches the model.
+		await fireToolResult(pi, detachResult("h1"))
+		registry.resolveExit("h1", 137)
+		await flush()
+		const steers = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text).toContain("no longer blocks your other tools")
+		expect(steers[0]?.content[0]?.text).toContain("exit code 137")
 	})
 })
