@@ -26,6 +26,7 @@ export function createContext(
 		hasUI: true,
 		mode: "tui",
 		cwd: "/tmp",
+		scopedModels: [],
 		isIdle: vi.fn(),
 		getContextUsage: vi.fn().mockReturnValue(undefined),
 		...overrides,

@@ -3,12 +3,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+	applyModelEnvArgs,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
@@ -19,6 +19,43 @@ import {
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+
+describe("applyModelEnvArgs", () => {
+	it("forwards an inherited model as an explicit launch argument", () => {
+		const args = applyModelEnvArgs(["--mode", "json", "--session", "/tmp/worker.jsonl", "-p"], "kimchi-dev/glm-5.3")
+		populateCliArgs(args)
+		expect(getParsedCliArgs().options.model).toBe("kimchi-dev/glm-5.3")
+		expect(args.slice(0, 2)).toEqual(["--model", "kimchi-dev/glm-5.3"])
+	})
+
+	it.each([
+		["--model", "kimchi-dev/auto"],
+		["--multi-model"],
+		["--model", "multi-model"],
+		["--model=kimchi-dev/auto"],
+		["--provider", "other"],
+		["--models", "kimchi-dev/auto,kimchi-dev/other"],
+	])("preserves explicit launch selection %j", (...args) => {
+		expect(applyModelEnvArgs(args, "kimchi-dev/glm-5.3")).toBe(args)
+	})
+
+	it("does not mistake flag-shaped prompt content for explicit selection", () => {
+		const args = ["--system-prompt", "--model", "--", "--provider"]
+		expect(applyModelEnvArgs(args, "kimchi-dev/glm-5.3")).toEqual(["--model", "kimchi-dev/glm-5.3", ...args])
+	})
+
+	it("leaves ordinary invocations unchanged without an inherited model", () => {
+		const args = ["hello"]
+		expect(applyModelEnvArgs(args, undefined)).toBe(args)
+	})
+
+	it("caches only an explicitly supplied model scope", () => {
+		populateCliArgs(["--models", "kimchi-dev/auto,kimchi-dev/glm-5.3"])
+		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
+		populateCliArgs([])
+		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -342,20 +379,5 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
-	})
-
-	it.each([
-		["canonical", ["--model", "kimchi-dev/auto"]],
-		["provider and id", ["--provider", "kimchi-dev", "--model", "auto"]],
-		["bare id", ["--model", "auto"]],
-		["thinking suffix", ["--model", "kimchi-dev/auto:high"]],
-	] as const)("recognizes an explicit Auto selection in %s form", (_label, args) => {
-		populateCliArgs([...args])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(true)
-	})
-
-	it("does not mistake another provider's auto model for kimchi-dev/auto", () => {
-		populateCliArgs(["--provider", "custom", "--model", "auto"])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
 	})
 })
