@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import * as clack from "@clack/prompts"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { AGENT_DEFINITIONS, type AgentDiscovery, discoverAgent } from "./agent-discovery/index.js"
 import { buildSkillPathOptions, getAgentConfigDir } from "./config.js"
-import type { ServerEntry } from "./extensions/mcp-adapter/types.js"
 
 export type MigrationState = "done" | "skip-forever"
 

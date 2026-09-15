@@ -10,6 +10,7 @@ import {
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
+	getConfiguredLegacyMcpKeys,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
@@ -184,6 +185,21 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("reports only explicitly persisted legacy MCP keys", () => {
+		const projectDir = join(tempDir, "project")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+		writeFileSync(configPath, JSON.stringify({ mcpSearchLimit: 7, unrelated: true }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ maxToolResultChars: 42_000, mcpSearch: { strategy: "regex" } }))
+
+		expect(getConfiguredLegacyMcpKeys({ configPath, cwd: projectDir })).toEqual([
+			"mcpSearchLimit",
+			"maxToolResultChars",
+			"mcpSearch",
+		])
+		expect(getConfiguredLegacyMcpKeys({ configPath: join(tempDir, "missing.json"), cwd: tempDir })).toEqual([])
 	})
 
 	it("falls back to global when .kimchi/config.json does not exist", () => {

@@ -1,12 +1,26 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ContextUsage,
+	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent"
 import { type Mocked, vi } from "vitest"
+
+export function createCommandContext(): ExtensionCommandContext {
+	return {
+		...createContext(),
+		getSystemPromptOptions: vi.fn(() => ({ cwd: "/tmp" })),
+		waitForIdle: vi.fn(async () => {}),
+		newSession: vi.fn(async () => ({ cancelled: false })),
+		fork: vi.fn(async () => ({ cancelled: false })),
+		navigateTree: vi.fn(async () => ({ cancelled: false })),
+		switchSession: vi.fn(async () => ({ cancelled: false })),
+		reload: vi.fn(async () => {}),
+	}
+}
 
 export function createContext(
 	overrides?: Mocked<

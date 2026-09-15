@@ -20,6 +20,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import {
@@ -70,7 +71,7 @@ function createHarness() {
 		getAllTools: vi.fn(() => []),
 		setActiveTools: vi.fn(),
 		getFlag: vi.fn(() => undefined),
-		events: { emit: vi.fn() },
+		events: createMiniEventBus().events,
 	} as unknown as ExtensionAPI
 
 	return { fermentsDir, eventStorage, runtime, pi, sentMessages }

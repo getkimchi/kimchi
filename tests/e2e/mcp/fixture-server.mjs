@@ -20,6 +20,7 @@ const scenario = process.env.KIMCHI_MCP_FIXTURE_SCENARIO ?? "basic"
 const transportKind = process.env.KIMCHI_MCP_FIXTURE_TRANSPORT ?? "stdio"
 const expectedBearerToken = process.env.KIMCHI_MCP_FIXTURE_BEARER_TOKEN
 const oauthEnabled = process.env.KIMCHI_MCP_FIXTURE_OAUTH === "1"
+const oauthPreauthorized = process.env.KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED === "1"
 const oauthGrantType = process.env.KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE ?? "authorization_code"
 const oauthClientId = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID ?? "kimchi-e2e-client"
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
@@ -70,6 +71,7 @@ function createFixtureServer() {
 			tools: [
 				{
 					name: "echo",
+					title: "Fixture echo",
 					description: "Echo deterministic text for Kimchi MCP end-to-end tests",
 					inputSchema: {
 						type: "object",
@@ -102,6 +104,7 @@ function createFixtureServer() {
 					description: "Wait for cancellation or a bounded delay",
 					inputSchema: { type: "object", properties: {}, additionalProperties: false },
 				},
+				...(fixtureBehavior.catalogTools ?? []),
 				...uiTools,
 			],
 		}
@@ -207,7 +210,7 @@ function sendJson(response, statusCode, body) {
 async function runHttpFixture() {
 	const sessions = new Map()
 	const authorizationCodes = new Map()
-	let oauthAccessTokenExpiresAt = 0
+	let oauthAccessTokenExpiresAt = oauthPreauthorized ? Date.now() + 3_600_000 : 0
 	let origin = ""
 	const httpServer = createServer(async (request, response) => {
 		try {
@@ -488,5 +491,9 @@ process.on("exit", (code) => record("process_exited", { code }))
 record("process_started", { transport: transportKind })
 
 if (fixtureBehavior.startup?.type === "exit") process.exit(fixtureBehavior.startup.code)
-else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
+else if (fixtureBehavior.startup?.type === "hang") {
+	process.stdin.resume()
+	process.stdin.once("end", () => process.exit(0))
+	process.once("SIGTERM", () => process.exit(0))
+} else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
 else await createFixtureServer().connect(new StdioServerTransport())
