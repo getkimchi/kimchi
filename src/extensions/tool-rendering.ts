@@ -28,6 +28,7 @@ import {
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent"
 import {
+	Box,
 	type Component,
 	Container,
 	deleteAllKittyImages,
@@ -744,7 +745,7 @@ function renderSkillViewResult(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	ctx: ToolRenderContext,
-): Text {
+): Component {
 	const args = (ctx.args ?? {}) as Record<string, unknown>
 	const name = typeof args.name === "string" && args.name ? args.name : "skill"
 	if (ctx.isError) {
@@ -766,18 +767,26 @@ function renderSkillViewResult(
 	const linked = linkedIdx >= 0 ? text.slice(linkedIdx + 1).trim() : ""
 
 	// Same visual as pi's SkillInvocationMessageComponent (the /skill block):
-	// bold [skill] label + name, collapsed to one line until ctrl+o.
+	// an accent-stroked Box with a bold [skill] label + name, collapsed to one
+	// line until ctrl+o, expanding to the full markdown body. Requires
+	// renderShell: "self" on the tool definition so the shell doesn't double-
+	// frame it.
+	const box = new Box(1, 1, (t: string) => theme.fg("accent", t))
 	const label = theme.fg("customMessageLabel", "\x1b[1m[skill]\x1b[22m")
 	if (!options.expanded) {
-		const line = `${label} ${theme.fg("customMessageText", name)}${theme.fg("dim", " (ctrl+o to expand)")}`
-		return makeText(ctx.lastComponent, withBranch(line, theme))
+		box.addChild(
+			new Text(`${label} ${theme.fg("customMessageText", name)}${theme.fg("dim", " (ctrl+o to expand)")}`, 0, 0),
+		)
+		return box
 	}
-	const lines = [
-		`${label} ${theme.fg("customMessageText", `\x1b[1m${name}\x1b[22m`)}`,
-		...body.split("\n").map((line) => theme.fg("customMessageText", line || " ")),
-	]
-	if (linked) lines.push(theme.fg("dim", linked))
-	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
+	box.addChild(new Text(`${label} ${theme.fg("customMessageText", `\x1b[1m${name}\x1b[22m`)}`, 0, 0))
+	box.addChild(
+		new Markdown(body, 0, 0, getMarkdownTheme(), {
+			color: (line: string) => theme.fg("customMessageText", line),
+		}),
+	)
+	if (linked) box.addChild(new Text(theme.fg("dim", linked), 0, 0))
+	return box
 }
 
 /** Marker that both upstream and our patched pi-ai validation errors append before the raw args JSON dump. */
