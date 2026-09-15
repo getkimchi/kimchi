@@ -19,11 +19,13 @@
  *   agent-manager.ts calls `record.session?.dispose?.()` on completion, and
  *   double-closing would error.
  *
- * Steering is not supported — ACP has no dedicated steering primitive. The
- * `steer()` method throws a clear error. This will be implemented later once
- * the ACP server supports it.
+ * Steering is supported via the ACP `_kimchi.dev/steering` extension method —
+ * forwarded to the remote kimchi's steering handler, which queues it into the
+ * live turn via pi-mono's `AgentSession.steer()`. Remote servers that pre-date
+ * the extension reject with a clear unsupported error.
  */
 
+import type { ImageContent } from "@earendil-works/pi-ai"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import type { AcpSessionClient } from "../../../sandbox/worker/acp-client.js"
 import type { RemoteSessionMeta } from "./remote-agent-runner.js"
@@ -391,16 +393,37 @@ export class RemoteAgentSession {
 	}
 
 	/**
-	 * Steering is not supported for remote agents — ACP has no dedicated
-	 * steering primitive. When the session is in a reconnecting state,
-	 * throws a specific "agent temporarily unreachable" error so callers
-	 * can distinguish it from a permanent "not supported" rejection.
+	 * Steers the running remote turn — forwarded over the ACP connection to
+	 * the remote kimchi's `_kimchi.dev/steering` handler, which queues it via
+	 * pi-mono's `AgentSession.steer()` (delivered after the current tool calls
+	 * finish, before the next LLM call). Always uses the CURRENTLY bound
+	 * client — after a disconnect recovery, `bindClient()` has already swapped
+	 * in the reattached client.
+	 *
+	 * Rejections deliberately surface as honest errors to the caller:
+	 * - reconnecting → "agent temporarily unreachable, retrying connection"
+	 * - no live turn on the remote (promptRequired) → the turn already finished
+	 * - remote server pre-dates steering → the client's unsupported error
+	 * On success the steer is appended to the local transcript as a user
+	 * message, mirroring how local agents render steered input.
 	 */
-	async steer(_text: string): Promise<void> {
+	async steer(text: string, images?: ImageContent[]): Promise<void> {
 		if (this._reconnecting) {
 			throw new Error("agent temporarily unreachable, retrying connection")
 		}
-		throw new Error("Steering is not supported for remote agents")
+		const client = this.acpClient
+		if (!client) {
+			throw new Error("remote agent is still initializing — no connection is bound yet, retry shortly")
+		}
+		const status = await client.steer(text, images)
+		if (status === "promptRequired") {
+			throw new Error("the remote turn already finished — send a follow-up prompt instead of steering")
+		}
+		// Mirror exactly what was steered: steered images belong in the local
+		// transcript too, not just the text.
+		const content = images && images.length > 0 ? [{ type: "text", text }, ...images] : text
+		this._messages.push({ role: "user", content })
+		this.emit({ type: "message_start", message: { role: "user", content } })
 	}
 
 	/** Abort = cancel the in-progress remote turn. */

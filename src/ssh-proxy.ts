@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
-import { readApiKeyFromConfigFile } from "./config.js"
+import { loadConfig } from "./config.js"
 
 interface FindProxyHelperOptions {
 	env?: NodeJS.ProcessEnv
@@ -63,11 +63,7 @@ export function isProxyMode(args: string[]): boolean {
 
 export function runProxy(sessionIDOrSandboxURL: string, proxyHelperPath?: string): never {
 	const bin = findProxyHelper(proxyHelperPath)
-	const apiKey = process.env.KIMCHI_API_KEY ?? readApiKeyFromConfigFile()
-	const env: Record<string, string> = { ...(process.env as Record<string, string>) }
-	if (apiKey) {
-		env.KIMCHI_API_KEY = apiKey
-	}
+	const env: NodeJS.ProcessEnv = { ...process.env, KIMCHI_API_KEY: loadConfig().apiKey }
 
 	const result = spawnSync(bin, ["ssh-proxy", sessionIDOrSandboxURL], {
 		stdio: "inherit",

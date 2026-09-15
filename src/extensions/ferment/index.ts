@@ -295,10 +295,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			}
 			runtime.clearPendingPlanReview(fermentId)
 			applyFermentRuntimeToolProfile(pi, runtime)
-			// Pause the ferment before spawning the cloud agent so the scheduler
+			// Pause the ferment before spawning the remote agent so the scheduler
 			// can't nudge the agent to activate_ferment_phase between confirm
 			// and spawn. The ferment is completed (on sync) or resumed (on
-			// review/custom/done) when the cloud agent finishes.
+			// review/custom) when the remote agent finishes.
 			const pauseOutcome = createApplyAndPersist(runtime)(fermentId, { type: "pause" })
 			if (pauseOutcome.ok) {
 				runtime.setActive(pauseOutcome.ferment)
@@ -316,7 +316,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				// user isn't left with a stuck ferment and no recovery path,
 				// and surface the error.
 				const message = err instanceof Error ? err.message : String(err)
-				ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
+				ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
 				const resumeOutcome = createApplyAndPersist(runtime)(fermentId, { type: "resume" })
 				if (resumeOutcome.ok) {
 					runtime.setActive(resumeOutcome.ferment)

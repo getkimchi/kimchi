@@ -45,7 +45,7 @@ it("renders pinned Billing status-line status from the credits API", { timeout: 
 		"utf-8",
 	)
 
-	const session = spawnInteractive()
+	const session = spawnInteractive({ extraEnv: { KIMCHI_API_KEY: "" } })
 	try {
 		await session.waitFor((out) => out.includes("Trust project folder?") || hasCreditsStatusLine(out), 15_000)
 		if (session.output().includes("Trust project folder?")) {

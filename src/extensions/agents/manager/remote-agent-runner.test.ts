@@ -8,6 +8,12 @@ vi.mock("../../../sandbox/cloud/auth.js", () => ({
 		wsUrl: "wss://worker.example.com",
 		host: "worker.example.com",
 	}),
+	authenticateWorkspaceProbe: vi.fn().mockResolvedValue({
+		connectToken: "test-token",
+		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+	}),
 }))
 
 vi.mock("../../../sandbox/cloud/readiness.js", () => ({
@@ -86,7 +92,7 @@ vi.mock("../../../sandbox/worker/acp-client.js", async (importOriginal) => {
 })
 
 // Import after mocks are set up
-import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
+import { authenticateWorkspace, authenticateWorkspaceProbe } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import {
 	AcpSessionClient,
@@ -150,6 +156,12 @@ beforeEach(() => {
 	capturedOptions = undefined
 	// Re-establish mock implementations after clearAllMocks resets them
 	vi.mocked(authenticateWorkspace).mockResolvedValue({
+		connectToken: "test-token",
+		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+	})
+	vi.mocked(authenticateWorkspaceProbe).mockResolvedValue({
 		connectToken: "test-token",
 		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
 		wsUrl: "wss://worker.example.com",
@@ -1442,10 +1454,10 @@ describe("runRemoteAgent", () => {
 			await expect(session.steer("do something")).rejects.toThrow("agent temporarily unreachable")
 		})
 
-		it("throws generic 'not supported' when session is NOT reconnecting", async () => {
+		it("rejects cleanly when no client is bound yet (not reconnecting)", async () => {
 			const { RemoteAgentSession } = await import("./remote-agent-session.js")
 			const session = new RemoteAgentSession()
-			await expect(session.steer("do something")).rejects.toThrow("Steering is not supported for remote agents")
+			await expect(session.steer("do something")).rejects.toThrow("still initializing")
 		})
 	})
 
@@ -1706,5 +1718,13 @@ describe("attachRemoteAgent", () => {
 		// recovery machinery handles the real session state.
 		vi.mocked(getSession).mockRejectedValue(new Error("network down"))
 		await expect(isRemoteSessionConnected(META, "test-api-key")).resolves.toBe(false)
+
+		// The probe is side-effect-free: it must go through
+		// authenticateWorkspaceProbe, never authenticateWorkspace (which upserts
+		// and resumes — waking a hibernated workspace).
+		expect(authenticateWorkspaceProbe).toHaveBeenCalledWith(META.workspaceId, "test-api-key", {
+			endpoint: undefined,
+		})
+		expect(authenticateWorkspace).not.toHaveBeenCalled()
 	})
 })

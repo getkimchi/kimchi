@@ -31,15 +31,27 @@ import {
 	ndJsonStream,
 	PROTOCOL_VERSION,
 	type PromptResponse,
+	RequestError,
 	type RequestPermissionRequest,
 	type RequestPermissionResponse,
 	type SessionNotification,
 	type ToolCallStatus,
 } from "@agentclientprotocol/sdk"
+import type { ImageContent } from "@earendil-works/pi-ai"
 import WebSocket from "ws"
 import type { LifetimeUsage } from "../../extensions/agents/manager/usage.js"
+import { AVAILABLE_EXT_METHODS } from "../../modes/acp/capabilities.js"
+import type { SteeringStatus } from "../../modes/acp/ext-methods/steering.js"
 import type { WorkspaceCredentials } from "../cloud/types.js"
 import { ACP_REATTACH_MID_TURN_META_KEY, parseToolCallId, readLifetimeUsageMeta } from "./acp-protocol.js"
+
+/** JSON-RPC code for "method not found" — how older remote servers (built
+ *  before the steering extension) answer `_kimchi.dev/steering`. */
+const JSON_RPC_METHOD_NOT_FOUND = -32601
+
+/** Error text when the remote kimchi pre-dates the ACP steering extension. */
+export const STEERING_UNSUPPORTED_MESSAGE =
+	"the remote agent does not support steering — it is running an older kimchi (upgrade the sandbox worker image)"
 
 // Hoisted once — reused across WebSocket frames instead of allocating per message.
 const textEncoder = new TextEncoder()
@@ -352,6 +364,51 @@ export class AcpSessionClient {
 		return {
 			stopReason: response.stopReason,
 			usage,
+		}
+	}
+
+	/**
+	 * Steers the running remote turn via the `_kimchi.dev/steering` extension
+	 * method — the same injection point as the ACP server's local steering
+	 * handler (queued via pi-mono's `AgentSession.steer()`, delivered after the
+	 * current tool calls finish, before the next LLM call).
+	 *
+	 * Returns "injected" when the message was queued into the live turn, or
+	 * "promptRequired" when no turn is active on the remote session (the
+	 * server never starts a new turn from a steer). Throws
+	 * STEERING_UNSUPPORTED_MESSAGE when the remote server pre-dates the
+	 * steering extension.
+	 */
+	async steer(text: string, images?: ImageContent[]): Promise<SteeringStatus> {
+		if (!this._connection || !this._sessionId) {
+			throw new Error("AcpSessionClient not initialized — call initialize() first")
+		}
+		try {
+			// pi-ai ImageContent already matches the ACP image ContentBlock shape
+			// the server parses — attachments are forwarded as-is.
+			// No _withAbortRejection: it is single-slot, held by the in-flight
+			// prompt() — wrapping steer() would evict the prompt's pending reject
+			// and silently disable its abort/forceDisconnect for the turn.
+			const response = await this._connection.extMethod(AVAILABLE_EXT_METHODS.steering, {
+				sessionId: this._sessionId,
+				prompt: text,
+				...(images && images.length > 0 ? { attachments: images } : {}),
+			})
+			// Validate before returning: a malformed/empty server payload must
+			// surface as an honest error — an unchecked cast would resolve with
+			// undefined, which callers treat as successful injection.
+			const status = response?.status
+			if (status !== "injected" && status !== "promptRequired") {
+				throw new Error(`unexpected steering status from remote: ${JSON.stringify(status)}`)
+			}
+			return status
+		} catch (err) {
+			// Older remote servers have no steering case in their extMethod
+			// dispatch — they answer with JSON-RPC method-not-found.
+			if (err instanceof RequestError && err.code === JSON_RPC_METHOD_NOT_FOUND) {
+				throw new Error(STEERING_UNSUPPORTED_MESSAGE)
+			}
+			throw err
 		}
 	}
 

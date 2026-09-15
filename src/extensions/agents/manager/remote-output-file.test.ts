@@ -27,12 +27,21 @@ interface EntryContent {
 	name?: string
 	id?: string
 	text?: string
-	input?: unknown
+	arguments?: unknown
+}
+
+interface ParsedMessage {
+	role: string
+	content: EntryContent[]
+	toolCallId?: string
+	toolName?: string
+	isError?: boolean
+	details?: unknown
 }
 
 interface ParsedEntry {
 	type: string
-	message: { role: string; content: EntryContent[] }
+	message: ParsedMessage
 }
 
 function parseEntries(entries: Record<string, unknown>[]): ParsedEntry[] {
@@ -40,11 +49,11 @@ function parseEntries(entries: Record<string, unknown>[]): ParsedEntry[] {
 }
 
 function findToolUseEntry(entries: ParsedEntry[]): ParsedEntry | undefined {
-	return entries.find((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "tool_use"))
+	return entries.find((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "toolCall"))
 }
 
 function findToolUseEntries(entries: ParsedEntry[]): ParsedEntry[] {
-	return entries.filter((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "tool_use"))
+	return entries.filter((e) => e.type === "assistant" && e.message.content?.some((c) => c.type === "toolCall"))
 }
 
 function findTextEntry(entries: ParsedEntry[]): ParsedEntry | undefined {
@@ -56,8 +65,8 @@ function findToolResultEntry(entries: ParsedEntry[]): ParsedEntry | undefined {
 }
 
 function getToolUseContent(entry: ParsedEntry): EntryContent {
-	const toolUse = entry.message.content.find((c) => c.type === "tool_use")
-	if (!toolUse) throw new Error("tool_use content not found in entry")
+	const toolUse = entry.message.content.find((c) => c.type === "toolCall")
+	if (!toolUse) throw new Error("toolCall content not found in entry")
 	return toolUse
 }
 
@@ -227,6 +236,11 @@ describe("streamRemoteToOutputFile", () => {
 			// The tool_use id should be call-789
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
 			expect(toolUse.id).toBe("call-789")
+			// Native pi-mono toolResult shape — correlates by toolCallId.
+			expect(toolResultEntry?.message.role).toBe("toolResult")
+			expect(toolResultEntry?.message.toolCallId).toBe("call-789")
+			expect(toolResultEntry?.message.toolName).toBe("Editing file.ts")
+			expect(toolResultEntry?.message.isError).toBe(false)
 		})
 	})
 
@@ -340,9 +354,9 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUseEntry = findToolUseEntry(entries)
 			expect(toolUseEntry).toBeDefined()
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
-			// The tool_use entry is written once, at completion — so args that
+			// The toolCall entry is written once, at completion — so args that
 			// streamed in after start are included.
-			expect(toolUse.input).toEqual({ command: "ls -la" })
+			expect(toolUse.arguments).toEqual({ command: "ls -la" })
 		})
 
 		it("captures rawInput from tool_call notification when it arrives before start", () => {
@@ -366,7 +380,102 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUseEntry = findToolUseEntry(entries)
 			expect(toolUseEntry).toBeDefined()
 			const toolUse = getToolUseContent(toolUseEntry as ParsedEntry)
-			expect(toolUse.input).toEqual({ path: "/app/file.ts" })
+			expect(toolUse.arguments).toEqual({ path: "/app/file.ts" })
+		})
+		it("parses a JSON-encoded string rawInput into arguments", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(
+				toolCallNotification("call-str", "Shell command", "in_progress", {
+					rawInput: JSON.stringify({ command: "ls -la" }),
+				}),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-str" })
+			callbacks.onRawNotification?.(toolCallUpdateNotification("call-str", { status: "completed", rawOutput: "ok" }))
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: "call-str" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUse = getToolUseContent(findToolUseEntry(entries) as ParsedEntry)
+			expect(toolUse.arguments).toEqual({ command: "ls -la" })
+		})
+
+		it("plain-string rawOutput is written verbatim, not JSON-quoted", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(toolCallNotification("call-txt", "Shell command", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-txt" })
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("call-txt", { status: "completed", rawOutput: "command not found" }),
+			)
+			callbacks.onToolActivity?.({ status: "completed", toolName: "Shell command", toolCallId: "call-txt" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolResultEntry = findToolResultEntry(entries)
+			expect(getTextContent(toolResultEntry as ParsedEntry).text).toBe("command not found")
+		})
+	})
+
+	describe("native pi-mono transcript shape", () => {
+		it("unwraps AgentToolResult rawOutput into native content blocks and details", () => {
+			// Regression: exported remote transcripts rendered no tool call detail
+			// because entries used the ACP shape (tool_use + role "tool" with a
+			// double-serialized JSON blob) instead of the native pi-mono shape the
+			// export HTML template renders (toolCall + ToolResultMessage).
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(
+				toolCallNotification("call-ls", "ls", "in_progress", { rawInput: { path: "/work" } }),
+			)
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "ls", toolCallId: "call-ls" })
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("call-ls", {
+					status: "completed",
+					rawOutput: { content: [{ type: "text", text: ".kimchi/" }], details: { ok: true } },
+				}),
+			)
+			callbacks.onToolActivity?.({ status: "completed", toolName: "ls", toolCallId: "call-ls" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolUse = getToolUseContent(findToolUseEntry(entries) as ParsedEntry)
+			expect(toolUse.type).toBe("toolCall")
+			expect(toolUse.name).toBe("ls")
+			expect(toolUse.arguments).toEqual({ path: "/work" })
+
+			const toolResultEntry = findToolResultEntry(entries)
+			expect(toolResultEntry?.message.role).toBe("toolResult")
+			expect(toolResultEntry?.message.toolCallId).toBe("call-ls")
+			// Content blocks pass through natively — NOT a JSON.stringify'd blob.
+			expect(toolResultEntry?.message.content).toEqual([{ type: "text", text: ".kimchi/" }])
+			expect(toolResultEntry?.message.details).toEqual({ ok: true })
+			expect(toolResultEntry?.message.isError).toBe(false)
+		})
+
+		it("marks failed tool calls isError in the toolResult", () => {
+			const { callbacks: inner } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			callbacks.onRawNotification?.(toolCallNotification("call-fail", "Shell command", "in_progress"))
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "Shell command", toolCallId: "call-fail" })
+			callbacks.onRawNotification?.(
+				toolCallUpdateNotification("call-fail", { status: "failed", rawOutput: "command not found" }),
+			)
+			callbacks.onToolActivity?.({ status: "failed", toolName: "Shell command", toolCallId: "call-fail" })
+			callbacks.onTurnEnd?.(1)
+
+			const entries = parseEntries(readJsonl(outputPath))
+			const toolResultEntry = findToolResultEntry(entries)
+			expect(toolResultEntry?.message.isError).toBe(true)
+			expect(toolResultEntry?.message.toolCallId).toBe("call-fail")
 		})
 	})
 
@@ -406,7 +515,7 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUse = getToolUseContent(toolUseEntries[0])
 			expect(toolUse.id).toBe("kt.Agent.8")
 			expect(toolUse.name).toBe("Agent")
-			expect(toolUse.input).toEqual(args)
+			expect(toolUse.arguments).toEqual(args)
 			expect(entries.filter((e) => e.type === "toolResult")).toHaveLength(1)
 		})
 
@@ -435,7 +544,7 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUseEntries = findToolUseEntries(entries)
 			expect(toolUseEntries).toHaveLength(1)
 			const toolUse = getToolUseContent(toolUseEntries[0])
-			expect(toolUse.input).toEqual({ command: "ls -la" })
+			expect(toolUse.arguments).toEqual({ command: "ls -la" })
 		})
 
 		it("writes one tool_use entry per completed tool call across sequential calls with the same name", () => {
@@ -487,14 +596,14 @@ describe("streamRemoteToOutputFile", () => {
 			const toolUses = findToolUseEntries(entries).map((e) => getToolUseContent(e))
 			expect(toolUses.map((t) => t.id)).toEqual(["call-a", "call-b"])
 			expect(toolUses[0].name).toBe("Tool A")
-			expect(toolUses[0].input).toEqual({ a: 1 })
+			expect(toolUses[0].arguments).toEqual({ a: 1 })
 			expect(toolUses[1].name).toBe("Tool B")
-			expect(toolUses[1].input).toEqual({ b: 2 })
+			expect(toolUses[1].arguments).toEqual({ b: 2 })
 
 			const results = entries.filter((e) => e.type === "toolResult").map((e) => getTextContent(e).text)
 			expect(results).toHaveLength(2)
 			expect(results[0]).toBe("Tool A") // degraded placeholder for the finalized call
-			expect(results[1]).toBe('"b out"') // B's own real output, not A's late one
+			expect(results[1]).toBe("b out") // B's own real output, not A's late one
 		})
 
 		it("does not leak the previous call's rawInput into a call that streamed no args", () => {
@@ -518,8 +627,8 @@ describe("streamRemoteToOutputFile", () => {
 			const entries = parseEntries(readJsonl(outputPath))
 			const toolUses = findToolUseEntries(entries).map((e) => getToolUseContent(e))
 			expect(toolUses).toHaveLength(2)
-			expect(toolUses[0].input).toEqual({ command: "ls" })
-			expect(toolUses[1].input).toEqual({})
+			expect(toolUses[0].arguments).toEqual({ command: "ls" })
+			expect(toolUses[1].arguments).toEqual({})
 		})
 	})
 

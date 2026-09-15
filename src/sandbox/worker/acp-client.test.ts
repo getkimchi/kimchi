@@ -5,6 +5,7 @@ import {
 	AcpSessionClient,
 	extractFinalAssistantText,
 	RemoteConnectionError,
+	STEERING_UNSUPPORTED_MESSAGE,
 } from "./acp-client.js"
 
 // ---------------------------------------------------------------------------
@@ -2069,6 +2070,184 @@ describe("AcpSessionClient", () => {
 
 			client.close()
 		})
+	})
+})
+
+describe("AcpSessionClient steer", () => {
+	const STEER_METHOD = "_kimchi.dev/steering"
+
+	it("sends the steering ext request with sessionId + prompt and returns injected", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("actually, do it differently")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		expect(steerReq.params).toEqual({ sessionId: "session-abc", prompt: "actually, do it differently" })
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "injected" }))
+
+		await expect(steerPromise).resolves.toBe("injected")
+		client.close()
+	})
+
+	it("forwards image attachments as ACP image blocks", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const images = [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" }]
+		const steerPromise = client.steer("this is the screen I meant", images)
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		expect(steerReq.params).toEqual({
+			sessionId: "session-abc",
+			prompt: "this is the screen I meant",
+			attachments: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+		})
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "injected" }))
+		await expect(steerPromise).resolves.toBe("injected")
+		client.close()
+	})
+
+	it("passes promptRequired through when no remote turn is active", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("adjust course")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "promptRequired" }))
+
+		await expect(steerPromise).resolves.toBe("promptRequired")
+		client.close()
+	})
+
+	it("maps a method-not-found response to the unsupported error", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		// initClient's initialize response carries no _meta — the probe path.
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, {
+			jsonrpc: "2.0",
+			id: steerReq.id,
+			error: { code: -32601, message: "Method not found" },
+		})
+
+		await expect(steerPromise).rejects.toThrow(STEERING_UNSUPPORTED_MESSAGE)
+		client.close()
+	})
+
+	it("propagates non-method-not-found RPC errors unchanged (invalid params, etc.)", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, {
+			jsonrpc: "2.0",
+			id: steerReq.id,
+			error: { code: -32602, message: "invalid params" },
+		})
+
+		await expect(steerPromise).rejects.not.toThrow(STEERING_UNSUPPORTED_MESSAGE)
+		await expect(steerPromise).rejects.toThrow()
+		client.close()
+	})
+
+	it("throws on a malformed/empty steering response instead of reporting false success", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		const steerPromise = client.steer("go")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, {}))
+
+		await expect(steerPromise).rejects.toThrow("unexpected steering status")
+		client.close()
+	})
+
+	it("throws when the client is not initialized", async () => {
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		await expect(client.steer("go")).rejects.toThrow("not initialized")
+	})
+
+	it("does not clobber a pending prompt's disconnect/abort handle (regression)", async () => {
+		// Steer is only meaningful mid-turn — while prompt() holds the
+		// single-slot pending-reject used by forceDisconnect and abort. If the
+		// steer registered there, its settlement would leave the prompt with no
+		// reject handle, silently disabling recovery for the rest of the turn.
+		const client = new AcpSessionClient({
+			sessionName: "sess-1",
+			credentials: makeCredentials(),
+			WebSocketImpl: MockWebSocket,
+		})
+		const { socket } = await initClient(client)
+
+		// A turn runs (prompt request pending)...
+		const promptPromise = client.prompt("work")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+		})
+
+		// ...a steer arrives and resolves mid-turn...
+		const steerPromise = client.steer("adjust course")
+		await vi.waitFor(() => {
+			expect(getSentMessages(socket).some((m) => m.method === STEER_METHOD)).toBe(true)
+		})
+		const steerReq = findRequest(getSentMessages(socket), STEER_METHOD)
+		serverSendMessage(socket, rpcResponse(steerReq.id, { status: "injected" }))
+		await expect(steerPromise).resolves.toBe("injected")
+
+		// ...then the transport dies. The still-pending prompt MUST reject with
+		// RemoteConnectionError so the recovery state machine can take over.
+		const promptSettled = expect(promptPromise).rejects.toBeInstanceOf(RemoteConnectionError)
+		client.forceDisconnect("worker reports client is disconnected")
+		await promptSettled
+		client.close()
 	})
 })
 

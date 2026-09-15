@@ -30,7 +30,7 @@
 
 import { randomUUID } from "node:crypto"
 import { setTimeout as timersSleep } from "node:timers/promises"
-import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
+import { authenticateWorkspace, authenticateWorkspaceProbe } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials, WorkspaceResourcesConfig } from "../../../sandbox/cloud/types.js"
 import {
@@ -640,7 +640,9 @@ export async function runRemoteAgent(
 	// every time, no stale files from prior runs.
 	const cwd = `/home/sandbox/${sessionName}`
 
-	// 1. Authenticate
+	// 1. Authenticate — wakes a hibernated workspace: authenticateWorkspace
+	// calls ResumeWorkspace (the only RPC that scales the sandbox pod back
+	// up) and propagates any failure honestly.
 	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, workspaceName, {
 		endpoint,
 		...(options.resources ? { resources: options.resources } : {}),
@@ -1071,7 +1073,9 @@ export async function isRemoteSessionConnected(
 	options?: { endpoint?: string },
 ): Promise<boolean> {
 	try {
-		const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, "kimchi", {
+		// Side-effect-free probe: no upsert, no resume — a read-only check must
+		// not wake a hibernated workspace or fail on resume quota errors.
+		const creds = await authenticateWorkspaceProbe(remoteSession.workspaceId, apiKey, {
 			endpoint: options?.endpoint,
 		})
 		const client = new WorkerClient(creds)

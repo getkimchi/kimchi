@@ -163,7 +163,7 @@ describe("runCloudAgent", () => {
 		expect(res.id).toBe("agent-bg")
 		// Should show a 'started in background' notification (no manager → no transcript path)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Cloud agent started in background. You'll be notified when it completes.",
+			"Remote agent started in background. You'll be notified when it completes.",
 			"info",
 		)
 		// Should trigger a new turn so the LLM can acknowledge
@@ -188,7 +188,7 @@ describe("runCloudAgent", () => {
 		await runCloudAgent(pi, ctx, "hello", "desc")
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Cloud agent started in background. You'll be notified when it completes.\nFull transcript: /tmp/transcripts/agent-bg.jsonl",
+			"Remote agent started in background. You'll be notified when it completes.\nFull transcript: /tmp/transcripts/agent-bg.jsonl",
 			"info",
 		)
 	})

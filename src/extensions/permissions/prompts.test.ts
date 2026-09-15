@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 import { ERROR_FG, ORANGE_FG, RST_FG, SUCCESS_FG } from "../../ansi.js"
-import { formatRiskBadge, promptForApproval, promptForCompoundApproval, truncate } from "./prompts.js"
+import {
+	buildPermissionChoices,
+	formatRiskBadge,
+	promptForApproval,
+	promptForCompoundApproval,
+	truncate,
+} from "./prompts.js"
 
 describe("truncate helper", () => {
 	it("returns original string if under max length", () => {
@@ -98,6 +104,7 @@ describe("promptForCompoundApproval", () => {
 			ui: {
 				select: vi.fn(async () => selectValue),
 				input: vi.fn(async () => "be more careful"),
+				notify: vi.fn(),
 				setWorkingVisible: vi.fn(),
 				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
 			},
@@ -120,16 +127,51 @@ describe("promptForCompoundApproval", () => {
 		expect(result).toEqual({ kind: "allow-all-once" })
 	})
 
-	it("returns allow-all-remember with correct wildcard rules when user selects Allow all from now on", async () => {
+	it("does not store rules for a read-only compound", async () => {
 		const ctx = fakeCtx("Allow all from now on")
 		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
 		expect(result).toEqual({
 			kind: "allow-all-remember",
-			rules: [
-				{ toolName: "bash", content: "git *", behavior: "allow", source: "session" },
-				{ toolName: "bash", content: "ls *", behavior: "allow", source: "session" },
-			],
+			rules: [],
 		})
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("notifies and stores only scopeable rules when a segment cannot be remembered", async () => {
+		const ctx = fakeCtx("Allow all from now on")
+		const pipeline = "cat server.log | sh"
+		const result = await promptForCompoundApproval({
+			toolName: "bash",
+			commands: [{ command: "cd /tmp" }, { command: pipeline }],
+			ctx,
+		})
+		// Pipe to a non-filter program: the derived scope can never match again
+		// (matchBashRule's single-segment canonical gate), so it is dropped…
+		expect(result).toEqual({
+			kind: "allow-all-remember",
+			rules: [],
+		})
+		// …and the user is told remembering did not cover the whole compound.
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify.mock.calls[0][0]).toContain(pipeline)
+	})
+
+	it("stores every head scope and does not warn when piped stages are whitelisted output filters", async () => {
+		// `2>&1 | tail -40` is the classic LLM output-bound wrapper: tail is a
+		// pure read-only filter, so ALL segments are scopeable — remember stores
+		// the head's narrow scope and never warns.
+		const ctx = fakeCtx("Allow all from now on")
+		const result = await promptForCompoundApproval({
+			toolName: "bash",
+			commands: [{ command: "cd /tmp" }, { command: "npm install 2>&1 | tail -40" }],
+			ctx,
+		})
+
+		expect(result).toEqual({
+			kind: "allow-all-remember",
+			rules: [{ toolName: "bash", content: "npm install:*", behavior: "allow", source: "session" }],
+		})
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
 	it("returns deny-with-feedback when user selects deny and provides feedback", async () => {
@@ -232,5 +274,92 @@ describe("promptForApproval — risk-first layout", () => {
 		const promptText = callArgs[0] as string
 		expect(stripAnsi(promptText)).toContain("bash(echo hello)")
 		expect(promptText).toContain("some explanation")
+	})
+})
+
+describe("buildPermissionChoices — compound bash", () => {
+	it.each(["cd /tmp", "pushd /tmp", "popd"])("never offers a remembered approval rule for %s", (command) => {
+		for (const readOnlyCommand of [command, `${command} && pwd`]) {
+			expect(buildPermissionChoices("bash", { command: readOnlyCommand }).map((choice) => choice.kind)).toEqual([
+				"allow-once",
+				"deny",
+			])
+		}
+		const choices = buildPermissionChoices("bash", { command: `${command} && npm install` })
+		for (const choice of choices) {
+			if (choice.kind === "allow-remember" || choice.kind === "allow-remember-wildcard") {
+				expect(choice.rules.map((rule) => rule.content)).toEqual([
+					choice.kind === "allow-remember" ? "npm install:*" : "npm *",
+				])
+				expect(choice.label).not.toContain(command)
+			}
+		}
+	})
+
+	// The compound gate re-evaluates each segment individually; remembering a
+	// compound sticks when every non-read-only segment has a matching rule.
+	it("remembers per-segment narrow rules with disclosed scopes", () => {
+		const choices = buildPermissionChoices("bash", { command: "cd /tmp && npm install" })
+		expect(choices.map((c) => c.kind)).toEqual(["allow-once", "allow-remember", "allow-remember-wildcard", "deny"])
+
+		const remember = choices.find((c) => c.kind === "allow-remember")
+		if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
+		expect(remember.rules.map((r) => r.content)).toEqual(["npm install:*"])
+		expect(remember.label).not.toContain("cd")
+		expect(remember.label).toContain("bash(npm install:*)")
+	})
+
+	it("offers a per-segment wildcard variant as an explicit broader choice", () => {
+		const choices = buildPermissionChoices("bash", { command: "cd /tmp && npm install" })
+		const wildcard = choices.find((c) => c.kind === "allow-remember-wildcard")
+		if (wildcard?.kind !== "allow-remember-wildcard") throw new Error("missing wildcard choice")
+		expect(wildcard.rules.map((r) => r.content)).toEqual(["npm *"])
+		expect(wildcard.label).toContain("npm *")
+	})
+
+	it("omits remember choices when any segment is unscopeable", () => {
+		const choices = buildPermissionChoices("bash", { command: "cd /tmp && cat server.log | sh" })
+		expect(choices.map((c) => c.kind)).toEqual(["allow-once", "deny"])
+	})
+
+	it("omits remember choices for a standalone pipe to a non-filter program", () => {
+		// `cat x | sh`: any derived scope can never match the piped command
+		// (matchBashRule's single-segment canonical gate), so offering
+		// "don't ask again" would silently no-op. Same contract as compounds.
+		const choices = buildPermissionChoices("bash", { command: "cat server.log | sh" })
+		expect(choices.map((c) => c.kind)).toEqual(["allow-once", "deny"])
+	})
+
+	it("keeps remember choices for a standalone whitelisted output-filter pipe", () => {
+		// head + read-only filter stages normalize to the head, so the scope
+		// DOES match reruns (`b0dbd1a4`) — remember is honest here.
+		const choices = buildPermissionChoices("bash", { command: "npm install 2>&1 | tail -20" })
+		expect(choices.map((c) => c.kind)).toEqual(["allow-once", "allow-remember", "allow-remember-wildcard", "deny"])
+		const remember = choices.find((c) => c.kind === "allow-remember")
+		if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
+		expect(remember.rules.map((r) => r.content)).toEqual(["npm install:*"])
+	})
+
+	it("offers remember choices when piped stages are whitelisted output filters", () => {
+		const choices = buildPermissionChoices("bash", { command: "cd /tmp && npm install 2>&1 | tail -40" })
+
+		expect(choices.map((c) => c.kind)).toEqual(["allow-once", "allow-remember", "allow-remember-wildcard", "deny"])
+		const remember = choices.find((c) => c.kind === "allow-remember")
+		if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
+		expect(remember.rules.map((r) => r.content)).toEqual(["npm install:*"])
+		expect(remember.label).toContain("bash(npm install:*)")
+		const wildcard = choices.find((c) => c.kind === "allow-remember-wildcard")
+		if (wildcard?.kind !== "allow-remember-wildcard") throw new Error("missing wildcard choice")
+		expect(wildcard.rules.map((r) => r.content)).toEqual(["npm *"])
+	})
+
+	it("truncates scope disclosure on long compounds", () => {
+		const choices = buildPermissionChoices("bash", {
+			command: "npm install && npm test && npm run build && npm publish && npm uninstall example",
+		})
+		const remember = choices.find((c) => c.kind === "allow-remember")
+		if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
+		expect(remember.rules).toHaveLength(5)
+		expect(remember.label).toContain("+ 2 more")
 	})
 })

@@ -24,6 +24,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+	vi.stubEnv("KIMCHI_API_KEY", undefined)
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	// Auth tests should be independent of the developer machine's real config.
 	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)

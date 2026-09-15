@@ -7,6 +7,7 @@ function makeMockAcpClient() {
 		cancel: vi.fn().mockResolvedValue(undefined),
 		close: vi.fn(),
 		initialize: vi.fn().mockResolvedValue(undefined),
+		steer: vi.fn().mockResolvedValue("injected"),
 		sessionId: "test-session-id",
 	}
 }
@@ -36,19 +37,89 @@ describe("RemoteAgentSession", () => {
 	})
 
 	describe("steer", () => {
-		it("throws 'not supported' error", async () => {
+		it("forwards the steer to the bound ACP client and records it in the transcript", async () => {
 			const session = new RemoteAgentSession()
 			const client = makeMockAcpClient()
 			session.bindClient(client as never, META)
-			await expect(session.steer("do something")).rejects.toThrow("Steering is not supported for remote agents")
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			await session.steer("do something")
+
+			expect(client.steer).toHaveBeenCalledTimes(1)
+			expect(client.steer).toHaveBeenCalledWith("do something", undefined)
+			expect(client.prompt).not.toHaveBeenCalled()
+			const last = session.messages[session.messages.length - 1]
+			expect(last).toEqual({ role: "user", content: "do something" })
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "message_start" })
 		})
 
-		it("does not call acpClient.prompt", async () => {
+		it("records steered images in the transcript, not just the text", async () => {
 			const session = new RemoteAgentSession()
 			const client = makeMockAcpClient()
 			session.bindClient(client as never, META)
-			await expect(session.steer("msg")).rejects.toThrow()
-			expect(client.prompt).not.toHaveBeenCalled()
+			const images = [{ type: "image", data: "aGk=", mimeType: "image/png" }] as never
+
+			await session.steer("look at this", images)
+
+			expect(client.steer).toHaveBeenCalledWith("look at this", images)
+			const last = session.messages[session.messages.length - 1]
+			expect(last).toEqual({
+				role: "user",
+				content: [
+					{ type: "text", text: "look at this" },
+					{ type: "image", data: "aGk=", mimeType: "image/png" },
+				],
+			})
+		})
+
+		it("uses the client most recently bound by bindClient (post-reattach)", async () => {
+			const session = new RemoteAgentSession()
+			const stale = makeMockAcpClient()
+			session.bindClient(stale as never, META)
+			const reattached = makeMockAcpClient()
+			session.bindClient(reattached as never, META)
+
+			await session.steer("msg")
+
+			expect(reattached.steer).toHaveBeenCalledTimes(1)
+			expect(stale.steer).not.toHaveBeenCalled()
+		})
+
+		it("throws 'temporarily unreachable' while reconnecting, without touching the client", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			session.bindClient(client as never, META)
+			session.setReconnecting(true)
+
+			await expect(session.steer("msg")).rejects.toThrow("agent temporarily unreachable, retrying connection")
+			expect(client.steer).not.toHaveBeenCalled()
+		})
+
+		it("throws when no client is bound yet", async () => {
+			const session = new RemoteAgentSession()
+			await expect(session.steer("msg")).rejects.toThrow("still initializing")
+		})
+
+		it("rejects with an honest error when the remote turn already finished (promptRequired)", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			client.steer.mockResolvedValue("promptRequired")
+			session.bindClient(client as never, META)
+
+			await expect(session.steer("msg")).rejects.toThrow("remote turn already finished")
+			// Not recorded in the transcript — the steer never landed.
+			expect(session.messages.some((m) => m.role === "user")).toBe(false)
+		})
+
+		it("propagates client-level errors (unsupported remote, transport failure)", async () => {
+			const session = new RemoteAgentSession()
+			const client = makeMockAcpClient()
+			client.steer.mockRejectedValue(new Error("the remote agent does not support steering"))
+			session.bindClient(client as never, META)
+
+			await expect(session.steer("msg")).rejects.toThrow("does not support steering")
 		})
 	})
 

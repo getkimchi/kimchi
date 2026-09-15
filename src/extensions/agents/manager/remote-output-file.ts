@@ -7,7 +7,8 @@
  */
 
 import { appendFileSync } from "node:fs"
-import type { SessionNotification } from "@agentclientprotocol/sdk"
+import type { SessionNotification, ToolCallStatus } from "@agentclientprotocol/sdk"
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 
 export function streamRemoteToOutputFile(
@@ -74,23 +75,43 @@ export function streamRemoteToOutputFile(
 		pendingEntries = []
 	}
 
-	/** Writes the single tool_use transcript entry for a tool call. Deferred to
-	 *  completion/abort so repeated in_progress notifications don't duplicate it
-	 *  and its input carries the fully streamed args. This means no entry exists
-	 *  for a call while it runs — live progress is surfaced via the forwarded
-	 *  activity callbacks, not this file. The entry's id prefers the ACP
-	 *  toolCallId (so consumers can correlate tool_use and tool_result), falling
-	 *  back to the display title only if no id arrived (should not happen in
-	 *  practice — toolCallId is present from the first notification). */
-	const writeToolUseEntry = (toolCall: { title: string; toolCallId?: string }) => {
+	/** Coerces the streamed ACP rawInput into `ToolCall.arguments`. A
+	 *  JSON-encoded string is parsed first; anything that still isn't a plain
+	 *  object falls back to {} (arrays/scalars are not valid arguments). */
+	const toArguments = (raw: unknown): Record<string, unknown> => {
+		let value = raw
+		if (typeof value === "string") {
+			try {
+				value = JSON.parse(value)
+			} catch {
+				// Not JSON — fall through to the shape check below.
+			}
+		}
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: {}
+	}
+
+	/** Writes the single tool-call transcript entry for a tool call, in the
+	 *  native pi-mono shape (`ToolCall` content block) so the export HTML
+	 *  template and other transcript consumers render it without conversion.
+	 *  Deferred to completion/abort so repeated in_progress notifications don't
+	 *  duplicate it and its arguments carry the fully streamed args. This means
+	 *  no entry exists for a call while it runs — live progress is surfaced via
+	 *  the forwarded activity callbacks, not this file. The entry's id prefers
+	 *  the ACP toolCallId (so consumers can correlate toolCall and toolResult),
+	 *  falling back to the display title only if no id arrived (should not
+	 *  happen in practice — toolCallId is present from the first
+	 *  notification). */
+	const writeToolCallEntry = (toolCall: { title: string; toolCallId?: string }) => {
 		writeEntry("assistant", {
 			role: "assistant",
 			content: [
 				{
-					type: "tool_use",
+					type: "toolCall",
 					name: toolCall.title,
 					id: toolCall.toolCallId ?? toolCall.title,
-					input: pendingRawInput ?? {},
+					arguments: toArguments(pendingRawInput),
 				},
 			],
 		})
@@ -100,16 +121,41 @@ export function streamRemoteToOutputFile(
 	 *  (can't disprove identity) or they match. */
 	const sameCall = (a: string | undefined, b: string | undefined) => a === undefined || b === undefined || a === b
 
-	/** Finalizes the pending tool call: writes its single tool_use entry plus a
-	 *  toolResult (the real rawOutput if it arrived, otherwise the title as a
-	 *  degraded placeholder), then clears the pending state. Does NOT flush —
-	 *  the caller decides when to write to disk. */
-	const finalizePendingToolCall = () => {
+	/** Finalizes the pending tool call: writes its single toolCall entry plus
+	 *  a toolResult in the native pi-mono shape (`ToolResultMessage`), then
+	 *  clears the pending state. When the ACP rawOutput arrived as an
+	 *  AgentToolResult (`{ content, details? }`) its content blocks are passed
+	 *  through natively; anything else becomes a single text block (the title
+	 *  as degraded placeholder when no output arrived). Does NOT flush — the
+	 *  caller decides when to write to disk. */
+	const finalizePendingToolCall = (status?: ToolCallStatus) => {
 		if (!pendingToolCall) return
-		writeToolUseEntry(pendingToolCall)
-		const outputText =
-			pendingToolCall.rawOutput != null ? JSON.stringify(pendingToolCall.rawOutput) : pendingToolCall.title
-		writeEntry("toolResult", { role: "tool", content: [{ type: "text", text: outputText }] })
+		writeToolCallEntry(pendingToolCall)
+		const toolCallId = pendingToolCall.toolCallId ?? pendingToolCall.title
+		const raw = pendingToolCall.rawOutput
+		let content: unknown[]
+		let details: unknown
+		if (raw != null && typeof raw === "object" && Array.isArray((raw as AgentToolResult<unknown>).content)) {
+			const agentToolResult = raw as AgentToolResult<unknown>
+			content = agentToolResult.content
+			details = agentToolResult.details
+		} else {
+			content = [
+				{
+					type: "text",
+					text: raw == null ? pendingToolCall.title : typeof raw === "string" ? raw : JSON.stringify(raw),
+				},
+			]
+		}
+		writeEntry("toolResult", {
+			role: "toolResult",
+			toolCallId,
+			toolName: pendingToolCall.title,
+			content,
+			...(details !== undefined ? { details } : {}),
+			isError: status === "failed",
+			timestamp: Date.now(),
+		})
 		pendingToolCall = undefined
 		pendingRawInput = undefined
 		pendingRawInputId = undefined
@@ -129,7 +175,7 @@ export function streamRemoteToOutputFile(
 					// these as args/title stream in, and cloud agents broadcast them
 					// periodically (~80ms) while a long-running tool executes. Only
 					// refresh the display state; a transcript entry per repeat would
-					// append thousands of identical tool_use lines to the .output
+					// append thousands of identical toolCall lines to the .output
 					// file (observed: 29MB files, ~99% duplicate lines).
 					pendingToolCall.title = activity.toolName
 					pendingToolCall.toolCallId ??= activity.toolCallId
@@ -149,7 +195,7 @@ export function streamRemoteToOutputFile(
 				pendingToolCall &&
 				sameCall(activity.toolCallId, pendingToolCall.toolCallId)
 			) {
-				finalizePendingToolCall()
+				finalizePendingToolCall(activity.status)
 				// Set textOffset so the next onTextDelta only shows text after this tool call.
 				// Use lastFullTextLength (not pendingAssistantText.length) because
 				// pendingAssistantText is cleared when the tool started.
@@ -230,9 +276,9 @@ export function streamRemoteToOutputFile(
 			writeEntry("assistant", { role: "assistant", content: [{ type: "text", text: pendingAssistantText }] })
 			pendingAssistantText = ""
 		}
-		// The tool_use entry is deferred to completion — on abort it has not
-		// been written yet, so finalize writes it with whatever input
-		// streamed in before the abort.
+		// The toolCall entry is deferred to completion — on abort it has not
+		// been written yet, so finalize writes it with whatever args streamed
+		// in before the abort (result unknown — not flagged isError).
 		finalizePendingToolCall()
 		flush()
 	}
