@@ -170,6 +170,8 @@ describe("UpstreamMcpProbe", () => {
 	it.each([
 		{ definition: { command: "node" }, timeoutMs: 15_000 },
 		{ definition: { url: "https://example.test/mcp" }, timeoutMs: 60_000 },
+		{ definition: { url: "https://example.test/mcp", auth: false as const }, timeoutMs: 60_000 },
+		{ definition: { url: "https://example.test/mcp", auth: "oauth" as const }, timeoutMs: 60_000 },
 	])("aborts a stalled connection after $timeoutMs ms and cleans up", async ({ definition, timeoutMs }) => {
 		vi.useFakeTimers()
 		upstream.gatewayExecute.mockImplementation(() => new Promise(() => {}))
@@ -184,7 +186,7 @@ describe("UpstreamMcpProbe", () => {
 		expect(await result).toMatchObject({
 			tools: [],
 			needsAuth: false,
-			error: expect.stringContaining(`Probe timed out after ${timeoutMs / 1000} seconds`),
+			error: `Probe timed out after ${timeoutMs / 1000} seconds`,
 		})
 		expect(signal?.aborted).toBe(true)
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()

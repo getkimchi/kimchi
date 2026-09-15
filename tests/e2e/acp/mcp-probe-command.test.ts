@@ -157,6 +157,54 @@ describe("compiled kimchi mcp probe command", () => {
 		expect(fixture.hasEvent("process_exited", { code: 0 })).toBe(true)
 	})
 
+	it.each([
+		"public",
+		"bearer",
+		"implicit-oauth",
+	] as const)("discovers %s HTTP tools and opens a browser only after an OAuth challenge", async (mode) => {
+		const homeDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-home-"))
+		const workDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-work-"))
+		tempDirs.push(homeDir, workDir)
+		const agentDir = join(homeDir, ".config", "kimchi", "harness")
+		mkdirSync(agentDir, { recursive: true })
+		const fixture = await createMcpFixture(agentDir, {
+			transport: mode === "implicit-oauth" ? "oauth" : "http",
+			...(mode === "bearer" ? { bearerToken: "fixture-bearer" } : {}),
+		})
+		fixtures.push(fixture)
+		// URL-only configuration must still discover OAuth after a challenge.
+		const server = mode === "implicit-oauth" ? { url: fixture.url } : fixture.serverDefinition
+		const isolatedEnv = Object.fromEntries(
+			Object.entries(process.env).filter(([name]) => name !== "NODE_CHANNEL_FD" && name !== "NODE_UNIQUE_ID"),
+		)
+		const result = spawnSync(BINARY_PATH, ["mcp", "probe", "--json"], {
+			cwd: workDir,
+			input: JSON.stringify({ name: "fixture", server }),
+			encoding: "utf8",
+			env: {
+				...isolatedEnv,
+				...fixture.env,
+				HOME: homeDir,
+				PI_PACKAGE_DIR: PACKAGE_DIR,
+				KIMCHI_NO_UPDATE_CHECK: "1",
+				KIMCHI_MCP_E2E_KEYRING_DIR: join(agentDir, "mcp-keyring"),
+			},
+			timeout: 90_000,
+		})
+
+		expect(result.error).toBeUndefined()
+		expect(result.status, result.stderr).toBe(0)
+		expect(JSON.parse(result.stdout)).toMatchObject({
+			tools: expect.arrayContaining([expect.objectContaining({ name: "echo" })]),
+			needsAuth: false,
+			error: null,
+		})
+		expect(fixture.hasEvent("tools_listed")).toBe(true)
+		expect(fixture.hasEvent("oauth_browser_opened")).toBe(mode === "implicit-oauth")
+		expect(fixture.hasEvent("oauth_token_issued")).toBe(mode === "implicit-oauth")
+		if (mode === "implicit-oauth") expect(result.stderr).toContain("MCP Auth:")
+	})
+
 	it.each(
 		process.platform === "linux" ? [false, true] : [false],
 	)("uses legacy OAuth credentials without opening a browser (revoked keyring: %s)", async (revokedKeyring) => {

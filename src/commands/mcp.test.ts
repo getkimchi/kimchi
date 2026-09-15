@@ -98,11 +98,39 @@ describe("kimchi mcp probe", () => {
 		expect(output.json.error).toContain("--json")
 	})
 
-	it("validates the input envelope and server shape", async () => {
-		mockStdin(JSON.stringify({ name: "fixture", server: null }))
+	it.each([
+		null,
+		[],
+		{},
+		{ server: { command: "node" } },
+		{ name: 42, server: { command: "node" } },
+		{ name: "fixture" },
+		{ name: "fixture", server: null },
+		{ name: "fixture", server: "node" },
+		{ name: "fixture", server: [] },
+		{ name: "fixture", server: { command: "node" }, unexpected: true },
+	])("rejects invalid input envelopes: %j", async (envelope) => {
+		mockStdin(JSON.stringify(envelope))
 		const output = captureStdout()
 		expect(await runMcp(["probe", "--json"])).toBe(1)
 		expect(output.json.error).toContain("Invalid probe input")
+		expect(probeTools).not.toHaveBeenCalled()
+	})
+
+	it("rejects a server without a command or URL", async () => {
+		mockStdin(input("fixture", {}))
+		const output = captureStdout()
+		expect(await runMcp(["probe", "--json"])).toBe(1)
+		expect(output.json.error).toContain("must have either 'command' or 'url'")
+		expect(probeTools).not.toHaveBeenCalled()
+	})
+
+	it("accepts dotted names and passes the complete server configuration through", async () => {
+		const server = { command: "node", args: ["server.js"], env: { FIXTURE: "1" }, includeTools: ["lookup"] }
+		mockStdin(input("github.com", server))
+		captureStdout()
+		expect(await runMcp(["probe", "--json"])).toBe(0)
+		expect(probeTools).toHaveBeenCalledWith("github.com", server, expect.anything())
 	})
 
 	it.each(["", "..", "foo/bar", "foo\\bar", "foo..bar"])("rejects unsafe server name %j", async (name) => {
@@ -155,7 +183,7 @@ describe("kimchi mcp probe", () => {
 
 	it.each([
 		{ server: { command: "node" }, error: "Probe timed out after 15 seconds" },
-		{ server: { url: "https://example.test/mcp" }, error: "Probe timed out after 60 seconds (including OAuth flow)" },
+		{ server: { url: "https://example.test/mcp" }, error: "Probe timed out after 60 seconds" },
 	])("reports the shared probe deadline as a CLI error: $error", async ({ server, error }) => {
 		probeTools.mockResolvedValue({ tools: [], needsAuth: false, error })
 		mockStdin(input("deadline", server))
@@ -172,6 +200,31 @@ describe("kimchi mcp probe", () => {
 
 		expect(await runMcp(["probe", "--json"])).toBe(1)
 		expect(output.json).toEqual({ tools: [], needsAuth: false, error: "probe crashed" })
+	})
+
+	it.each([false, true])("keeps diagnostics out of JSON and restores console methods (failure: %s)", async (fails) => {
+		const originalConsole = { log: console.log, info: console.info, debug: console.debug }
+		const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {})
+		probeTools.mockImplementation(async () => {
+			console.log("MCP Auth: authorization complete")
+			console.info("MCP connection ready")
+			console.debug("MCP discovery finished")
+			if (fails) throw new Error("probe crashed")
+			return { tools: [], needsAuth: false, error: null }
+		})
+		mockStdin(input())
+		const output = captureStdout()
+
+		expect(await runMcp(["probe", "--json"])).toBe(fails ? 1 : 0)
+		expect(output.json).toEqual({ tools: [], needsAuth: false, error: fails ? "probe crashed" : null })
+		expect(diagnostics.mock.calls).toEqual([
+			["MCP Auth: authorization complete"],
+			["MCP connection ready"],
+			["MCP discovery finished"],
+		])
+		expect(console.log).toBe(originalConsole.log)
+		expect(console.info).toBe(originalConsole.info)
+		expect(console.debug).toBe(originalConsole.debug)
 	})
 
 	it("rejects interactive stdin instead of waiting for input", async () => {
