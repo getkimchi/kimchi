@@ -224,7 +224,7 @@ export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 // text), kimi-k3 drops out of reasoning mode, and its deliberation arrives as ordinary
 // content — no thinking blocks, unhideable by the TUI. Mirrors the moonshotai and
 // deepseek entries in pi-ai's upstream model registry.
-const AI_ENABLER_REASONING_COMPAT: ReadonlyArray<readonly [family: string, compat: OpenAICompletionsCompat]> = [
+const AI_ENABLER_REASONING_COMPAT: ReadonlyArray<readonly [slug: string, compat: OpenAICompletionsCompat]> = [
 	["kimi-k3", { requiresReasoningContentOnAssistantMessages: true }],
 	["deepseek-v4", { requiresReasoningContentOnAssistantMessages: true }],
 ]
@@ -237,18 +237,16 @@ const NON_ANTHROPIC_CLAUDE_COMPAT: OpenAICompletionsCompat = {
 	supportsUsageInStreaming: true,
 }
 
-// Exact slug or a variant suffix within the same family (kimi-k3-turbo, kimi-k3.1,
-// deepseek-v4-flash-0731) — never an unrelated slug that merely shares the
-// characters (kimi-k30).
-function slugBelongsToFamily(slug: string, family: string): boolean {
-	return slug === family || slug.startsWith(`${family}-`) || slug.startsWith(`${family}.`)
-}
-
-// Guarded on reasoning: a non-reasoning slug in a flagged family must stay clean —
-// pi-ai's marker emission itself also requires `model.reasoning`.
+// Guarded on reasoning: a non-reasoning slug must stay clean — pi-ai's marker
+// emission itself also requires `model.reasoning`.
+// Base-slug match: exact, or a variant suffix within the family (kimi-k3-turbo,
+// kimi-k3.1, deepseek-v4-flash-0731) — never slugs that merely share characters
+// (kimi-k30).
 function aiEnablerReasoningCompat(m: ModelMetadata): OpenAICompletionsCompat | undefined {
 	if (m.provider !== "ai-enabler" || !m.reasoning) return undefined
-	return AI_ENABLER_REASONING_COMPAT.find(([family]) => slugBelongsToFamily(m.slug, family))?.[1]
+	return AI_ENABLER_REASONING_COMPAT.find(
+		([slug]) => m.slug === slug || m.slug.startsWith(`${slug}-`) || m.slug.startsWith(`${slug}.`),
+	)?.[1]
 }
 
 function resolveCompat(
