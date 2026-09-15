@@ -72,7 +72,7 @@ describe("registerDispatchToCloudAgentTool", () => {
 		expect(message).not.toContain("Implement the auth feature")
 		expect(runCloudAgent).toHaveBeenCalledWith(expect.anything(), ctx, "Implement the auth feature", "cloud: auth", {
 			background: true,
-			origin: "remote session",
+			origin: DISPATCH_TO_CLOUD_AGENT_TOOL,
 		})
 		expect(result.content[0].text).toContain("agent-7")
 		expect(result.details).toEqual({ agentId: "agent-7" })
@@ -102,7 +102,7 @@ describe("registerDispatchToCloudAgentTool", () => {
 			ctx,
 			"Fix the flaky login test",
 			"remote session: Fix the flaky login test",
-			{ background: true, origin: "remote session" },
+			{ background: true, origin: DISPATCH_TO_CLOUD_AGENT_TOOL },
 		)
 	})
 

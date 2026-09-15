@@ -103,7 +103,7 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 			try {
 				const { id } = await runCloudAgent(pi, ctx, task, description, {
 					background: true,
-					origin: "remote session",
+					origin: DISPATCH_TO_CLOUD_AGENT_TOOL,
 				})
 				return {
 					content: [
