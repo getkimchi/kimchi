@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DISPATCH_TO_CLOUD_AGENT_TOOL } from "./dispatch-tool.js"
 import remoteRunExtension from "./index.js"
-import { runCloudAgent } from "./runner.js"
+import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 
 vi.mock("./runner.js", () => ({
 	runCloudAgent: vi.fn(),
@@ -42,19 +42,13 @@ function makePi(): {
 }
 
 describe("remoteRunExtension", () => {
-	const orig = process.env.KIMCHI_REMOTE_RUN
-
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(true)
 	})
 
-	afterEach(() => {
-		if (orig === undefined) delete process.env.KIMCHI_REMOTE_RUN
-		else process.env.KIMCHI_REMOTE_RUN = orig
-	})
-
-	it("registers nothing when KIMCHI_REMOTE_RUN is unset", () => {
-		delete process.env.KIMCHI_REMOTE_RUN
+	it("registers nothing when remote run is disabled", () => {
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(false)
 		const { pi, tools, commands, handlers } = makePi()
 		remoteRunExtension(pi)
 		expect(tools).toEqual([])
@@ -63,7 +57,6 @@ describe("remoteRunExtension", () => {
 	})
 
 	it("registers the dispatch tool, /remote-run command, and shutdown handler when enabled", () => {
-		process.env.KIMCHI_REMOTE_RUN = "1"
 		const { pi, tools, commands, handlers } = makePi()
 		remoteRunExtension(pi)
 		expect(tools.map((t) => t.name)).toEqual([DISPATCH_TO_CLOUD_AGENT_TOOL])
@@ -72,7 +65,6 @@ describe("remoteRunExtension", () => {
 	})
 
 	it("/remote-run shows usage on empty args", async () => {
-		process.env.KIMCHI_REMOTE_RUN = "1"
 		const { pi, commands } = makePi()
 		remoteRunExtension(pi)
 		const notify = vi.fn()
@@ -85,7 +77,6 @@ describe("remoteRunExtension", () => {
 	})
 
 	it("/remote-run dispatches the raw prompt in the background", async () => {
-		process.env.KIMCHI_REMOTE_RUN = "1"
 		const { pi, commands } = makePi()
 		remoteRunExtension(pi)
 		vi.mocked(runCloudAgent).mockResolvedValue({ id: "agent-cmd", result: "backgrounded", backgrounded: true })
