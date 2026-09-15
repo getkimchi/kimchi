@@ -7,8 +7,7 @@ got there.**
 Why the split: patch headers answer three questions a reader always needs — what the
 patch does (`Changes:`), where the issue lives (`Tracking:`), and when it can be
 deleted (`Removal:`). Rebase narrative is none of those. It expires, it duplicates
-git, and left in the header it grows without bound (the pi-coding-agent header hit 49
-lines after one upgrade).
+git, and left in the header it grows without bound.
 
 **Adding an entry:** on every PI upgrade, add a section for the new version describing
 per-package rebase decisions, anything deliberately dropped or retained, and traps the
@@ -17,13 +16,6 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 ---
 
 ## 0.84.1 → 0.85.1
-
-Upgrade branch: `upgrade-pi-85.1`. Companion docs:
-[`pi-upgrade-0.85.1-runbook-v2.md`](../.kimchi/docs/pi-upgrade-0.85.1-runbook-v2.md),
-[`pi-upgrade-0.85.1-review.md`](../.kimchi/docs/pi-upgrade-0.85.1-review.md).
-
-Measured before starting: 11 of 56 hunks needed rework (`patch --fuzz=3` against the
-published tarballs).
 
 ### `@earendil-works/pi-ai`
 
@@ -104,18 +96,18 @@ published tarballs).
 ### Kimchi-side follow-ups from this upgrade
 
 - `src/extensions/router/index.ts` — the session_start CLI-recording path
-  (`pi.setModel(ctx.model)`) silently persisted under 0.84.1 and became session-only
-  under 0.85.1, so `--model` launches stopped writing the default. Fixed with
-  `{ persist: true }` in `31d26aa3`; caught by auto-model TUI e2e.
+  (`pi.setModel(ctx.model)`) relied on upstream's unconditional persistence at
+  0.84.1. At 0.85.1 the same call became session-only with no signature change, so
+  `--model` launches stopped writing `settings.defaultProvider/defaultModel`.
+  Same root cause as the `{ persist }` change above. The site was easy to miss when
+  auditing call sites: it reads as an internal restore path, but it is recording an
+  explicit `--model` flag, i.e. user intent arriving indirectly. Fixed with
+  `{ persist: true }` in `31d26aa3`.
+  **Caught by pre-existing e2e assertions** (`tests/e2e/tui/auto-model.test.ts:194-196`
+  and `:479-481`, which read settings.json directly) — the tests were untouched by the
+  fix; only the upstream behavior underneath them changed. TUI e2e runs on every PR
+  (`.github/workflows/tui-e2e.yml`), so this would have blocked the merge.
 - PR [earendil-works/pi#8627](https://github.com/earendil-works/pi/pull/8627)
   (`ctx.cwd` for the seven cwd-sensitive tools) is a Kimchi-contributed fix that
   **arrives with this upgrade** — absent at 0.84.1, present in all seven at 0.85.1.
-  Closes LLM-3185 with no local change, after
-  [kimchi#1099](https://github.com/getkimchi/kimchi/pull/1099) was closed unmerged.
-
-### Known open items
-
-- The model selector still renders upstream's
-  `Enter to select · Ctrl+S to set as default` hint, but plain Enter now persists too,
-  so both keys behave identically. Ctrl+S also bypasses `handleSelect`, so selecting
-  the virtual multi-model entry with Ctrl+S never sets `__kimchiMultiModelEnabled`.
+  Closes LLM-3185 with no local change, after [kimchi#1099](https://github.com/getkimchi/kimchi/pull/1099) was closed unmerged.
