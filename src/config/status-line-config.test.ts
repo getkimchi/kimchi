@@ -1,4 +1,5 @@
-import { homedir } from "node:os"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -11,43 +12,41 @@ import {
 	writeStatusLineConfig,
 } from "./status-line-config.js"
 
-// ── memfs-backed mock of ./json.js ───────────────────────────────────────────
-// The mock factory computes the settings path at call time (after vi.mock hoisting).
-const memfs: Map<string, string> = new Map()
+// ── Real-cache mock of ./json.js (mirrors src/config/settings.test.ts) ───────
+// All json.js reads/writes are remapped onto a per-process temp settings
+// file so these tests run against the REAL stat-gated cache. A bare
+// `...original` spread would NOT work: the original readJsonCached internally
+// binds the original readJson, which would read the real user settings file
+// instead of the temp path.
+const testDir = join(tmpdir(), `kimchi-statusline-test-${process.pid}`)
+const testPath = join(testDir, "settings.json")
 
-vi.mock("./json.js", () => {
-	const memfsRead = (path: string) => {
-		const raw = memfs.get(path)
-		if (!raw) return {}
-		try {
-			return JSON.parse(raw)
-		} catch {
-			return {}
-		}
-	}
+vi.mock("./json.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./json.js")>()
 	return {
-		readJson: memfsRead,
-		// The memfs layer has no stat — bypass the signature gate and read
-		// directly; the real caching semantics are covered by json.test.ts.
-		readJsonCached: memfsRead,
-		writeJson: (path: string, data: unknown) => {
-			memfs.set(path, `${JSON.stringify(data, null, 2)}\n`)
-		},
-		invalidateJsonCache: (_path: string) => {},
+		...original,
+		readJson: (_path: string) => original.readJson(testPath),
+		readJsonCached: (_path: string) => original.readJsonCached(testPath),
+		writeJson: (_path: string, data: unknown) => original.writeJson(testPath, data),
+		invalidateJsonCache: (_path: string) => original.invalidateJsonCache(testPath),
 	}
 })
 
-const SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+/** Seed the temp settings file with raw JSON text. */
+function seed(raw: string): void {
+	writeFileSync(testPath, raw, "utf-8")
+}
 
 beforeEach(() => {
-	memfs.clear()
-	memfs.set(SETTINGS_PATH, "{}")
+	rmSync(testDir, { recursive: true, force: true })
+	mkdirSync(testDir, { recursive: true })
+	seed("{}")
 	_invalidateStatusLineConfigCache()
 })
 
 afterEach(() => {
+	rmSync(testDir, { recursive: true, force: true })
 	vi.restoreAllMocks()
-	memfs.clear()
 })
 
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
@@ -89,7 +88,7 @@ describe("STATUS_LINE_ELEMENTS", () => {
 
 describe("readStatusLineConfig", () => {
 	it("returns DEFAULT_STATUS_LINE_PINNED when no statusLine key exists in settings", () => {
-		memfs.set(SETTINGS_PATH, "{}")
+		seed("{}")
 		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
 	})
 
@@ -112,22 +111,22 @@ describe("readStatusLineConfig", () => {
 	})
 
 	it("returns { pinned: [] } when statusLine key exists with empty pinned array", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: [] } }, null, 2))
+		seed(JSON.stringify({ statusLine: { pinned: [] } }, null, 2))
 		expect(readStatusLineConfig().pinned).toEqual([])
 	})
 
 	it("returns { pinned: ['context'] } when config exists", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
+		seed(JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
 		expect(readStatusLineConfig().pinned).toEqual(["context"])
 	})
 
 	it("migrates the legacy billing toggle to credits and budget", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, 2))
+		seed(JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, 2))
 		expect(readStatusLineConfig().pinned).toEqual(["credits", "budget"])
 	})
 
 	it("ignores non-string items in the pinned array", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["context", 42, null, "model"] } }, null, 2))
+		seed(JSON.stringify({ statusLine: { pinned: ["context", 42, null, "model"] } }, null, 2))
 		expect(readStatusLineConfig().pinned).toEqual(["context", "model"])
 	})
 })
@@ -137,7 +136,7 @@ describe("readStatusLineConfig", () => {
 describe("writeStatusLineConfig", () => {
 	it("writes statusLine.pinned to disk", () => {
 		writeStatusLineConfig({ pinned: ["model"] })
-		const stored = JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}")
+		const stored = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(stored.statusLine).toEqual({ pinned: ["model"] })
 	})
 
@@ -148,9 +147,9 @@ describe("writeStatusLineConfig", () => {
 	})
 
 	it("merge-safety: does not clobber sibling top-level keys", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ modelRoles: { orchestrator: "kimi" }, other: "value" }, null, 2))
+		seed(JSON.stringify({ modelRoles: { orchestrator: "kimi" }, other: "value" }, null, 2))
 		writeStatusLineConfig({ pinned: ["permissions"] })
-		const stored = JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}")
+		const stored = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(stored.modelRoles).toEqual({ orchestrator: "kimi" })
 		expect(stored.other).toBe("value")
 		expect(stored.statusLine).toEqual({ pinned: ["permissions"] })
@@ -161,7 +160,7 @@ describe("writeStatusLineConfig", () => {
 
 describe("setStatusLineElementPinned", () => {
 	beforeEach(() => {
-		memfs.set(SETTINGS_PATH, "{}")
+		seed("{}")
 	})
 
 	it("adds id to pinned array when pinned=true", () => {
@@ -170,7 +169,7 @@ describe("setStatusLineElementPinned", () => {
 	})
 
 	it("removes id from pinned array when pinned=false", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["model"] } }, null, 2))
+		seed(JSON.stringify({ statusLine: { pinned: ["model"] } }, null, 2))
 		setStatusLineElementPinned("model", false)
 		expect(readStatusLineConfig().pinned).not.toContain("model")
 	})
@@ -185,7 +184,7 @@ describe("setStatusLineElementPinned", () => {
 
 describe("isStatusLineElementPinned", () => {
 	beforeEach(() => {
-		memfs.set(SETTINGS_PATH, "{}")
+		seed("{}")
 	})
 
 	it("returns true for a pinned element", () => {
@@ -212,5 +211,27 @@ describe("isStatusLineElementPinned", () => {
 		const pinned = readStatusLineConfig().pinned
 		expect(pinned).toEqual(expect.arrayContaining(["context", "ferment"]))
 		expect(pinned).not.toContain("model")
+	})
+})
+
+// ─── stat-gated cache integration ────────────────────────────────────────────
+// These exercise the real readJsonCached/invalidateJsonCache on the temp
+// settings path — the behaviors the module gained with the stat gate.
+
+describe("readStatusLineConfig (stat cache)", () => {
+	it("picks up an external write to the settings file without explicit invalidation", () => {
+		seed(JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
+		expect(readStatusLineConfig().pinned).toEqual(["context"])
+		// Simulate another process editing the file: plain writeFileSync,
+		// NOT our writeJson — only the mtime/size stat gate can catch it.
+		writeFileSync(testPath, JSON.stringify({ statusLine: { pinned: ["ferment", "usage"] } }), "utf-8")
+		expect(readStatusLineConfig().pinned).toEqual(["ferment", "usage"])
+	})
+
+	it("writeStatusLineConfig is visible to the next read without explicit invalidation", () => {
+		seed("{}")
+		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
+		writeStatusLineConfig({ pinned: ["phase"] })
+		expect(readStatusLineConfig().pinned).toEqual(["phase"])
 	})
 })

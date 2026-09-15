@@ -501,6 +501,15 @@ function getTagManager(
  * back to a throwaway instance that is never cached — mutating callers must
  * go through getTagManager, which always constructs with the real
  * appendEntry.
+ *
+ * Session-scoped by design: the shared instance snapshots its tags at
+ * construction, and the map is not invalidated when the session branches or
+ * resets its leaf — after such navigation the display may keep showing a tag
+ * that was added on the abandoned branch. This is deliberate: the
+ * before_provider_request tagging path reads the same cached instance, so
+ * the display stays consistent with the tags actually sent on requests, and
+ * /tags mutations update the shared set directly. Re-reading on branch for
+ * the display alone would reintroduce a display/request divergence.
  */
 export function peekActiveTags(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">): string[] {
 	const cached = tagManagerMap.get(sessionManager.getSessionId())

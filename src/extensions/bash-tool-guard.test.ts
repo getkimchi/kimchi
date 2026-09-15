@@ -4,13 +4,17 @@
  *
  * Tests that exercise the wired `bashToolGuardExtension` against a mock
  * ExtensionAPI (session_start/tool_call handlers) live in
- * bash-tool-guard.integration.test.ts instead.
+ * bash-tool-guard.integration.test.ts instead — except the stat-gated
+ * settings-reads suite at the bottom, which wires the extension via the
+ * shared createExtensionApi mock to count real fs reads.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetJsonCacheForTest } from "../config/json.js"
+import { createContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 import bashToolGuardExtension, {
 	applyDescriptionOverride,
 	type BashCategory,
@@ -948,20 +952,12 @@ describe("bashToolGuardExtension — stat-gated settings reads", () => {
 	})
 
 	it("consecutive tool_call events read settings.json exactly once; a change re-reads", () => {
-		const handlers: Record<string, Array<(ev: unknown) => unknown>> = {}
-		const pi = {
-			on: (event: string, handler: (ev: unknown) => unknown) => {
-				if (!handlers[event]) handlers[event] = []
-				handlers[event].push(handler)
-			},
-			registerTool: vi.fn(),
-			sendMessage: vi.fn(),
-			events: { emit: vi.fn() },
-		}
-		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
+		const { api, getHandlers } = createExtensionApi()
+		bashToolGuardExtension(api)
 
 		const event = { toolName: "bash", input: { command: "echo hello" } }
-		const runToolCall = () => handlers.tool_call?.map((h) => h(event))
+		const ctx = createContext()
+		const runToolCall = () => getHandlers("tool_call").map((handler) => handler(event, ctx))
 
 		// Two consecutive bash tool_calls consult the resource store; the
 		// stat-gated cache must read (open+parse) the file exactly once.
