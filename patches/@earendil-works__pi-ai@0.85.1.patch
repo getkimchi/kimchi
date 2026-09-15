@@ -2,13 +2,19 @@
 #
 # Tracking: LLM-2564. No matching upstream issue exists yet; report these
 # changes to https://github.com/earendil-works/pi before the next upgrade.
-# Changes: accept JSON-encoded array/object tool arguments (including {} as
-# an empty array) and count LiteLLM cache_creation_tokens as cache writes.
-# Rebased 0.84.1 -> 0.85.1: validateToolArguments now PRESERVES upstream's
-# normalizeOptionalNulls() call (added in 0.85.1) ahead of the Kimchi
-# coercion + error wrapping; the TYPEBOX_KIND removal removes upstream's
-# last reference to that symbol on purpose.
+# Changes:
+#   - Accept JSON-encoded array/object tool arguments (including {} as an empty
+#     array) in coercePrimitiveByType.
+#   - Run coerceWithJsonSchema before Value.Convert, and wrap conversion errors
+#     with the received arguments so models can self-correct.
+#   - Drop upstream's TYPEBOX_KIND guard so coercion also applies to
+#     TypeBox-defined schemas (Kimchi's own tools are TypeBox-defined). Both the
+#     guard and its then-unused declaration are removed on purpose.
+#   - Count LiteLLM cache_creation_tokens as cache writes.
+# Careful: validateToolArguments interleaves with upstream's
+#   normalizeOptionalNulls() - keep that call first when rebasing.
 # Removal: delete each hunk when the pinned Pi release provides that behavior.
+# History: see patches/CHANGELOG.md.
 #
 diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
 index 48464f2..8132989 100644

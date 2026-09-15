@@ -3,22 +3,17 @@
 #
 # Tracking: https://github.com/getkimchi/kimchi/issues/863
 # Changes:
-#   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine).
-#   - Make scrollback clearing opt-in to avoid viewport jumps in long iTerm2 sessions.
+#   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine),
+#     including Box.handleMouse() so mouse hit-testing matches render().
+#   - Make scrollback clearing opt-in (PI_TUI_NO_CLEAR_SCROLLBACK) to avoid
+#     viewport jumps in long iTerm2 sessions.
 #   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
 #     so that no component can emit a line wider than the terminal (prevents
 #     crashes at widths 1-2 where paddingX margins alone exceed width).
-# Rebased 0.84.1 -> 0.85.1:
-#   - tui-main-screen.js: the clear sequence moved into the BoundedTerminalWriter
-#     helper; PI_TUI_NO_CLEAR_SCROLLBACK gate rewritten against output.append().
-#   - text.js: LAYERED on upstream's new paddingX clamp (0.84.3) - the clamp is
-#     kept, Kimchi's stroke accounting and hard truncation sit on top, and the
-#     clamped local paddingX is threaded through the stroke sites. Upstream
-#     clamped only Text; Box/Markdown keep Kimchi's hardening (upstream bug).
-#   - box.js: upstream added handleMouse(); its hit-test/child-height width now
-#     subtracts STROKE_WIDTH to match render() (Kimchi extension; verify by
-#     clicking inside tool blocks).
+# Careful: text.js layers on upstream's own paddingX clamp - keep the clamp and
+#   thread the clamped local paddingX through the stroke sites when rebasing.
 # Removal: delete when the pinned Pi TUI release provides all three behaviors.
+# History: see patches/CHANGELOG.md.
 #
 diff --git a/dist/components/box.js b/dist/components/box.js
 index 2b31b95..bf46805 100644
