@@ -6,9 +6,11 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
-#   - Extension setModel/setThinkingLevel accept { persist } and thread it to
-#     AgentSession's ModelMutationOptions, restoring the persistence channel
-#     upstream made opt-in. (Upstream candidate.)
+#   - Extension setModel accepts { persist } and threads it to AgentSession's
+#     ModelMutationOptions, restoring the persistence channel upstream made
+#     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
+#     caller (src/extensions/tags.ts, set_phase) is tool-driven and must stay
+#     session-only, so the plumbing would have no caller. (Upstream candidate.)
 #   - exportToJsonl is awaited: src/cli.ts replaces the prototype with an async
 #     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
 #     is sync, so this hunk looks redundant - it is not. Dropping it prints
@@ -128,7 +130,7 @@ index 66e874e..916a37e 100644
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -2047,14 +2085,14 @@ export class AgentSession {
+@@ -2047,12 +2085,12 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -141,11 +143,8 @@ index 66e874e..916a37e 100644
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
--            setThinkingLevel: (level) => this.setThinkingLevel(level),
-+            setThinkingLevel: (level, options) => this.setThinkingLevel(level, options),
+             setThinkingLevel: (level) => this.setThinkingLevel(level),
          }, {
-             getModel: () => this.model,
-             getScopedModels: () => this._scopedModels,
 @@ -2076,7 +2114,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
@@ -208,7 +207,7 @@ index e8e8859..88b4ce1 100644
      "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
      "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
      "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
-@@ -336,17 +358,17 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+@@ -336,11 +358,11 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
              assertActive();
              return runtime.getCommands();
          },
@@ -222,14 +221,6 @@ index e8e8859..88b4ce1 100644
              assertActive();
              return runtime.getThinkingLevel();
          },
--        setThinkingLevel(level) {
-+        setThinkingLevel(level, options) {
-             assertActive();
--            runtime.setThinkingLevel(level);
-+            runtime.setThinkingLevel(level, options);
-         },
-         registerProvider(providerOrName, config) {
-             assertActive();
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
 index 94ca072..317f057 100644
 --- a/dist/core/extensions/types.d.ts
@@ -261,7 +252,7 @@ index 94ca072..317f057 100644
      onComplete?: (result: CompactionResult) => void;
      onError?: (error: Error) => void;
  }
-@@ -1000,17 +1013,24 @@ export interface ExtensionAPI {
+@@ -1000,10 +1013,14 @@ export interface ExtensionAPI {
      /** Get available slash commands in the current session. */
      getCommands(): SlashCommandInfo[];
      /**
@@ -278,20 +269,7 @@ index 94ca072..317f057 100644
      /** Get current thinking level. */
      getThinkingLevel(): ThinkingLevel;
      /**
--     * Set the thinking level (clamped to model capabilities) for the current session without changing the configured default
--     * for new sessions.
-+     * Set the thinking level (clamped to model capabilities). By default session-only;
-+     * pass { persist: true } to also change the configured default for new sessions.
-+     * (kimchi-dev: options parameter added; upstream candidate.)
-      */
--    setThinkingLevel(level: ThinkingLevel): void;
-+    setThinkingLevel(level: ThinkingLevel, options?: {
-+        persist?: boolean;
-+    }): void;
-     /**
-      * Register or override a model provider.
-      *
-@@ -1202,9 +1222,13 @@ export type GetAllToolsHandler = () => ToolInfo[];
+@@ -1202,9 +1222,11 @@ export type GetAllToolsHandler = () => ToolInfo[];
  export type GetCommandsHandler = () => SlashCommandInfo[];
  export type SetActiveToolsHandler = (toolNames: string[]) => void;
  export type RefreshToolsHandler = () => void;
@@ -300,10 +278,7 @@ index 94ca072..317f057 100644
 +    persist?: boolean;
 +}) => Promise<boolean>;
  export type GetThinkingLevelHandler = () => ThinkingLevel;
--export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
-+export type SetThinkingLevelHandler = (level: ThinkingLevel, options?: {
-+    persist?: boolean;
-+}) => void;
+ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
  export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
  /**
   * Shared state created by loader, used during registration and runtime.

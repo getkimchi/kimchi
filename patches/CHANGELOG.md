@@ -54,7 +54,7 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ### `@earendil-works/pi-coding-agent`
 
-- **NEW — `{ persist }` on the extension `setModel` / `setThinkingLevel`.**
+- **NEW — `{ persist }` on the extension `setModel`.**
   0.85.1 made `AgentSession.setModel()` persistence opt-in (`options.persist`,
   default `false`), while the extension-facing wrapper stayed byte-identical — so
   every `pi.setModel()` call kept typechecking and silently stopped writing the
@@ -62,7 +62,14 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
   `agent-session.js`, the `loader.js` runtime facade, and `types.d.ts`) to restore
   the 0.84.1 channel. `runner.js` needs no change: it assigns the action by
   reference rather than rewrapping it.
-  *Upstream candidate — "let extensions opt into persistence" is generic.*
+  **`setThinkingLevel` is deliberately NOT threaded**, though upstream gave it the
+  same `ModelMutationOptions` parameter. Kimchi's only caller is
+  `src/extensions/tags.ts` (`set_phase`), which is tool-driven, not user-initiated,
+  and must stay session-only — so the plumbing would ship with no caller. Pi's own
+  `/thinking` and `/settings` reach the class method directly and are unaffected.
+  *Upstream candidate — "let extensions opt into persistence" is generic. Worth
+  asking for both signatures there, for symmetry, even though Kimchi only needs
+  `setModel` today.*
 - **DROPPED — a stray `sessionId` argument on `showLoginProviderSelector`.**
   The `sessionId` injection belongs to `showModelSelector`, which declares
   `const sessionId = this.sessionManager.getSessionId()` in scope. Upstream's
