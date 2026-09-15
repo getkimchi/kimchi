@@ -20,9 +20,8 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		expect(ALLOWED_TIERS).toContain(cap.tier)
 	})
 
-	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {
-		expect(typeof cap.orchestrationGuidelines).toBe("string")
-		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
+	it.each(LIVE_ENTRIES)("%s — has no legacy orchestration guideline annex", (_id, cap) => {
+		expect(cap).not.toHaveProperty("orchestrationGuidelines")
 	})
 
 	it.each(LIVE_ENTRIES)("%s — every guidelines entry is a non-empty string", (_id, cap) => {

@@ -30,7 +30,6 @@ import type { Ferment } from "../../ferment/types.js"
 import {
 	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
 	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
-	hasFermentScopingCompletionSignal,
 	isNudgeSuppressed,
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
@@ -287,9 +286,7 @@ export function maybeInjectScopingStopNudge(
 	stopReason: string | undefined,
 	opts: { interactive: boolean } = { interactive: true },
 ): ScopingStopNudgeOutcome {
-	const completionSignalPresent = hasFermentScopingCompletionSignal(toolNames)
-
-	if (!shouldNudge({ hasToolCall: toolNames.length > 0, stopReason, completionSignalPresent })) {
+	if (hasScopingProgressTool(toolNames) || !shouldNudge({ hasToolCall: toolNames.length > 0, stopReason })) {
 		return { kind: "not_applicable" }
 	}
 

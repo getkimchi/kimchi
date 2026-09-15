@@ -54,32 +54,26 @@ vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
 import { withPrintGate } from "./print-mode.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
 
-vi.mock("./multi-model.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./multi-model.js")>()
-	return { ...actual, resolveMultiModelEnabled: () => ({ value: false, source: "cli" }) }
-})
-
 const CHARS_PER_TOKEN = 4
 
 /** Budget slices (estimated tokens). Headroom over the measured baseline below. */
 const BUDGET = {
-	/** buildSystemPrompt with the canonical single-mode options below
-	 *  (tool descriptions live in the API payload, the phase payload is gated
-	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
-	systemPrompt: 2050,
+	/** Preserve master's 2050 cap plus the static Working Practices section
+	 *  (1036 chars / 259 estimated tokens), retained after phase removal.
+	 *  Tool descriptions remain API-only; the measured prompt is 2273 tokens. */
+	systemPrompt: 2309,
 	/** Sum of name + description chars across resources/skills frontmatter. */
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
-	total: 2150,
-	/** Total canonical tool surface (26 tools after the DAP session-tool +
+	total: 2409,
+	/** Total canonical tool surface (25 tools after phase-tool removal, DAP session-tool +
 	 *  bash_control deferrals, the mcp zero-server registration gate, and the
 	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH
 	 *  a detected language server will exceed this by the five gated lsp_* tools
 	 *  — that is by design, see LSP_TOOL_NAMES in lsp.ts. */
 	toolSurface: 7100,
-	/** Print-mode slice (24 tools — the canonical surface minus questionnaire
-	 *  and set_phase, which the registration gates drop in headless --print
-	 *  runs; ~5% headroom). */
+	/** Print-mode slice (24 tools — the canonical surface minus questionnaire,
+	 *  which the registration gate drops in headless --print runs; ~5% headroom). */
 	printToolSurface: 6300,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
@@ -240,7 +234,7 @@ describe("context budget", () => {
 
 		const names = new Set(tools.map((tool) => tool.name))
 		// The interactive surface is the canonical 26-tool set above; in print
-		// mode the registration gates must remove exactly these two.
+		// mode questionnaire is gated out; set_phase was removed in every mode.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
 		expect(tools.length).toBe(24)

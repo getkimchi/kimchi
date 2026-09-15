@@ -19,7 +19,6 @@ import type {
 	AgentResumeAttempt,
 	AgentTaskRef,
 	AgentVisibility,
-	IsolationMode,
 	SubagentType,
 	ThinkingLevel,
 } from "../personas/types.js"
@@ -87,7 +86,6 @@ interface SpawnOptions {
 	 * if the configured concurrency limit would otherwise queue it.
 	 */
 	bypassQueue?: boolean
-	isolation?: IsolationMode
 	sessionFile?: string
 	sessionDir?: string
 	signal?: AbortSignal

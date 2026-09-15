@@ -23,15 +23,12 @@ STEP 3 (Completion Criteria):
 
 STEP 5 (Plan):
 - Draft the plan directly within this conversation using the structure defined above.
-- When the plan is complete and ALL of the following are true:
-  1. The plan is written in full (Goal, Constraints, Chunks, Verification Strategy, Decision Log, Risks).
-  2. All Open Questions are resolved — none remain unanswered.
-  3. You are not waiting on any clarification from the user.
-  Call the \`submit_plan\` tool with the full plan text as the \`plan\` parameter.
-- Do NOT call \`submit_plan\` on intermediate drafts, while posing clarifying questions,
-  or while any Open Question remains unresolved. The approval menu will not appear until all
-  Open Questions are cleared.
-- If the plan is denied with feedback, revise the plan and call \`submit_plan\` again.
+- Verify every library, runtime, or build-tool version assumption with web_search/web_fetch,
+  or record it as an explicit assumption in the Decision Log and ask the user to confirm it.
+- When the plan is complete, all Open Questions are resolved, and you are not waiting for
+  clarification, call ExitPlanMode with the complete plan. Do not call it for intermediate drafts.
+- For complex work (3+ files, new architecture, or genuine uncertainty), verification happens
+  after approval on the execution path; do not invent a second planning phase or reviewer here.
 
 ## Plan File Persistence
 

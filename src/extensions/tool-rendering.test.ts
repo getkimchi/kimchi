@@ -226,7 +226,7 @@ describe("hidden tool block rendering", () => {
 		const tui = new TuiMainScreen(new ProcessTerminal())
 		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
 		const create = (input: typeof args) =>
-			new ToolExecutionComponent("submit_plan", "tc-plan", input, {}, undefined, tui, "/tmp")
+			new ToolExecutionComponent("ExitPlanMode", "tc-plan", input, {}, undefined, tui, "/tmp")
 		const component = create({ plan: "# Draft" })
 		component.updateArgs(args)
 		component.setArgsComplete()
@@ -496,18 +496,6 @@ describe("mcpCallLabelAndSummary", () => {
 			true,
 		)
 		expect(result.summary).toContain(longVal)
-	})
-})
-
-describe("set_phase tool summary", () => {
-	it("summarizes set_phase calls with the phase value", () => {
-		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
-		expect(summary).toBe("plan")
-	})
-
-	it("summarizes set_phase calls with unknown phase fallback", () => {
-		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
-		expect(summary).toBe("set phase")
 	})
 })
 

@@ -215,8 +215,8 @@ describe("prompt-supplement-registry", () => {
 			register("test-key", block, { modes: ["adhoc"] })
 
 			const adhocBlocks = compose("adhoc")
-			const rendered = adhocBlocks[0].render({ mode: "orchestrator" })
-			expect(rendered).toBe("mode: orchestrator")
+			const rendered = adhocBlocks[0].render({ mode: "single" })
+			expect(rendered).toBe("mode: single")
 		})
 
 		it("confirms suppress can be called on composed block", () => {
@@ -228,7 +228,7 @@ describe("prompt-supplement-registry", () => {
 			register("test-key", block, { modes: ["ferment"] })
 
 			const fermentBlocks = compose("ferment")
-			const suppressSet = fermentBlocks[0].suppress?.({ mode: "orchestrator" })
+			const suppressSet = fermentBlocks[0].suppress?.({ mode: "single" })
 			expect(suppressSet).toBeInstanceOf(Set)
 			expect(suppressSet?.has("orchestration")).toBe(true)
 		})
