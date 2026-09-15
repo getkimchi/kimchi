@@ -19,11 +19,18 @@ function resultText(result: { content?: TextContentLike[] } | undefined): string
 }
 
 describe("skillsManagerExtension", () => {
-	it("registers skill_manage and skill_view tools", () => {
+	it("registers skill_manage and skill_view tools by default", () => {
 		const { api, getRegisteredTool } = createExtensionApi()
 		skillsManagerExtension(api, { skillsDir: "/tmp/test-skills" })
 		expect(() => getRegisteredTool("skill_manage")).not.toThrow()
 		expect(() => getRegisteredTool("skill_view")).not.toThrow()
+	})
+
+	it("registerSkillManageTool: false registers only skill_view (the CLI wiring since #235)", () => {
+		const { api, getRegisteredTool } = createExtensionApi()
+		skillsManagerExtension(api, { skillsDir: "/tmp/test-skills", registerSkillManageTool: false })
+		expect(() => getRegisteredTool("skill_view")).not.toThrow()
+		expect(() => getRegisteredTool("skill_manage")).toThrow(/was not registered/)
 	})
 
 	describe("discovered-skills wiring", () => {

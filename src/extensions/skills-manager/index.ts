@@ -8,6 +8,12 @@ import { UsageTracker } from "./usage.js"
 
 export interface SkillsManagerOptions {
 	skillsDir?: string
+	/** Register the skill_manage (write-side) tool. The view-side skill_view
+	 *  is always registered. skill_manage has been disabled at the CLI wiring
+	 *  point since #235 ("temporarily", May 2026) — its autonomous
+	 *  skill-creation guidance proved noisy in practice. Re-enable here only
+	 *  with a deliberate decision. */
+	registerSkillManageTool?: boolean
 }
 
 export default function skillsManagerExtension(pi: ExtensionAPI, options?: SkillsManagerOptions): void {
@@ -33,6 +39,8 @@ export default function skillsManagerExtension(pi: ExtensionAPI, options?: Skill
 	})
 	manager.setDiscoveredSkillsProvider(() => discoveredSkills)
 
-	pi.registerTool(createSkillManageTool(manager, tracker))
 	pi.registerTool(createSkillViewTool(manager, tracker))
+	if (options?.registerSkillManageTool !== false) {
+		pi.registerTool(createSkillManageTool(manager, tracker))
+	}
 }

@@ -194,13 +194,15 @@ describe("SkillSuggester", () => {
 })
 
 describe("buildSkillReminder", () => {
-	it("names the skill, the load mechanism, and the read fallback path", () => {
+	it("names the skill and the skill_view load mechanism without offering the read path", () => {
 		const suggestions = suggestSkills("git commit and push these changes", ALL_SKILLS)
 		expect(suggestions.map((s) => s.name)).toEqual(["vcs-workflow"])
 		const reminder = buildSkillReminder(suggestions)
 		expect(reminder).toContain("vcs-workflow")
 		expect(reminder).toContain("skill_view")
-		expect(reminder).toContain("`/skills/vcs-workflow/SKILL.md`")
+		// The read path stays in the <available_skills> block's <location> —
+		// offering it here too makes the model take the read shortcut.
+		expect(reminder).not.toContain("read `")
 	})
 
 	it("leaves the decision to the model — no directive wording", () => {

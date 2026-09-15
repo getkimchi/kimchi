@@ -303,7 +303,7 @@ export function buildSkillReminder(suggestions: readonly SkillSuggestion[]): str
 	const lines = suggestions.map(
 		(s) =>
 			`- **${s.name}** — ${truncateAtWord(s.description, REMINDER_DESCRIPTION_MAX_CHARS)} ` +
-			`(load with \`skill_view\` (name: \`${s.name}\`) or read \`${s.filePath}\`)`,
+			`(load with the \`skill_view\` tool, name: \`${s.name}\`)`,
 	)
 	return [
 		"The following installed skills appear relevant to the current task:",

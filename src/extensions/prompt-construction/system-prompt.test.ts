@@ -253,6 +253,10 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("available_skills")
 			expect(result).toContain("deploy")
 			expect(result).toContain("Deploy the app to production")
+			// Kimchi prefers the dedicated skill_view tool over a plain read —
+			// the standing instruction decides which tool the model uses.
+			expect(result).toContain("Load a skill with the skill_view tool")
+			expect(result).not.toContain("Use the read tool to load a skill's file")
 		})
 
 		it("excludes skills with disableModelInvocation", () => {

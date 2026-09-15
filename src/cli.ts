@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	getParsedCliArgs,
@@ -122,6 +122,7 @@ import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
@@ -680,6 +681,11 @@ try {
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
+			// skill_view must always be present: the <available_skills> prompt block
+			// and the skill-suggest reminder both instruct the model to load skills
+			// through it. skill_manage (the write side) stays disabled per #235;
+			// re-enable via registerSkillManageTool after review.
+			(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 			promptEnrichmentExtension(effectiveSkillPaths),
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },

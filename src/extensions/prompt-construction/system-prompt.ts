@@ -514,7 +514,23 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 	return `## Project Guidelines\n\n${combined}`
 }
 
+const UPSTREAM_SKILL_LOAD_INSTRUCTION =
+	"Use the read tool to load a skill's file when the task matches its description."
+
+/** Kimchi ships a dedicated skill_view tool; prefer it over a plain file read.
+ *  It also returns the linked_files map (references/templates/scripts) and
+ *  records usage. read stays as the fallback for surfaces without the tool. */
+const SKILL_VIEW_LOAD_INSTRUCTION =
+	"Load a skill with the skill_view tool (name: <skill name>) when the task matches its description — it returns the full SKILL.md plus a linked_files map of its references, templates, and scripts. If skill_view is not available, read the skill's file at its location instead."
+
 function formatSkills(skills?: readonly Skill[]): string {
 	if (!skills || skills.length === 0) return ""
-	return formatSkillsForPrompt(skills as Skill[])
+	const block = formatSkillsForPrompt(skills as Skill[])
+	// The upstream instruction names the read tool; standing system-prompt
+	// instructions outrank any reminder, so this line decides which tool the
+	// model actually uses. If the upstream wording drifts, the replace
+	// no-ops and the block keeps upstream behavior.
+	return block.includes(UPSTREAM_SKILL_LOAD_INSTRUCTION)
+		? block.replace(UPSTREAM_SKILL_LOAD_INSTRUCTION, SKILL_VIEW_LOAD_INSTRUCTION)
+		: block
 }

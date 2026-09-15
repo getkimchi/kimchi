@@ -24,8 +24,11 @@ handled by the upstream loader; kimchi contributes its sources via a
   each skill's **name, one-line description, and file location**. The full
   SKILL.md content is never auto-injected — the model decides whether to load it.
 - The `skill_view` tool loads a skill's content by name (including its
-  references/templates/scripts), from any source. Plain `read` on the SKILL.md
-  path works too.
+  references/templates/scripts), from any source. It is always registered —
+  the `<available_skills>` instruction and the auto-suggest reminder both
+  direct the model to it. Plain `read` on the SKILL.md path works as a
+  fallback. (`skill_manage`, the write-side tool, is currently not registered
+  at the CLI wiring point — disabled since #235 pending review.)
 - **Auto-suggest:** when a user message matches a skill's name/description
   (stopword-filtered token overlap with a threshold), the harness delivers a
   short `<system-reminder>` steer naming the matched skill and how to load it —

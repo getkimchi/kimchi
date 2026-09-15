@@ -60,6 +60,15 @@ test("skill suggest reminder is attached when the user prompt matches an install
 			expect(requestText).toContain("skill_view")
 			// The reminder is an existence nudge, not a directive.
 			expect(requestText).toContain("your call")
+
+			// The skill_view tool the instructions name must actually be in the
+			// request's tool payload — a reminder pointing at a missing tool is
+			// worse than none (regression guard for the #235 unwiring).
+			const advertisedTools = fixture.fake.requests.flatMap(
+				(request) => (request.body as { tools?: Array<{ function?: { name?: string } }> | undefined })?.tools ?? [],
+			)
+			expect(advertisedTools.some((tool) => tool.function?.name === "skill_view")).toBe(true)
+			expect(advertisedTools.some((tool) => tool.function?.name === "skill_manage")).toBe(false)
 		},
 	)
 })
