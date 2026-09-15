@@ -21,8 +21,15 @@
  */
 
 import { readFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const distFile = resolve(
+	projectRoot,
+	"node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js",
+)
 
 /**
  * Source of upstream's interactive-mode dist module, as installed and patched.
@@ -31,12 +38,6 @@ import { describe, expect, it } from "vitest"
  * nor deep dist paths, so the file is read from node_modules directly.
  */
 function readInteractiveModeSource(): string {
-	const distFile = fileURLToPath(
-		new URL(
-			"../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js",
-			import.meta.url,
-		),
-	)
 	return readFileSync(distFile, "utf-8")
 }
 
