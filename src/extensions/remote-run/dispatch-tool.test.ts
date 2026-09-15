@@ -167,7 +167,7 @@ describe("registerDispatchToCloudAgentTool", () => {
 
 		const result = await callExecute(tool, ctx, { task: "Do the thing" })
 
-		expect(result.content[0].text).toContain("Could not dispatch the cloud agent: workspace unreachable")
+		expect(result.content[0].text).toContain("Could not dispatch the remote agent: workspace unreachable")
 		expect(result.details).toEqual({ error: "workspace unreachable" })
 	})
 
