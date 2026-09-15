@@ -234,10 +234,10 @@ export class UpstreamMcpProbe implements McpProbe {
 		installKeyringRequireBridge()
 		installProbeToolMetadataCapture()
 		const capturedTools = new Map<string, ProbeTool>()
+		// URL-only servers can advertise OAuth during connection. Reserve time
+		// for that discovery without assuming every remote server needs a login.
 		const timeoutMs = definition.url ? 60_000 : 15_000
-		const timeoutMessage = definition.url
-			? "Probe timed out after 60 seconds (including OAuth flow)"
-			: "Probe timed out after 15 seconds"
+		const timeoutMessage = `Probe timed out after ${timeoutMs / 1000} seconds`
 		const deadline = new AbortController()
 		const timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
 		const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal
@@ -277,6 +277,8 @@ export class UpstreamMcpProbe implements McpProbe {
 				toolPrefix: "none" as const,
 				directTools: false,
 				scriptMode: false,
+				// Upstream only starts OAuth after a needs-auth connection result
+				// and its supportsOAuth check; public and bearer servers skip it.
 				autoAuth: options.authenticate === true,
 				sampling: false,
 				elicitation: false,

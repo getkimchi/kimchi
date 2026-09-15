@@ -52,7 +52,17 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 	const subcommand = args[0]
 
 	if (subcommand === "probe") {
-		return runProbe(args.slice(1))
+		// stdout is the probe's JSON protocol. Upstream OAuth diagnostics use
+		// console.log, so route console output to stderr for this CLI command.
+		const stdoutConsole = { log: console.log, info: console.info, debug: console.debug }
+		console.log = console.error
+		console.info = console.error
+		console.debug = console.error
+		try {
+			return await runProbe(args.slice(1))
+		} finally {
+			Object.assign(console, stdoutConsole)
+		}
 	}
 	if (subcommand === "keyring-check") {
 		return runKeyringCheck(args.slice(1))
