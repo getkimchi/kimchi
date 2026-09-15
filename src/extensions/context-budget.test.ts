@@ -203,6 +203,38 @@ describe("context budget", () => {
 
 	it("canonical tool surface stays within committed token budgets", async () => {
 		const { tools, exclusions } = await measureCanonicalToolSurface()
+		// Pin membership as well as size: a flag stub that silently hides a tool
+		// must fail measurement even though it would reduce the token total.
+		expect(tools.map((tool) => tool.name).sort()).toEqual(
+			[
+				"read",
+				"bash",
+				"edit",
+				"write",
+				"grep",
+				"find",
+				"ls",
+				"create_todos",
+				"update_todos",
+				"mark_todo",
+				"add_todo",
+				"clear_todos",
+				"web_search",
+				"web_fetch",
+				"questionnaire",
+				"Agent",
+				"resume_subagent",
+				"get_subagent_result",
+				"steer_subagent",
+				"set_phase",
+				"Skill",
+				"debug_launch",
+				"debug_state_at",
+				"debug_last_error",
+				"debug_trace_calls",
+				"debug_watch_change",
+			].sort(),
+		)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		const breakdown = [
