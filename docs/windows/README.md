@@ -15,7 +15,9 @@ irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | i
 This runs the installer in memory, so the PowerShell execution policy does not
 apply. If you downloaded `install.ps1` and run it as a file instead (blocked by
 the default `Restricted` policy), use
-`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`.
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`. The bypass
+applies only to this invocation and does not change your system-wide execution
+policy.
 
 The installer downloads `kimchi_windows_amd64.zip`, installs
 `kimchi.exe` under `%LOCALAPPDATA%\Kimchi\bin`, stages shared runtime files

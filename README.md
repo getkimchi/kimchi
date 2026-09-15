@@ -32,7 +32,7 @@ The one-liner runs the installer in memory, so the PowerShell execution policy d
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Then configure your API key and launch:
+The bypass applies only to this invocation and does not change your system-wide execution policy. Then configure your API key and launch:
 
 ```bash
 kimchi setup   # one-time interactive setup
