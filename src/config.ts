@@ -327,8 +327,14 @@ function readConfigExtras(configPath: string): {
  * group or world access), or undefined if the file doesn't exist or is
  * owner-only (0600 or stricter). Used by loadConfig and
  * readApiKeyFromConfigFile to warn users when their API key is exposed.
+ *
+ * Skipped on Windows: Node reports POSIX mode bits (typically 0666) that
+ * don't reflect the actual ACLs, and `chmod` isn't a native command, so
+ * the warning would be meaningless noise. Windows files under the user
+ * profile are already protected by directory ACLs.
  */
 export function checkConfigFilePermissions(configPath: string): string | undefined {
+	if (process.platform === "win32") return undefined
 	try {
 		const stat = statSync(configPath)
 		if ((stat.mode & 0o077) !== 0) {
