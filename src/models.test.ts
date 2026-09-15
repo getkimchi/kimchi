@@ -66,6 +66,29 @@ const KIMI_K27: unknown = {
 	limits: { context_window: 262144, max_output_tokens: 262144 },
 }
 
+// Non-reasoning variant of a flagged family — the `reasoning` guard must keep it clean.
+const KIMI_K3_FLASH: unknown = {
+	slug: "kimi-k3-flash",
+	display_name: "Kimi K3 Flash",
+	provider: "ai-enabler",
+	reasoning: false,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Shares the "kimi-k3" characters but is a different model — prefix matching
+// must stop at a slug delimiter so this does not pick up the kimi-k3 compat.
+const KIMI_K30: unknown = {
+	slug: "kimi-k30",
+	display_name: "Kimi K30",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
 const SONNET_46: unknown = {
 	slug: "claude-sonnet-4-6",
 	display_name: "",
@@ -310,6 +333,30 @@ describe("updateModelsConfig", () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI_K27] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("does not set reasoning compat for a non-reasoning slug sharing the kimi-k3 prefix", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K3_FLASH] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("does not let prefix matching over-match unrelated slugs like kimi-k30", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K30] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
