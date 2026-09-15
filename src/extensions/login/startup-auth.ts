@@ -164,9 +164,7 @@ async function runStartupAuthGate(
 					? await performKimchiApiKeyLoginViaExtensionUI(ctx, (model) =>
 							pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
 						)
-					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) =>
-							pi.setModel(model, { persist: true }),
-						))
+					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model, { persist: true })))
 						? "success"
 						: "failed"
 
