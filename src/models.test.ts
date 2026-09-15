@@ -34,6 +34,38 @@ const GLM: unknown = {
 	limits: { context_window: 202752, max_output_tokens: 202752 },
 }
 
+const KIMI_K3: unknown = {
+	slug: "kimi-k3",
+	display_name: "Kimi K3",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+const DEEPSEEK_V4_FLASH: unknown = {
+	slug: "deepseek-v4-flash",
+	display_name: "DeepSeek V4 Flash",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Reasoning ai-enabler model whose upstream registry does NOT require the
+// reasoning_content marker — must not pick up the kimi-k3/deepseek compat.
+const KIMI_K27: unknown = {
+	slug: "kimi-k2.7",
+	display_name: "Kimi K2.7",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 262144 },
+}
+
 const SONNET_46: unknown = {
 	slug: "claude-sonnet-4-6",
 	display_name: "",
@@ -238,6 +270,46 @@ describe("updateModelsConfig", () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("sets requiresReasoningContentOnAssistantMessages compat for ai-enabler kimi-k3 models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K3] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("sets requiresReasoningContentOnAssistantMessages compat for ai-enabler deepseek-v4 models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [DEEPSEEK_V4_FLASH] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("does not set reasoning compat for ai-enabler kimi-k2.7", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K27] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
