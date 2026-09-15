@@ -3,48 +3,32 @@
 # Tracking: LLM-2564, https://github.com/getkimchi/kimchi/issues/863. No matching
 # upstream issue exists yet; report remaining generic changes to
 # https://github.com/earendil-works/pi before the next upgrade.
-# Retains Kimchi CLI/provider defaults, extension-triggered prompt handling,
-# forced compaction, model selection, extension UI helpers, and compact visuals.
-# Also fixes two issues that block third-party npm extensions (e.g. plannotator):
+# Changes:
+#   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
+#     compaction, model selection, extension UI helpers, and compact visuals.
+#   - Extension setModel/setThinkingLevel accept { persist } and thread it to
+#     AgentSession's ModelMutationOptions, restoring the persistence channel
+#     upstream made opt-in. (Upstream candidate.)
+#   - exportToJsonl is awaited: src/cli.ts replaces the prototype with an async
+#     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
+#     is sync, so this hunk looks redundant - it is not. Dropping it prints
+#     [object Promise] and returns before redaction completes.
+#   - tools/bash.js timeout pipe-cleanup lives in createLocalShellOperations, so
+#     it covers the PowerShell tool too (intentional).
+#   Two fixes for third-party npm extensions (e.g. plannotator):
 #   - Type2 ReferenceError: Bun's bundler renames Google GenAI's `Type` enum to
 #     `Type2` (collision with typebox's `Type`); the pi-ai compat module re-exports
 #     `Type` from typebox, but the bundled getter references the broken `Type2`
 #     binding. A Proxy overrides `.Type` with the typebox namespace directly.
+#     Only observable in the compiled binary.
 #   - Flag conflict crash: when an npm extension registers a flag that kimchi
 #     already provides (e.g. `--plan`), the conflict is downgraded from a hard
 #     error to a warning (kimchi built-in extensions load first and win).
-#
-# Rebased 0.84.1 -> 0.85.1:
-#   - NEW (upstream candidate): extension setModel/setThinkingLevel now accept
-#     { persist } options and thread them through the extension action and the
-#     loader runtime facade to AgentSession's native ModelMutationOptions.
-#     0.85.1 made upstream's wrapper drop options (session-only always); this
-#     restores the persistence channel for Kimchi extension call sites.
-#   - Edit rendering hunks retargeted from core/tools/edit.js to the new
-#     core/tools/renderers/edit.js (upstream extracted renderers; bodies moved
-#     unchanged).
-#   - Model selector rebuilt on the 0.85.1 constructor: settingsManager is gone
-#     (upstream added onSelectAsDefault/defaultModel + Ctrl+S); Kimchi's sessionId
-#     moved to the LAST positional parameter to avoid colliding with
-#     onSelectAsDefault. handleSelect keeps __kimchi* tracking; persistence now
-#     flows through interactive-mode's selectModel(model, persist) closure with
-#     persist: true for user selection (0.84.1 semantics) instead of
-#     setDefaultModelAndProvider.
-#   - RETAINED: the exportToJsonl `await` hunk. exportToJsonl IS synchronous in
-#     both upstream versions, but src/cli.ts monkey-patches the prototype with an
-#     async wrapper (trace-ID injection + awaited PII redaction, fail-closed on
-#     error). The hunk is the paired second half of that contract; dropping it is
-#     a regression (prints [object Promise], returns before redaction completes).
-#     Verified live via tmux harness before restore.
-#   - DROPPED: the pasteToEditor handleInput routing hunk. The TS patch
-#     src/paste-to-editor-patch.ts (handleTerminalInput) is the single home for
-#     that fix; two patches racing was last-writer-wins.
-#   - Bun Type2 Proxy re-applied after upstream's bundled-runtime restructure
-#     (runtime-verify in the compiled binary: third-party npm extension load).
-#   - tools/bash.js timeout pipe-cleanup now lives in createLocalShellOperations,
-#     so it also covers the PowerShell tool (intentional).
+# Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
+#   that routing. Do not re-add a dist hunk for it.
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
 # or Kimchi no longer needs the branded behavior.
+# History: see patches/CHANGELOG.md.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 763b93f..13e0767 100644
