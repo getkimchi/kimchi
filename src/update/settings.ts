@@ -17,7 +17,7 @@
 
 import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
-import { readJson, writeJson } from "../config/json.js"
+import { readJsonCached, writeJson } from "../config/json.js"
 
 /** Path to the dedicated auto-update state file. Separate from the shared
  *  settings.json so read-modify-writes here can never clobber unrelated keys. */
@@ -34,7 +34,9 @@ interface AutoUpdateState {
 
 function readState(path: string): AutoUpdateState {
 	try {
-		return readJson(path) as AutoUpdateState
+		// Stat-gated: read at startup, from the /update command, and by the
+		// auto-update tip provider.
+		return readJsonCached(path) as AutoUpdateState
 	} catch (err) {
 		// readJson throws on malformed JSON (by design — corrupt configs should
 		// be visible). Auto-update is non-critical, so swallow and return the

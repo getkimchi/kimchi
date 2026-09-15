@@ -493,10 +493,21 @@ function getTagManager(
 	return tagManager
 }
 
-export function getActiveTags(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">): string[] {
-	// Read-only lookup: do not cache this instance, otherwise a later
-	// command/tool context that needs to mutate tags would get a no-op
-	// appendEntry from the cached instance.
+/**
+ * Read-only lookup of a session's active tags for display surfaces that
+ * render on every frame (the status line). Reads the shared per-session
+ * TagManager that session_start created, so repeated peeks cost no file I/O.
+ * Before session_start has run (or for a session that never started), falls
+ * back to a throwaway instance that is never cached — mutating callers must
+ * go through getTagManager, which always constructs with the real
+ * appendEntry.
+ */
+export function peekActiveTags(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">): string[] {
+	const cached = tagManagerMap.get(sessionManager.getSessionId())
+	if (cached) return cached.getAllTags()
+	// Throwaway reader: constructing it still reads default tags once, but it
+	// is never stored, so a later mutating context can't inherit its no-op
+	// appendEntry.
 	return new TagManager(sessionManager, () => {}).getAllTags()
 }
 

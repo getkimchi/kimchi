@@ -1,7 +1,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { findNearestAncestorPath } from "../utils/find-nearest-ancestor.js"
-import { readJson } from "./json.js"
+import { readJsonCached } from "./json.js"
 
 // ─── Tag format validation ───────────────────────────────────────────────────
 
@@ -42,7 +42,9 @@ function errText(err: unknown): string {
 
 function readTagFile(path: string): string[] {
 	try {
-		const config = readJson(path) as TagsConfig
+		// Stat-gated cache: resolveDefaultTags runs on every TagManager
+		// construction; the tag files themselves change rarely.
+		const config = readJsonCached(path) as TagsConfig
 		if (!Array.isArray(config.tags)) return []
 		return config.tags.filter(isValidTag)
 	} catch (err) {

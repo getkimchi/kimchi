@@ -15,8 +15,8 @@ import {
 // The mock factory computes the settings path at call time (after vi.mock hoisting).
 const memfs: Map<string, string> = new Map()
 
-vi.mock("./json.js", () => ({
-	readJson: (path: string) => {
+vi.mock("./json.js", () => {
+	const memfsRead = (path: string) => {
 		const raw = memfs.get(path)
 		if (!raw) return {}
 		try {
@@ -24,11 +24,18 @@ vi.mock("./json.js", () => ({
 		} catch {
 			return {}
 		}
-	},
-	writeJson: (path: string, data: unknown) => {
-		memfs.set(path, `${JSON.stringify(data, null, 2)}\n`)
-	},
-}))
+	}
+	return {
+		readJson: memfsRead,
+		// The memfs layer has no stat — bypass the signature gate and read
+		// directly; the real caching semantics are covered by json.test.ts.
+		readJsonCached: memfsRead,
+		writeJson: (path: string, data: unknown) => {
+			memfs.set(path, `${JSON.stringify(data, null, 2)}\n`)
+		},
+		invalidateJsonCache: (_path: string) => {},
+	}
+})
 
 const SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
