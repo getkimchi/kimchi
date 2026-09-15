@@ -13,6 +13,7 @@ import {
 	applyCooperativeTweak,
 	getCurrentProfile,
 	reapplyCurrentProfile,
+	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -26,6 +27,7 @@ import {
 } from "./oauth-callback-branding.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
+import { collectReadOnlyMcpWireNames } from "./read-only.js"
 
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
@@ -74,6 +76,15 @@ function blockedPlanningResult(toolName: string) {
 	}
 }
 
+/**
+ * Plan-mode gate: the gateway, script, namespace proxies, and write-capable
+ * direct tools stay blocked; read-only-qualified direct tools (spec
+ * annotations with a name-convention fallback — see ./read-only.ts) run.
+ */
+function isBlockedInPlanning(toolName: string, isReadOnlyTool: (wireName: string) => boolean): boolean {
+	return !isReadOnlyTool(toolName)
+}
+
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
 type CapturedUpstreamEvent = "input" | "session_start"
 
@@ -81,6 +92,7 @@ function createUpstreamApi(
 	pi: ExtensionAPI,
 	policy: McpToolSurfacePolicy,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
+	isReadOnlyTool: (wireName: string) => boolean,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const registeredToolNames = new Set<string>()
@@ -113,7 +125,9 @@ function createUpstreamApi(
 					target.registerTool({
 						...brandedTool,
 						execute: async (...args: Parameters<typeof execute>) => {
-							if (isPlanningMode(target, args[4])) return blockedPlanningResult(brandedTool.name)
+							if (isPlanningMode(target, args[4]) && isBlockedInPlanning(brandedTool.name, isReadOnlyTool)) {
+								return blockedPlanningResult(brandedTool.name)
+							}
 							return brandMcpAdapterOwnedToolResult(await execute(...args))
 						},
 					})
@@ -257,6 +271,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			]
 			const installedPolicy = createMcpToolSurfacePolicy(config)
 			policy = installedPolicy
+			// Read-only-qualified direct tools stay visible in planning profiles;
+			// annotations arrive through the adapter's persistent metadata cache.
+			registerReadOnlyToolProvider(pi, () => collectReadOnlyMcpWireNames(config))
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
 					? { config }
@@ -264,9 +281,14 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						? { configPath: selectedResult.configPath }
 						: {}
 			createMcpAdapter(adapterOptions)(
-				createUpstreamApi(pi, installedPolicy, (upstreamEvent, handler) => {
-					upstreamHandlers[upstreamEvent].push(handler)
-				}),
+				createUpstreamApi(
+					pi,
+					installedPolicy,
+					(upstreamEvent, handler) => {
+						upstreamHandlers[upstreamEvent].push(handler)
+					},
+					(wireName) => collectReadOnlyMcpWireNames(config).includes(wireName),
+				),
 			)
 		}
 

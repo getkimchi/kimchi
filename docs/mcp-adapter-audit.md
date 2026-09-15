@@ -18,12 +18,14 @@ The migration removes 57 vendored files and roughly 25,000 lines of copied
 implementation and tests.
 
 The remaining facade is Kimchi's integration boundary. One temporary
-dependency patch carries two host compatibilities: it separates the host's
+dependency patch carries three host compatibilities: it separates the host's
 user and project config directories (tracking issue, upstream PR plan, and
 removal criteria in
-[`mcp-project-config-patch.md`](mcp-project-config-patch.md)), and it
+[`mcp-project-config-patch.md`](mcp-project-config-patch.md)), it
 restores master's #1168 tool-name sanitization and exclusion compatibility
-(see the naming section below).
+(see the naming section below), and it retains tool annotations in the
+persistent metadata cache (see the planning section below; remove once
+upstream serializes annotations).
 
 ## Master rebase: naming compatibility
 
@@ -201,22 +203,33 @@ Relevant code:
 
 ### Planning-mode safety and tool-profile integration
 
-Kimchi exposes no model-facing MCP tools while a session is in plan mode. This
-applies equally to the gateway and direct tools, regardless of protocol
-annotations or tool names. The planning catalogs exclude the `mcp` gateway and
-do not admit dynamically registered direct tools. A planning snapshot is
-refreshed before the agent starts, closing the race where direct tools finish
-registering after the initial profile selection.
+In plan mode Kimchi exposes only read-only-qualified MCP direct tools. A tool
+qualifies when the server publishes `annotations.readOnlyHint: true`; when the
+server publishes NO annotations at all, a name-prefix convention (`get_`,
+`search_`, `list_`, `read_`, `fetch_`) applies as a best-effort signal with a
+one-time warning per promoted tool. Any published annotations veto the
+convention. The gateway (`mcp`), `mcpScript`, and namespace proxies always
+stay blocked: each offers arbitrary server-side execution.
+
+Annotations reach the facade through the adapter's persistent metadata cache,
+which a third patch hunk keeps by serializing `annotations` alongside name and
+schema. The facade registers a `registerReadOnlyToolProvider` with the profile
+manager; planning profiles union provider names with the planning catalog. A
+planning snapshot is refreshed before the agent starts, closing the race where
+direct tools finish registering after the initial profile selection.
 
 The facade also checks the active planning state when any adapter-owned tool is
-executed. A stale or forced call returns `plan_mode_mcp_blocked` before it can
-reach the MCP server. Outside plan mode, the gateway and direct tools retain
-their normal behavior. This blanket policy avoids local annotation capture,
-classification, and cache machinery.
+executed. A stale or forced call that is not read-only-qualified returns
+`plan_mode_mcp_blocked` before it can reach the MCP server. Outside plan mode,
+the gateway and direct tools retain their normal behavior. This restores the
+vendor fork's read-only classification (`tool-metadata.ts` semantics in
+[#1168](https://github.com/getkimchi/kimchi/pull/1168)) as facade behavior on
+published-package data.
 
 Relevant code:
 
 - [`src/extensions/mcp/index.ts`](../src/extensions/mcp/index.ts)
+- [`src/extensions/mcp/read-only.ts`](../src/extensions/mcp/read-only.ts)
 - [`src/shared/planning/tool-session-scope.ts`](../src/shared/planning/tool-session-scope.ts)
 - [`src/shared/planning/tool-catalog.ts`](../src/shared/planning/tool-catalog.ts)
 - [`src/shared/planning/tool-profile-manager.ts`](../src/shared/planning/tool-profile-manager.ts)
@@ -290,7 +303,7 @@ regressions:
 | OAuth callback branding | Users finish authorization on an unbranded package page or provider errors render unsafe HTML | Compiled-browser success/denial scenarios plus renderer and real HTTP-response unit tests |
 | Repository project trust | Opening a clone executes a project `.mcp.json` command during cache bootstrap | Compiled TUI accept/deny sentinel scenarios plus headless ACP denial and trust-resolution units |
 | Product/model branding | Setup, MCP App pages, or model guidance identifies Kimchi as Pi or recommends a hidden tool | Compiled setup/browser/model-contract scenarios plus exact-boundary units |
-| Plan-mode MCP exposure leak | A direct or gateway MCP tool becomes visible or callable during planning | TUI scenario asserts neither surface is advertised and no call reaches the fixture server; unit tests verify the planning catalog and defensive execution block |
+| Plan-mode MCP exposure leak | A non-read-only direct or gateway MCP tool becomes visible or callable during planning | TUI scenario asserts the gateway and write-capable direct tools are neither advertised nor callable; unit tests verify read-only qualification, planning-catalog admission via the provider seam, and the defensive execution block |
 | ACP session isolation | One Desktop session sees another session's servers, or caller definitions lose precedence | ACP `session/new`/`session/load`, collision, direct-tool registration, and multi-session configuration tests |
 | Probe cleanup and OAuth isolation | Probe hangs, leaves a callback listener/process alive, or overwrites another server's credentials | CLI and compiled ACP probes for stdio, HTTP, timeout/failure, OAuth, and same-name/different-URL behavior |
 | Adapter startup and direct-tool synchronization | First request lacks tools, a restrictive profile is widened, or stale tools survive reconnect | TUI lifecycle, restart, stdio, failure, and planning scenarios |

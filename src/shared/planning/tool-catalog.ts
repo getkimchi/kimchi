@@ -107,7 +107,10 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "workflow_submit_result", modes: ["shared"] },
 	{ name: "workflow_submit_questions", modes: ["shared"] },
 	// MCP gateway — discovery + proxy for MCP server tools. Available in normal
-	// and implementation modes, but filtered out of both planning profiles.
+	// and implementation modes, but filtered out of both planning profiles
+	// (arbitrary server calls). Read-only-qualified MCP direct tools are
+	// admitted to planning profiles by the profile manager via
+	// registerReadOnlyToolProvider (see src/extensions/mcp/read-only.ts).
 	{ name: "mcp", modes: ["shared"] },
 	// DAP debugger tools — always available in every mode/profile so the agent
 	// can inspect runtime state at any time. Registered by the dap extension.

@@ -66,9 +66,52 @@ let turnListenerInstalled = false
  */
 let lastProfileByScope = new WeakMap<object, ToolProfile>()
 
+/**
+ * Providers of read-only-qualified tool names, registered per session scope.
+ * Planning profiles union catalog tools with provider-supplied names so
+ * read-only MCP direct tools stay visible while planning. Registration is
+ * scoped exactly like `lastProfileByScope` — a provider registered under one
+ * extension's pi never leaks into another session's snapshot (the DAP→ferment
+ * cross-extension case).
+ */
+const readOnlyProvidersByScope = new WeakMap<object, Set<ReadOnlyToolProvider>>()
+
+export type ReadOnlyToolProvider = () => readonly string[];
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Register a provider of read-only-qualified tool names for this session.
+ * Planning profiles admit the union of catalog tools and provider names.
+ * Returns an unregister function. Provider errors must never break a
+ * snapshot: a throwing provider is skipped.
+ */
+export function registerReadOnlyToolProvider(pi: ExtensionAPI, provider: ReadOnlyToolProvider): () => void {
+	const scope = getToolSessionScope(pi)
+	let providers = readOnlyProvidersByScope.get(scope)
+	if (!providers) {
+		providers = new Set()
+		readOnlyProvidersByScope.set(scope, providers)
+	}
+	providers.add(provider)
+	return () => providers?.delete(provider)
+}
+
+function collectReadOnlyProviderNames(pi: ExtensionAPI): string[] {
+	const providers = readOnlyProvidersByScope.get(getToolSessionScope(pi))
+	if (!providers || providers.size === 0) return []
+	const names = new Set<string>()
+	for (const provider of providers) {
+		try {
+			for (const name of provider()) names.add(name)
+		} catch {
+			// provider failure must not break the planning snapshot
+		}
+	}
+	return [...names]
+}
 
 /**
  * Core logic for `apply()` — sets the active tool list from the catalog and
@@ -125,6 +168,14 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 	} else {
 		const tools = getToolsForProfile(profile)
 		allowedNames = tools.map((t) => t.name)
+
+		// Read-only MCP direct tools registered with a planning provider stay
+		// visible while planning (see src/extensions/mcp/read-only.ts); the
+		// gateway and all write-capable tools remain catalog-excluded.
+		const catalogNames = new Set(allowedNames)
+		for (const name of collectReadOnlyProviderNames(pi)) {
+			if (!catalogNames.has(name)) allowedNames.push(name)
+		}
 
 		// Filter out tools that the cooperative visibility layer has voted to
 		// hide.  Without this, a snapshot apply would re-surface tools that
