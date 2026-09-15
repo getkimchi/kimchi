@@ -76,7 +76,7 @@ let lastProfileByScope = new WeakMap<object, ToolProfile>()
  */
 const readOnlyProvidersByScope = new WeakMap<object, Set<ReadOnlyToolProvider>>()
 
-export type ReadOnlyToolProvider = () => readonly string[];
+export type ReadOnlyToolProvider = () => readonly string[]
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -111,6 +111,11 @@ function collectReadOnlyProviderNames(pi: ExtensionAPI): string[] {
 		}
 	}
 	return [...names]
+}
+
+/** Use the same session-scoped qualification for visibility and permission checks. */
+export function isProviderReadOnlyTool(pi: ExtensionAPI, name: string): boolean {
+	return collectReadOnlyProviderNames(pi).includes(name)
 }
 
 /**

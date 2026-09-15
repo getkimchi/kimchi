@@ -6,6 +6,7 @@ import { getToolsForProfile } from "./tool-catalog.js"
 import {
 	apply,
 	applyCooperativeTweak,
+	isProviderReadOnlyTool,
 	isSnapshotAppliedThisTurn,
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
@@ -95,6 +96,18 @@ describe("apply", () => {
 
 		apply("planning-adhoc", "adhoc", fermentPi)
 		expect(vi.mocked(fermentPi.setActiveTools).mock.calls[0][0]).not.toContain("srv_get_issue")
+		expect(isProviderReadOnlyTool(fermentPi, "srv_get_issue")).toBe(false)
+	})
+
+	it("shares exact read-only names between extension wrappers in the same session", () => {
+		const { events } = createMiniEventBus()
+		const mcpPi = makeMockPi({ events })
+		const permissionsPi = makeMockPi({ events })
+		const unregister = registerReadOnlyToolProvider(mcpPi, () => ["atlassian_getJiraIssue"])
+		expect(isProviderReadOnlyTool(permissionsPi, "atlassian_getJiraIssue")).toBe(true)
+		expect(isProviderReadOnlyTool(permissionsPi, "atlassian_getjiraissue")).toBe(false)
+		unregister()
+		expect(isProviderReadOnlyTool(permissionsPi, "atlassian_getJiraIssue")).toBe(false)
 	})
 
 	it("idle profile restores all registered tools minus ferment-only tools", () => {
