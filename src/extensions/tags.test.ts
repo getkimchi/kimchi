@@ -618,6 +618,22 @@ describe("peekActiveTags", () => {
 		resolveSpy.mockRestore()
 	})
 
+	it("returns a defensive copy — mutating the result does not affect subsequent peeks", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "add team:backend", commandContext("peek-mutation-session"))
+		const sessionManager = makeSessionManager("peek-mutation-session")
+
+		// getAllTags() copies the instance's set (Array.from), so a display
+		// path sorting or appending to the array it got must not corrupt the
+		// shared TagManager for other readers (including request tagging).
+		const tags = peekActiveTags(sessionManager)
+		tags.push("injected:key")
+		tags.length = 0
+
+		expect(peekActiveTags(sessionManager)).toEqual(["team:backend"])
+	})
+
 	it("returns an empty array before tags are added", () => {
 		expect(peekActiveTags(makeSessionManager("fresh-tags-session"))).toEqual([])
 	})

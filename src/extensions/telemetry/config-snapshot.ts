@@ -46,7 +46,9 @@ function readAgentSettings(): Record<string, unknown> {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return {}
 	try {
-		return readJsonCached(resolve(agentDir, "settings.json"))
+		// Spread at this boundary: the cached object is shared between
+		// callers, and the snapshot builder must not be able to mutate it.
+		return { ...readJsonCached(resolve(agentDir, "settings.json")) }
 	} catch {
 		return {}
 	}

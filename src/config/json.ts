@@ -2,6 +2,16 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "no
 import { dirname, resolve } from "node:path"
 
 /**
+ * The `.jsonc` sibling tried when a `.json` path is absent. Single source of
+ * truth for the fallback rule: readJson reads the sibling as a content
+ * fallback, and readJsonCached stats it as the cache's alternative source.
+ * If the fallback set ever changes, both paths must change together.
+ */
+function jsoncSibling(path: string): string | undefined {
+	return path.endsWith(".json") ? `${path}c` : undefined
+}
+
+/**
  * Read a JSON file, returning {} if it does not exist. Tolerates JSONC-style
  * comments because some tools (OpenCode, get-shit-done-cc) write `.jsonc`
  * files with `//` and block comments. If `path` ends with `.json` and is
@@ -16,9 +26,10 @@ export function readJson(path: string): Record<string, unknown> {
 		raw = readFileSync(path, "utf-8")
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
-		if (path.endsWith(".json")) {
+		const sibling = jsoncSibling(path)
+		if (sibling) {
 			try {
-				raw = readFileSync(`${path}c`, "utf-8")
+				raw = readFileSync(sibling, "utf-8")
 			} catch (err2) {
 				if ((err2 as NodeJS.ErrnoException).code === "ENOENT") return {}
 				throw err2
@@ -110,8 +121,9 @@ export function readJsonCached(path: string): Record<string, unknown> {
 	const key = resolve(path)
 	const primary = fileSignature(path)
 	if (primary !== undefined) return cachedRead(key, path, primary)
-	if (path.endsWith(".json")) {
-		const alt = `${path}c`
+	// Same fallback rule as readJson — see jsoncSibling.
+	const alt = jsoncSibling(path)
+	if (alt) {
 		const altSig = fileSignature(alt)
 		if (altSig !== undefined) return cachedRead(key, alt, altSig)
 	}
@@ -153,6 +165,8 @@ export function writeJson(path: string, data: unknown): void {
 export async function writeJsonAsync(path: string, data: unknown): Promise<void> {
 	return new Promise((resolve, reject) => {
 		try {
+			// Delegates to writeJson, so it inherits writeJson's cache
+			// invalidation — no separate write-through needed here.
 			writeJson(path, data)
 			resolve()
 		} catch (err) {
