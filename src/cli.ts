@@ -173,6 +173,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installCollisionDiagnosticsPatch } from "./upstream-collision-diagnostics-patch.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
@@ -193,6 +194,9 @@ installPiNativeCompatibilityShim()
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
 applyInteractiveModelSessionPatch()
+// Hide non-actionable resource collisions from the startup report unless the
+// user asked for a verbose startup before the first loader update emits them.
+installCollisionDiagnosticsPatch()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
