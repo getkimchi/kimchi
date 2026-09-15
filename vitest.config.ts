@@ -33,5 +33,6 @@ export default defineConfig({
 		},
 		// Isolate test files to prevent mock leakage between tests
 		pool: "forks",
+		maxWorkers: 4,
 	},
 })
