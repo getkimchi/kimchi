@@ -1,6 +1,8 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { getRawErrorMessage, hasPreservedRawErrorMessage } from "./extensions/error-preservation.js"
+import { isAutoModel } from "./extensions/router/constants.js"
+import { resolveEffectiveModel } from "./extensions/router/state.js"
 import { GATEWAY_CLASSIFICATION_AUDIT_TYPE } from "./infrastructure-error.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
@@ -16,7 +18,8 @@ type SessionBranchEntry = {
 	data?: { rawMessage?: unknown }
 }
 type BranchBackedSession = {
-	sessionManager?: { getBranch?: () => SessionBranchEntry[] }
+	model?: Model<string>
+	sessionManager?: { getBranch?: () => SessionBranchEntry[]; getSessionId?: () => string }
 }
 type PatchableAgentSession = {
 	prototype: {
@@ -244,6 +247,50 @@ function rawErrorForCompactionRecovery(
 }
 
 /**
+ * For Auto sessions, upstream's `sameModel` gate compares the assistant
+ * message's `provider`/`model` against `this.model` — which is the
+ * user-selected `kimchi-dev/auto`. But the message carries the routed
+ * concrete model (stamped by the Auto API provider when it delegates to the
+ * target model's `stream()`). This mismatch causes `sameModel` to always be
+ * `false`, blocking overflow recovery.
+ *
+ * This helper checks whether the session is an Auto session that has routed to
+ * a concrete model. If so, the assistant message carries the routed model's
+ * `provider`/`id`, while `this.model` is `kimchi-dev/auto`. Upstream's
+ * `sameModel` gate compares the message against `this.model` and fails.
+ *
+ * To fix this, we stamp the copy with the *session* model's identity
+ * (`kimchi-dev/auto`) so `sameModel` passes. Returns `undefined` when no
+ * stamping is needed (non-Auto sessions, unresolved routing, or the message
+ * already matches the session model).
+ *
+ * Only the returned copy is modified — the original message is untouched.
+ */
+function stampEffectiveModel(
+	message: CompactionCheckMessage,
+	session: BranchBackedSession | undefined,
+): CompactionCheckMessage | undefined {
+	const sessionModel = session?.model
+	if (!sessionModel || !isAutoModel(sessionModel)) return undefined
+
+	const sessionId = session.sessionManager?.getSessionId?.()
+	const effective = resolveEffectiveModel(sessionModel, sessionId ?? "")
+	// Only stamp when routing resolved to a different concrete model. Compare by
+	// identity (provider/id), not reference — resolveEffectiveModel may return a
+	// distinct object that still represents the same Auto model.
+	if (!effective || (effective.provider === sessionModel.provider && effective.id === sessionModel.id)) {
+		return undefined
+	}
+
+	// Stamp the copy with the session model's identity so sameModel passes.
+	const msgProvider = message.provider
+	const msgModel = message.model
+	if (msgProvider === sessionModel.provider && msgModel === sessionModel.id) return undefined
+
+	return { ...message, provider: sessionModel.provider, model: sessionModel.id }
+}
+
+/**
  * Companion to {@link installInfrastructureRetryPatch}: teaches upstream's
  * `_checkCompaction` to classify overflow from the preserved raw provider
  * error rather than the sanitized display text.
@@ -266,14 +313,30 @@ export function installCompactionRecoveryPatch(
 		message: CompactionCheckMessage,
 		skipAbortedCheck?: boolean,
 	): Promise<boolean> {
-		// Restore the raw provider error for the classification, leaving the
-		// display text untouched. A shared copy (not the session message) is
-		// passed through so nothing downstream observes the swap.
+		// Build a throwaway copy with both fixes applied so the original message
+		// is never mutated:
+		//   1. Restore the raw provider error (so isContextOverflow can match it).
+		//   2. Stamp the effective model's provider/id for Auto sessions (so the
+		//      sameModel gate passes — upstream compares message.model against
+		//      this.model, but Auto keeps kimchi-dev/auto while the message
+		//      carries the routed concrete model).
+		let copy: CompactionCheckMessage | undefined
+
 		if (typeof message.errorMessage === "string") {
 			const raw = rawErrorForCompactionRecovery(message, this)
 			if (raw && raw !== message.errorMessage) {
-				return original.call(this, { ...message, errorMessage: raw }, skipAbortedCheck)
+				copy = { ...message, errorMessage: raw }
 			}
+		}
+
+		// Stamp on the copy (if one exists) so both fixes land on the same object.
+		const stamped = stampEffectiveModel(copy ?? message, this)
+		if (stamped) {
+			copy = stamped
+		}
+
+		if (copy) {
+			return original.call(this, copy, skipAbortedCheck)
 		}
 		return original.call(this, message, skipAbortedCheck)
 	}

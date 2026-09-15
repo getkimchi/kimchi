@@ -1,6 +1,8 @@
+import type { Model } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { getRawErrorMessage, preserveRawErrorMessage } from "./extensions/error-preservation.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./extensions/router/state.js"
 import { installCompactionRecoveryPatch } from "./upstream-retry-patch.js"
 
 /**
@@ -323,5 +325,189 @@ describe("resume path: raw error recovered from session audit entries", () => {
 		await patchedCheckCompaction(cls).call(session as never, msg)
 
 		expect(original.mock.calls[0][0]).toBe(msg)
+	})
+})
+
+describe("installCompactionRecoveryPatch: Auto sameModel stamping", () => {
+	const SESSION_ID = "test-auto-session"
+
+	const autoModel: Model<string> = {
+		id: "auto",
+		name: "Auto",
+		api: "kimchi-auto",
+		provider: "kimchi-dev",
+		baseUrl: "",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 16_000,
+	}
+
+	const routedModel: Model<string> = {
+		id: "routed",
+		name: "Routed",
+		api: "openai-completions",
+		provider: "ai-enabler",
+		baseUrl: "",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 8_192,
+	}
+
+	const concreteModel: Model<string> = {
+		id: "kimi-k2",
+		name: "Kimi K2",
+		api: "openai-completions",
+		provider: "kimchi-dev",
+		baseUrl: "",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262_144,
+		maxTokens: 131_072,
+	}
+
+	const RAW_OVERFLOW =
+		'{"error":{"type":"invalid_request_error","message":"The input (313972 tokens) is longer than the model\'s context length (262144 tokens).","retryable":false,"code":"400"}}'
+
+	afterEach(() => {
+		clearAutoRoutingState(SESSION_ID)
+	})
+
+	it("stamps the session model on the copy so sameModel passes for Auto sessions", async () => {
+		const captured: Record<string, unknown>[] = []
+		const original = vi.fn<CheckCompaction>(async (message) => {
+			captured.push(message)
+			return true
+		})
+		const cls = createPatchedClass(original)
+
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: routedModel })
+
+		const session = {
+			model: autoModel,
+			sessionManager: { getSessionId: () => SESSION_ID, getBranch: () => [] },
+		}
+		const msg: Record<string, unknown> = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: RAW_OVERFLOW,
+			provider: routedModel.provider,
+			model: routedModel.id,
+		}
+
+		await patchedCheckCompaction(cls).call(session as never, msg)
+
+		expect(captured).toHaveLength(1)
+		// The copy is stamped with the SESSION model's identity (kimchi-dev/auto),
+		// not the routed model — upstream's sameModel compares message against
+		// this.model, so the message must match this.model (auto).
+		expect(captured[0].provider).toBe(autoModel.provider)
+		expect(captured[0].model).toBe(autoModel.id)
+		// The original message keeps its routed model identity.
+		expect(msg.provider).toBe(routedModel.provider)
+		expect(msg.model).toBe(routedModel.id)
+	})
+
+	it("does not stamp when routing is unresolved (no effective model to resolve)", async () => {
+		const captured: Record<string, unknown>[] = []
+		const original = vi.fn<CheckCompaction>(async (message) => {
+			captured.push(message)
+			return false
+		})
+		const cls = createPatchedClass(original)
+
+		// No setAutoRoutingState → state is "unresolved"
+		const session = {
+			model: autoModel,
+			sessionManager: { getSessionId: () => SESSION_ID, getBranch: () => [] },
+		}
+		const msg: Record<string, unknown> = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: RAW_OVERFLOW,
+			provider: routedModel.provider,
+			model: routedModel.id,
+		}
+
+		await patchedCheckCompaction(cls).call(session as never, msg)
+
+		// No stamping: resolveEffectiveModel returns the Auto model itself,
+		// which equals sessionModel, so stampEffectiveModel returns undefined.
+		// The message is passed through unchanged (identity, not a copy).
+		expect(captured).toHaveLength(1)
+		expect(captured[0]).toBe(msg)
+	})
+
+	it("does not modify message for concrete (non-Auto) sessions (sameModel guard preserved)", async () => {
+		const captured: Record<string, unknown>[] = []
+		const original = vi.fn<CheckCompaction>(async (message) => {
+			captured.push(message)
+			return false
+		})
+		const cls = createPatchedClass(original)
+
+		// A concrete session where the message came from a DIFFERENT model
+		// (simulating a user switch from kimi-k2 to claude-opus-4).
+		// The sameModel guard must block stale overflow — no stamping.
+		const session = {
+			model: concreteModel,
+			sessionManager: { getSessionId: () => SESSION_ID, getBranch: () => [] },
+		}
+		const msg: Record<string, unknown> = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: RAW_OVERFLOW,
+			provider: "anthropic",
+			model: "claude-opus-4",
+		}
+
+		await patchedCheckCompaction(cls).call(session as never, msg)
+
+		expect(captured).toHaveLength(1)
+		// Identity pass-through: the message is NOT a copy, NOT stamped.
+		expect(captured[0]).toBe(msg)
+		expect(captured[0].provider).toBe("anthropic")
+		expect(captured[0].model).toBe("claude-opus-4")
+	})
+
+	it("combines raw-error restoration and model stamping on the same copy", async () => {
+		const captured: Record<string, unknown>[] = []
+		const original = vi.fn<CheckCompaction>(async (message) => {
+			captured.push(message)
+			return true
+		})
+		const cls = createPatchedClass(original)
+
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: routedModel })
+
+		const session = {
+			model: autoModel,
+			sessionManager: { getSessionId: () => SESSION_ID, getBranch: () => [] },
+		}
+		const msg: Record<string, unknown> = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: RAW_OVERFLOW,
+			provider: routedModel.provider,
+			model: routedModel.id,
+		}
+		// Simulate interactive-error-surface sanitizing the message.
+		preserveRawErrorMessage(msg)
+		msg.errorMessage = SANITIZED_OVERFLOW
+
+		await patchedCheckCompaction(cls).call(session as never, msg)
+
+		expect(captured).toHaveLength(1)
+		// Both fixes land on the same copy: raw error restored AND model stamped
+		// to the session model (auto), not the routed model.
+		expect(captured[0].errorMessage).toBe(RAW_OVERFLOW)
+		expect(captured[0].provider).toBe(autoModel.provider)
+		expect(captured[0].model).toBe(autoModel.id)
+		// The original message keeps its sanitized display text.
+		expect(msg.errorMessage).toBe(SANITIZED_OVERFLOW)
 	})
 })

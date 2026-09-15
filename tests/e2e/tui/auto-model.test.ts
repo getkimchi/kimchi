@@ -58,6 +58,25 @@ const MODELS_WITH_RANKED_FALLBACK = [
 	},
 ]
 
+const OVERFLOW_MODEL = {
+	slug: "routed",
+	displayName: "Fake Routed",
+	provider: "ai-enabler",
+	input: ["text"] as const,
+	// Large window so proactive threshold compaction never fires during priming;
+	// the context-length 400 is the only compaction trigger in this scenario.
+	contextWindow: 100_000,
+	maxTokens: 8_192,
+}
+
+const OVERFLOW_ERROR_BODY = {
+	error: {
+		message: "BadRequestError: The input (104857 tokens) is longer than the model's context length (1048576 tokens).",
+		type: "invalid_request_error",
+		code: 400,
+	},
+}
+
 function requestsTo<T extends { url: string }>(fixture: { fake: { requests: T[] } }, path: string): T[] {
 	return fixture.fake.requests.filter((request) => request.url.startsWith(path))
 }
@@ -122,6 +141,21 @@ function agentCall(id: string, model?: string, runInBackground = false) {
 			}),
 		},
 	}
+}
+
+/** Generate a long prompt so the chars÷4 token estimate creates a summarizable prefix. */
+function largePrompt(base: string, tokens: number): string {
+	const chunk = "one two three four five six seven eight nine ten "
+	const repeats = Math.ceil((tokens * 4) / chunk.length)
+	return `${base}: ${chunk.repeat(repeats)}`
+}
+
+function seedCompactionSettings(homeDir: string) {
+	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
+	settings.compaction = { keepRecentTokens: 1_000 }
+	writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"), "utf-8")
+	return {}
 }
 
 test("/model autocomplete shows and selects Auto when experimental features are enabled", async ({ terminal }) => {
@@ -592,6 +626,64 @@ test("an explicitly selected concrete child model bypasses Auto routing", async 
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests).toHaveLength(3)
 			expect(chatRequests.map((request) => requestModel(request.body))).toEqual(["routed", "routed", "routed"])
+		},
+	)
+})
+
+test("Auto sessions auto-compact and recover from a context-window overflow", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-overflow-compaction",
+			providerId: "kimchi-dev",
+			initialModel: "auto",
+			extraArgs: ["--enable-experimental-features"],
+			gitInit: true,
+			models: [OVERFLOW_MODEL],
+			routerResponses: [ROUTED_ROUTER_RESPONSE],
+			seedHome: seedCompactionSettings,
+			responses: [
+				// Prime enough history that compaction has something to summarize.
+				{ stream: ["Ack 1."], usage: { prompt_tokens: 400, completion_tokens: 1 } },
+				{ stream: ["Ack 2."], usage: { prompt_tokens: 400, completion_tokens: 1 } },
+				{ stream: ["Ack 3."], usage: { prompt_tokens: 400, completion_tokens: 1 } },
+				// The overflow 400.
+				{ status: 400, body: OVERFLOW_ERROR_BODY },
+				// Compaction summary request.
+				{ stream: ["Summary", " of", " prior", " context."], usage: { prompt_tokens: 100, completion_tokens: 4 } },
+				// Retry after compaction.
+				{ stream: ["Recovered", " after", " compaction."], usage: { prompt_tokens: 1000, completion_tokens: 3 } },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit(largePrompt("First prompt", 500))
+			await waitForText(terminal, "Ack 1.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("auto resolved to routed; turn 1 complete")
+
+			terminal.submit(largePrompt("Second prompt", 500))
+			await waitForText(terminal, "Ack 2.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("turn 2 complete")
+
+			terminal.submit(largePrompt("Third prompt", 500))
+			await waitForText(terminal, "Ack 3.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("turn 3 complete")
+
+			terminal.submit("Continue the task")
+			trace.step("submitted follow-up that will overflow")
+
+			await waitForText(terminal, "Recovered after compaction.", { timeoutMs: STREAM_TIMEOUT_MS })
+
+			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
+			expect(chatRequests.length).toBeGreaterThanOrEqual(6)
+			const hasCompactionSummary = chatRequests.some((request) =>
+				JSON.stringify(request.body).includes("context summarization assistant"),
+			)
+			expect(hasCompactionSummary).toBe(true)
+			expect(chatRequests.every((request) => requestModel(request.body) === "routed")).toBe(true)
 		},
 	)
 })
