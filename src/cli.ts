@@ -151,6 +151,7 @@ import {
 	createInfrastructureErrorTracker,
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
+import { ensureAgentColabExtension } from "./integrations/agent-colab.js"
 import {
 	injectAutoModel,
 	injectExperimentalProvider,
@@ -370,6 +371,10 @@ try {
 		if (!agentDir) {
 			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 		}
+		// Sync the pi-agent-colab extension (pinned dependency, upstream
+		// getkimchi/pi-agent-colab) into pi's discovered extensions dir BEFORE
+		// extension discovery runs — same version stamp → no-op. Best-effort.
+		ensureAgentColabExtension(agentDir)
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
 		let currentApiKey = apiKey

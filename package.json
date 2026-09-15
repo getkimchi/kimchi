@@ -45,6 +45,7 @@
 	"dependencies": {
 		"@agentclientprotocol/sdk": "0.19.2",
 		"@bulkhead-ai/core": "^0.7.0",
+		"pi-agent-colab": "github:getkimchi/pi-agent-colab#v0.1.0",
 		"@kimchi-dev/kimchi-workflows": "0.0.9",
 		"@clack/prompts": "^1.3.0",
 		"@earendil-works/pi-coding-agent": "0.84.1",
