@@ -109,7 +109,7 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text" as const,
-							text: `Cloud agent dispatched (agent ${id}). It is running in the background on a remote sandbox; the user will be notified when it completes. Do not redo this work locally.`,
+							text: `Remote agent dispatched (agent ${id}). It is running in the background on a remote sandbox; the user will be notified when it completes. Do not redo this work locally.`,
 						},
 					],
 					details: { agentId: id },
