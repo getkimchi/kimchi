@@ -158,13 +158,13 @@ async function runStartupAuthGate(
 		const result =
 			choice === "kimchi"
 				? await performKimchiBrowserLoginWithDialog(ctx, (model) =>
-						pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+						pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
 					)
 				: choice === "api-key"
 					? await performKimchiApiKeyLoginViaExtensionUI(ctx, (model) =>
-							pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+							pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
 						)
-					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model)))
+					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model, { persist: true })))
 						? "success"
 						: "failed"
 

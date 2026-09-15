@@ -743,7 +743,8 @@ export class KimchiAcpAgent implements Agent {
 			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 			setMultiModelEnabled(sessionId, true)
 			try {
-				await session.setModel(orchestrator)
+				// An explicit client request to change the model, so save it as the default.
+				await session.setModel(orchestrator, { persist: true })
 			} catch {
 				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
 				// Pi's setModel only throws "if no auth is configured for the model"
@@ -774,7 +775,8 @@ export class KimchiAcpAgent implements Agent {
 		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 		setMultiModelEnabled(sessionId, false)
 		try {
-			await session.setModel(target)
+			// An explicit client request to change the model, so save it as the default.
+			await session.setModel(target, { persist: true })
 		} catch {
 			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
 			// Pi's setModel only throws "if no auth is configured for the model"

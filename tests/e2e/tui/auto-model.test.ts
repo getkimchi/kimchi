@@ -89,21 +89,6 @@ async function waitForAbortedRequest(
 	throw new Error(`Timed out waiting for the request to ${path} to be aborted`)
 }
 
-async function navigateToSetting(terminal: import("@microsoft/tui-test").Terminal, label: string): Promise<void> {
-	for (let index = 0; index < 30; index += 1) {
-		const cursorLine = viewText(terminal)
-			.split("\n")
-			.find((line) => line.includes("→"))
-		if (cursorLine?.includes(label)) {
-			terminal.submit("")
-			return
-		}
-		terminal.keyDown()
-		await new Promise((resolve) => setTimeout(resolve, 50))
-	}
-	throw new Error(`Could not navigate to setting "${label}"`)
-}
-
 function requestModel(body: unknown): string | undefined {
 	return body && typeof body === "object" && "model" in body && typeof body.model === "string" ? body.model : undefined
 }
@@ -147,11 +132,13 @@ test("/model autocomplete shows and selects Auto when experimental features are 
 
 			terminal.write("auto")
 			await waitForText(terminal, "Auto (Kimchi Router)", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			expect(viewText(terminal)).toMatch(/→ auto \[kimchi-dev\]/)
+			// Upstream 0.85.1 added a "✓ current model" marker column: the row renders
+			// as "→   auto [kimchi-dev]" (cursor, marker column, then the label).
+			expect(viewText(terminal)).toMatch(/→\s+auto \[kimchi-dev\]/)
 			trace.step("Auto highlighted")
 
 			terminal.submit("")
-			await waitForText(terminal, "Model: auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Default model: kimchi-dev/auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("Auto selected")
 		},
@@ -225,20 +212,19 @@ test("Auto exposes only off after routing to a model without reasoning", async (
 			await waitForText(terminal, "Non-reasoning reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
-			terminal.write("/settings")
-			await waitForText(terminal, "/settings", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// Upstream 0.85.1 removed the global "Thinking level" /settings row in
+			// favor of /thinking + per-model defaults, so drive the /thinking selector.
+			terminal.write("/thinking")
+			await waitForText(terminal, "/thinking", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
-			await waitForText(terminal, "Auto-compact", { timeoutMs: INPUT_TIMEOUT_MS })
-			await navigateToSetting(terminal, "Thinking level")
-			await waitForText(terminal, "Enter to select · Esc to go back", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Thinking Level", { timeoutMs: INPUT_TIMEOUT_MS })
 
-			terminal.keyDown()
-			terminal.submit("")
-			await waitForText(terminal, "Enter/Space to change · Esc to cancel", { timeoutMs: INPUT_TIMEOUT_MS })
-			const thinkingLine = viewText(terminal)
-				.split("\n")
-				.find((line) => line.includes("Thinking level"))
-			expect(thinkingLine).toMatch(/Thinking level\s+off/)
+			const thinkingList = viewText(terminal)
+			// The Auto model synced to a non-reasoning routed model exposes "off" only.
+			expect(thinkingList).toMatch(/✓ +off +No reasoning/)
+			expect(thinkingList).not.toMatch(
+				/Very brief reasoning|Light reasoning|Moderate reasoning|Deep reasoning|Maximum reasoning/,
+			)
 
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })

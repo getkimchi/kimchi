@@ -183,7 +183,7 @@ export default function modelSwitchExtension(
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
-				ok = await pi.setModel(target)
+				ok = await pi.setModel(target, { persist: true })
 			} finally {
 				suppressModelSelectGuard = false
 			}
