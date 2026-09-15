@@ -17,10 +17,15 @@
  * are computed exactly as the adapter registers them, from the same config.
  */
 
-import { loadMetadataCache } from "pi-mcp-adapter/metadata-cache"
-import { type McpConfig, type ToolPrefix, formatToolName, resolveToolPrefix } from "pi-mcp-adapter/types"
-
-type ToolAnnotations = { readOnlyHint?: boolean }
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
+import { isServerCacheValid, loadMetadataCache, reconstructToolMetadata } from "pi-mcp-adapter/metadata-cache"
+import {
+	formatServerNamespace,
+	formatToolName,
+	isServerDisabled,
+	type McpConfig,
+	resolveToolPrefix,
+} from "pi-mcp-adapter/types"
 
 const READ_ONLY_NAME_PREFIXES = /^(get|search|list|read|fetch)/
 
@@ -43,22 +48,41 @@ export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: T
 
 /**
  * Compute the wire names of read-only-qualified direct tools from the
- * adapter's metadata cache, restricted to servers present in the config so
- * unconfigured cache leftovers never leak into a planning snapshot.
+ * adapter's valid metadata, using upstream filtering and wire-name rules.
+ * Ambiguous names fail closed: a read-only claim must never authorize a
+ * different server's tool. The facade intersects these candidates with its
+ * registered tools before exposing them to the planning profile.
  */
 export function collectReadOnlyMcpWireNames(config: McpConfig): string[] {
 	const cache = loadMetadataCache()
 	if (!cache?.servers) return []
-	const names = new Set<string>()
-	for (const [serverName, entry] of Object.entries(cache.servers)) {
-		const definition = config.mcpServers[serverName]
-		if (!definition) continue
-		const prefix: ToolPrefix = resolveToolPrefix(definition, config.settings?.toolPrefix)
-		for (const tool of entry.tools ?? []) {
-			if (isReadOnlyQualifiedMcpTool(tool.name, tool.annotations)) {
-				names.add(formatToolName(tool.name, serverName, prefix))
-			}
+	const qualified = new Map<string, boolean>()
+	const reserved = new Set([
+		"mcp",
+		"mcpScript",
+		...Object.keys(config.mcpServers).map((name) => `mcp__${formatServerNamespace(name)}`),
+	])
+	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
+		const entry = cache.servers[serverName]
+		if (isServerDisabled(definition) || !entry || !isServerCacheValid(entry, definition)) continue
+		const prefix = resolveToolPrefix(definition, config.settings?.toolPrefix)
+		const nameCounts = new Map<string, number>()
+		for (const tool of entry.tools) {
+			const name = formatToolName(tool.name, serverName, prefix)
+			nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1)
+		}
+		for (const tool of reconstructToolMetadata(serverName, entry, prefix, definition, config.mcpServers, cache)) {
+			if (reserved.has(tool.name)) continue
+			const source = entry.tools.find((candidate) => candidate.name === tool.originalName)
+			qualified.set(
+				tool.name,
+				!qualified.has(tool.name) &&
+					nameCounts.get(tool.name) === 1 &&
+					!tool.resourceUri &&
+					source !== undefined &&
+					isReadOnlyQualifiedMcpTool(source.name, source.annotations),
+			)
 		}
 	}
-	return [...names]
+	return [...qualified].filter(([, readOnly]) => readOnly).map(([name]) => name)
 }
