@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import {
 	AGENT_DEFINITIONS,
 	type AgentDefinition,
@@ -10,7 +11,6 @@ import {
 } from "../../../agent-discovery/index.js"
 import { writeJson } from "../../../config/json.js"
 import { ALWAYS_SHOWN_SKILL_PATHS, writeMigrationState, writeSkillPaths } from "../../../config.js"
-import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { toSkillName } from "../../../setup-wizard.js"
 
 /**

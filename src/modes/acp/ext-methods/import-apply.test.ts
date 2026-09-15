@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AgentDefinition, DirCandidate } from "../../../agent-discovery/index.js"
-import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "../capabilities.js"
 import { handleImportApply } from "./import-apply.js"
 

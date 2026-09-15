@@ -337,6 +337,14 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(getParsedCliArgs()).toEqual({ options: { provider: "kimchi-dev" }, positionals: ["fix tests"] })
 	})
 
+	it("caches upstream project-trust overrides for trust-aware extensions", () => {
+		populateCliArgs(["--approve"])
+		expect(getParsedCliArgs()).toEqual({ options: { approve: true }, positionals: [] })
+
+		populateCliArgs(["--no-approve"])
+		expect(getParsedCliArgs()).toEqual({ options: { "no-approve": true }, positionals: [] })
+	})
+
 	it("reuses the cached parse across calls", () => {
 		populateCliArgs(["--multi-model"])
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })

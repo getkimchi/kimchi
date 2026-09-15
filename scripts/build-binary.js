@@ -102,7 +102,7 @@ const externalFlags = externals.map((name) => `--external ${name}`).join(" ")
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
 run(
 	"compile",
-	`bun scripts/compile-binary.js src/entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
+	`bun scripts/compile-binary.js src/binary-entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS: the

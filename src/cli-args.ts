@@ -179,9 +179,23 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Start in yolo mode (run freely, no classifier - DANGER)",
 	},
+	approve: {
+		type: "boolean",
+		short: "a",
+		description: "Trust project-local files for this run",
+	},
+	"no-approve": {
+		type: "boolean",
+		description: "Ignore project-local files for this run",
+	},
 	"permissions-config": {
 		type: "string",
 		description: "Replace the merged permissions config with this file",
+		placeholder: "<path>",
+	},
+	"mcp-config": {
+		type: "string",
+		description: "Use a specific MCP configuration file",
 		placeholder: "<path>",
 	},
 	verbose: {
@@ -220,7 +234,10 @@ export interface SessionCliArgs {
 		plan?: boolean
 		auto?: boolean
 		yolo?: boolean
+		approve?: boolean
+		"no-approve"?: boolean
 		"permissions-config"?: string
+		"mcp-config"?: string
 		verbose?: boolean
 	}
 	positionals: string[]
@@ -263,7 +280,10 @@ const CACHEABLE_OPTION_NAMES = [
 	"plan",
 	"auto",
 	"yolo",
+	"approve",
+	"no-approve",
 	"permissions-config",
+	"mcp-config",
 	"verbose",
 ] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
 

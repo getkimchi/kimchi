@@ -215,8 +215,8 @@ describe("getToolsForProfile", () => {
 		const result = getToolsForProfile("planning-adhoc")
 		const names = namesOf(result)
 
-		it("includes all SHARED_CORE_TOOLS", () => {
-			for (const name of TOOL_NAMES.sharedCore) {
+		it("includes shared core tools other than MCP", () => {
+			for (const name of TOOL_NAMES.sharedCore.filter((name) => name !== "mcp")) {
 				expect(names).toContain(name)
 			}
 		})
@@ -231,8 +231,8 @@ describe("getToolsForProfile", () => {
 			expect(names).toContain("bash")
 		})
 
-		it("includes the mcp gateway", () => {
-			expect(names).toContain("mcp")
+		it("does NOT include the mcp gateway", () => {
+			expect(names).not.toContain("mcp")
 		})
 
 		it("includes Ferment V2 state tools but not legacy Ferment lifecycle or write tools", () => {
@@ -258,10 +258,6 @@ describe("getToolsForProfile", () => {
 			}
 		})
 
-		it("includes the mcp gateway", () => {
-			expect(names).toContain("mcp")
-		})
-
 		it("does NOT include write tools other than bash", () => {
 			const writeTools = ["edit", "write", "Agent", "get_subagent_result"]
 			for (const name of writeTools) {
@@ -274,10 +270,14 @@ describe("getToolsForProfile", () => {
 		const result = getToolsForProfile("planning-ferment")
 		const names = namesOf(result)
 
-		it("includes all SHARED_CORE_TOOLS", () => {
-			for (const name of TOOL_NAMES.sharedCore) {
+		it("includes shared core tools other than MCP", () => {
+			for (const name of TOOL_NAMES.sharedCore.filter((name) => name !== "mcp")) {
 				expect(names).toContain(name)
 			}
+		})
+
+		it("does NOT include the mcp gateway", () => {
+			expect(names).not.toContain("mcp")
 		})
 
 		it("includes ferment tools visible in planning", () => {
