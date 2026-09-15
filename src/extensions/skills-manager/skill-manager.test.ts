@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	formatPreview,
@@ -426,6 +427,113 @@ describe("SkillManager", () => {
 			const result = await bundledMgr.create("new-skill", "---\ndescription: x\n---\nBody.")
 			expect(result.success).toBe(true)
 			expect(result.path).toContain(tmpDir)
+		})
+	})
+
+	describe("discovered skills (session inventory)", () => {
+		let projectDir: string
+		let discoveredMgr: SkillManager
+
+		beforeEach(() => {
+			projectDir = mkdtempSync(join(tmpdir(), "kimchi-skill-project-"))
+			const skillDir = join(projectDir, "project-skill")
+			mkdirSync(skillDir, { recursive: true })
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				"---\nname: project-skill\ndescription: lives in the project repo\n---\nProject body.",
+			)
+			discoveredMgr = new SkillManager(tmpDir)
+		})
+
+		afterEach(() => {
+			rmSync(projectDir, { recursive: true, force: true })
+		})
+
+		function discoveredSkill(name = "project-skill"): Skill {
+			return {
+				name,
+				description: "lives in the project repo",
+				filePath: join(projectDir, name, "SKILL.md"),
+				baseDir: join(projectDir, name),
+				sourceInfo: {
+					path: join(projectDir, name, "SKILL.md"),
+					source: "local",
+					scope: "project",
+					origin: "top-level",
+				},
+				disableModelInvocation: false,
+			}
+		}
+
+		it("view resolves a discovered skill absent from harness and bundled roots", async () => {
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await discoveredMgr.view("project-skill")
+			expect(result.success).toBe(true)
+			expect(result.content).toContain("Project body.")
+		})
+
+		it("view returns not-found when no provider is set", async () => {
+			const result = await discoveredMgr.view("project-skill")
+			expect(result.success).toBe(false)
+			expect(result.error).toContain("not found")
+		})
+
+		it("view collects linked files from the discovered skill directory", async () => {
+			mkdirSync(join(projectDir, "project-skill", "references"), { recursive: true })
+			writeFileSync(join(projectDir, "project-skill", "references", "api.md"), "# API")
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await discoveredMgr.view("project-skill")
+			expect(result.success).toBe(true)
+			expect(result.linked_files).toEqual({ references: ["references/api.md"] })
+		})
+
+		it("harness skill shadows a discovered skill with the same name", async () => {
+			await discoveredMgr.create("project-skill", "---\ndescription: y\n---\nHarness body.")
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await discoveredMgr.view("project-skill")
+			expect(result.content).toContain("Harness body.")
+		})
+
+		it("bundled skill shadows a discovered skill with the same name", async () => {
+			const bundledDir = mkdtempSync(join(tmpdir(), "kimchi-skill-bundled-shadow-"))
+			mkdirSync(join(bundledDir, "project-skill"), { recursive: true })
+			writeFileSync(
+				join(bundledDir, "project-skill", "SKILL.md"),
+				"---\nname: project-skill\ndescription: bundled\n---\nBundled body.",
+			)
+			const mgr = new SkillManager(tmpDir, { bundledRoots: [bundledDir] })
+			mgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await mgr.view("project-skill")
+			expect(result.content).toContain("Bundled body.")
+			rmSync(bundledDir, { recursive: true, force: true })
+		})
+
+		it("edit refuses to mutate a discovered skill", async () => {
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await discoveredMgr.edit("project-skill", "---\ndescription: y\n---\nHacked.")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/discovered outside the harness skills dir/i)
+		})
+
+		it("delete refuses to remove a discovered skill", async () => {
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await discoveredMgr.delete("project-skill")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/discovered outside the harness skills dir/i)
+			expect(existsSync(join(projectDir, "project-skill"))).toBe(true)
+		})
+
+		it("writeFile refuses to add a file under a discovered skill", async () => {
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const result = await discoveredMgr.writeFile("project-skill", "references/x.md", "# Extra")
+			expect(result.success).toBe(false)
+			expect(result.error).toMatch(/discovered outside the harness skills dir/i)
+		})
+
+		it("listInventory does not include discovered skills (prompt block is the discovery surface)", async () => {
+			discoveredMgr.setDiscoveredSkillsProvider(() => [discoveredSkill()])
+			const inventory = await discoveredMgr.listInventory()
+			expect(inventory.find((s) => s.name === "project-skill")).toBeUndefined()
 		})
 	})
 })

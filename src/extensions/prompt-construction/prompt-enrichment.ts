@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
@@ -61,8 +61,15 @@ import {
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { getEffectiveModel } from "../router/state.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
+import {
+	buildSkillReminder,
+	SKILL_SUGGEST_EVENT,
+	type SkillSuggestEventPayload,
+	SkillSuggester,
+} from "./skill-suggest.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -215,6 +222,21 @@ export default function (skillPathsFromConfig: string[]) {
 			registerModelRolesCommand(pi)
 		}
 
+		// Session-keyed skill suggesters. Defined at factory scope (not inside the
+		// main-thread block) because the shared before_agent_start below feeds the
+		// inventory for every session; suggest() itself only fires from the
+		// main-thread input handler — subagents receive no user input events.
+		const skillSuggesterMap = new Map<string, SkillSuggester>()
+
+		function getSkillSuggester(sessionId: string): SkillSuggester {
+			let suggester = skillSuggesterMap.get(sessionId)
+			if (!suggester) {
+				suggester = new SkillSuggester()
+				skillSuggesterMap.set(sessionId, suggester)
+			}
+			return suggester
+		}
+
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 
@@ -257,6 +279,7 @@ export default function (skillPathsFromConfig: string[]) {
 			pi.on("session_shutdown", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				deprecatedNotificationFired.delete(sessionId)
+				skillSuggesterMap.delete(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
@@ -352,6 +375,8 @@ export default function (skillPathsFromConfig: string[]) {
 				continuationNudge.resetForNewUserInput()
 				emptyTurnNudge.resetForNewUserInput()
 			})
+
+			// Skill matching runs in the before_agent_start handler below, not here:
 
 			pi.on("tool_execution_start", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
@@ -510,6 +535,34 @@ export default function (skillPathsFromConfig: string[]) {
 			// divergent view composed here. Kimchi-specific sources reach pi
 			// through resources_discover above.
 			const skills = event.systemPromptOptions?.skills ?? []
+			// Skill suggest: match the user prompt against the fresh inventory and
+			// attach an existence reminder after the user message for this turn.
+			// Runs here (not on the input event) because this is the only place
+			// where both the prompt text and the loaded skills are visible — the
+			// input event fires before the first inventory exists. The reminder
+			// is a nudge, not a directive; no match is the normal outcome and
+			// nothing is injected. Keyed on this session so an in-process
+			// subagent's inventory never crosses into the parent's suggester.
+			let skillSuggestMessage: BeforeAgentStartEventResult["message"]
+			if (!subagentMode) {
+				const suggester = getSkillSuggester(sessionId)
+				suggester.updateSkills(skills)
+				const { suggestions, latched } = suggester.suggest(event.prompt)
+				if (suggestions.length > 0) {
+					// Domain event for telemetry counters (skill_suggest.fired +
+					// the conversion window). Fire-and-forget by design — a telemetry
+					// miss must never break prompt construction.
+					pi.events.emit(SKILL_SUGGEST_EVENT, {
+						skills: suggestions.map((s) => ({ name: s.name, filePath: s.filePath })),
+						latched,
+					} satisfies SkillSuggestEventPayload)
+					skillSuggestMessage = {
+						customType: "skill-suggest",
+						content: [{ type: "text", text: markHarnessSteer(buildSkillReminder(suggestions)) }],
+						display: false,
+					}
+				}
+			}
 
 			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))
@@ -585,7 +638,7 @@ export default function (skillPathsFromConfig: string[]) {
 				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
-			return { systemPrompt }
+			return skillSuggestMessage ? { systemPrompt, message: skillSuggestMessage } : { systemPrompt }
 		})
 	}
 }

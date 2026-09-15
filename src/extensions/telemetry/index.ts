@@ -37,6 +37,7 @@ import {
 	type LoopGuardSubagentAbortPayload,
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
+import { SKILL_SUGGEST_EVENT } from "../prompt-construction/skill-suggest.js"
 import { resetTelemetryFermentV2Context, setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import {
@@ -45,7 +46,7 @@ import {
 	handleSessionShutdown,
 	handleSessionStart,
 } from "./handlers/session.js"
-import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
+import { handleSkillSuggestEvent, handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
@@ -829,6 +830,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		// Subscribe to ferment domain events published via pi.events.
 		// This keeps telemetry decoupled from ferment internals — ferment
 		// publishes facts; telemetry translates them into OTLP records.
+		// Skill-suggest counters: the prompt-construction wiring publishes the
+		// domain event; telemetry counts fired reminders and conversions
+		// (skill_view call or SKILL.md read within the conversion window).
+		pi.events.on(SKILL_SUGGEST_EVENT, (raw) => handleSkillSuggestEvent(telemetryCtx, raw))
+
 		pi.events.on(FERMENT_EVENTS.STARTED, onFermentStarted)
 		pi.events.on(FERMENT_EVENTS.COMPLETED, onFermentCompleted)
 		pi.events.on(FERMENT_EVENTS.ABANDONED, onFermentAbandoned)
