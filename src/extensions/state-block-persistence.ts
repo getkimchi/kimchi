@@ -132,6 +132,11 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 	const forceReemit = new Set<string>()
 	let agentBusy = 0
 	let currentSessionKey = ""
+	// Set by session_shutdown: no persistence may happen for this registrar
+	// afterwards — checked in the notify closure AND in the deferred flush
+	// paths, since pending entries can carry keys other than currentSessionKey
+	// (a foreign session sharing the todo store may forward its own id).
+	let shutDown = false
 
 	/** Persist the rendered block if it changed (or `force` bypasses equality).
 	 *  Returns true when a new entry was written. */
@@ -170,6 +175,7 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 		agentBusy = Math.max(0, agentBusy - 1)
 	})
 	pi.on("agent_settled", (_event, ctx) => {
+		if (shutDown) return
 		if (agentBusy > 0) return
 		if (pendingFlush.size === 0 && forceReemit.size === 0) return
 		// Skip aborted runs: the flushed block would become the newest turn
@@ -194,13 +200,13 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 	// outcome). Emission stays at the settle boundary — writing here would be
 	// the mid-run send the module comment forbids.
 	pi.on("session_compact", (_event, ctx) => {
+		if (shutDown) return
 		const key = currentSessionKey
 		if (!key || !lastPersisted.get(key)) return
 		if (newestStateBlockSurvivesInBranch(ctx, customType)) return
 		forceReemit.add(key)
 	})
 
-	let shutDown = false
 	const unsubscribeFromSource = subscribe((key?: string) => {
 		if (shutDown) return
 		const effectiveKey = key ?? currentSessionKey
@@ -219,11 +225,11 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 	pi.on("session_shutdown", () => {
 		shutDown = true
 		if (typeof unsubscribeFromSource === "function") unsubscribeFromSource()
-		if (currentSessionKey) {
-			pendingFlush.delete(currentSessionKey)
-			forceReemit.delete(currentSessionKey)
-			lastPersisted.delete(currentSessionKey)
-		}
+		// Clear maps entirely, not just currentSessionKey: pending entries may
+		// carry foreign session keys forwarded by shared-store subscribers.
+		pendingFlush.clear()
+		forceReemit.clear()
+		lastPersisted.clear()
 	})
 
 	// Strip-only context pass: drop every block of this customType except the

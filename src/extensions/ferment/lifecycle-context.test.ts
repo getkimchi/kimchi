@@ -184,6 +184,41 @@ describe("registerFermentLifecycleContext", () => {
 		expect(harness.persistedBlocks()).toHaveLength(2)
 	})
 
+	it("releases every lifecycle change-event subscription on session_shutdown", async () => {
+		const harness = createHarness()
+		// Wrap bus.on to track each subscription's unsubscribe handle, so the
+		// test pins that the cleanup returned by subscribe() invokes all of them.
+		const subscribedChannels: string[] = []
+		const unsubscribedChannels: string[] = []
+		const originalOn = harness.bus.on.bind(harness.bus)
+		harness.bus.on = (channel: string, handler: (data: unknown) => void): (() => void) => {
+			subscribedChannels.push(channel)
+			const unsubscribe = originalOn(channel, handler)
+			return () => {
+				unsubscribedChannels.push(channel)
+				unsubscribe()
+			}
+		}
+
+		const { runtime } = makeMutableRuntime(makeFerment())
+		registerFermentLifecycleContext(harness.pi, runtime)
+		await startSession(harness)
+
+		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1", phaseId: "phase-1", stepId: "step-1" })
+		expect(harness.persistedBlocks()).toHaveLength(1)
+
+		await harness.fire("session_shutdown", { reason: "reload" })
+
+		// Every channel the module subscribed was unsubscribed via its handle.
+		expect(unsubscribedChannels.sort()).toEqual(subscribedChannels.sort())
+		expect(unsubscribedChannels.length).toBeGreaterThan(0)
+
+		// And no further domain event produces a block, even after a settle.
+		harness.bus.emit(FERMENT_EVENTS.PHASE_COMPLETED, { fermentId: "ferment-1", phaseId: "phase-1" })
+		await harness.fire("agent_settled", {})
+		expect(harness.persistedBlocks()).toHaveLength(1)
+	})
+
 	it("does not flush after an aborted run; the block lands at the next normal settle", async () => {
 		const abortedAssistant = {
 			type: "message",

@@ -81,9 +81,9 @@ function createHarness(options: HarnessOptions = {}) {
 
 	return {
 		fire,
-		notify: () => {
+		notify: (key?: string) => {
 			if (!notify) throw new Error("subscribe not wired")
-			notify()
+			notify(key)
 		},
 		setStore: (value: string | undefined) => {
 			store = value
@@ -224,6 +224,42 @@ describe("registerStateBlockPersistence — compaction re-emit", () => {
 		h.notify() // deferred while busy
 
 		await h.fire("session_shutdown", { reason: "reload" })
+		await h.fire("agent_end")
+		await h.fire("agent_settled")
+
+		expect(h.persisted()).toEqual(["## State\nitem A"])
+	})
+
+	it("clears pending flushes keyed by other sessions on shutdown", async () => {
+		const h = createHarness()
+		await startSession(h)
+		h.setStore("item A")
+		h.notify()
+		expect(h.persisted()).toEqual(["## State\nitem A"])
+
+		await h.fire("agent_start")
+		h.setStore("item B")
+		h.notify("foreign-session") // deferred under a foreign key
+		h.setStore("item C")
+		h.notify() // deferred under currentSessionKey
+
+		await h.fire("session_shutdown", { reason: "reload" })
+		await h.fire("agent_end")
+		await h.fire("agent_settled")
+
+		expect(h.persisted()).toEqual(["## State\nitem A"])
+	})
+
+	it("ignores compaction signals after shutdown", async () => {
+		const h = createHarness()
+		await startSession(h)
+		h.setStore("item A")
+		h.notify()
+		h.setBranch([])
+
+		await h.fire("session_shutdown", { reason: "reload" })
+		await h.fire("session_compact", { reason: "threshold" })
+		await h.fire("agent_start")
 		await h.fire("agent_end")
 		await h.fire("agent_settled")
 
