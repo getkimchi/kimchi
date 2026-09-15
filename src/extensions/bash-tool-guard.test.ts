@@ -926,7 +926,7 @@ describe("applyDescriptionOverride", () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────
-// Ticket regression: "Reduce file read operations during agent loop".
+// Regression: config reads during the agent loop.
 // The guard consults the resource store on every bash tool_call; with the
 // stat-gated cache that must cost one statSync, not a read+parse per event.
 // ─────────────────────────────────────────────────────────────────────────
