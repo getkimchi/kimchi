@@ -34,6 +34,84 @@ const GLM: unknown = {
 	limits: { context_window: 202752, max_output_tokens: 202752 },
 }
 
+const KIMI_K3: unknown = {
+	slug: "kimi-k3",
+	display_name: "Kimi K3",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+const DEEPSEEK_V4_FLASH: unknown = {
+	slug: "deepseek-v4-flash",
+	display_name: "DeepSeek V4 Flash",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Dated snapshot slug from the live catalog — must match the deepseek-v4 rule
+// through its dash-delimited variant suffixes.
+const DEEPSEEK_V4_DATED: unknown = {
+	slug: "deepseek-v4-flash-0731",
+	display_name: "DeepSeek V4 Flash 0731",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Dot-suffixed variant of a flagged family — must match the kimi-k3 rule.
+const KIMI_K31: unknown = {
+	slug: "kimi-k3.1",
+	display_name: "Kimi K3.1",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Reasoning ai-enabler model whose upstream registry does NOT require the
+// reasoning_content marker — must not pick up the kimi-k3/deepseek compat.
+const KIMI_K27: unknown = {
+	slug: "kimi-k2.7",
+	display_name: "Kimi K2.7",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 262144 },
+}
+
+// Non-reasoning variant of a flagged family — the `reasoning` guard must keep it clean.
+const KIMI_K3_FLASH: unknown = {
+	slug: "kimi-k3-flash",
+	display_name: "Kimi K3 Flash",
+	provider: "ai-enabler",
+	reasoning: false,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Shares the "kimi-k3" characters but is a different model — prefix matching
+// must stop at a slug delimiter so this does not pick up the kimi-k3 compat.
+const KIMI_K30: unknown = {
+	slug: "kimi-k30",
+	display_name: "Kimi K30",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
 const SONNET_46: unknown = {
 	slug: "claude-sonnet-4-6",
 	display_name: "",
@@ -238,6 +316,98 @@ describe("updateModelsConfig", () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("sets requiresReasoningContentOnAssistantMessages compat for ai-enabler kimi-k3 models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K3] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("sets requiresReasoningContentOnAssistantMessages compat for ai-enabler deepseek-v4 models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [DEEPSEEK_V4_FLASH] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("matches dated deepseek-v4 snapshots via delimited variant suffixes", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [DEEPSEEK_V4_DATED] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("matches dot-suffixed kimi-k3 variants like kimi-k3.1", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K31] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("does not set reasoning compat for ai-enabler kimi-k2.7", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K27] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("does not set reasoning compat for a non-reasoning slug sharing the kimi-k3 prefix", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K3_FLASH] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("does not let prefix matching over-match unrelated slugs like kimi-k30", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K30] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")

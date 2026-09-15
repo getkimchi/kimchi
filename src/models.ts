@@ -216,24 +216,59 @@ export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 	}
 }
 
+// kimi-k3* and deepseek-v4* backends behind the ai-enabler gateway require a
+// `reasoning_content` marker on every assistant message in the request. pi-ai emits
+// `reasoning_content: ""` when this compat flag is set (openai-completions.js). Without
+// it, a mid-session switch from another model family leaves the history with no
+// reasoning markers at all (pi-ai flattens other-model thinking blocks into plain
+// text), kimi-k3 drops out of reasoning mode, and its deliberation arrives as ordinary
+// content — no thinking blocks, unhideable by the TUI. Mirrors the moonshotai and
+// deepseek entries in pi-ai's upstream model registry.
+const AI_ENABLER_REASONING_COMPAT: ReadonlyArray<readonly [slug: string, compat: OpenAICompletionsCompat]> = [
+	["kimi-k3", { requiresReasoningContentOnAssistantMessages: true }],
+	["deepseek-v4", { requiresReasoningContentOnAssistantMessages: true }],
+]
+
+// claude-* models from non-anthropic providers still use openai-completions,
+// so they keep the openai-completions compat flags.
+const NON_ANTHROPIC_CLAUDE_COMPAT: OpenAICompletionsCompat = {
+	supportsReasoningEffort: false,
+	cacheControlFormat: "anthropic",
+	supportsUsageInStreaming: true,
+}
+
+// Guarded on reasoning: a non-reasoning slug must stay clean — pi-ai's marker
+// emission itself also requires `model.reasoning`.
+// Base-slug match: exact, or a variant suffix within the family (kimi-k3-turbo,
+// kimi-k3.1, deepseek-v4-flash-0731) — never slugs that merely share characters
+// (kimi-k30).
+function aiEnablerReasoningCompat(m: ModelMetadata): OpenAICompletionsCompat | undefined {
+	if (m.provider !== "ai-enabler" || !m.reasoning) return undefined
+	return AI_ENABLER_REASONING_COMPAT.find(
+		([slug]) => m.slug === slug || m.slug.startsWith(`${slug}-`) || m.slug.startsWith(`${slug}.`),
+	)?.[1]
+}
+
+function resolveCompat(
+	m: ModelMetadata,
+	upstream: Model<"anthropic-messages"> | undefined,
+): OpenAICompletionsCompat | AnthropicMessagesCompat | undefined {
+	if (upstream) return upstream.compat
+	if (m.provider !== "anthropic" && m.slug.startsWith("claude-")) return NON_ANTHROPIC_CLAUDE_COMPAT
+	return aiEnablerReasoningCompat(m)
+}
+
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// Anthropic models are routed through the native `/v1/messages` API. Inherit
 	// the upstream catalog's compat flags (adaptive thinking, strict tools) and
 	// thinking-level map so Pi picks the correct thinking mode and effort names
 	// per model. Models missing from the catalog get no compat, as before.
 	//
-	// claude-* models from non-anthropic providers still use openai-completions,
-	// so they keep the openai-completions compat flags.
-	//
 	// ai-enabler models don't support chat_template_kwargs, so we rely on the
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
 	// disables thinking with `none` and advertises max to Pi's selector.
 	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
-	const compat = upstream
-		? upstream.compat
-		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
-			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
-			: undefined
+	const compat = resolveCompat(m, upstream)
 	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
 	return {
 		id: m.slug,
