@@ -36,10 +36,9 @@ export function registerTodoStatePersistence(pi: ExtensionAPI): void {
 			// The list was cleared after a block was persisted: retract it.
 			return previous === undefined ? undefined : markHarnessSteer(TODO_CLEARED_MARKDOWN)
 		},
-		subscribe: (notify) => {
+		subscribe: (notify) =>
 			subscribeTodoStore((_details, sessionId) => {
 				notify(sessionId)
-			})
-		},
+			}),
 	})
 }

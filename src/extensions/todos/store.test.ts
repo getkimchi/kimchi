@@ -201,3 +201,72 @@ describe("todo store", () => {
 		unsubscribe()
 	})
 })
+
+describe("todo store listener failure isolation", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("a throwing listener does not fail the write, and later listeners still run", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const throwing = vi.fn(() => {
+				throw new Error("boom")
+			})
+			const healthy = vi.fn()
+			subscribeTodoStore(throwing)
+			subscribeTodoStore(healthy)
+
+			const details = applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+
+			expect(details.todos.map((todo) => todo.content)).toEqual(["alpha"])
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
+			expect(healthy).toHaveBeenCalledWith(details, TEST_SESSION_ID)
+			expect(errorSpy).toHaveBeenCalledWith("Todo store listener failed:", expect.any(Error))
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("auto-removes listeners that throw the stale extension-ctx signature", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const stale = vi.fn(() => {
+				throw new Error(
+					"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().",
+				)
+			})
+			const healthy = vi.fn()
+			subscribeTodoStore(stale)
+			subscribeTodoStore(healthy)
+
+			applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+			applyWriteTodos({ todos: [{ content: "bravo", status: "pending" }] }, TEST_SESSION_ID)
+
+			// The stale listener detonated once, then was removed; the healthy
+			// listener keeps receiving every write.
+			expect(stale).toHaveBeenCalledTimes(1)
+			expect(healthy).toHaveBeenCalledTimes(2)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("keeps listeners that throw generic errors subscribed", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const throwing = vi.fn(() => {
+				throw new Error("transient boom")
+			})
+			subscribeTodoStore(throwing)
+
+			applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
+			applyWriteTodos({ todos: [{ content: "bravo", status: "pending" }] }, TEST_SESSION_ID)
+
+			expect(throwing).toHaveBeenCalledTimes(2)
+			expect(errorSpy).toHaveBeenCalledTimes(2)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+})

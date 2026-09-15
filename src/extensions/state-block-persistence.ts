@@ -80,8 +80,12 @@ export interface StateBlockPersistenceOptions {
 	render: (key: string, previous: string | undefined) => string | undefined
 	/** Wire change sources: call `notify(key)` whenever the rendered block
 	 *  for that session key may have changed. Keys default to the current
-	 *  session id captured at session_start/session_tree. */
-	subscribe: (notify: (key?: string) => void) => void
+	 *  session id captured at session_start/session_tree. Optionally return an
+	 *  unsubscribe handle — invoked on session_shutdown. Sources are typically
+	 *  process-global (e.g. the todo store's listener set), so without this the
+	 *  closure (capturing this session's pi) lingers after the runtime is
+	 *  invalidated, and its stale pi throws into whoever notifies next. */
+	subscribe: (notify: (key?: string) => void) => (() => void) | undefined
 	/** Optional hook on session_start/session_tree, before the history scan
 	 *  (e.g. to capture the sessionManager handle for flag lookups). */
 	onSessionEvent?: (ctx: ExtensionContext) => void
@@ -196,13 +200,30 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 		forceReemit.add(key)
 	})
 
-	subscribe((key?: string) => {
+	let shutDown = false
+	const unsubscribeFromSource = subscribe((key?: string) => {
+		if (shutDown) return
 		const effectiveKey = key ?? currentSessionKey
 		if (agentBusy > 0) {
 			pendingFlush.add(effectiveKey)
 			return
 		}
 		persistIfChanged(effectiveKey, forceReemit.delete(effectiveKey))
+	})
+
+	// Release the change-source listener when the session shuts down cleanly.
+	// pi-mono emits session_shutdown on extension reload, but NOT on session
+	// replacement (newSession/fork/switchSession dispose without it) — that
+	// path is covered by the todo store's stale-ctx listener isolation
+	// (todos/store.ts, notifyTodoStoreListeners).
+	pi.on("session_shutdown", () => {
+		shutDown = true
+		if (typeof unsubscribeFromSource === "function") unsubscribeFromSource()
+		if (currentSessionKey) {
+			pendingFlush.delete(currentSessionKey)
+			forceReemit.delete(currentSessionKey)
+			lastPersisted.delete(currentSessionKey)
+		}
 	})
 
 	// Strip-only context pass: drop every block of this customType except the

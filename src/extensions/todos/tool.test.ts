@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { __resetTodoStore, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
+import { __resetTodoStore, GLOBAL_TODO_SCOPE, getTodosForScope, subscribeTodoStore } from "./store.js"
 import { CREATE_TODOS_TOOL_NAME, registerTodosTool, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 
 function fakeCtx(sessionId: string): ExtensionContext {
@@ -171,6 +171,42 @@ describe("todo tools", () => {
 		const clearResult = await tools.clear_todos.execute("clear-1", {}, undefined, undefined, ctx)
 		expect(clearResult.details.todos).toEqual([])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")).toEqual([])
+	})
+
+	it("reports success when a disposed session's leaked listener throws during notification", async () => {
+		// Regression test for a session observed in the wild: a state-block
+		// persistence listener leaked by a disposed session threw pi-mono's
+		// stale-ctx error inside applyWriteTodos AFTER the store was written,
+		// and the tool reported "Failed to write todos" — so the model abandoned
+		// todo updates for the rest of the session. Listener failures must never
+		// be reported as write failures.
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		subscribeTodoStore(() => {
+			throw new Error(
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().",
+			)
+		})
+		try {
+			const tools = registeredTools()
+			const result = await tools[CREATE_TODOS_TOOL_NAME].execute(
+				"create-1",
+				{
+					todos: [
+						{ content: "Checking mothership config for per-resource optimization toggles", status: "in_progress" },
+						{ content: "Verify how toggles are exposed", status: "pending" },
+						{ content: "Correct ADR-0006 context lines", status: "pending" },
+					],
+				},
+				undefined,
+				undefined,
+				fakeCtx("session"),
+			)
+
+			expect(result.content).toEqual([{ type: "text", text: "Updated 3 todos in global." }])
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")).toHaveLength(3)
+		} finally {
+			errorSpy.mockRestore()
+		}
 	})
 
 	it("writes through to the session id reported by ctx.sessionManager", async () => {
