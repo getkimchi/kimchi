@@ -5,8 +5,8 @@ import type { KimchiConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
 	createMemoryBackend,
+	EXTRACTION_MODEL,
 	defaultMemoryDir,
-	EXTRACTION_MODEL_PREFERENCES,
 	historyDbPath,
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
@@ -44,7 +44,7 @@ describe("buildMemoryConfig", () => {
 		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
 		expect(config.embedder.config.apiKey).toBe("test-key")
 		expect(config.llm.provider).toBe("openai")
-		expect(config.llm.config.model).toBe(EXTRACTION_MODEL_PREFERENCES[0])
+		expect(config.llm.config.model).toBe(EXTRACTION_MODEL)
 		expect(config.llm.config.apiKey).toBe("test-key")
 		expect(config.vectorStore.provider).toBe("memory")
 		expect(config.vectorStore.config.dbPath).toBe("/tmp/mem.db")
@@ -302,30 +302,20 @@ describe("resolveExtractionModel", () => {
 		}
 	})
 
-	it("picks the first available preference (deepseek flash first)", async () => {
+	it("resolves deepseek flash when it is on the gateway list", async () => {
 		const fetchImpl = vi
 			.fn()
 			.mockImplementation(() => Promise.resolve(okModels(["deepseek-v4-flash-0731", "glm-5.3-flash", "kimi-k3"])))
-		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("deepseek-v4-flash-0731")
+		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe(EXTRACTION_MODEL)
 	})
 
-	it("falls through to glm flash when deepseek is unavailable", async () => {
-		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["glm-5.3-flash", "kimi-k3"])))
-		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("glm-5.3-flash")
-	})
-
-	it("falls through the preference order when earlier models are unavailable", async () => {
-		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["kimi-k3", "glm-5.3"])))
-		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("glm-5.3")
-	})
-
-	it("falls back to the top preference when the model list is unreachable", async () => {
+	it("uses deepseek flash when the model list is unreachable", async () => {
 		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(new Response("boom", { status: 503 })))
-		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe(EXTRACTION_MODEL_PREFERENCES[0])
+		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe(EXTRACTION_MODEL)
 	})
 
-	it("throws a clear error when no preference is available", async () => {
-		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["unrelated-model"])))
+	it("throws a clear error when deepseek flash is unavailable", async () => {
+		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["glm-5.3-flash", "kimi-k3"])))
 		await expect(resolveExtractionModel(gateway, { fetchImpl })).rejects.toThrow(/no extraction model available/)
 	})
 })
@@ -334,9 +324,9 @@ describe("resolveExtractionModel no longer calls the auto router", () => {
 	const gateway = { baseURL: "https://gw.test/v1", apiKey: "k" }
 	const okModels = (ids: string[]) => new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 })
 
-	it("resolves from the preference list without any /v1/route call", async () => {
-		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["glm-5.3-flash"])))
-		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("glm-5.3-flash")
+	it("resolves without any auto-router call", async () => {
+		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["deepseek-v4-flash-0731"])))
+		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("deepseek-v4-flash-0731")
 		for (const [input] of fetchImpl.mock.calls) {
 			expect(String(input)).not.toContain("/v1/route")
 		}

@@ -50,15 +50,13 @@ export function normalizeMem0SearchResults(raw: unknown): Mem0SearchHit[] {
 }
 
 /**
- * Extraction model preference order — resolved against the gateway's live
- * model list at capture-worker start (models deprecate; per-user gateway
- * access varies), falling through instead of failing. Flash first: capture
- * latency is dominated by extraction calls, and the flash tier is ~10x
- * faster than the reasoning models. deepseek-v4-flash first — the benchmark
- * validated it for strict-JSON extraction at temperature 0. Override:
+ * Extraction model — resolved against the gateway's live model list at
+ * capture-worker start (models deprecate; per-user gateway access varies).
+ * deepseek-v4-flash: benchmarks showed it is the only suitable model for
+ * extraction, and the flash tier keeps capture latency low. Override:
  * KIMCHI_MEMORY_EXTRACTION_MODEL.
  */
-export const EXTRACTION_MODEL_PREFERENCES = ["deepseek-v4-flash-0731", "glm-5.3-flash", "glm-5.3", "kimi-k3"]
+export const EXTRACTION_MODEL = "deepseek-v4-flash-0731"
 
 /** Options for {@link resolveExtractionModel}. */
 export interface ExtractionModelOptions {
@@ -68,15 +66,14 @@ export interface ExtractionModelOptions {
 
 /**
  * Resolve the extraction model: the KIMCHI_MEMORY_EXTRACTION_MODEL override
- * wins; otherwise the first preference available on the gateway's model
- * list (one cheap call). If the list itself is unreachable, fall back to
- * the top preference — a likely-right model beats failing capture entirely.
- * Throws only when the list is reachable and no preference is on it.
+ * wins; otherwise deepseek-v4-flash when it's on the gateway's model list
+ * (one cheap call). If the list itself is unreachable, use it anyway — a
+ * likely-right model beats failing capture entirely. Throws when the list
+ * is reachable and deepseek-v4-flash is not on it.
  *
  * Deliberately NOT routed through the auto router: benchmarking showed the
  * router picks models suited to conversation, not to strict-JSON extraction
- * at temperature 0 — the deterministic flash-tier preference order is the
- * validated path.
+ * at temperature 0.
  */
 export async function resolveExtractionModel(
 	gateway: { baseURL: string; apiKey: string },
@@ -87,13 +84,11 @@ export async function resolveExtractionModel(
 	const fetchImpl = options.fetchImpl ?? fetch
 	const available = await fetchAvailableModelIds(gateway, fetchImpl)
 	if (available === undefined) {
-		return EXTRACTION_MODEL_PREFERENCES[0] as string
+		return EXTRACTION_MODEL
 	}
-	for (const preference of EXTRACTION_MODEL_PREFERENCES) {
-		if (available.has(preference)) return preference
-	}
+	if (available.has(EXTRACTION_MODEL)) return EXTRACTION_MODEL
 	throw new Error(
-		`no extraction model available on the gateway (tried ${EXTRACTION_MODEL_PREFERENCES.join(", ")}); set KIMCHI_MEMORY_EXTRACTION_MODEL`,
+		`no extraction model available on the gateway (${EXTRACTION_MODEL}); set KIMCHI_MEMORY_EXTRACTION_MODEL`,
 	)
 }
 
@@ -292,7 +287,7 @@ function resolveEndpoint(
 export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway)
-	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL_PREFERENCES[0])
+	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL)
 	return {
 		embedder: {
 			provider: "openai",
@@ -351,7 +346,7 @@ export async function createMemoryBackend(
 ): Promise<Mem0Memory> {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway)
-	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL_PREFERENCES[0])
+	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL)
 	for (const [name, ep] of [
 		["embedder", embedder],
 		["llm", llm],
