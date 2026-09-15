@@ -8,6 +8,7 @@ import {
 	applyCooperativeTweak,
 	isSnapshotAppliedThisTurn,
 	reapplyCurrentProfile,
+	registerReadOnlyToolProvider,
 	resetAll,
 } from "./tool-profile-manager.js"
 
@@ -57,6 +58,43 @@ describe("apply", () => {
 		expect(pi.setActiveTools).toHaveBeenCalledOnce()
 		expect(pi.setActiveTools).toHaveBeenCalledWith(expectedTools)
 		expect(isSnapshotAppliedThisTurn()).toBe(true)
+	})
+
+	it("planning profiles admit read-only-qualified provider names", () => {
+		const pi = makeMockPi()
+		const unregister = registerReadOnlyToolProvider(pi, () => ["srv_get_issue"])
+
+		apply("planning-adhoc", "adhoc", pi)
+		expect(vi.mocked(pi.setActiveTools).mock.calls[0][0]).toContain("srv_get_issue")
+
+		// once the provider is gone the catalog-only surface returns
+		unregister()
+		reapplyCurrentProfile(pi)
+		expect(vi.mocked(pi.setActiveTools).mock.calls[1][0]).not.toContain("srv_get_issue")
+	})
+
+	it("provider errors never break the planning snapshot, and non-planning profiles ignore providers", () => {
+		const pi = makeMockPi()
+		registerReadOnlyToolProvider(pi, () => {
+			throw new Error("provider blew up")
+		})
+		registerReadOnlyToolProvider(pi, () => ["srv_get_issue"])
+
+		expect(() => apply("planning-ferment", "ferment", pi)).not.toThrow()
+		expect(vi.mocked(pi.setActiveTools).mock.calls[0][0]).toContain("srv_get_issue")
+
+		// idle is not a planning profile: providers are only honoured while planning
+		apply("idle", "adhoc", pi)
+		expect(vi.mocked(pi.setActiveTools).mock.calls[1][0]).not.toContain("srv_get_issue")
+	})
+
+	it("a provider registered on one pi never surfaces in another pi's snapshot", () => {
+		const dapPi = makeMockPi()
+		const fermentPi = makeMockPi()
+		registerReadOnlyToolProvider(dapPi, () => ["srv_get_issue"])
+
+		apply("planning-adhoc", "adhoc", fermentPi)
+		expect(vi.mocked(fermentPi.setActiveTools).mock.calls[0][0]).not.toContain("srv_get_issue")
 	})
 
 	it("idle profile restores all registered tools minus ferment-only tools", () => {

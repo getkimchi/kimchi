@@ -30,6 +30,7 @@ const planning = vi.hoisted(() => ({
 	applyCooperativeTweak: vi.fn(() => true),
 	currentProfile: undefined as "planning-adhoc" | "planning-ferment" | "idle" | undefined,
 	reapplyCurrentProfile: vi.fn<typeof ToolProfileManager.reapplyCurrentProfile>(() => false),
+	registerReadOnlyToolProvider: vi.fn<typeof ToolProfileManager.registerReadOnlyToolProvider>(() => () => {}),
 }))
 const permissionState = vi.hoisted(() => ({
 	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
@@ -37,6 +38,7 @@ const permissionState = vi.hoisted(() => ({
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
+const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
 
 vi.mock("pi-mcp-adapter", () => ({
 	MCP_STATUS_EVENT: "pi-mcp-adapter/status/v1",
@@ -80,6 +82,11 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	applyCooperativeTweak: planning.applyCooperativeTweak,
 	getCurrentProfile: () => planning.currentProfile,
 	reapplyCurrentProfile: planning.reapplyCurrentProfile,
+	registerReadOnlyToolProvider: planning.registerReadOnlyToolProvider,
+}))
+
+vi.mock("./read-only.js", () => ({
+	collectReadOnlyMcpWireNames: () => [...readOnlyState.wireNames],
 }))
 
 vi.mock("../permissions/mode-controller.js", () => ({
@@ -146,6 +153,7 @@ describe("upstream MCP adapter facade", () => {
 		projectTrust.trusted = true
 		planning.currentProfile = undefined
 		permissionState.mode = undefined
+		readOnlyState.wireNames.clear()
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockReset().mockReturnValue(false)
 	})
@@ -352,6 +360,40 @@ describe("upstream MCP adapter facade", () => {
 			isError: true,
 			details: { error: "plan_mode_mcp_blocked", tool: "docs_get_issue" },
 		})
+		expect(gatewayResult).toMatchObject({
+			isError: true,
+			details: { error: "plan_mode_mcp_blocked", tool: "mcp" },
+		})
+	})
+
+	it("admits read-only-qualified direct tools while planning, keeping the gateway blocked", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		planning.currentProfile = "planning-adhoc"
+		permissionState.mode = "plan"
+		readOnlyState.wireNames.add("docs_get_issue")
+		const readOnlyExecute = vi.fn(tool("docs_get_issue", "MCP: get_issue").execute)
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("docs_get_issue", "MCP: get_issue"), execute: readOnlyExecute })
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+
+		expect(planning.registerReadOnlyToolProvider).toHaveBeenCalledWith(harness.api, expect.any(Function))
+
+		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
+		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
+		await direct?.execute("direct", {}, undefined, undefined, createContext())
+		const gatewayResult = await gateway?.execute(
+			"gateway",
+			{ tool: "get_issue", args: {} },
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		expect(readOnlyExecute).toHaveBeenCalledOnce()
+		expect(gatewayExecute).not.toHaveBeenCalled()
 		expect(gatewayResult).toMatchObject({
 			isError: true,
 			details: { error: "plan_mode_mcp_blocked", tool: "mcp" },

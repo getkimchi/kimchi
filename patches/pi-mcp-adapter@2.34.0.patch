@@ -110,11 +110,31 @@ index 20b6adba1a0b861838f9dd59084e7af57d914ff8..fce831379e644ee680ca607d77956220
  }
  export function getSharedConfigPath(target, cwd = process.cwd()) {
      return target === "project" ? getProjectConfigPath(cwd) : getGenericGlobalConfigPath();
+diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
+index d9e5f56365e917600bd9dd52f16efd0f418e04f0..387fe166a6439a8da6f4f4de7bf6fc3f6a8427d0 100644
+--- a/dist/metadata-cache.js
++++ b/dist/metadata-cache.js
+@@ -246,6 +246,7 @@ export function serializeTools(tools) {
+             ...(t.description !== undefined ? { description: t.description } : {}),
+             ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
+             ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
++            ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
+             ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+             ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+             ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index c0adc21f5eeb733062f3bceea41dbf256f88c55a..4c81375962b38e643ae47544a9a3eee51e8d225b 100644
+index c0adc21f5eeb733062f3bceea41dbf256f88c55a..3404384567d0f575b6720e94bc0e760ece1b9b02 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -560,6 +560,7 @@ export interface McpPanelResult {
+@@ -512,6 +512,7 @@ export interface CachedTool {
+     description?: string;
+     inputSchema?: unknown;
+     outputSchema?: unknown;
++    annotations?: ListToolsResult["tools"][number]["annotations"];
+     uiResourceUri?: string;
+     uiVisibility?: UiToolVisibility[];
+     uiStreamMode?: "eager" | "stream-first";
+@@ -560,6 +561,7 @@ export interface McpPanelResult {
      disabledChanges: Map<string, boolean>;
      cancelled: boolean;
  }
@@ -244,11 +264,43 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          }
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
+diff --git a/metadata-cache.ts b/metadata-cache.ts
+index 0b449fe35389429912739bcfe10ce906ecb1ab33..a47d0ce9f3725b17b1f20c8071d67826c6bcd1a6 100644
+--- a/metadata-cache.ts
++++ b/metadata-cache.ts
+@@ -302,6 +302,7 @@ export function serializeTools(tools: McpTool[]): CachedTool[] {
+         ...(t.description !== undefined ? { description: t.description } : {}),
+         ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
+         ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
++        ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
+         ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+         ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+         ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
 diff --git a/types.ts b/types.ts
-index a8c407fabfc280c32cd363098a5d924673b091a0..d30f842a2d4a66d2c5850121fb435c5eceaad4b0 100644
+index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632aa729e057 100644
 --- a/types.ts
 +++ b/types.ts
-@@ -781,14 +781,22 @@ export interface McpPanelResult {
+@@ -88,6 +88,7 @@ export interface McpTool {
+   description?: SdkTool["description"];
+   inputSchema?: SdkTool["inputSchema"]; // JSON Schema
+   outputSchema?: SdkTool["outputSchema"]; // JSON Schema for structuredContent
++  annotations?: SdkTool["annotations"];
+   _meta?: SdkTool["_meta"];
+ }
+ 
+@@ -730,6 +731,11 @@ export interface CachedTool {
+   description?: string;
+   inputSchema?: unknown;
+   outputSchema?: unknown;
++  // Host read-only classification; tracking: getkimchi/kimchi — Kimchi's
++  // planning mode admits read-only-qualified MCP tools (spec annotations
++  // with a name convention fallback), which requires annotations to survive
++  // into the persistent cache. Remove when upstream caches annotations.
++  annotations?: SdkTool["annotations"];
+   uiResourceUri?: string;
+   uiVisibility?: UiToolVisibility[];
+   uiStreamMode?: "eager" | "stream-first";
+@@ -781,14 +787,22 @@ export interface McpPanelResult {
    cancelled: boolean;
  }
  
@@ -276,7 +328,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..d30f842a2d4a66d2c5850121fb435c5e
  }
  
  export function getServerPrefix(
-@@ -797,25 +805,44 @@ export function getServerPrefix(
+@@ -797,25 +811,44 @@ export function getServerPrefix(
  ): string {
    if (mode === "none") return "";
    if (mode === "short") {
@@ -328,7 +380,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..d30f842a2d4a66d2c5850121fb435c5e
  }
  
  export function resolveToolPrefix(
-@@ -881,10 +908,14 @@ export function formatPromptCommandName(
+@@ -881,10 +914,14 @@ export function formatPromptCommandName(
  }
  
  function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
@@ -346,7 +398,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..d30f842a2d4a66d2c5850121fb435c5e
  }
  
  function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
-@@ -944,13 +975,25 @@ export function createToolSelectorCandidateIndex(
+@@ -944,13 +981,25 @@ export function createToolSelectorCandidateIndex(
    };
  }
  
