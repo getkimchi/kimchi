@@ -54,6 +54,29 @@ const DEEPSEEK_V4_FLASH: unknown = {
 	limits: { context_window: 262144, max_output_tokens: 65536 },
 }
 
+// Dated snapshot slug from the live catalog — must match the deepseek-v4 rule
+// through its dash-delimited variant suffixes.
+const DEEPSEEK_V4_DATED: unknown = {
+	slug: "deepseek-v4-flash-0731",
+	display_name: "DeepSeek V4 Flash 0731",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
+// Dot-suffixed variant of a flagged family — must match the kimi-k3 rule.
+const KIMI_K31: unknown = {
+	slug: "kimi-k3.1",
+	display_name: "Kimi K3.1",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text", "image"],
+	is_serverless: true,
+	limits: { context_window: 262144, max_output_tokens: 65536 },
+}
+
 // Reasoning ai-enabler model whose upstream registry does NOT require the
 // reasoning_content marker — must not pick up the kimi-k3/deepseek compat.
 const KIMI_K27: unknown = {
@@ -319,6 +342,34 @@ describe("updateModelsConfig", () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [DEEPSEEK_V4_FLASH] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("matches dated deepseek-v4 snapshots via delimited variant suffixes", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [DEEPSEEK_V4_DATED] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			requiresReasoningContentOnAssistantMessages: true,
+		})
+	})
+
+	it("matches dot-suffixed kimi-k3 variants like kimi-k3.1", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI_K31] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
