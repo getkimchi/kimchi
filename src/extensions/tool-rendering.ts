@@ -726,6 +726,11 @@ function stripSkillFrontmatter(body: string): string {
 }
 
 function renderSkillViewCall(args: unknown, theme: Theme, ctx: ToolRenderContext): Component {
+	// Once the final result exists, the [skill] result block owns the whole
+	// row — a call header above it would duplicate the /skill presentation.
+	if ((ctx.state as { _executionEndedAt?: number } | undefined)?._executionEndedAt !== undefined) {
+		return makeText(ctx.lastComponent, "")
+	}
 	const name =
 		typeof (args as Record<string, unknown> | undefined)?.name === "string"
 			? String((args as Record<string, unknown>).name)

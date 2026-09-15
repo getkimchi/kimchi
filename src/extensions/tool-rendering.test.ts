@@ -857,6 +857,8 @@ describe("skill_view rendering (matches the /skill block)", () => {
 		expect(rendered).toContain("ctrl+o to expand")
 		// collapsed: the body stays hidden
 		expect(rendered).not.toContain("Stage, commit, push")
+		// the call header is subsumed by the [skill] block once the result is in
+		expect(rendered).not.toMatch(/\bSkill\b/)
 	})
 
 	it("renders the expanded result with frontmatter stripped and linked files noted", () => {
@@ -866,6 +868,26 @@ describe("skill_view rendering (matches the /skill block)", () => {
 		// frontmatter is stripped — the name header comes from the call args
 		expect(rendered).not.toContain("name: vcs-workflow")
 		expect(rendered).toContain("Linked files")
+		expect(rendered).not.toMatch(/\bSkill\b/)
+	})
+
+	it("shows the call header while the tool is still running", () => {
+		// Before the result arrives there is no [skill] block yet — the running
+		// header is the only feedback that the skill is loading.
+		const component = new ToolExecutionComponent(
+			"skill_view",
+			"tc-skill-view-running",
+			{ name: "vcs-workflow" },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+		component.markExecutionStarted()
+		const rendered = component.render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("Skill")
+		expect(rendered).toContain("vcs-workflow")
 	})
 
 	it("renders errors as plain error text", () => {
