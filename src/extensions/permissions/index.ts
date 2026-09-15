@@ -303,7 +303,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function isPlanModeTool(name: string): boolean {
-		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
+		return (
+			PLAN_MODE_TOOL_SET.has(name.toLowerCase()) ||
+			ToolProfileManager.isProviderReadOnlyTool(pi, name) ||
+			isReadOnlyTool(name)
+		)
 	}
 
 	function applyPlanModeTools(): void {
@@ -1104,7 +1108,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 					return undefined
 				}
-				if (!isPlanModeTool(toolName)) {
+				if (!isPlanModeTool(event.toolName)) {
 					return {
 						block: true,
 						reason: `Plan mode: tool ${toolName} is not available. Use /permissions mode default to enable writes.`,
