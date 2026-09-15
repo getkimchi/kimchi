@@ -14,6 +14,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
+import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
@@ -516,17 +517,44 @@ describe("permissions plan-mode tool visibility", () => {
 		}
 	})
 
-	it("allows the mcp gateway tool under explicit --plan", async () => {
+	it("refreshes the plan tool snapshot before every model request", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const initialApplications = vi.mocked(harness.pi.setActiveTools).mock.calls.length
+
+		await harness.fire("before_agent_start", {}, createMockContext([]))
+
+		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
+	})
+
+	it("keeps annotated MCP tools visible and callable regardless of their name", async () => {
+		const names = ["atlassian_getJiraIssue", "docs_stats"]
+		const harness = createPermissionsHarness(["read", ...names], { plan: true })
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => names)
+		try {
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools().sort()).toEqual(["read", ...names].sort())
+			for (const toolName of names) {
+				await expect(harness.fire("tool_call", { toolName, input: {} })).resolves.toBeUndefined()
+			}
+			unregister()
+			await expect(harness.fire("tool_call", { toolName: "docs_stats", input: {} })).resolves.toMatchObject({
+				block: true,
+			})
+		} finally {
+			unregister()
+		}
+	})
+
+	it("hides and blocks the mcp gateway tool under explicit --plan", async () => {
 		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		// mcp must be in the active set (cataloged as shared core)
-		expect(harness.activeTools().sort()).toEqual(["mcp", "read"])
-		// And the tool_call gate must not block it
+		expect(harness.activeTools()).toEqual(["read"])
 		await expect(
 			harness.fire("tool_call", { toolName: "mcp", input: { search: "jira" } }, createMockContext([])),
-		).resolves.toBeUndefined()
+		).resolves.toEqual(expect.objectContaining({ block: true }))
 	})
 
 	it("blocks read calls targeting directories before upstream read", async () => {

@@ -4,6 +4,8 @@ import { join, resolve } from "node:path"
 import type {
 	AgentSideConnection,
 	ListSessionsRequest,
+	LoadSessionRequest,
+	NewSessionRequest,
 	RequestPermissionRequest,
 	SessionNotification,
 	TextContent,
@@ -97,7 +99,6 @@ import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTest
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
-import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -138,7 +139,6 @@ function cleanPermissionEnv(): void {
 	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
 	// set by one test don't leak into another via the module-level cache.
 	populateCliArgs([])
-	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
@@ -2038,14 +2038,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
-	// servers are pushed onto the caller-servers registry and consumed by
-	// initializeMcp during session_start. This test verifies the session is
-	// created successfully (factory called) and the servers land in the registry.
-	it("accepts newSession with non-empty mcpServers and registers them", async () => {
+	it("passes newSession MCP servers to the session factory", async () => {
 		const factoryCalled = { count: 0 }
-		const factory: AcpSessionFactory = async () => {
+		let receivedServers: NewSessionRequest["mcpServers"] | undefined
+		const factory: AcpSessionFactory = async (params) => {
 			factoryCalled.count++
+			receivedServers = params.mcpServers
 			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
@@ -2053,19 +2051,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		// Clear any stale entries from beforeEach's newSession call so peek
-		// returns only this test's entry.
-		clearCallerMcpServers()
+		const mcpServers: NewSessionRequest["mcpServers"] = [{ name: "x", command: "x", args: [], env: [] }]
 		const res = await localAgent.newSession({
 			cwd: "/tmp",
-			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+			mcpServers,
 		})
 		expect(res.sessionId).toBe("with-mcp")
 		expect(factoryCalled.count).toBe(1)
-		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
-		// so the caller-servers entry stays in the registry — verify it was set.
-		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
+		expect(receivedServers).toEqual(mcpServers)
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -6874,21 +6867,21 @@ describe("KimchiAcpAgent loadSession", () => {
 
 	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
-		const loader: AcpSessionLoader = async () => {
+		let receivedServers: LoadSessionRequest["mcpServers"] | undefined
+		const loader: AcpSessionLoader = async (params) => {
 			loaderCalls.count++
+			receivedServers = params.mcpServers
 			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
+		const mcpServers: LoadSessionRequest["mcpServers"] = [{ name: "x", command: "x", args: [], env: [] }]
 		await agent.loadSession({
 			sessionId: "s1",
 			cwd: "/tmp",
-			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+			mcpServers,
 		})
 		expect(loaderCalls.count).toBe(1)
-		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
-		// so the caller-servers entry stays in the registry — verify it was set.
-		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
+		expect(receivedServers).toEqual(mcpServers)
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {

@@ -1,7 +1,10 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mcpToolResult } from "../tui/support/mcp-fixture.js"
+import { MCP_FIXTURE_OAUTH_ACCESS_TOKEN, mcpToolResult } from "../tui/support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "../tui/support/mcp-model-script.js"
-import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpMcpFixture } from "./support/acp-fixture.js"
+import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture, startAcpMcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
 describe("ACP integration — MCP", () => {
@@ -60,6 +63,17 @@ describe("ACP integration — MCP", () => {
 		)
 	})
 
+	it("discovers all original tools even when the configured model surface selects only echo", async () => {
+		const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			server: { ...fixture.mcp.serverDefinition, includeTools: ["echo"] },
+			serverName: "acp-fixture-probe",
+		})
+		expect(probe).toMatchObject({ needsAuth: false, error: null })
+		expect(probe.tools).toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: "echo" }), expect.objectContaining({ name: "fail" })]),
+		)
+	})
+
 	it("forwards MCP text and image results across the ACP and model boundaries", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 		const result = await prompt(fixture, sessionId, "Call the configured MCP fixture echo tool")
@@ -96,6 +110,56 @@ describe("ACP integration — MCP", () => {
 		await fixture.mcp.waitForEvent("tool_called", { where: { name: "mixed_content", arguments: {} } })
 		expect(toolResultText(fixture.fake.requests, mixedContent)).toContain("fixture mixed content: kimchi-mcp-mixed")
 	})
+})
+
+describe("ACP integration — probe recovery", () => {
+	it("migrates preauthorized legacy credentials before the first probe, without a session", async () => {
+		const fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-legacy-probe",
+			mcp: { transport: "oauth", oauthPreauthorized: true },
+			responses: [],
+		})
+		try {
+			const legacyDir = join(fixture.homeDir, ".config", "kimchi", "harness", "mcp-oauth", "fixture")
+			mkdirSync(legacyDir, { recursive: true })
+			writeFileSync(
+				join(legacyDir, "tokens.json"),
+				JSON.stringify({ serverUrl: fixture.mcp.url, tokens: { accessToken: MCP_FIXTURE_OAUTH_ACCESS_TOKEN } }),
+				{ mode: 0o600 },
+			)
+			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+				server: fixture.mcp.serverDefinition,
+				serverName: "fixture",
+				skipAuth: true,
+			})
+			expect(probe).toMatchObject({ needsAuth: false, error: null })
+			expect(probe.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "echo" })]))
+			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(false)
+		} finally {
+			await fixture.stop()
+		}
+	})
+
+	it("ends a stalled stdio probe within its total deadline and stops the child process", async () => {
+		const fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-probe-deadline",
+			mcp: { behavior: { startup: { type: "hang" } } },
+			responses: [],
+		})
+		try {
+			const started = performance.now()
+			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+				server: fixture.mcp.serverDefinition,
+				serverName: "stalled",
+			})
+			expect(probe).toEqual({ tools: [], needsAuth: false, error: "Probe timed out after 15 seconds" })
+			expect(performance.now() - started).toBeLessThan(20_000)
+			await fixture.mcp.waitForEvent("process_exited", { where: { code: 0 } })
+			expect(fixture.mcp.hasEvent("initialized")).toBe(false)
+		} finally {
+			await fixture.stop()
+		}
+	}, 25_000)
 })
 
 describe("ACP integration — OAuth MCP", () => {
@@ -152,4 +216,35 @@ describe("ACP integration — OAuth MCP", () => {
 		})
 		expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: acp-oauth-mcp")
 	})
+})
+
+describe("ACP integration — project MCP trust", () => {
+	it(
+		"does not execute repository MCP configuration in a headless session without trust",
+		async () => {
+			const fixture = await startAcpFixture({ artifactName: "acp-mcp-project-trust", responses: [] })
+			try {
+				const sentinel = join(fixture.workDir, "project-mcp-started")
+				writeFileSync(
+					join(fixture.workDir, ".mcp.json"),
+					JSON.stringify({
+						mcpServers: {
+							untrusted: {
+								command: process.execPath,
+								args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(sentinel)}, "started")`],
+							},
+						},
+					}),
+				)
+
+				await newSession(fixture, fixture.workDir)
+				await delay(500)
+
+				expect(existsSync(sentinel)).toBe(false)
+			} finally {
+				await fixture.stop()
+			}
+		},
+		STARTUP_TIMEOUT_MS,
+	)
 })

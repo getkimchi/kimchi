@@ -11,10 +11,10 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AgentDefinition, DirCandidate } from "../../../agent-discovery/index.js"
 import * as discoveryModule from "../../../agent-discovery/index.js"
-import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "../capabilities.js"
 import { importDiscover } from "./import-discover.js"
 

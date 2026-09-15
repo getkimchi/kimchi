@@ -59,20 +59,11 @@ vi.mock("./multi-model.js", async (importOriginal) => {
 const mcpConfigState = vi.hoisted(() => ({
 	servers: {} as Record<string, unknown>,
 }))
-vi.mock("./mcp-adapter/config.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp-adapter/config.js")>()
+vi.mock("./mcp/config.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp/config.js")>()
 	return {
 		...original,
-		loadMcpConfig: () => ({ config: { mcpServers: mcpConfigState.servers }, warnings: [] }),
-	}
-})
-vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp-adapter/metadata-cache.js")>()
-	return {
-		...original,
-		loadMetadataCache: () => undefined,
-		overwriteMetadataCache: () => {},
-		flushMetadataCache: () => {},
+		loadKimchiMcpConfig: () => ({ config: { mcpServers: mcpConfigState.servers }, warnings: [] }),
 	}
 })
 
@@ -195,6 +186,7 @@ function createExposureHarness(): ExposureHarness & { pi: ExtensionAPI } {
 		{},
 		{
 			get: (_target, prop) => {
+				if (prop === "getFlag") return () => undefined
 				if (prop === "registerTool") {
 					return (tool: { name: string; description?: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
 						registered.set(tool.name, tool)
