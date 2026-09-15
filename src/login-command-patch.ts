@@ -159,7 +159,7 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 	await performKimchiBrowserLogin({
 		modelRegistry: asLoginRegistry(runtime),
-		// User chose this model at login - persist it (0.84.1 semantics).
+		// The user picked this model during login, so save it as their default.
 		setModel: (model) => session.setModel(model, { persist: true }),
 		showStatus,
 		showError,

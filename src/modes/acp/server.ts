@@ -743,7 +743,7 @@ export class KimchiAcpAgent implements Agent {
 			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 			setMultiModelEnabled(sessionId, true)
 			try {
-				// User-initiated over the wire - persisted at 0.84.1, keep persisting.
+				// An explicit client request to change the model, so save it as the default.
 				await session.setModel(orchestrator, { persist: true })
 			} catch {
 				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
@@ -775,7 +775,7 @@ export class KimchiAcpAgent implements Agent {
 		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 		setMultiModelEnabled(sessionId, false)
 		try {
-			// User-initiated over the wire - persisted at 0.84.1, keep persisting.
+			// An explicit client request to change the model, so save it as the default.
 			await session.setModel(target, { persist: true })
 		} catch {
 			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
