@@ -118,7 +118,10 @@ function agentCall(id: string, model?: string, runInBackground = false) {
 				description: "verify child routing",
 				subagent_type: "General-Purpose",
 				...(model ? { model } : {}),
-				...(runInBackground ? { run_in_background: true } : {}),
+				// Pin the mode explicitly: Agent now defaults to background in
+				// interactive sessions, but these tests assert foreground-child
+				// semantics (turn counts, Escape cancelling the child).
+				run_in_background: runInBackground,
 			}),
 		},
 	}
