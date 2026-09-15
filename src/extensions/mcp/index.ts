@@ -82,7 +82,7 @@ function blockedPlanningResult(toolName: string) {
  * annotations with a name-convention fallback — see ./read-only.ts) run.
  */
 function isBlockedInPlanning(toolName: string, isReadOnlyTool: (wireName: string) => boolean): boolean {
-	return !isReadOnlyTool(toolName)
+	return toolName === MCP_PROXY_TOOL || toolName === MCP_SCRIPT_TOOL || !isReadOnlyTool(toolName)
 }
 
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
@@ -92,11 +92,21 @@ function createUpstreamApi(
 	pi: ExtensionAPI,
 	policy: McpToolSurfacePolicy,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
-	isReadOnlyTool: (wireName: string) => boolean,
+	getReadOnlyToolNames: () => readonly string[],
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const registeredToolNames = new Set<string>()
 	const adapterActiveNames = new Set<string>()
+	registerReadOnlyToolProvider(pi, () => {
+		const readOnlyNames = new Set(getReadOnlyToolNames())
+		return pi
+			.getAllTools()
+			.map(({ name }) => name)
+			.filter(
+				(name) =>
+					registeredToolNames.has(name) && !isBlockedInPlanning(name, (candidate) => readOnlyNames.has(candidate)),
+			)
+	})
 	return new Proxy(pi, {
 		get(target, property) {
 			if (property === "on") {
@@ -125,7 +135,10 @@ function createUpstreamApi(
 					target.registerTool({
 						...brandedTool,
 						execute: async (...args: Parameters<typeof execute>) => {
-							if (isPlanningMode(target, args[4]) && isBlockedInPlanning(brandedTool.name, isReadOnlyTool)) {
+							if (
+								isPlanningMode(target, args[4]) &&
+								isBlockedInPlanning(brandedTool.name, (name) => getReadOnlyToolNames().includes(name))
+							) {
 								return blockedPlanningResult(brandedTool.name)
 							}
 							return brandMcpAdapterOwnedToolResult(await execute(...args))
@@ -271,9 +284,6 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			]
 			const installedPolicy = createMcpToolSurfacePolicy(config)
 			policy = installedPolicy
-			// Read-only-qualified direct tools stay visible in planning profiles;
-			// annotations arrive through the adapter's persistent metadata cache.
-			registerReadOnlyToolProvider(pi, () => collectReadOnlyMcpWireNames(config))
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
 					? { config }
@@ -287,7 +297,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(wireName) => collectReadOnlyMcpWireNames(config).includes(wireName),
+					() => collectReadOnlyMcpWireNames(config),
 				),
 			)
 		}

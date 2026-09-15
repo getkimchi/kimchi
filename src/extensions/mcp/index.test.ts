@@ -371,6 +371,8 @@ describe("upstream MCP adapter facade", () => {
 		planning.currentProfile = "planning-adhoc"
 		permissionState.mode = "plan"
 		readOnlyState.wireNames.add("docs_get_issue")
+		readOnlyState.wireNames.add("docs_unregistered")
+		readOnlyState.wireNames.add("mcp")
 		const readOnlyExecute = vi.fn(tool("docs_get_issue", "MCP: get_issue").execute)
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
@@ -380,6 +382,8 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
 		expect(planning.registerReadOnlyToolProvider).toHaveBeenCalledWith(harness.api, expect.any(Function))
+		const provider = planning.registerReadOnlyToolProvider.mock.calls.at(-1)?.[1]
+		expect(provider?.()).toEqual(["docs_get_issue"])
 
 		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")

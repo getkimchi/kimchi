@@ -218,6 +218,13 @@ manager; planning profiles union provider names with the planning catalog. A
 planning snapshot is refreshed before the agent starts, closing the race where
 direct tools finish registering after the initial profile selection.
 
+The permission hook uses the same session-scoped provider, including for tool
+names such as `atlassian_getJiraIssue`. Only registered adapter tools qualify.
+Disabled servers, expired caches, and metadata for a different configuration
+cannot grant read-only access. Ambiguous wire names are blocked in Plan mode;
+use distinct server prefixes and tool names to avoid collisions. The facade
+also preserves upstream exclusions and app-only tool visibility.
+
 The facade also checks the active planning state when any adapter-owned tool is
 executed. A stale or forced call that is not read-only-qualified returns
 `plan_mode_mcp_blocked` before it can reach the MCP server. Outside plan mode,

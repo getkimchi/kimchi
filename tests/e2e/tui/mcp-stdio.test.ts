@@ -95,38 +95,54 @@ test("registers and calls a direct MCP tool on the first session", async ({ term
 	)
 })
 
-test("does not expose MCP tools in plan mode", async ({ terminal }) => {
+test("reads through an annotated MCP tool in plan mode while hiding writes and the gateway", async ({ terminal }) => {
+	const read = directMcpCall("getJiraIssue", {})
 	await runMcpKimchiSession(
 		terminal,
 		{
-			artifactName: "mcp-stdio-plan-disabled",
+			artifactName: "mcp-stdio-plan-read-only",
 			extraArgs: ["--plan=true"],
 			mcp: {
-				directTools: ["get_safe"],
+				directTools: ["getJiraIssue", "get_write_access"],
 				behavior: {
 					catalogTools: [
 						{
-							name: "get_safe",
-							description: "Read a safe fixture value",
+							name: "getJiraIssue",
+							description: "Read a fixture issue",
 							inputSchema: { type: "object", properties: {}, additionalProperties: false },
 							annotations: { readOnlyHint: true },
 						},
+						{
+							name: "get_write_access",
+							description: "Change fixture permissions",
+							inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							annotations: { readOnlyHint: false },
+						},
+					],
+					tools: [
+						mcpToolResult("getJiraIssue", {
+							content: [{ type: "text", text: "Fixture issue: planning read succeeded" }],
+						}),
 					],
 				},
 			},
-			responses: [modelReply("MCP tools are unavailable in plan mode.")],
+			responses: [read.response, modelReply("I read the issue while staying in plan mode.")],
 		},
 		async (fixture, trace) => {
-			terminal.submit("Inspect the available planning tools")
-			await waitForText(terminal, "MCP tools are unavailable in plan mode.", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.submit("Read the fixture issue to inform the plan")
+			await waitForText(terminal, "I read the issue while staying in plan mode.", { timeoutMs: STREAM_TIMEOUT_MS })
 
+			requireRequestAdvertisingTool(fixture.fake.requests, read.modelToolName)
 			const request = fixture.fake.requests.find((candidate) => candidate.url.startsWith("/openai/v1/chat/completions"))
-			expect(request).toBeDefined()
 			const tools = (request?.body as { tools?: Array<{ function?: { name?: string } }> } | undefined)?.tools ?? []
-			expect(tools.some((tool) => tool.function?.name === "mcp")).toBe(false)
-			expect(tools.some((tool) => tool.function?.name === "fixture_get_safe")).toBe(false)
-			expect(fixture.mcp.hasEvent("tool_called", { name: "get_safe" })).toBe(false)
-			trace.step("plan profile omitted both gateway and direct MCP tools")
+			const mcpTools = tools
+				.map((tool) => tool.function?.name)
+				.filter((name) => name === "mcp" || name?.startsWith("fixture_"))
+			expect(mcpTools).toEqual([read.modelToolName])
+			expect(fixture.mcp.hasEvent("tool_called", { name: "getJiraIssue" })).toBe(true)
+			expect(fixture.mcp.hasEvent("tool_called", { name: "get_write_access" })).toBe(false)
+			expect(toolResultText(fixture.fake.requests, read)).toContain("Fixture issue: planning read succeeded")
+			trace.step("annotated MCP read executed; writable direct tool and gateway stayed hidden")
 		},
 	)
 })
