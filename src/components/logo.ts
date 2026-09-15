@@ -13,8 +13,10 @@ const CELL_PAD = 1
 const RIGHT_MIN = 12
 // Maximum per-side symmetric gutter around the logo content.
 const GUTTER_MAX = 10
-// Minimum per-side gutter the full word-art needs to stay comfortably readable.
-const MIN_GUTTER = 1
+// Smallest right-column width at which the full word-art is still shown (the
+// logo sits flush against the box edges at that point); below it the header
+// switches to the pepper-only mark.
+const FULL_LOGO_RIGHT_MIN = 9
 
 export interface HeaderLayout {
 	span: number
@@ -77,11 +79,11 @@ export class LogoHeader implements Component {
 		// symmetric gutters that grow smoothly with width and collapses
 		// gracefully when the right column claims more space.
 
-		// Variant. The full word-art only fits comfortably when we can afford
-		// at least MIN_GUTTER on each side of the logo and RIGHT_MIN for the
-		// tips; below that, switch to the pepper-only mark.
+		// Variant. The full word-art fits once the right column can keep
+		// FULL_LOGO_RIGHT_MIN columns with the logo flush against the box
+		// edges; below that, switch to the pepper-only mark.
 		const fullLogoWidth = Math.max(...this.logoLines.map((l) => visibleWidth(l)))
-		const isCompact = width < fullLogoWidth + CHROME + 2 * CELL_PAD + RIGHT_MIN + 2 * MIN_GUTTER
+		const isCompact = width < fullLogoWidth + CHROME + 2 * CELL_PAD + FULL_LOGO_RIGHT_MIN
 		const logoLines = isCompact ? this.compactLogoLines : this.logoLines
 		const logoWidth = Math.max(...logoLines.map((l) => visibleWidth(l)))
 		const logoHeight = logoLines.length

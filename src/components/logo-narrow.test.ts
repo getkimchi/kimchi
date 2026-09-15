@@ -36,11 +36,10 @@ function createMockTheme(): Theme {
 // holds the tips in `rightColWidth` with one CELL_PAD space each side.
 const CHROME = 3
 const CELL_PAD = 1
-const RIGHT_MIN = 12
-const MIN_GUTTER = 1
+const FULL_LOGO_RIGHT_MIN = 9
 const COMPACT_LOGO_WIDTH = 7
 const FULL_LOGO_WIDTH = 36
-const COMPACT_BREAKPOINT = FULL_LOGO_WIDTH + CHROME + 2 * CELL_PAD + RIGHT_MIN + 2 * MIN_GUTTER // 55
+const COMPACT_BREAKPOINT = FULL_LOGO_WIDTH + CHROME + 2 * CELL_PAD + FULL_LOGO_RIGHT_MIN // 50
 
 describe("LogoHeader — narrow terminals", () => {
 	// Regression: on terminals narrower than the fixed-width logo column the
@@ -59,14 +58,14 @@ describe("LogoHeader — narrow terminals", () => {
 		})
 	}
 
-	// The full word-art (36 cols) needs at least MIN_GUTTER on each side of
-	// the logo plus RIGHT_MIN for the tips to remain readable; below that
-	// threshold the header switches to the pepper-only mark.
+	// The full word-art (36 cols) is shown once the right column can keep
+	// FULL_LOGO_RIGHT_MIN columns with the logo flush against the box edges;
+	// below that threshold the header switches to the pepper-only mark.
 	describe("variant switch", () => {
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping
 		const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "")
 
-		for (const width of [11, 20, 30, 39, 46, 50, 54]) {
+		for (const width of [11, 20, 30, 39, 46, 49]) {
 			it(`uses the pepper-only mark at width ${width}`, () => {
 				const header = new LogoHeader(createMockTheme())
 				const lines = header.render(width).map(strip)
@@ -83,7 +82,7 @@ describe("LogoHeader — narrow terminals", () => {
 			})
 		}
 
-		for (const width of [55, 60, 80, 109, 120]) {
+		for (const width of [50, 54, 55, 60, 80, 109, 120]) {
 			it(`uses the full word-art at width ${width}`, () => {
 				const header = new LogoHeader(createMockTheme())
 				const text = header.render(width).map(strip).join("\n")
@@ -112,7 +111,10 @@ describe("LogoHeader — narrow terminals", () => {
 			{ width: 30, span: 13, right: 12 },
 			{ width: 38, span: 21, right: 12 },
 			{ width: 46, span: 27, right: 14 },
-			{ width: 54, span: 27, right: 22 },
+			{ width: 49, span: 27, right: 17 },
+			{ width: 50, span: 36, right: 9 },
+			{ width: 53, span: 36, right: 12 },
+			{ width: 54, span: 36, right: 13 },
 			{ width: 55, span: 38, right: 12 },
 			{ width: 60, span: 42, right: 13 },
 			{ width: 69, span: 52, right: 12 },
@@ -147,9 +149,9 @@ describe("LogoHeader — narrow terminals", () => {
 			return row ? (strip(row).split("│")[2]?.length ?? 0) : 0
 		}
 
-		it("right column grows monotonically in compact regime (width 26..54)", () => {
+		it("right column grows monotonically in compact regime (width 26..49)", () => {
 			let prev = -Infinity
-			for (let w = 26; w <= 54; w++) {
+			for (let w = 26; w <= 49; w++) {
 				const lines = new LogoHeader(createMockTheme()).render(w).map(strip)
 				const rightLen = rightSeg(lines)
 				// Right cell is CELL_PAD + rightColWidth + CELL_PAD. Allow a
@@ -159,9 +161,9 @@ describe("LogoHeader — narrow terminals", () => {
 			}
 		})
 
-		it("right column grows monotonically in full regime (width 55..200)", () => {
+		it("right column grows monotonically in full regime (width 50..200)", () => {
 			let prev = -Infinity
-			for (let w = 55; w <= 200; w++) {
+			for (let w = 50; w <= 200; w++) {
 				const lines = new LogoHeader(createMockTheme()).render(w).map(strip)
 				const rightLen = rightSeg(lines)
 				expect(rightLen).toBeGreaterThanOrEqual(prev - 1)
