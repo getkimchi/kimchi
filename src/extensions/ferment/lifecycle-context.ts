@@ -85,10 +85,13 @@ export function registerFermentLifecycleContext(pi: ExtensionAPI, runtime: Ferme
 			return markHarnessSteer(content)
 		},
 		subscribe: (notify) => {
-			for (const channel of LIFECYCLE_CHANGE_EVENTS) {
+			const unsubscribers = LIFECYCLE_CHANGE_EVENTS.map((channel) =>
 				pi.events.on(channel, () => {
 					notify()
-				})
+				}),
+			)
+			return () => {
+				for (const unsubscribe of unsubscribers) unsubscribe()
 			}
 		},
 	})

@@ -80,8 +80,12 @@ export interface StateBlockPersistenceOptions {
 	render: (key: string, previous: string | undefined) => string | undefined
 	/** Wire change sources: call `notify(key)` whenever the rendered block
 	 *  for that session key may have changed. Keys default to the current
-	 *  session id captured at session_start/session_tree. */
-	subscribe: (notify: (key?: string) => void) => void
+	 *  session id captured at session_start/session_tree. Optionally return an
+	 *  unsubscribe handle — invoked on session_shutdown. Sources are typically
+	 *  process-global (e.g. the todo store's listener set), so without this the
+	 *  closure (capturing this session's pi) lingers after the runtime is
+	 *  invalidated, and its stale pi throws into whoever notifies next. */
+	subscribe: (notify: (key?: string) => void) => (() => void) | undefined
 	/** Optional hook on session_start/session_tree, before the history scan
 	 *  (e.g. to capture the sessionManager handle for flag lookups). */
 	onSessionEvent?: (ctx: ExtensionContext) => void
@@ -128,6 +132,11 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 	const forceReemit = new Set<string>()
 	let agentBusy = 0
 	let currentSessionKey = ""
+	// Set by session_shutdown: no persistence may happen for this registrar
+	// afterwards — checked in the notify closure AND in the deferred flush
+	// paths, since pending entries can carry keys other than currentSessionKey
+	// (a foreign session sharing the todo store may forward its own id).
+	let shutDown = false
 
 	/** Persist the rendered block if it changed (or `force` bypasses equality).
 	 *  Returns true when a new entry was written. */
@@ -166,6 +175,7 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 		agentBusy = Math.max(0, agentBusy - 1)
 	})
 	pi.on("agent_settled", (_event, ctx) => {
+		if (shutDown) return
 		if (agentBusy > 0) return
 		if (pendingFlush.size === 0 && forceReemit.size === 0) return
 		// Skip aborted runs: the flushed block would become the newest turn
@@ -190,19 +200,36 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 	// outcome). Emission stays at the settle boundary — writing here would be
 	// the mid-run send the module comment forbids.
 	pi.on("session_compact", (_event, ctx) => {
+		if (shutDown) return
 		const key = currentSessionKey
 		if (!key || !lastPersisted.get(key)) return
 		if (newestStateBlockSurvivesInBranch(ctx, customType)) return
 		forceReemit.add(key)
 	})
 
-	subscribe((key?: string) => {
+	const unsubscribeFromSource = subscribe((key?: string) => {
+		if (shutDown) return
 		const effectiveKey = key ?? currentSessionKey
 		if (agentBusy > 0) {
 			pendingFlush.add(effectiveKey)
 			return
 		}
 		persistIfChanged(effectiveKey, forceReemit.delete(effectiveKey))
+	})
+
+	// Release the change-source listener when the session shuts down cleanly.
+	// pi-mono emits session_shutdown on extension reload, but NOT on session
+	// replacement (newSession/fork/switchSession dispose without it) — that
+	// path is covered by the todo store's stale-ctx listener isolation
+	// (todos/store.ts, notifyTodoStoreListeners).
+	pi.on("session_shutdown", () => {
+		shutDown = true
+		if (typeof unsubscribeFromSource === "function") unsubscribeFromSource()
+		// Clear maps entirely, not just currentSessionKey: pending entries may
+		// carry foreign session keys forwarded by shared-store subscribers.
+		pendingFlush.clear()
+		forceReemit.clear()
+		lastPersisted.clear()
 	})
 
 	// Strip-only context pass: drop every block of this customType except the
