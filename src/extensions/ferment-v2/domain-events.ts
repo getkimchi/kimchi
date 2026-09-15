@@ -60,6 +60,7 @@ export type FermentV2EvaluatorFailureType =
 	| "content_filter"
 	| "context_window_exceeded"
 	| "invalid_request_payload"
+	| "model_retired"
 	| "call_failed"
 
 export interface FermentV2EvaluatedPayload {

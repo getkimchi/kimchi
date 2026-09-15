@@ -6,6 +6,7 @@ import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -99,8 +100,11 @@ export interface ModelMetadata {
 		context_window: number
 		max_output_tokens: number
 	}
-	status?: "active" | "sunset" | "deprecated"
-	replacement?: string
+	deprecated_at?: string
+	sunset_at?: string
+	replacement_model?: string
+	alternatives?: ModelAlternative[]
+	deprecation_note?: string
 }
 
 interface ModelsMetadataResponse {
@@ -508,12 +512,25 @@ export async function discoverModelsConfig(
 	// Authenticated success clears marks from earlier 401s.
 	clearCredentialStale(KIMCHI_PROVIDER_ID)
 
-	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)
+	// Persist deprecation state (replacement_model, alternatives, notes) before
+	// filtering: entries for models excluded below still inform role remapping
+	// and retirement warnings on later runs. Best-effort — the sidecar is
+	// auxiliary, and a stale one is better than a failed metadata refresh.
+	try {
+		writeModelDeprecations(modelsJsonPath, fetched)
+	} catch (err) {
+		console.warn("[model-deprecation] failed to persist sidecar:", err)
+	}
+
+	const activeModels = fetched.filter((m) => {
+		const state = deriveDeprecationState(m)
+		return (state === "none" || state === "announced") && m.limits.max_output_tokens > 0
+	})
 	if (activeModels.length === 0 && fetched.length > 0) {
 		if (options.requireActiveModels) {
 			throw new ModelsFetchError("No active Kimchi models are available for this API key", { transient: false })
 		}
-		console.warn("All models from the API are sunset. No active models available.")
+		console.warn("All models from the API are deprecated or sunset. No active models available.")
 	}
 	const models = sortModels(activeModels)
 	return {

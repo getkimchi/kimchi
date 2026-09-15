@@ -20,6 +20,7 @@
  *     excluded from routing (it cannot be called).
  */
 
+import { deriveDeprecationState, pickReplacementSlug } from "../../../model-deprecation.js"
 import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import type { ModelCapabilities, OrchestrationModelDescriptor } from "./types.js"
@@ -47,7 +48,13 @@ function deriveName(m: ModelMetadata): string {
 export interface ModelRegistryWarning {
 	kind: "unknown_model" | "deprecated_model"
 	modelId: string
-	replacement?: string // only for deprecated_model
+	/** Replacement target, only for deprecated_model. From replacement_model,
+	 * falling back to the first alternative slug. */
+	replacement?: string
+	/** ISO date the deprecation takes effect, only for deprecated_model. */
+	deprecatedAt?: string
+	/** URL with deprecation details, only for deprecated_model. */
+	note?: string
 }
 
 export class ModelRegistry {
@@ -61,20 +68,28 @@ export class ModelRegistry {
 		const allModels: OrchestrationModelDescriptor[] = []
 
 		for (const m of availableModels) {
-			// Sunset models are excluded entirely, like "ignored"
-			if (m.status === "sunset") continue
+			// Models past their deprecation date (or sunset) are excluded
+			// entirely, like "ignored" — the backend stops serving them.
+			const state = deriveDeprecationState(m, Date.now(), m.slug)
+			if (state === "past" || state === "sunset") continue
 
 			// Deprecated warning is emitted even for ignored models so the
 			// user gets notified even if the model isn't routed to subagents.
-			if (m.status === "deprecated") {
-				warnings.push({ kind: "deprecated_model", modelId: m.slug, replacement: m.replacement })
+			if (state === "announced") {
+				warnings.push({
+					kind: "deprecated_model",
+					modelId: m.slug,
+					replacement: pickReplacementSlug(m),
+					deprecatedAt: m.deprecated_at,
+					note: m.deprecation_note,
+				})
 			}
 
 			const entry = MODEL_CAPABILITIES.get(m.slug)
 			if (entry === "ignored") continue
 
 			if (entry === undefined) {
-				if (m.status !== "deprecated") {
+				if (state !== "announced") {
 					warnings.push({ kind: "unknown_model", modelId: m.slug })
 				}
 				allModels.push({
