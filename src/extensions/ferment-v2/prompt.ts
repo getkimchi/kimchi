@@ -25,8 +25,11 @@ export function replaceFermentV2ContextMessages(
 	lessons: readonly FermentV2Lesson[] = [],
 ): ContextEvent["messages"] | undefined {
 	const filtered = messages.filter((message) => !isFermentV2ContextMessage(message))
-	if (!fermentV2 || fermentV2.status === FERMENT_V2_STATUS.COMPLETE)
-		return filtered.length === messages.length ? undefined : filtered
+	const removedContext = filtered.length !== messages.length
+	const isComplete = fermentV2?.status === FERMENT_V2_STATUS.COMPLETE
+	if (!fermentV2 || isComplete) {
+		return removedContext ? filtered : undefined
+	}
 
 	const message = {
 		role: "custom" as const,

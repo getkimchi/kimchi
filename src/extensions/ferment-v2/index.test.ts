@@ -44,7 +44,7 @@ import fermentV2Extension from "./index.js"
 import { objectiveFilePath, saveObjectiveFile } from "./objective-file.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "./plan-executor.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
-import type { FermentV2JournalEntry, SessionFermentV2 } from "./types.js"
+import { FERMENT_V2_STATUS, type FermentV2JournalEntry, type SessionFermentV2 } from "./types.js"
 
 vi.mock("./evaluator.js", () => ({ evaluateFermentV2: vi.fn() }))
 vi.mock("./settings.js", async (importOriginal) => {
@@ -2651,18 +2651,29 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
 		await settleFermentV2(harness, "met")
-		expect(harness.currentFermentV2()?.status).toBe("complete")
+		expect(harness.currentFermentV2()?.status).toBe(FERMENT_V2_STATUS.COMPLETE)
 		if (replay) await harness.fire("session_start", { type: "session_start", reason: "resume" })
 
 		const user = { role: "user" as const, content: "Now work on something else", timestamp: Date.now() }
+		const assistant = assistantTextMessage("Finished the requested task.")
+		const history = [assistant, user]
 		const result = (await harness.fire("context", {
 			type: "context",
-			messages: [...activeContext.messages, user],
+			messages: [...activeContext.messages, ...history],
 		})) as ContextEvent
-		expect(result.messages).toEqual([user])
-		expect(await harness.fire("context", { type: "context", messages: [user] })).toBeUndefined()
+		expect(result.messages).toEqual(history)
+		expect(result.messages[0]).toBe(assistant)
+		expect(result.messages[1]).toBe(user)
+		expect(await harness.fire("context", { type: "context", messages: history })).toBeUndefined()
+		expect(
+			await harness.fire("before_agent_start", {
+				type: "before_agent_start",
+				prompt: user.content,
+				systemPrompt: "base",
+			}),
+		).toBeUndefined()
 		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toMatchObject({
-			status: "complete",
+			status: FERMENT_V2_STATUS.COMPLETE,
 			objective: "finish this objective",
 		})
 	})
