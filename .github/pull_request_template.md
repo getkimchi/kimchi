@@ -11,7 +11,7 @@ Closes #
 
 ## Checklist
 
-- [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md) and agree to the CLA
+- [ ] I have read [CONTRIBUTING.md](https://github.com/getkimchi/kimchi/blob/HEAD/CONTRIBUTING.md) and agree to the CLA
 - [ ] This PR links to an open issue above
 - [ ] Tests pass locally (`pnpm run test`)
 - [ ] Lint passes (`pnpm run check`)
