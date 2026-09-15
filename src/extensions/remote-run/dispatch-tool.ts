@@ -120,7 +120,7 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text" as const,
-							text: `Could not dispatch the cloud agent: ${message}. Report the failure to the user and suggest retrying or running the task locally instead.`,
+							text: `Could not dispatch the remote agent: ${message}. Report the failure to the user and suggest retrying or running the task locally instead.`,
 						},
 					],
 					details: { error: message },
