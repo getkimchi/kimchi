@@ -73,6 +73,34 @@ describe("suggestSkills", () => {
 		expect(result.map((s) => s.name)).toEqual(["vcs-workflow"])
 	})
 
+	it("matches write/writing and story/stories through suffix normalization", () => {
+		// "writing" is not a prefix of "write" (the e drops in the -ing form),
+		// so without suffix stripping the strongest skill signal — the leading
+		// imperative verb — would never match.
+		const result = suggestSkills("write a short story about kimchi", ALL_SKILLS)
+		expect(result.map((s) => s.name)).toEqual(["ai-writing-proofreader"])
+	})
+
+	it("fires on a leading verb that matches the skill name (imperative prompts)", () => {
+		// The user's canonical case: topic nouns (short, story, kimchi) match
+		// nothing, but "write" matches the name token "writing" — the
+		// leading-word rule treats that as half the signal.
+		const result = suggestSkills("write a short story about kimchi", [PROOFREADER])
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("ai-writing-proofreader")
+		expect(result[0].score).toBeGreaterThanOrEqual(1)
+	})
+
+	it("accepts the leading-verb trade-off: a code task with the same verb also fires", () => {
+		// "write a test" carries the identical verb signal as "write a story" —
+		// token-level matching cannot separate them. The reminder is
+		// non-directive, latched once per session, and the skill's own
+		// description ("Do not load for code implementation") lets the model
+		// self-reject — an accepted false positive, not a bug.
+		const result = suggestSkills("write a test for the parser module", [PROOFREADER])
+		expect(result.map((s) => s.name)).toEqual(["ai-writing-proofreader"])
+	})
+
 	it("double-counts name hits so a half-covered input with a name match passes the threshold", () => {
 		// "vcs" matches the name, "workflow" matches the name too: full coverage
 		// via name → score 2.0. A description-only half match (0.5) stays below.
@@ -82,15 +110,10 @@ describe("suggestSkills", () => {
 	})
 
 	it("does not suggest on description-only partial coverage below the threshold", () => {
-		// "read" only matches the description token "READMEs": coverage 1/3, no
-		// name hit → 0.33, below threshold.
+		// "read" only matches the description token "READMEs": coverage 1/3,
+		// no name hit, and a leading word that matches only a DESCRIPTION token
+		// gets no floor → 0.33, below threshold.
 		expect(suggestSkills("read the config file first", ALL_SKILLS)).toEqual([])
-	})
-
-	it("does not prefix-match write/writing — a code task must not hit the proofreader", () => {
-		// "write" is not a true prefix of "writing" (5th char differs), so this
-		// coding input scores zero against ai-writing-proofreader.
-		expect(suggestSkills("write a test for the parser module", ALL_SKILLS)).toEqual([])
 	})
 
 	it("excludes skills with disableModelInvocation", () => {

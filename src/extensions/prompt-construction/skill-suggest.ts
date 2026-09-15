@@ -137,17 +137,34 @@ export function contentWords(text: string): string[] {
 }
 
 /**
- * Two tokens are the same word when equal, or when they share a prefix of
- * at least TOKEN_PREFIX_MIN characters and both are long enough for the
- * prefix to be meaningful. This catches inflection variants
- * (commit/committing, branch/branching, proofread/proofreader) without a
- * stemmer.
+ * Light inflection normalization: strip common suffixes when a ≥4-char
+ * base remains, so write/writing, story/stories, and hooks/hook compare
+ * equal. Applied to both sides inside tokensMatch — a full stemmer is
+ * deliberately avoided; irregular forms (wrote) stay unmatched and that
+ * miss is accepted.
+ */
+function normalizeToken(token: string): string {
+	if (token.endsWith("ies") && token.length >= 5) return `${token.slice(0, -3)}y` // stories → story
+	if (token.endsWith("ing") && token.length >= 6) return token.slice(0, -3) // writing → writ
+	if (token.endsWith("ed") && token.length >= 5) return token.slice(0, -2) // drafted → draft
+	if (token.endsWith("s") && !token.endsWith("ss") && token.length >= 4) return token.slice(0, -1) // essays → essay
+	return token
+}
+
+/**
+ * Two tokens are the same word when their normalized forms are equal, or
+ * when they share a prefix of at least TOKEN_PREFIX_MIN characters and both
+ * are long enough for the prefix to be meaningful. This catches remaining
+ * inflection variants (commit/committing, proofread/proofreader, and
+ * writ/write after suffix-stripping) without a stemmer.
  */
 function tokensMatch(a: string, b: string): boolean {
-	if (a === b) return true
-	if (a.length < TOKEN_PREFIX_MIN || b.length < TOKEN_PREFIX_MIN) return false
-	const shorter = Math.min(a.length, b.length)
-	return a.slice(0, shorter) === b.slice(0, shorter) && shorter >= TOKEN_PREFIX_MIN
+	const na = normalizeToken(a)
+	const nb = normalizeToken(b)
+	if (na === nb) return true
+	if (na.length < TOKEN_PREFIX_MIN || nb.length < TOKEN_PREFIX_MIN) return false
+	const shorter = Math.min(na.length, nb.length)
+	return na.slice(0, shorter) === nb.slice(0, shorter) && shorter >= TOKEN_PREFIX_MIN
 }
 
 function anyTokenMatches(token: string, candidates: readonly string[]): boolean {
@@ -188,7 +205,20 @@ export function scoreSkill(inputTokens: readonly string[], skill: Skill): number
 		}
 	}
 	if (matched === 0) return 0
-	const coverage = matched / uniqueTokens.length
+	let coverage = matched / uniqueTokens.length
+	// Imperative prompts lead with the action verb ("write a story",
+	// "debug the parser") while the topic nouns are exactly the tokens that
+	// cannot match any skill — short prompts structurally cap coverage. A
+	// leading-word match against the skill NAME is the strongest single signal
+	// available, so treat it as half the input being about the skill. Name-only:
+	// a leading word that merely matches a description token ("read" against
+	// "READMEs") gets no floor. The reminder is non-directive and latched once
+	// per session, so residual false positives ("write a test" nudging the
+	// writing skill) cost one ignored reminder the model self-rejects using the
+	// skill's own "do not load for code" clause.
+	if (anyTokenMatches(uniqueTokens[0], nameTokens)) {
+		coverage = Math.max(coverage, 0.5)
+	}
 	return coverage * (nameHit ? 2 : 1)
 }
 

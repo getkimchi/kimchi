@@ -72,4 +72,14 @@ Anti-patterns:
   unless the user repeats the jargon verbatim.
 
 The matcher scores skill **names** as well as descriptions (a name hit doubles
-the match score), so keep names descriptive of the task domain too.
+the match score), so keep names descriptive of the task domain too. Two
+matching behaviors matter for authors:
+
+- **Inflection is normalized**: write/writing, story/stories, and
+  commit/committing compare equal, so singular/plural and verb forms in the
+  description all count.
+- **The leading word matters most**: an imperative prompt ("write a story",
+  "debug the parser") matches on its first content word — when that word
+  matches the skill *name*, the skill is suggested even if the topic nouns
+  match nothing. An action verb in the name ("…-debugging", "…-writing")
+  makes the skill fire on the corresponding imperative.
