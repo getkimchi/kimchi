@@ -815,3 +815,62 @@ describe("validation error display truncation", () => {
 		expect(second).toBe(first)
 	})
 })
+
+describe("skill_view rendering (matches the /skill block)", () => {
+	beforeAll(() => {
+		toolRenderingExtension(createExtensionApi().api)
+	})
+
+	const SKILL_RESULT_TEXT = [
+		"---",
+		"name: vcs-workflow",
+		"description: Git workflow discipline",
+		"---",
+		"",
+		"# Git workflow",
+		"Stage, commit, push in that order.",
+		"",
+		'Linked files: {"references":["references/api.md"]}',
+	].join("\n")
+
+	function makeSkillComponent(expanded: boolean, resultText = SKILL_RESULT_TEXT, isError = false) {
+		const component = new ToolExecutionComponent(
+			"skill_view",
+			"tc-skill-view",
+			{ name: "vcs-workflow" },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+		component.markExecutionStarted()
+		component.updateResult({ content: [{ type: "text", text: resultText }], isError }, false)
+		component.setExpanded(expanded)
+		return component
+	}
+
+	it("renders the collapsed result as a [skill] line with the skill name", () => {
+		const rendered = makeSkillComponent(false).render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("[skill]")
+		expect(rendered).toContain("vcs-workflow")
+		expect(rendered).toContain("ctrl+o to expand")
+		// collapsed: the body stays hidden
+		expect(rendered).not.toContain("Stage, commit, push")
+	})
+
+	it("renders the expanded result with frontmatter stripped and linked files noted", () => {
+		const rendered = makeSkillComponent(true).render(200).map(stripSgr).join("\n")
+		expect(rendered).toContain("[skill]")
+		expect(rendered).toContain("Stage, commit, push")
+		// frontmatter is stripped — the name header comes from the call args
+		expect(rendered).not.toContain("name: vcs-workflow")
+		expect(rendered).toContain("Linked files")
+	})
+
+	it("renders errors as plain error text", () => {
+		const rendered = makeSkillComponent(false, "Skill 'nope' not found.", true).render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("not found")
+		expect(rendered).not.toContain("[skill]")
+	})
+})

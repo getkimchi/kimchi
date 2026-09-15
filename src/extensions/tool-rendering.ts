@@ -660,6 +660,9 @@ function patchToolExecutionRenderers(): void {
 			return (args: unknown, theme: Theme, ctx: ToolRenderContext) =>
 				renderApplyPatchCall(args, theme, ctx, (path: string) => shortPath(ctx.cwd ?? process.cwd(), path))
 		}
+		if (toolName === "skill_view") {
+			return (args: unknown, theme: Theme, ctx: ToolRenderContext) => renderSkillViewCall(args, theme, ctx)
+		}
 		// Agent renders a dynamic persona header that the generic renderer cannot produce.
 		if (toolName === "Agent" && typeof originalGetCallRenderer === "function") {
 			const renderer = originalGetCallRenderer.call(this)
@@ -680,6 +683,9 @@ function patchToolExecutionRenderers(): void {
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
+		}
+		if (toolName === "skill_view") {
+			return renderSkillViewResult
 		}
 		if (shouldUseGenericToolRenderer(toolName)) {
 			return (
@@ -704,6 +710,70 @@ function patchToolExecutionRenderers(): void {
 
 /** Upstream core tools whose error rendering needs the validation-dump truncation. */
 const CORE_ERROR_TRUNCATING_TOOLS = new Set(["edit", "write", "read"])
+
+// ---------------------------------------------------------------------------
+// skill_view rendering — matches the /skill invocation block ([skill] name,
+// collapsed to one line, full content on ctrl+o) instead of the generic
+// "N lines returned" tool shell.
+// ---------------------------------------------------------------------------
+
+/** Strip SKILL.md frontmatter for display — the /skill expansion does the same. */
+function stripSkillFrontmatter(body: string): string {
+	if (!body.startsWith("---")) return body
+	const end = body.indexOf("\n---", 3)
+	if (end === -1) return body
+	return body.slice(end + 4).replace(/^\n+/, "")
+}
+
+function renderSkillViewCall(args: unknown, theme: Theme, ctx: ToolRenderContext): Component {
+	const name =
+		typeof (args as Record<string, unknown> | undefined)?.name === "string"
+			? String((args as Record<string, unknown>).name)
+			: ""
+	const timer = formatToolTimer(getToolElapsedMs(ctx))
+	return makeText(ctx.lastComponent, toolHeader("Skill", name, theme, toolStatusDot(ctx, theme), timer))
+}
+
+function renderSkillViewResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	ctx: ToolRenderContext,
+): Text {
+	const args = (ctx.args ?? {}) as Record<string, unknown>
+	const name = typeof args.name === "string" && args.name ? args.name : "skill"
+	if (ctx.isError) {
+		return makeText(
+			ctx.lastComponent,
+			withBranch(theme.fg("error", getTextContent(result) || "Failed to load skill"), theme),
+		)
+	}
+	const content = result.content.find((block) => block?.type === "text")
+	if (content?.type !== "text") {
+		return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme))
+	}
+
+	// The tool appends a "Linked files: {...}" trailer after the SKILL.md body;
+	// show it dimmed below the content rather than inline.
+	const text = content.text
+	const linkedIdx = text.indexOf("\nLinked files: ")
+	const body = stripSkillFrontmatter(linkedIdx >= 0 ? text.slice(0, linkedIdx) : text).replace(/\n+$/, "")
+	const linked = linkedIdx >= 0 ? text.slice(linkedIdx + 1).trim() : ""
+
+	// Same visual as pi's SkillInvocationMessageComponent (the /skill block):
+	// bold [skill] label + name, collapsed to one line until ctrl+o.
+	const label = theme.fg("customMessageLabel", "\x1b[1m[skill]\x1b[22m")
+	if (!options.expanded) {
+		const line = `${label} ${theme.fg("customMessageText", name)}${theme.fg("dim", " (ctrl+o to expand)")}`
+		return makeText(ctx.lastComponent, withBranch(line, theme))
+	}
+	const lines = [
+		`${label} ${theme.fg("customMessageText", `\x1b[1m${name}\x1b[22m`)}`,
+		...body.split("\n").map((line) => theme.fg("customMessageText", line || " ")),
+	]
+	if (linked) lines.push(theme.fg("dim", linked))
+	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
+}
 
 /** Marker that both upstream and our patched pi-ai validation errors append before the raw args JSON dump. */
 const RECEIVED_ARGS_MARKER = "\n\nReceived arguments:\n"

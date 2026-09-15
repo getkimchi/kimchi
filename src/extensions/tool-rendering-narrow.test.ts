@@ -70,6 +70,7 @@ const CASES: Array<{ name: string; args: Record<string, unknown>; result?: strin
 	},
 	{ name: "grep", args: { pattern: "wrapMarkedLine", path: "/Users/someone/reps/project" }, result: LONG_OUTPUT },
 	{ name: "find", args: { pattern: "*.ts", path: "/Users/someone/reps/project" }, result: LONG_OUTPUT },
+	{ name: "skill_view", args: { name: "vcs-workflow" }, result: LONG_OUTPUT },
 	{
 		name: "list",
 		args: { path: "/Users/someone/reps/project/src/extensions/" },
