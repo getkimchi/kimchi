@@ -138,9 +138,6 @@ test("/model autocomplete shows and selects Auto when experimental features are 
 			trace.step("Auto highlighted")
 
 			terminal.submit("")
-			// The plain select path persists the model as the default (0.84.1
-			// semantics restored by our patch), so the status line reads
-			// "Default model: <provider>/<id>" instead of 0.84.1's "Model: <id>".
 			await waitForText(terminal, "Default model: kimchi-dev/auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("Auto selected")
