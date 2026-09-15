@@ -89,10 +89,9 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				(isAutoModel(ctx.model) || sessionSelectsAuto(entries))
 			) {
 				setMultiModelEnabled(sessionId, false)
-				// kimchi-dev: explicit CLI --model/--provider choice is user-initiated;
-				// persist it as the default (0.84.1 semantics - upstream 0.85.1 made
-				// setModel session-only by default).
-				await pi.setModel(ctx.model, { persist: true })
+				// `--model` is a per-invocation override: it changes the session
+				// but must not rewrite the user's saved default.
+				await pi.setModel(ctx.model)
 				if (!isAutoModel(ctx.model)) {
 					clearAutoRoutingState(sessionId)
 					return

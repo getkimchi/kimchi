@@ -109,7 +109,7 @@ describe("Auto model extension", () => {
 		await start({ type: "session_start", reason: "reload" }, ctx)
 
 		expect(setModel).toHaveBeenCalledOnce()
-		expect(setModel).toHaveBeenCalledWith(auto, { persist: true })
+		expect(setModel).toHaveBeenCalledWith(auto)
 	})
 
 	it("does not persist an ordinary concrete CLI selection", async () => {
@@ -145,7 +145,7 @@ describe("Auto model extension", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(setModel).toHaveBeenCalledOnce()
-		expect(setModel).toHaveBeenCalledWith(target, { persist: true })
+		expect(setModel).toHaveBeenCalledWith(target)
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
 	})
 

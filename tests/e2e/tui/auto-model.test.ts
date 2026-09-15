@@ -188,9 +188,11 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			expect(chatRequests[1]?.headers.traceparent).not.toBe(chatRequests[0]?.headers.traceparent)
 			expect(routerRequests[0]?.headers["x-parent-session-id"]).toBeUndefined()
 
+			// The session launched with `--model auto`, a per-invocation override:
+			// it must not rewrite the global default (pi 0.85.1 semantics).
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))
-			expect(settings.defaultProvider).toBe("kimchi-dev")
-			expect(settings.defaultModel).toBe("auto")
+			expect(settings.defaultProvider).toBeUndefined()
+			expect(settings.defaultModel).toBeUndefined()
 		},
 	)
 })
@@ -473,9 +475,12 @@ test("an explicit concrete CLI model overrides a resumed Auto session", async ({
 		expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
 		const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 		expect(chatRequests.map((request) => requestModel(request.body))).toEqual(["routed", "override"])
+		// `--model` is a per-invocation override: it changes the session but must not
+		// rewrite the global default (pi 0.85.1 semantics). The fixture seeds a
+		// settings.json without defaultProvider/defaultModel, so both stay unset.
 		const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))
-		expect(settings.defaultProvider).toBe("kimchi-dev")
-		expect(settings.defaultModel).toBe("override")
+		expect(settings.defaultProvider).toBeUndefined()
+		expect(settings.defaultModel).toBeUndefined()
 	} finally {
 		await stopKimchi(terminal).catch(() => {})
 		await fixture.stop().catch(() => {})

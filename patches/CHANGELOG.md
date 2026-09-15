@@ -119,18 +119,17 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ### Kimchi-side follow-ups from this upgrade
 
-- `src/extensions/router/index.ts` — the session_start CLI-recording path
-  (`pi.setModel(ctx.model)`) relied on upstream's unconditional persistence at
-  0.84.1. At 0.85.1 the same call became session-only with no signature change, so
-  `--model` launches stopped writing `settings.defaultProvider/defaultModel`.
-  Same root cause as the `{ persist }` change above. The site was easy to miss when
-  auditing call sites: it reads as an internal restore path, but it is recording an
-  explicit `--model` flag, i.e. user intent arriving indirectly. Fixed with
-  `{ persist: true }` in `31d26aa3`.
-  **Caught by pre-existing e2e assertions** (`tests/e2e/tui/auto-model.test.ts:194-196`
-  and `:479-481`, which read settings.json directly) — the tests were untouched by the
-  fix; only the upstream behavior underneath them changed. TUI e2e runs on every PR
-  (`.github/workflows/tui-e2e.yml`), so this would have blocked the merge.
+- `src/extensions/router/index.ts` — **`--model` is now session-only, matching pi
+  0.85.1.** Under 0.84.1 upstream's `setModel` persisted unconditionally, so the
+  router's session_start CLI-recording call wrote `settings.defaultProvider/
+  defaultModel` as a side effect. 0.85.1 made persistence opt-in; `31d26aa3` briefly
+  restored it with `{ persist: true }`, then it was reverted deliberately: a
+  per-invocation flag should not rewrite global state.
+  Note the persistence only ever applied when Auto was involved (the call sits behind
+  an Auto-teardown guard), so `--model <non-auto>` never persisted at 0.85.1 anyway —
+  the revert makes the behavior consistent across both.
+  Other user-initiated sites (model picker, first-run login, `set_model` tool) still
+  persist; `--model` is the deliberate exception.
 - PR [earendil-works/pi#8627](https://github.com/earendil-works/pi/pull/8627)
   (`ctx.cwd` for the seven cwd-sensitive tools) is a Kimchi-contributed fix that
   **arrives with this upgrade** — absent at 0.84.1, present in all seven at 0.85.1.
