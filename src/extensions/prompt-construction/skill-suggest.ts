@@ -250,10 +250,59 @@ export function suggestSkills(input: string, skills: readonly Skill[]): SkillSug
 export class SkillSuggester {
 	private skills: readonly Skill[] = []
 	private readonly suggested = new Map<string, number>()
+	private readonly loaded = new Set<string>()
+	private historyScanned = false
 
 	/** Refresh the inventory; called on every before_agent_start. */
 	updateSkills(skills: readonly Skill[]): void {
 		this.skills = skills
+	}
+
+	/**
+	 * Mark a skill as loaded into the conversation. Loaded skills are never
+	 * suggested — recommending an already-loaded skill is what nudged the
+	 * model into redundant skill_view calls (session 01a0a5f1).
+	 */
+	markLoaded(name: string): void {
+		if (name) this.loaded.add(name)
+	}
+
+	/**
+	 * Record /skill expansions embedded in a prompt. The harness expands
+	 * `/skill:name` into a `<skill name="...">` block before
+	 * before_agent_start fires, so scanning the prompt catches user-side
+	 * loads — including the same-turn case.
+	 */
+	notePrompt(prompt: string): void {
+		for (const match of prompt.matchAll(/<skill name="([^"]+)"/g)) {
+			this.markLoaded(match[1])
+		}
+	}
+
+	/**
+	 * Scan the session history once per tracker for skills already loaded
+	 * before this tracker existed — /skill expansions in earlier user
+	 * messages and skill_view calls the agent already made. Covers resumed
+	 * sessions, where the conversation predates the suggester.
+	 */
+	scanHistory(entries: readonly unknown[]): void {
+		if (this.historyScanned) return
+		this.historyScanned = true
+		for (const entry of entries) {
+			const typed = entry as { type?: string; message?: { role?: string; content?: unknown } }
+			if (typed?.type !== "message" || !typed.message) continue
+			const { role, content } = typed.message
+			if (role === "user") {
+				this.notePrompt(messageText(content))
+			} else if (role === "assistant") {
+				for (const block of asBlockArray(content)) {
+					if (block.type !== "toolCall" || block.name !== "skill_view") continue
+					const args = block.arguments
+					const name = typeof args === "object" && args !== null ? (args as Record<string, unknown>).name : undefined
+					if (typeof name === "string") this.markLoaded(name)
+				}
+			}
+		}
 	}
 
 	suggest(input: string): { suggestions: SkillSuggestion[]; latched: number } {
@@ -261,6 +310,10 @@ export class SkillSuggester {
 		const suggestions: SkillSuggestion[] = []
 		let latched = 0
 		for (const candidate of candidates) {
+			// Loaded skills are never suggested — the content is already in the
+			// conversation. Not counted as latched: that metric tracks the
+			// once-per-skill reminder latch, a different suppression.
+			if (this.loaded.has(candidate.name)) continue
 			const previous = this.suggested.get(candidate.name)
 			if (previous !== undefined && candidate.score < SKILL_SUGGEST_STRONG) {
 				latched += 1
@@ -271,6 +324,20 @@ export class SkillSuggester {
 		}
 		return { suggestions, latched }
 	}
+}
+
+function asBlockArray(content: unknown): Array<Record<string, unknown>> {
+	return Array.isArray(content)
+		? (content.filter((b) => b && typeof b === "object") as Array<Record<string, unknown>>)
+		: []
+}
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content
+	return asBlockArray(content)
+		.filter((block) => block.type === "text" && typeof block.text === "string")
+		.map((block) => block.text as string)
+		.join("\n")
 }
 
 /** Domain event channel for skill suggestions, published via pi.events.

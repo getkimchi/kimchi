@@ -173,6 +173,68 @@ describe("SkillSuggester", () => {
 		expect(repeat.suggestions[0].score).toBeGreaterThanOrEqual(SKILL_SUGGEST_STRONG)
 	})
 
+	describe("loaded-skill suppression (session 01a0a5f1)", () => {
+		it("never suggests a skill marked loaded", () => {
+			const suggester = new SkillSuggester()
+			suggester.updateSkills(ALL_SKILLS)
+			suggester.markLoaded("vcs-workflow")
+
+			// Would otherwise fire at 1.0 — suppressed because it is loaded.
+			const result = suggester.suggest("git commit and push these changes")
+			expect(result.suggestions).toEqual([])
+			expect(result.latched).toBe(0)
+		})
+
+		it("notePrompt marks skills expanded into the prompt via /skill", () => {
+			const suggester = new SkillSuggester()
+			suggester.updateSkills(ALL_SKILLS)
+			suggester.notePrompt(
+				'<skill name="ai-writing-proofreader" location="/skills/ai-writing-proofreader/SKILL.md">\nBody.\n</skill>',
+			)
+
+			const result = suggester.suggest("write a short story about kimchi")
+			expect(result.suggestions).toEqual([])
+		})
+
+		it("scanHistory picks up /skill expansions and prior skill_view calls (resumed sessions)", () => {
+			const suggester = new SkillSuggester()
+			suggester.updateSkills(ALL_SKILLS)
+			suggester.scanHistory([
+				{ type: "model_change", modelId: "x" },
+				{
+					type: "message",
+					message: {
+						role: "user",
+						content: '<skill name="vcs-workflow" location="/skills/vcs-workflow/SKILL.md">\nBody.\n</skill>',
+					},
+				},
+				{
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [{ type: "toolCall", name: "skill_view", arguments: { name: "dap-debugging" } }],
+					},
+				},
+			])
+
+			// Both loaded skills stay silent; the un-loaded one still fires.
+			const result = suggester.suggest("git commit and push, then debug the parser")
+			expect(result.suggestions.map((s) => s.name)).toEqual([])
+			const proof = suggester.suggest("proofread this README")
+			expect(proof.suggestions.map((s) => s.name)).toEqual(["ai-writing-proofreader"])
+		})
+
+		it("scans history only once (repeat calls do not clear the loaded set)", () => {
+			const suggester = new SkillSuggester()
+			suggester.updateSkills(ALL_SKILLS)
+			suggester.scanHistory([{ type: "message", message: { role: "user", content: "plain text, no skill" } }])
+			suggester.markLoaded("vcs-workflow")
+			suggester.scanHistory([])
+
+			expect(suggester.suggest("git commit and push these changes").suggestions).toEqual([])
+		})
+	})
+
 	it("refreshes the inventory via updateSkills", () => {
 		const suggester = new SkillSuggester()
 		suggester.updateSkills([VCS_WORKFLOW])

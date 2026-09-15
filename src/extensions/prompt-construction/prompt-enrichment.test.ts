@@ -1341,4 +1341,37 @@ describe("skill suggest wiring", () => {
 		const result = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
 		expect(result.message?.customType).toBe("skill-suggest")
 	})
+
+	it("does not suggest a skill the user already loaded via /skill (session 01a0a5f1)", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		// Turn 1: the user ran /skill:vcs-workflow — the prompt arrives already
+		// expanded into a <skill> block, and no reminder fires for it.
+		const expansion = await fireAgentStart(
+			fire,
+			'<skill name="vcs-workflow" location="/skills/vcs-workflow/SKILL.md">\nBody.\n</skill>',
+			[VCS_SKILL],
+		)
+		expect(expansion.message).toBeUndefined()
+
+		// Turn 2: the matching request — the loaded skill must stay silent.
+		const second = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		expect(second.message).toBeUndefined()
+	})
+
+	it("does not suggest a skill the agent already loaded via skill_view", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		await fire("tool_execution_start", {
+			toolCallId: "tc-1",
+			toolName: "skill_view",
+			args: { name: "vcs-workflow" },
+		})
+
+		// The latch alone would re-arm on the strong repeat; the loaded mark
+		// must hold regardless.
+		const result = await fireAgentStart(fire, "use the vcs workflow to manage git", [VCS_SKILL])
+		expect(result.message).toBeUndefined()
+	})
 })

@@ -378,10 +378,18 @@ export default function (skillPathsFromConfig: string[]) {
 
 			// Skill matching runs in the before_agent_start handler below, not here:
 
-			pi.on("tool_execution_start", async (_event, ctx) => {
+			pi.on("tool_execution_start", async (event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
 				continuationNudge.recordToolCall()
+				// An agent-side skill_view call loads the skill into the
+				// conversation — the suggester must never recommend it again.
+				if (event.toolName === "skill_view") {
+					const name = (event.args as Record<string, unknown> | undefined)?.name
+					if (typeof name === "string" && name.length > 0) {
+						getSkillSuggester(sessionId).markLoaded(name)
+					}
+				}
 			})
 
 			pi.on("message_update", (event, ctx) => {
@@ -547,6 +555,12 @@ export default function (skillPathsFromConfig: string[]) {
 			if (!subagentMode) {
 				const suggester = getSkillSuggester(sessionId)
 				suggester.updateSkills(skills)
+				// Track what is already loaded so the suggester never recommends
+				// it: /skill expansions in this prompt, prior skill_view calls in
+				// the history (covers resumed sessions), and live skill_view calls
+				// (marked in the tool_execution_start handler below).
+				suggester.scanHistory(ctx.sessionManager.getEntries())
+				suggester.notePrompt(event.prompt)
 				const { suggestions, latched } = suggester.suggest(event.prompt)
 				if (suggestions.length > 0) {
 					// Domain event for telemetry counters (skill_suggest.fired +
