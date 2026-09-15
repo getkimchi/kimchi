@@ -63,6 +63,23 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
   the 0.84.1 channel. `runner.js` needs no change: it assigns the action by
   reference rather than rewrapping it.
   *Upstream candidate — "let extensions opt into persistence" is generic.*
+- **DROPPED — a stray `sessionId` argument on `showLoginProviderSelector`.**
+  The `sessionId` injection belongs to `showModelSelector`, which declares
+  `const sessionId = this.sessionManager.getSessionId()` in scope. Upstream's
+  0.85.1 refactor shifted line numbers and a second copy of the hunk landed in
+  `showLoginProviderSelector(authType, initialSearchInput)`, which has no such
+  binding — making `sessionId` a free variable that throws
+  `ReferenceError: sessionId is not defined` whenever that selector renders.
+  It typechecks and every unit test passes, because the login tests stub the
+  selector and Kimchi's own `/login` menu (`src/login-command-patch.ts`) never
+  routes through it. The reachable path is `/login <prefix>` where the prefix
+  matches two providers with *different* ids: `patchedHandleLoginCommand`
+  delegates to upstream, which falls through to the broken selector.
+  `OAuthSelectorComponent` takes five parameters, so the argument was inert
+  even had the variable existed — the hunk is deleted outright, not repaired.
+  **Lesson: when a rebase relocates a hunk, verify the *enclosing function*,
+  not just that the context lines still match. Identical trailing context
+  (`}, initialSearchInput);`) appears in more than one selector method.**
 - **Model selector rebuilt on the 0.85.1 constructor.** `settingsManager` was removed
   and `onSelectAsDefault`/`defaultModel` added, colliding with the position Kimchi
   used for `sessionId`. `sessionId` moved to the last positional parameter;

@@ -757,15 +757,6 @@ index a1e7d98..304960d 100644
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -4687,7 +4731,7 @@ export class InteractiveMode {
-                 else {
-                     this.ui.requestRender();
-                 }
--            }, initialSearchInput);
-+            }, initialSearchInput, sessionId);
-             return { component: selector, focus: selector };
-         });
-     }
 @@ -5051,7 +5095,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
