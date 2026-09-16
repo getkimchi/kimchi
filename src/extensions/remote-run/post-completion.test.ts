@@ -29,12 +29,16 @@ const {
 	mockCreateDraftPr,
 	mockPullBranchLocally,
 	mockOpenExternalDiff,
+	mockOpenInBrowser,
+	mockWriteDiffHtmlFile,
 } = vi.hoisted(() => ({
 	mockPushBranchRemotely: vi.fn(),
 	mockPushViaLocalFallback: vi.fn(),
 	mockCreateDraftPr: vi.fn(),
 	mockPullBranchLocally: vi.fn(),
 	mockOpenExternalDiff: vi.fn(),
+	mockOpenInBrowser: vi.fn(),
+	mockWriteDiffHtmlFile: vi.fn(),
 }))
 vi.mock("./push-and-pr.js", () => ({
 	pushBranchRemotely: mockPushBranchRemotely,
@@ -49,7 +53,8 @@ vi.mock("./push-and-pr.js", () => ({
 	}),
 	classifyPushFailure: vi.fn(),
 }))
-vi.mock("./ui/external-viewer.js", () => ({ openExternalDiff: mockOpenExternalDiff }))
+vi.mock("./ui/external-viewer.js", () => ({ openExternalDiff: mockOpenExternalDiff, openInBrowser: mockOpenInBrowser }))
+vi.mock("./ui/diff-html.js", () => ({ writeDiffHtmlFile: mockWriteDiffHtmlFile }))
 const { mockApplyAndPersist, mockSetActive } = vi.hoisted(() => ({
 	mockApplyAndPersist: vi.fn(),
 	mockSetActive: vi.fn(),
@@ -588,6 +593,8 @@ describe("handleRemoteCompletion — PR intent", () => {
 		mockCollectCompletionDiff.mockResolvedValue({ ...STAT })
 		mockPullBranchLocally.mockReturnValue({ kind: "pulled", action: "created" })
 		mockOpenExternalDiff.mockReturnValue({ opened: false, detail: "no editor" })
+		mockOpenInBrowser.mockReturnValue({ opened: true, detail: "open /path/remote-diff.html" })
+		mockWriteDiffHtmlFile.mockImplementation((patchPath: string) => join(dirname(patchPath), "remote-diff.html"))
 		mockRecoverBaseShaFromMergeBase.mockResolvedValue(undefined)
 		// Mimics the real stream: chunks flow to onChunk AND append to the patch file.
 		mockStreamRemotePatch.mockImplementation(
@@ -640,6 +647,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(title).toContain("2 files changed, 8 insertions(+), 3 deletions(-)")
 		expect(options).toEqual([
 			"Show the diff",
+			"Show diff in browser",
 			"Show diff in external viewer",
 			"Request changes (steer the remote agent)",
 			"Push branch and open draft PR",
@@ -1078,6 +1086,36 @@ describe("handleRemoteCompletion — PR intent", () => {
 		// The push happened (branch is on origin) but NOTHING was terminated:
 		// menu relooped, session still alive until Done.
 		expect(mockDeleteRemoteSession).not.toHaveBeenCalled()
+	})
+
+	it("Show diff in browser streams the patch, builds a self-contained html, and opens it with the OS opener", async () => {
+		const patch = "diff --git a/a.ts b/a.ts\n+hello\n"
+		mockStreamRemotePatch.mockImplementation(
+			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
+				onChunk(1, patch)
+				if (patchPath) appendFileSync(patchPath, patch)
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: patch.length, cancelled: false }) }
+			},
+		)
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce("Show diff in browser")
+			.mockResolvedValueOnce("Done (keep the remote session for later)")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: join(tmp, "t-browser", "agent.jsonl"),
+			remoteSession: REMOTE,
+			gitWorkflow: GIT,
+		})
+
+		const patchPath = join(tmp, "t-browser", "remote-diff.diff")
+		const htmlPath = join(tmp, "t-browser", "remote-diff.html")
+		expect(mockWriteDiffHtmlFile).toHaveBeenCalledWith(patchPath, expect.objectContaining({ patch }))
+		expect(mockOpenInBrowser).toHaveBeenCalledWith(htmlPath)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(`Opened the diff in your browser: ${htmlPath}`, "info")
+		// The editor fallback path is NOT touched.
+		expect(mockOpenExternalDiff).not.toHaveBeenCalled()
 	})
 
 	it("Show diff in external viewer streams the full patch to disk and opens the system viewer", async () => {

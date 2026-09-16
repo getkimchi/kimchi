@@ -42,13 +42,15 @@ import {
 } from "./remote-diff.js"
 import { continueCloudAgent } from "./runner.js"
 import { recoverBaseShaFromMergeBase, resolveSandboxGitConnection, type SandboxGitConnection } from "./sandbox-git.js"
+import { writeDiffHtmlFile } from "./ui/diff-html.js"
 import { DiffViewer } from "./ui/diff-viewer.js"
-import { openExternalDiff } from "./ui/external-viewer.js"
+import { openExternalDiff, openInBrowser } from "./ui/external-viewer.js"
 
 const REVIEW = "Review the remote agent's results in the local session"
 const SYNC = "Pull the changes to my machine and finish"
 const CUSTOM = "Describe what to do next"
 const SHOW_DIFF = "Show the diff"
+const SHOW_DIFF_BROWSER = "Show diff in browser"
 const SHOW_DIFF_EXTERNAL = "Show diff in external viewer"
 const REQUEST_CHANGES = "Request changes (steer the remote agent)"
 const PUSH_AND_PR = "Push branch and open draft PR"
@@ -528,6 +530,7 @@ async function handlePrCompletion(
 			withWorkingHidden(ctx.ui, () =>
 				ctx.ui.select(menuTitle, [
 					SHOW_DIFF,
+					SHOW_DIFF_BROWSER,
 					SHOW_DIFF_EXTERNAL,
 					REQUEST_CHANGES,
 					PUSH_AND_PR,
@@ -544,6 +547,18 @@ async function handlePrCompletion(
 				transcriptPath: opts.transcriptPath,
 				baseSha,
 				connection,
+				viewerTitle,
+				statText,
+				diffPersisted,
+			})
+			continue
+		}
+		if (choice === SHOW_DIFF_BROWSER) {
+			diffPersisted = await showDiffInBrowser(ctx, {
+				transcriptPath: opts.transcriptPath,
+				baseSha,
+				connection,
+				branch: git.branch,
 				viewerTitle,
 				statText,
 				diffPersisted,
@@ -926,6 +941,76 @@ async function showDiffOverlay(
 }
 
 /**
+ * Ensures the FULL patch exists on disk: reused when a previous show already
+ * streamed it, otherwise streamed now (no overlay).
+ */
+async function ensurePatchOnDisk(
+	ctx: ExtensionContext,
+	opts: {
+		transcriptPath?: string
+		baseSha: string
+		connection: SandboxGitConnection
+		branch: string
+		diffPersisted: boolean
+	},
+): Promise<{ patchPath: string; persisted: boolean } | undefined> {
+	const { transcriptPath, baseSha, connection, branch, diffPersisted } = opts
+	const patchPath = transcriptPath
+		? join(dirname(transcriptPath), "remote-diff.diff")
+		: join(tmpdir(), `kimchi-remote-diff-${branch.replace(/[^\w.-]/g, "-")}.diff`)
+
+	if (diffPersisted) return { patchPath, persisted: true }
+	mkdirSync(dirname(patchPath), { recursive: true })
+	writeFileSync(patchPath, "", "utf-8")
+	try {
+		const stream = streamRemotePatch({
+			connection,
+			baseSha,
+			patchPath,
+			onChunk: () => {},
+		})
+		await stream.promise
+		return { patchPath, persisted: true }
+	} catch (err) {
+		ctx.ui.notify(`Diff stream failed: ${errMessage(err)} — back to the menu.`, "warning")
+		return undefined
+	}
+}
+
+/**
+ * Browser viewer: one self-contained html file (patch + inlined diff2html
+ * bundles — opens fully offline). Zero reliance on installed editors.
+ */
+async function showDiffInBrowser(
+	ctx: ExtensionContext,
+	opts: {
+		transcriptPath?: string
+		baseSha: string
+		connection: SandboxGitConnection
+		branch: string
+		viewerTitle: string
+		statText: string
+		diffPersisted: boolean
+	},
+): Promise<boolean> {
+	const ensured = await ensurePatchOnDisk(ctx, opts)
+	if (!ensured) return opts.diffPersisted
+	const patch = readFileSync(ensured.patchPath, "utf-8")
+	const htmlPath = writeDiffHtmlFile(ensured.patchPath, {
+		title: opts.viewerTitle,
+		subtitle: opts.statText,
+		patch,
+	})
+	const opened = openInBrowser(htmlPath)
+	if (opened.opened) {
+		ctx.ui.notify(`Opened the diff in your browser: ${htmlPath}`, "info")
+	} else {
+		ctx.ui.notify(`Could not open the browser (${opened.detail}). The page is at ${htmlPath}`, "warning")
+	}
+	return ensured.persisted
+}
+
+/**
  * Opens the diff in the system's external viewer (IDE or the OS default
  * .patch app — see ui/external-viewer.ts). The FULL patch must exist on disk
  * first: reused when a previous show already streamed it, otherwise
@@ -942,33 +1027,17 @@ async function showDiffExternally(
 		diffPersisted: boolean
 	},
 ): Promise<boolean> {
-	const { transcriptPath, baseSha, connection, branch, diffPersisted } = opts
-	const patchPath = transcriptPath
-		? join(dirname(transcriptPath), "remote-diff.diff")
-		: join(tmpdir(), `kimchi-remote-diff-${branch.replace(/[^\w.-]/g, "-")}.patch`)
+	const ensured = await ensurePatchOnDisk(ctx, opts)
+	if (!ensured) return opts.diffPersisted
 
-	if (!diffPersisted) {
-		mkdirSync(dirname(patchPath), { recursive: true })
-		writeFileSync(patchPath, "", "utf-8")
-		try {
-			const stream = streamRemotePatch({
-				connection,
-				baseSha,
-				patchPath,
-				onChunk: () => {},
-			})
-			await stream.promise
-		} catch (err) {
-			ctx.ui.notify(`Diff stream failed: ${errMessage(err)} — back to the menu.`, "warning")
-			return diffPersisted
-		}
-	}
-
-	const opened = openExternalDiff(patchPath)
+	const opened = openExternalDiff(ensured.patchPath)
 	if (opened.opened) {
-		ctx.ui.notify(`Opened the diff externally: ${patchPath}`, "info")
+		ctx.ui.notify(`Opened the diff externally: ${ensured.patchPath}`, "info")
 	} else {
-		ctx.ui.notify(`Could not open the external viewer (${opened.detail}). The patch is at ${patchPath}`, "warning")
+		ctx.ui.notify(
+			`Could not open the external viewer (${opened.detail}). The patch is at ${ensured.patchPath}`,
+			"warning",
+		)
 	}
-	return true
+	return ensured.persisted
 }

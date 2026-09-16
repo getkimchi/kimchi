@@ -157,21 +157,23 @@ test("PR completion dropdown: push is consent-gated and gh failure lands on the 
 			})
 			trace.step("PR completion dropdown visible")
 
-			// Exactly the seven PR-intent entries, user-visible.
+			// Exactly the eight PR-intent entries, user-visible.
 			await waitForText(terminal, "Show the diff", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Show diff in browser", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Show diff in external viewer", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Request changes (steer the remote agent)", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Push branch and open draft PR", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Push branch and pull locally", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Pull the changes to my machine and finish", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Done (keep the remote session for later)", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("all seven dropdown entries visible")
+			trace.step("all eight dropdown entries visible")
 
 			// Declining push consent: choose Push → consent prompt → Cancel →
 			// back at the dropdown. No push, no gh, no session deletion.
-			terminal.keyDown() // → Show diff in external viewer (1) →
-			terminal.keyDown() // → Request changes (2) →
-			terminal.keyDown() // → Push branch and open draft PR (3)
+			terminal.keyDown() // → Show diff in browser (1)
+			terminal.keyDown() // → Show diff in external viewer (2)
+			terminal.keyDown() // → Request changes (3)
+			terminal.keyDown() // → Push branch and open draft PR (4)
 			terminal.submit("")
 			await waitForText(terminal, "Push kimchi/e2e-fix-login to origin and open a draft PR?", {
 				timeoutMs: INPUT_TIMEOUT_MS,
@@ -186,6 +188,7 @@ test("PR completion dropdown: push is consent-gated and gh failure lands on the 
 
 			// Accepting consent: sandbox push (canned) succeeds, then gh fails
 			// honestly (no git host in the seeded workdir) → manual command.
+			terminal.keyDown()
 			terminal.keyDown()
 			terminal.keyDown()
 			terminal.keyDown()
