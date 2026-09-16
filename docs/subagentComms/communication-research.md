@@ -40,6 +40,20 @@ The following are inferences from the external sources and our [recorded experim
 
 These findings favor selective communication around information dependencies. They do not justify requiring posts, broadcasting complete drafts or adding workers to create board activity.
 
+## Questions, information loss and joint action
+
+Three further studies help separate failures that a final score or message count would hide.
+
+[Communication and Verification in LLM Agents](https://arxiv.org/html/2510.25595v1) compares asking, sharing, both and neither in a two-player constraint puzzle. Its error analysis separates redundant sharing, unanswered requests, incorrect answers and wrong rule understanding. Some models score highly without communication by exploiting regularities in the environment. This makes both task variation and independent verification relevant to our comparison. The table also contains exceptions to the paper's broad ordering of communication strategies; it supports measuring these behaviors, not requiring every worker to ask questions.
+
+[CRAFT](https://arxiv.org/html/2603.25268v1) gives three directors different views of a construction target and asks a builder to combine their instructions. Across twenty structures per model, better individual message ratings do not reliably produce better joint outcomes. Builders almost never request clarification: at most once per model across 385–400 turns. Its constrained action space and private views differ from coding with shared files. For Kimchi, the testable question is whether workers identify an unresolved contract and obtain enough information to implement it correctly, rather than whether their messages sound clear.
+
+[AgentCollabBench](https://arxiv.org/html/2605.08647v1) tracks constraint violations, propagation of a seeded token, acceptance of false claims and cross-task leakage across 900 tasks. Direct routes preserve the token better than paths requiring several handoffs. The authors explicitly distinguish preservation from reasoning: copying a token does not prove that a recipient uses a constraint. Most tasks are generated, and two metrics use model judges. We can borrow the distinction without adopting its scores as evidence of coding quality.
+
+These studies suggest recording where an exchange stops: a worker discovers a fact, sends it, the recipient receives the body, asks or answers a question, and changes or verifies the dependent work. A board title in request context establishes discovery only. A successful read establishes access to the body; neither establishes understanding. Claims of a useful change still need source edits, independent checks and competing explanations such as a test failure or a shared file read.
+
+A [reanalysis of the four existing Ferment trials](communication-trace-evaluation.json) found 54 and 62 peer-entry body returns in the enabled runs, and 49 and 59 in controls. These counts include repeated reads, exclude each worker's own entries and separate parent reads. Enabled workers made no directed message calls. Controls had three accepted questions between them, two with recorded accepted replies. This confirms that the board was used in those runs; it leaves open whether asking about a specific unresolved contract would have helped. Both arms already had communication, and these are existing trials rather than new quality results. The [trace script](../../scripts/agent-communication/README.md) reproduced the earlier usage totals across all 38 captured sessions and retains four non-JSON communication results as warnings.
+
 ## A more informative comparison
 
 A suitable workload is a multi-service compatibility repair. Investigations cover producer behavior, consumer behavior and recorded failure traces. All arms retain access to every source and artifact; the task is large enough that discovering an invariant has a measurable cost. Examples include a schema migration or a cancellation contract spanning several components. The communication arm should gain from reusing discoveries, not from denying essential files to its control.

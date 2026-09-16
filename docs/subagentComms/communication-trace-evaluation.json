@@ -1,0 +1,310 @@
+{
+  "date": "2026-09-16",
+  "kind": "retrospective trace analysis; no new inference trials",
+  "source_evaluation": "worker-goal-quality-evaluation.json",
+  "artifact_root": "/private/tmp/kimchi-worker-goal-quality-9pdak4oz",
+  "analyzer": "scripts/agent-communication/trace.py",
+  "analyzer_sha256": "3de7f8b132f684699129013d9b3791e05c9d27b64e67bb62a90b011cf4775b3a",
+  "trials": [
+    {
+      "trial": "trial-01",
+      "worker_ferment": true,
+      "summary": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 86,
+        "unique_reader_entry_pairs": 82,
+        "known_peer_body_returns": 54,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "warnings": [],
+      "usage": {
+        "input": 852536,
+        "output": 55448,
+        "cacheRead": 7497280,
+        "cacheWrite": 0
+      },
+      "usage_matches_prior": true,
+      "sessions": 8,
+      "sources": [
+        {
+          "file": "2026-09-16T09-12-31-277Z_01a0a97d-392d-7d41-b01b-b054ff42a15d.jsonl",
+          "sha256": "c845af94ce15ebdf66469d380a5823dee14e0acbd1780a5d7b764444c8211527"
+        },
+        {
+          "file": "2026-09-16T09-13-07-191Z_01a0a97d-c577-77bd-8354-9daa8869b7dd.jsonl",
+          "sha256": "dc082fc926dfa5ab1fec2edc0f686dd8b56edd4a4fcfa564a804b10889046964"
+        },
+        {
+          "file": "2026-09-16T09-13-07-194Z_01a0a97d-c57a-7056-b151-c68ac9c8bdb6.jsonl",
+          "sha256": "434c948f6d93f8a57030e5177ad1d894dd4b292f9dde2240946ec4144352a772"
+        },
+        {
+          "file": "2026-09-16T09-13-07-195Z_01a0a97d-c57b-748b-b6da-df3794e0cc28.jsonl",
+          "sha256": "7d81f92b79050a2033c0531892402d169682b5e23c9a7627bac4f2132e862eb9"
+        },
+        {
+          "file": "2026-09-16T09-16-56-085Z_01a0a981-4395-7a47-9a79-1f51464e3164.jsonl",
+          "sha256": "d5a3de287b9e8cb2e0d43d8cecf2f5f379e98b0e6eb8fae101f426237f09bdcf"
+        },
+        {
+          "file": "2026-09-16T09-17-23-582Z_01a0a981-aefe-7ed8-a004-4bd3e89244c7.jsonl",
+          "sha256": "2432f6556184be2b14ab01efdb22981a90e864ca7b896f642edef1efa0df45d9"
+        },
+        {
+          "file": "2026-09-16T09-19-05-909Z_01a0a983-3eb5-706f-933f-fb52820a408c.jsonl",
+          "sha256": "f5697b851d6d9caa7a27d9ff7e1fc0bcc7b99ce8b1bef3a624699b895a78aa4a"
+        },
+        {
+          "file": "2026-09-16T09-22-41-566Z_01a0a986-891e-7b28-846d-8e15298edd47.jsonl",
+          "sha256": "fdb918b12c340a6607785e0e88efc9014c8d9abc64e9f56d1408873b6e077085"
+        }
+      ]
+    },
+    {
+      "trial": "trial-02",
+      "worker_ferment": false,
+      "summary": {
+        "recorded_message_calls": 3,
+        "parsed_message_receipts": 2,
+        "board_body_returns": 143,
+        "unique_reader_entry_pairs": 70,
+        "known_peer_body_returns": 49,
+        "parent_body_returns": 70,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 1,
+        "questions_with_recorded_accepted_reply": 1
+      },
+      "warnings": [
+        {
+          "file": "2026-09-16T09-15-24-863Z_01a0a97f-df3f-707b-9555-0dd717fc9dd2.jsonl",
+          "line": 90,
+          "session_id": "01a0a97f-df3f-707b-9555-0dd717fc9dd2",
+          "tool_call_id": "call_017305a17ec34e62ab6dd7f3",
+          "timestamp": 1789550306103,
+          "reason": "non-JSON communication result",
+          "tool": "send_agent_message"
+        }
+      ],
+      "usage": {
+        "input": 694146,
+        "output": 67977,
+        "cacheRead": 8119616,
+        "cacheWrite": 0
+      },
+      "usage_matches_prior": true,
+      "sessions": 9,
+      "sources": [
+        {
+          "file": "2026-09-16T09-12-33-649Z_01a0a97d-4271-77fd-8f51-23bbbc2666ae.jsonl",
+          "sha256": "3e11edd9f5cf648d081960576b3271fd9700e86d1ad22381a896778e643c8660"
+        },
+        {
+          "file": "2026-09-16T09-15-24-849Z_01a0a97f-df31-7381-a356-d31a8ae057db.jsonl",
+          "sha256": "44b68eb8dd014d0e8b8d62374534b4ddfe7a5ae63ebd8aea467b1872bdd510de"
+        },
+        {
+          "file": "2026-09-16T09-15-24-860Z_01a0a97f-df3c-75de-a10d-2dc06d7a6a19.jsonl",
+          "sha256": "bfc61b358a59756ff64a2240429141343e8cb108bfceb22100f645bb469ac4d2"
+        },
+        {
+          "file": "2026-09-16T09-15-24-863Z_01a0a97f-df3f-707b-9555-0dd717fc9dd2.jsonl",
+          "sha256": "72766e9dd1a127f9bd0239a2bf37b819786bdb2f35a3f5406254602b72360b3b"
+        },
+        {
+          "file": "2026-09-16T09-21-30-194Z_01a0a985-7252-70be-8c27-076a0c8578c6.jsonl",
+          "sha256": "7a14f1f0e5d02605ab2ffdd491ba2503ea5e8b33d7d2d0db2a0b9ec3c0db450f"
+        },
+        {
+          "file": "2026-09-16T09-25-25-402Z_01a0a989-091a-7bdd-a104-47525eeb94f1.jsonl",
+          "sha256": "927ee1a691958ab2f98d35755fe53112dfe6cac0a1113079444f768e0ee2c0df"
+        },
+        {
+          "file": "2026-09-16T09-25-43-291Z_01a0a989-4efb-7f80-b465-ca7650aacc78.jsonl",
+          "sha256": "585e81008ae29e4233ac56f1861603a13d940ba359b1e2b0ce37d216fb9b7c34"
+        },
+        {
+          "file": "2026-09-16T09-26-17-267Z_01a0a989-d3b3-728f-a217-c873f23ad654.jsonl",
+          "sha256": "c883e6c87e74bcd39fda9a927b9c079d80f7565a9a88da446a8654a75ff25f2e"
+        },
+        {
+          "file": "2026-09-16T09-26-41-959Z_01a0a98a-3427-7727-942f-373a89b8bc89.jsonl",
+          "sha256": "a69c65857c0be571b25d3aca5c707742b334c02c9b30e77eb537ffcd221eef40"
+        }
+      ]
+    },
+    {
+      "trial": "trial-03",
+      "worker_ferment": false,
+      "summary": {
+        "recorded_message_calls": 7,
+        "parsed_message_receipts": 4,
+        "board_body_returns": 93,
+        "unique_reader_entry_pairs": 84,
+        "known_peer_body_returns": 59,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 2,
+        "questions_with_recorded_accepted_reply": 1
+      },
+      "warnings": [
+        {
+          "file": "2026-09-16T09-25-09-071Z_01a0a988-c94f-71cb-96bc-a147adc1104e.jsonl",
+          "line": 97,
+          "session_id": "01a0a988-c94f-71cb-96bc-a147adc1104e",
+          "tool_call_id": "call_5ba8d2e9396b4c5c99e3e132",
+          "timestamp": 1789550890799,
+          "reason": "non-JSON communication result",
+          "tool": "send_agent_message"
+        },
+        {
+          "file": "2026-09-16T09-25-09-084Z_01a0a988-c95c-73e9-a6a0-f4f74ad1f5ae.jsonl",
+          "line": 78,
+          "session_id": "01a0a988-c95c-73e9-a6a0-f4f74ad1f5ae",
+          "tool_call_id": "call_1ad4c40b3617475da6e2db27",
+          "timestamp": 1789550931943,
+          "reason": "non-JSON communication result",
+          "tool": "send_agent_message"
+        },
+        {
+          "file": "2026-09-16T09-25-09-084Z_01a0a988-c95c-73e9-a6a0-f4f74ad1f5ae.jsonl",
+          "line": 81,
+          "session_id": "01a0a988-c95c-73e9-a6a0-f4f74ad1f5ae",
+          "tool_call_id": "call_92c0017f7b5a485a901c6f91",
+          "timestamp": 1789550944666,
+          "reason": "non-JSON communication result",
+          "tool": "send_agent_message"
+        }
+      ],
+      "usage": {
+        "input": 511551,
+        "output": 49654,
+        "cacheRead": 5768896,
+        "cacheWrite": 0
+      },
+      "usage_matches_prior": true,
+      "sessions": 8,
+      "sources": [
+        {
+          "file": "2026-09-16T09-21-34-264Z_01a0a985-8238-7e4d-aba9-4190f5c6c5e1.jsonl",
+          "sha256": "d8c2f4d89146fec6d2dd8d3706ad8ee0634c32bf66a654c6baf40cf01d9690bb"
+        },
+        {
+          "file": "2026-09-16T09-23-08-748Z_01a0a986-f34c-7dcd-8e24-9771cf16b91b.jsonl",
+          "sha256": "51afb464bf88f7b06d797a8f52cc30997dd8b0b7b7c261f16d0a8ce278f08806"
+        },
+        {
+          "file": "2026-09-16T09-25-09-071Z_01a0a988-c94f-71cb-96bc-a147adc1104e.jsonl",
+          "sha256": "0980783216dc033c384e8cd886d942830bb2dfdcee861a3392b5224fa569d89c"
+        },
+        {
+          "file": "2026-09-16T09-25-09-081Z_01a0a988-c959-733c-94e2-83ac3f6be9b6.jsonl",
+          "sha256": "a837037c7436afe9bc1541b7d98325e18e09955a34adc5d362c43a12bcf96a64"
+        },
+        {
+          "file": "2026-09-16T09-25-09-084Z_01a0a988-c95c-73e9-a6a0-f4f74ad1f5ae.jsonl",
+          "sha256": "9bc32aab501e7797fe36fb76fc5ead4ef32bf4475de2517d64ca9e727cec38b6"
+        },
+        {
+          "file": "2026-09-16T09-30-58-018Z_01a0a98e-1c62-749c-9790-10ce45ad13f3.jsonl",
+          "sha256": "5b900c5e9fefb09de97886a9bbd9061a621f9e9ce3c99cac07e5a7e9f3e2d0f2"
+        },
+        {
+          "file": "2026-09-16T09-32-41-675Z_01a0a98f-b14b-7fe3-bff4-0d4da6e51784.jsonl",
+          "sha256": "988602812981f420179b0fb672242de4b5328510aedb9e869c754eec11f6bb02"
+        },
+        {
+          "file": "2026-09-16T09-32-54-792Z_01a0a98f-e488-73a4-92bf-28a5a7c6c392.jsonl",
+          "sha256": "db22426c390e76a83ad1b081f61f615c8ccb42347f855cf177ba48c929e4bf94"
+        }
+      ]
+    },
+    {
+      "trial": "trial-04",
+      "worker_ferment": true,
+      "summary": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 98,
+        "unique_reader_entry_pairs": 88,
+        "known_peer_body_returns": 62,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "warnings": [],
+      "usage": {
+        "input": 979968,
+        "output": 57250,
+        "cacheRead": 6252224,
+        "cacheWrite": 0
+      },
+      "usage_matches_prior": true,
+      "sessions": 13,
+      "sources": [
+        {
+          "file": "2026-09-16T09-21-36-530Z_01a0a985-8b12-7a63-80bb-600e5ba09746.jsonl",
+          "sha256": "19c2c1d357be029b2b1474e53c036eb56b53b6ee0f901bd860c978ad5cd18ac2"
+        },
+        {
+          "file": "2026-09-16T09-23-01-827Z_01a0a986-d843-779f-92da-c98748b9e65c.jsonl",
+          "sha256": "d649a7d12a54201f86b641ab365ac9c973be5f6eb7ed4e19ffa0bffad426ea47"
+        },
+        {
+          "file": "2026-09-16T09-23-01-832Z_01a0a986-d848-737e-9390-ee5d670f7f26.jsonl",
+          "sha256": "d5586efc450fb5b97c3846549177d38b5aeb1124490d8c8b79b6eecb396885e8"
+        },
+        {
+          "file": "2026-09-16T09-23-01-833Z_01a0a986-d849-7419-845c-7aecad93205f.jsonl",
+          "sha256": "cd537ec24ad3784f606a418cfe3681b8fc668284728915a5c173ed6392322fa6"
+        },
+        {
+          "file": "2026-09-16T09-26-57-352Z_01a0a98a-7048-7a93-b4f4-006d1d73a0e8.jsonl",
+          "sha256": "01a199e3688ad55d4b44af42aa8a0d2c1c61181bd627c934e4986ac392e82f2c"
+        },
+        {
+          "file": "2026-09-16T09-27-21-869Z_01a0a98a-d00d-7182-81ee-1bb6d30c6d34.jsonl",
+          "sha256": "e67ae6af37c1cd1239ba816317f28bdf78f690538cbd150d4c5233a243e21710"
+        },
+        {
+          "file": "2026-09-16T09-27-51-214Z_01a0a98b-42ae-71b9-992b-27ee80d967e0.jsonl",
+          "sha256": "ea67a5f0aba4e23da1a3605be690da96e0fe0522eb4dfa0ec5d1ed6cc387bc09"
+        },
+        {
+          "file": "2026-09-16T09-28-25-341Z_01a0a98b-c7fd-75b4-a9e4-aeecf4f37e4c.jsonl",
+          "sha256": "78f9de7aa4f07d72afb4d5de1e3c4e0c6a78933a6297953e4e942f205d74aafc"
+        },
+        {
+          "file": "2026-09-16T09-30-50-154Z_01a0a98d-fdaa-719a-9a54-70a9cc601518.jsonl",
+          "sha256": "b62899f5cb915ac2dd94ff216dd00c5f80d010b1a98766cb238d912b015e20d8"
+        },
+        {
+          "file": "2026-09-16T09-32-15-653Z_01a0a98f-4ba5-74b6-a3de-957631e40250.jsonl",
+          "sha256": "f10fcfdb907252e8f1121e05a85edcf8947c3f58244a2b4f74490a98729d9652"
+        },
+        {
+          "file": "2026-09-16T09-32-30-704Z_01a0a98f-8670-73a1-8b19-10c7ae2bfac1.jsonl",
+          "sha256": "3bfa7bd3ef1348a82e1c81307e0690349565de83c763f97d7a966bea215d39f0"
+        },
+        {
+          "file": "2026-09-16T09-33-18-878Z_01a0a990-429e-7b16-b44c-f2142a2d431c.jsonl",
+          "sha256": "cac2d1fe1f4705cc30c647e8ca54757351eab85b1b595624b218467876401d75"
+        },
+        {
+          "file": "2026-09-16T09-33-46-641Z_01a0a990-af11-7f0c-8ef4-fcd9a1988ad8.jsonl",
+          "sha256": "2d8437c29a3659adb3b5c6ac2215370db17306a26dc7d6571d4751cdf67fa021"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Both original arms had messages and board; this is not a communication ablation.",
+    "Successful body returns establish tool output, not provider delivery, understanding or causal improvement.",
+    "Question correlation measures recorded accepted replies only; other resolution paths are not inferred.",
+    "All recorded session branches and inference usage are included; no cost or quality conclusion follows."
+  ]
+}
