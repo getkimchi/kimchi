@@ -79,7 +79,7 @@ Platform: ${env.platform}`
 
 	if (config.promptMode === "append") {
 		const activeToolNames = extras?.activeToolNames
-		const parentPrompt = parentSystemPrompt || genericBase
+		const parentPrompt = stripHumanResponseStyle(parentSystemPrompt || genericBase)
 		const identity = activeToolNames
 			? stripInheritedContextSections(parentPrompt)
 			: stripAvailableToolsSection(parentPrompt)
@@ -164,6 +164,10 @@ function buildToolGuidance(toolNames?: string[]): string {
 function uniqueToolNames(toolNames?: string[]): string[] {
 	if (!toolNames) return []
 	return [...new Set(toolNames)].filter(Boolean)
+}
+
+function stripHumanResponseStyle(prompt: string): string {
+	return prompt.replace(/(^|\n)## Communication\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
 }
 
 function stripAvailableToolsSection(prompt: string): string {
