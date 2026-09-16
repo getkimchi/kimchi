@@ -17,6 +17,11 @@ vi.mock("../../config/json.js", async (importOriginal) => {
 	return {
 		...original,
 		readJson: (_path: string) => original.readJson(testPath),
+		// Route readConfigSetting's cache through the REAL cache on testPath
+		// (a bare `...original` spread would read the real user settings file,
+		// because the original readJsonCached internally binds the original
+		// readJson, not this mock's path remap).
+		readJsonCached: (_path: string) => original.readJsonCached(testPath),
 		writeJson: (_path: string, data: unknown) => original.writeJson(testPath, data),
 	}
 })

@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
-import { readJson } from "../../config/json.js"
+import { readJsonCached } from "../../config/json.js"
 import type { KimchiConfig } from "../../config.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import type { RoleModelAssignment } from "../orchestration/model-roles.js"
@@ -46,7 +46,9 @@ function readAgentSettings(): Record<string, unknown> {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return {}
 	try {
-		return readJson(resolve(agentDir, "settings.json"))
+		// Spread at this boundary: the cached object is shared between
+		// callers, and the snapshot builder must not be able to mutate it.
+		return { ...readJsonCached(resolve(agentDir, "settings.json")) }
 	} catch {
 		return {}
 	}

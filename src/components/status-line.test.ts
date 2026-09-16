@@ -209,7 +209,7 @@ function setupStatusLineTest(): { theme: Theme; restorePlatform: () => void } {
 	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+	vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 	const theme = createMockTheme()
 	const restorePlatform = stubPlatform("darwin")
@@ -412,7 +412,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		// Stub platform-dependent shortcut so tests are stable across CI.
 		restorePlatform = stubPlatform("darwin")
@@ -560,7 +560,7 @@ describe("StatusLine segment coverage", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		restorePlatform = stubPlatform("darwin")
 	})
@@ -627,7 +627,7 @@ describe("StatusLine segment coverage", () => {
 
 	it("tags segment shows non-team, non-phase tags when pinned", () => {
 		withPinned(["tags"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
 			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(sl, 200)
 			expect(visible).toContain("tags:")
@@ -645,7 +645,7 @@ describe("StatusLine segment coverage", () => {
 	})
 
 	it("tags segment is always hidden when unpinned", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "team:platform"])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod", "team:platform"])
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 		const visible = renderVisible(sl, 200)
 		expect(visible).not.toContain("tags:")
@@ -653,7 +653,7 @@ describe("StatusLine segment coverage", () => {
 
 	it("team segment shows team value when pinned", () => {
 		withPinned(["team"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform"])
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["team:platform"])
 			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(sl, 200)
 			expect(visible).toContain("team:")
@@ -662,7 +662,7 @@ describe("StatusLine segment coverage", () => {
 	})
 
 	it("team segment is hidden when no team tag present", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod"])
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 		const visible = renderVisible(sl, 200)
 		expect(visible).not.toContain("team:")
@@ -733,12 +733,12 @@ describe("StatusLine segment coverage", () => {
 	it("passes the active session id to phase and tag lookups", () => {
 		withPinned(["phase", "tags"], () => {
 			const getCurrentPhaseSpy = vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-			const getActiveTagsSpy = vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+			const peekActiveTagsSpy = vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod"])
 			const ctx = createMockContext()
 			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
 			renderVisible(sl, 200)
 			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
-			expect(getActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
+			expect(peekActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
 		})
 	})
 })
@@ -752,7 +752,7 @@ describe("StatusLine info line", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 	})
 
@@ -826,7 +826,7 @@ describe("StatusLine regression tests", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		restorePlatform = stubPlatform("darwin")
 	})
@@ -840,7 +840,7 @@ describe("StatusLine regression tests", () => {
 		// Shedding removes whole segments under pressure, but survivors are
 		// re-joined, so we should never see two adjacent separators.
 		// Truncation cuts the tail, not the middle.
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform", "env:prod"])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["team:platform", "env:prod"])
 		const data = createMockStatusLineData({ permissionsMode: "● default" })
 		const sl = new StatusLine(createMockContext(), theme, data)
 
@@ -874,7 +874,7 @@ describe("status line pinning", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 		restorePlatform = stubPlatform("darwin")
 	})
@@ -994,7 +994,7 @@ describe("status line pinning", () => {
 
 	it("pinned team shows 'team: —' when no team tag is present", () => {
 		withPinned(["team"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"]) // no team: tag
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue(["env:prod"]) // no team: tag
 			const sl = makeStatusLine()
 			const visible = stripAnsi(sl.render(200)[0])
 			expect(visible).toContain("team:")
@@ -1004,7 +1004,7 @@ describe("status line pinning", () => {
 
 	it("pinned tags shows 'tags: —' when no tags are present", () => {
 		withPinned(["tags"], () => {
-			vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+			vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 			const sl = makeStatusLine()
 			const visible = stripAnsi(sl.render(200)[0])
 			expect(visible).toContain("tags:")

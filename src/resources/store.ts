@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { readJson, writeJson } from "../config/json.js"
+import { readJson, readJsonCached, writeJson } from "../config/json.js"
 import { getResourceDefinition } from "./definitions.js"
 import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type ResourceSettings } from "./types.js"
 
@@ -15,7 +15,10 @@ export function getResourceSettingsPath(): string {
 export const settingsPath = getResourceSettingsPath
 
 export function readResourceSettings(path = getResourceSettingsPath()): ResourceSettings {
-	const settings = readJson(path)
+	// Stat-gated cache: isResourceEnabled is consulted on every bash tool_call
+	// and every hook event, so the common case must not re-read and re-parse
+	// the settings file. The parsed object is shared — only read from it.
+	const settings = readJsonCached(path)
 	const raw = asRecord(settings[SETTINGS_KEY])
 	const resources: ResourceSettings["resources"] = {}
 	for (const [id, value] of Object.entries(raw)) {

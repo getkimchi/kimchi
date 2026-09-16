@@ -15,8 +15,9 @@ vi.mock("node:os", async (importOriginal) => {
 	}
 })
 
+import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
-import tagsExtension, { getActiveTags, getCurrentPhase, setCurrentPhase, TagManager } from "./tags.js"
+import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 
@@ -580,7 +581,7 @@ describe("setCurrentPhase", () => {
 	})
 })
 
-describe("getActiveTags", () => {
+describe("peekActiveTags", () => {
 	beforeEach(() => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
 		mkdirSync(MOCK_HOME, { recursive: true })
@@ -593,22 +594,62 @@ describe("getActiveTags", () => {
 		vi.unstubAllEnvs()
 	})
 
+	it("reuses the session's TagManager — repeated peeks do not re-resolve defaults", () => {
+		const resolveSpy = vi.spyOn(configTags, "resolveDefaultTags")
+
+		// Guard: prove the spy actually intercepts TagManager construction —
+		// peeking a never-started session builds a throwaway instance.
+		peekActiveTags(makeSessionManager("peek-spy-guard-session"))
+		expect(resolveSpy).toHaveBeenCalledOnce()
+		resolveSpy.mockClear()
+
+		const pi = makePi()
+		tagsExtension(pi) // fires session_start → populates the shared map
+		resolveSpy.mockClear()
+
+		const sessionManager = makeSessionManager(TEST_SESSION_ID)
+		peekActiveTags(sessionManager)
+		peekActiveTags(sessionManager)
+		peekActiveTags(sessionManager)
+
+		// Every peek hit the shared instance: no new TagManager construction,
+		// no tag-file reads, no ancestor walk.
+		expect(resolveSpy).not.toHaveBeenCalled()
+		resolveSpy.mockRestore()
+	})
+
+	it("returns a defensive copy — mutating the result does not affect subsequent peeks", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "add team:backend", commandContext("peek-mutation-session"))
+		const sessionManager = makeSessionManager("peek-mutation-session")
+
+		// getAllTags() copies the instance's set (Array.from), so a display
+		// path sorting or appending to the array it got must not corrupt the
+		// shared TagManager for other readers (including request tagging).
+		const tags = peekActiveTags(sessionManager)
+		tags.push("injected:key")
+		tags.length = 0
+
+		expect(peekActiveTags(sessionManager)).toEqual(["team:backend"])
+	})
+
 	it("returns an empty array before tags are added", () => {
-		expect(getActiveTags(makeSessionManager("fresh-tags-session"))).toEqual([])
+		expect(peekActiveTags(makeSessionManager("fresh-tags-session"))).toEqual([])
 	})
 
 	it("returns tags added through the extension command", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", "add team:backend", commandContext("command-tags-session"))
-		expect(getActiveTags(makeSessionManager("command-tags-session"))).toEqual(["team:backend"])
+		expect(peekActiveTags(makeSessionManager("command-tags-session"))).toEqual(["team:backend"])
 	})
 
 	it("isolates tags between sessions", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", "add team:backend", commandContext("tags-session-a"))
-		expect(getActiveTags(makeSessionManager("tags-session-a"))).toEqual(["team:backend"])
-		expect(getActiveTags(makeSessionManager("tags-session-b"))).toEqual([])
+		expect(peekActiveTags(makeSessionManager("tags-session-a"))).toEqual(["team:backend"])
+		expect(peekActiveTags(makeSessionManager("tags-session-b"))).toEqual([])
 	})
 })

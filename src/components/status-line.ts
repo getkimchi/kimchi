@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -6,6 +5,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
+import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { parseTag } from "../config/tags.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
@@ -18,7 +18,7 @@ import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
 import { getEffectiveModel } from "../extensions/router/state.js"
-import { getActiveTags, getCurrentPhase } from "../extensions/tags.js"
+import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -87,9 +87,12 @@ const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "s
 
 export function readStatusLineCommand(): string | null {
 	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		const cmd = parsed?.statusLine?.command
+		// Stat-gated read: the footer factory consults this on rebuild, so it
+		// must not re-read and re-parse the settings file every time.
+		const settings = readJsonCached(HARNESS_SETTINGS_PATH)
+		const statusLine = settings.statusLine
+		const cmd =
+			statusLine && typeof statusLine === "object" ? (statusLine as Record<string, unknown>).command : undefined
 		if (typeof cmd !== "string" || cmd.length === 0) return null
 		if (cmd.startsWith("~/")) return resolve(homedir(), cmd.slice(2))
 		return cmd
@@ -684,7 +687,7 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 ): Segment[] {
-	const tags = getActiveTags(ctx.sessionManager)
+	const tags = peekActiveTags(ctx.sessionManager)
 		.map(parseTag)
 		.filter((t): t is ParsedTag => t !== null)
 
