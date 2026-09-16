@@ -1237,6 +1237,11 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 	try {
 		let client: AcpSessionClient
 		if (reusedAcpClient) {
+			// Events stream through the CONSTRUCT-TIME callbacks — rebind them
+			// to THIS run's record/state, else the continuation's updates pour
+			// into the stale run-1 state (completion then never fires for the
+			// new record).
+			reusedAcpClient.setCallbacks(wrappedCallbacks)
 			client = reusedAcpClient
 		} else {
 			// session/load via the persisted id — the only way to keep the

@@ -424,6 +424,15 @@ export class AcpSessionClient {
 		return this._closed
 	}
 
+	/** Swap the event callbacks — REQUIRED when reusing a kept-alive client
+	 *  for a new run/record: events stream through _options.callbacks, which
+	 *  still point at the ORIGINAL run's record/state otherwise. All event
+	 *  sites read callbacks lazily, so the swap is safe between turns.
+	 *  Must NOT be called while a turn is in flight (single-owner contract). */
+	setCallbacks(callbacks: AcpSessionCallbacks): void {
+		this._options.callbacks = callbacks
+	}
+
 	/** Closes the WebSocket and frees resources. Safe to call multiple times. */
 	close(): void {
 		if (this._closed) return

@@ -83,6 +83,7 @@ vi.mock("../../../sandbox/worker/acp-client.js", async (importOriginal) => {
 				close: mockClose,
 				cancel: mockCancel,
 				forceDisconnect: mockForceDisconnect,
+				setCallbacks: vi.fn(),
 			}
 		}),
 		RemoteConnectionError,
@@ -211,6 +212,7 @@ beforeEach(() => {
 			close: mockClose,
 			cancel: mockCancel,
 			forceDisconnect: mockForceDisconnect,
+			setCallbacks: vi.fn(),
 			get loadReplay() {
 				return mockLoadReplay
 			},
@@ -1871,6 +1873,11 @@ describe("continueRemoteAgent", () => {
 		expect(waitForWorkspaceReady).not.toHaveBeenCalled()
 		expect(AcpSessionClient).toHaveBeenCalledTimes(1) // unchanged
 		expect(mockInitialize).toHaveBeenCalledTimes(1) // no session/load again
+		// THE crux: the reused client's event callbacks were REBOUND to the
+		// second run — without this, run 2's turn updates pour into run 1's
+		// stale state and its completion never fires.
+		const reusedInstance = vi.mocked(AcpSessionClient).mock.results[0]?.value as { setCallbacks: ReturnType<typeof vi.fn> }
+		expect(reusedInstance.setCallbacks).toHaveBeenCalledTimes(1)
 		expect(mockPrompt).toHaveBeenCalledTimes(2)
 		expect(mockPrompt).toHaveBeenLastCalledWith("one more change")
 		expect(result.stopReason).toBe("end_turn")
