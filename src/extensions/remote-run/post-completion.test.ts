@@ -729,6 +729,25 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("retries diff collection once when the credential exchange stalls", async () => {
+		const abort = new Error("The operation was aborted")
+		abort.name = "AbortError"
+		mockCollectCompletionDiff.mockRejectedValueOnce(abort).mockResolvedValueOnce({ ...STAT })
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done (keep the remote session for later)")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession: REMOTE, gitWorkflow: GIT })
+
+		// Retry surfaced as an info line with the honest timeout wording --
+		// never Node's raw "The operation was aborted".
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Diff collection stalled (connection timed out) — retrying once…", "info")
+		// The retry landed in the PR dropdown, not the degraded menu.
+		const [, options] = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string[]]
+		expect(options).toContain("Push branch and open draft PR")
+		expect(mockCollectCompletionDiff).toHaveBeenCalledTimes(2)
+	})
+
 	it("degrades to the standard menu when diff collection fails over SSH", async () => {
 		mockCollectCompletionDiff.mockRejectedValue(new Error("ssh unreachable"))
 		const pi = makePi()

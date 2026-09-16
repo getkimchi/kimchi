@@ -394,6 +394,11 @@ async function promptForCustomAction(ctx: ExtensionContext): Promise<string | un
 }
 
 function errMessage(err: unknown): string {
+	// Node abort errors read "The operation was aborted" — useless. Name the
+	// cause (a fetch/ssh timeout), which is what abort means in our paths.
+	if (err instanceof Error && err.name === "AbortError") {
+		return "connection timed out"
+	}
 	return err instanceof Error ? err.message : String(err)
 }
 
@@ -439,10 +444,29 @@ async function handlePrCompletion(
 	let stat: CompletionDiffStat | undefined
 	const baseSha = git.baseSha
 	try {
-		connection = await resolveSandboxGitConnection(opts.remoteSession, apiKey, {
-			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-		})
-		stat = await collectCompletionDiff({ connection, baseSha: git.baseSha, baselineDirtyFiles: git.dirtyFiles })
+		// One retry: the credential-exchange fetch (30s timeout) is the flaky
+		// hop in practice — it aborts silently when the control endpoint
+		// stalls, with no bearing on whether the sandbox itself is alive.
+		const collect = async (): Promise<[SandboxGitConnection, CompletionDiffStat | undefined]> => {
+			const conn = await resolveSandboxGitConnection(opts.remoteSession, apiKey, {
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
+			const diffStat = await collectCompletionDiff({
+				connection: conn,
+				baseSha,
+				baselineDirtyFiles: git.dirtyFiles,
+			})
+			return [conn, diffStat]
+		}
+		let result: [SandboxGitConnection, CompletionDiffStat | undefined]
+		try {
+			result = await collect()
+		} catch (firstErr) {
+			ctx.ui.notify(`Diff collection stalled (${errMessage(firstErr)}) — retrying once…`, "info")
+			result = await collect()
+		}
+		connection = result[0]
+		stat = result[1]
 	} catch (err) {
 		ctx.ui.notify(
 			`Could not collect the remote diff: ${errMessage(err)}. Falling back to the standard actions.`,
