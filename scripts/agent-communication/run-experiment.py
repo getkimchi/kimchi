@@ -86,12 +86,15 @@ def snapshot(source, destination):
 def sample(run):
     usage = Counter(input=0, output=0, cacheRead=0, cacheWrite=0)
     parent = []
+    child_sessions = 0
     for path in (run / "sessions").glob("*.jsonl"):
         entries = rows(path)
         if not entries:
             continue
         if entries[0].get("type") == "session" and not entries[0].get("parentSession"):
             parent = entries
+        elif entries[0].get("type") == "session":
+            child_sessions += 1
         for entry in entries:
             message = entry.get("message", {})
             if entry.get("type") == "message" and message.get("role") == "assistant":
@@ -100,12 +103,16 @@ def sample(run):
     records = {entry["data"]["id"]: entry["data"] for entry in parent
                if entry.get("customType") == "subagents:record" and entry.get("data", {}).get("visibility") == "user"}
     messages = [entry["message"] for entry in parent if entry.get("type") == "message"]
+    launched = {message["details"]["agentId"] for message in messages
+                if message.get("role") == "toolResult" and message.get("toolName") == "Agent"
+                and not message.get("isError") and message.get("details", {}).get("agentId")}
     last = messages[-1] if messages else {}
     settled = last.get("role") == "assistant" and last.get("stopReason") in {"stop", "error", "aborted"}
     latest_worker = max((record.get("completedAt", 0) or 0 for record in records.values()), default=0)
     return {"usage": dict(usage), "records": list(records.values()),
             "settled": settled and last.get("timestamp", 0) >= latest_worker,
-            "workers_terminal": all(record["status"] in TERMINAL for record in records.values())}
+            "workers_terminal": launched <= records.keys() and len(records) >= child_sessions
+            and all(record["status"] in TERMINAL for record in records.values())}
 
 
 def prompt(arm):

@@ -37,6 +37,20 @@ class RunnerTests(unittest.TestCase):
         ])
         self.assertFalse(runner.sample(self.root)["workers_terminal"])
 
+    def test_worker_session_without_terminal_record_prevents_completion(self):
+        self.session("parent", [
+            {"type": "message", "message": {"role": "assistant", "stopReason": "stop", "timestamp": 300}},
+        ])
+        self.session("worker", [], parent="parent")
+        self.assertFalse(runner.sample(self.root)["workers_terminal"])
+
+    def test_accepted_launch_prevents_completion_before_child_session_exists(self):
+        self.session("parent", [
+            {"type": "message", "message": {"role": "toolResult", "toolName": "Agent", "details": {"agentId": "worker"}}},
+            {"type": "message", "message": {"role": "assistant", "stopReason": "stop", "timestamp": 300}},
+        ])
+        self.assertFalse(runner.sample(self.root)["workers_terminal"])
+
     def test_usage_includes_cached_input_and_every_session(self):
         for name, parent in [("parent", None), ("worker", "parent")]:
             self.session(name, [{"type": "message", "message": {"role": "assistant", "usage": {
