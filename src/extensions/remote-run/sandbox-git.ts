@@ -272,6 +272,30 @@ export async function captureBaseline(
 }
 
 /**
+ * Fallback when no pre-run baseline exists (its capture failed at dispatch
+ * — the attempted-flag correctly prevents a post-commit re-capture, so HEAD
+ * has moved and is no longer a valid diff start): use the fork point of
+ * <baseBranch>. Best-effort fetch of origin/<baseBranch> first so clone
+ * tokens that never fetched defaults still get a sane merge-base; falls
+ * back to the locally-known ref. Returns undefined when the fork point
+ * can't be determined.
+ */
+export async function recoverBaseShaFromMergeBase(
+	connection: SandboxGitConnection,
+	baseBranch: string,
+	opts?: { signal?: AbortSignal; apiKey?: string; proxyCommand?: string; _spawn?: typeof spawn },
+): Promise<string | undefined> {
+	// Best effort — the clone may be offline-only or the token read-only.
+	await runSandboxGit({ connection, args: ["fetch", "--no-tags", "origin", baseBranch], ...opts }).catch(() => {})
+	for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+		const res = await runSandboxGit({ connection, args: ["merge-base", ref, "HEAD"], ...opts }).catch(() => undefined)
+		const sha = res?.stdout.trim() ?? ""
+		if (/^[0-9a-f]{40}$/.test(sha)) return sha
+	}
+	return undefined
+}
+
+/**
  * Parses `git status --porcelain` into repo-relative paths. Handles rename
  * entries ("R  old -> new" — keeps the new path) and git's C-quoted paths
  * (strips the surrounding quotes; escape sequences are left as-is, which is

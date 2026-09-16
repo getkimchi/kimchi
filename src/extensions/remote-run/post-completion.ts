@@ -41,7 +41,7 @@ import {
 	streamRemotePatch,
 } from "./remote-diff.js"
 import { continueCloudAgent } from "./runner.js"
-import { resolveSandboxGitConnection, type SandboxGitConnection } from "./sandbox-git.js"
+import { recoverBaseShaFromMergeBase, resolveSandboxGitConnection, type SandboxGitConnection } from "./sandbox-git.js"
 import { DiffViewer } from "./ui/diff-viewer.js"
 import { openExternalDiff } from "./ui/external-viewer.js"
 
@@ -432,22 +432,42 @@ async function handlePrCompletion(
 	opts: HandleRemoteCompletionOpts & { gitWorkflow: PersistedGitWorkflow; remoteSession: RemoteSessionMeta },
 ): Promise<boolean> {
 	const git = opts.gitWorkflow
-	if (!git.baseSha) {
-		ctx.ui.notify(
-			`The remote branch ${git.branch} is ready, but no pre-run baseline was captured — cannot compute the review diff. Falling back to the standard actions.`,
-			"warning",
-		)
-		return false
-	}
 	const apiKey = loadConfig().apiKey
 	if (!apiKey) {
 		ctx.ui.notify("No API key configured. Run `kimchi login`.", "error")
 		return false
 	}
 
+	// No pre-run baseline (its capture failed at dispatch — user already got
+	// a warning): re-capturing now would anchor the range at a post-commit
+	// HEAD (silently poisoning the diff). Recover instead via the fork point
+	// of the base branch, when one was recorded.
+	let baseSha = git.baseSha
+	if (!baseSha) {
+		if (git.baseBranch) {
+			const conn0 = await resolveSandboxGitConnection(opts.remoteSession, apiKey, {
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			}).catch(() => undefined)
+			if (conn0) {
+				baseSha = await recoverBaseShaFromMergeBase(conn0, git.baseBranch).catch(() => undefined)
+			}
+		}
+		if (!baseSha) {
+			ctx.ui.notify(
+				`The remote branch ${git.branch} is ready, but no review baseline could be determined (no pre-run baseline${git.baseBranch ? `, and no merge-base with ${git.baseBranch}` : ""}) — cannot compute the review diff. Falling back to the standard actions.`,
+				"warning",
+			)
+			return false
+		}
+		ctx.ui.notify(
+			`Review baseline recovered via merge-base with ${git.baseBranch} (the pre-run baseline was never captured).`,
+			"info",
+		)
+	}
+
 	let connection: SandboxGitConnection
 	let stat: CompletionDiffStat | undefined
-	const baseSha = git.baseSha
+	const baseShaConst = baseSha
 	try {
 		// One retry: the credential-exchange fetch (30s timeout) is the flaky
 		// hop in practice — it aborts silently when the control endpoint
@@ -458,7 +478,7 @@ async function handlePrCompletion(
 			})
 			const diffStat = await collectCompletionDiff({
 				connection: conn,
-				baseSha,
+				baseSha: baseShaConst,
 				baselineDirtyFiles: git.dirtyFiles,
 			})
 			return [conn, diffStat]

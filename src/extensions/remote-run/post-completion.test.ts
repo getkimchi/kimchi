@@ -68,15 +68,20 @@ const {
 	mockStreamRemotePatch,
 	mockContinueCloudAgent,
 	mockDeleteRemoteSession,
+	mockRecoverBaseShaFromMergeBase,
 } = vi.hoisted(() => ({
 	mockResolveSandboxGitConnection: vi.fn(),
 	mockCollectCompletionDiff: vi.fn(),
 	mockStreamRemotePatch: vi.fn(),
 	mockContinueCloudAgent: vi.fn(),
 	mockDeleteRemoteSession: vi.fn(),
+	mockRecoverBaseShaFromMergeBase: vi.fn(),
 }))
 
-vi.mock("./sandbox-git.js", () => ({ resolveSandboxGitConnection: mockResolveSandboxGitConnection }))
+vi.mock("./sandbox-git.js", () => ({
+	resolveSandboxGitConnection: mockResolveSandboxGitConnection,
+	recoverBaseShaFromMergeBase: mockRecoverBaseShaFromMergeBase,
+}))
 vi.mock("./remote-diff.js", () => ({
 	collectCompletionDiff: mockCollectCompletionDiff,
 	streamRemotePatch: mockStreamRemotePatch,
@@ -583,6 +588,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		mockCollectCompletionDiff.mockResolvedValue({ ...STAT })
 		mockPullBranchLocally.mockReturnValue({ kind: "pulled", action: "created" })
 		mockOpenExternalDiff.mockReturnValue({ opened: false, detail: "no editor" })
+		mockRecoverBaseShaFromMergeBase.mockResolvedValue(undefined)
 		// Mimics the real stream: chunks flow to onChunk AND append to the patch file.
 		mockStreamRemotePatch.mockImplementation(
 			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
@@ -796,7 +802,34 @@ describe("handleRemoteCompletion — PR intent", () => {
 		})
 
 		expect(mockCollectCompletionDiff).not.toHaveBeenCalled()
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("no pre-run baseline"), "warning")
+		expect(mockRecoverBaseShaFromMergeBase).toHaveBeenCalledWith(CONNECTION, "main")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("no review baseline could be determined"),
+			"warning",
+		)
+	})
+
+	it("recovers the review baseline via merge-base when the pre-run baseline was never captured", async () => {
+		mockRecoverBaseShaFromMergeBase.mockResolvedValue("c".repeat(40))
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done (keep the remote session for later)")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			remoteSession: REMOTE,
+			gitWorkflow: { branch: "kimchi/fix-login", baseBranch: "main" },
+		})
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Review baseline recovered via merge-base with main (the pre-run baseline was never captured).",
+			"info",
+		)
+		expect(mockCollectCompletionDiff).toHaveBeenCalledWith(
+			expect.objectContaining({ connection: CONNECTION, baseSha: "c".repeat(40) }),
+		)
+		// Recovery landed in the PR dropdown, not the degraded menu.
+		const [, options] = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string[]]
+		expect(options).toContain("Push branch and open draft PR")
 	})
 
 	it("syncs from the PR menu: rsync + ferment completion + PR-flavoured inject", async () => {

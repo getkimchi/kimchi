@@ -624,6 +624,10 @@ export class AgentManager {
 						record.gitWorkflow.baseSha = baseline.baseSha
 						record.gitWorkflow.dirtyFiles = baseline.dirtyFiles
 					} catch (err) {
+						// Was console.warn — invisible. This degrades the PR review at
+						// completion (no deterministic range), so tell the user now.
+						const message = `PR review baseline could not be captured: ${err instanceof Error ? err.message : err} — diff review will fall back to merge-base at completion.`
+						ctx.ui.notify?.(message, "warning")
 						console.warn(`[agent-manager] baseline capture failed: ${err instanceof Error ? err.message : err}`)
 					}
 				}

@@ -6,6 +6,7 @@ import {
 	buildSandboxGitSshArgv,
 	captureBaseline,
 	parsePorcelainPaths,
+	recoverBaseShaFromMergeBase,
 	runSandboxGit,
 	type SandboxGitConnection,
 	SandboxGitError,
@@ -233,5 +234,55 @@ describe("captureBaseline", () => {
 	it("propagates SandboxGitError from the first failing command", async () => {
 		const spawner = fakeSpawn({ code: 1, stderr: "fatal" })
 		await expect(captureBaseline(CONNECTION, { apiKey: "k", _spawn: spawner })).rejects.toThrow(SandboxGitError)
+	})
+})
+
+describe("recoverBaseShaFromMergeBase", () => {
+	function mergeBaseSpawner(responses: Array<{ match: string; stdout: string; code?: number }>) {
+		return vi.fn((_binary: string, args: string[]) => {
+			const remoteCommand = args[args.length - 1]
+			const hit = responses.find((r) => remoteCommand.includes(r.match)) ?? { stdout: "", code: 1 }
+			const child = new EventEmitter() as ChildProcess
+			child.stdout = new EventEmitter() as ChildProcess["stdout"]
+			child.stderr = new EventEmitter() as ChildProcess["stderr"]
+			process.nextTick(() => {
+				child.stdout?.emit("data", Buffer.from(hit.stdout, "utf-8"))
+				child.emit("close", hit.code ?? 0)
+			})
+			return child
+		}) as unknown as typeof spawn
+	}
+
+	it("resolves via origin/<baseBranch> after a best-effort fetch", async () => {
+		const sha = "c".repeat(40)
+		const commands: string[] = []
+		const base = mergeBaseSpawner([
+			{ match: "fetch", stdout: "" },
+			{ match: "merge-base", stdout: `${sha}\n` },
+		])
+		const spawner = vi.fn((binary: string, args: string[]) => {
+			commands.push(args[args.length - 1] as string)
+			return base(binary, args)
+		}) as unknown as typeof spawn
+
+		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { apiKey: "k", _spawn: spawner })
+
+		expect(got).toBe(sha)
+		expect(commands).toEqual([
+			"git -C '/home/sandbox/acp-deadbeef' 'fetch' '--no-tags' 'origin' 'main'",
+			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'origin/main' 'HEAD'",
+		])
+	})
+
+	it("falls back to the local base-branch ref and returns undefined when there is no fork point", async () => {
+		const spawner = mergeBaseSpawner([
+			{ match: "fetch", stdout: "" },
+			// origin/main merge-base fails; plain main succeeds
+		])
+
+		// First call (origin/main) fails → second (main) succeeds? both fail here → undefined.
+		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { apiKey: "k", _spawn: spawner })
+
+		expect(got).toBeUndefined()
 	})
 })
