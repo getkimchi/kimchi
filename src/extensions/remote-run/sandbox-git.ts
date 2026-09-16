@@ -18,6 +18,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
+import { WorkerClient } from "../../sandbox/worker/client.js"
+import { getSession } from "../../sandbox/worker/sessions.js"
 import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { buildProxyCommand } from "../teleport/provisioning/proxy-command.js"
@@ -64,7 +66,13 @@ export class SandboxGitError extends Error {
 		readonly stderr: string,
 		message?: string,
 	) {
-		super(message ?? `git exited with code ${exitCode}`)
+		// Attach the first non-empty stderr line — ssh/git layer failures
+		// (255 = ssh connect/auth failure) are unfixable without it.
+		const firstLine = stderr
+			.split("\n")
+			.map((l) => l.trim())
+			.find(Boolean)
+		super(message ?? `git exited with code ${exitCode}${firstLine ? `: ${firstLine}` : ""}`)
 		this.name = "SandboxGitError"
 	}
 }
@@ -86,10 +94,34 @@ export async function resolveSandboxGitConnection(
 	const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, opts?.description ?? "kimchi", {
 		endpoint: opts?.endpoint ?? process.env.KIMCHI_REMOTE_ENDPOINT,
 	})
+	// Hibernated sandbox: SSH to a sleeping pod is a bare 255 with zero
+	// feedback. The ACP attach path wakes via the session endpoint; mirror
+	// it here — best-effort poll until the sandbox reports alive before any
+	// git ssh goes out.
+	await wakeSandboxIfAsleep(creds, remoteSession.sessionName)
 	// The session may have moved hosts between runs (reconnect) — the freshly
 	// exchanged credential carries the live host, while the recorded cwd
 	// stays valid because the workspace filesystem persists.
 	return { host: creds.host, remoteUser: SANDBOX_USER, authToken: creds.connectToken, cwd: remoteSession.cwd }
+}
+
+/**
+ * Best-effort hibernation wake before SSH: poll the session endpoint until
+ * the sandbox reports its pod alive (or ~90s pass). NEVER throws — the git
+ * layer's own retry surfaces real failures.
+ */
+async function wakeSandboxIfAsleep(
+	creds: Awaited<ReturnType<typeof authenticateWorkspace>>,
+	sessionName: string,
+): Promise<void> {
+	const deadline = Date.now() + 90_000
+	const client = new WorkerClient(creds)
+	for (;;) {
+		const session = await getSession(client, sessionName).catch(() => undefined)
+		if (session?.alive) return
+		if (Date.now() > deadline) return
+		await new Promise((resolve) => setTimeout(resolve, 3_000))
+	}
 }
 
 /** POSIX single-quote for remote shell interpolation (ssh joins argv into one remote command). */
