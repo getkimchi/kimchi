@@ -1876,7 +1876,9 @@ describe("continueRemoteAgent", () => {
 		// THE crux: the reused client's event callbacks were REBOUND to the
 		// second run — without this, run 2's turn updates pour into run 1's
 		// stale state and its completion never fires.
-		const reusedInstance = vi.mocked(AcpSessionClient).mock.results[0]?.value as { setCallbacks: ReturnType<typeof vi.fn> }
+		const reusedInstance = vi.mocked(AcpSessionClient).mock.results[0]?.value as {
+			setCallbacks: ReturnType<typeof vi.fn>
+		}
 		expect(reusedInstance.setCallbacks).toHaveBeenCalledTimes(1)
 		expect(mockPrompt).toHaveBeenCalledTimes(2)
 		expect(mockPrompt).toHaveBeenLastCalledWith("one more change")
