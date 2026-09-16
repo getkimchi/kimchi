@@ -1032,6 +1032,14 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(mockPullBranchLocally).toHaveBeenCalledWith(expect.objectContaining({ branch: "kimchi/fix-login" }))
 		// No gh involvement — the PR flow is not this action's job.
 		expect(mockCreateDraftPr).not.toHaveBeenCalled()
+		// Plannotator code-review is fired fire-and-forget on the pulled branch.
+		expect(pi.events.emit).toHaveBeenCalledWith(
+			"plannotator:request",
+			expect.objectContaining({
+				action: "code-review",
+				payload: { cwd: ctx.cwd, defaultBranch: "main" },
+			}),
+		)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			"Pushed and pulled — on kimchi/fix-login (created from origin/kimchi/fix-login).",
 			"info",

@@ -52,6 +52,9 @@ const CUSTOM = "Describe what to do next"
 const SHOW_DIFF = "Show the diff"
 const SHOW_DIFF_BROWSER = "Show diff in browser"
 const SHOW_DIFF_EXTERNAL = "Show diff in external viewer"
+
+/** Plannotator shared event bus action for its browser code-review UI. */
+const PLANNOTATOR_REQUEST_CHANNEL = "plannotator:request"
 const REQUEST_CHANGES = "Request changes (steer the remote agent)"
 const PUSH_AND_PR = "Push branch and open draft PR"
 const PUSH_AND_PULL = "Push branch and pull locally"
@@ -833,8 +836,33 @@ async function pushAndPullLocally(pi: ExtensionAPI, ctx: ExtensionContext, run: 
 			: `Pushed and pulled — on ${branch}, fast-forwarded to origin/${branch}.`,
 		"info",
 	)
+	// Fire-and-forget plannotator code-review on the freshly checked-out
+	// local branch. When @plannotator/pi-extension is not installed the emit
+	// is a no-op (nobody listens) — the local state is ready either way.
+	firePlannotatorCodeReview(pi, ctx.cwd, git.baseBranch ?? undefined)
+	ctx.ui.notify(
+		"Opening the Plannotator code-review UI in your browser (needs @plannotator/pi-extension installed). If nothing opens, the extension is not installed.",
+		"info",
+	)
 	await deleteKeptRemoteSession(ctx, run.opts.remoteSession, run.apiKey)
 	return true
+}
+
+/**
+ * Emits plannotator's shared `code-review` request against the LOCAL repo
+ * (branch-vs-base — the remote branch was just pulled). fire-and-forget,
+ * https://github.com/backnotprop/plannotator — a missing extension simply
+ * never invokes the respond callback.
+ */
+function firePlannotatorCodeReview(pi: ExtensionAPI, cwd: string, baseBranch?: string): void {
+	const payload: Record<string, unknown> = { cwd }
+	if (baseBranch) payload.defaultBranch = baseBranch
+	pi.events.emit(PLANNOTATOR_REQUEST_CHANNEL, {
+		requestId: `kimchi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+		action: "code-review",
+		payload,
+		respond: () => {},
+	})
 }
 
 /**
