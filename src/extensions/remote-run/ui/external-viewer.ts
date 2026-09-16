@@ -84,13 +84,29 @@ export function openExternalDiff(
 		// opener instead, which still gives the diff a real window.
 	}
 
+	return openFileWithOsPatch(patchPath, opts)
+}
+
+/** OS-default-open (browsers for html, file-manager for others). No editor env. */
+export function openInBrowser(
+	path: string,
+	opts?: { platform?: NodeJS.Platform; _exec?: typeof execFileSync },
+): ExternalViewerResult {
+	return openFileWithOsPatch(path, opts)
+}
+
+function openFileWithOsPatch(
+	path: string,
+	opts?: { platform?: NodeJS.Platform; _exec?: typeof execFileSync },
+): ExternalViewerResult {
+	const exec = opts?._exec ?? execFileSync
 	const platform = opts?.platform ?? process.platform
 	const [command, args] =
 		platform === "darwin"
-			? ["open", [patchPath]]
+			? ["open", [path]]
 			: platform === "win32"
-				? ["cmd", ["/c", "start", "", patchPath]]
-				: ["xdg-open", [patchPath]]
+				? ["cmd", ["/c", "start", "", path]]
+				: ["xdg-open", [path]]
 	try {
 		exec(command, args, { stdio: "ignore" })
 		return { opened: true, detail: `${command} ${args.join(" ")}` }
