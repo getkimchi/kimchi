@@ -479,6 +479,30 @@ describe("handlers/tools", () => {
 			expect(fired?.attrs.latched_count).toBe("1")
 		})
 
+		it("skips the fired emit and window for payloads with no valid skills", async () => {
+			const ctx = new TelemetryContext(makeConfig())
+
+			// Null payload and malformed/empty entries are not real suggestions.
+			handleSkillSuggestEvent(ctx, null)
+			handleSkillSuggestEvent(ctx, { skills: [{ name: 42 }], latched: 0 })
+			handleSkillSuggestEvent(ctx, { skills: [], latched: 0 })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			expect(events.find((e) => e.eventName === "skill_suggest.fired")).toBeUndefined()
+			// The conversion window stays empty — a later skill_view of any skill
+			// must not emit a bogus loaded event.
+			handleToolExecutionStart(ctx, { toolCallId: "tc-guard", toolName: "skill_view", args: { name: "vcs-workflow" } })
+			handleToolExecutionEnd(ctx, createContext({ model: { id: "claude-3-5-sonnet" } }), {
+				toolCallId: "tc-guard",
+				isError: false,
+			})
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			expect(parseLogEvents(fetchMock).find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
+		})
+
 		it("counts a skill_view call for a suggested skill as a conversion", async () => {
 			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
 			const ctx = new TelemetryContext(makeConfig())

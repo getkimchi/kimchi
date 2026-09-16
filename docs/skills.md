@@ -86,3 +86,7 @@ matching behaviors matter for authors:
   matches the skill *name*, the skill is suggested even if the topic nouns
   match nothing. An action verb in the name ("…-debugging", "…-writing")
   makes the skill fire on the corresponding imperative.
+- **Matching is English-oriented**: tokens are `[a-z0-9']` sequences, so
+  prompts in non-ASCII scripts (CJK, accented Latin) yield few or no tokens
+  and simply never match — no suggestion, no error. English trigger
+  vocabulary in descriptions is what the matcher (and the model) rely on.

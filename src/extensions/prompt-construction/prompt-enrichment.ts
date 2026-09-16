@@ -222,10 +222,14 @@ export default function (skillPathsFromConfig: string[]) {
 			registerModelRolesCommand(pi)
 		}
 
-		// Session-keyed skill suggesters. Defined at factory scope (not inside the
-		// main-thread block) because the shared before_agent_start below feeds the
-		// inventory for every session; suggest() itself only fires from the
-		// main-thread input handler — subagents receive no user input events.
+		// Session-keyed skill suggesters. Defined at factory scope because the
+		// shared before_agent_start below feeds the inventory for every session.
+		// Suggestion runs inside that handler, gated on !subagentMode: subagent
+		// sessions never reach it, because they are created with their own
+		// DefaultResourceLoader whose inline extension-factory list does not
+		// include this extension (repo-native extensions from cli.ts are not
+		// discovered by a child loader), so their before_agent_start events are
+		// handled by their own runner, not this one.
 		const skillSuggesterMap = new Map<string, SkillSuggester>()
 
 		function getSkillSuggester(sessionId: string): SkillSuggester {
@@ -375,8 +379,6 @@ export default function (skillPathsFromConfig: string[]) {
 				continuationNudge.resetForNewUserInput()
 				emptyTurnNudge.resetForNewUserInput()
 			})
-
-			// Skill matching runs in the before_agent_start handler below, not here:
 
 			pi.on("tool_execution_start", async (event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
@@ -558,8 +560,12 @@ export default function (skillPathsFromConfig: string[]) {
 				// Track what is already loaded so the suggester never recommends
 				// it: /skill expansions in this prompt, prior skill_view calls in
 				// the history (covers resumed sessions), and live skill_view calls
-				// (marked in the tool_execution_start handler below).
-				suggester.scanHistory(ctx.sessionManager.getEntries())
+				// (marked in the tool_execution_start handler below). The history
+				// is only fetched until the first scan — getEntries() on a large
+				// session is not free and the scan no-ops afterwards anyway.
+				if (!suggester.hasScannedHistory) {
+					suggester.scanHistory(ctx.sessionManager.getEntries())
+				}
 				suggester.notePrompt(event.prompt)
 				const { suggestions, latched } = suggester.suggest(event.prompt)
 				if (suggestions.length > 0) {

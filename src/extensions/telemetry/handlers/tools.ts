@@ -40,13 +40,16 @@ function pruneExpiredSuggestions(tm: TelemetryContext): void {
 }
 
 /** Handle the skill-suggest domain event: count the fired reminder and open
- *  the conversion window for each named skill. */
+ *  the conversion window for each named skill. A fired event with zero
+ *  valid skills is not a real suggestion — nothing is emitted and no
+ *  window opens. */
 export function handleSkillSuggestEvent(tm: TelemetryContext, payload: unknown): void {
-	const raw = payload as { skills?: Array<{ name?: unknown; filePath?: unknown }>; latched?: unknown }
+	const raw = (payload ?? {}) as { skills?: Array<{ name?: unknown; filePath?: unknown }>; latched?: unknown }
 	const skills = (raw.skills ?? []).filter(
 		(s): s is { name: string; filePath: string } =>
 			typeof s.name === "string" && typeof s.filePath === "string" && s.name.length > 0,
 	)
+	if (skills.length === 0) return
 
 	tm.emit("skill_suggest.fired", {
 		skill_count: skills.length,

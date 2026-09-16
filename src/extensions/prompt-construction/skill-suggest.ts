@@ -2,6 +2,11 @@
  * Skill suggester — harness-side matching of user input against the
  * discovered skill inventory, producing a lightweight existence reminder.
  *
+ * Matching is English-oriented: tokens are `[a-z0-9']` sequences, so
+ * non-ASCII prompts (CJK, accented scripts) yield few or no tokens and
+ * simply never match — no suggestion, no error. Documented in
+ * docs/skills.md.
+ *
  * The <available_skills> system-prompt block advertises skills as name +
  * description + location and relies on model discipline to read the
  * SKILL.md. In practice models skip that read regardless of description
@@ -21,15 +26,17 @@ import type { Skill } from "@earendil-works/pi-coding-agent"
  * Minimum weighted score for a skill to be suggested. The score is the
  * fraction of the user's content words covered by the skill's
  * name/description tokens, doubled when a match hit the skill *name*
- * specifically. 0.6 ≈ "most of the input is about this skill" or
+ * specifically. 0.5 ≈ "most of the input is about this skill" or
  * "a third of the input matched the skill's name".
  */
 export const SKILL_SUGGEST_THRESHOLD = 0.5
 
 /**
- * A match at or above this score re-arms the once-per-skill latch — the
- * user is clearly repeating the topic, so remind again even if the skill
- * was already suggested this session.
+ * A match at or above this score re-arms the once-per-skill latch once —
+ * the user is clearly repeating the topic, so remind a second time even
+ * if the skill was already suggested. After that one re-arm the skill is
+ * done for the session: repeating a strong topic while never loading the
+ * skill is a decline, and re-firing every turn would nag.
  */
 export const SKILL_SUGGEST_STRONG = SKILL_SUGGEST_THRESHOLD * 2
 
@@ -258,6 +265,11 @@ export class SkillSuggester {
 		this.skills = skills
 	}
 
+	/** True once the session history has been scanned for prior loads. */
+	get hasScannedHistory(): boolean {
+		return this.historyScanned
+	}
+
 	/**
 	 * Mark a skill as loaded into the conversation. Loaded skills are never
 	 * suggested — recommending an already-loaded skill is what nudged the
@@ -317,6 +329,16 @@ export class SkillSuggester {
 			const previous = this.suggested.get(candidate.name)
 			if (previous !== undefined && candidate.score < SKILL_SUGGEST_STRONG) {
 				latched += 1
+				continue
+			}
+			if (previous !== undefined) {
+				// Strong re-fire: the one-shot re-arm. The user has now been
+				// reminded twice about the same skill and declined both times —
+				// remind again on every subsequent strong turn and the reminder
+				// becomes nagging. Infinity latches the skill for the rest of the
+				// session regardless of future match strength.
+				this.suggested.set(candidate.name, Number.POSITIVE_INFINITY)
+				suggestions.push(candidate)
 				continue
 			}
 			this.suggested.set(candidate.name, candidate.score)

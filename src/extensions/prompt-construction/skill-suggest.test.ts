@@ -157,7 +157,7 @@ describe("SkillSuggester", () => {
 		expect(second.latched).toBe(1)
 	})
 
-	it("re-arms the latch when a later input matches strongly", () => {
+	it("re-arms the latch exactly once — a third strong match stays silent", () => {
 		const suggester = new SkillSuggester()
 		suggester.updateSkills(ALL_SKILLS)
 
@@ -171,6 +171,12 @@ describe("SkillSuggester", () => {
 		const repeat = suggester.suggest("use the vcs workflow to manage git")
 		expect(repeat.suggestions.map((s) => s.name)).toContain("vcs-workflow")
 		expect(repeat.suggestions[0].score).toBeGreaterThanOrEqual(SKILL_SUGGEST_STRONG)
+
+		// The user has now been reminded twice and declined both times — a
+		// third strong match must not nag again (the re-arm is one-shot, not
+		// a permanent unlock).
+		const third = suggester.suggest("use the vcs workflow for the whole team")
+		expect(third.suggestions).toEqual([])
 	})
 
 	describe("loaded-skill suppression (session 01a0a5f1)", () => {
