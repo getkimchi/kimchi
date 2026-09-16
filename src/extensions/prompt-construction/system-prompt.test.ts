@@ -738,4 +738,62 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("never delegate to a different model")
 		})
 	})
+
+	describe("hasUserLoop gating", () => {
+		it("defaults to user-present behavior when hasUserLoop is omitted", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+			expect(result).toContain("## Consent & Irreversible Actions")
+			expect(result).toContain("## Harness Notes and Approval")
+			expect(result).toContain("## Documents")
+			expect(result).toContain("orients the user")
+			expect(result).not.toContain("## Autonomous Session")
+		})
+
+		it("keeps interactive sections when hasUserLoop is true", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
+			expect(result).toContain("## Consent & Irreversible Actions")
+			expect(result).toContain("## Harness Notes and Approval")
+			expect(result).toContain("## Documents")
+			expect(result).not.toContain("## Autonomous Session")
+		})
+
+		it("replaces user-presence-only sections in userless sessions", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			expect(result).not.toContain("## Consent & Irreversible Actions")
+			expect(result).not.toContain("## Harness Notes and Approval")
+			expect(result).not.toContain("## Documents")
+			expect(result).toContain("## Autonomous Session")
+			expect(result).toContain("fully autonomous with no human available")
+			expect(result).toContain("Proceed without asking for approval")
+		})
+
+		it("drops the orient-the-user ritual in userless single-model sessions", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "single",
+				hasUserLoop: false,
+				currentModelId: "kimi-k3",
+			})
+			expect(result).not.toContain("orients the user")
+			expect(result).not.toContain("user's window to interrupt")
+			// The non-interactive core of the single-model section stays.
+			expect(result).toContain("## Single-Model Mode")
+			expect(result).toContain("Your model ID is `kimi-k3`")
+			expect(result).toContain("Do not spawn subagents")
+		})
+
+		it("keeps task-execution sections regardless of the gate", () => {
+			const gated = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			expect(gated).toContain("## Guidelines")
+			expect(gated).toContain("## Tool Selection")
+			expect(gated).toContain("## Environment")
+		})
+
+		it("is significantly smaller in userless sessions", () => {
+			const interactive = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
+			const headless = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			expect(interactive.length - headless.length).toBeGreaterThan(2000)
+		})
+	})
 })
