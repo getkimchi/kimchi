@@ -6,6 +6,8 @@ The preceding four-run comparison changed worker-local Ferment while leaving com
 
 The subsequent [four-arm compaction pilot](compaction-pilot.md) adds a solo baseline and separates ordinary delegation, messages and the board. Its token budget interrupted work before the planned repair stage, so its partial outputs cannot answer which arm produces better completed work.
 
+A separate [budget calibration](compaction-calibration.md) produced solo and ordinary-worker outputs that pass real-process continuation checks but retain lifecycle defects. It also exposed delayed result collection while the parent repeatedly called shell waits. That is an orchestration problem to resolve before interpreting channel comparisons.
+
 ## Papers closest to the problem
 
 | Source | Mechanism and evidence | What transfers to Kimchi |

@@ -1,0 +1,254 @@
+{
+  "purpose": "calibration",
+  "artifact_root": "/private/tmp/kimchi-compaction-arms-w4mh1_g1",
+  "protocol_head": "9f54b13f8852ebbcb76dc17d2c5dacbd13769d44",
+  "product_binary_source_head": "97d528a4b2e4e9f7ccf6f3fc9802d8b9b0fbc80d",
+  "binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
+  "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+  "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "worker_ferment": false,
+  "limits": {
+    "max_total_tokens": 12000000,
+    "max_output_tokens": 60000,
+    "wall_seconds": 1800
+  },
+  "seal_sha256": "4568c389abb02e6836f9fd961a927768c852fded944f815533b1fa78cd38acc2",
+  "isolation_checks": 20,
+  "trials": [
+    {
+      "label": "trial-01",
+      "arm": "solo",
+      "finish_reason": "settled",
+      "elapsed_seconds": 775.966,
+      "usage": {
+        "input": 333554,
+        "output": 38956,
+        "cacheRead": 5967040,
+        "cacheWrite": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "workers": [],
+      "own_checks": {
+        "test:compaction-local": 0,
+        "typecheck": 0,
+        "check:compaction-style": 0,
+        "build:binary": 0
+      },
+      "protected_changes": [],
+      "binary_sha256": "5ad880e6a0148ed06f84eacb3e40dfc47214bc14d1b04f4079aa33fa716d28af",
+      "process": {
+        "exit_code": 0,
+        "passed": 2,
+        "failed": 0,
+        "cases": [
+          {
+            "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+            "status": "passed",
+            "first_failure": null
+          },
+          {
+            "title": "cancelling during summarization ends the run without scheduling another task request",
+            "status": "passed",
+            "first_failure": null
+          }
+        ]
+      },
+      "adapter": {
+        "exit_code": 1,
+        "passed": 0,
+        "failed": 4,
+        "cases": [
+          {
+            "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to be called 1 times, but got 0 times"
+          },
+          {
+            "title": "sustains four effective compaction cycles in one session",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to be called 4 times, but got 1 times"
+          },
+          {
+            "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to be called with arguments: [ 'model_guard_compaction', \u2026(1) ]"
+          },
+          {
+            "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to be called 1 times, but got 0 times"
+          }
+        ]
+      },
+      "repeated_process": {
+        "exit_code": 0,
+        "passed": 2,
+        "failed": 0,
+        "cases": [
+          {
+            "title": "a --print tool run completes two effective compaction cycles without another prompt",
+            "status": "passed",
+            "first_failure": null
+          },
+          {
+            "title": "cancelling during summarization ends the run without scheduling another task request",
+            "status": "passed",
+            "first_failure": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "trial-02",
+      "arm": "workers",
+      "finish_reason": "wall_limit",
+      "elapsed_seconds": 1800.937,
+      "usage": {
+        "input": 382716,
+        "output": 53740,
+        "cacheRead": 5381632,
+        "cacheWrite": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "workers": [
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed",
+          "abortReason": null,
+          "startedAt": 1789559518687,
+          "completedAt": 1789559619992
+        },
+        {
+          "description": "Boundary investigator",
+          "status": "aborted",
+          "abortReason": "token_budget",
+          "startedAt": 1789559518690,
+          "completedAt": 1789559682170
+        },
+        {
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "token_budget",
+          "startedAt": 1789559518691,
+          "completedAt": 1789559878841
+        },
+        {
+          "description": "Repair owner",
+          "status": "aborted",
+          "abortReason": "token_budget",
+          "startedAt": 1789560757381,
+          "completedAt": 1789560926097
+        }
+      ],
+      "own_checks": {
+        "test:compaction-local": 0,
+        "typecheck": 0,
+        "check:compaction-style": 0,
+        "build:binary": 0
+      },
+      "protected_changes": [],
+      "binary_sha256": "ce1805665eb404f0229c814f3c9916b6117a487132bac42b2951c60f1afae583",
+      "process": {
+        "exit_code": 0,
+        "passed": 2,
+        "failed": 0,
+        "cases": [
+          {
+            "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+            "status": "passed",
+            "first_failure": null
+          },
+          {
+            "title": "cancelling during summarization ends the run without scheduling another task request",
+            "status": "passed",
+            "first_failure": null
+          }
+        ]
+      },
+      "adapter": {
+        "exit_code": 1,
+        "passed": 1,
+        "failed": 3,
+        "cases": [
+          {
+            "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          },
+          {
+            "title": "sustains four effective compaction cycles in one session",
+            "status": "passed",
+            "first_failure": null
+          },
+          {
+            "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to be called with arguments: [ 'model_guard_compaction', \u2026(1) ]"
+          },
+          {
+            "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+            "status": "failed",
+            "first_failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          }
+        ]
+      },
+      "repeated_process": {
+        "exit_code": 0,
+        "passed": 2,
+        "failed": 0,
+        "cases": [
+          {
+            "title": "a --print tool run completes two effective compaction cycles without another prompt",
+            "status": "passed",
+            "first_failure": null
+          },
+          {
+            "title": "cancelling during summarization ends the run without scheduling another task request",
+            "status": "passed",
+            "first_failure": null
+          }
+        ]
+      }
+    }
+  ],
+  "supplemental_historical_tool_call": {
+    "solo": {
+      "passed": 0,
+      "failed": 1
+    },
+    "reference": {
+      "passed": 1,
+      "failed": 0
+    }
+  },
+  "followup_loop_probe": {
+    "package": "@earendil-works/pi-agent-core@0.84.1",
+    "requests": [
+      {
+        "request": 1,
+        "workerFinishedVisible": false
+      },
+      {
+        "request": 2,
+        "workerFinishedVisible": false
+      },
+      {
+        "request": 3,
+        "workerFinishedVisible": false
+      },
+      {
+        "request": 4,
+        "workerFinishedVisible": true
+      }
+    ],
+    "passed": true
+  }
+}
