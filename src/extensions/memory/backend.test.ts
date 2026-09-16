@@ -5,8 +5,8 @@ import type { KimchiConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
 	createMemoryBackend,
-	EXTRACTION_MODEL,
 	defaultMemoryDir,
+	EXTRACTION_MODEL,
 	historyDbPath,
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
