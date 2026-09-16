@@ -616,19 +616,28 @@ export class AgentManager {
 				// post-commit HEAD as baseSha (silently poisoning the diff range).
 				if (record.gitWorkflow && !record.gitWorkflow.baseSha && !baselineCaptureAttempted) {
 					baselineCaptureAttempted = true
-					try {
-						const connection = await resolveSandboxGitConnection(meta, apiKey, {
-							endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-						})
-						const baseline = await captureBaseline(connection, { signal: record.abortController?.signal })
-						record.gitWorkflow.baseSha = baseline.baseSha
-						record.gitWorkflow.dirtyFiles = baseline.dirtyFiles
-					} catch (err) {
-						// Was console.warn — invisible. This degrades the PR review at
-						// completion (no deterministic range), so tell the user now.
-						const message = `PR review baseline could not be captured: ${err instanceof Error ? err.message : err} — diff review will fall back to merge-base at completion.`
-						ctx.ui.notify?.(message, "warning")
-						console.warn(`[agent-manager] baseline capture failed: ${err instanceof Error ? err.message : err}`)
+					// One retry for the ssh layer: the proxy enumerates the control
+					// API with its own deadline and transient stalls answer as exit
+					// status 255. Everything else fails once, honestly.
+					for (let attempt = 0; ; attempt++) {
+						try {
+							const connection = await resolveSandboxGitConnection(meta, apiKey, {
+								endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+							})
+							const baseline = await captureBaseline(connection, { signal: record.abortController?.signal })
+							record.gitWorkflow.baseSha = baseline.baseSha
+							record.gitWorkflow.dirtyFiles = baseline.dirtyFiles
+							break
+						} catch (err) {
+							const isSshLayer = err instanceof Error && /exited with code 255/.test(err.message)
+							if (isSshLayer && attempt === 0) continue
+							// Was console.warn — invisible. This degrades the PR review at
+							// completion (no deterministic range), so tell the user now.
+							const message = `Pre-run snapshot failed: ${err instanceof Error ? err.message : err}. This is a one-time HEAD snapshot taken before the agent commits — diff review at completion will recover via merge-base instead.`
+							ctx.ui.notify?.(message, "warning")
+							console.warn(`[agent-manager] baseline capture failed: ${err instanceof Error ? err.message : err}`)
+							break
+						}
 					}
 				}
 				if (acpSessionId) {
