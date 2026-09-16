@@ -834,6 +834,14 @@ describe("skill_view rendering (matches the /skill block)", () => {
 	].join("\n")
 
 	function makeSkillComponent(expanded: boolean, resultText = SKILL_RESULT_TEXT, isError = false) {
+		return makeSkillComponentFromContent(expanded, [{ type: "text", text: resultText }], isError)
+	}
+
+	function makeSkillComponentFromContent(
+		expanded: boolean,
+		content: Array<{ type: string; text?: string }>,
+		isError = false,
+	) {
 		const component = new ToolExecutionComponent(
 			"skill_view",
 			"tc-skill-view",
@@ -845,7 +853,7 @@ describe("skill_view rendering (matches the /skill block)", () => {
 			"/tmp",
 		)
 		component.markExecutionStarted()
-		component.updateResult({ content: [{ type: "text", text: resultText }], isError }, false)
+		component.updateResult({ content: content as never, isError }, false)
 		component.setExpanded(expanded)
 		return component
 	}
@@ -894,5 +902,29 @@ describe("skill_view rendering (matches the /skill block)", () => {
 		const rendered = makeSkillComponent(false, "Skill 'nope' not found.", true).render(120).map(stripSgr).join("\n")
 		expect(rendered).toContain("not found")
 		expect(rendered).not.toContain("[skill]")
+	})
+
+	it("falls back to 'No text content' when the result has no text block", () => {
+		const rendered = makeSkillComponentFromContent(false, []).render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("No text content")
+	})
+
+	it("renders a body without frontmatter unchanged", () => {
+		const rendered = makeSkillComponent(true, "# Plain skill\n\nNo frontmatter here.")
+			.render(200)
+			.map(stripSgr)
+			.join("\n")
+		expect(rendered).toContain("Plain skill")
+		expect(rendered).toContain("No frontmatter here.")
+	})
+
+	it("renders a success result without the linked-files trailer", () => {
+		const rendered = makeSkillComponent(true, "---\nname: x\ndescription: y\n---\n\nBody only.")
+			.render(120)
+			.map(stripSgr)
+			.join("\n")
+		expect(rendered).toContain("[skill]")
+		expect(rendered).toContain("Body only.")
+		expect(rendered).not.toContain("Linked files")
 	})
 })

@@ -565,5 +565,30 @@ describe("handlers/tools", () => {
 			const events = parseLogEvents(fetchMock)
 			expect(events.find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
 		})
+
+		it("drops stale pending suggestions on session restart (reset clears the window)", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleSkillSuggestEvent(ctx, {
+				skills: [{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" }],
+				latched: 0,
+			})
+
+			// Session restart in the same process: reset() zeroes turnIndex and
+			// clears the pending window — the old reminder must not become
+			// conversion-eligible again in the new session.
+			ctx.reset()
+			handleToolExecutionStart(ctx, {
+				toolCallId: "tc-sv-4",
+				toolName: "skill_view",
+				args: { name: "vcs-workflow" },
+			})
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-sv-4", isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			expect(events.find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
+		})
 	})
 })

@@ -1213,11 +1213,11 @@ describe("skill suggest wiring", () => {
 		message?: { customType?: string; content?: Array<{ type: string; text: string }>; display?: boolean }
 	}
 
-	function buildSkillSuggestHandlers() {
+	function buildSkillSuggestHandlers(options?: { subagent?: boolean }) {
 		const handlerMap = new Map<string, Array<(event: unknown, ctx?: unknown) => Promise<unknown> | unknown>>()
 		const emittedEvents: Array<{ channel: string; payload: unknown }> = []
 
-		vi.spyOn(agentWorkerContext, "isAgentWorker").mockReturnValue(false)
+		vi.spyOn(agentWorkerContext, "isAgentWorker").mockReturnValue(options?.subagent ?? false)
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
 		vi.spyOn(config, "loadConfig").mockReturnValue({
 			apiKey: "",
@@ -1373,5 +1373,28 @@ describe("skill suggest wiring", () => {
 		// must hold regardless.
 		const result = await fireAgentStart(fire, "use the vcs workflow to manage git", [VCS_SKILL])
 		expect(result.message).toBeUndefined()
+	})
+
+	it("resets suggester state on session_shutdown — the same session id can be re-suggested", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		const first = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		expect(first.message?.customType).toBe("skill-suggest")
+
+		await fire("session_shutdown", {})
+
+		// A fresh session reusing the same id must start from a clean suggester:
+		// no leaked latch, no leaked loaded marks.
+		const second = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		expect(second.message?.customType).toBe("skill-suggest")
+	})
+
+	it("does not suggest in subagent mode", async () => {
+		const { fire, emittedEvents } = buildSkillSuggestHandlers({ subagent: true })
+
+		const result = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+
+		expect(result.message).toBeUndefined()
+		expect(emittedEvents.filter((e) => e.channel === SKILL_SUGGEST_EVENT)).toEqual([])
 	})
 })

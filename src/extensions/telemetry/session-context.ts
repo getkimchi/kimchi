@@ -144,6 +144,7 @@ export class TelemetryContext {
 		this.toolStartTimes.clear()
 		this.lastSessionType = undefined
 		this.compactionCount = 0
+		this.skillSuggestPending = []
 		this.cumulative = getOrCreateAccumulator(this.telemetryId)
 		this.inFlight.clear()
 		this.shuttingDown = false

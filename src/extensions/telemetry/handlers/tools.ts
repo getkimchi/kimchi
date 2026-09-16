@@ -27,6 +27,18 @@ export function resultSizeChars(result: unknown): number {
  *  turns of the reminder being delivered. */
 const SKILL_SUGGEST_CONVERSION_TURNS = 3
 
+/**
+ * Drop suggestions whose conversion window has closed. Entries stamped
+ * from a future turnIndex (i.e. left over before a session restart reset
+ * turnIndex to 0) are also dropped — a restart must not resurrect a
+ * previous session's reminders.
+ */
+function pruneExpiredSuggestions(tm: TelemetryContext): void {
+	tm.skillSuggestPending = tm.skillSuggestPending.filter(
+		(entry) => entry.firedAtTurn <= tm.turnIndex && tm.turnIndex - entry.firedAtTurn <= SKILL_SUGGEST_CONVERSION_TURNS,
+	)
+}
+
 /** Handle the skill-suggest domain event: count the fired reminder and open
  *  the conversion window for each named skill. */
 export function handleSkillSuggestEvent(tm: TelemetryContext, payload: unknown): void {
@@ -42,9 +54,7 @@ export function handleSkillSuggestEvent(tm: TelemetryContext, payload: unknown):
 	})
 
 	// Refresh the window for re-suggested skills; prune expired entries.
-	tm.skillSuggestPending = tm.skillSuggestPending.filter(
-		(entry) => tm.turnIndex - entry.firedAtTurn <= SKILL_SUGGEST_CONVERSION_TURNS,
-	)
+	pruneExpiredSuggestions(tm)
 	for (const skill of skills) {
 		tm.skillSuggestPending = tm.skillSuggestPending.filter((entry) => entry.name !== skill.name)
 		tm.skillSuggestPending.push({
@@ -61,9 +71,7 @@ function recordSkillSuggestConversion(
 	match: { name: string },
 	matchBy: "skill_view" | "read",
 ): void {
-	tm.skillSuggestPending = tm.skillSuggestPending.filter(
-		(entry) => tm.turnIndex - entry.firedAtTurn <= SKILL_SUGGEST_CONVERSION_TURNS,
-	)
+	pruneExpiredSuggestions(tm)
 	const index = tm.skillSuggestPending.findIndex((entry) => entry.name === match.name)
 	if (index === -1) return
 	tm.skillSuggestPending.splice(index, 1)

@@ -26,6 +26,14 @@ describe("skillsManagerExtension", () => {
 		expect(() => getRegisteredTool("skill_view")).not.toThrow()
 	})
 
+	it("skill_view renders its own framing (renderShell self — the [skill] box)", () => {
+		const { api, getRegisteredTool } = createExtensionApi()
+		skillsManagerExtension(api, { skillsDir: "/tmp/test-skills", registerSkillManageTool: false })
+		// Without this the generic tool shell double-frames the [skill] block;
+		// dropping the flag must fail here.
+		expect(getRegisteredTool("skill_view").renderShell).toBe("self")
+	})
+
 	it("registerSkillManageTool: false registers only skill_view (the CLI wiring since #235)", () => {
 		const { api, getRegisteredTool } = createExtensionApi()
 		skillsManagerExtension(api, { skillsDir: "/tmp/test-skills", registerSkillManageTool: false })
@@ -49,15 +57,22 @@ describe("skillsManagerExtension", () => {
 
 		afterEach(async () => {
 			// The UsageTracker's fire-and-forget lock-file creation (from the
-			// successful skill_view calls) can race directory removal on macOS —
-			// retry briefly so cleanup never flakes.
+			// successful skill_view calls) races directory removal on macOS
+			// (ENOTEMPTY between readdir and unlink) — retry briefly so cleanup
+			// never flakes on the expected race.
+			let removed = false
 			for (let attempt = 0; attempt < 10; attempt++) {
 				try {
 					rmSync(harnessDir, { recursive: true, force: true })
+					removed = true
 					break
 				} catch {
+					// Expected: the async lock-file write landed mid-removal.
 					await new Promise((resolve) => setTimeout(resolve, 10))
 				}
+			}
+			if (!removed) {
+				console.warn("skills-manager test cleanup: harness dir removal failed after retries:", harnessDir)
 			}
 			rmSync(projectDir, { recursive: true, force: true })
 		})
