@@ -318,8 +318,26 @@ export async function recoverBaseShaFromMergeBase(
 	opts?: { signal?: AbortSignal; apiKey?: string; proxyCommand?: string; _spawn?: typeof spawn },
 ): Promise<string | undefined> {
 	// Best effort — the clone may be offline-only or the token read-only.
+	await runSandboxGit({ connection, args: ["fetch", "--no-tags", "origin"], ...opts }).catch(() => {})
 	await runSandboxGit({ connection, args: ["fetch", "--no-tags", "origin", baseBranch], ...opts }).catch(() => {})
-	for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+
+	// Candidate refs in preference order: the recorded base branch, its local
+	// copy, the clone's symbolic default (covers baseBranch naming drift like
+	// master/main), then EVERY remote branch — the first ref with a common
+	// ancestor wins.
+	const candidates = [`origin/${baseBranch}`, baseBranch, "origin/HEAD"]
+	const refs = await runSandboxGit({
+		connection,
+		args: ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+		...opts,
+	}).catch(() => undefined)
+	if (refs) {
+		for (const line of refs.stdout.split("\n")) {
+			const ref = line.trim()
+			if (ref && ref !== "origin/HEAD" && !candidates.includes(ref)) candidates.push(ref)
+		}
+	}
+	for (const ref of candidates) {
 		const res = await runSandboxGit({ connection, args: ["merge-base", ref, "HEAD"], ...opts }).catch(() => undefined)
 		const sha = res?.stdout.trim() ?? ""
 		if (/^[0-9a-f]{40}$/.test(sha)) return sha

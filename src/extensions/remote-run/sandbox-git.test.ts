@@ -258,6 +258,7 @@ describe("recoverBaseShaFromMergeBase", () => {
 		const commands: string[] = []
 		const base = mergeBaseSpawner([
 			{ match: "fetch", stdout: "" },
+			{ match: "for-each-ref", stdout: "origin/HEAD\norigin/main\n" },
 			{ match: "merge-base", stdout: `${sha}\n` },
 		])
 		const spawner = vi.fn((binary: string, args: string[]) => {
@@ -269,18 +270,44 @@ describe("recoverBaseShaFromMergeBase", () => {
 
 		expect(got).toBe(sha)
 		expect(commands).toEqual([
+			"git -C '/home/sandbox/acp-deadbeef' 'fetch' '--no-tags' 'origin'",
 			"git -C '/home/sandbox/acp-deadbeef' 'fetch' '--no-tags' 'origin' 'main'",
+			"git -C '/home/sandbox/acp-deadbeef' 'for-each-ref' '--format=%(refname:short)' 'refs/remotes/origin/'",
 			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'origin/main' 'HEAD'",
 		])
 	})
 
-	it("falls back to the local base-branch ref and returns undefined when there is no fork point", async () => {
-		const spawner = mergeBaseSpawner([
+	it("falls back through origin/HEAD and every remote ref before giving up", async () => {
+		// merge-base succeeds only for origin/release-2 — the baseBranch name
+		// was wrong (real failure mode: master vs main drift, shallow clones).
+		const sha = "d".repeat(40)
+		const commands: string[] = []
+		const base = mergeBaseSpawner([
 			{ match: "fetch", stdout: "" },
-			// origin/main merge-base fails; plain main succeeds
+			{ match: "for-each-ref", stdout: "origin/HEAD\norigin/master\norigin/release-1\norigin/release-2\n" },
+			{ match: "release-2", stdout: `${sha}\n` },
 		])
+		const spawner = vi.fn((binary: string, args: string[]) => {
+			commands.push(args[args.length - 1] as string)
+			return base(binary, args)
+		}) as unknown as typeof spawn
 
-		// First call (origin/main) fails → second (main) succeeds? both fail here → undefined.
+		const got = await recoverBaseShaFromMergeBase(CONNECTION, "master", { apiKey: "k", _spawn: spawner })
+
+		expect(got).toBe(sha)
+		// merge-base probes: origin/master, master, origin/HEAD, origin/release-1, origin/release-2
+		expect(commands.filter((c) => c.includes("merge-base"))).toEqual([
+			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'origin/master' 'HEAD'",
+			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'master' 'HEAD'",
+			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'origin/HEAD' 'HEAD'",
+			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'origin/release-1' 'HEAD'",
+			"git -C '/home/sandbox/acp-deadbeef' 'merge-base' 'origin/release-2' 'HEAD'",
+		])
+	})
+
+	it("returns undefined when no remote ref shares a fork point", async () => {
+		const spawner = mergeBaseSpawner([{ match: "fetch", stdout: "" }])
+
 		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { apiKey: "k", _spawn: spawner })
 
 		expect(got).toBeUndefined()
