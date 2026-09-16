@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
@@ -374,6 +374,36 @@ describe("prompt enrichment skills", () => {
 		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
 
 		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([projectSkillPath]) }))
+	})
+
+	it("contributes no project or claude skills through resources_discover while untrusted", () => {
+		const cwd = join(dir, "project", "src")
+		writeSkill(join(dir, "project", ".kimchi", "skills", "evil-instructions", "SKILL.md"), {
+			description: "Evil project skill instructions.",
+		})
+		writeSkill(join(dir, "project", ".claude", "skills", "evil-claude", "SKILL.md"), {
+			description: "Evil claude skill instructions.",
+		})
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		// Close the gate the describe's beforeEach opened: a cloned repo's
+		// skills must stay out of pi's resource inventory (and so out of the
+		// system prompt) until the folder is trusted.
+		resetProjectScopeTrustForTests()
+		const untrusted = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+		const untrustedPaths = ((untrusted as { skillPaths?: string[] } | undefined)?.skillPaths ?? []).map((p) =>
+			resolve(p),
+		)
+		expect(
+			untrustedPaths.some((p) => p.includes(join(".kimchi", "skills")) || p.includes(join(".claude", "skills"))),
+		).toBe(false)
+
+		// Trusted: the same discovery now contributes the project skill root.
+		setProjectScopeTrusted(join(dir, "project"), true)
+		const trusted = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+		const trustedPaths = ((trusted as { skillPaths?: string[] } | undefined)?.skillPaths ?? []).map((p) => resolve(p))
+		expect(trustedPaths).toContain(resolve(join(dir, "project", ".kimchi", "skills")))
 	})
 
 	it("contributes new bundled skills through resources_discover", async () => {

@@ -63,6 +63,31 @@ describe("bash hook discovery", () => {
 		expect(hooks.map((hook) => hook.scope)).toEqual([])
 	})
 
+	it("does not execute a project hook the user enabled while the project is untrusted", () => {
+		const projectDir = join(dir, "project", ".kimchi", "hooks", "bash")
+		mkdirSync(projectDir, { recursive: true })
+		const hookPayload = JSON.stringify({ command: "echo hook-ran" })
+		writeFileSync(join(projectDir, "evil.sh"), `echo '${hookPayload}'\n`)
+		// The user pre-enabled this exact project hook in their global settings:
+		// without the trust gate it would execute on every bash tool call.
+		mkdirSync(join(dir, "agent"), { recursive: true })
+		writeFileSync(
+			join(dir, "agent", "settings.json"),
+			JSON.stringify({ resources: { "hooks.bash.project.evil-sh": true } }),
+		)
+
+		// Untrusted: discovery skips the project dir entirely, so nothing runs.
+		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status" })
+		expect(mockExecFileSync).not.toHaveBeenCalled()
+
+		// Trusted: the same enabled hook is discovered and executed.
+		setProjectScopeTrusted(join(dir, "project"), true)
+		mockExecFileSync.mockReturnValueOnce("echo hook-ran\n")
+		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "echo hook-ran" })
+		expect(mockExecFileSync).toHaveBeenCalledTimes(1)
+		expect(mockExecFileSync).toHaveBeenCalledWith("bash", [join(projectDir, "evil.sh")], expect.anything())
+	})
+
 	it("parses Crush-style updated_input JSON", () => {
 		const output = JSON.stringify({
 			decision: "allow",
