@@ -301,10 +301,13 @@ describe("MCP OAuth callback lifecycle", () => {
 
 			expect(failure).toBeInstanceOf(Error)
 			const message = (failure as Error).message
-			expect(message).toMatch(/does not support dynamic client registration/)
+			expect(message).toContain("cannot register clients dynamically")
 			expect(message).toContain('"oauth": { "clientId"')
 			expect(message).toContain('"gmail"')
 			expect(message).toContain("/mcp-auth gmail")
+			// The guidance must not contain the matched substring itself, so a
+			// translated error can never be re-translated by the same code path.
+			expect(isDynamicRegistrationUnsupportedError(failure)).toBe(false)
 			expect((failure as Error).cause).toBeInstanceOf(Error)
 		} finally {
 			await flow.shutdownOAuth()
