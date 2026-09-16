@@ -2,7 +2,9 @@
 
 Research checked on 2026-09-16. The papers and systems below support testing communication where workers discover different facts, explore different hypotheses or resolve a dependency during execution. They do not establish that adding a board improves every coding task.
 
-Our latest four-run comparison changed worker-local Ferment while leaving communication available in both arms. It tests continuation and evaluation policy. Earlier communication and board comparisons are relevant to transport value, but their small repair tasks often let workers recover the same information from shared files. Those are useful controls; their negative results remain valid for those conditions. See the [local results](communication.md#observed-results).
+The preceding four-run comparison changed worker-local Ferment while leaving communication available in both arms. It tests continuation and evaluation policy. Earlier communication and board comparisons are relevant to transport value, but their small repair tasks often let workers recover the same information from shared files. Those are useful controls; their negative results remain valid for those conditions. See the [local results](communication.md#observed-results).
+
+The subsequent [four-arm compaction pilot](compaction-pilot.md) adds a solo baseline and separates ordinary delegation, messages and the board. Its token budget interrupted work before the planned repair stage, so its partial outputs cannot answer which arm produces better completed work.
 
 ## Papers closest to the problem
 
@@ -15,6 +17,10 @@ Our latest four-run comparison changed worker-local Ferment while leaving commun
 | [Exploring Advanced LLM Multi-Agent Systems Based on Blackboard Architecture](https://arxiv.org/html/2507.01701v1), July 2025 | The board stores partial solutions and a controller selects the next contributors from its contents. Evaluation uses reasoning and mathematics benchmarks. | A blackboard in this literature includes a decision process for acting on shared state. Kimchi's message store alone is not that architecture. Importing its scheduler would be a separate product change. |
 
 ## Systems operating in other settings
+
+The older literature separates shared knowledge from deciding what work is worth doing next. **Hearsay-II** combined independent speech-analysis components through hypotheses on a blackboard. Its controller selected promising actions. Section 3.2 reports a scheduling comparison with word error rates of 29% versus 48% and less than half the processing time; the authors warn that configurations differ across experiments. This demonstrates a control-policy benefit within that speech system, not a message-board benefit in coding. Section 4.3 is especially relevant: forcing each component's internal work through the general blackboard failed or caused severe performance degradation. Our inference is to share findings at dependencies while keeping local investigation local. [Hearsay-II, 1980, sections 3.2 and 4.3](https://mas.cs.umass.edu/Documents/Erman_Hearsay80.pdf).
+
+**Contract Net** addresses who should take a task. A manager announces work, suitable nodes bid, and the manager awards a contract. Its distributed-sensing example uses location and sensor capability to match work to nodes; focused addressing and eligibility checks reduce irrelevant traffic. The paper describes a simulation, not an LLM coding deployment. For Kimchi, it suggests investigating whether the parent can identify an unresolved dependency and the worker with the relevant evidence. It does not justify adding bidding or another scheduler to the current communication feature. [Smith, 1980, sections II–IV](https://cse-robotics.engr.tamu.edu/dshell/cs631/papers/smith80contract.pdf).
 
 **Kosmos connects literature search with data analysis.** Its research state links findings to papers and executable analyses, then informs the next investigation cycle. The paper reports about 200 agent rollouts per run. Expert checks supported 79.4% of 102 sampled statements from three reports, but only 57.9% of synthesis statements. This is a concrete example of prolonged complementary work, with substantial verification limits. It is not a controlled board-on/off comparison. [Kosmos paper](https://arxiv.org/html/2511.02824v2).
 

@@ -1,0 +1,852 @@
+{
+  "date": "2026-09-16",
+  "artifact_root": "/private/tmp/kimchi-compaction-arms-xzaj19xq",
+  "protocol": {
+    "runner_head": "97d528a4b2e4e9f7ccf6f3fc9802d8b9b0fbc80d",
+    "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+    "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
+    "binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
+    "model": "kimchi-dev/glm-5.3-flash",
+    "thinking": "low",
+    "worker_ferment": false,
+    "max_output_tokens": 60000,
+    "max_total_tokens": 2000000,
+    "wall_seconds": 1080,
+    "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+    "trials": [
+      {
+        "label": "trial-01",
+        "arm": "solo",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-01"
+      },
+      {
+        "label": "trial-02",
+        "arm": "workers",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-02"
+      },
+      {
+        "label": "trial-03",
+        "arm": "messages",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-03"
+      },
+      {
+        "label": "trial-04",
+        "arm": "board",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-04"
+      },
+      {
+        "label": "trial-05",
+        "arm": "board",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-05"
+      },
+      {
+        "label": "trial-06",
+        "arm": "messages",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-06"
+      },
+      {
+        "label": "trial-07",
+        "arm": "workers",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-07"
+      },
+      {
+        "label": "trial-08",
+        "arm": "solo",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xzaj19xq/trial-08"
+      }
+    ],
+    "protocol_head": "50227686aa81c4a55a7cb3e861a4e231f10527f9",
+    "staffing": "Three initial workers, then one Repair owner; no parent production repair"
+  },
+  "seal_sha256": "c125970bec475d094c755afa1e77d75597c83987e942c8c617aba89e8a03b9e6",
+  "results": [
+    {
+      "label": "trial-01",
+      "arm": "solo",
+      "repetition": 1,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 340.6,
+      "usage": {
+        "input": 158034,
+        "output": 21566,
+        "cacheRead": 1833152,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2012752,
+      "budget_overshoot": 12752,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 35,
+      "observed_sessions": 1,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 35
+      },
+      "launches": [],
+      "initial_workers_single_batch": false,
+      "repair_workers": 0,
+      "worker_statuses": [],
+      "malformed_tool_names": 0,
+      "tool_errors": 3,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/compaction-guard.ts"
+      ],
+      "grading": {
+        "label": "trial-01",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 1,
+          "typecheck": 2,
+          "check:compaction-style": 1,
+          "build:binary": 1
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-02",
+      "arm": "workers",
+      "repetition": 1,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 183.4,
+      "usage": {
+        "input": 317480,
+        "output": 25570,
+        "cacheRead": 1671744,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2014794,
+      "budget_overshoot": 14794,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 80,
+      "observed_sessions": 4,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 78
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "ba94f1ce-ed85-411",
+          "batch": "d8f78cea"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "4ecea3c2-3ad5-456",
+          "batch": "d8f78cea"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "15812b4e-8194-452",
+          "batch": "d8f78cea"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 0,
+      "worker_statuses": [
+        {
+          "id": "ba94f1ce-ed85-411",
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "id": "15812b4e-8194-452",
+          "description": "Implementation owner",
+          "status": "stopped"
+        }
+      ],
+      "malformed_tool_names": 0,
+      "tool_errors": 9,
+      "changed_source_files": [
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/compaction-pressure.ts"
+      ],
+      "grading": {
+        "label": "trial-02",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 1,
+          "typecheck": 2,
+          "check:compaction-style": 1,
+          "build:binary": 1
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-03",
+      "arm": "messages",
+      "repetition": 1,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 138.2,
+      "usage": {
+        "input": 230615,
+        "output": 17151,
+        "cacheRead": 1775104,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2022870,
+      "budget_overshoot": 22870,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 83,
+      "observed_sessions": 4,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 83
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "2868cfbf-0a79-482",
+          "batch": "410e35d5"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "d30e3378-46d3-420",
+          "batch": "410e35d5"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "88b7ed3c-0d62-421",
+          "batch": "410e35d5"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 0,
+      "worker_statuses": [
+        {
+          "id": "88b7ed3c-0d62-421",
+          "description": "Implementation owner",
+          "status": "stopped"
+        },
+        {
+          "id": "2868cfbf-0a79-482",
+          "description": "Lifecycle investigator",
+          "status": "stopped"
+        },
+        {
+          "id": "d30e3378-46d3-420",
+          "description": "Boundary investigator",
+          "status": "stopped"
+        }
+      ],
+      "malformed_tool_names": 16,
+      "tool_errors": 21,
+      "changed_source_files": [],
+      "grading": {
+        "label": "trial-03",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "1da68c1db69e6ddf2fa6a5d8ed21d9dd6486fad797a403bbabc26a635d285f08",
+        "process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-04",
+      "arm": "board",
+      "repetition": 1,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 243.0,
+      "usage": {
+        "input": 209203,
+        "output": 20209,
+        "cacheRead": 1795200,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2024612,
+      "budget_overshoot": 24612,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 8,
+        "unique_reader_entry_pairs": 8,
+        "known_peer_body_returns": 4,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 66,
+      "observed_sessions": 4,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 66
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "a6004334-9b7f-460",
+          "batch": "bed54c21"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "e119f5d7-dc07-4c6",
+          "batch": "783f615c"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "3201e470-976f-42a",
+          "batch": "783f615c"
+        }
+      ],
+      "initial_workers_single_batch": false,
+      "repair_workers": 0,
+      "worker_statuses": [
+        {
+          "id": "a6004334-9b7f-460",
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "id": "3201e470-976f-42a",
+          "description": "Implementation owner",
+          "status": "stopped"
+        },
+        {
+          "id": "e119f5d7-dc07-4c6",
+          "description": "Boundary investigator",
+          "status": "stopped"
+        }
+      ],
+      "malformed_tool_names": 0,
+      "tool_errors": 22,
+      "changed_source_files": [],
+      "grading": {
+        "label": "trial-04",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "1da68c1db69e6ddf2fa6a5d8ed21d9dd6486fad797a403bbabc26a635d285f08",
+        "process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-05",
+      "arm": "board",
+      "repetition": 2,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 123.9,
+      "usage": {
+        "input": 254123,
+        "output": 9896,
+        "cacheRead": 1748544,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2012563,
+      "budget_overshoot": 12563,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 30,
+        "unique_reader_entry_pairs": 25,
+        "known_peer_body_returns": 16,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 11,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 75,
+      "observed_sessions": 4,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 73
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "1b05c891-0d3a-466",
+          "batch": "8fc4f5e7"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "d9d730dd-ee6b-499",
+          "batch": "8fc4f5e7"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "57568e49-8bcc-470",
+          "batch": "8fc4f5e7"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 0,
+      "worker_statuses": [
+        {
+          "id": "57568e49-8bcc-470",
+          "description": "Implementation owner",
+          "status": "stopped"
+        },
+        {
+          "id": "d9d730dd-ee6b-499",
+          "description": "Boundary investigator",
+          "status": "stopped"
+        }
+      ],
+      "malformed_tool_names": 0,
+      "tool_errors": 6,
+      "changed_source_files": [],
+      "grading": {
+        "label": "trial-05",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "1da68c1db69e6ddf2fa6a5d8ed21d9dd6486fad797a403bbabc26a635d285f08",
+        "process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-06",
+      "arm": "messages",
+      "repetition": 2,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 184.0,
+      "usage": {
+        "input": 258713,
+        "output": 29868,
+        "cacheRead": 1761344,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2049925,
+      "budget_overshoot": 49925,
+      "communication": {
+        "recorded_message_calls": 3,
+        "parsed_message_receipts": 1,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [
+        {
+          "file": "2026-09-16T11-34-27-493Z_01a0a9ff-2ba4-73bc-9339-e0e3f231c9c9.jsonl",
+          "line": 66,
+          "session_id": "01a0a9ff-2ba4-73bc-9339-e0e3f231c9c9",
+          "tool_call_id": "call_1d9eff2a550d4863926c46ea",
+          "timestamp": 1789558558544,
+          "reason": "non-JSON communication result",
+          "tool": "send_agent_message"
+        },
+        {
+          "file": "2026-09-16T11-34-27-493Z_01a0a9ff-2ba4-73bc-9339-e0e3f231c9c9.jsonl",
+          "line": 68,
+          "session_id": "01a0a9ff-2ba4-73bc-9339-e0e3f231c9c9",
+          "tool_call_id": "call_5eb77f3edcba432d8aa4d281",
+          "timestamp": 1789558563850,
+          "reason": "non-JSON communication result",
+          "tool": "send_agent_message"
+        }
+      ],
+      "provider_requests": 82,
+      "observed_sessions": 4,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 81
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "bc4afad4-9334-483",
+          "batch": "3b83d73c"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "6e767fff-c1f8-4d9",
+          "batch": "3b83d73c"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "41051e75-f78f-43c",
+          "batch": "3b83d73c"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 0,
+      "worker_statuses": [
+        {
+          "id": "bc4afad4-9334-483",
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "id": "6e767fff-c1f8-4d9",
+          "description": "Boundary investigator",
+          "status": "stopped"
+        },
+        {
+          "id": "41051e75-f78f-43c",
+          "description": "Implementation owner",
+          "status": "stopped"
+        }
+      ],
+      "malformed_tool_names": 2,
+      "tool_errors": 8,
+      "changed_source_files": [
+        "src/upstream-inline-compact-patch.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-evaluation.test.ts"
+      ],
+      "grading": {
+        "label": "trial-06",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 1,
+          "typecheck": 2,
+          "check:compaction-style": 1,
+          "build:binary": 1
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-07",
+      "arm": "workers",
+      "repetition": 2,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 150.5,
+      "usage": {
+        "input": 209791,
+        "output": 21626,
+        "cacheRead": 1811904,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2043321,
+      "budget_overshoot": 43321,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 88,
+      "observed_sessions": 4,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 88
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "15822316-168b-411",
+          "batch": "bfa9298f"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "799816bf-1a61-438",
+          "batch": "bfa9298f"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "1a221974-3fa7-44d",
+          "batch": "bfa9298f"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 0,
+      "worker_statuses": [
+        {
+          "id": "15822316-168b-411",
+          "description": "Lifecycle investigator",
+          "status": "stopped"
+        },
+        {
+          "id": "799816bf-1a61-438",
+          "description": "Boundary investigator",
+          "status": "stopped"
+        },
+        {
+          "id": "1a221974-3fa7-44d",
+          "description": "Implementation owner",
+          "status": "stopped"
+        }
+      ],
+      "malformed_tool_names": 1,
+      "tool_errors": 7,
+      "changed_source_files": [
+        "src/extensions/compaction-evaluation.test.ts"
+      ],
+      "grading": {
+        "label": "trial-07",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 1,
+          "typecheck": 2,
+          "check:compaction-style": 1,
+          "build:binary": 1
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-08",
+      "arm": "solo",
+      "repetition": 2,
+      "finish_reason": "token_limit",
+      "elapsed_seconds": 433.4,
+      "usage": {
+        "input": 135909,
+        "output": 27641,
+        "cacheRead": 1868608,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 2032158,
+      "budget_overshoot": 32158,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 42,
+      "observed_sessions": 1,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 42
+      },
+      "launches": [],
+      "initial_workers_single_batch": false,
+      "repair_workers": 0,
+      "worker_statuses": [],
+      "malformed_tool_names": 0,
+      "tool_errors": 2,
+      "changed_source_files": [
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-thresholds.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/model-guard.test.ts"
+      ],
+      "grading": {
+        "label": "trial-08",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 1,
+          "typecheck": 2,
+          "check:compaction-style": 0,
+          "build:binary": 1
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    }
+  ],
+  "scope": "Budget-limited pilot; incomplete outputs are retained and are not completed quality comparisons.",
+  "limitations": [
+    "All eight trials hit the total recorded-token cap before completing the intended workflow; none launched the repair worker.",
+    "One board trial split initial workers across batches after rejected launches.",
+    "Unavailable tools were absent in audited requests; malformed names still occurred in three trials.",
+    "Only three unchanged outputs built; their continuation checks fail and cancellation checks pass. Other outputs remain unbuildable.",
+    "Runtime durations include concurrent backend and local-machine contention and are not a clean latency comparison.",
+    "The monitor termination regression was corrected after the cohort. All recorded stops here are token_limit, so it did not determine these stops."
+  ],
+  "conclusion": "No completed-work quality, readability, cohesion or performance advantage was established. Board use occurred without a production repair before the cutoff."
+}
