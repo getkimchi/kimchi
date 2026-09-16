@@ -2,8 +2,13 @@
  * `dispatch_to_cloud_agent` tool — dispatches a self-contained task briefing
  * to a remote cloud agent via `runCloudAgent`.
  *
- * Registered only when KIMCHI_REMOTE_RUN is set (the remote-run extension
- * returns early otherwise). The tool is part of the default tool set; plan
+ * Registered only when KIMCHI_REMOTE_RUN is set and the session was not
+ * launched with `--print` (the remote-run extension skips registration in
+ * headless runs — no human exists to answer the consent dialog, and
+ * remote dispatch is a supervised, user-led convenience, not something an
+ * unsupervised agent should trigger on its own). The
+ * execute-time `no_ui` refusal below stays as defense-in-depth for UI-less
+ * sessions under interactive launches (e.g. subagent workers). The tool is part of the default tool set; plan
  * mode and ferment profiles swap it out via the tool catalog, so it is only
  * callable when direct dispatch is valid.
  *

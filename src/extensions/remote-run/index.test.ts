@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { withPrintGate } from "../print-mode.js"
 import { DISPATCH_TO_CLOUD_AGENT_TOOL } from "./dispatch-tool.js"
 import remoteRunExtension from "./index.js"
 import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
@@ -62,6 +63,24 @@ describe("remoteRunExtension", () => {
 		expect(tools.map((t) => t.name)).toEqual([DISPATCH_TO_CLOUD_AGENT_TOOL])
 		expect([...commands.keys()]).toEqual(["remote-run"])
 		expect(handlers.get("session_shutdown")).toHaveLength(1)
+	})
+
+	it("does not register the dispatch tool in --print runs, but keeps the command and shutdown handler", async () => {
+		await withPrintGate({ print: true }, () => {
+			const { pi, tools, commands, handlers } = makePi()
+			remoteRunExtension(pi)
+			expect(tools).toEqual([])
+			expect([...commands.keys()]).toEqual(["remote-run"])
+			expect(handlers.get("session_shutdown")).toHaveLength(1)
+		})
+	})
+
+	it("does not lift the print suppression for ferment-oneshot runs", async () => {
+		await withPrintGate({ print: true, fermentOneshot: true }, () => {
+			const { pi, tools } = makePi()
+			remoteRunExtension(pi)
+			expect(tools).toEqual([])
+		})
 	})
 
 	it("/remote-run shows usage on empty args", async () => {
