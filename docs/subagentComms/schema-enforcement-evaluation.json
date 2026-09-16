@@ -1,0 +1,169 @@
+{
+  "checked": "2026-09-16",
+  "probe": "Provider enforcement of the existing agent-message schema",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "conclusion": "The tested route returned an invalid mixed-field payload despite transmitted strict=true. Keep local validation; no product change justified.",
+  "scope": "Four isolated built TMUX local-sink sessions, no actual peer delivery or coding-quality measurement.",
+  "runtime_sha256": "c6c414da8cfeb6bff6b04f26160b65d0762c1efe4fdad53ae3bbee6d34f5f7b1",
+  "source_head": "52fb3e2c0b0433056a194a309c777618719625a1",
+  "artifacts": "/private/tmp/kimchi-comms-strict-7ldfg34h",
+  "trials": [
+    {
+      "label": "valid-default",
+      "required_strict": false,
+      "wire_strict": [
+        false,
+        false
+      ],
+      "wire_schema_matches": true,
+      "calls": [
+        {
+          "type": "toolCall",
+          "id": "call_f42839a659224625a2a736bf",
+          "name": "message_schema_probe",
+          "arguments": {
+            "recipient": {
+              "agentId": "probe-peer",
+              "type": "agent"
+            },
+            "payload": {
+              "kind": "status",
+              "summary": "Naming contract ready",
+              "nextAction": "Check registration"
+            }
+          }
+        }
+      ],
+      "results": [
+        {
+          "name": "message_schema_probe",
+          "isError": false
+        }
+      ],
+      "stopped": true,
+      "home_removed": true
+    },
+    {
+      "label": "valid-strict",
+      "required_strict": true,
+      "wire_strict": [
+        true,
+        true
+      ],
+      "wire_schema_matches": true,
+      "calls": [
+        {
+          "type": "toolCall",
+          "id": "call_ce282c3ab87c4b1990274833",
+          "name": "message_schema_probe",
+          "arguments": {
+            "recipient": {
+              "agentId": "probe-peer",
+              "type": "agent"
+            },
+            "payload": {
+              "kind": "status",
+              "summary": "Naming contract ready",
+              "nextAction": "Check registration"
+            }
+          }
+        }
+      ],
+      "results": [
+        {
+          "name": "message_schema_probe",
+          "isError": false
+        }
+      ],
+      "stopped": true,
+      "home_removed": true
+    },
+    {
+      "label": "mixed-strict",
+      "required_strict": true,
+      "wire_strict": [
+        true,
+        true
+      ],
+      "wire_schema_matches": true,
+      "calls": [
+        {
+          "type": "toolCall",
+          "id": "call_7b018b51d2a446df81072787",
+          "name": "message_schema_probe",
+          "arguments": {
+            "recipient": {
+              "agentId": "probe-peer",
+              "type": "agent"
+            },
+            "payload": {
+              "kind": "status",
+              "summary": "Naming contract ready",
+              "nextAction": "Check registration",
+              "answer": null
+            }
+          }
+        }
+      ],
+      "results": [
+        {
+          "name": "message_schema_probe",
+          "isError": true
+        }
+      ],
+      "stopped": true,
+      "home_removed": true
+    },
+    {
+      "label": "mixed-default",
+      "required_strict": false,
+      "wire_strict": [
+        false,
+        false
+      ],
+      "wire_schema_matches": true,
+      "calls": [
+        {
+          "type": "toolCall",
+          "id": "call_0b376061673c47b18c517fdc",
+          "name": "message_schema_probe",
+          "arguments": {
+            "payload": {
+              "answer": null,
+              "kind": "status",
+              "nextAction": "Check registration",
+              "summary": "Naming contract ready"
+            },
+            "recipient": {
+              "agentId": "probe-peer",
+              "type": "agent"
+            }
+          }
+        }
+      ],
+      "results": [
+        {
+          "name": "message_schema_probe",
+          "isError": true
+        }
+      ],
+      "stopped": true,
+      "home_removed": true
+    }
+  ],
+  "deviations": [
+    "Runtime tool-profile updates left built-in tools advertised despite setActiveTools. The hook blocked all non-probe calls; only the sink was called. Every variant had the same advertised tool set."
+  ],
+  "limits": [
+    "One valid and one malformed call per configuration. This is a counterexample to schema enforcement on this route, not a broad provider benchmark.",
+    "The request hook proves strict=true and unchanged schema at the client boundary; backend selection and downstream transformations are not established."
+  ],
+  "source_hashes": {
+    "schema.json": "5d4554870fcddc13dd35eef7d3536b4c9a246cb7624f998ffd7dbc744ce2aade",
+    "manifest.json": "6729be5ebaa22e6c07e5dfe7c2f0fd43b3826de6bfa7a49a97a94b1fda83f067",
+    "seal.json": "800629682105e51821d8c611f0c4f575a5583a96a46c88a5ac3ea0d735f68ed3",
+    "audit.json": "9fdf7160c1764f02ac54726145c1cbbe26b8a3c24d42532f9c57fd5fdfcbba91",
+    "results.json": "cd4462d395f39ce47fddf544bbe65c44fcc74408d57dc070fbdb486ee20d63f4",
+    "report.md": "11de33f9f8a49e282f3fad46cca7a7ab73190a738c454c1009f0a2cdee58c184"
+  }
+}

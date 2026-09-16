@@ -2,7 +2,7 @@
 
 Ferment V2 is an experimental, session-branch-scoped objective controller. It keeps one objective active across turns and uses the ordinary Todo tools for tactical work. It does not create Ferment V1 phases, workers, or worktrees.
 
-Enable `extensions.ferment-v2` under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default. The extension does not activate in an agent-worker process, and a run requires every Ferment V2 and Todo tool to be available.
+Enable `extensions.ferment-v2` under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default. A run requires every Ferment V2 and Todo tool to be available. Local `Agent` calls can opt in with `ferment_v2: true`; the assigned prompt becomes a separate worker objective. The worker uses its own Todo store and journal, and keeps the existing host turn, output-token and duration limits. Host cancellation stops its evaluator. Resuming that worker keeps the objective ID and advances its revision for new evidence, invalidating its earlier accepted answer. The parent objective stays separate. Worker results expose `ferment_v2` with the objective ID, revision, status and last evaluation. A completed worker run can still have a paused objective, for example when its final answer differs from the accepted draft.
 
 ## Journal state
 

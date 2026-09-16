@@ -1,0 +1,536 @@
+{
+  "task": "Historical MCP provider naming and collision repair",
+  "checked": "2026-09-16",
+  "source_head": "52fb3e2c0b0433056a194a309c777618719625a1",
+  "historical_baseline": "5644358b599bc6f04aa510a643863684c1fbf080",
+  "historical_reference": "da328918e63b754b7f9a89e52107325d9021e4fb",
+  "runtime_sha256": "c6c414da8cfeb6bff6b04f26160b65d0762c1efe4fdad53ae3bbee6d34f5f7b1",
+  "artifacts": "/private/tmp/kimchi-comms-mcp-names-s7395jup",
+  "design": {
+    "order": [
+      "on",
+      "off",
+      "off",
+      "on"
+    ],
+    "model": "glm-5.3-flash",
+    "thinking": "low",
+    "initial_workers": 2,
+    "initial_limits": {
+      "turns": 30,
+      "seconds": 360,
+      "output_tokens": 18000
+    },
+    "repair_workers": 1,
+    "repair_limits": {
+      "turns": 25,
+      "seconds": 240,
+      "output_tokens": 12000
+    },
+    "parent_ferment_tokens": 4000000,
+    "wall_seconds": 900,
+    "controls_keep_shared_files": true,
+    "parent_edits_allowed": false,
+    "posting_quota": false
+  },
+  "conclusion": "No final-quality advantage. A consumed board finding preceded reuse of a peer registry, but that candidate retained an unwired warning helper. Workflow and infrastructure failures prevent a speed comparison.",
+  "trials": [
+    {
+      "trial": "trial-01",
+      "arm": "on",
+      "stages": [
+        {
+          "stage": "handoff",
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 2,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 29,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 29,
+            "total": 31,
+            "failures": [
+              {
+                "name": "formatToolName warns once per overlong name, not on every call"
+              },
+              {
+                "name": "private naming integration live metadata warns once for each distinct overlong original"
+              }
+            ]
+          },
+          "own_tests": {
+            "numPassedTests": 213,
+            "numFailedTests": 0,
+            "numTotalTests": 214
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 2,
+          "biome_exit": 1
+        },
+        {
+          "stage": "final",
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 2,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 29,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 29,
+            "total": 31,
+            "failures": [
+              {
+                "name": "formatToolName warns once per overlong name, not on every call"
+              },
+              {
+                "name": "private naming integration live metadata warns once for each distinct overlong original"
+              }
+            ]
+          },
+          "own_tests": {
+            "numPassedTests": 213,
+            "numFailedTests": 0,
+            "numTotalTests": 214
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        }
+      ],
+      "workflow_status": "paused",
+      "seconds": 606.5350210666656,
+      "usage": {
+        "input": 394134,
+        "output": 34126,
+        "cacheRead": 2330432,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "a785ba96-4f17-451",
+          "description": "Naming owner",
+          "status": "completed"
+        },
+        {
+          "id": "d379debe-be8f-4b6",
+          "description": "Integration owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "cb99c28b-153a-45f",
+          "description": "Repair owner",
+          "status": "steered"
+        }
+      ],
+      "repair_stage_missing": false,
+      "peer_entries_read": 1,
+      "message_attempts": 2,
+      "message_rejections": 1,
+      "production_repair_churn": {
+        "src/extensions/mcp-adapter/index.ts": {
+          "added": 1,
+          "removed": 1,
+          "handoff_lines": 656,
+          "final_lines": 656
+        },
+        "src/extensions/mcp-adapter/metadata-cache.ts": {
+          "added": 1,
+          "removed": 1,
+          "handoff_lines": 330,
+          "final_lines": 330
+        },
+        "src/extensions/mcp-adapter/registration-collisions.ts": {
+          "added": 1,
+          "removed": 1,
+          "handoff_lines": 83,
+          "final_lines": 83
+        },
+        "src/extensions/mcp-adapter/tool-metadata.ts": {
+          "added": 1,
+          "removed": 1,
+          "handoff_lines": 186,
+          "final_lines": 186
+        }
+      },
+      "protected_source_changes": []
+    },
+    {
+      "trial": "trial-02",
+      "arm": "off",
+      "stages": [
+        {
+          "stage": "handoff",
+          "frozen_behavior": {
+            "numPassedTests": 27,
+            "numFailedTests": 3,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 30,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 31,
+            "total": 31,
+            "failures": []
+          },
+          "own_tests": {
+            "numPassedTests": 209,
+            "numFailedTests": 0,
+            "numTotalTests": 210
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        },
+        {
+          "stage": "final",
+          "frozen_behavior": {
+            "numPassedTests": 27,
+            "numFailedTests": 3,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 30,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 31,
+            "total": 31,
+            "failures": []
+          },
+          "own_tests": {
+            "numPassedTests": 210,
+            "numFailedTests": 0,
+            "numTotalTests": 211
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        }
+      ],
+      "workflow_status": "paused",
+      "seconds": 484.7085120677948,
+      "usage": {
+        "input": 395304,
+        "output": 31544,
+        "cacheRead": 2333184,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "01ad9215-eca3-4f7",
+          "description": "Naming owner",
+          "status": "completed"
+        },
+        {
+          "id": "eb3ff2c5-2a87-4fc",
+          "description": "Integration owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "c53c7db8-1f87-4b6",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "repair_stage_missing": false,
+      "peer_entries_read": 0,
+      "message_attempts": 0,
+      "message_rejections": 0,
+      "production_repair_churn": {},
+      "protected_source_changes": []
+    },
+    {
+      "trial": "trial-03",
+      "arm": "off",
+      "stages": [
+        {
+          "stage": "handoff",
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 2,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 30,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 31,
+            "total": 31,
+            "failures": []
+          },
+          "own_tests": {
+            "numPassedTests": 218,
+            "numFailedTests": 0,
+            "numTotalTests": 219
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        },
+        {
+          "stage": "final",
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 2,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 30,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 31,
+            "total": 31,
+            "failures": []
+          },
+          "own_tests": {
+            "numPassedTests": 217,
+            "numFailedTests": 1,
+            "numTotalTests": 219
+          },
+          "own_test_exit": 1,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        }
+      ],
+      "workflow_status": "active",
+      "seconds": 901.3481070995331,
+      "usage": {
+        "input": 221252,
+        "output": 24329,
+        "cacheRead": 1698048,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "e3b8fbce-f459-429",
+          "description": "Naming owner",
+          "status": "completed"
+        },
+        {
+          "id": "86a21a15-17f6-406",
+          "description": "Integration owner",
+          "status": "steered"
+        }
+      ],
+      "repair_stage_missing": true,
+      "peer_entries_read": 0,
+      "message_attempts": 0,
+      "message_rejections": 0,
+      "production_repair_churn": {},
+      "protected_source_changes": []
+    },
+    {
+      "trial": "trial-04",
+      "arm": "on",
+      "stages": [
+        {
+          "stage": "handoff",
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 2,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 30,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 31,
+            "total": 31,
+            "failures": []
+          },
+          "own_tests": {
+            "numPassedTests": 211,
+            "numFailedTests": 0,
+            "numTotalTests": 212
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        },
+        {
+          "stage": "final",
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 2,
+            "numTotalTests": 30
+          },
+          "corrected_original_behavior": {
+            "passed": 30,
+            "total": 30
+          },
+          "extended_diagnostics": {
+            "passed": 31,
+            "total": 31,
+            "failures": []
+          },
+          "own_tests": {
+            "numPassedTests": 211,
+            "numFailedTests": 0,
+            "numTotalTests": 212
+          },
+          "own_test_exit": 0,
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        }
+      ],
+      "workflow_status": "complete",
+      "seconds": 471.452339887619,
+      "usage": {
+        "input": 337762,
+        "output": 31887,
+        "cacheRead": 2528192,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "80c94d9d-b4de-4f5",
+          "description": "Naming owner",
+          "status": "completed"
+        },
+        {
+          "id": "91f876b2-42b3-480",
+          "description": "Integration owner",
+          "status": "steered"
+        },
+        {
+          "id": "9bc3117a-93b4-4b5",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "repair_stage_missing": false,
+      "peer_entries_read": 1,
+      "message_attempts": 6,
+      "message_rejections": 4,
+      "production_repair_churn": {},
+      "protected_source_changes": []
+    }
+  ],
+  "grading_corrections": [
+    "Frozen 30-case results remain unchanged. Two warning assertions required particular synonyms despite warning wording being outside task scope. Corrected assertions identify the conflicting provider name.",
+    "Boot fixture metadata contained an unrelated conflicting origin even in the quiet-repeat case. Diagnostic metadata now derives from supplied batches for every candidate, baseline, reference and mutant.",
+    "One additional metadata-path test confirms trial-01 fails to emit warnings in production. It duplicates the warning requirement at an integration boundary; do not count it as a second independent defect.",
+    "Original snapshot protected-file check reported two deliberately omitted generated files. Live source hashes match the sealed protected source in all four runs.",
+    "The first grading attempt failed on copied pnpm shims/network-disabled package-manager bootstrapping. Retained separately; unchanged checks ran with a clean HOME and the installed pinned pnpm10.8.1 distribution."
+  ],
+  "diagnostic_validation": [
+    {
+      "label": "baseline",
+      "passed": 11,
+      "total": 31
+    },
+    {
+      "label": "reference",
+      "passed": 31,
+      "total": 31
+    },
+    {
+      "label": "invalid-characters",
+      "passed": 17,
+      "total": 31
+    },
+    {
+      "label": "silent-late-collision",
+      "passed": 29,
+      "total": 31
+    },
+    {
+      "label": "wrong-dispatch-name",
+      "passed": 30,
+      "total": 31
+    }
+  ],
+  "communication_trace": {
+    "trial-01": {
+      "entry": "bd-e609e690",
+      "read_at": 1789529132500,
+      "next_helper_read_at": 1789529132502,
+      "registry_rewrite_at": 1789529134584,
+      "observation": "The integration worker read the peer naming module after the board entry, then replaced its own Map with an adapter over ProviderNameRegistry. The preceding syntax fix and board read were issued in the same assistant turn, so the board cannot receive credit for that fix. No final behavior gain is established.",
+      "limitation": "The same peer module and shared notes were accessible without communication; this is observed reuse, not a counterfactual proof or general readability result.",
+      "earlier_direct_message": {
+        "id": "4ed7c980-a213-41cd-b85a-20192f090ef2",
+        "recipient_observed_at": 1789529125481,
+        "next_assistant_edit_at": 1789529128165,
+        "change": "export function defaultCollisionWarn: CollisionWarn = became export const defaultCollisionWarn: CollisionWarn =",
+        "parse_replay": {
+          "before": [
+            {
+              "code": 1005,
+              "message": "'(' expected."
+            },
+            {
+              "code": 1144,
+              "message": "'{' or ';' expected."
+            }
+          ],
+          "after": []
+        },
+        "interpretation": "Peer message preceded the exact syntax repair in the next assistant turn. Board read followed; credit the syntax finding to the direct message, not the board. Parse replay uses the worker-authored module and this one replacement; it is not a whole-project quality grade."
+      }
+    },
+    "trial-04": "One peer entry consumed. Two valid messages confirmed signatures already specified by TASK; four other message attempts were rejected. No new-information quality gain established."
+  },
+  "workflow_limits": [
+    "trial-01 paused after three transport connection errors; parent did not finish its post-repair checks. Host grading checked the frozen result.",
+    "trial-02 evaluator accepted completion, but final delivery rewrote the evaluated draft; final_answer_delivery_failed remained paused.",
+    "trial-03 waited at approval for the prescribed Vitest command until the wall limit and never launched repair. Its handoff field is the final available snapshot, not a completed prescribed handoff.",
+    "trial-04 completed the prescribed workflow. Eleven of twelve intended workers started; all eight initial launches matched their parameters.",
+    "trial-03 own final suite had an OAuth callback EADDRINUSE failure in unchanged code. A serial focused recheck passed that case but failed another existing callback timing assertion; preserve both failures, do not describe its own suite as passing."
+  ],
+  "cleanup": [
+    {
+      "trial": "trial-01",
+      "exit": 0,
+      "status": "Live: false \u00b7 initial model: kimchi-dev/glm-5.3-flash \u00b7 run: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-01/tmp/kimchi-harness-live-xjoxtA\nSession: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-01/tmp/kimchi-harness-live-xjoxtA/sessions/2026-09-16T03-22-19-374Z_01a0a83c-9b6e-7d4b-8f5b-8b623974d2cd.jsonl\n",
+      "home_absent": true
+    },
+    {
+      "trial": "trial-02",
+      "exit": 0,
+      "status": "Live: false \u00b7 initial model: kimchi-dev/glm-5.3-flash \u00b7 run: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-02/tmp/kimchi-harness-live-bqYYNB\nSession: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-02/tmp/kimchi-harness-live-bqYYNB/sessions/2026-09-16T03-22-20-822Z_01a0a83c-a116-73d0-99dd-44b72d93618e.jsonl\n",
+      "home_absent": true
+    },
+    {
+      "trial": "trial-03",
+      "exit": 0,
+      "status": "Live: false \u00b7 initial model: kimchi-dev/glm-5.3-flash \u00b7 run: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-03/tmp/kimchi-harness-live-99Teli\nSession: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-03/tmp/kimchi-harness-live-99Teli/sessions/2026-09-16T03-22-22-669Z_01a0a83c-a84d-7e3d-936a-8a851e2ed14c.jsonl\n",
+      "home_absent": true
+    },
+    {
+      "trial": "trial-04",
+      "exit": 0,
+      "status": "Live: false \u00b7 initial model: kimchi-dev/glm-5.3-flash \u00b7 run: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-04/tmp/kimchi-harness-live-y917Xp\nSession: /private/tmp/kimchi-comms-mcp-names-s7395jup/trial-04/tmp/kimchi-harness-live-y917Xp/sessions/2026-09-16T03-22-24-398Z_01a0a83c-af0e-7e2e-a1e3-ced00f3d1bf8.jsonl\n",
+      "home_absent": true
+    }
+  ],
+  "source_hashes": {
+    "manifest.json": "6f28ef7161d478f14e5dbd646bfc2dcf9aa060da8e4dce42f613df50e70748cb",
+    "seal.json": "ada0cd45c42b115a244f544a95692dd6033a3c99f2e29d7b93f167202adeaf1a",
+    "fixture-validation.json": "2456806ff412bdd29b401624895c3401dd6797df776e3cc370aaaa0ef9f764f0",
+    "isolation-checks.json": "fea61811eb4109fbfba2c34c6871ff6d57826651bc129adfd3fe588828f505c3",
+    "protocol-review.json": "8c751b5c605a4667bae1d1b43001e5a8afbb60cc9deb5e77c68bf25222956903",
+    "results.json": "9733757db13652bd27a19a4e615ea7d636ab53552d93216af8584555203764c2",
+    "diagnostics/results.json": "2a68b2ee29c9ba935c8ef436828229888dc50d142af4de735dc45e552ea9430e",
+    "diagnostics/corrections.json": "20660336a6cb373bdec9d5e445dd04f6bb6dfae6dcb099b7ed4aa5c45b336ac8",
+    "cleanup-recheck.json": "e6102d208534c012c3e6638a9e42fb442806f0703130adaff71412e5aab02680",
+    "oauth-recheck.log": "bbaffa213a20d3e686e6ad068d9ea3697c02c023e71a488e151fbe9938674762",
+    "syntax-replay/results.json": "667d8e67be4242676d3118b1590db447dbe8b5206165d385527287648cb155a1",
+    "trial-01-audit.json": "602ae5a1c0e83d4ae4ee6393efb764cfa4e263c0b6a3a1eb2c5253db4b5e96de",
+    "diagnostics/types.log": "9a4155a1a5b23e4c1057d24dbb512ea167c043be41e70fee7d467445f7ef2973"
+  }
+}

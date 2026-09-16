@@ -1,0 +1,878 @@
+{
+  "date": "2026-09-16",
+  "checkout_head": "52fb3e2c0b0433056a194a309c777618719625a1",
+  "changes": "Existing uncommitted implementation; no production changes during comparison.",
+  "question": "Does optional worker-local Ferment v2 improve work beyond ordinary TODOs and board communication?",
+  "conclusion": "No reliable overall quality improvement established. Frozen scores favor enabled workers in one pair and tie in one, but an enabled repair introduced a confirmed startup regression outside the frozen checks. All four finals pass their own tests, typecheck and Biome.",
+  "design": {
+    "model": "kimchi-dev/glm-5.3-flash",
+    "thinking": "low",
+    "binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
+    "same_binary_all_arms": true,
+    "baseline_source": "5644358b599bc6f04aa510a643863684c1fbf080",
+    "reference_source": "da328918e63b754b7f9a89e52107325d9021e4fb",
+    "task": "Historical MCP naming repair; task family reused from earlier communication research.",
+    "order": [
+      "enabled",
+      "control",
+      "control",
+      "enabled"
+    ],
+    "board_and_todos_available_in_both_arms": true,
+    "parent_ferment_v2_in_both_arms": true,
+    "initial_workers": 3,
+    "repair_workers": 1,
+    "initial_communication": "group",
+    "initial_limits": {
+      "soft_turns": 45,
+      "hard_turns": 51,
+      "seconds": 600,
+      "output_tokens": 22000
+    },
+    "repair_limits": {
+      "soft_turns": 25,
+      "hard_turns": 31,
+      "seconds": 240,
+      "output_tokens": 12000
+    },
+    "parent_token_budget": 4000000,
+    "wall_limit_seconds": 1200,
+    "inference_retries": 0
+  },
+  "preflight": {
+    "isolation_checks_passed": 50,
+    "protocol_assertions_passed": 35,
+    "sealed_files_unchanged": 1650,
+    "baseline": "11/31",
+    "reference": "31/31",
+    "mutants": {
+      "silent_late_collision": "29/31",
+      "invalid_characters": "17/31",
+      "wrong_dispatch_name": "30/31"
+    },
+    "denied": [
+      "real HOME",
+      "original checkout",
+      "other trials",
+      "hidden grader",
+      "reference source",
+      "npm/npx"
+    ],
+    "allowed": [
+      "own isolated files",
+      "read-only dependencies",
+      "inference HTTPS"
+    ]
+  },
+  "trials": [
+    {
+      "id": "trial-01",
+      "worker_ferment_v2": true,
+      "pair": 1,
+      "stages": {
+        "handoff": {
+          "frozen_behavior": {
+            "numPassedTests": 31,
+            "numFailedTests": 0,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 224,
+            "numFailedTests": 0,
+            "numTotalTests": 225
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 1,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        },
+        "final": {
+          "frozen_behavior": {
+            "numPassedTests": 31,
+            "numFailedTests": 0,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 225,
+            "numFailedTests": 0,
+            "numTotalTests": 226
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 0,
+            "total": 2
+          }
+        }
+      },
+      "parent_status": "paused",
+      "seconds": 670.5,
+      "timed_out": false,
+      "workers": [
+        {
+          "id": "aa2495ea-5dba-4de",
+          "description": "Integration owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "aeae562c-bc6c-46a",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "bd8e23f4-749e-4ea",
+          "description": "Naming owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "ea1ba435-5888-4f2",
+          "description": "Repair owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        }
+      ],
+      "rejected_launch_tool_results": 1,
+      "launch_calls_without_tool_result": 0,
+      "usage_by_role": {
+        "parent": {
+          "input": 76195,
+          "output": 7403,
+          "cacheRead": 630400,
+          "cacheWrite": 0
+        },
+        "workers": {
+          "input": 765384,
+          "output": 45785,
+          "cacheRead": 6866240,
+          "cacheWrite": 0
+        },
+        "evaluators": {
+          "input": 10957,
+          "output": 2260,
+          "cacheRead": 640,
+          "cacheWrite": 0
+        },
+        "unclassified": {}
+      },
+      "usage_total": {
+        "input": 852536,
+        "output": 55448,
+        "cacheRead": 7497280,
+        "cacheWrite": 0
+      },
+      "successful_board_reads": 54,
+      "board_reads_containing_other_authors": 24,
+      "distinct_peer_entries_read": 30,
+      "manual_board_posts": 2,
+      "directed_message_calls": 0,
+      "reconciliation_calls": 0,
+      "production_files": [
+        {
+          "file": "src/extensions/mcp-adapter/direct-tools.ts",
+          "baseline_lines": 415,
+          "handoff_lines": 428,
+          "final_lines": 428,
+          "repair_added": 1,
+          "repair_removed": 1,
+          "sha256": "0cb9d85249dc0dd68309ee15d140cd318937336869f0c2e617bee50f7f4a0137"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/index.ts",
+          "baseline_lines": 636,
+          "handoff_lines": 662,
+          "final_lines": 662,
+          "repair_added": 1,
+          "repair_removed": 1,
+          "sha256": "245f23c73b5881f86a34f435986801db6ff08bb8566a515b45c30fbbf69bace7"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/init.ts",
+          "baseline_lines": 416,
+          "handoff_lines": 416,
+          "final_lines": 420,
+          "repair_added": 9,
+          "repair_removed": 5,
+          "sha256": "37b9138b0dbc72d2e946e15b690462032468496ef1862e0b2fa369d35f6a3af5"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/naming.ts",
+          "baseline_lines": 0,
+          "handoff_lines": 174,
+          "final_lines": 174,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "beeb5cab241e2e2b51f8fc60bd76359d2d633aa8b23efa5bf9b42efe7e4d928c"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/proxy-modes.ts",
+          "baseline_lines": 1033,
+          "handoff_lines": 1033,
+          "final_lines": 1040,
+          "repair_added": 9,
+          "repair_removed": 2,
+          "sha256": "4b765212979df7b37b816f0370841d84b066d2b28026b2a8223b05ccf28aa50d"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/state.ts",
+          "baseline_lines": 45,
+          "handoff_lines": 45,
+          "final_lines": 47,
+          "repair_added": 2,
+          "repair_removed": 0,
+          "sha256": "207ebc97baa614244fbbfeb358ba9acc48b39ea3bfe8db1df9943ccfeafafb82"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/tool-metadata.ts",
+          "baseline_lines": 182,
+          "handoff_lines": 182,
+          "final_lines": 213,
+          "repair_added": 31,
+          "repair_removed": 0,
+          "sha256": "b062ef33e4b2273c21ba9228bbcfbd212b645dde3ae4d7fa18315e6f64712211"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/types.ts",
+          "baseline_lines": 447,
+          "handoff_lines": 416,
+          "final_lines": 416,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "b969e1f1a323f4f33d7d401db9a8a25b08a2e1ddb4e84402dc3b61c47b68362c"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "id": "trial-02",
+      "worker_ferment_v2": false,
+      "pair": 1,
+      "stages": {
+        "handoff": {
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 3,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [
+            "formatToolName warns once per overlong name, not on every call",
+            "private naming integration late registration warns about a different original using the same wire name",
+            "private naming integration late registration notices same wire names from different servers"
+          ],
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 230,
+            "numFailedTests": 2,
+            "numTotalTests": 233
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        },
+        "final": {
+          "frozen_behavior": {
+            "numPassedTests": 28,
+            "numFailedTests": 3,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [
+            "formatToolName warns once per overlong name, not on every call",
+            "private naming integration late registration warns about a different original using the same wire name",
+            "private naming integration late registration notices same wire names from different servers"
+          ],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 232,
+            "numFailedTests": 0,
+            "numTotalTests": 233
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        }
+      },
+      "parent_status": "paused",
+      "seconds": 856.1,
+      "timed_out": false,
+      "workers": [
+        {
+          "id": "b13e9b11-bf45-4a4",
+          "description": "Investigator",
+          "status": "steered"
+        },
+        {
+          "id": "b1a43d88-ba81-465",
+          "description": "Naming owner",
+          "status": "completed"
+        },
+        {
+          "id": "30ef69b8-fc8a-4be",
+          "description": "Integration owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "5a40daad-cd38-446",
+          "description": "Repair owner",
+          "status": "aborted",
+          "abortReason": "token_budget"
+        }
+      ],
+      "rejected_launch_tool_results": 12,
+      "launch_calls_without_tool_result": 0,
+      "usage_by_role": {
+        "parent": {
+          "input": 266026,
+          "output": 18759,
+          "cacheRead": 2383616,
+          "cacheWrite": 0
+        },
+        "workers": {
+          "input": 409584,
+          "output": 44701,
+          "cacheRead": 5732928,
+          "cacheWrite": 0
+        },
+        "evaluators": {
+          "input": 18536,
+          "output": 4517,
+          "cacheRead": 3072,
+          "cacheWrite": 0
+        },
+        "unclassified": {}
+      },
+      "usage_total": {
+        "input": 694146,
+        "output": 67977,
+        "cacheRead": 8119616,
+        "cacheWrite": 0
+      },
+      "successful_board_reads": 52,
+      "board_reads_containing_other_authors": 29,
+      "distinct_peer_entries_read": 21,
+      "manual_board_posts": 1,
+      "directed_message_calls": 3,
+      "reconciliation_calls": 0,
+      "production_files": [
+        {
+          "file": "src/extensions/mcp-adapter/direct-tools.ts",
+          "baseline_lines": 415,
+          "handoff_lines": 422,
+          "final_lines": 422,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "6080710187b9e9cde9b8e9f55549cf658a090e128707694fa8cf24437d87586c"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/index.ts",
+          "baseline_lines": 636,
+          "handoff_lines": 667,
+          "final_lines": 667,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "f70acf1ad545ddc316c3cdd8c0993a68e01f69b240ba1d950621a7bb2b9b523a"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/metadata-cache.ts",
+          "baseline_lines": 327,
+          "handoff_lines": 333,
+          "final_lines": 333,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "9b5ba08034236afb92eb27fe4f9f09ab855d53b1c0967177457e16aa585408c8"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/naming.ts",
+          "baseline_lines": 0,
+          "handoff_lines": 188,
+          "final_lines": 188,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "f817c294c6530fbea4c2843120a0b69741eeda78ebe58696aec5522c391c9c20"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/tool-metadata.ts",
+          "baseline_lines": 182,
+          "handoff_lines": 194,
+          "final_lines": 194,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "9eece9a4b99a32807e136c67300cc9d529071403c8e17518ddc837c6efe728aa"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/types.ts",
+          "baseline_lines": 447,
+          "handoff_lines": 411,
+          "final_lines": 411,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "78a654de08206d00b73673992eef232f9f3072fb0ee49156a4b8862227d06dd3"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "id": "trial-03",
+      "worker_ferment_v2": false,
+      "pair": 2,
+      "stages": {
+        "handoff": {
+          "frozen_behavior": {
+            "numPassedTests": 29,
+            "numFailedTests": 2,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [
+            "private naming integration late registration warns about a different original using the same wire name",
+            "private naming integration late registration notices same wire names from different servers"
+          ],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 223,
+            "numFailedTests": 0,
+            "numTotalTests": 224
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        },
+        "final": {
+          "frozen_behavior": {
+            "numPassedTests": 29,
+            "numFailedTests": 2,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [
+            "private naming integration late registration warns about a different original using the same wire name",
+            "private naming integration late registration notices same wire names from different servers"
+          ],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 223,
+            "numFailedTests": 0,
+            "numTotalTests": 224
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        }
+      },
+      "parent_status": "complete",
+      "seconds": 689.4,
+      "timed_out": false,
+      "workers": [
+        {
+          "id": "666965c8-9c92-4b7",
+          "description": "Naming owner",
+          "status": "steered"
+        },
+        {
+          "id": "3a88b5ad-63b2-4e3",
+          "description": "Integration owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "f6f5d87e-8eb2-43d",
+          "description": "Investigator",
+          "status": "completed"
+        },
+        {
+          "id": "5e91bfe4-a258-402",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "rejected_launch_tool_results": 7,
+      "launch_calls_without_tool_result": 0,
+      "usage_by_role": {
+        "parent": {
+          "input": 149114,
+          "output": 12280,
+          "cacheRead": 1165696,
+          "cacheWrite": 0
+        },
+        "workers": {
+          "input": 348000,
+          "output": 35691,
+          "cacheRead": 4601536,
+          "cacheWrite": 0
+        },
+        "evaluators": {
+          "input": 14437,
+          "output": 1683,
+          "cacheRead": 1664,
+          "cacheWrite": 0
+        },
+        "unclassified": {}
+      },
+      "usage_total": {
+        "input": 511551,
+        "output": 49654,
+        "cacheRead": 5768896,
+        "cacheWrite": 0
+      },
+      "successful_board_reads": 49,
+      "board_reads_containing_other_authors": 24,
+      "distinct_peer_entries_read": 30,
+      "manual_board_posts": 4,
+      "directed_message_calls": 7,
+      "reconciliation_calls": 0,
+      "production_files": [
+        {
+          "file": "src/extensions/mcp-adapter/commands.ts",
+          "baseline_lines": 235,
+          "handoff_lines": 236,
+          "final_lines": 236,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "e4b2759a1ff3a6a5115d82e31026715af4331cbd439107d53af471cce5962c0c"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/init.ts",
+          "baseline_lines": 416,
+          "handoff_lines": 417,
+          "final_lines": 417,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "5b915b321c4c0184e7f5fb0c626ad36cbd745156cda43432ccefe6c2f9960113"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/naming.ts",
+          "baseline_lines": 0,
+          "handoff_lines": 178,
+          "final_lines": 178,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "9e81759ddac3dc83a7acd020ddc8eb714d708d2e44cc97ba753c24791707e31e"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/proxy-modes.ts",
+          "baseline_lines": 1033,
+          "handoff_lines": 1034,
+          "final_lines": 1034,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "2c7b2561a58ac51a23bdeec92426e3c8e1e2bc4a766e621324034fb3a9aa5029"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/tool-metadata.ts",
+          "baseline_lines": 182,
+          "handoff_lines": 182,
+          "final_lines": 188,
+          "repair_added": 7,
+          "repair_removed": 1,
+          "sha256": "a139a8f2db289fdd8adfa6a22f0abd0e521a42c71022844cf90ccee1b916a18d"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/tool-registry.ts",
+          "baseline_lines": 0,
+          "handoff_lines": 76,
+          "final_lines": 76,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "ab6580a3a5fc1308377cacb00bae3c3ef190eca3db93d09926ecc85d21fc1fa8"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/types.ts",
+          "baseline_lines": 447,
+          "handoff_lines": 413,
+          "final_lines": 413,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "d17ecf1826c0d3013afae07069a45d00a8e3651328ae455bb7055520bbb50c9b"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "id": "trial-04",
+      "worker_ferment_v2": true,
+      "pair": 2,
+      "stages": {
+        "handoff": {
+          "frozen_behavior": {
+            "numPassedTests": 29,
+            "numFailedTests": 2,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [
+            "formatToolName warns once per overlong name, not on every call",
+            "private naming integration live metadata warns once for each distinct overlong original"
+          ],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 224,
+            "numFailedTests": 0,
+            "numTotalTests": 225
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        },
+        "final": {
+          "frozen_behavior": {
+            "numPassedTests": 29,
+            "numFailedTests": 2,
+            "numTotalTests": 31
+          },
+          "frozen_failures": [
+            "formatToolName warns once per overlong name, not on every call",
+            "private naming integration live metadata warns once for each distinct overlong original"
+          ],
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 224,
+            "numFailedTests": 0,
+            "numTotalTests": 225
+          },
+          "typecheck_exit": 0,
+          "biome_exit": 0,
+          "separate_startup_diagnostic": {
+            "passed": 2,
+            "total": 2
+          }
+        }
+      },
+      "parent_status": "complete",
+      "seconds": 747.7,
+      "timed_out": false,
+      "workers": [
+        {
+          "id": "52d4e2c2-6234-47a",
+          "description": "Naming owner",
+          "status": "steered"
+        },
+        {
+          "id": "e36132a3-c854-491",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "393f5389-f91b-4d8",
+          "description": "Integration owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "b5b05a3f-6ef1-4bb",
+          "description": "Repair owner",
+          "status": "steered"
+        }
+      ],
+      "rejected_launch_tool_results": 1,
+      "launch_calls_without_tool_result": 1,
+      "usage_by_role": {
+        "parent": {
+          "input": 110595,
+          "output": 6889,
+          "cacheRead": 651264,
+          "cacheWrite": 0
+        },
+        "workers": {
+          "input": 826955,
+          "output": 43507,
+          "cacheRead": 5596480,
+          "cacheWrite": 0
+        },
+        "evaluators": {
+          "input": 42418,
+          "output": 6854,
+          "cacheRead": 4480,
+          "cacheWrite": 0
+        },
+        "unclassified": {}
+      },
+      "usage_total": {
+        "input": 979968,
+        "output": 57250,
+        "cacheRead": 6252224,
+        "cacheWrite": 0
+      },
+      "successful_board_reads": 48,
+      "board_reads_containing_other_authors": 28,
+      "distinct_peer_entries_read": 32,
+      "manual_board_posts": 3,
+      "directed_message_calls": 0,
+      "reconciliation_calls": 0,
+      "production_files": [
+        {
+          "file": "src/extensions/mcp-adapter/direct-tools.ts",
+          "baseline_lines": 415,
+          "handoff_lines": 434,
+          "final_lines": 434,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "40f5b768fae8b9eead3f278a20ea0da2d37abcce86161f749a3bfd1f9f2de3d8"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/index.ts",
+          "baseline_lines": 636,
+          "handoff_lines": 647,
+          "final_lines": 647,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "911af6622fa46b0ad9900a101774c2e8085407795ca84e30c4326f75c4fb8ba9"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/metadata-cache.ts",
+          "baseline_lines": 327,
+          "handoff_lines": 328,
+          "final_lines": 328,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "131283c925139b86a76c5e692a262334e191db70665d1f4eddd92c1671a55192"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/naming.ts",
+          "baseline_lines": 0,
+          "handoff_lines": 112,
+          "final_lines": 112,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "5a6dbec60fbaecc3a095055406d2ada4a5cc69f89e20f8829fd2227fb00d2f86"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/tool-metadata.ts",
+          "baseline_lines": 182,
+          "handoff_lines": 199,
+          "final_lines": 199,
+          "repair_added": 0,
+          "repair_removed": 0,
+          "sha256": "f2b1ffaa3c1aeddd293c63ab1631cba66fc28f7ff0184d276044e646fbb520f5"
+        },
+        {
+          "file": "src/extensions/mcp-adapter/types.ts",
+          "baseline_lines": 447,
+          "handoff_lines": 456,
+          "final_lines": 456,
+          "repair_added": 3,
+          "repair_removed": 3,
+          "sha256": "40540c77aa17e242a056bc8b311ff2f59beff99ceb776944e5a3479c346f3f9b"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    }
+  ],
+  "recorded_usage": {
+    "totals": {
+      "worker-goal": {
+        "input": 1832504,
+        "output": 112698,
+        "cacheRead": 13749504,
+        "cacheWrite": 0
+      },
+      "ordinary-todos": {
+        "input": 1205697,
+        "output": 117631,
+        "cacheRead": 13888512,
+        "cacheWrite": 0
+      }
+    },
+    "enabled_percent_difference": {
+      "input": 51.99,
+      "output": -4.19,
+      "cacheRead": -1.0
+    },
+    "notes": "Includes parent, workers and evaluator journals. No unclassified session usage. Cache reads reported separately; no dollar-cost estimate. Launch-recovery overhead remains included."
+  },
+  "source_review": {
+    "cohesion": "All four outputs use a naming helper. Sharing code alone did not ensure correct integration: enabled trial-01 repair shared a claim map between metadata discovery and tool registration; claimed names then looked already registered.",
+    "confirmed_startup_regression": {
+      "trial": "trial-01",
+      "handoff": "2/2",
+      "final": "0/2",
+      "reference": "2/2",
+      "other_finals": "2/2 each",
+      "replay": {
+        "exit": 0,
+        "passed": 2,
+        "total": 2,
+        "change": "Only remove shared registeredOrigins argument from initializeMcp in a disposable final-output copy; keep frozen output unchanged."
+      },
+      "source": [
+        "index.ts:223 skips same claims",
+        "index.ts:303 passes registeredOrigins into initializeMcp",
+        "init.ts:51 shares claims",
+        "tool-metadata.ts:117 claims metadata before registration"
+      ]
+    },
+    "style": "All final Biome checks pass. No blinded readability review or objective style improvement measured.",
+    "performance": "No generated-code runtime benchmark. Wall time is confounded by launch recovery and overlapping pairs."
+  },
+  "attribution": [
+    "Trial-01 final naming.ts exactly matches its successful write before the first worker evaluator continuation; the frozen-score advantage cannot be credited to a later continuation.",
+    "Trial-04 repair production edits and passing checks precede its first evaluator continuation, which requests final-answer verification. Later completion confirms reporting, not a new behavioral fix.",
+    "All arms read peer TODO snapshots. No manual board posts occurred; control workers also sent directed messages. No trial called reconcile_agent_result. This does not isolate automatic posting or parent reconciliation value.",
+    "Live outcomes expose paused worker objectives and budget_exhausted/max_turns separately from completed objectives. This verifies result reporting; it does not prove higher quality."
+  ],
+  "grader_limits": [
+    "Keep the original 31-check scores. The late-registration fixture mocks initialization and injects callbacks, bypassing trial-03 collision handling in its metadata registry; those warning failures are not sufficient proof of a real-path defect.",
+    "An additional injected-callback origin-identity test passes the reference and trial-04 but fails trials 01/02/03. It has the same layering limitation and is not pooled into the primary score.",
+    "An attempted connect/search warning diagnostic was excluded: its initial fixture reused metadata cache, and the corrected isolated reference did not satisfy the assumed warning path. No conclusion uses those warning results.",
+    "The separate startup diagnostic asserts only uncached first-tool registration, verifies the active agent directory, and passes the reference and all handoffs. It avoids the uncertain late-warning assumption.",
+    "The watcher graded trial-04 final before the snapshot copy finished, missing 95 files. Original output remained intact. Preserve the invalid 19-pass/1-fail/11-uncollected attempt; regrading the identical completed snapshot yields 29/31. Other seven grade copies match their snapshots.",
+    "Protected-file audit lists only .kimchi/tags.json because the host intentionally excludes .kimchi from captures. No baseline files outside the adapter changed in complete captures."
+  ],
+  "repository_validation": {
+    "unit": {
+      "passed": 10604,
+      "skipped": 13,
+      "failed": 0,
+      "files_passed": 544
+    },
+    "offline_smoke": {
+      "passed": 28,
+      "skipped": 12,
+      "failed": 0
+    },
+    "retained_invalid_attempts": [
+      "14 update-test failures with inherited KIMCHI_NO_UPDATE_CHECK=1; corrected by removing the flag.",
+      "Initial smoke: 28 passed, 7 failed, 5 skipped and one worker timeout with invalid inherited live credentials. Offline rerun skips authenticated tests."
+    ],
+    "live_scope": "Four dedicated built TMUX inference trials used working isolated credentials; this does not validate all authenticated smoke scenarios."
+  },
+  "limitations": [
+    "Two pairs on one previously used task; no general or statistical quality claim.",
+    "Only worker-local Ferment opt-in differs by protocol; parent-generated worker prompts and model sampling can still vary.",
+    "Equal limits do not guarantee equal effective work; several workers hit turn caps, and two parents paused.",
+    "Input/output totals are usage observations, not a claim of monetary cost or speed improvement."
+  ],
+  "local_evidence_root": "/private/tmp/kimchi-worker-goal-quality-9pdak4oz"
+}

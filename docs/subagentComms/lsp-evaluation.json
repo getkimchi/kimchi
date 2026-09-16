@@ -1,0 +1,405 @@
+{
+  "task": "Historical Kimchi session-scoped LSP failure suppression",
+  "base_commit": "a7b0b82cebef1374218709dbd40213f455da2a78",
+  "reference_fix": "def44291f3ac4d538bc4aaea0737ab02fa6694f2",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "binary_sha256": "77ec4a95278f1d10107d2a59462f4c755ffb9ea2de539cb96192807d87170b3a",
+  "source_root": "/private/tmp/kimchi-comms-lsp-uhnkqlge",
+  "pairs": [
+    [
+      "trial-01",
+      "trial-02"
+    ],
+    [
+      "trial-04",
+      "trial-03"
+    ]
+  ],
+  "grading_note": "Frozen historical scores are preserved. A post-run diagnostic relaxes only overconstrained status prefixes/order and exact repeat-tool wording; it is applied identically to all eight outputs, baseline and reference. Compare it separately from frozen scores.",
+  "trials": [
+    {
+      "id": "trial-01",
+      "communication": true,
+      "elapsed_seconds": 900.6,
+      "state": "active",
+      "wall_limit_reached": true,
+      "usage": {
+        "input": 307698,
+        "output": 54587,
+        "cacheRead": 3130048,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "b4b39e10-7cb9-410",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "token_budget",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-01/tmp/kimchi-harness-live-9bJycp/sessions/2026-09-16T00-22-33-480Z_01a0a798-0708-76a5-bfab-32d1629ed9f3.jsonl"
+        },
+        {
+          "id": "767317b5-7de0-47f",
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "token_budget",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-01/tmp/kimchi-harness-live-9bJycp/sessions/2026-09-16T00-22-33-474Z_01a0a798-0702-72ba-a5ad-632f9760ea41.jsonl"
+        }
+      ],
+      "production_parent_repair": {
+        "src/extensions/lsp.ts": {
+          "added": 41,
+          "removed": 21,
+          "handoff_lines": 620,
+          "final_lines": 640
+        }
+      },
+      "board_posts": 0,
+      "board_reads": 1,
+      "peer_entries_read": 0,
+      "directed_messages": 0,
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 4,
+          "numFailedTests": 11,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 141,
+          "numFailedTests": 9,
+          "numTotalTests": 150
+        },
+        "own_test_exit": 1,
+        "typecheck_exit": 2,
+        "biome_exit": 1,
+        "wording_relaxed_diagnostic": {
+          "passed": 10,
+          "failed": 5,
+          "total": 15
+        },
+        "behavior_failures": [
+          "lsp file sync failure handling logs once and suppresses repeated read startup failures",
+          "lsp file sync failure handling logs once and suppresses repeated edit startup failures",
+          "lsp file sync failure handling logs once and suppresses repeated write startup failures",
+          "lsp file sync failure handling logs at most one line per server even when failures recur on different roots (monorepo)",
+          "lsp file sync failure handling keeps a failed server's status indicator when a healthy server syncs afterwards"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 8,
+          "numFailedTests": 7,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 150,
+          "numFailedTests": 0,
+          "numTotalTests": 150
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "wording_relaxed_diagnostic": {
+          "passed": 14,
+          "failed": 1,
+          "total": 15
+        },
+        "behavior_failures": [
+          "lsp file sync failure handling logs at most one line per server even when failures recur on different roots (monorepo)"
+        ]
+      }
+    },
+    {
+      "id": "trial-02",
+      "communication": false,
+      "elapsed_seconds": 613.7,
+      "state": "complete",
+      "wall_limit_reached": false,
+      "usage": {
+        "input": 310666,
+        "output": 38251,
+        "cacheRead": 3456896,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "23dcfa2c-fe94-42c",
+          "description": "Investigator",
+          "status": "steered",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-02/tmp/kimchi-harness-live-YdK4yx/sessions/2026-09-16T00-22-35-986Z_01a0a798-10d2-740b-974c-5768e39f27f2.jsonl"
+        },
+        {
+          "id": "4f51e512-9f93-470",
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "max_turns",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-02/tmp/kimchi-harness-live-YdK4yx/sessions/2026-09-16T00-22-35-982Z_01a0a798-10ce-7602-ad60-956be5ebf259.jsonl"
+        }
+      ],
+      "production_parent_repair": {
+        "src/extensions/lsp.ts": {
+          "added": 9,
+          "removed": 1,
+          "handoff_lines": 659,
+          "final_lines": 667
+        }
+      },
+      "board_posts": 0,
+      "board_reads": 0,
+      "peer_entries_read": 0,
+      "directed_messages": 0,
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 4,
+          "numFailedTests": 11,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 140,
+          "numFailedTests": 0,
+          "numTotalTests": 140
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 1,
+        "wording_relaxed_diagnostic": {
+          "passed": 15,
+          "failed": 0,
+          "total": 15
+        },
+        "behavior_failures": []
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 4,
+          "numFailedTests": 11,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 140,
+          "numFailedTests": 0,
+          "numTotalTests": 140
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "wording_relaxed_diagnostic": {
+          "passed": 15,
+          "failed": 0,
+          "total": 15
+        },
+        "behavior_failures": []
+      }
+    },
+    {
+      "id": "trial-03",
+      "communication": false,
+      "elapsed_seconds": 798.7,
+      "state": "paused",
+      "wall_limit_reached": false,
+      "usage": {
+        "input": 218173,
+        "output": 44867,
+        "cacheRead": 3136064,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "2b3a21b6-b2d8-4de",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "max_duration",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-03/tmp/kimchi-harness-live-G1JjaR/sessions/2026-09-16T00-22-39-195Z_01a0a798-1d5b-745e-9926-7d32e148a1d6.jsonl"
+        },
+        {
+          "id": "571cb574-a434-485",
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "max_duration",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-03/tmp/kimchi-harness-live-G1JjaR/sessions/2026-09-16T00-22-39-190Z_01a0a798-1d56-75ff-8c48-a346d47cf8b9.jsonl"
+        }
+      ],
+      "production_parent_repair": {
+        "src/extensions/lsp.ts": {
+          "added": 3,
+          "removed": 1,
+          "handoff_lines": 653,
+          "final_lines": 655
+        }
+      },
+      "board_posts": 0,
+      "board_reads": 0,
+      "peer_entries_read": 0,
+      "directed_messages": 0,
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 4,
+          "numFailedTests": 11,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 132,
+          "numFailedTests": 0,
+          "numTotalTests": 132
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 1,
+        "wording_relaxed_diagnostic": {
+          "passed": 14,
+          "failed": 1,
+          "total": 15
+        },
+        "behavior_failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 4,
+          "numFailedTests": 11,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 136,
+          "numFailedTests": 0,
+          "numTotalTests": 136
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "wording_relaxed_diagnostic": {
+          "passed": 14,
+          "failed": 1,
+          "total": 15
+        },
+        "behavior_failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing"
+        ]
+      }
+    },
+    {
+      "id": "trial-04",
+      "communication": true,
+      "elapsed_seconds": 535.2,
+      "state": "paused",
+      "wall_limit_reached": false,
+      "usage": {
+        "input": 308218,
+        "output": 38864,
+        "cacheRead": 3368960,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "b876dbba-ca11-47b",
+          "description": "Investigator",
+          "status": "steered",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-04/tmp/kimchi-harness-live-SaEt2G/sessions/2026-09-16T00-22-28-543Z_01a0a797-f3bf-723a-a93f-e48a0fe34667.jsonl"
+        },
+        {
+          "id": "bc7cff10-5ef2-409",
+          "description": "Implementation owner",
+          "status": "steered",
+          "sessionFile": "/private/tmp/kimchi-comms-lsp-uhnkqlge/trial-04/tmp/kimchi-harness-live-SaEt2G/sessions/2026-09-16T00-22-28-534Z_01a0a797-f3b6-7552-bcb6-569d2c5431f4.jsonl"
+        }
+      ],
+      "production_parent_repair": {
+        "src/extensions/lsp.ts": {
+          "added": 0,
+          "removed": 0,
+          "handoff_lines": 646,
+          "final_lines": 646
+        }
+      },
+      "board_posts": 1,
+      "board_reads": 5,
+      "peer_entries_read": 1,
+      "directed_messages": 0,
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 9,
+          "numFailedTests": 6,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 147,
+          "numFailedTests": 0,
+          "numTotalTests": 147
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "wording_relaxed_diagnostic": {
+          "passed": 14,
+          "failed": 1,
+          "total": 15
+        },
+        "behavior_failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 9,
+          "numFailedTests": 6,
+          "numTotalTests": 15
+        },
+        "own_tests": {
+          "numPassedTests": 147,
+          "numFailedTests": 0,
+          "numTotalTests": 147
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "wording_relaxed_diagnostic": {
+          "passed": 14,
+          "failed": 1,
+          "total": 15
+        },
+        "behavior_failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing"
+        ]
+      }
+    }
+  ],
+  "limitations": [
+    "One enabled run reached the 900-second wall limit; two other runs paused. All retained.",
+    "Worker caps ended five attempts; three ended with steered status.",
+    "Baseline support mock updated from historical fix; installed workflows 0.0.9 versus historical 0.0.8. Baseline 122 tests and typecheck passed.",
+    "A tracked .pyc was omitted by the runner copy filter in every trial. Raw protection scanner flags it; this was setup behavior, not an agent edit.",
+    "One consumed finding preceded a five-call-site correction; the requirement was already shared, so this does not establish the owner could not self-correct.",
+    "No throughput or consistent readability gain established. HTTPS443 broadly allowed for inference."
+  ],
+  "verified_exchange": {
+    "trial": "trial-04",
+    "entry_id": "bd-e281eac2",
+    "description": "Owner read investigator finding, acknowledged it, inspected direct client calls and routed all five explicit tools through acquireClient before own tests.",
+    "before": {
+      "passed": 9,
+      "total": 15,
+      "typecheck_exit": 0
+    },
+    "after": {
+      "passed": 14,
+      "total": 15,
+      "typecheck_exit": 0
+    },
+    "remaining_defect": "Repeated file operations still sync a server after a mid-session sync failure.",
+    "causal_artifact": "causal/provenance.json"
+  },
+  "source_hashes": {
+    "manifest.json": "11a5a252156b2cc672d6f9540c6f7166da5eaa988392f8fd6ca9fd23681230d4",
+    "results.json": "ebc1b670524b5bafc37fa34dcd4471267a37528b45308eba06df0df374b54616",
+    "behavior-review-results.json": "dcdc7683666807c312f3af9973b849a351c0203a273b153d5eb2a63a296eb6cb",
+    "measurements.json": "ee43e20339f7b68f7f49dba1ba13381377216fd14de8dcbaf448044dfb47a2cd",
+    "behavior-review.test.ts": "88d481dca489f114210655d93f60956088b9ed4931f604e17bd805d0a1c3b8b1",
+    "causal/provenance.json": "767451c93ad5061b001eb6317d4d67befb8617b0828a76482668d9ccff9ac60d",
+    "seal.json": "fb17f786c3c295be7ca9b76ae3dd1abb343c741d998e6dfa3a2ef70059183246"
+  }
+}

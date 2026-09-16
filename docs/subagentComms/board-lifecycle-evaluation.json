@@ -1,0 +1,130 @@
+{
+  "checked": "2026-09-16",
+  "change": "Recheck worker lifecycle and active communication root on every board read/post",
+  "source_head": "52fb3e2c0b0433056a194a309c777618719625a1",
+  "runtime_sha256": "13165a570241112c29d9b1bb9da37677053631288fcd7e9eb391e7099e7aab72",
+  "evidence_root": "/private/tmp/kimchi-board-lifecycle-4_trnuyb",
+  "failing_before_regressions": 8,
+  "validation": {
+    "agent_tests_passed": 578,
+    "related_integration_tests_passed": 417,
+    "built_tui_workflows_passed": 3,
+    "typecheck": "passed",
+    "build": "passed",
+    "scoped_biome": "passed",
+    "diff_check": "passed"
+  },
+  "live": {
+    "workers": [
+      {
+        "id": "1c1444e0-2b17-433",
+        "description": "Writer: post board entry",
+        "status": "completed"
+      },
+      {
+        "id": "b7fe554b-3829-42c",
+        "description": "Reader: read board entry",
+        "status": "completed"
+      }
+    ],
+    "posts": [
+      {
+        "session": "2026-09-16T06-40-21-550Z_01a0a8f1-ea2e-74df-913e-ab2e2f13b650.jsonl",
+        "error": false,
+        "receipt": {
+          "ok": true,
+          "entry": {
+            "id": "bd-1d5fec06",
+            "rootSessionId": "01a0a8f1-bade-7a7d-ba20-b3787a54a3d3",
+            "groupId": "batch-1",
+            "authorAgentId": "1c1444e0-2b17-433",
+            "kind": "finding",
+            "title": "Lifecycle marker",
+            "body": "The checked contract is marker-49.",
+            "postedAt": 1789540822881
+          },
+          "truncated": []
+        }
+      }
+    ],
+    "reads": [
+      {
+        "session": "2026-09-16T06-40-21-557Z_01a0a8f1-ea35-74f7-855e-da22f5613441.jsonl",
+        "error": false,
+        "receipt": {
+          "ok": true,
+          "entries": [],
+          "total": 0
+        }
+      },
+      {
+        "session": "2026-09-16T06-40-21-557Z_01a0a8f1-ea35-74f7-855e-da22f5613441.jsonl",
+        "error": false,
+        "receipt": {
+          "ok": true,
+          "entries": [
+            {
+              "id": "bd-1d5fec06",
+              "rootSessionId": "01a0a8f1-bade-7a7d-ba20-b3787a54a3d3",
+              "groupId": "batch-1",
+              "authorAgentId": "1c1444e0-2b17-433",
+              "kind": "finding",
+              "title": "Lifecycle marker",
+              "body": "The checked contract is marker-49.",
+              "postedAt": 1789540822881
+            }
+          ],
+          "total": 1
+        }
+      },
+      {
+        "session": "2026-09-16T06-40-21-557Z_01a0a8f1-ea35-74f7-855e-da22f5613441.jsonl",
+        "error": false,
+        "receipt": {
+          "ok": true,
+          "entries": [],
+          "total": 1
+        }
+      }
+    ],
+    "peer_reads": 1,
+    "launches": [
+      {
+        "communication": "group",
+        "description": "Writer: post board entry",
+        "max_duration": 120,
+        "max_turns": 8,
+        "model": "glm-5.3-flash",
+        "run_in_background": true,
+        "subagent_type": "General-Purpose",
+        "thinking": "low",
+        "token_budget": 4096
+      },
+      {
+        "communication": "group",
+        "description": "Reader: read board entry",
+        "max_duration": 120,
+        "max_turns": 8,
+        "model": "glm-5.3-flash",
+        "run_in_background": true,
+        "subagent_type": "General-Purpose",
+        "thinking": "low",
+        "token_budget": 4096
+      }
+    ],
+    "stopped": true,
+    "home_removed": true,
+    "journal_group_field": "Persisted worker records omit groupId; authorized post/read receipts contain batch-1. Do not infer group membership from a missing journal field."
+  },
+  "limits": [
+    "Stale-capability denial is covered by deterministic host regressions, not a model-induced post-shutdown call.",
+    "The live check verifies authorized posting, peer consumption and terminal completion only. It does not measure final coding quality."
+  ],
+  "source_hashes": {
+    "manifest.json": "83acdce3970523f39bc4c2a10ae209518ae74cbbfcf9b7d6cc40eef281906124",
+    "seal.json": "a107051067fee22be0a3742a07bf1a638a45aa5b7107fe57568412ef68602e89",
+    "live-audit.json": "95a39ff4b19e90e8480852b19ecb212147cd5295a9fadec7c44824446062f9ef",
+    "agent-manager.ts.diff": "a8115e0e56b49dc90e56f812a281920d0f4a44db822e8ba5633384bd2cdfd573",
+    "agent-manager.test.ts.diff": "a5c07554bf5544940d07dcec5ebc3b41deb574ee78569510210e375770ee2382"
+  }
+}

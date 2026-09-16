@@ -1,0 +1,265 @@
+{
+  "task": "Historical Kimchi Auto routing capacity and model-switch regression",
+  "base_commit": "35dcf4549355a881c04774c35da866c5ee992da7",
+  "reference_fix": "1689c6ebd77b7f7dfb9f5e11fe94c2328dd53043",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "binary_sha256": "85bd3871399d3d01bf58d76895e119fe7d7145cbe8f62ddef40cb298970c436f",
+  "source_root": "/private/tmp/kimchi-comms-real-router-oc4av53z",
+  "pairs": [
+    [
+      "trial-01",
+      "trial-02"
+    ],
+    [
+      "trial-04",
+      "trial-03"
+    ]
+  ],
+  "trials": [
+    {
+      "id": "trial-01",
+      "communication": true,
+      "elapsed_seconds": 304.7,
+      "state": "complete",
+      "usage": {
+        "input": 171917,
+        "output": 18547,
+        "cacheRead": 1249536,
+        "cacheWrite": 0
+      },
+      "workers": [
+        "completed",
+        "completed"
+      ],
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 80,
+          "numFailedTests": 2,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 199,
+          "numFailedTests": 0,
+          "numTotalTests": 199
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "effective Auto guard behavior tool: rejects image loss through text-only route",
+          "effective Auto guard behavior event: rejects image loss through text-only route"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 80,
+          "numFailedTests": 2,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 199,
+          "numFailedTests": 0,
+          "numTotalTests": 199
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "effective Auto guard behavior tool: rejects image loss through text-only route",
+          "effective Auto guard behavior event: rejects image loss through text-only route"
+        ]
+      }
+    },
+    {
+      "id": "trial-02",
+      "communication": false,
+      "elapsed_seconds": 332.9,
+      "state": "complete",
+      "usage": {
+        "input": 169397,
+        "output": 19124,
+        "cacheRead": 1294720,
+        "cacheWrite": 0
+      },
+      "workers": [
+        "completed",
+        "completed"
+      ],
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 80,
+          "numFailedTests": 2,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 200,
+          "numFailedTests": 0,
+          "numTotalTests": 200
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "effective Auto guard behavior tool: rejects image loss through text-only route",
+          "effective Auto guard behavior event: rejects image loss through text-only route"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 80,
+          "numFailedTests": 2,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 200,
+          "numFailedTests": 0,
+          "numTotalTests": 200
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "effective Auto guard behavior tool: rejects image loss through text-only route",
+          "effective Auto guard behavior event: rejects image loss through text-only route"
+        ]
+      }
+    },
+    {
+      "id": "trial-03",
+      "communication": false,
+      "elapsed_seconds": 507.3,
+      "state": "paused",
+      "usage": {
+        "input": 169642,
+        "output": 27494,
+        "cacheRead": 2136192,
+        "cacheWrite": 0
+      },
+      "workers": [
+        "completed",
+        "completed"
+      ],
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 80,
+          "numFailedTests": 2,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 200,
+          "numFailedTests": 0,
+          "numTotalTests": 200
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "effective Auto guard behavior tool: rejects image loss through text-only route",
+          "effective Auto guard behavior event: rejects image loss through text-only route"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 80,
+          "numFailedTests": 2,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 200,
+          "numFailedTests": 0,
+          "numTotalTests": 200
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "effective Auto guard behavior tool: rejects image loss through text-only route",
+          "effective Auto guard behavior event: rejects image loss through text-only route"
+        ]
+      }
+    },
+    {
+      "id": "trial-04",
+      "communication": true,
+      "elapsed_seconds": 408.2,
+      "state": "complete",
+      "usage": {
+        "input": 275203,
+        "output": 23385,
+        "cacheRead": 1955136,
+        "cacheWrite": 0
+      },
+      "workers": [
+        "completed",
+        "completed"
+      ],
+      "protected_file_changes": [],
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 82,
+          "numFailedTests": 0,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 197,
+          "numFailedTests": 0,
+          "numTotalTests": 197
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": []
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 82,
+          "numFailedTests": 0,
+          "numTotalTests": 82
+        },
+        "own_tests": {
+          "numPassedTests": 197,
+          "numFailedTests": 0,
+          "numTotalTests": 197
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": []
+      }
+    }
+  ],
+  "communication": {
+    "trial-04": {
+      "send_attempts": 4,
+      "rejected": 2,
+      "accepted": 2,
+      "observed_at_recipient": 2,
+      "board_posts": 1,
+      "board_reads": 0
+    },
+    "other_trials": "No board or directed-message calls"
+  },
+  "conclusion": "One tied pair and one enabled win; final quality difference is not attributable to the observed exchange because the image-safety implementation preceded it. One peer type-error report preceded a verified one-line type correction; another reported issue was already fixed. No repeatable broad quality, style, performance or readability gain established.",
+  "limitations": [
+    "Two pairs of one historical bug, one model; existing shared-file access in both arms.",
+    "One control paused despite a met evaluator verdict; independent checks still score its final output.",
+    "Same dependency toolchain in every arm; workflows package 0.0.9 instead of historical 0.0.8, with preflight tests and typecheck passing.",
+    "Temporary fault-injection and formatting shell operations are not fully represented in the initial replay; final reconstructed production differs only by recorded import sorting. Causal source comparison uses two exact captured edits.",
+    "HTTPS allowed on port 443; no provider-only network claim. No captured install/network-tool command; npm logs/cache absent before HOME removal.",
+    "Early progress counter missed the direct-message tool name; corrected before grading, with all calls included in final audit."
+  ],
+  "artifacts": {
+    "manifest.json": "2b3c097d04f0c64478b6d528670431aec44cf111f35ff1efdcc78952916508ec",
+    "seal.json": "f77ec003c4acaeb5be24a107989af83b18e2fdd5b897e134037b41745b468125",
+    "results.json": "67e87e435df82b5e69ba4c3d31c0cbc04dbf587a119f0648bff5c586fe9f4ede",
+    "measurements.json": "e80755de3b950091bb4a5d0ffff2298ee00588c4f8fce7877e9d7d74a039bc5f",
+    "causal-evidence.json": "950504270a7e7b99d8e8bf639bbf7983a1286ce1687ce58586e39e27d8a4ce1f",
+    "isolation-checks.json": "fea61811eb4109fbfba2c34c6871ff6d57826651bc129adfd3fe588828f505c3",
+    "scope-audit.json": "ea5fdf7644bd69064a4143f97bea88ee3c587c736fe60d0eef354088af268522",
+    "replay-end-state-review.json": "2f8fa5e9cc56b9283fc945b4d5d5cb3ab5eb073f35a9ffccc15427d1d6d623cb"
+  }
+}

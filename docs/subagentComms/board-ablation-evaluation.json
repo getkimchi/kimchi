@@ -1,0 +1,529 @@
+{
+  "checked": "2026-09-16",
+  "comparison": "Messages plus board versus messages only on the historical LSP failure repair",
+  "source_head": "52fb3e2c0b0433056a194a309c777618719625a1",
+  "source_root": "/private/tmp/kimchi-board-ablation-0bpunmc1",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "binaries": {
+    "board": "13165a570241112c29d9b1bb9da37677053631288fcd7e9eb391e7099e7aab72",
+    "messages": "e7808200e350913c8f85170e8d77f73d599958cc420dac0ebd3a55a50e090887"
+  },
+  "pairs": [
+    [
+      "trial-01",
+      "trial-02"
+    ],
+    [
+      "trial-04",
+      "trial-03"
+    ]
+  ],
+  "preflight": {
+    "baseline_behavior": "3/18",
+    "reference_behavior": "18/18",
+    "detected_mutants": 3,
+    "baseline_own_tests": 122,
+    "isolation_checks": 50,
+    "protocol_assertions": 27,
+    "sealed_inputs": 1661,
+    "live_smoke_sessions": 2
+  },
+  "trials": [
+    {
+      "id": "trial-01",
+      "arm": "board",
+      "seconds": 622.9,
+      "state": "paused",
+      "usage": {
+        "input": 422224,
+        "output": 44633,
+        "cacheRead": 3274816,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "a0147efc-a163-4cd",
+          "description": "Implementation owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-01/tmp/kimchi-harness-live-CUVyAj/sessions/2026-09-16T06-59-08-346Z_01a0a903-1bba-7217-9a6c-8be932033971.jsonl"
+        },
+        {
+          "id": "ba2aae14-055f-451",
+          "description": "Investigator",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-01/tmp/kimchi-harness-live-CUVyAj/sessions/2026-09-16T06-59-08-349Z_01a0a903-1bbd-74d8-aef7-524ec6f9a2f9.jsonl"
+        },
+        {
+          "id": "55c93fc3-5fc2-46e",
+          "description": "Repair owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-01/tmp/kimchi-harness-live-CUVyAj/sessions/2026-09-16T07-06-46-808Z_01a0a90a-1a98-71df-9692-e55f7f2ecbfa.jsonl"
+        }
+      ],
+      "repair_production_churn": {
+        "src/extensions/lsp.ts": {
+          "added": 11,
+          "removed": 1,
+          "handoff_lines": 621,
+          "final_lines": 631
+        }
+      },
+      "board_posts": 1,
+      "peer_entries_read": 0,
+      "directed_send_attempts": 3,
+      "protocol": {
+        "trial": "trial-01",
+        "arm": "board",
+        "all_three_launches_match": true,
+        "rejected_launches": [],
+        "initial_pair_same_batch": true,
+        "worker_requests": {
+          "Implementation owner": 25,
+          "Investigator": 40,
+          "Repair owner": 11
+        },
+        "parent_verification_counts": {
+          "pnpm exec vitest run src/extensions/lsp.test.ts src/extensions/lsp": 2,
+          "pnpm run typecheck": 2,
+          "pnpm exec biome check src/extensions/lsp.ts src/extensions/lsp.test.ts src/extensions/lsp/lsp-investigation.test.ts": 2
+        },
+        "unique_peer_deliveries": 2,
+        "peer_entries_read": 0,
+        "protected_changes": [],
+        "resumes": 0,
+        "parent_edits": 0,
+        "terminal": "paused",
+        "final_delivery_failure_records": []
+      },
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 13,
+          "numFailedTests": 5,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 146,
+          "numFailedTests": 0,
+          "numTotalTests": 146
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "lsp file sync failure handling logs once and suppresses repeated read startup failures",
+          "lsp file sync failure handling logs once and suppresses repeated edit startup failures",
+          "lsp file sync failure handling logs once and suppresses repeated write startup failures",
+          "lsp file sync failure handling logs at most one line per server even when failures recur on different roots (monorepo)",
+          "lsp file sync failure handling keeps a failed server's status indicator when a healthy server syncs afterwards"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 17,
+          "numFailedTests": 1,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 147,
+          "numFailedTests": 0,
+          "numTotalTests": 147
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "lsp file sync failure handling logs at most one line per server even when failures recur on different roots (monorepo)"
+        ]
+      }
+    },
+    {
+      "id": "trial-02",
+      "arm": "messages",
+      "seconds": 656.2,
+      "state": "complete",
+      "usage": {
+        "input": 383671,
+        "output": 42133,
+        "cacheRead": 4441600,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "10b59a76-0d27-4ae",
+          "description": "Investigator",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-02/tmp/kimchi-harness-live-B9Qo6I/sessions/2026-09-16T06-59-05-821Z_01a0a903-11dd-760c-a7d2-e8084b1e874e.jsonl"
+        },
+        {
+          "id": "661242e1-bbb3-44b",
+          "description": "Implementation owner",
+          "status": "steered",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-02/tmp/kimchi-harness-live-B9Qo6I/sessions/2026-09-16T06-59-05-818Z_01a0a903-11da-749d-9ac7-2ade577a5740.jsonl"
+        },
+        {
+          "id": "bddb85cc-3e91-4dd",
+          "description": "Repair owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-02/tmp/kimchi-harness-live-B9Qo6I/sessions/2026-09-16T07-07-04-351Z_01a0a90a-5f1f-725b-ba12-03985678c575.jsonl"
+        }
+      ],
+      "repair_production_churn": {
+        "src/extensions/lsp.ts": {
+          "added": 0,
+          "removed": 0,
+          "handoff_lines": 670,
+          "final_lines": 670
+        }
+      },
+      "board_posts": 0,
+      "peer_entries_read": 0,
+      "directed_send_attempts": 1,
+      "protocol": {
+        "trial": "trial-02",
+        "arm": "messages",
+        "all_three_launches_match": true,
+        "rejected_launches": [],
+        "initial_pair_same_batch": true,
+        "worker_requests": {
+          "Investigator": 40,
+          "Implementation owner": 46,
+          "Repair owner": 9
+        },
+        "parent_verification_counts": {
+          "pnpm exec vitest run src/extensions/lsp.test.ts src/extensions/lsp": 2,
+          "pnpm run typecheck": 2,
+          "pnpm exec biome check src/extensions/lsp.ts src/extensions/lsp.test.ts src/extensions/lsp/lsp-investigation.test.ts": 2
+        },
+        "unique_peer_deliveries": 0,
+        "peer_entries_read": 0,
+        "protected_changes": [],
+        "resumes": 0,
+        "parent_edits": 0,
+        "terminal": "complete",
+        "final_delivery_failure_records": []
+      },
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 18,
+          "numFailedTests": 0,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 139,
+          "numFailedTests": 0,
+          "numTotalTests": 139
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": []
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 18,
+          "numFailedTests": 0,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 139,
+          "numFailedTests": 0,
+          "numTotalTests": 139
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": []
+      }
+    },
+    {
+      "id": "trial-03",
+      "arm": "messages",
+      "seconds": 650.1,
+      "state": "complete",
+      "usage": {
+        "input": 348705,
+        "output": 45383,
+        "cacheRead": 2745344,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "99a35284-4ecc-40f",
+          "description": "Investigator",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-03/tmp/kimchi-harness-live-RVrMS0/sessions/2026-09-16T06-59-06-273Z_01a0a903-13a1-7178-86b3-264286c31cfc.jsonl"
+        },
+        {
+          "id": "f8105356-bb7d-437",
+          "description": "Implementation owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-03/tmp/kimchi-harness-live-RVrMS0/sessions/2026-09-16T06-59-06-270Z_01a0a903-139d-7420-86cb-a496319b718f.jsonl"
+        },
+        {
+          "id": "587f9f5b-0d01-426",
+          "description": "Repair owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-03/tmp/kimchi-harness-live-RVrMS0/sessions/2026-09-16T07-06-57-323Z_01a0a90a-43ab-763b-93ff-d5db00bdcda1.jsonl"
+        }
+      ],
+      "repair_production_churn": {
+        "src/extensions/lsp.ts": {
+          "added": 0,
+          "removed": 0,
+          "handoff_lines": 651,
+          "final_lines": 651
+        }
+      },
+      "board_posts": 0,
+      "peer_entries_read": 0,
+      "directed_send_attempts": 1,
+      "protocol": {
+        "trial": "trial-03",
+        "arm": "messages",
+        "all_three_launches_match": true,
+        "rejected_launches": [],
+        "initial_pair_same_batch": true,
+        "worker_requests": {
+          "Investigator": 24,
+          "Implementation owner": 36,
+          "Repair owner": 5
+        },
+        "parent_verification_counts": {
+          "pnpm exec vitest run src/extensions/lsp.test.ts src/extensions/lsp": 2,
+          "pnpm run typecheck": 2,
+          "pnpm exec biome check src/extensions/lsp.ts src/extensions/lsp.test.ts src/extensions/lsp/lsp-investigation.test.ts": 2
+        },
+        "unique_peer_deliveries": 0,
+        "peer_entries_read": 0,
+        "protected_changes": [],
+        "resumes": 0,
+        "parent_edits": 0,
+        "terminal": "complete",
+        "final_delivery_failure_records": []
+      },
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 16,
+          "numFailedTests": 2,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 145,
+          "numFailedTests": 0,
+          "numTotalTests": 145
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing",
+          "lsp file sync failure handling ignores a pending eager-start rejection after shutdown"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 16,
+          "numFailedTests": 2,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 145,
+          "numFailedTests": 0,
+          "numTotalTests": 145
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing",
+          "lsp file sync failure handling ignores a pending eager-start rejection after shutdown"
+        ]
+      }
+    },
+    {
+      "id": "trial-04",
+      "arm": "board",
+      "seconds": 770.3,
+      "state": "paused",
+      "usage": {
+        "input": 376316,
+        "output": 58619,
+        "cacheRead": 4792448,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "id": "96d7dd8d-4291-4ca",
+          "description": "Implementation owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-04/tmp/kimchi-harness-live-hiijB2/sessions/2026-09-16T06-59-14-623Z_01a0a903-343e-77b6-b125-076e4fcac53e.jsonl"
+        },
+        {
+          "id": "12b141d6-a7c0-49e",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "max_turns",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-04/tmp/kimchi-harness-live-hiijB2/sessions/2026-09-16T06-59-14-627Z_01a0a903-3443-747b-956e-046714005960.jsonl"
+        },
+        {
+          "id": "1163e13f-d047-4dc",
+          "description": "Repair owner",
+          "status": "completed",
+          "sessionFile": "/private/tmp/kimchi-board-ablation-0bpunmc1/trial-04/tmp/kimchi-harness-live-hiijB2/sessions/2026-09-16T07-07-39-156Z_01a0a90a-e714-765e-af3e-83f033b46356.jsonl"
+        }
+      ],
+      "repair_production_churn": {
+        "src/extensions/lsp.ts": {
+          "added": 0,
+          "removed": 0,
+          "handoff_lines": 636,
+          "final_lines": 636
+        }
+      },
+      "board_posts": 2,
+      "peer_entries_read": 1,
+      "directed_send_attempts": 2,
+      "protocol": {
+        "trial": "trial-04",
+        "arm": "board",
+        "all_three_launches_match": true,
+        "rejected_launches": [
+          {
+            "timestamp": 1789542433727,
+            "sessionId": "01a0a902-a0f4-7237-9cc4-20f8cefeb44c",
+            "toolCallId": "call_92d9e587b72945ec8cf8b008",
+            "tool": "Agent",
+            "parameters": {
+              "description": "Repair owner",
+              "subagent_type": "General-Purpose",
+              "model": "glm-5.3-flash",
+              "thinking": "low",
+              "run_in_background": true,
+              "max_turns": 25,
+              "max_duration": 240
+            },
+            "reason": "Correct launch fields token_budget: {\"subagent_type\":\"General-Purpose\",\"model\":\"glm-5.3-flash\",\"thinking\":\"low\",\"run_in_background\":true,\"max_turns\":25,\"max_duration\":240,\"token_budget\":12000}. A rejected launch has not used its slot."
+          }
+        ],
+        "initial_pair_same_batch": true,
+        "worker_requests": {
+          "Implementation owner": 40,
+          "Investigator": 50,
+          "Repair owner": 7
+        },
+        "parent_verification_counts": {
+          "pnpm exec vitest run src/extensions/lsp.test.ts src/extensions/lsp": 2,
+          "pnpm run typecheck": 2,
+          "pnpm exec biome check src/extensions/lsp.ts src/extensions/lsp.test.ts src/extensions/lsp/lsp-investigation.test.ts": 2
+        },
+        "unique_peer_deliveries": 2,
+        "peer_entries_read": 1,
+        "protected_changes": [],
+        "resumes": 0,
+        "parent_edits": 0,
+        "terminal": "paused",
+        "final_delivery_failure_records": []
+      },
+      "handoff": {
+        "hidden": {
+          "numPassedTests": 16,
+          "numFailedTests": 2,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 143,
+          "numFailedTests": 0,
+          "numTotalTests": 143
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 1,
+        "failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing",
+          "lsp file sync failure handling ignores a pending eager-start rejection after shutdown"
+        ]
+      },
+      "final": {
+        "hidden": {
+          "numPassedTests": 16,
+          "numFailedTests": 2,
+          "numTotalTests": 18
+        },
+        "own_tests": {
+          "numPassedTests": 143,
+          "numFailedTests": 0,
+          "numTotalTests": 143
+        },
+        "own_test_exit": 0,
+        "typecheck_exit": 0,
+        "biome_exit": 0,
+        "failures": [
+          "lsp file sync failure handling marks a mid-session sync failure as 'failed' (not 'failed to start') and stops syncing",
+          "lsp file sync failure handling ignores a pending eager-start rejection after shutdown"
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "board": {
+      "handoff": 29,
+      "final": 33,
+      "possible": 36,
+      "usage": {
+        "input": 798540,
+        "output": 103252,
+        "cacheRead": 8067264,
+        "cacheWrite": 0
+      }
+    },
+    "messages": {
+      "handoff": 34,
+      "final": 34,
+      "possible": 36,
+      "usage": {
+        "input": 732376,
+        "output": 87516,
+        "cacheRead": 7186944,
+        "cacheWrite": 0
+      }
+    }
+  },
+  "usage_difference_percent": {
+    "input": 9.03,
+    "output": 17.98,
+    "cacheRead": 12.25
+  },
+  "board_exchange": {
+    "trial": "trial-04",
+    "entry": "bd-fd17f3ea",
+    "posted_at": 1789542299343,
+    "peer_read_at": 1789542317278,
+    "prior_test_correction_call_at": 1789542271280,
+    "subsequent_test_correction_call_at": 1789542317280,
+    "interpretation": "The reviewer read the owner analysis and subsequently corrected more tests. It had already inspected production, corrected some of these tests before the post, and received failing test output alongside the read. These observations do not isolate the board contribution or show a final-quality gain."
+  },
+  "limitations": [
+    "Two reversed pairs on one previously used task and one model; no broad causal or channel-superiority claim.",
+    "Both messages-only runs retained peer contacts/tools but chose shared files and parent messages; neither exchanged a peer message.",
+    "One board-arm investigator hit max_turns; one messages-only implementation owner was steered. One repair launch omitted token_budget and was corrected before startup. All twelve actual launches matched.",
+    "Both board roots paused after evaluator met; both messages-only roots completed. This is not evidence that the board caused the pause, nor a valid clean workflow-speed comparison.",
+    "Observer copied two handoff directories before synchronous host capture finished. Recovered exact complete host captures whose last writes precede repair session creation; all protected hashes match. Incomplete observer copies and initial grading attempts retained. Final snapshots were complete and unchanged.",
+    "One added file-open preflight check initially used edit events; corrected to read before any comparison inference. Initial failed preflight retained.",
+    "No production throughput benchmark or consistent readability/cohesion advantage established. Final source sizes do not establish either. HTTPS 443 was broadly allowed for inference."
+  ],
+  "conclusion": "No demonstrated marginal final-quality advantage from adding the board: one pair loss and one tie. Keep broad quality acceptance open; no product change from this ablation.",
+  "source_hashes": {
+    "manifest.json": "e4091bf206cb69f62b90f844456b932c84d48017ecb33822d15acc49db81de1a",
+    "seal.json": "6fd1ca1f2627189e5274b84b541088b58a29cd946e4c53b7181f1d138c5ae3f9",
+    "results.json": "0919396ad26bd245abb3c2537766a6459c4fdce7046c603a9213498692a338f5",
+    "measurements.json": "d0d587a115b22f9a9d976861e9daedd9d26eefaf1e787d64beed59d7f01e909f",
+    "protocol-review.json": "4158617b47186943d1a12deb4c6fa70e7b7565da4e1a6762e69ee9ffcecc81f6",
+    "handoff-recovery.json": "0627b64cac89a89d542039f9b40a4f6be338b22b10e9a5d18f264a226d1c39f6",
+    "final-integrity.json": "1050135235935a8069d93983512a268be1b52c3eedaddbb0e6ff4492ef83d0f1",
+    "behavior.test.ts": "26856b596848b743889eb890141714a947f1fa76d1fdecfc6d99efcd1a9d60ec",
+    "grader-preflight.json": "b5561ca79e97ad9bbf9575268aa8ea2ba3760fee22b5acb6d7c7a6b9e17ae294",
+    "smoke-audit.json": "2ccfc8136b9f68c86f8fed3d5be5c79d60fda8c7a223bfe181f609d1136b7471",
+    "runtime-differences-final.json": "d6b3eac4a87a207e0087f9fa92c21cd78eac2396c6f1c040f2ebac1077d5545b"
+  }
+}

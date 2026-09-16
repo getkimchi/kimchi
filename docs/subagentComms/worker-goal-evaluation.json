@@ -1,0 +1,277 @@
+{
+  "date": "2026-09-16",
+  "checkout_head": "52fb3e2c0b0433056a194a309c777618719625a1",
+  "changes": "uncommitted",
+  "purpose": "Functional worker TODO, board and optional Ferment v2 integration checks; no work-quality comparison.",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "attempts": {
+    "inference_tui_sessions": 3,
+    "scenarios": 4,
+    "initial_workers": 7,
+    "worker_resumes": 3,
+    "readiness_only_sessions": 1
+  },
+  "isolation": {
+    "real_home_read_denied": true,
+    "outside_workspace_write_denied": true
+  },
+  "scenarios": [
+    {
+      "id": "initial-group",
+      "run": "LCMke7",
+      "worker_session": "01a0a92d-98d6-723f-a5e8-b6ecbde8f318",
+      "result": "Initial objective completed; peer consumed board progress; parent read four entries and independently checked matching files.",
+      "goal_transitions": [
+        {
+          "id": "6d52ac80-5157-40f4-9b3a-d28f69ec988e",
+          "revision": 1,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "6d52ac80-5157-40f4-9b3a-d28f69ec988e",
+          "revision": 1,
+          "status": "active",
+          "verdict": "continue"
+        },
+        {
+          "id": "6d52ac80-5157-40f4-9b3a-d28f69ec988e",
+          "revision": 1,
+          "status": "active",
+          "verdict": "met"
+        },
+        {
+          "id": "6d52ac80-5157-40f4-9b3a-d28f69ec988e",
+          "revision": 1,
+          "status": "complete",
+          "verdict": "met"
+        }
+      ],
+      "journal_sha256": "757dba11672e2c035bf85cb0cf659b98b1bebbe53a0696cf0f18f6cfe9161f30",
+      "file_checks": {
+        "fact.txt": {
+          "sha256": "1d0d674444b80be96c22818a662f91a33a548c05908a833dfd5c9ac913ae5535",
+          "bytes": 8
+        },
+        "observed.txt": {
+          "sha256": "1d0d674444b80be96c22818a662f91a33a548c05908a833dfd5c9ac913ae5535",
+          "bytes": 8
+        }
+      },
+      "matching_files_verified": true
+    },
+    {
+      "id": "ungrouped-correction",
+      "run": "PLcM2C",
+      "worker_session": "01a0a932-6ffa-71f7-a93e-ffb0f153a154",
+      "result": "Initial objective completed; parent omitted background launch so no group board existed. Resume reopened TODO and corrected the file, then hit the 26-turn hard cap while reusing the accepted old revision. Not a valid group-board test.",
+      "goal_transitions": [
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "active",
+          "verdict": "continue"
+        },
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "active",
+          "verdict": "met"
+        },
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "complete",
+          "verdict": "met"
+        },
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "active",
+          "verdict": "continue"
+        },
+        {
+          "id": "36d4dd53-dee6-4f9e-9f6e-92c143d313a1",
+          "revision": 1,
+          "status": "paused",
+          "verdict": "continue"
+        }
+      ],
+      "journal_sha256": "85d1cd9d47561a58b1ae0fdf431aaed37c1ddd7c422db0fcbc2e62a492d24110",
+      "file_checks": {
+        "fact.txt": {
+          "sha256": "e1884e317e2ce8933d961bd04078301fe01f2915803081be11651e0393385c4f",
+          "bytes": 13
+        },
+        "observed.txt": {
+          "sha256": "e1884e317e2ce8933d961bd04078301fe01f2915803081be11651e0393385c4f",
+          "bytes": 13
+        }
+      },
+      "matching_files_verified": true
+    },
+    {
+      "id": "grouped-correction-before-fix",
+      "run": "PLcM2C",
+      "worker_session": "01a0a935-9441-77f7-94d7-580f633c8e3d",
+      "result": "Initial objective completed. Resume published reopened/completed TODO snapshots and corrected the file, but hit the 26-turn hard cap with a stale final answer. Workers read the board; the parent supplied invalid group IDs and received misleading empty results. Both defects were subsequently fixed.",
+      "goal_transitions": [
+        {
+          "id": "533f594b-2f27-454f-825c-8e835ebb199a",
+          "revision": 1,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "533f594b-2f27-454f-825c-8e835ebb199a",
+          "revision": 1,
+          "status": "active",
+          "verdict": "met"
+        },
+        {
+          "id": "533f594b-2f27-454f-825c-8e835ebb199a",
+          "revision": 1,
+          "status": "complete",
+          "verdict": "met"
+        },
+        {
+          "id": "533f594b-2f27-454f-825c-8e835ebb199a",
+          "revision": 1,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "533f594b-2f27-454f-825c-8e835ebb199a",
+          "revision": 1,
+          "status": "active",
+          "verdict": "continue"
+        },
+        {
+          "id": "533f594b-2f27-454f-825c-8e835ebb199a",
+          "revision": 1,
+          "status": "paused",
+          "verdict": "continue"
+        }
+      ],
+      "journal_sha256": "6e513f00ca40dc548d91b8d060e6688c69ff482f326f04a4ef8999fbafc7764a",
+      "file_checks": {
+        "fact2.txt": {
+          "sha256": "f03c5dabf633874c7ffb071eae4a40dcbf69b040530f1ebe7c625657d509d45e",
+          "bytes": 8
+        },
+        "observed2.txt": {
+          "sha256": "f03c5dabf633874c7ffb071eae4a40dcbf69b040530f1ebe7c625657d509d45e",
+          "bytes": 8
+        }
+      },
+      "matching_files_verified": true
+    },
+    {
+      "id": "revision-fix",
+      "run": "xnoaEy",
+      "worker_session": "01a0a93c-4fa3-74ad-ae66-a8be513dbf7e",
+      "result": "Initial revision completed. Resume advanced to revision 2, reopened TODO, replaced stale evidence and returned the correct fresh answer in 10 turns. Evaluator accepted the draft, but exact final-delivery checking paused the objective because returned wording differed. This is not a completed resumed objective. Structured objective reporting was added after this live run.",
+      "goal_transitions": [
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 1,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 1,
+          "status": "active",
+          "verdict": "met"
+        },
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 1,
+          "status": "complete",
+          "verdict": "met"
+        },
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 2,
+          "status": "active",
+          "verdict": null
+        },
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 2,
+          "status": "active",
+          "verdict": "continue"
+        },
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 2,
+          "status": "active",
+          "verdict": "met"
+        },
+        {
+          "id": "f58ea2c9-227e-446e-9902-63d90ef21550",
+          "revision": 2,
+          "status": "paused",
+          "verdict": "met"
+        }
+      ],
+      "journal_sha256": "cc68003fdd76e87b3f23689e321136761d3ba209a06bc0fba8fe687f022b7bab",
+      "file_checks": {
+        "fact.txt": {
+          "sha256": "c147bbabc3cc254f2914171fa3830faf0e1aa96bdc45a0541e177ec81a57cc5f",
+          "bytes": 7
+        },
+        "observed.txt": {
+          "sha256": "c147bbabc3cc254f2914171fa3830faf0e1aa96bdc45a0541e177ec81a57cc5f",
+          "bytes": 7
+        }
+      },
+      "matching_files_verified": true
+    }
+  ],
+  "fixes": [
+    "Load native TODO extension in eligible workers; restore worker-local state and release subscriptions across resumes.",
+    "Reuse existing Ferment controller; cancel its evaluator with the host and bind stop callbacks to the live session rather than unused loader instances.",
+    "Advance objective revision on worker resume so earlier accepted answers cannot satisfy new work.",
+    "Return unknown_group with authorized group IDs and print the exact group_id in parent context.",
+    "Expose final journal objective status in agent_outcome.ferment_v2 separately from worker execution; omit stale state if a later resume throws."
+  ],
+  "validation": {
+    "unit_integration": "1079 tests passed in 50 files",
+    "terminal": "3 built workflows passed",
+    "build": "passed",
+    "typecheck": "passed",
+    "lint": "passed with pre-existing unrelated unused-import warning",
+    "diff_check": "passed"
+  },
+  "limits": [
+    "Live resume probe ended paused/met, not complete; exact accepted-draft delivery remains enforced.",
+    "Structured objective reporting and unknown-group recovery have regression coverage; their new fields were not retested with live inference.",
+    "Host cancellation during evaluation has regression coverage; no live forced-cancellation probe is counted.",
+    "Small artificial file-copy tasks establish wiring and lifecycle behavior, not better quality, style, readability, performance or long-work reliability.",
+    "No repeated outcome-based reruns; failed and protocol-deviating attempts are retained."
+  ],
+  "local_evidence_root": "/private/tmp/kimchi-worker-goal-dzep3cps",
+  "cleanup": {
+    "tmux_sessions_running": false,
+    "temporary_home_removed": true,
+    "environment_file_removed": true,
+    "additional_journals_retained": 0
+  },
+  "final_binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
+  "live_revision_probe_binary_sha256": "e23c016dc6165885c962becbf57fdc7fb34a512797ead45f25e7f7ed8c196b3c",
+  "review": "Reviewed lifecycle, cancellation ownership, journal replay, parent authorization, evidence citation and outcome serialization. Fixed missing resume/steer claim exclusion and stale outcome on thrown resume. No unresolved findings in this integration scope."
+}

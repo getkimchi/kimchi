@@ -1,0 +1,496 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-16",
+  "conclusion": "No demonstrated final-quality advantage from communication. Same-task two-output totals: on 69/80, off 71/80; handoffs tie at 67/80.",
+  "denominator": "Forty behavior checks per output, two outputs per arm; no pooling with other tasks or the interrupted preceding attempt.",
+  "source": {
+    "baseline": "1c46088853342a608dec4c619199c82433ddfaa2",
+    "reference": "3bf4613877200edb5db50093f8eb908a42014edf",
+    "normalizations": [
+      "Remove tracked generated pyc files before baseline hashing",
+      "Add reference model-registry mock to baseline as test support",
+      "Reuse pinned installed toolchain; verify direct dependency versions before launch"
+    ],
+    "reference_adapter": "Hidden reference-only adapter preserves old classifier entrypoint for grading against historical new API; production reference is unchanged."
+  },
+  "runtime_sha256": "2c8f4fbad1b91c01fa82752800f77f195e4f274f2267acd3fd46455daedcef76",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "initial_workers": {
+    "count": 2,
+    "max_turns": 45,
+    "max_duration_seconds": 600,
+    "output_token_budget": 24000
+  },
+  "repair_workers": {
+    "count": 1,
+    "max_turns": 35,
+    "max_duration_seconds": 360,
+    "output_token_budget": 18000
+  },
+  "parent_policy": "Read and run exact verification commands before and after the single repair worker; no parent edits or worker resumes.",
+  "preflight": {
+    "isolation_checks": 50,
+    "baseline_public_tests_passed": 371,
+    "guard_assertions": 42,
+    "baseline_private_passed": 14,
+    "reference_private_passed": 40,
+    "private_total": 40,
+    "typed_provider_fixtures": "pass",
+    "mutants_detected": [
+      "provider-match",
+      "total-budget",
+      "auth-cancellation"
+    ],
+    "immutable_inputs_sealed": 1595
+  },
+  "trials": [
+    {
+      "trial": "trial-01",
+      "arm": "on",
+      "pair": 1,
+      "stages": {
+        "handoff": {
+          "behavior_passed": 39,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "classifier fallback behavior cancels promptly during backoff without starting fallback"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 407,
+            "numFailedTests": 2,
+            "numTotalTests": 409
+          },
+          "unloaded_test_files": [],
+          "typecheck_exit": 2,
+          "biome_exit": 1
+        },
+        "final": {
+          "behavior_passed": 35,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior cancels promptly during backoff without starting fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded",
+            "classifier fallback behavior observes late provider rejection without changing an already successful fallback"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 408,
+            "numFailedTests": 1,
+            "numTotalTests": 409
+          },
+          "unloaded_test_files": [],
+          "typecheck_exit": 0,
+          "biome_exit": 1
+        }
+      },
+      "ferment_state": "blocked",
+      "evaluator_verdict": "impossible",
+      "terminal_seconds": 1276,
+      "snapshot_stop_seconds": 1386,
+      "usage": {
+        "input": 524777,
+        "output": 66693,
+        "cacheRead": 4290816,
+        "cacheWrite": 0
+      },
+      "worker_outcomes": [
+        {
+          "id": "311fc97c-2f26-426",
+          "description": "Investigator",
+          "status": "completed"
+        },
+        {
+          "id": "79b39b87-c1c2-4e1",
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        },
+        {
+          "id": "a761720b-79a2-498",
+          "description": "Repair owner",
+          "status": "aborted",
+          "abortReason": "max_duration"
+        }
+      ],
+      "board_posts": 1,
+      "board_reads": 2,
+      "peer_entries_consumed": 1,
+      "directed_messages": 1,
+      "protocol_checks": {
+        "three_started_workers": true,
+        "two_initial_one_repair": true,
+        "initial_same_batch": true,
+        "Implementation owner_parameters": true,
+        "Investigator_parameters": true,
+        "Repair owner_parameters": true,
+        "repair_after_pair_settled": true,
+        "no_parent_edits_or_resumes": true,
+        "parent_checks_before_repair": true,
+        "parent_checks_after_repair": true
+      },
+      "protected_file_changes": [],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "trial": "trial-02",
+      "arm": "off",
+      "pair": 1,
+      "stages": {
+        "handoff": {
+          "behavior_passed": 33,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "loadConfig merging inherits user budget through project and local files that omit it",
+            "loadConfig merging uses explicit local budgets before project budgets and preserves inheritance through sparse local files",
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior cancels promptly during request without starting fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded",
+            "classifier fallback behavior observes late provider rejection without changing an already successful fallback"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 398,
+            "numFailedTests": 1,
+            "numTotalTests": 399
+          },
+          "unloaded_test_files": [
+            "config.test.ts"
+          ],
+          "typecheck_exit": 2,
+          "biome_exit": 1
+        },
+        "final": {
+          "behavior_passed": 35,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior cancels promptly during request without starting fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded",
+            "classifier fallback behavior observes late provider rejection without changing an already successful fallback"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 411,
+            "numFailedTests": 0,
+            "numTotalTests": 411
+          },
+          "unloaded_test_files": [],
+          "typecheck_exit": 0,
+          "biome_exit": 1
+        }
+      },
+      "ferment_state": "blocked",
+      "evaluator_verdict": "impossible",
+      "terminal_seconds": 1062,
+      "snapshot_stop_seconds": 1386,
+      "usage": {
+        "input": 477536,
+        "output": 68260,
+        "cacheRead": 4945280,
+        "cacheWrite": 0
+      },
+      "worker_outcomes": [
+        {
+          "id": "d7bb7c2f-92d9-4b8",
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "token_budget"
+        },
+        {
+          "id": "ff72980b-4908-40f",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "token_budget"
+        },
+        {
+          "id": "952ef9cf-35dd-4b6",
+          "description": "Repair owner",
+          "status": "aborted",
+          "abortReason": "max_turns"
+        }
+      ],
+      "board_posts": 0,
+      "board_reads": 0,
+      "peer_entries_consumed": 0,
+      "directed_messages": 0,
+      "protocol_checks": {
+        "three_started_workers": true,
+        "two_initial_one_repair": true,
+        "initial_same_batch": true,
+        "Implementation owner_parameters": true,
+        "Investigator_parameters": true,
+        "Repair owner_parameters": true,
+        "repair_after_pair_settled": true,
+        "no_parent_edits_or_resumes": true,
+        "parent_checks_before_repair": true,
+        "parent_checks_after_repair": true
+      },
+      "protected_file_changes": [],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "trial": "trial-03",
+      "arm": "off",
+      "pair": 2,
+      "stages": {
+        "handoff": {
+          "behavior_passed": 34,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "loadConfig merging inherits user budget through project and local files that omit it",
+            "loadConfig merging uses explicit local budgets before project budgets and preserves inheritance through sparse local files",
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded",
+            "classifier fallback behavior observes late provider rejection without changing an already successful fallback"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 408,
+            "numFailedTests": 6,
+            "numTotalTests": 414
+          },
+          "unloaded_test_files": [],
+          "typecheck_exit": 2,
+          "biome_exit": 1
+        },
+        "final": {
+          "behavior_passed": 36,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded",
+            "classifier fallback behavior observes late provider rejection without changing an already successful fallback"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 390,
+            "numFailedTests": 0,
+            "numTotalTests": 390
+          },
+          "unloaded_test_files": [
+            "classifier-investigation.test.ts"
+          ],
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        }
+      },
+      "ferment_state": "blocked",
+      "evaluator_verdict": "impossible",
+      "terminal_seconds": 1157,
+      "snapshot_stop_seconds": 1161,
+      "usage": {
+        "input": 403266,
+        "output": 63279,
+        "cacheRead": 3933376,
+        "cacheWrite": 0
+      },
+      "worker_outcomes": [
+        {
+          "id": "451f826f-1197-47c",
+          "description": "Implementation owner",
+          "status": "aborted",
+          "abortReason": "token_budget"
+        },
+        {
+          "id": "45aab36e-41b8-486",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "max_duration"
+        },
+        {
+          "id": "2a95e454-74d6-48a",
+          "description": "Repair owner",
+          "status": "aborted",
+          "abortReason": "max_duration"
+        }
+      ],
+      "board_posts": 0,
+      "board_reads": 0,
+      "peer_entries_consumed": 0,
+      "directed_messages": 0,
+      "protocol_checks": {
+        "three_started_workers": true,
+        "two_initial_one_repair": true,
+        "initial_same_batch": true,
+        "Implementation owner_parameters": true,
+        "Investigator_parameters": true,
+        "Repair owner_parameters": true,
+        "repair_after_pair_settled": true,
+        "no_parent_edits_or_resumes": true,
+        "parent_checks_before_repair": true,
+        "parent_checks_after_repair": true
+      },
+      "protected_file_changes": [],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "trial": "trial-04",
+      "arm": "on",
+      "pair": 2,
+      "stages": {
+        "handoff": {
+          "behavior_passed": 28,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "loadConfig merging inherits user budget through project and local files that omit it",
+            "loadConfig merging fills or accepts the classifier total budget (undefined)",
+            "loadConfig merging fills or accepts the classifier total budget (12000)",
+            "loadConfig merging uses explicit local budgets before project budgets and preserves inheritance through sparse local files",
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior cancels promptly during auth without starting fallback",
+            "classifier fallback behavior cancels promptly during request without starting fallback",
+            "classifier fallback behavior cancels promptly during backoff without starting fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded",
+            "classifier fallback behavior observes late provider rejection without changing an already successful fallback"
+          ],
+          "wiring_passed": false,
+          "own_test_exit": 1,
+          "own_tests": {
+            "numPassedTests": 385,
+            "numFailedTests": 18,
+            "numTotalTests": 403
+          },
+          "unloaded_test_files": [],
+          "typecheck_exit": 2,
+          "biome_exit": 1
+        },
+        "final": {
+          "behavior_passed": 34,
+          "behavior_total": 40,
+          "behavior_failures": [
+            "classifier fallback behavior bounds a primary auth promise that never settles and still tries fallback",
+            "classifier fallback behavior bounds ignored request cancellation and reserves time for a slow fallback",
+            "classifier fallback behavior cancels promptly during auth without starting fallback",
+            "classifier fallback behavior cancels promptly during request without starting fallback",
+            "classifier fallback behavior cancels promptly during backoff without starting fallback",
+            "classifier fallback behavior does not revive timed-out authentication after fallback has succeeded"
+          ],
+          "wiring_passed": true,
+          "own_test_exit": 0,
+          "own_tests": {
+            "numPassedTests": 404,
+            "numFailedTests": 0,
+            "numTotalTests": 404
+          },
+          "unloaded_test_files": [],
+          "typecheck_exit": 0,
+          "biome_exit": 0
+        }
+      },
+      "ferment_state": "paused",
+      "evaluator_verdict": "met",
+      "terminal_seconds": 995,
+      "snapshot_stop_seconds": 999,
+      "usage": {
+        "input": 436456,
+        "output": 38835,
+        "cacheRead": 2231168,
+        "cacheWrite": 0
+      },
+      "worker_outcomes": [
+        {
+          "id": "57ede51d-3788-433",
+          "description": "Implementation owner",
+          "status": "completed"
+        },
+        {
+          "id": "fef2fa59-f448-4da",
+          "description": "Investigator",
+          "status": "aborted",
+          "abortReason": "max_duration"
+        },
+        {
+          "id": "8dc89325-7c3f-497",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "board_posts": 1,
+      "board_reads": 4,
+      "peer_entries_consumed": 0,
+      "directed_messages": 0,
+      "protocol_checks": {
+        "three_started_workers": true,
+        "two_initial_one_repair": true,
+        "initial_same_batch": true,
+        "Implementation owner_parameters": true,
+        "Investigator_parameters": true,
+        "Repair owner_parameters": true,
+        "repair_after_pair_settled": true,
+        "no_parent_edits_or_resumes": true,
+        "parent_checks_before_repair": true,
+        "parent_checks_after_repair": true
+      },
+      "protected_file_changes": [],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    }
+  ],
+  "attribution": [
+    "Trial 01 consumed a peer board finding and made matching edits, but its simultaneous own-test call delivered the same failures at the same boundary; the board contribution is not isolated.",
+    "Trial 01 repair regressed private behavior from 39/40 to 35/40.",
+    "Trial 04 owner completed before its investigator posted; no peer entry was consumed.",
+    "The only directed message was a parent handoff. Controls retain shared files and ordinary parent coordination."
+  ],
+  "limitations": [
+    "Two matched pairs, one historical task and one model do not establish a general effect.",
+    "Nine of twelve workers ended at configured limits.",
+    "One final in each arm fails its own test command; all four have private behavior failures despite passing typecheck.",
+    "Trial 03 investigator tests could not load; zero failed assertions is not a successful suite.",
+    "The initial startup seal rejected normal settings mutation before inference; original failure retained.",
+    "Two host-blocked idle runs required manual capture because the observer also expected a final assistant text message; extra idle time is separated.",
+    "Trial 04 paused with a final-answer-delivery warning after evaluator acceptance and a visible report. Cause is not attributed to the board."
+  ],
+  "preceding_attempt": {
+    "artifact_root": "/private/tmp/kimchi-comms-classifier-t6hfc80o",
+    "status": "All four interrupted after staffing-policy conflict; excluded from this comparison.",
+    "grader_defect": "Some frozen mocks returned plain objects from an async API; uniform promise-contract diagnostic applied to all snapshots, baseline, reference and mutants.",
+    "corrected_stopped_totals": {
+      "on": {
+        "passed": 70,
+        "total": 80
+      },
+      "off": {
+        "passed": 70,
+        "total": 80
+      }
+    },
+    "cleanup": "All sessions stopped and copied HOMEs removed."
+  },
+  "artifact_root": "/private/tmp/kimchi-comms-classifier-repair-7zg5830p",
+  "artifact_hashes": {
+    "results.json": "bdefdde38a7533bc0dcb207db5be03a74a47a4124787b5c6e19b2faec2417a94",
+    "protocol-review.json": "ed4f4ff758c569a6e88550cc27a6d0e796edaf0d1914dc12b6d642d4d4eaea9d",
+    "measurements.json": "08aa91f7c0f395e3531692a4c979d07cb3e219a6c04e98ce3272fdec0bc2cc5b",
+    "seal.json": "9cf9aacb5a42df2059bfca41b97cf8930eecc782656ecbf2b5f6920235cb0599",
+    "report.md": "9e565ca55267db00046cc014b2f48ff6a6ffa453f44163bfc8fd5af822eaa194",
+    "fixture-validation.json": "04190509eb2c6925560e335b23b848c608e858899719b8d68d437067e7f919fd",
+    "isolation-checks.json": "fea61811eb4109fbfba2c34c6871ff6d57826651bc129adfd3fe588828f505c3"
+  }
+}

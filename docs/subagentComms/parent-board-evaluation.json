@@ -1,0 +1,265 @@
+{
+  "date": "2026-09-16",
+  "purpose": "Does a parent receive a new board finding during its current run?",
+  "decision": "Retain the request-context delivery correction. Broader code-quality acceptance remains unmet.",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "worker_limits": {
+    "max_turns": 8,
+    "max_duration_seconds": 90,
+    "token_budget": 4000
+  },
+  "old_binary_sha256": "2c8f4fbad1b91c01fa82752800f77f195e4f274f2267acd3fd46455daedcef76",
+  "new_binary_sha256": "c6c414da8cfeb6bff6b04f26160b65d0762c1efe4fdad53ae3bbee6d34f5f7b1",
+  "usable_pair": {
+    "new": "corrected_guard/trial-03",
+    "old": "corrected_guard/trial-04",
+    "new_observed_before_result_collection": true,
+    "old_observed_before_result_collection": false,
+    "new_first_request_after_post_ms": 15,
+    "old_first_request_with_post_ms": 32963
+  },
+  "limitations": [
+    "Four initial attempts invalidated by the experiment guard also blocking worker reads; retained separately.",
+    "In the corrected cohort both launches in trial-01 and trial-02 omitted token_budget and were rejected. They are retained as failed attempts, not successful delivery observations.",
+    "One usable old/new pair; deliberately instructed marker task, no coding quality, readability, performance or cost claim.",
+    "The old path wakes an idle parent and records notifications; the new board digest refreshes only on a model request and is transient. Directed messages and worker completion notifications are unchanged."
+  ],
+  "attempts": [
+    {
+      "cohort": "initial_invalid_guard",
+      "trial": "trial-01",
+      "variant": "old",
+      "timed_out": true,
+      "wall_seconds": 180.39,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 0,
+      "workers": [],
+      "board_post_titles": [],
+      "observations": [],
+      "post_to_visible_ms": null,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "initial_invalid_guard",
+      "trial": "trial-02",
+      "variant": "new",
+      "timed_out": false,
+      "wall_seconds": 119.07,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 2,
+      "workers": [
+        {
+          "status": "completed",
+          "description": "Finder: read INPUT.txt, post marker"
+        },
+        {
+          "status": "aborted",
+          "description": "Waiter: sleep 30, report WAITED"
+        }
+      ],
+      "board_post_titles": [
+        "This parent probe uses only Agent, probe_tick, record_probe and worker result tools. The Finder reads INPUT.txt."
+      ],
+      "observations": [
+        {
+          "timestamp": 1789527292065,
+          "kind": "record",
+          "observed": "NOT_OBSERVED"
+        }
+      ],
+      "post_to_visible_ms": null,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "initial_invalid_guard",
+      "trial": "trial-03",
+      "variant": "new",
+      "timed_out": true,
+      "wall_seconds": 180.56,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 2,
+      "workers": [
+        {
+          "status": "completed",
+          "description": "Finder posts marker finding"
+        },
+        {
+          "status": "aborted",
+          "description": "Waiter sleeps then reports"
+        }
+      ],
+      "board_post_titles": [
+        "This parent probe uses only Agent, probe_tick, record_probe and worker result tools. The Finder reads INPUT.txt."
+      ],
+      "observations": [],
+      "post_to_visible_ms": null,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "initial_invalid_guard",
+      "trial": "trial-04",
+      "variant": "old",
+      "timed_out": true,
+      "wall_seconds": 180.45,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 2,
+      "workers": [
+        {
+          "status": "completed",
+          "description": "Finder posts marker finding"
+        },
+        {
+          "status": "aborted",
+          "description": "Waiter sleeps then finishes"
+        }
+      ],
+      "board_post_titles": [
+        "This parent probe uses only Agent, probe_tick, record_probe and worker result tools. The Finder reads INPUT.txt."
+      ],
+      "observations": [],
+      "post_to_visible_ms": null,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "corrected_guard",
+      "trial": "trial-01",
+      "variant": "old",
+      "timed_out": true,
+      "wall_seconds": 180.4,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 0,
+      "workers": [],
+      "board_post_titles": [],
+      "observations": [],
+      "post_to_visible_ms": null,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "corrected_guard",
+      "trial": "trial-02",
+      "variant": "new",
+      "timed_out": true,
+      "wall_seconds": 180.27,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 0,
+      "workers": [],
+      "board_post_titles": [],
+      "observations": [],
+      "post_to_visible_ms": null,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "corrected_guard",
+      "trial": "trial-03",
+      "variant": "new",
+      "timed_out": false,
+      "wall_seconds": 56.12,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 2,
+      "workers": [
+        {
+          "status": "completed",
+          "description": "Finder: read INPUT.txt, post marker"
+        },
+        {
+          "status": "completed",
+          "description": "Waiter: sleep 30, report WAITED"
+        }
+      ],
+      "board_post_titles": [
+        "signal-j7q9m2"
+      ],
+      "observations": [
+        {
+          "timestamp": 1789527458173,
+          "kind": "record",
+          "observed": "signal-j7q9m2"
+        }
+      ],
+      "post_to_visible_ms": 15,
+      "saved_board_followups": 0,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "cohort": "corrected_guard",
+      "trial": "trial-04",
+      "variant": "old",
+      "timed_out": false,
+      "wall_seconds": 57.55,
+      "launch_calls": 2,
+      "launches_accepted_by_guard": 2,
+      "workers": [
+        {
+          "status": "completed",
+          "description": "Finder: post marker finding"
+        },
+        {
+          "status": "completed",
+          "description": "Waiter: sleep 30 then finish"
+        }
+      ],
+      "board_post_titles": [
+        "signal-j7q9m2"
+      ],
+      "observations": [
+        {
+          "timestamp": 1789527461810,
+          "kind": "record",
+          "observed": "NOT_OBSERVED"
+        }
+      ],
+      "post_to_visible_ms": 32963,
+      "saved_board_followups": 1,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    }
+  ],
+  "validation": {
+    "unit_tests": 760,
+    "terminal_workflows": 3,
+    "typecheck": "passed",
+    "binary_build": "passed",
+    "targeted_biome": "passed",
+    "sandbox_checks_per_cohort": 40,
+    "fresh_status_checks": "All eight stopped; all copied credential HOMEs removed."
+  },
+  "evidence": {
+    "/private/tmp/kimchi-parent-board-corrected-n08bs38h/results.json": "cbbcc2b5fce145267b698af5146683980550b260ce46e7381b8318e75fe087c0",
+    "/private/tmp/kimchi-parent-board-corrected-n08bs38h/seal.json": "404fdda01bd171eb92ef55ce2b0fa1df3aa9d0c875e3d3f502cb0cef6e085bf8",
+    "/private/tmp/kimchi-parent-board-corrected-n08bs38h/protocol-guard.ts": "a59215c25fb19107f8580cb314b06546a465b93e513db6bc05ab4c8f04e9586e",
+    "/private/tmp/kimchi-parent-board-corrected-n08bs38h/board-prompt.txt": "e09ee15f2b0a903ecdd4b2039cad3f3f848102d499899b14064116e329e966dd",
+    "/private/tmp/kimchi-parent-board-corrected-n08bs38h/trial-03/launch-audit.jsonl": "fc019a410012901651fc0d8f93065fe7e912cf4b34b13e8278572d5769b9509b",
+    "/private/tmp/kimchi-parent-board-corrected-n08bs38h/trial-04/launch-audit.jsonl": "1c3dcb6add1ed87f14ff0d23efd5c273687879f324c4893bd193cbfb2e416d48",
+    "/private/tmp/kimchi-parent-board-4jd7t8wu/seal.json": "2ca117ac3d8127426c9813572475514bad903fcccffe1f5f8d0cbf4645230d0a"
+  }
+}

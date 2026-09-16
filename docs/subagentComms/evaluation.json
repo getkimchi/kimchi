@@ -1,0 +1,631 @@
+{
+  "collected_on": "2026-09-16",
+  "selection": "Five communication on/off comparisons collected before the board-summary experiment, after transcript-fixture corrections; twenty runs across three task families. All-enabled old/new probes, the later three-arm summary experiment and earlier transcript rounds are outside this table. Scores are not pooled across tasks.",
+  "pair_outcomes": {
+    "on_higher": 1,
+    "equal": 8,
+    "off_higher": 1
+  },
+  "comparisons": [
+    {
+      "task": "Interface implementation",
+      "evidence_directory": "kimchi-board-interface-0eymdccb",
+      "source_sha256": {
+        "manifest.json": "9dbd7e3c6f6c615f63549132afe068a8e741596d7394de26299150aa4f09d6b3",
+        "results.json": "975a1a27a4ea8884decfbb2f8ad110d2ff85efdef182bebb20be1005aa0ce390",
+        "measurements.json": "61d704a4a49025d5e850aa4ad94cb6ec999f8e6515f0da48906480f9fdd68a72",
+        "candidate-checks.json": "d79d7b8711d7f622aa643fb7eccd05cc879f847880536c387231937431de0772"
+      },
+      "model": "kimchi-dev/glm-5.3-flash",
+      "binary_sha256": "a95608885ca2dbe71687b7ab0cf433f02f58f18c717883ead961a901b940c305",
+      "pairs": [
+        {
+          "pair": 1,
+          "off": {
+            "trial": "trial-01",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 114305,
+              "output": 21833,
+              "cacheRead": 687872,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-02",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 195195,
+              "output": 22237,
+              "cacheRead": 932800,
+              "cacheWrite": 0
+            }
+          }
+        },
+        {
+          "pair": 2,
+          "off": {
+            "trial": "trial-04",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 154884,
+              "output": 27054,
+              "cacheRead": 1301632,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-03",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 23,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 280130,
+              "output": 33605,
+              "cacheRead": 1446720,
+              "cacheWrite": 0
+            }
+          }
+        }
+      ],
+      "totals": {
+        "on": {
+          "passed": 47,
+          "tests": 48,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 475325,
+          "output": 55842,
+          "cacheRead": 2379520
+        },
+        "off": {
+          "passed": 48,
+          "tests": 48,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 269189,
+          "output": 48887,
+          "cacheRead": 1989504
+        }
+      }
+    },
+    {
+      "task": "Interface with reply recovery",
+      "evidence_directory": "kimchi-quality-recovery-wws53c2k",
+      "source_sha256": {
+        "manifest.json": "3910eddf1f5aa7216d60fc145a9fa8de64f3bfc60cfc552a1b68ecd0b7d33b93",
+        "results.json": "aa38a001c9351d92a0fc09bd3f5cba15dbe9ae93112481729825672d6ebc9091",
+        "measurements.json": "535c84de1ecafd225cf231904b04d18dd045ed6e676664317d96050477bf72db",
+        "candidate-checks.json": "62a91a232fc12e599a4d92ffabb5ab9e5137aa9881f8a2fe008314e7c1de0ba3"
+      },
+      "model": "kimchi-dev/glm-5.3-flash",
+      "binary_sha256": "c23aeb5d0b30aaefb4c4280cdf5453195446489c52a331f24a7b7e0a21517bd5",
+      "pairs": [
+        {
+          "pair": 1,
+          "off": {
+            "trial": "trial-01",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 145365,
+              "output": 26772,
+              "cacheRead": 1051776,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-02",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 123883,
+              "output": 22568,
+              "cacheRead": 790656,
+              "cacheWrite": 0
+            }
+          }
+        },
+        {
+          "pair": 2,
+          "off": {
+            "trial": "trial-04",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 112049,
+              "output": 21098,
+              "cacheRead": 630656,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-03",
+            "handoff": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final": {
+              "passed": 24,
+              "tests": 24
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 229488,
+              "output": 25277,
+              "cacheRead": 872064,
+              "cacheWrite": 0
+            }
+          }
+        }
+      ],
+      "totals": {
+        "on": {
+          "passed": 48,
+          "tests": 48,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 353371,
+          "output": 47845,
+          "cacheRead": 1662720
+        },
+        "off": {
+          "passed": 48,
+          "tests": 48,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 257414,
+          "output": 47870,
+          "cacheRead": 1682432
+        }
+      }
+    },
+    {
+      "task": "Concurrent fetch and cancellation",
+      "evidence_directory": "kimchi-comms-cancel-c2o3tv_k",
+      "source_sha256": {
+        "manifest.json": "c65185074d83e3137682450f5dc3698e09cec98fb13f224cf66dd9a1c3f997d8",
+        "results.json": "eb74c5bd09133916a91f1d7cd90af8764d3f856e16e62e5106ca52f60b1c2b4d",
+        "measurements.json": "2a11e7b74aa033979c02866be2578363c4d58b868f70f3bd6860c741c3cd1750",
+        "candidate-checks.json": "7f678e84c8e5533fbcad7d0b2f9e35dd395bded69b0fcc66f45250f12a23d3f6"
+      },
+      "model": "kimchi-dev/glm-5.3-flash",
+      "binary_sha256": "c23aeb5d0b30aaefb4c4280cdf5453195446489c52a331f24a7b7e0a21517bd5",
+      "pairs": [
+        {
+          "pair": 1,
+          "off": {
+            "trial": "trial-01",
+            "handoff": {
+              "passed": 44,
+              "tests": 47
+            },
+            "final": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 1
+            },
+            "usage": {
+              "input": 170217,
+              "output": 49587,
+              "cacheRead": 1680128,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-02",
+            "handoff": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 412292,
+              "output": 47729,
+              "cacheRead": 2111552,
+              "cacheWrite": 0
+            }
+          }
+        },
+        {
+          "pair": 2,
+          "off": {
+            "trial": "trial-04",
+            "handoff": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 129264,
+              "output": 32896,
+              "cacheRead": 1112768,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-03",
+            "handoff": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final": {
+              "passed": 47,
+              "tests": 47
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 223165,
+              "output": 32248,
+              "cacheRead": 1602816,
+              "cacheWrite": 0
+            }
+          }
+        }
+      ],
+      "totals": {
+        "on": {
+          "passed": 94,
+          "tests": 94,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 635457,
+          "output": 79977,
+          "cacheRead": 3714368
+        },
+        "off": {
+          "passed": 94,
+          "tests": 94,
+          "own_checks_passed": 1,
+          "outputs": 2,
+          "input": 299481,
+          "output": 82483,
+          "cacheRead": 2792896
+        }
+      }
+    },
+    {
+      "task": "JSON Patch, two implementation owners",
+      "evidence_directory": "kimchi-comms-jsonpatch-v04mj1ry",
+      "source_sha256": {
+        "manifest.json": "7b8f21cab31369e9e012817525653b41ec5c0a92c8af585386bca80fb0c9ca0f",
+        "results.json": "52f147d47e2b469898ba2ee0c7daef8200d00e2837a5107b189d545d32009483",
+        "measurements.json": "d63870f29e535584d3c1210acbfa3f86685fd49beffe81210f6a3776befb08e4",
+        "candidate-checks.json": "55885e2386462a5f4a3533338526557e58b4fdbab63f3462acfac8ee7f18480c"
+      },
+      "model": "kimchi-dev/glm-5.3-flash",
+      "binary_sha256": "d2100b52e0e285ded46a9d34f28491e701ebc5bd414bdc017a692fab5005a4b9",
+      "pairs": [
+        {
+          "pair": 1,
+          "off": {
+            "trial": "trial-01",
+            "handoff": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 144637,
+              "output": 25114,
+              "cacheRead": 806464,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-02",
+            "handoff": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 169842,
+              "output": 28361,
+              "cacheRead": 937856,
+              "cacheWrite": 0
+            }
+          }
+        },
+        {
+          "pair": 2,
+          "off": {
+            "trial": "trial-04",
+            "handoff": {
+              "passed": 54,
+              "tests": 57
+            },
+            "final": {
+              "passed": 54,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 94303,
+              "output": 27145,
+              "cacheRead": 1328704,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-03",
+            "handoff": {
+              "passed": 56,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 111283,
+              "output": 24181,
+              "cacheRead": 764224,
+              "cacheWrite": 0
+            }
+          }
+        }
+      ],
+      "totals": {
+        "on": {
+          "passed": 114,
+          "tests": 114,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 281125,
+          "output": 52542,
+          "cacheRead": 1702080
+        },
+        "off": {
+          "passed": 111,
+          "tests": 114,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 238940,
+          "output": 52259,
+          "cacheRead": 2135168
+        }
+      }
+    },
+    {
+      "task": "JSON Patch, implementation owner and reviewer",
+      "evidence_directory": "kimchi-comms-peer-review-yfpdz9ic",
+      "source_sha256": {
+        "manifest.json": "421aa293be2085be78e4cd699cf288704d66a0330bc40862ade616a05435ddf6",
+        "results.json": "e39a1d460ff193016b5427194742e7904d693c4644c25de56bc740d2b76563ff",
+        "measurements.json": "1412221cae8f285e7a17e07f8d49fbc167a0b8363f9f53b8d3761af858a0f6b5",
+        "candidate-checks.json": "616534ce835259863b70d7b26443ff14e5a97e2676d9113b2f9c81caadcad168"
+      },
+      "model": "kimchi-dev/glm-5.3-flash",
+      "binary_sha256": "85bd3871399d3d01bf58d76895e119fe7d7145cbe8f62ddef40cb298970c436f",
+      "pairs": [
+        {
+          "pair": 1,
+          "off": {
+            "trial": "trial-01",
+            "handoff": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 120545,
+              "output": 29131,
+              "cacheRead": 1426176,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-02",
+            "handoff": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 156328,
+              "output": 33872,
+              "cacheRead": 1318912,
+              "cacheWrite": 0
+            }
+          }
+        },
+        {
+          "pair": 2,
+          "off": {
+            "trial": "trial-04",
+            "handoff": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 155415,
+              "output": 35530,
+              "cacheRead": 1072448,
+              "cacheWrite": 0
+            }
+          },
+          "on": {
+            "trial": "trial-03",
+            "handoff": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final": {
+              "passed": 57,
+              "tests": 57
+            },
+            "final_own_checks": {
+              "typecheck": 0,
+              "test": 0
+            },
+            "usage": {
+              "input": 120043,
+              "output": 28254,
+              "cacheRead": 923712,
+              "cacheWrite": 0
+            }
+          }
+        }
+      ],
+      "totals": {
+        "on": {
+          "passed": 114,
+          "tests": 114,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 276371,
+          "output": 62126,
+          "cacheRead": 2242624
+        },
+        "off": {
+          "passed": 114,
+          "tests": 114,
+          "own_checks_passed": 2,
+          "outputs": 2,
+          "input": 275960,
+          "output": 64661,
+          "cacheRead": 2498624
+        }
+      }
+    }
+  ]
+}
