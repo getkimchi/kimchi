@@ -98,9 +98,6 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_DEBUGGER,
 ] as const
 
-/** Memory scope for persistent agent memory. */
-export type MemoryScope = "user" | "project" | "local"
-
 /** Isolation mode for agent execution. */
 export type IsolationMode = "worktree"
 
@@ -143,8 +140,6 @@ export interface AgentConfig {
 	includeContextFiles?: boolean
 	/** Whether to inject shared core guidelines (CORE_GUIDELINES, FACTUAL_ACCURACY, DOCUMENTS_SECTION) into the system prompt in replace mode. Default: false. */
 	includeCoreGuidelines?: boolean
-	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
-	memory?: MemoryScope
 	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
 	isolation?: IsolationMode
 	/** true = this is an embedded default agent (informational) */

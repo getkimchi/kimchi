@@ -56,6 +56,7 @@ import {
 	MEMORY_ENABLED_NOTICE,
 } from "./inject.js"
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
+import { migrateAgentMemory } from "./migrate-agent-memory.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { createMemorySearchTool } from "./tools.js"
 
@@ -232,6 +233,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// The session's working directory, captured at the first agent start —
 		// scopes retrieval to the project store (see createScopedSearcher).
 		let sessionCwd: string | undefined
+		let agentMemoryMigrationAttempted = false
 
 		// Degrade-path logger. The once-ness comes from caller flags
 		// (searcherFailed / recallFailed), not from this helper — the name says
@@ -311,6 +313,18 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			clearMemoryView(ctx)
 			// Capture the session cwd once — scopes retrieval to the project store.
 			sessionCwd ??= ctx.cwd
+			// One-time migration from the legacy agent-memory system (per-agent
+			// MEMORY.md) into the personal store — awaited so migrated content is
+			// searchable from this session's first digest. Steady state is a single
+			// marker-file stat; never allowed to break the turn.
+			if (!agentMemoryMigrationAttempted) {
+				agentMemoryMigrationAttempted = true
+				try {
+					await withTimeout(migrateAgentMemory(), 30_000, "agent memory migration")
+				} catch {
+					// One-time best effort — retried next session on failure.
+				}
+			}
 			// Lever 3: drain new content as it accumulates (sync, cheap — reads
 			// the in-memory entries and spawns a detached worker past the mark).
 			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd)

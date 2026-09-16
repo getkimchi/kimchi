@@ -12,7 +12,7 @@ import { basename, join } from "node:path"
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js"
-import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js"
+import type { AgentConfig, ThinkingLevel } from "./types.js"
 
 /**
  * Scan for custom agent .md files from multiple locations.
@@ -73,9 +73,8 @@ function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "
 			isolated: fm.isolated != null ? fm.isolated === true : undefined,
 			includeContextFiles: fm.include_context_files != null ? fm.include_context_files === true : undefined,
 			includeCoreGuidelines: fm.include_core_guidelines != null ? fm.include_core_guidelines === true : undefined,
-			memory: parseMemory(fm.memory),
-			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
 			enabled: fm.enabled !== false,
+			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
 			source,
 		})
 	}
@@ -133,11 +132,6 @@ function csvOrArrayList(val: unknown): string[] | undefined {
 	if (typeof val === "string" && val.trim().length > 0) {
 		return parseCsvField(val)
 	}
-	return undefined
-}
-
-function parseMemory(val: unknown): MemoryScope | undefined {
-	if (val === "user" || val === "project" || val === "local") return val
 	return undefined
 }
 
