@@ -4,6 +4,7 @@ import {
 	classifyPushFailure,
 	createDraftPr,
 	manualPrCommand,
+	pullBranchLocally,
 	pushBranchRemotely,
 	pushViaLocalFallback,
 	scanDiffForSecrets,
@@ -306,5 +307,70 @@ describe("createDraftPr", () => {
 
 		expect(result.kind).toBe("manual")
 		if (result.kind === "manual") expect(result.reason).toContain("no PR URL")
+	})
+})
+
+describe("pullBranchLocally", () => {
+	it("creates a tracking branch when the local branch does not exist", () => {
+		const execFile = vi.fn((cmd: string, args: string[]) => {
+			if (args[0] === "rev-parse") throw new Error("not found")
+			return Buffer.from("")
+		}) as unknown as typeof execFileSync
+
+		const result = pullBranchLocally({ localRepo: "/repo", branch: "kimchi/fix", execFile })
+
+		expect(result).toEqual({ kind: "pulled", action: "created" })
+		const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1] as string[])
+		expect(calls).toEqual([
+			["fetch", "--no-tags", "origin", "kimchi/fix"],
+			["rev-parse", "--verify", "refs/heads/kimchi/fix"],
+			["switch", "-c", "kimchi/fix", "--track", "origin/kimchi/fix"],
+		])
+	})
+
+	it("fast-forwards an existing local branch", () => {
+		const execFile = vi.fn(() => Buffer.from("")) as unknown as typeof execFileSync
+
+		const result = pullBranchLocally({ localRepo: "/repo", branch: "kimchi/fix", execFile })
+
+		expect(result).toEqual({ kind: "pulled", action: "fast-forwarded" })
+		const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1] as string[])
+		expect(calls).toEqual([
+			["fetch", "--no-tags", "origin", "kimchi/fix"],
+			["rev-parse", "--verify", "refs/heads/kimchi/fix"],
+			["switch", "kimchi/fix"],
+			["merge", "--ff-only", "origin/kimchi/fix"],
+		])
+	})
+
+	it("reports failure honestly with manual commands on diverged branch", () => {
+		const execFile = vi.fn((cmd: string, args: string[]) => {
+			if (args[0] === "merge")
+				throw Object.assign(new Error("merge failed"), { stderr: Buffer.from("fatal: Not possible to fast-forward") })
+			return Buffer.from("")
+		}) as unknown as typeof execFileSync
+
+		const result = pullBranchLocally({ localRepo: "/repo", branch: "kimchi/fix", execFile })
+
+		expect(result.kind).toBe("failed")
+		if (result.kind === "failed") {
+			expect(result.reason).toContain("Not possible to fast-forward")
+			expect(result.command).toBe(
+				"git fetch origin kimchi/fix && git switch kimchi/fix && git merge --ff-only origin/kimchi/fix",
+			)
+		}
+	})
+
+	it("reports fetch failures with manual commands", () => {
+		const execFile = vi.fn(() => {
+			throw Object.assign(new Error("fetch failed"), {
+				stderr: Buffer.from("fatal: 'origin' does not appear to be a git repository"),
+			})
+		}) as unknown as typeof execFileSync
+
+		const result = pullBranchLocally({ localRepo: "/repo", branch: "kimchi/fix", execFile })
+
+		expect(result.kind).toBe("failed")
+		if (result.kind === "failed") expect(result.reason).toContain("does not appear to be a git repository")
 	})
 })

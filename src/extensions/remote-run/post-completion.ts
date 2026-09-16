@@ -8,7 +8,8 @@
  * - "Describe what to do next" — injects result + triggers turn with custom action
  */
 
-import { readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
@@ -28,6 +29,7 @@ import { DIFF_MESSAGE_CAP_LINES, REMOTE_DIFF_ENTRY_TYPE, type RemoteRunDiffDetai
 import {
 	createDraftPr,
 	type PushResult,
+	pullBranchLocally,
 	pushBranchRemotely,
 	pushViaLocalFallback,
 	scanDiffForSecrets,
@@ -41,13 +43,16 @@ import {
 import { continueCloudAgent } from "./runner.js"
 import { resolveSandboxGitConnection, type SandboxGitConnection } from "./sandbox-git.js"
 import { DiffViewer } from "./ui/diff-viewer.js"
+import { openExternalDiff } from "./ui/external-viewer.js"
 
 const REVIEW = "Review the remote agent's results in the local session"
 const SYNC = "Pull the changes to my machine and finish"
 const CUSTOM = "Describe what to do next"
 const SHOW_DIFF = "Show the diff"
+const SHOW_DIFF_EXTERNAL = "Show diff in external viewer"
 const REQUEST_CHANGES = "Request changes (steer the remote agent)"
 const PUSH_AND_PR = "Push branch and open draft PR"
+const PUSH_AND_PULL = "Push branch and pull locally"
 const PUSH_LOCAL_FALLBACK = "Push with my local credentials instead"
 const DONE_KEEP_SESSION = "Done (keep the remote session for later)"
 
@@ -501,7 +506,15 @@ async function handlePrCompletion(
 		const menuTitle = [`Remote branch ${git.branch} is ready — ${statText}.`, ...warnings, "What next?"].join("\n")
 		const choice = await withBlocked(pi.events, "Remote execution complete", () =>
 			withWorkingHidden(ctx.ui, () =>
-				ctx.ui.select(menuTitle, [SHOW_DIFF, REQUEST_CHANGES, PUSH_AND_PR, SYNC, DONE_KEEP_SESSION]),
+				ctx.ui.select(menuTitle, [
+					SHOW_DIFF,
+					SHOW_DIFF_EXTERNAL,
+					REQUEST_CHANGES,
+					PUSH_AND_PR,
+					PUSH_AND_PULL,
+					SYNC,
+					DONE_KEEP_SESSION,
+				]),
 			),
 		)
 		// Dismissed: the branch and session stay alive, the ferment stays paused.
@@ -513,6 +526,16 @@ async function handlePrCompletion(
 				connection,
 				viewerTitle,
 				statText,
+				diffPersisted,
+			})
+			continue
+		}
+		if (choice === SHOW_DIFF_EXTERNAL) {
+			diffPersisted = await showDiffExternally(ctx, {
+				transcriptPath: opts.transcriptPath,
+				baseSha,
+				connection,
+				branch: git.branch,
 				diffPersisted,
 			})
 			continue
@@ -561,6 +584,24 @@ async function handlePrCompletion(
 			})
 			return true
 		}
+		if (choice === PUSH_AND_PULL) {
+			const pulled = await pushAndPullLocally(pi, ctx, {
+				connection,
+				baseSha,
+				git,
+				result,
+				opts,
+				apiKey,
+			})
+			if (!pulled) continue
+			// Terminal: same cleanup + result injection as the PR exit.
+			completeFerment(opts.fermentId)
+			injectRemoteResult(pi, result, promptPrefix, opts, {
+				actionSuffix:
+					"\n\n---\n\nThe user pushed the remote branch and pulled it locally — the working branch now contains all remote commits. No local sync (rsync) was performed.",
+			})
+			return true
+		}
 		if (choice === SYNC) {
 			trackRemoteExecution("sync.started", promptPrefix)
 			const synced = await syncRemoteChanges(ctx, opts.remoteSession)
@@ -593,25 +634,28 @@ async function handlePrCompletion(
 	}
 }
 
+interface PushRunArgs {
+	connection: SandboxGitConnection
+	baseSha: string
+	git: PersistedGitWorkflow
+	result: string
+	opts: HandleRemoteCompletionOpts & { gitWorkflow: PersistedGitWorkflow; remoteSession: RemoteSessionMeta }
+	apiKey: string
+}
+
 /**
- * The consent-gated push terminal action. STRICT ordering: re-harvest the
- * current (post-steer) patch over SSH into the transcript-side patch file
- * → scan it for secrets → consent (hits require an explicit re-confirm) →
- * sandbox push → explicit local-fallback OFFER (never silent) → draft PR →
- * notify. Declining at any gate leaves everything untouched. Returns true
- * only when the push actually succeeded (terminal — caller cleans up).
+ * Shared deterministic push core for the two push terminal actions. STRICT
+ * ordering: re-harvest the current (post-steer) patch over SSH → scan it
+ * for secrets → consent (hits require an explicit re-confirm) → sandbox
+ * push → explicit local-fallback OFFER (never silent). Declining at any
+ * gate leaves everything untouched. Returns true only when the push
+ * actually succeeded.
  */
-async function pushAndOpenDraftPr(
+async function secretScannedConsentPush(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	run: {
-		connection: SandboxGitConnection
-		baseSha: string
-		git: PersistedGitWorkflow
-		result: string
-		opts: HandleRemoteCompletionOpts & { gitWorkflow: PersistedGitWorkflow; remoteSession: RemoteSessionMeta }
-		apiKey: string
-	},
+	run: PushRunArgs,
+	consentTitle: string,
 ): Promise<boolean> {
 	const { connection, baseSha, git } = run
 	const branch = git.branch
@@ -643,14 +687,10 @@ async function pushAndOpenDraftPr(
 
 	// 3. Consent. Clean scan → plain confirm; hits → strong warning + the
 	//    distinct re-confirm choice (user decision: warn, never hard-block).
-	const confirmLabel = `Push ${branch} to origin and open a draft PR`
 	const consent = await withBlocked(pi.events, "Remote execution complete", () =>
 		withWorkingHidden(ctx.ui, () => {
 			if (hits.length === 0) {
-				return ctx.ui.select(`Push ${branch} to origin and open a draft PR? (secret scan: no hits)`, [
-					confirmLabel,
-					"Cancel",
-				])
+				return ctx.ui.select(`${consentTitle}? (secret scan: no hits)`, [consentTitle, "Cancel"])
 			}
 			const preview = hits
 				.slice(0, 5)
@@ -694,6 +734,19 @@ async function pushAndOpenDraftPr(
 			return false
 		}
 	}
+	return true
+}
+
+/**
+ * The consent-gated push + draft-PR terminal action: shared consent push →
+ * draft PR via local gh → notify → kept-session cleanup. Returns true only
+ * when terminal (caller completes the ferment + injects the result).
+ */
+async function pushAndOpenDraftPr(pi: ExtensionAPI, ctx: ExtensionContext, run: PushRunArgs): Promise<boolean> {
+	const { git } = run
+	const branch = git.branch
+	const pushed = await secretScannedConsentPush(pi, ctx, run, `Push ${branch} to origin and open a draft PR`)
+	if (!pushed) return false
 
 	// 5. Draft PR. gh missing/unauthed → notified manual command, never silent.
 	const goal = defaultFermentRuntime.getActive()?.goal
@@ -710,6 +763,41 @@ async function pushAndOpenDraftPr(
 	}
 
 	// 6. Terminal cleanup: the kept session retires (honest warning when not).
+	await deleteKeptRemoteSession(ctx, run.opts.remoteSession, run.apiKey)
+	return true
+}
+
+/**
+ * The consent-gated push + local pull terminal action: shared consent push
+ * → fetch + checkout the branch from origin (fast-forward when it already
+ * exists) → notify → kept-session cleanup. Never touches origin from the
+ * local side; failures report the exact manual commands. Returns true only
+ * when terminal.
+ */
+async function pushAndPullLocally(pi: ExtensionAPI, ctx: ExtensionContext, run: PushRunArgs): Promise<boolean> {
+	const { git } = run
+	const branch = git.branch
+	const pushed = await secretScannedConsentPush(pi, ctx, run, `Push ${branch} to origin and pull it locally`)
+	if (!pushed) return false
+
+	const pulled = pullBranchLocally({ localRepo: ctx.cwd, branch })
+	if (pulled.kind === "failed") {
+		// The push DID happen — the branch is on origin; only the local side
+		// failed. Honest, non-terminal: back to the menu so the user can fix
+		// their worktree (or pick another action). The manual commands are
+		// always surfaced.
+		ctx.ui.notify(
+			`Pushed ${branch} to origin, but the local pull failed: ${pulled.reason}\nDo it manually:\n${pulled.command}`,
+			"error",
+		)
+		return false
+	}
+	ctx.ui.notify(
+		pulled.action === "created"
+			? `Pushed and pulled — on ${branch} (created from origin/${branch}).`
+			: `Pushed and pulled — on ${branch}, fast-forwarded to origin/${branch}.`,
+		"info",
+	)
 	await deleteKeptRemoteSession(ctx, run.opts.remoteSession, run.apiKey)
 	return true
 }
@@ -815,4 +903,52 @@ async function showDiffOverlay(
 		ctx.ui.notify(`The diff could not be persisted: ${errMessage(err)}`, "warning")
 		return diffPersisted
 	}
+}
+
+/**
+ * Opens the diff in the system's external viewer (IDE or the OS default
+ * .patch app — see ui/external-viewer.ts). The FULL patch must exist on disk
+ * first: reused when a previous show already streamed it, otherwise
+ * streamed here (no overlay). Returns whether a complete patch file exists
+ * (so a later "Show the diff" skips the file re-append).
+ */
+async function showDiffExternally(
+	ctx: ExtensionContext,
+	opts: {
+		transcriptPath?: string
+		baseSha: string
+		connection: SandboxGitConnection
+		branch: string
+		diffPersisted: boolean
+	},
+): Promise<boolean> {
+	const { transcriptPath, baseSha, connection, branch, diffPersisted } = opts
+	const patchPath = transcriptPath
+		? join(dirname(transcriptPath), "remote-diff.patch")
+		: join(tmpdir(), `kimchi-remote-diff-${branch.replace(/[^\w.-]/g, "-")}.patch`)
+
+	if (!diffPersisted) {
+		mkdirSync(dirname(patchPath), { recursive: true })
+		writeFileSync(patchPath, "", "utf-8")
+		try {
+			const stream = streamRemotePatch({
+				connection,
+				baseSha,
+				patchPath,
+				onChunk: () => {},
+			})
+			await stream.promise
+		} catch (err) {
+			ctx.ui.notify(`Diff stream failed: ${errMessage(err)} — back to the menu.`, "warning")
+			return diffPersisted
+		}
+	}
+
+	const opened = openExternalDiff(patchPath)
+	if (opened.opened) {
+		ctx.ui.notify(`Opened the diff externally: ${patchPath}`, "info")
+	} else {
+		ctx.ui.notify(`Could not open the external viewer (${opened.detail}). The patch is at ${patchPath}`, "warning")
+	}
+	return true
 }

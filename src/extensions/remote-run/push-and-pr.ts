@@ -306,3 +306,59 @@ export function createDraftPr(opts: {
 		return { kind: "manual", reason, command }
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Local branch pull (after a consented push to origin)
+
+export interface PullBranchSuccess {
+	kind: "pulled"
+	/** What happened to the local branch. */
+	action: "created" | "checked-out" | "fast-forwarded"
+}
+export interface PullBranchFailure {
+	kind: "failed"
+	/** Human-readable reason (first stderr line). */
+	reason: string
+	/** The exact manual commands the user can run themselves. */
+	command: string
+}
+export type PullBranchResult = PullBranchSuccess | PullBranchFailure
+
+/**
+ * After a consented push to origin, make the branch available locally:
+ * fetch it from origin, then when the local branch already exists switch to
+ * it and fast-forward-merge, otherwise create it tracking origin/<branch>.
+ * NEVER throws, NEVER touches origin, and reports the exact manual commands
+ * on any failure (dirty worktree, diverged branch).
+ */
+export function pullBranchLocally(opts: {
+	localRepo: string
+	branch: string
+	execFile?: typeof execFileSync
+}): PullBranchResult {
+	const { localRepo, branch } = opts
+	const command = `git fetch origin ${branch} && git switch ${branch} && git merge --ff-only origin/${branch}`
+	const exec = opts.execFile ?? execFileSync
+	const run = (args: string[]): void => {
+		exec("git", args, { cwd: localRepo, stdio: ["ignore", "pipe", "pipe"] })
+	}
+	try {
+		run(["fetch", "--no-tags", "origin", branch])
+		let exists = true
+		try {
+			run(["rev-parse", "--verify", `refs/heads/${branch}`])
+		} catch {
+			exists = false
+		}
+		if (!exists) {
+			run(["switch", "-c", branch, "--track", `origin/${branch}`])
+			return { kind: "pulled", action: "created" }
+		}
+		run(["switch", branch])
+		run(["merge", "--ff-only", `origin/${branch}`])
+		return { kind: "pulled", action: "fast-forwarded" }
+	} catch (err) {
+		const stderr = stderrOf(err) || (err instanceof Error ? err.message : String(err))
+		return { kind: "failed", reason: stderr.trim().split("\n")[0] ?? "unknown git error", command }
+	}
+}

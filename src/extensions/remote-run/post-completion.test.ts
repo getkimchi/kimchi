@@ -23,15 +23,24 @@ vi.mock("../teleport/provisioning/sync-local-changes.js", () => ({
 }))
 
 // Mock the push/PR layer — consent gating is asserted on these call shapes.
-const { mockPushBranchRemotely, mockPushViaLocalFallback, mockCreateDraftPr } = vi.hoisted(() => ({
+const {
+	mockPushBranchRemotely,
+	mockPushViaLocalFallback,
+	mockCreateDraftPr,
+	mockPullBranchLocally,
+	mockOpenExternalDiff,
+} = vi.hoisted(() => ({
 	mockPushBranchRemotely: vi.fn(),
 	mockPushViaLocalFallback: vi.fn(),
 	mockCreateDraftPr: vi.fn(),
+	mockPullBranchLocally: vi.fn(),
+	mockOpenExternalDiff: vi.fn(),
 }))
 vi.mock("./push-and-pr.js", () => ({
 	pushBranchRemotely: mockPushBranchRemotely,
 	pushViaLocalFallback: mockPushViaLocalFallback,
 	createDraftPr: mockCreateDraftPr,
+	pullBranchLocally: mockPullBranchLocally,
 	scanDiffForSecrets: vi.fn((patch: string) => {
 		const hits = []
 		if (patch.includes("AKIAIOSFODNN7EXAMPLE"))
@@ -40,6 +49,7 @@ vi.mock("./push-and-pr.js", () => ({
 	}),
 	classifyPushFailure: vi.fn(),
 }))
+vi.mock("./ui/external-viewer.js", () => ({ openExternalDiff: mockOpenExternalDiff }))
 const { mockApplyAndPersist, mockSetActive } = vi.hoisted(() => ({
 	mockApplyAndPersist: vi.fn(),
 	mockSetActive: vi.fn(),
@@ -571,6 +581,8 @@ describe("handleRemoteCompletion — PR intent", () => {
 		mockApplyAndPersist.mockReturnValue({ ok: false })
 		mockResolveSandboxGitConnection.mockResolvedValue(CONNECTION)
 		mockCollectCompletionDiff.mockResolvedValue({ ...STAT })
+		mockPullBranchLocally.mockReturnValue({ kind: "pulled", action: "created" })
+		mockOpenExternalDiff.mockReturnValue({ opened: false, detail: "no editor" })
 		// Mimics the real stream: chunks flow to onChunk AND append to the patch file.
 		mockStreamRemotePatch.mockImplementation(
 			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
@@ -622,8 +634,10 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(title).toContain("2 files changed, 8 insertions(+), 3 deletions(-)")
 		expect(options).toEqual([
 			"Show the diff",
+			"Show diff in external viewer",
 			"Request changes (steer the remote agent)",
 			"Push branch and open draft PR",
+			"Push branch and pull locally",
 			"Pull the changes to my machine and finish",
 			"Done (keep the remote session for later)",
 		])
@@ -741,7 +755,10 @@ describe("handleRemoteCompletion — PR intent", () => {
 
 		// Retry surfaced as an info line with the honest timeout wording --
 		// never Node's raw "The operation was aborted".
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Diff collection stalled (connection timed out) — retrying once…", "info")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Diff collection stalled (connection timed out) — retrying once…",
+			"info",
+		)
 		// The retry landed in the PR dropdown, not the degraded menu.
 		const [, options] = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string[]]
 		expect(options).toContain("Push branch and open draft PR")
@@ -945,6 +962,121 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(mockCreateDraftPr).not.toHaveBeenCalled()
 		expect(mockDeleteRemoteSession).not.toHaveBeenCalled()
 		expect(select).toHaveBeenCalledTimes(3)
+	})
+
+	it("Push branch and pull locally: consent, sandbox push, local pull, terminal cleanup", async () => {
+		const patch = "diff --git a/a.ts b/a.ts\n+x\n"
+		mockStreamRemotePatch.mockImplementation(
+			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
+				onChunk(1, patch)
+				if (patchPath) appendFileSync(patchPath, patch)
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: patch.length, cancelled: false }) }
+			},
+		)
+		mockPushBranchRemotely.mockResolvedValue({ ok: true })
+		const pi = makePi()
+		const ctx = makeCtx()
+		const select = ctx.ui.select as ReturnType<typeof vi.fn>
+		select
+			.mockResolvedValueOnce("Push branch and pull locally")
+			.mockResolvedValueOnce("Push kimchi/fix-login to origin and pull it locally")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			remoteSession: REMOTE,
+			acpSessionId: "acp-9",
+			gitWorkflow: GIT,
+		})
+
+		expect(mockPushBranchRemotely).toHaveBeenCalledWith(
+			expect.objectContaining({ connection: CONNECTION, branch: "kimchi/fix-login" }),
+		)
+		expect(mockPullBranchLocally).toHaveBeenCalledWith(expect.objectContaining({ branch: "kimchi/fix-login" }))
+		// No gh involvement — the PR flow is not this action's job.
+		expect(mockCreateDraftPr).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Pushed and pulled — on kimchi/fix-login (created from origin/kimchi/fix-login).",
+			"info",
+		)
+		// Terminal: kept session retires + result is injected into the turn.
+		expect(mockDeleteRemoteSession).toHaveBeenCalledWith(
+			REMOTE,
+			"fake-key",
+			expect.objectContaining({ endpoint: undefined }),
+		)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("Push branch and pull locally: local-pull failure is honest, manual commands shown, nothing terminated", async () => {
+		const patch = "diff --git a/a.ts b/a.ts\n+x\n"
+		mockStreamRemotePatch.mockImplementation(
+			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
+				onChunk(1, patch)
+				if (patchPath) appendFileSync(patchPath, patch)
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: patch.length, cancelled: false }) }
+			},
+		)
+		mockPushBranchRemotely.mockResolvedValue({ ok: true })
+		mockPullBranchLocally.mockReturnValue({
+			kind: "failed",
+			reason: "error: untracked working tree files would be overwritten",
+			command:
+				"git fetch origin kimchi/fix-login && git switch kimchi/fix-login && git merge --ff-only origin/kimchi/fix-login",
+		})
+		const pi = makePi()
+		const ctx = makeCtx()
+		const select = ctx.ui.select as ReturnType<typeof vi.fn>
+		select
+			.mockResolvedValueOnce("Push branch and pull locally")
+			.mockResolvedValueOnce("Push kimchi/fix-login to origin and pull it locally")
+			.mockResolvedValueOnce("Done (keep the remote session for later)")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			remoteSession: REMOTE,
+			acpSessionId: "acp-9",
+			gitWorkflow: GIT,
+		})
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("the local pull failed: error: untracked working tree files would be overwritten"),
+			"error",
+		)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("git fetch origin kimchi/fix-login && git switch"),
+			"error",
+		)
+		// The push happened (branch is on origin) but NOTHING was terminated:
+		// menu relooped, session still alive until Done.
+		expect(mockDeleteRemoteSession).not.toHaveBeenCalled()
+	})
+
+	it("Show diff in external viewer streams the full patch to disk and opens the system viewer", async () => {
+		mockOpenExternalDiff.mockReturnValue({ opened: true, detail: "open /path" })
+		const patch = "diff --git a/a.ts b/a.ts\n+hello\n"
+		mockStreamRemotePatch.mockImplementation(
+			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
+				onChunk(1, patch)
+				if (patchPath) appendFileSync(patchPath, patch)
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: patch.length, cancelled: false }) }
+			},
+		)
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce("Show diff in external viewer")
+			.mockResolvedValueOnce("Done (keep the remote session for later)")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: join(tmp, "t-ext", "agent.jsonl"),
+			remoteSession: REMOTE,
+			gitWorkflow: GIT,
+		})
+
+		const patchPath = join(tmp, "t-ext", "remote-diff.patch")
+		expect(mockOpenExternalDiff).toHaveBeenCalledWith(patchPath)
+		expect(readFileSync(patchPath, "utf8")).toBe(patch)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(`Opened the diff externally: ${patchPath}`, "info")
+		// External view does not create a transcript entry (that's the overlay's job).
+		expect(pi.appendEntry).not.toHaveBeenCalled()
 	})
 
 	it("consented push scans the freshly harvested diff, pushes from the sandbox, and cleans up", async () => {
