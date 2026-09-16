@@ -31,12 +31,18 @@ export function buildDiffHtmlDocument(opts: { title: string; subtitle?: string; 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title.replace(/</g, "&lt;")}</title>
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; background: #0d1117; color: #e6edf3; }
-.kimchi-header { padding: 12px 20px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; z-index: 1; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; background: #f6f8fa; color: #1f2328; }
+.kimchi-header { padding: 12px 20px; border-bottom: 1px solid #d1d9e0; background: #ffffff; position: sticky; top: 0; z-index: 1; }
 .kimchi-header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-.kimchi-header .kimchi-stat { font-size: 13px; color: #8b949e; margin-top: 2px; }
+.kimchi-header .kimchi-stat { font-size: 13px; color: #59636e; margin-top: 2px; }
 #diff { padding: 12px 20px 40px; }
 ${diff2htmlCss}
+/* Contrast overrides: diff2html's defaults sit below WCAG AA on some screen
+   setups — pin the text colors up-front rather than inheriting theme vars. */
+.d2h-file-header, .d2h-file-name, .d2h-file-name-wrapper { color: #1f2328; }
+.d2h-code-line, .d2h-code-side-line { color: #1f2328; }
+.d2h-code-linenumber, .d2h-code-side-linenumber { color: #57606a; }
+.d2h-file-list-text a { color: #0969da; }
 </style>
 </head>
 <body>
