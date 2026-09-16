@@ -51,6 +51,28 @@ class RunnerTests(unittest.TestCase):
         ])
         self.assertFalse(runner.sample(self.root)["workers_terminal"])
 
+    def test_only_parent_settlement_after_latest_request_finishes_the_run(self):
+        self.session("parent", [
+            {"type": "message", "message": {"role": "assistant", "stopReason": "error", "timestamp": 300}},
+        ])
+        audit = self.root / "audit.jsonl"
+        events = []
+        for event, expected in [
+            ({"kind": "request", "sessionId": "parent"}, False),
+            ({"kind": "settled", "sessionId": "child"}, False),
+            ({"kind": "settled", "sessionId": "parent"}, True),
+            ({"kind": "request", "sessionId": "parent"}, False),
+        ]:
+            events.append(event)
+            audit.write_text("".join(json.dumps(row) + "\n" for row in events))
+            self.assertEqual(runner.sample(self.root, audit)["settled"], expected)
+
+    def test_missing_lifecycle_audit_does_not_establish_completion(self):
+        self.session("parent", [
+            {"type": "message", "message": {"role": "assistant", "stopReason": "stop", "timestamp": 300}},
+        ])
+        self.assertFalse(runner.sample(self.root, self.root / "absent.jsonl")["settled"])
+
     def test_usage_includes_cached_input_and_every_session(self):
         for name, parent in [("parent", None), ("worker", "parent")]:
             self.session(name, [{"type": "message", "message": {"role": "assistant", "usage": {

@@ -83,9 +83,10 @@ def snapshot(source, destination):
     staging.rename(destination)
 
 
-def sample(run):
+def sample(run, audit=None):
     usage = Counter(input=0, output=0, cacheRead=0, cacheWrite=0)
     parent = []
+    parent_id = None
     child_sessions = 0
     for path in (run / "sessions").glob("*.jsonl"):
         entries = rows(path)
@@ -93,6 +94,7 @@ def sample(run):
             continue
         if entries[0].get("type") == "session" and not entries[0].get("parentSession"):
             parent = entries
+            parent_id = entries[0]["id"]
         elif entries[0].get("type") == "session":
             child_sessions += 1
         for entry in entries:
@@ -108,6 +110,10 @@ def sample(run):
                 and not message.get("isError") and message.get("details", {}).get("agentId")}
     last = messages[-1] if messages else {}
     settled = last.get("role") == "assistant" and last.get("stopReason") in {"stop", "error", "aborted"}
+    if audit is not None:
+        lifecycle = [entry for entry in rows(audit) if entry.get("sessionId") == parent_id
+                     and entry.get("kind") in {"request", "settled"}] if audit.exists() else []
+        settled = settled and bool(lifecycle) and lifecycle[-1]["kind"] == "settled"
     latest_worker = max((record.get("completedAt", 0) or 0 for record in records.values()), default=0)
     return {"usage": dict(usage), "records": list(records.values()),
             "settled": settled and last.get("timestamp", 0) >= latest_worker,
@@ -186,7 +192,7 @@ def main():
     while active:
         for trial in list(active):
             run = Path(trial["run"])
-            state = sample(run)
+            state = sample(run, Path(trial["directory"]) / "audit.jsonl")
             usage = state["usage"]
             reason = None
             if time.time() - trial["started_at"] > manifest["wall_seconds"]:
