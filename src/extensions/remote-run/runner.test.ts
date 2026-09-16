@@ -1,7 +1,7 @@
 import os from "node:os"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
+import { continueCloudAgent, isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 
 // Mock the agents module — we only care that spawnRemoteAgent is called
 // with the right args, not the real spawn machinery.
@@ -93,6 +93,55 @@ describe("isRemoteRunEnabled", () => {
 		} finally {
 			osTypeMock.mockRestore()
 		}
+	})
+})
+
+describe("continueCloudAgent", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("dispatches the steer prompt to the same session as a background continuation", async () => {
+		vi.mocked(spawnRemoteAgent).mockResolvedValue({ id: "agent-steer-1", result: "", backgrounded: true })
+		const pi = makePi()
+		const ctx = makeCtx()
+		const remoteSession = {
+			workspaceId: "ws-1",
+			sessionName: "acp-x",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-x",
+		}
+		const gitWorkflow = { branch: "kimchi/fix-login", baseBranch: "main", baseSha: "a".repeat(40) }
+
+		const { id } = await continueCloudAgent(pi, ctx, "Rename the button", {
+			remoteSession,
+			acpSessionId: "acp-9",
+			gitWorkflow,
+		})
+
+		const call = vi.mocked(spawnRemoteAgent).mock.calls[0] as unknown as [
+			unknown,
+			unknown,
+			string,
+			string,
+			Record<string, unknown>,
+		]
+		const [, , promptArg, descArg, optsArg] = call
+		expect(promptArg).toContain("Rename the button")
+		expect(promptArg).toContain("kimchi/fix-login")
+		expect(promptArg).toContain("Do NOT push")
+		expect(descArg).toBe("steer: kimchi/fix-login")
+		expect(optsArg).toMatchObject({
+			background: true,
+			gitWorkflow,
+			continuation: { remoteSession, acpSessionId: "acp-9" },
+		})
+		expect(id).toBe("agent-steer-1")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("kimchi/fix-login"), "info")
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "cloud_agent_steered" }), {
+			triggerTurn: true,
+		})
 	})
 })
 

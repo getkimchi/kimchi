@@ -36,6 +36,7 @@ vi.mock("../../teleport/provisioning/paths.js", () => ({
 
 vi.mock("./remote-agent-runner.js", () => ({
 	runRemoteAgent: vi.fn(),
+	continueRemoteAgent: vi.fn(),
 	attachRemoteAgent: vi.fn(),
 	isRemoteSessionConnected: vi.fn(),
 }))
@@ -48,26 +49,41 @@ vi.mock("../../teleport/provisioning/git-token.js", () => ({
 	resolveGitToken: vi.fn(),
 }))
 
+vi.mock("../../remote-run/sandbox-git.js", () => ({
+	resolveSandboxGitConnection: vi.fn(),
+	captureBaseline: vi.fn(),
+}))
+
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import { captureBaseline, resolveSandboxGitConnection } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import type { AgentRecord } from "../personas/types.js"
-import type { RemoteRunState } from "../remote-run-persistence.js"
+import type { PersistedGitWorkflow, RemoteRunState } from "../remote-run-persistence.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
-import { attachRemoteAgent, isRemoteSessionConnected, runRemoteAgent } from "./remote-agent-runner.js"
+import {
+	attachRemoteAgent,
+	continueRemoteAgent,
+	isRemoteSessionConnected,
+	type RemoteSessionMeta,
+	runRemoteAgent,
+} from "./remote-agent-runner.js"
 
 const mockRunAgent = vi.mocked(runAgent)
 const mockResumeAgent = vi.mocked(resumeAgent)
 const mockResolveClonePlan = vi.mocked(resolveClonePlan)
 const mockResolveGitToken = vi.mocked(resolveGitToken)
 const mockRunRemoteAgent = vi.mocked(runRemoteAgent)
+const mockContinueRemoteAgent = vi.mocked(continueRemoteAgent)
 const mockAttachRemoteAgent = vi.mocked(attachRemoteAgent)
 const mockIsRemoteSessionConnected = vi.mocked(isRemoteSessionConnected)
 const mockListWorkspaces = vi.mocked(listWorkspaces)
 const mockLoadWorkspaceFile = vi.mocked(loadWorkspaceFile)
+const mockResolveSandboxGitConnection = vi.mocked(resolveSandboxGitConnection)
+const mockCaptureBaseline = vi.mocked(captureBaseline)
 
 function fakePi(): ExtensionAPI {
 	return {} as ExtensionAPI
@@ -1445,6 +1461,238 @@ describe("AgentManager reconnecting lifecycle", () => {
 	})
 })
 
+describe("AgentManager git-intent baseline capture", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	function fakeRemoteCtx(): ExtensionContext {
+		return {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			ui: { custom: vi.fn() },
+		} as unknown as ExtensionContext
+	}
+
+	const SHA = "11223344556677889900aabbccddee1122334455"
+	const META: RemoteSessionMeta = {
+		workspaceId: "ws-1",
+		sessionName: "acp-test",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-test",
+	}
+	const remoteResult = {
+		responseText: "done",
+		stopReason: "end_turn",
+		remoteSession: META,
+	} satisfies Awaited<ReturnType<typeof runRemoteAgent>>
+
+	type RemoteOpts = Parameters<typeof runRemoteAgent>[2]
+	type FakeClient = Parameters<NonNullable<RemoteOpts["onReady"]>>[0]
+	const fakeAcpClient = { sessionId: "acp-1" } as unknown as FakeClient
+
+	/** Spawn a remote record with the runner parked at runRemoteAgent. The
+	 *  spawn spy plants record.gitWorkflow synchronously right after record
+	 *  registration — before _runRemote's first awaited continuation resumes
+	 *  on the microtask queue — making branch override and baseline capture
+	 *  deterministic without sleeping. */
+	async function spawnControlledRemote(opts?: { captureError?: boolean; gitWorkflow?: PersistedGitWorkflow }) {
+		let capturedOpts: RemoteOpts | undefined
+		let resolveRun: (v: Awaited<ReturnType<typeof runRemoteAgent>>) => void = () => {}
+		mockResolveClonePlan.mockResolvedValue({
+			url: "git@gitlab.com:team/repo.git",
+			httpsUrl: "https://gitlab.com/team/repo.git",
+			branch: "main",
+		})
+		mockResolveGitToken.mockResolvedValue(undefined)
+		mockListWorkspaces.mockResolvedValue([])
+		mockLoadWorkspaceFile.mockReturnValue(undefined)
+		mockResolveSandboxGitConnection.mockResolvedValue({
+			host: META.host,
+			remoteUser: "sandbox",
+			authToken: "tok",
+			cwd: META.cwd,
+		})
+		if (opts?.captureError) {
+			mockCaptureBaseline.mockRejectedValue(new Error("ssh unreachable"))
+		} else {
+			mockCaptureBaseline.mockResolvedValue({ baseSha: SHA, dirtyFiles: ["dirty.ts"] })
+		}
+		mockRunRemoteAgent.mockImplementation(
+			(_workspaceId, _prompt, options) =>
+				new Promise((resolve) => {
+					capturedOpts = options
+					resolveRun = resolve
+				}),
+		)
+		manager = new AgentManager()
+		const originalSpawn = manager.spawn.bind(manager)
+		vi.spyOn(manager, "spawn").mockImplementation((...args: Parameters<AgentManager["spawn"]>) => {
+			const id = originalSpawn(...args)
+			const record = manager?.getRecord(id)
+			if (record && opts?.gitWorkflow) record.gitWorkflow = opts.gitWorkflow
+			return id
+		})
+		const done = manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+		await vi.waitFor(() => expect(capturedOpts).toBeDefined())
+		const record = manager?.listAgents()[0]
+		if (!record) throw new Error("record not registered")
+		return { record, opts: capturedOpts as RemoteOpts, resolveRun, done }
+	}
+
+	it("overrides the clone branch with the intent branch for git-intent runs", async () => {
+		const h = await spawnControlledRemote({ gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main" } })
+
+		expect(h.opts.gitDetails?.branch).toBe("kimchi/pr-1")
+
+		h.resolveRun(remoteResult)
+		await h.done
+	})
+
+	it("captures the baseline over SSH at onReady and attaches it to the record", async () => {
+		const h = await spawnControlledRemote({ gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main" } })
+
+		await h.opts.onReady?.(fakeAcpClient, META)
+
+		expect(mockResolveSandboxGitConnection).toHaveBeenCalledWith(
+			META,
+			"test-key",
+			expect.objectContaining({ endpoint: undefined }),
+		)
+		expect(mockCaptureBaseline).toHaveBeenCalledTimes(1)
+		expect(h.record.gitWorkflow?.baseSha).toBe(SHA)
+		expect(h.record.gitWorkflow?.dirtyFiles).toEqual(["dirty.ts"])
+
+		h.resolveRun(remoteResult)
+		await h.done
+	})
+
+	it("skips re-capture on reattach — a post-commit HEAD would poison the diff range", async () => {
+		const h = await spawnControlledRemote({ gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main" } })
+
+		await h.opts.onReady?.(fakeAcpClient, META)
+		await h.opts.onReady?.(fakeAcpClient, META)
+
+		expect(mockCaptureBaseline).toHaveBeenCalledTimes(1)
+
+		h.resolveRun(remoteResult)
+		await h.done
+	})
+
+	it("captures no baseline and keeps the clone branch for plain runs", async () => {
+		const h = await spawnControlledRemote()
+
+		await h.opts.onReady?.(fakeAcpClient, META)
+
+		expect(h.opts.gitDetails?.branch).toBe("main")
+		expect(mockResolveSandboxGitConnection).not.toHaveBeenCalled()
+		expect(mockCaptureBaseline).not.toHaveBeenCalled()
+
+		h.resolveRun(remoteResult)
+		await h.done
+	})
+
+	it("degrades to a clean completion when baseline capture fails", async () => {
+		const h = await spawnControlledRemote({
+			captureError: true,
+			gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main" },
+		})
+
+		await h.opts.onReady?.(fakeAcpClient, META)
+		expect(h.record.gitWorkflow?.baseSha).toBeUndefined()
+
+		h.resolveRun(remoteResult)
+		const record = await h.done
+		expect(record.status).toBe("completed")
+	})
+})
+
+describe("AgentManager steer continuation", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	function fakeRemoteCtx(): ExtensionContext {
+		return {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			ui: { custom: vi.fn() },
+		} as unknown as ExtensionContext
+	}
+
+	const CONTINUE_META: RemoteSessionMeta = {
+		workspaceId: "ws-123",
+		sessionName: "acp-pr0001",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-pr0001",
+	}
+
+	it("attaches to the kept session — no workspace listing, no clone, no fresh session", async () => {
+		mockContinueRemoteAgent.mockImplementation(async (opts) => {
+			await opts.onReady?.({ sessionId: "acp-9" } as never, CONTINUE_META)
+			return { responseText: "steered result", stopReason: "end_turn", usage: undefined, remoteSession: CONTINUE_META }
+		})
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "steer prompt text", {
+			description: "steer: kimchi/fix-login",
+			remote: true,
+			continuation: { remoteSession: CONTINUE_META, acpSessionId: "acp-9" },
+		})
+
+		expect(record.status).toBe("completed")
+		expect(record.result).toBe("steered result")
+		expect(mockContinueRemoteAgent).toHaveBeenCalledTimes(1)
+		expect(mockContinueRemoteAgent.mock.calls[0]?.[0]).toMatchObject({
+			apiKey: "test-key",
+			prompt: "steer prompt text",
+			acpSessionId: "acp-9",
+			remoteSession: CONTINUE_META,
+		})
+		// The continuation budget: provisioning machinery never runs.
+		expect(mockListWorkspaces).not.toHaveBeenCalled()
+		expect(mockResolveClonePlan).not.toHaveBeenCalled()
+		expect(mockRunRemoteAgent).not.toHaveBeenCalled()
+		expect(mockCaptureBaseline).not.toHaveBeenCalled()
+		// The record picked up the persisted handles for persistRemoteRunState.
+		expect(record.acpSessionId).toBe("acp-9")
+		expect(record.remoteSession?.sessionName).toBe("acp-pr0001")
+	})
+
+	it("fires onRemoteReady so a new remote_run:state entry gets persisted", async () => {
+		let readyInfo: { meta: RemoteSessionMeta; acpSessionId: string } | undefined
+		mockContinueRemoteAgent.mockImplementation(async (opts) => {
+			await opts.onReady?.({ sessionId: "acp-9" } as never, CONTINUE_META)
+			return { responseText: "ok", stopReason: "end_turn", usage: undefined, remoteSession: CONTINUE_META }
+		})
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "steer", {
+			description: "steer",
+			remote: true,
+			continuation: { remoteSession: CONTINUE_META, acpSessionId: "acp-9" },
+			onRemoteReady: (info) => {
+				readyInfo = info
+			},
+		})
+
+		expect(readyInfo).toEqual({ meta: CONTINUE_META, acpSessionId: "acp-9" })
+	})
+})
+
 describe("AgentManager resumeRemoteRecord", () => {
 	let manager: AgentManager | undefined
 
@@ -1571,5 +1819,26 @@ describe("AgentManager resumeRemoteRecord", () => {
 		expect(mockAttachRemoteAgent).not.toHaveBeenCalled()
 		expect(manager.getRecord(state.id)).toBeUndefined()
 		expect(manager.getRunningCount()).toBe(0)
+	})
+
+	it("restores the persisted gitWorkflow onto the resumed record", async () => {
+		mockAttachRemoteAgent.mockResolvedValue({
+			responseText: "recovered result",
+			stopReason: "recovered",
+			usage: undefined,
+			remoteSession: state.remoteSession,
+			recoveryNote: undefined,
+		})
+		manager = new AgentManager()
+		const prState: RemoteRunState = {
+			...state,
+			gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main", baseSha: "a".repeat(40), dirtyFiles: ["a.ts"] },
+		}
+
+		await manager.resumeRemoteRecord(prState, fakeResumeCtx())
+		await manager.getRecord(prState.id)?.promise
+
+		expect(manager.getRecord(prState.id)?.gitWorkflow?.branch).toBe("kimchi/pr-1")
+		expect(manager.getRecord(prState.id)?.gitWorkflow?.baseSha).toBe("a".repeat(40))
 	})
 })

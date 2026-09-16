@@ -24,6 +24,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
@@ -34,6 +35,17 @@ import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
+
+vi.mock("../remote-run/runner.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../remote-run/runner.js")>()
+	return {
+		...actual,
+		runCloudAgent: vi.fn(async () => ({ id: "agent-1", result: "done", backgrounded: true })),
+	}
+})
+
+const runCloudAgentMock = vi.mocked(runCloudAgent)
+
 import { SessionMemory } from "./session-memory.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
@@ -1056,6 +1068,50 @@ describe("plan mode assumption detection", () => {
 				expect.objectContaining({ customType: "plan-execute" }),
 				expect.anything(),
 			)
+		})
+
+		describe("remote workspace dispatch git intent", () => {
+			const CLOUD_OPTION = "Execute the plan in a remote workspace"
+			const PLAN = "## Goal\nBuild a feature\n\n## Chunks\n### Chunk 1\nDo the thing."
+
+			beforeEach(() => {
+				runCloudAgentMock.mockClear()
+			})
+
+			it("captures a branch name into the prompt and spawn opts", async () => {
+				const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+				await harness.fire("session_start", {}, createMockContext([]))
+				await harness.fire("tool_execution_start", {})
+
+				const ctx = createMockContext([CLOUD_OPTION], TEST_SESSION_ID, {
+					uiContext: { input: vi.fn(async () => "kimchi/my-branch") },
+				})
+				await submitPlan(harness, PLAN, ctx)
+
+				expect(runCloudAgentMock).toHaveBeenCalledTimes(1)
+				const [, , prompt, , opts] = runCloudAgentMock.mock.calls[0]
+				expect(prompt).toContain("[Git workflow — PR-first execution]")
+				expect(prompt).toContain("`kimchi/my-branch`")
+				expect(prompt).toContain("Never push — the harness pushes after user review.")
+				expect(opts).toMatchObject({ background: true, gitWorkflow: { branch: "kimchi/my-branch" } })
+				expect(ctx.ui.input).toHaveBeenCalledWith(expect.any(String), "kimchi/build-a-feature")
+			})
+
+			it("dispatches a plain run without intent when the branch input is empty", async () => {
+				const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+				await harness.fire("session_start", {}, createMockContext([]))
+				await harness.fire("tool_execution_start", {})
+
+				// createMockContext's default input resolves "" — Escape-equivalent.
+				const ctx = createMockContext([CLOUD_OPTION])
+				await submitPlan(harness, PLAN, ctx)
+
+				expect(runCloudAgentMock).toHaveBeenCalledTimes(1)
+				const [, , prompt, , opts] = runCloudAgentMock.mock.calls[0]
+				expect(prompt).not.toContain("[Git workflow")
+				expect(opts).toMatchObject({ background: true })
+				expect((opts as { gitWorkflow?: unknown }).gitWorkflow).toBeUndefined()
+			})
 		})
 
 		it("Start as ferment handoff references the saved plan path", async () => {

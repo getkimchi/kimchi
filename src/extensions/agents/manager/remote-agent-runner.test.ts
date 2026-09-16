@@ -108,6 +108,9 @@ import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-loc
 import {
 	type AttachRemoteAgentOptions,
 	attachRemoteAgent,
+	type ContinueRemoteAgentOptions,
+	continueRemoteAgent,
+	deleteRemoteSession,
 	isRemoteSessionConnected,
 	type RemoteRunOptions,
 	type RemoteSessionMeta,
@@ -1726,5 +1729,137 @@ describe("attachRemoteAgent", () => {
 			endpoint: undefined,
 		})
 		expect(authenticateWorkspace).not.toHaveBeenCalled()
+	})
+})
+
+describe("runRemoteAgent keepAlive", () => {
+	it("deletes the remote session on success by default", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+		expect(deleteSession).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps the remote session on success when keepAlive is set (PR review/steer loop)", async () => {
+		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ keepAlive: true }))
+		expect(result.stopReason).toBe("end_turn")
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+})
+
+describe("continueRemoteAgent", () => {
+	const PR_META: RemoteSessionMeta = {
+		workspaceId: "ws-123",
+		sessionName: "acp-pr0001",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-pr0001",
+	}
+
+	function makeContinueOptions(overrides: Partial<ContinueRemoteAgentOptions> = {}): ContinueRemoteAgentOptions {
+		return {
+			apiKey: "test-api-key",
+			remoteSession: PR_META,
+			acpSessionId: "acp-123",
+			prompt: "Rename the button to Save",
+			...overrides,
+		}
+	}
+
+	it("requires the persisted acpSessionId — session/load attaches by id, never session/new", async () => {
+		await expect(continueRemoteAgent(makeContinueOptions({ acpSessionId: "" }))).rejects.toThrow("acpSessionId")
+	})
+
+	it("loads the session by id, sends exactly one steer prompt, and returns the result", async () => {
+		const result = await continueRemoteAgent(makeContinueOptions())
+
+		// Never session/new — the branch work lives only in the kept session.
+		expect(createSession).not.toHaveBeenCalled()
+		// session/load via the persisted id.
+		expect(AcpSessionClient).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: "acp-123",
+				sessionName: "acp-pr0001",
+				cwd: "/home/sandbox/acp-pr0001",
+			}),
+		)
+		expect(mockInitialize).toHaveBeenCalledTimes(1)
+		expect(mockPrompt).toHaveBeenCalledTimes(1)
+		expect(mockPrompt).toHaveBeenCalledWith("Rename the button to Save")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.remoteSession.sessionName).toBe("acp-pr0001")
+	})
+
+	it("never deletes the kept session (deletion is reserved for terminal actions)", async () => {
+		await continueRemoteAgent(makeContinueOptions())
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("recovers the steer via the shared engine on a mid-prompt disconnect", async () => {
+		mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
+		vi.mocked(getSession).mockResolvedValue({
+			name: "acp-pr0001",
+			agentMode: "ACP",
+			yolo: true,
+			alive: true,
+			agentRunning: false,
+			finishedAt: new Date().toISOString(),
+			clientConnected: false,
+			connectedThroughBridge: false,
+		})
+
+		const result = await continueRemoteAgent(makeContinueOptions())
+
+		expect(result.stopReason).toBe("recovered")
+		expect(result.responseText).toContain("Recovered result text")
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("keeps the session when the steer is killed mid-prompt (retryable)", async () => {
+		const controller = new AbortController()
+		controller.abort()
+		const abortError = new Error("Aborted")
+		abortError.name = "AbortError"
+		mockPrompt.mockRejectedValueOnce(abortError)
+
+		await expect(continueRemoteAgent(makeContinueOptions({ signal: controller.signal }))).rejects.toThrow("Aborted")
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("fires onReady after the load, before the prompt", async () => {
+		const order: string[] = []
+		mockInitialize.mockImplementation(async () => {
+			order.push("initialize")
+		})
+		mockPrompt.mockImplementation(async () => {
+			order.push("prompt")
+			return { stopReason: "end_turn", usage: undefined }
+		})
+
+		await continueRemoteAgent(
+			makeContinueOptions({
+				onReady: () => {
+					order.push("onReady")
+				},
+			}),
+		)
+
+		expect(order).toEqual(["initialize", "onReady", "prompt"])
+	})
+})
+
+describe("deleteRemoteSession", () => {
+	const KEEP_META: RemoteSessionMeta = {
+		workspaceId: "ws-keep",
+		sessionName: "acp-keep01",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-keep01",
+	}
+
+	it("re-authenticates and deletes the kept session at a terminal action", async () => {
+		await deleteRemoteSession(KEEP_META, "test-api-key")
+		expect(authenticateWorkspace).toHaveBeenCalledWith(KEEP_META.workspaceId, "test-api-key", "kimchi", {
+			endpoint: undefined,
+		})
+		expect(deleteSession).toHaveBeenCalledWith(expect.anything(), KEEP_META.sessionName)
 	})
 })

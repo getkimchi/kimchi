@@ -12,6 +12,10 @@ export function createExtensionApi(): {
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	emitEvent: ReturnType<typeof vi.fn>
+	registerMessageRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerMessageRenderer"]>>
+	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
+	getMessageRenderer(customType: string): (...args: never[]) => unknown
+	getEntryRenderer(customType: string): (...args: never[]) => unknown
 	getAppendedEntries<T = unknown>(type: string): T[]
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
@@ -28,6 +32,8 @@ export function createExtensionApi(): {
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
+	const registerMessageRenderer = vi.fn<ExtensionAPI["registerMessageRenderer"]>()
+	const registerEntryRenderer = vi.fn<ExtensionAPI["registerEntryRenderer"]>()
 	const emitEvent = vi.fn()
 
 	return {
@@ -35,6 +41,8 @@ export function createExtensionApi(): {
 			on,
 			registerCommand,
 			registerTool,
+			registerMessageRenderer,
+			registerEntryRenderer,
 			sendMessage,
 			appendEntry,
 			setModel,
@@ -57,6 +65,19 @@ export function createExtensionApi(): {
 		setModel,
 		emitEvent,
 		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
+		registerMessageRenderer,
+		registerEntryRenderer,
+		/** Return the renderer callback registered for a message or entry type. */
+		getMessageRenderer(customType: string): (...args: never[]) => unknown {
+			const call = registerMessageRenderer.mock.calls.find(([type]) => type === customType)
+			if (!call) throw new Error(`No message renderer registered for ${customType}`)
+			return call[1] as (...args: never[]) => unknown
+		},
+		getEntryRenderer(customType: string): (...args: never[]) => unknown {
+			const call = registerEntryRenderer.mock.calls.find(([type]) => type === customType)
+			if (!call) throw new Error(`No entry renderer registered for ${customType}`)
+			return call[1] as (...args: never[]) => unknown
+		},
 		getAppendedEntries<T = unknown>(type: string): T[] {
 			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)
 		},

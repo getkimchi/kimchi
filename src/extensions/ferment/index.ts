@@ -28,7 +28,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { withBlocked } from "../herdr-events.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
-import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
@@ -257,7 +257,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	// Decision handler for ferment plan reviews — handles decisions from both
 	// the TUI review component and plannotator's browser UI (first decision wins).
-	onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+	onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
 		if (payload.planReviewSource !== "ferment") return
 		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
@@ -304,14 +304,9 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				runtime.setActive(pauseOutcome.ferment)
 			}
 			const planMarkdown = reviewCtx.planText
-			const cloudPrompt = buildRemotePlanPrompt(planMarkdown, { origin: "ferment" })
 			const cloudDescription = `${planMarkdown.slice(0, 60)}${planMarkdown.length > 60 ? "..." : ""}`
 			const ui = reviewCtx.ctx?.ui
-			void runCloudAgent(pi, reviewCtx.ctx, cloudPrompt, cloudDescription, {
-				background: true,
-				origin: "ferment plan",
-				fermentId,
-			}).catch((err) => {
+			const onSpawnFailure = (err: unknown) => {
 				// Spawn failed after the ferment was paused — resume it so the
 				// user isn't left with a stuck ferment and no recovery path,
 				// and surface the error.
@@ -321,7 +316,22 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				if (resumeOutcome.ok) {
 					runtime.setActive(resumeOutcome.ferment)
 				}
-			})
+			}
+			try {
+				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(
+					reviewCtx.ctx,
+					planMarkdown,
+					{ origin: "ferment" },
+				)
+				void runCloudAgent(pi, reviewCtx.ctx, cloudPrompt, cloudDescription, {
+					background: true,
+					origin: "ferment plan",
+					fermentId,
+					gitWorkflow,
+				}).catch(onSpawnFailure)
+			} catch (err) {
+				onSpawnFailure(err)
+			}
 		} else if (payload.decision === "feedback") {
 			// Clear the pending review before triggering the revision turn.
 			// The model needs its full toolset to revise the plan (read files,
