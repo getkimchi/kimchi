@@ -19,7 +19,7 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
@@ -118,6 +118,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	afterEach(async () => {
+		resetProjectScopeTrustForTests()
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
 		clearPermissionModeEnv(TEST_SESSION_ID)
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)

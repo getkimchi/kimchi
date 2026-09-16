@@ -1,9 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { afterEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { preloadSkills } from "./prompt/skill-loader.js"
+
+// The project-scope gate is module-global state; reset it after each test so
+// a trusted decision cannot leak into sibling tests.
+afterEach(resetProjectScopeTrustForTests)
 
 describe("preloadSkills", () => {
 	it("returns empty array when no skill names requested", () => {

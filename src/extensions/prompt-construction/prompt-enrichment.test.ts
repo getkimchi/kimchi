@@ -1088,7 +1088,7 @@ describe("orchestrator default remap on session_start", () => {
 			getActiveTools: () => [],
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 		return {
 			handlers,
 			sessionStart: handlers.get("session_start"),
@@ -1227,7 +1227,7 @@ describe("retired model substitution notification", () => {
 			getActiveTools: () => [],
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 		return { afterProviderResponse: handlers.get("after_provider_response") }
 	}
 

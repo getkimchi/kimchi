@@ -23,7 +23,7 @@ const IMPORT_PATHS: Record<ImportKind, string> = {
 	vscode: ".vscode/mcp.json", // Relative to project
 }
 
-export function loadMcpConfig(overridePath?: string): { config: McpConfig; warnings: string[] } {
+export function loadMcpConfig(overridePath?: string, cwd = process.cwd()): { config: McpConfig; warnings: string[] } {
 	const configPath = overridePath ? resolve(overridePath) : getDefaultConfigPath()
 	const warnings: string[] = []
 
@@ -40,13 +40,14 @@ export function loadMcpConfig(overridePath?: string): { config: McpConfig; warni
 		}
 	}
 
-	// Process imports from other tools
+	// Process imports from other tools — resolved against the session cwd when
+	// provided (vscode's .vscode/mcp.json is a project-relative import path).
 	if (config.imports?.length) {
 		for (const importKind of config.imports) {
 			const importPath = IMPORT_PATHS[importKind]
 			if (!importPath) continue
 
-			const fullPath = importPath.startsWith(".") ? resolve(process.cwd(), importPath) : importPath
+			const fullPath = importPath.startsWith(".") ? resolve(cwd, importPath) : importPath
 
 			if (!existsSync(fullPath)) continue
 
@@ -69,9 +70,11 @@ export function loadMcpConfig(overridePath?: string): { config: McpConfig; warni
 
 	// Check for project-local config (skip if it's the same as the main
 	// config) — gated on project trust: an untrusted repo's .kimchi/mcp.json
-	// must not register (and thereby spawn) MCP servers.
-	const projectPath = resolve(process.cwd(), PROJECT_CONFIG_NAME)
-	if (existsSync(projectPath) && projectPath !== configPath && isProjectScopeAllowed(process.cwd())) {
+	// must not register (and thereby spawn) MCP servers. The cwd parameter
+	// lets session-scoped callers (ACP, per-session extensions) gate on their
+	// own session cwd rather than the server process cwd.
+	const projectPath = resolve(cwd, PROJECT_CONFIG_NAME)
+	if (existsSync(projectPath) && projectPath !== configPath && isProjectScopeAllowed(cwd)) {
 		try {
 			const projectConfig = JSON.parse(readFileSync(projectPath, "utf-8"))
 			const validated = validateConfig(projectConfig)
@@ -138,7 +141,7 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
 	return servers as Record<string, ServerEntry>
 }
 
-export function getServerProvenance(overridePath?: string): Map<string, ServerProvenance> {
+export function getServerProvenance(overridePath?: string, cwd = process.cwd()): Map<string, ServerProvenance> {
 	const provenance = new Map<string, ServerProvenance>()
 	const userPath = overridePath ? resolve(overridePath) : getDefaultConfigPath()
 
@@ -156,7 +159,7 @@ export function getServerProvenance(overridePath?: string): Map<string, ServerPr
 		for (const importKind of userConfig.imports) {
 			const importPath = IMPORT_PATHS[importKind]
 			if (!importPath) continue
-			const fullPath = importPath.startsWith(".") ? resolve(process.cwd(), importPath) : importPath
+			const fullPath = importPath.startsWith(".") ? resolve(cwd, importPath) : importPath
 			if (!existsSync(fullPath)) continue
 			try {
 				const imported = JSON.parse(readFileSync(fullPath, "utf-8"))
@@ -170,11 +173,11 @@ export function getServerProvenance(overridePath?: string): Map<string, ServerPr
 		}
 	}
 
-	const projectPath = resolve(process.cwd(), PROJECT_CONFIG_NAME)
 	// Project MCP config is gated on project trust — the provenance map must
 	// not attribute servers to a project the user has not trusted (the /mcp UI
-	// and write flows key off this).
-	if (existsSync(projectPath) && projectPath !== userPath && isProjectScopeAllowed(process.cwd())) {
+	// and write flows key off this). Gated on the session cwd when provided.
+	const projectPath = resolve(cwd, PROJECT_CONFIG_NAME)
+	if (existsSync(projectPath) && projectPath !== userPath && isProjectScopeAllowed(cwd)) {
 		try {
 			const projectConfig = validateConfig(JSON.parse(readFileSync(projectPath, "utf-8")))
 			for (const name of Object.keys(projectConfig.mcpServers)) {

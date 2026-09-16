@@ -49,9 +49,20 @@ export function objectiveText(objective: string, cwd: string): string {
 	}
 }
 
-/** Publish a new revision's complete text before its reference is journaled. */
+/**
+ * Publish a new revision's complete text before its reference is journaled.
+ *
+ * The plans directory is project-scoped: while the project is untrusted, the
+ * file is NOT written (writing would both modify a repo the user declined to
+ * trust and arm the trust prompt on the next launch via the .kimchi/plans
+ * scan entry) — the raw text is returned as the objective instead, which
+ * objectiveText/objectiveFilePath treat as a plain (non-file) objective.
+ */
 export function saveObjectiveFile(text: string, cwd: string): string {
 	if (!text.trim()) throw new Error("Ferment V2 objective cannot be empty.")
+	if (!isProjectScopeAllowed(cwd)) {
+		return text
+	}
 	let path: string | undefined
 	let created = false
 	try {

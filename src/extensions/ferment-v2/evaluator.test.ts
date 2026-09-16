@@ -5,7 +5,7 @@ import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
@@ -78,6 +78,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	afterEach(() => {
+		resetProjectScopeTrustForTests()
 		if (savedRedactionEnv === undefined) delete process.env.KIMCHI_REDACTION_ENABLED
 		else process.env.KIMCHI_REDACTION_ENABLED = savedRedactionEnv
 		resetRedactionConfigCache()

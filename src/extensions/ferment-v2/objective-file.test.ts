@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -82,6 +83,17 @@ describe("managed objective files", () => {
 		rmSync(path)
 		symlinkSync(other, path)
 		expect(() => objectiveText(reference, cwd)).toThrow(/Could not read Kimchi objective file/)
+	})
+
+	it("does not write a managed file while the project is untrusted — returns the raw text instead", () => {
+		resetProjectScopeTrustForTests()
+		const text = "# Untrusted objective\nRuns nowhere."
+		const returned = saveObjectiveFile(text, cwd)
+		// Raw text is returned as the objective (no file reference), and no
+		// .kimchi/plans file is created in the repo the user declined to trust.
+		expect(returned).toBe(text)
+		expect(objectiveFilePath(returned, cwd)).toBeUndefined()
+		expect(existsSync(join(cwd, ".kimchi", "plans"))).toBe(false)
 	})
 
 	it.each([

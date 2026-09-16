@@ -12,7 +12,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
@@ -101,6 +101,7 @@ beforeEach(() => {
 	isResourceEnabledMock.mockReturnValue(false)
 })
 afterEach(cleanPermissionEnv)
+afterEach(resetProjectScopeTrustForTests)
 
 vi.mock("../ide-adapter/index.js", () => ({
 	isIdeConnected: vi.fn(() => false),

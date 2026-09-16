@@ -2,6 +2,7 @@
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
@@ -327,10 +328,8 @@ try {
 		// resolves untrusted (fail closed) and the prompt inside main()
 		// decides; settingsTrustSyncExtension then syncs the outcome onto the
 		// gate at session_start.
-		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
-		if (preMainAgentDir) {
-			setProjectScopeTrusted(process.cwd(), resolvePreMainProjectTrust(process.cwd(), preMainAgentDir))
-		}
+		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		setProjectScopeTrusted(process.cwd(), resolvePreMainProjectTrust(process.cwd(), preMainAgentDir))
 
 		let config = loadConfig()
 
@@ -636,10 +635,17 @@ try {
 		// inside pi's main() (after this point), and resource discovery re-runs
 		// post-trust — a frozen array here would keep a newly trusted project's
 		// configured skills invisible until a restart even after trusting.
+<<<<<<< HEAD
 		const configuredSkillPaths = (): string[] => loadConfig().skillPaths ?? []
 		const mcpAdapterExtensions = enabledExtensionFactories([
 			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 		] satisfies ManagedExtensionFactory[])
+=======
+		// Dedup preserves the pre-change behavior (the old effectiveSkillPaths
+		// was [...new Set([...skillPaths])]) so duplicate config entries don't
+		// multiply downstream expansion work per discovery.
+		const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
+>>>>>>> e91fce662 (Merge master; address review comments and CI failures)
 		const extensionFactories = [
 			// First so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.

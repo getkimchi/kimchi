@@ -113,11 +113,17 @@ export function readMemoryIndex(memoryDir: string, scope: MemoryScope, cwd: stri
 
 /**
  * Build the memory block to inject into the agent's system prompt.
- * Also ensures the memory directory exists (creates it if needed).
+ * Also ensures the memory directory exists (creates it if needed) — except
+ * for project/local scopes in an untrusted project, where creating the
+ * directory would both write into a repo the user declined to trust and arm
+ * the trust prompt on the next launch via the .kimchi/agent-memory scan
+ * entry (the read side is gated by readMemoryIndex).
  */
 export function buildMemoryBlock(agentName: string, scope: MemoryScope, cwd: string): string {
 	const memoryDir = resolveMemoryDir(agentName, scope, cwd)
-	ensureMemoryDir(memoryDir)
+	if (scope === "user" || isProjectScopeAllowed(cwd)) {
+		ensureMemoryDir(memoryDir)
+	}
 
 	const existingMemory = readMemoryIndex(memoryDir, scope, cwd)
 

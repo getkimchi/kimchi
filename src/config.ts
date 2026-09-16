@@ -337,11 +337,20 @@ function readConfigExtras(configPath: string): {
  * the warning would be meaningless noise. Windows files under the user
  * profile are already protected by directory ACLs.
  */
+// Paths whose permission warning has already been emitted this process.
+// loadConfig() is uncached by design (post-trust config adoption depends on
+// fresh reads), and the lazy configuredSkillPaths getter re-invokes it on every
+// resources_discover event — without warn-once, a chmod-644 config would print
+// the same warning per event. This is process-lifetime log hygiene, not
+// per-session state.
+const configPermissionWarnedPaths = new Set<string>()
+
 export function checkConfigFilePermissions(configPath: string): string | undefined {
 	if (process.platform === "win32") return undefined
 	try {
 		const stat = statSync(configPath)
-		if ((stat.mode & 0o077) !== 0) {
+		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
+			configPermissionWarnedPaths.add(configPath)
 			const mode = (stat.mode & 0o777).toString(8)
 			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
 		}
