@@ -114,6 +114,7 @@ import {
 	isRemoteSessionConnected,
 	type RemoteRunOptions,
 	type RemoteSessionMeta,
+	resetLiveKeptAcpClientsForTests,
 	runRemoteAgent,
 } from "./remote-agent-runner.js"
 
@@ -156,6 +157,7 @@ function quietRunningFor(runningFor: number) {
 
 beforeEach(() => {
 	vi.clearAllMocks()
+	resetLiveKeptAcpClientsForTests()
 	capturedOptions = undefined
 	// Re-establish mock implementations after clearAllMocks resets them
 	vi.mocked(authenticateWorkspace).mockResolvedValue({
@@ -1822,6 +1824,56 @@ describe("continueRemoteAgent", () => {
 
 		await expect(continueRemoteAgent(makeContinueOptions({ signal: controller.signal }))).rejects.toThrow("Aborted")
 		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("retries the attach when loadSession times out on a just-woken sandbox", async () => {
+		mockInitialize
+			.mockRejectedValueOnce(new RemoteConnectionError("loadSession timed out after 30000ms"))
+			.mockRejectedValueOnce(new RemoteConnectionError("loadSession timed out after 30000ms"))
+
+		const result = await continueRemoteAgent(makeContinueOptions({ reconnectBackoffsMs: [1, 1] }))
+
+		expect(mockInitialize).toHaveBeenCalledTimes(3)
+		// Every attempt targeted the SAME kept ACP id — never a fresh session.
+		for (const call of vi.mocked(AcpSessionClient).mock.calls) {
+			expect(call[0]).toEqual(expect.objectContaining({ sessionId: "acp-123", sessionName: "acp-pr0001" }))
+		}
+		expect(mockPrompt).toHaveBeenCalledTimes(1)
+		expect(result.stopReason).toBe("end_turn")
+	})
+
+	it("surfaces the attach error after the retry budget is exhausted (kept session untouched)", async () => {
+		vi.useFakeTimers()
+		try {
+			mockInitialize.mockRejectedValue(new RemoteConnectionError("loadSession timed out after 30000ms"))
+			const run = continueRemoteAgent(makeContinueOptions({ reconnectBackoffsMs: [1, 1, 1, 1] }))
+			run.catch(() => {}) // no unhandled rejection while the timers advance
+			await vi.runAllTimersAsync()
+			await expect(run).rejects.toThrow("loadSession timed out")
+			expect(mockInitialize).toHaveBeenCalledTimes(5)
+			expect(deleteSession).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("reuses the SAME live ACP connection for consecutive steers — no session/load, no second attach", async () => {
+		// First steer attaches (session/load) and registers its client on success.
+		await continueRemoteAgent(makeContinueOptions())
+		expect(mockInitialize).toHaveBeenCalledTimes(1)
+		expect(AcpSessionClient).toHaveBeenCalledTimes(1)
+
+		// Second steer reuses that very client: NO readiness wait, NO
+		// initialize, NO new client — just one more prompt over it.
+		vi.mocked(waitForWorkspaceReady).mockClear()
+		const result = await continueRemoteAgent(makeContinueOptions({ prompt: "one more change" }))
+
+		expect(waitForWorkspaceReady).not.toHaveBeenCalled()
+		expect(AcpSessionClient).toHaveBeenCalledTimes(1) // unchanged
+		expect(mockInitialize).toHaveBeenCalledTimes(1) // no session/load again
+		expect(mockPrompt).toHaveBeenCalledTimes(2)
+		expect(mockPrompt).toHaveBeenLastCalledWith("one more change")
+		expect(result.stopReason).toBe("end_turn")
 	})
 
 	it("fires onReady after the load, before the prompt", async () => {

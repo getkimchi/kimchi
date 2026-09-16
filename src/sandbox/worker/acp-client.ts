@@ -418,6 +418,12 @@ export class AcpSessionClient {
 		await this._connection.cancel({ sessionId: this._sessionId })
 	}
 
+	/** True after close() — kept-alive steer loops use this to pick between
+	 *  reusing the SAME connection (follow-up prompt) and a fresh attach. */
+	get isClosed(): boolean {
+		return this._closed
+	}
+
 	/** Closes the WebSocket and frees resources. Safe to call multiple times. */
 	close(): void {
 		if (this._closed) return

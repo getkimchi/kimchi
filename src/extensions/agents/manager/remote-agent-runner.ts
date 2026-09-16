@@ -151,6 +151,63 @@ const DEFAULT_TURN_SETTLE_GRACE_MS = 120_000
 /** Always-on status poll cadence: ~15s fixed + up to 5s jitter. */
 const POLL_INTERVAL_MS = 15_000
 const POLL_JITTER_MS = 5_000
+
+// ---------------------------------------------------------------------------
+// Kept-alive live ACP clients — the review/steer loop
+//
+// PR-intent runs (keepAlive) leave the REMOTE session alive; they now also
+// keep the LOCAL WebSocket connection: a follow-up steer is a plain
+// session/prompt over the SAME connection — NO session/load, which was the
+// observed 30s-timeout failure mode when steering after a gap. Entries are
+// written on successful completion of keepAlive runs/steers (including
+// clients swapped in by disconnect recovery) and closed+removed on terminal
+// actions (deleteRemoteSession) or when a new run supersedes them.
+// ---------------------------------------------------------------------------
+const liveKeptAcpClients = new Map<string, AcpSessionClient>()
+
+/** A live, non-closed, kept client for `sessionName`, when one exists. */
+export function getLiveKeptAcpClient(sessionName: string): AcpSessionClient | undefined {
+	const client = liveKeptAcpClients.get(sessionName)
+	if (!client) return undefined
+	if (client.isClosed) {
+		liveKeptAcpClients.delete(sessionName)
+		return undefined
+	}
+	return client
+}
+
+/** Close and forget the kept client for `sessionName` (terminal actions). */
+export function discardLiveKeptAcpClient(sessionName: string): void {
+	const client = liveKeptAcpClients.get(sessionName)
+	liveKeptAcpClients.delete(sessionName)
+	try {
+		client?.close()
+	} catch {
+		/* closing an already-torn connection */
+	}
+}
+
+/** TEST seam: module-level registry must not leak between test cases. */
+export function resetLiveKeptAcpClientsForTests(): void {
+	liveKeptAcpClients.clear()
+}
+
+/** Close the HTTP worker client; keep or close the ACP client per keepAlive. */
+async function retireStClients(st: RemoteRecoveryState, keepLiveAcpClient: boolean): Promise<void> {
+	if (keepLiveAcpClient && st.acpClient && !st.acpClient.isClosed) {
+		liveKeptAcpClients.set(st.meta.sessionName, st.acpClient)
+	} else {
+		try {
+			st.acpClient?.close()
+		} catch {
+			/* already torn */
+		}
+		if (st.meta.sessionName) liveKeptAcpClients.delete(st.meta.sessionName)
+	}
+	await st.client.close().catch((err) => {
+		console.error(`[remote-agent-runner] failed to close worker client:`, err)
+	})
+}
 /** Cap on re-auth + readiness attempts when a session is reported `!alive`. */
 const REVIVE_MAX_ATTEMPTS = 3
 /** Per-attempt readiness timeout when reviving a workspace. Smaller than the
@@ -774,6 +831,7 @@ export async function runRemoteAgent(
 	// these in place so the poll loop and finally block always see the latest
 	// client/creds. acpSessionId is captured from the first initialize so a
 	// reattach can session/load the SAME session instead of starting a new one.
+	let completed = false // success → keepAlive hands the ACP client to the steer registry
 	const st: RemoteRecoveryState = {
 		creds,
 		client,
@@ -900,12 +958,15 @@ export async function runRemoteAgent(
 		// Success — the run is confirmed done; clean up the remote session
 		// unless the caller keeps it alive for the PR review/steer loop
 		// (git-intent runs — deleted only on terminal actions or server TTL).
+		// With keepAlive, the ACP client's WebSocket survives too: the steer
+		// continuation reuses the SAME connection (no session/load).
 		if (!options.keepAlive) {
 			await deleteSession(st.client, sessionName).catch((err) => {
 				console.error(`[remote-agent-runner] failed to delete session ${sessionName}:`, err)
 			})
 		}
 
+		completed = true
 		return {
 			responseText: st.responseText,
 			stopReason,
@@ -914,10 +975,9 @@ export async function runRemoteAgent(
 			recoveryNote: st.recoveryNote,
 		}
 	} finally {
-		st.acpClient?.close()
-		await st.client.close().catch((err) => {
-			console.error(`[remote-agent-runner] failed to close worker client:`, err)
-		})
+		// Failures/aborts ALWAYS tear down both clients; a successful
+		// keepAlive run hands the ACP client to the steer loop registry.
+		await retireStClients(st, Boolean(options.keepAlive) && completed)
 	}
 }
 
@@ -1129,12 +1189,20 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 	const creds: WorkspaceCredentials = await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, {
 		endpoint,
 	})
-	await waitForWorkspaceReady({ wsUrl: creds.wsUrl, connectToken: creds.connectToken, signal })
 
+	// Fast path: the original keepAlive run LEFT THE SAME CONNECTION OPEN —
+	// a steer is then a plain session/prompt over it (no readiness wait, no
+	// session/load). A dead handshake falls through to the attach path.
+	const reusedAcpClient = getLiveKeptAcpClient(remoteSession.sessionName)
+	if (!reusedAcpClient) {
+		await waitForWorkspaceReady({ wsUrl: creds.wsUrl, connectToken: creds.connectToken, signal })
+	}
+
+	let completed = false // success → ACP client survives for the NEXT steer
 	const st: RemoteRecoveryState = {
 		creds,
 		client: new WorkerClient(creds),
-		acpClient: undefined,
+		acpClient: reusedAcpClient,
 		acpSessionId,
 		responseText: "",
 		recoveryNote: undefined,
@@ -1167,23 +1235,68 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 	}
 
 	try {
-		// session/load via the persisted id — the only way to keep the branch
-		// work and the agent's own context across steers.
-		const client = new AcpSessionClient({
-			sessionName: remoteSession.sessionName,
-			credentials: st.creds,
-			callbacks: wrappedCallbacks,
-			signal,
-			cwd: remoteSession.cwd,
-			sessionId: acpSessionId,
-		})
-		st.acpClient = client
-		await client.initialize()
+		let client: AcpSessionClient
+		if (reusedAcpClient) {
+			client = reusedAcpClient
+		} else {
+			// session/load via the persisted id — the only way to keep the
+			// branch work and the agent's own context across steers. The
+			// attach itself gets a small retry budget: a just-woken sandbox
+			// (worker reachable, session process still cold) makes ONE
+			// loadSession race a 30s cap; retrying heals exactly that
+			// observed failure mode without any worker-side change.
+			// The attach budget reuses the recovery backoff schedule (the "timed
+			// out" race is exactly the single-attempt + 30s-cap failure mode).
+			const ATTACH_BACKOFFS_MS = backoffs
+			let attached: AcpSessionClient | undefined
+			let lastAttachError: unknown
+			for (let attempt = 0; attempt <= ATTACH_BACKOFFS_MS.length && !attached; attempt++) {
+				if (signal?.aborted) throw makeAbortError()
+				try {
+					const candidate = new AcpSessionClient({
+						sessionName: remoteSession.sessionName,
+						credentials: st.creds,
+						callbacks: wrappedCallbacks,
+						signal,
+						cwd: remoteSession.cwd,
+						sessionId: acpSessionId,
+					})
+					st.acpClient = candidate
+					await candidate.initialize()
+					attached = candidate
+				} catch (err) {
+					lastAttachError = err
+					try {
+						st.acpClient?.close()
+					} catch {
+						/* closing a half-initialized client */
+					}
+					st.acpClient = undefined
+					const last = attempt >= ATTACH_BACKOFFS_MS.length
+					if (last || !isRetryableAttachError(err)) break
+					if (signal?.aborted) throw makeAbortError()
+					await timersSleep(ATTACH_BACKOFFS_MS[attempt as number] ?? 20_000, undefined, { signal })
+					// Refresh creds between attempts — the connect token may have
+					// expired while the sandbox was hibernating.
+					try {
+						applyRecoveryCreds(
+							st,
+							await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, { endpoint }),
+						)
+					} catch {
+						// Keep the stale creds — the next attempt retries anyway.
+					}
+				}
+			}
+			if (!attached) throw lastAttachError
+			client = attached
+		}
 		if (options.onReady) {
 			await options.onReady(client, st.meta)
 		}
 
 		const outcome = await runPromptWithPolling(st, config, prompt)
+		completed = true
 		return {
 			responseText: st.responseText,
 			stopReason: outcome.stopReason,
@@ -1192,11 +1305,18 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 			recoveryNote: st.recoveryNote,
 		}
 	} finally {
-		st.acpClient?.close()
-		await st.client.close().catch((err) => {
-			console.error(`[remote-agent-runner] failed to close worker client:`, err)
-		})
+		// Success keeps the ACP connection alive for the NEXT steer (same
+		// contract as the initial keepAlive run); failures always tear down.
+		await retireStClients(st, completed)
 	}
+}
+
+/** Errors worth another attach shot: transport/session-load timeouts and
+ *  connection blips; anything hard (auth, protocol) fails fast. */
+function isRetryableAttachError(err: unknown): boolean {
+	if (err instanceof RemoteConnectionError) return true
+	const message = err instanceof Error ? err.message : String(err)
+	return /timed out|loadSession|websocket|ECONNRESET|ECONNREFUSED/i.test(message)
 }
 
 /**
@@ -1216,6 +1336,9 @@ export async function deleteRemoteSession(
 	try {
 		await deleteSession(client, remoteSession.sessionName)
 	} finally {
+		// Terminal action — close the steer-loop connection too, whatever the
+		// server said (it may already be gone over a hibernation wake).
+		discardLiveKeptAcpClient(remoteSession.sessionName)
 		await client.close().catch(() => {})
 	}
 }
