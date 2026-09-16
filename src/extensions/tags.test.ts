@@ -17,6 +17,7 @@ vi.mock("node:os", async (importOriginal) => {
 
 import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
@@ -379,11 +380,16 @@ describe("TagManager config hierarchy", () => {
 		mkdirSync(MOCK_HOME, { recursive: true })
 		vi.stubEnv("KIMCHI_TAGS", "")
 		clearSessionEntriesStore()
+		// cwd is pinned to MOCK_HOME (see cwdSpy) and the project tier tests
+		// exercise trusted project tags. The fail-closed case has its own test.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(MOCK_HOME, true)
 	})
 
 	afterEach(() => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
 		vi.unstubAllEnvs()
+		resetProjectScopeTrustForTests()
 	})
 
 	function writeGlobalTags(tags: string[]): void {
@@ -403,6 +409,14 @@ describe("TagManager config hierarchy", () => {
 		const { manager } = makeTagManager()
 		expect(manager.getAllTags()).toEqual(["repo:api"])
 		expect(manager.getTier("repo:api")).toBe("project")
+	})
+
+	it("ignores project tags while the project is untrusted (fail closed)", () => {
+		resetProjectScopeTrustForTests()
+		writeGlobalTags(["team:backend"])
+		writeProjectTags(["spoofed:attacker"])
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:backend"])
 	})
 
 	it("resolves key collisions with project beating global", () => {

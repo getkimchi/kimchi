@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 
 // Point getAgentDir() to a temp dir so global agents don't pollute project-only tests
 const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-${Date.now()}`)
@@ -21,6 +22,7 @@ function writeAgentMd(dir: string, name: string, description: string): void {
 describe("discovery-priority: project agents override global", () => {
 	beforeEach(() => {
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
+		resetProjectScopeTrustForTests()
 	})
 
 	it("project .kimchi/agents/ overrides global agent with same name", () => {
@@ -34,6 +36,7 @@ describe("discovery-priority: project agents override global", () => {
 		const projectAgentsDir = join(cwd, ".kimchi", "agents")
 		writeAgentMd(projectAgentsDir, "my-agent", "project version")
 
+		setProjectScopeTrusted(cwd, true)
 		const agents = loadCustomAgents(cwd)
 		expect(agents.has("my-agent")).toBe(true)
 		expect(agents.get("my-agent")?.description).toBe("project version")
@@ -57,6 +60,7 @@ describe("discovery-priority: project agents override global", () => {
 		const projectAgentsDir = join(cwd, ".kimchi", "agents")
 		writeAgentMd(projectAgentsDir, "path-check-agent", "kimchi path agent")
 
+		setProjectScopeTrusted(cwd, true)
 		const agents = loadCustomAgents(cwd)
 		const agent = agents.get("path-check-agent")
 		expect(agent).toBeDefined()

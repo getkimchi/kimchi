@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import {
 	discoverClaudeCodeSkillDirs,
 	getClaudeCodeSkillResourcePaths,
@@ -17,6 +18,10 @@ describe("Claude Code skill discovery", () => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skills-"))
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Project fixtures live under <dir>/project — trusted for the tests that
+		// exercise project .claude/skills; the fail-closed case has its own test.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(join(dir, "project"), true)
 	})
 
 	afterEach(() => {

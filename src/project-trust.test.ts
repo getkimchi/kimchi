@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resolveHeadlessProjectTrust } from "./project-trust.js"
+import { resolveHeadlessProjectTrust, resolvePreMainProjectTrust } from "./project-trust.js"
 
 let root: string
 let cwd: string
@@ -24,6 +24,10 @@ afterEach(() => {
 function addProjectSettings(settings: Record<string, unknown> = {}): void {
 	mkdirSync(join(cwd, ".pi"), { recursive: true })
 	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(settings))
+}
+
+function writeGlobalDefaultProjectTrust(defaultProjectTrust: string): void {
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust }))
 }
 
 describe("resolveHeadlessProjectTrust", () => {
@@ -53,5 +57,36 @@ describe("resolveHeadlessProjectTrust", () => {
 		addProjectSettings()
 		expect(resolveHeadlessProjectTrust(cwd, agentDir, "always")).toBe(true)
 		expect(resolveHeadlessProjectTrust(cwd, agentDir, "never")).toBe(false)
+	})
+})
+
+describe("resolvePreMainProjectTrust", () => {
+	it("fails closed when a decision is needed but none was persisted (ask default)", () => {
+		addProjectSettings()
+		expect(resolvePreMainProjectTrust(cwd, agentDir)).toBe(false)
+	})
+
+	it("honors a persisted trust decision without prompting again", () => {
+		addProjectSettings()
+		new ProjectTrustStore(agentDir).set(cwd, true)
+		expect(resolvePreMainProjectTrust(cwd, agentDir)).toBe(true)
+	})
+
+	it("reads defaultProjectTrust=always from the global scope", () => {
+		addProjectSettings()
+		writeGlobalDefaultProjectTrust("always")
+		expect(resolvePreMainProjectTrust(cwd, agentDir)).toBe(true)
+	})
+
+	it("a project settings file cannot grant itself trust via defaultProjectTrust", () => {
+		// The default must be read from the global (agentDir) scope only — a
+		// project settings.json claiming defaultProjectTrust: always must not
+		// open the pre-main gate.
+		addProjectSettings({ defaultProjectTrust: "always" })
+		expect(resolvePreMainProjectTrust(cwd, agentDir)).toBe(false)
+	})
+
+	it("trusts a cwd with no trust-requiring project resources", () => {
+		expect(resolvePreMainProjectTrust(cwd, agentDir)).toBe(true)
 	})
 })

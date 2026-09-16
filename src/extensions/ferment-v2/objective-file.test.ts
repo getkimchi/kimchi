@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { objectiveFilePath, objectiveText, saveObjectiveFile } from "./objective-file.js"
 
 describe("managed objective files", () => {
@@ -20,6 +21,10 @@ describe("managed objective files", () => {
 		root = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-objective-file-")))
 		cwd = join(root, 'project "with spaces"')
 		mkdirSync(cwd)
+		// Objective files live in the project's .kimchi/plans — trust the root
+		// so both cwd and the alias path (a sibling) resolve as allowed.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(root, true)
 	})
 	afterEach(() => rmSync(root, { recursive: true, force: true }))
 

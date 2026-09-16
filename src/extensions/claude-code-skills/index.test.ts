@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type ExtensionAPI, loadSkillsFromDir, type ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import claudeCodeSkillsExtension from "./index.js"
 
 let dir: string
@@ -13,6 +14,11 @@ describe("Claude Code skills extension", () => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skill-tool-"))
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Project fixtures live under <dir>/project — trusted for the tests
+		// that exercise project .claude/skills; fail-closed cases have their
+		// own tests in definition.test.ts.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(join(dir, "project"), true)
 	})
 
 	afterEach(() => {

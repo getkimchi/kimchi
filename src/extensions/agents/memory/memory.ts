@@ -10,6 +10,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { isProjectScopeAllowed } from "../../../project-scope-trust.js"
 import type { MemoryScope } from "../personas/types.js"
 
 /** Maximum lines to read from MEMORY.md */
@@ -89,8 +90,12 @@ export function ensureMemoryDir(memoryDir: string): void {
 /**
  * Read the first N lines of MEMORY.md from the memory directory, if it exists.
  * Returns undefined if no MEMORY.md exists or if the path is a symlink.
+ *
+ * Project and local scopes are gated on project trust: an untrusted repo's
+ * shipped MEMORY.md must not be injected into an agent's system prompt.
  */
-export function readMemoryIndex(memoryDir: string): string | undefined {
+export function readMemoryIndex(memoryDir: string, scope?: MemoryScope, cwd?: string): string | undefined {
+	if (scope && scope !== "user" && cwd && !isProjectScopeAllowed(cwd)) return undefined
 	if (isSymlink(memoryDir)) return undefined
 
 	const memoryFile = join(memoryDir, "MEMORY.md")
@@ -112,7 +117,7 @@ export function buildMemoryBlock(agentName: string, scope: MemoryScope, cwd: str
 	const memoryDir = resolveMemoryDir(agentName, scope, cwd)
 	ensureMemoryDir(memoryDir)
 
-	const existingMemory = readMemoryIndex(memoryDir)
+	const existingMemory = readMemoryIndex(memoryDir, scope, cwd)
 
 	const header = `# Agent Memory
 
@@ -151,7 +156,7 @@ This memory persists across sessions. Use it to build up knowledge over time.`
  */
 export function buildReadOnlyMemoryBlock(agentName: string, scope: MemoryScope, cwd: string): string {
 	const memoryDir = resolveMemoryDir(agentName, scope, cwd)
-	const existingMemory = readMemoryIndex(memoryDir)
+	const existingMemory = readMemoryIndex(memoryDir, scope, cwd)
 
 	const header = `# Agent Memory (read-only)
 

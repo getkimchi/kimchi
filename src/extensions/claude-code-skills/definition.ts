@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
@@ -29,7 +30,9 @@ export function discoverClaudeCodeSkillDirs(cwd = process.cwd()): string[] {
 
 	const homeDir = homedir()
 	const dirs = [join(homeDir, ".claude", "skills")]
-	if (resolve(projectDir) !== resolve(homeDir)) {
+	// The project's .claude/skills is gated on project trust: an untrusted
+	// repo must not contribute skills to the system prompt.
+	if (resolve(projectDir) !== resolve(homeDir) && isProjectScopeAllowed(cwd)) {
 		dirs.push(join(projectDir, ".claude", "skills"))
 	}
 

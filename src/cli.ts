@@ -23,6 +23,8 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { setProjectScopeTrusted } from "./project-scope-trust.js"
+import { resolvePreMainProjectTrust } from "./project-trust.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -317,6 +319,19 @@ try {
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
+
+		// Open the kimchi project-scope gate from any persisted (or
+		// defaultProjectTrust=always) decision before the first config read:
+		// pi resolves — and prompts for — project trust inside main(), which
+		// runs after these pre-main reads. With no decision recorded this
+		// resolves untrusted (fail closed) and the prompt inside main()
+		// decides; settingsTrustSyncExtension then syncs the outcome onto the
+		// gate at session_start.
+		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		if (preMainAgentDir) {
+			setProjectScopeTrusted(process.cwd(), resolvePreMainProjectTrust(process.cwd(), preMainAgentDir))
+		}
+
 		let config = loadConfig()
 
 		const envKey = captureApiKeyFromEnvironment()
@@ -617,7 +632,11 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
-		const effectiveSkillPaths = [...new Set([...skillPaths])]
+		// Config-derived skill paths resolve lazily: the trust prompt is answered
+		// inside pi's main() (after this point), and resource discovery re-runs
+		// post-trust — a frozen array here would keep a newly trusted project's
+		// configured skills invisible until a restart even after trusting.
+		const configuredSkillPaths = (): string[] => loadConfig().skillPaths ?? []
 		const mcpAdapterExtensions = enabledExtensionFactories([
 			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 		] satisfies ManagedExtensionFactory[])
@@ -680,9 +699,9 @@ try {
 			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
 			autoModelExtension,
 			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
+				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension(effectiveSkillPaths),
+			promptEnrichmentExtension(configuredSkillPaths),
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),

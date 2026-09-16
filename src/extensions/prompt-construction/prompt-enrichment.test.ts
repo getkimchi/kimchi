@@ -6,6 +6,7 @@ import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
 import { createContext } from "../__mocks__/context.js"
@@ -296,6 +297,10 @@ describe("prompt enrichment skills", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
 		process.env.HOME = join(dir, "home")
 		process.env.XDG_CACHE_HOME = join(dir, "cache")
+		// Project skill fixtures live under <dir>/project — trusted for the
+		// tests that exercise project .kimchi/skills and .claude/skills.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(join(dir, "project"), true)
 		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
 	})

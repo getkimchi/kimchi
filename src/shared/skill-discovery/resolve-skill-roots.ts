@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { findNearestAncestorPath } from "../../utils/find-nearest-ancestor.js"
 
 /**
@@ -74,27 +75,47 @@ function mapConfigPath(path: string, cwd: string, home: string): string {
 }
 
 /**
+ * A config path that resolves under the project cwd (relative, non-`.config/`
+ * entries such as `.claude/skills` or `.pi/agent/skills`): project-scoped, so
+ * gated on project trust. Absolute and home-resolved config paths are the
+ * user's own and stay ungated.
+ */
+function isCwdResolvedConfigPath(path: string): boolean {
+	return !isAbsolute(path) && !path.startsWith(".config/") && !path.startsWith(".config\\")
+}
+
+/**
  * Ordered skill roots, weakest first. Consumers that build a name→skill map
  * should let later occurrences override earlier ones, yielding the precedence
  * project > config > harness > bundled. Missing `config` and `project`
  * directories are skipped; the harness root is always included because it is
  * the default writable root even when it has not been created yet, and the
  * bundled root is included only when it resolves to an existing directory.
+ *
+ * Project-scope roots — the nearest ancestor `.kimchi/skills` and config paths
+ * that resolve under cwd — are gated on project trust (src/project-scope-trust.ts):
+ * while the cwd is untrusted they are skipped entirely, so a cloned repo's
+ * skills cannot reach the system prompt.
  */
 export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[] {
 	const home = options.homeDir ?? homedir()
 	const bundled =
 		options.bundledDir === undefined ? resolveBundledSkillsDir(home, options.execPath) : options.bundledDir
+	const projectScopeAllowed = isProjectScopeAllowed(options.cwd)
 	const roots: SkillRoot[] = []
 
 	if (bundled) roots.push({ dir: bundled, kind: "bundled" })
 	roots.push({ dir: resolveHarnessSkillsDir(home), kind: "harness" })
 	for (const p of options.configPaths ?? DEFAULT_CONFIG_PATHS) {
 		const dir = mapConfigPath(p, options.cwd, home)
-		if (existsSync(dir)) roots.push({ dir, kind: "config" })
+		if (!existsSync(dir)) continue
+		if (isCwdResolvedConfigPath(p) && !projectScopeAllowed) continue
+		roots.push({ dir, kind: "config" })
 	}
-	const projectDir = findNearestAncestorPath(options.cwd, join(".kimchi", "skills"))
-	if (projectDir) roots.push({ dir: projectDir, kind: "project" })
+	if (projectScopeAllowed) {
+		const projectDir = findNearestAncestorPath(options.cwd, join(".kimchi", "skills"))
+		if (projectDir) roots.push({ dir: projectDir, kind: "project" })
+	}
 
 	return roots
 }
