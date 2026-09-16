@@ -18,7 +18,9 @@ GRADING_FILES = [
     "tests/smoke/print-mid-turn-compaction.test.ts",
     "tests/smoke/print-config.ts",
     "tests/e2e/tui/support/fake-openai-server.ts",
+    "src/extensions/model-guard.test.ts",
 ]
+DIAGNOSTICS = "sustains four effective|suppresses repeated attempts|late completion from an old session|defers when the active branch"
 
 
 def run(command, cwd, log):
@@ -49,12 +51,25 @@ def grade(root, label):
                GRADING_FILES[0], "--reporter=json", f"--outputFile=../{label}-process-tests.json"]
     code = run(command, root / label, root / f"{label}-tests.log")
     report = json.loads((root / f"{label}-process-tests.json").read_text())
-    return {
+    result = {
         "command": command, "exit_code": code,
         "passed": report["numPassedTests"], "failed": report["numFailedTests"],
         "cases": [{"title": case["title"], "status": case["status"]}
                   for suite in report["testResults"] for case in suite["assertionResults"]],
     }
+    command = ["pnpm", "exec", "vitest", "run", "src/extensions/model-guard.test.ts", "-t", DIAGNOSTICS,
+               "--reporter=json", f"--outputFile=../{label}-contract-tests.json"]
+    code = run(command, root / label, root / f"{label}-contracts.log")
+    report = json.loads((root / f"{label}-contract-tests.json").read_text())
+    result["adapter_contract_diagnostics"] = {
+        "command": command, "exit_code": code,
+        "passed": report["numPassedTests"], "failed": report["numFailedTests"],
+        "cases": [{"title": case["title"], "status": case["status"]}
+                  for suite in report["testResults"] for case in suite["assertionResults"]
+                  if case["status"] not in {"pending", "skipped"}],
+        "limit": "These unit checks assume the existing inlineCompact adapter and diagnostic events; assess alternatives through process behavior separately.",
+    }
+    return result
 
 
 def main():
@@ -85,6 +100,9 @@ def main():
     for label, statuses in expected.items():
         if [case["status"] for case in results[label]["cases"]] != statuses:
             raise SystemExit(f"Unexpected {label} results; inspect retained artifacts before using this grader")
+    contracts = results["reference"]["adapter_contract_diagnostics"]
+    if contracts["passed"] != 4 or contracts["failed"] or len(contracts["cases"]) != 4:
+        raise SystemExit("Reference adapter contract diagnostics did not pass")
 
 
 if __name__ == "__main__":
