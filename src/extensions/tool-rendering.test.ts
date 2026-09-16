@@ -815,3 +815,116 @@ describe("validation error display truncation", () => {
 		expect(second).toBe(first)
 	})
 })
+
+describe("skill_view rendering (matches the /skill block)", () => {
+	beforeAll(() => {
+		toolRenderingExtension(createExtensionApi().api)
+	})
+
+	const SKILL_RESULT_TEXT = [
+		"---",
+		"name: vcs-workflow",
+		"description: Git workflow discipline",
+		"---",
+		"",
+		"# Git workflow",
+		"Stage, commit, push in that order.",
+		"",
+		'Linked files: {"references":["references/api.md"]}',
+	].join("\n")
+
+	function makeSkillComponent(expanded: boolean, resultText = SKILL_RESULT_TEXT, isError = false) {
+		return makeSkillComponentFromContent(expanded, [{ type: "text", text: resultText }], isError)
+	}
+
+	function makeSkillComponentFromContent(
+		expanded: boolean,
+		content: Array<{ type: string; text?: string }>,
+		isError = false,
+	) {
+		const component = new ToolExecutionComponent(
+			"skill_view",
+			"tc-skill-view",
+			{ name: "vcs-workflow" },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+		component.markExecutionStarted()
+		component.updateResult({ content: content as never, isError }, false)
+		component.setExpanded(expanded)
+		return component
+	}
+
+	it("renders the collapsed result as a [skill] line with the skill name", () => {
+		const rendered = makeSkillComponent(false).render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("[skill]")
+		expect(rendered).toContain("vcs-workflow")
+		expect(rendered).toContain("ctrl+o to expand")
+		// collapsed: the body stays hidden
+		expect(rendered).not.toContain("Stage, commit, push")
+		// the call header is subsumed by the [skill] block once the result is in
+		expect(rendered).not.toMatch(/\bSkill\b/)
+	})
+
+	it("renders the expanded result with frontmatter stripped and linked files noted", () => {
+		const rendered = makeSkillComponent(true).render(200).map(stripSgr).join("\n")
+		expect(rendered).toContain("[skill]")
+		expect(rendered).toContain("Stage, commit, push")
+		// frontmatter is stripped — the name header comes from the call args
+		expect(rendered).not.toContain("name: vcs-workflow")
+		expect(rendered).toContain("Linked files")
+		expect(rendered).not.toMatch(/\bSkill\b/)
+	})
+
+	it("shows the call header while the tool is still running", () => {
+		// Before the result arrives there is no [skill] block yet — the running
+		// header is the only feedback that the skill is loading.
+		const component = new ToolExecutionComponent(
+			"skill_view",
+			"tc-skill-view-running",
+			{ name: "vcs-workflow" },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+		component.markExecutionStarted()
+		const rendered = component.render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("Skill")
+		expect(rendered).toContain("vcs-workflow")
+	})
+
+	it("renders errors as plain error text", () => {
+		const rendered = makeSkillComponent(false, "Skill 'nope' not found.", true).render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("not found")
+		expect(rendered).not.toContain("[skill]")
+	})
+
+	it("falls back to 'No text content' when the result has no text block", () => {
+		const rendered = makeSkillComponentFromContent(false, []).render(120).map(stripSgr).join("\n")
+		expect(rendered).toContain("No text content")
+	})
+
+	it("renders a body without frontmatter unchanged", () => {
+		const rendered = makeSkillComponent(true, "# Plain skill\n\nNo frontmatter here.")
+			.render(200)
+			.map(stripSgr)
+			.join("\n")
+		expect(rendered).toContain("Plain skill")
+		expect(rendered).toContain("No frontmatter here.")
+	})
+
+	it("renders a success result without the linked-files trailer", () => {
+		const rendered = makeSkillComponent(true, "---\nname: x\ndescription: y\n---\n\nBody only.")
+			.render(120)
+			.map(stripSgr)
+			.join("\n")
+		expect(rendered).toContain("[skill]")
+		expect(rendered).toContain("Body only.")
+		expect(rendered).not.toContain("Linked files")
+	})
+})

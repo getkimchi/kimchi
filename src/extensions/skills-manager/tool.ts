@@ -66,6 +66,9 @@ export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker
 	return {
 		name: "skill_view",
 		label: "Skill View",
+		// Own framing: the result renders as a [skill] Box (accent stroke) like
+		// the /skill invocation block, instead of inside the generic tool shell.
+		renderShell: "self" as const,
 		description:
 			"Load a skill's full content. First call (no file_path) returns SKILL.md plus a linked_files map of available references/templates/scripts/assets. " +
 			"To read a linked file, call again with file_path (e.g. 'references/api.md').",

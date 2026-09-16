@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
-import { handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
+import { handleSkillSuggestEvent, handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
 
 vi.mock("../../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -451,6 +451,168 @@ describe("handlers/tools", () => {
 
 			await Promise.allSettled([...ctx.inFlight])
 			expect(fetchMock).not.toHaveBeenCalled()
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// skill-suggest counters and conversion
+	// -----------------------------------------------------------------------
+
+	describe("skill-suggest", () => {
+		it("handleSkillSuggestEvent emits fired counts and opens the conversion window", async () => {
+			const ctx = new TelemetryContext(makeConfig())
+
+			handleSkillSuggestEvent(ctx, {
+				skills: [
+					{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" },
+					{ name: "dap-debugging", filePath: "/skills/dap-debugging/SKILL.md" },
+				],
+				latched: 1,
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			const fired = events.find((e) => e.eventName === "skill_suggest.fired")
+			expect(fired).toBeDefined()
+			expect(fired?.attrs.skill_count).toBe("2")
+			expect(fired?.attrs.latched_count).toBe("1")
+		})
+
+		it("skips the fired emit and window for payloads with no valid skills", async () => {
+			const ctx = new TelemetryContext(makeConfig())
+
+			// Null payload and malformed/empty entries are not real suggestions.
+			handleSkillSuggestEvent(ctx, null)
+			handleSkillSuggestEvent(ctx, { skills: [{ name: 42 }], latched: 0 })
+			handleSkillSuggestEvent(ctx, { skills: [], latched: 0 })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			expect(events.find((e) => e.eventName === "skill_suggest.fired")).toBeUndefined()
+			// The conversion window stays empty — a later skill_view of any skill
+			// must not emit a bogus loaded event.
+			handleToolExecutionStart(ctx, { toolCallId: "tc-guard", toolName: "skill_view", args: { name: "vcs-workflow" } })
+			handleToolExecutionEnd(ctx, createContext({ model: { id: "claude-3-5-sonnet" } }), {
+				toolCallId: "tc-guard",
+				isError: false,
+			})
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			expect(parseLogEvents(fetchMock).find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
+		})
+
+		it("counts a skill_view call for a suggested skill as a conversion", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleSkillSuggestEvent(ctx, {
+				skills: [{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" }],
+				latched: 0,
+			})
+
+			handleToolExecutionStart(ctx, {
+				toolCallId: "tc-sv-1",
+				toolName: "skill_view",
+				args: { name: "vcs-workflow" },
+			})
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-sv-1", isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			const loaded = events.find((e) => e.eventName === "skill_suggest.loaded")
+			expect(loaded).toBeDefined()
+			expect(loaded?.attrs.skill_name).toBe("vcs-workflow")
+			expect(loaded?.attrs.match_by).toBe("skill_view")
+		})
+
+		it("counts reading the suggested skill's SKILL.md as a conversion", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleSkillSuggestEvent(ctx, {
+				skills: [{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" }],
+				latched: 0,
+			})
+
+			handleToolExecutionStart(ctx, {
+				toolCallId: "tc-read-skill",
+				toolName: "read",
+				args: { path: "/skills/vcs-workflow/SKILL.md" },
+			})
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-read-skill", isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			const loaded = events.find((e) => e.eventName === "skill_suggest.loaded")
+			expect(loaded).toBeDefined()
+			expect(loaded?.attrs.match_by).toBe("read")
+		})
+
+		it("does not convert when the skill was never suggested", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+
+			handleToolExecutionStart(ctx, {
+				toolCallId: "tc-sv-2",
+				toolName: "skill_view",
+				args: { name: "some-other-skill" },
+			})
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-sv-2", isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			expect(events.find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
+		})
+
+		it("expires the conversion window after the configured turns", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleSkillSuggestEvent(ctx, {
+				skills: [{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" }],
+				latched: 0,
+			})
+
+			// Suggestion fired at the current turn; advance well past the window.
+			ctx.turnIndex += 4
+			handleToolExecutionStart(ctx, {
+				toolCallId: "tc-sv-3",
+				toolName: "skill_view",
+				args: { name: "vcs-workflow" },
+			})
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-sv-3", isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			expect(events.find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
+		})
+
+		it("drops stale pending suggestions on session restart (reset clears the window)", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleSkillSuggestEvent(ctx, {
+				skills: [{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" }],
+				latched: 0,
+			})
+
+			// Session restart in the same process: reset() zeroes turnIndex and
+			// clears the pending window — the old reminder must not become
+			// conversion-eligible again in the new session.
+			ctx.reset()
+			handleToolExecutionStart(ctx, {
+				toolCallId: "tc-sv-4",
+				toolName: "skill_view",
+				args: { name: "vcs-workflow" },
+			})
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-sv-4", isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+			expect(events.find((e) => e.eventName === "skill_suggest.loaded")).toBeUndefined()
 		})
 	})
 })

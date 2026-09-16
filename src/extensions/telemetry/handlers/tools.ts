@@ -20,6 +20,79 @@ export function resultSizeChars(result: unknown): number {
 }
 
 // ---------------------------------------------------------------------------
+// Skill-suggest conversion tracking
+// ---------------------------------------------------------------------------
+
+/** A suggestion converts when the model loads the skill within this many
+ *  turns of the reminder being delivered. */
+const SKILL_SUGGEST_CONVERSION_TURNS = 3
+
+/**
+ * Drop suggestions whose conversion window has closed. Entries stamped
+ * from a future turnIndex (i.e. left over before a session restart reset
+ * turnIndex to 0) are also dropped — a restart must not resurrect a
+ * previous session's reminders.
+ */
+function pruneExpiredSuggestions(tm: TelemetryContext): void {
+	tm.skillSuggestPending = tm.skillSuggestPending.filter(
+		(entry) => entry.firedAtTurn <= tm.turnIndex && tm.turnIndex - entry.firedAtTurn <= SKILL_SUGGEST_CONVERSION_TURNS,
+	)
+}
+
+/** Handle the skill-suggest domain event: count the fired reminder and open
+ *  the conversion window for each named skill. A fired event with zero
+ *  valid skills is not a real suggestion — nothing is emitted and no
+ *  window opens. */
+export function handleSkillSuggestEvent(tm: TelemetryContext, payload: unknown): void {
+	const raw = (payload ?? {}) as { skills?: Array<{ name?: unknown; filePath?: unknown }>; latched?: unknown }
+	const skills = (raw.skills ?? []).filter(
+		(s): s is { name: string; filePath: string } =>
+			typeof s.name === "string" && typeof s.filePath === "string" && s.name.length > 0,
+	)
+	if (skills.length === 0) return
+
+	tm.emit("skill_suggest.fired", {
+		skill_count: skills.length,
+		latched_count: typeof raw.latched === "number" ? raw.latched : 0,
+	})
+
+	// Refresh the window for re-suggested skills; prune expired entries.
+	pruneExpiredSuggestions(tm)
+	for (const skill of skills) {
+		tm.skillSuggestPending = tm.skillSuggestPending.filter((entry) => entry.name !== skill.name)
+		tm.skillSuggestPending.push({
+			name: skill.name,
+			fileHashes: [hashFilePath(skill.filePath)],
+			firedAtTurn: tm.turnIndex,
+		})
+	}
+}
+
+/** Record a conversion when the model loads a suggested skill. */
+function recordSkillSuggestConversion(
+	tm: TelemetryContext,
+	match: { name: string },
+	matchBy: "skill_view" | "read",
+): void {
+	pruneExpiredSuggestions(tm)
+	const index = tm.skillSuggestPending.findIndex((entry) => entry.name === match.name)
+	if (index === -1) return
+	tm.skillSuggestPending.splice(index, 1)
+	tm.emit("skill_suggest.loaded", {
+		skill_name: match.name,
+		match_by: matchBy,
+		turn_index: tm.turnIndex,
+	})
+}
+
+/** Check whether a read file path matches a pending suggested skill's SKILL.md. */
+function recordSkillSuggestConversionByPath(tm: TelemetryContext, filePath: string): void {
+	const hash = hashFilePath(filePath)
+	const entry = tm.skillSuggestPending.find((pending) => pending.fileHashes.some((candidate) => candidate === hash))
+	if (entry) recordSkillSuggestConversion(tm, { name: entry.name }, "read")
+}
+
+// ---------------------------------------------------------------------------
 // Tool execution handlers
 // ---------------------------------------------------------------------------
 
@@ -90,6 +163,9 @@ export function handleToolExecutionEnd(
 				},
 				ctx,
 			)
+			// Skill-suggest conversion: reading a suggested skill's SKILL.md counts
+			// as loading it, same as calling skill_view.
+			recordSkillSuggestConversionByPath(tm, filePath)
 		}
 	} else if (toolName === "write" && !event.isError) {
 		const filePath = extractFilePath(args)
@@ -144,6 +220,12 @@ export function handleToolExecutionEnd(
 				},
 				ctx,
 			)
+		}
+	} else if (toolName === "skill_view" && !event.isError) {
+		// Skill-suggest conversion: loading a suggested skill via skill_view.
+		const name = (args as { name?: unknown }).name
+		if (typeof name === "string" && name.length > 0) {
+			recordSkillSuggestConversion(tm, { name }, "skill_view")
 		}
 	} else if (toolName === "bash") {
 		tm.emit(

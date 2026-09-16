@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, Skill, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
@@ -16,6 +16,7 @@ import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
+import { SKILL_SUGGEST_EVENT } from "./skill-suggest.js"
 import { toolNamesFromSection } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
@@ -209,7 +210,9 @@ describe("prompt enrichment tool visibility", () => {
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		try {
-			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+			const result = (await beforeAgentStart({ prompt: "" }, createContext({ hasUI: false }))) as {
+				systemPrompt: string
+			}
 
 			expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
 			expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
@@ -241,7 +244,9 @@ describe("prompt enrichment tool visibility", () => {
 		const beforeAgentStart = handlers.get("before_agent_start")
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+		const result = (await beforeAgentStart({ prompt: "" }, createContext({ hasUI: false }))) as {
+			systemPrompt: string
+		}
 
 		expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
 		expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
@@ -262,7 +267,9 @@ describe("prompt enrichment environment context", () => {
 			const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+			const result = (await beforeAgentStart({ prompt: "" }, createContext({ hasUI: false }))) as {
+				systemPrompt: string
+			}
 
 			expect(result.systemPrompt).not.toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
@@ -324,6 +331,7 @@ describe("prompt enrichment skills", () => {
 
 		const result = (await beforeAgentStart(
 			{
+				prompt: "list the available environment details",
 				systemPromptOptions: {
 					skills: [
 						{
@@ -350,7 +358,9 @@ describe("prompt enrichment skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+		const result = (await beforeAgentStart({ prompt: "" }, createContext({ cwd, hasUI: false }))) as {
+			systemPrompt: string
+		}
 
 		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
 	})
@@ -466,7 +476,7 @@ describe("append system prompt", () => {
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const result = (await beforeAgentStart(
-			{ systemPromptOptions: { appendSystemPrompt: "Custom appended instructions" } },
+			{ prompt: "", systemPromptOptions: { appendSystemPrompt: "Custom appended instructions" } },
 			createContext({ hasUI: false }),
 		)) as { systemPrompt: string }
 
@@ -480,12 +490,12 @@ describe("append system prompt", () => {
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const resultWithout = (await beforeAgentStart(
-			{ systemPromptOptions: {} },
+			{ prompt: "", systemPromptOptions: {} },
 			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-1" } }),
 		)) as { systemPrompt: string }
 
 		const resultWithEmpty = (await beforeAgentStart(
-			{ systemPromptOptions: { appendSystemPrompt: undefined } },
+			{ prompt: "", systemPromptOptions: { appendSystemPrompt: undefined } },
 			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-2" } }),
 		)) as { systemPrompt: string }
 
@@ -498,12 +508,12 @@ describe("append system prompt", () => {
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const resultBaseline = (await beforeAgentStart(
-			{ systemPromptOptions: {} },
+			{ prompt: "", systemPromptOptions: {} },
 			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-1" } }),
 		)) as { systemPrompt: string }
 
 		const resultWhitespace = (await beforeAgentStart(
-			{ systemPromptOptions: { appendSystemPrompt: "   \n  " } },
+			{ prompt: "", systemPromptOptions: { appendSystemPrompt: "   \n  " } },
 			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-2" } }),
 		)) as { systemPrompt: string }
 
@@ -595,6 +605,7 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 		getAllTools: () => [],
 		getActiveTools: () => [],
 		getFlag: () => false,
+		events: { on: () => {}, emit: () => {} },
 	} as unknown as ExtensionAPI
 	promptEnrichmentExtension(skillPaths)(pi)
 	return {
@@ -914,7 +925,7 @@ describe("continuation nudge turn_end handler", () => {
 		// Simulate a tool having been called earlier in the session so the
 		// fresh-session suppression does not apply. Then a new user-input cycle.
 		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// Model responds with text-only, stopReason "stop".
 		await fire("turn_end", {
@@ -931,7 +942,7 @@ describe("continuation nudge turn_end handler", () => {
 
 		// Tool called earlier in the session so the fresh-session guard is past.
 		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// First text-only turn triggers the continuation nudge.
 		await fire("turn_end", {
@@ -951,7 +962,7 @@ describe("continuation nudge turn_end handler", () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
 		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// First text-only turn triggers the continuation nudge.
 		await fire("turn_end", {
@@ -975,7 +986,7 @@ describe("continuation nudge turn_end handler", () => {
 		await fire("agent_start", {})
 
 		// Simulate user input.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// Model calls a tool — marks the run as having used tools.
 		await fire("tool_execution_start", {})
@@ -997,7 +1008,7 @@ describe("continuation nudge turn_end handler", () => {
 		await fire("agent_start", {})
 
 		// Simulate user input.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// Model returns an empty response with no prior tool calls.
 		await fire("turn_end", {
@@ -1024,7 +1035,7 @@ describe("continuation nudge turn_end handler", () => {
 		})
 
 		// New user input after the switch.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// New model responds with orientation text only, no tool calls.
 		await fire("turn_end", {
@@ -1051,7 +1062,7 @@ describe("continuation nudge turn_end handler", () => {
 		})
 
 		// New user input after the cycle.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// New model responds with orientation text only, no tool calls.
 		await fire("turn_end", {
@@ -1077,7 +1088,7 @@ describe("continuation nudge turn_end handler", () => {
 		})
 
 		// New user input after restore.
-		await fire("input", { source: "user" })
+		await fire("input", { source: "user", text: "" })
 
 		// Model responds with text only, no tool calls.
 		await fire("turn_end", {
@@ -1164,12 +1175,12 @@ describe("debug prompts cleanup", () => {
 		const ctx = createContext({ hasUI: false })
 
 		// First turn: flag is off, env vars are unset.
-		await beforeAgentStart({}, ctx)
+		await beforeAgentStart({ prompt: "" }, ctx)
 
 		// Second turn: flag is still off. With the buggy cleanup, the first
 		// turn would have left KIMCHI_DEBUG_SESSION as the string "undefined",
 		// which is truthy and would re-enable debug mode here.
-		await beforeAgentStart({}, ctx)
+		await beforeAgentStart({ prompt: "" }, ctx)
 
 		expect(process.env.KIMCHI_DEBUG_PROMPTS).toBeUndefined()
 		expect(process.env.KIMCHI_DEBUG_SESSION).toBeUndefined()
@@ -1182,12 +1193,238 @@ describe("debug prompts cleanup", () => {
 			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 			const ctx = createContext({ cwd: dir, hasUI: false })
-			await beforeAgentStart({}, ctx)
+			await beforeAgentStart({ prompt: "" }, ctx)
 
 			expect(process.env.KIMCHI_DEBUG_PROMPTS).toBe("1")
 			expect(process.env.KIMCHI_DEBUG_SESSION).toBeDefined()
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("skill suggest wiring", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	interface AgentStartResult {
+		systemPrompt?: string
+	}
+
+	function buildSkillSuggestHandlers(options?: { subagent?: boolean }) {
+		const handlerMap = new Map<string, Array<(event: unknown, ctx?: unknown) => Promise<unknown> | unknown>>()
+		const emittedEvents: Array<{ channel: string; payload: unknown }> = []
+
+		vi.spyOn(agentWorkerContext, "isAgentWorker").mockReturnValue(options?.subagent ?? false)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+		vi.spyOn(config, "loadConfig").mockReturnValue({
+			apiKey: "",
+			agentConfigDir: "",
+			llmEndpoint: "",
+			customLlmEndpoint: undefined,
+			maxToolResultChars: 0,
+			mcpSearchLimit: 5,
+			mcpSearch: {
+				strategy: "bm25" as const,
+				bm25K1: 1.2,
+				bm25B: 0.75,
+				fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+			},
+			onboarding: {},
+			deviceId: "test",
+		})
+
+		const pi = {
+			registerFlag: () => {},
+			registerCommand: () => {},
+			appendEntry: vi.fn(),
+			on: (event: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown) => {
+				const list = handlerMap.get(event) ?? []
+				list.push(handler)
+				handlerMap.set(event, list)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: () => false,
+			events: {
+				on: () => {},
+				emit: (channel: string, payload: unknown) => {
+					emittedEvents.push({ channel, payload })
+				},
+			},
+		} as unknown as ExtensionAPI
+
+		promptEnrichmentExtension([])(pi)
+
+		const fire = async (event: string, payload: unknown) => {
+			const handlers = handlerMap.get(event) ?? []
+			const ctx = createContext({ model: { provider: "test", id: "test-model" } })
+			let result: unknown
+			for (const h of handlers) result = await h(payload, ctx)
+			return result
+		}
+
+		return { fire, emittedEvents }
+	}
+
+	const VCS_SKILL: Skill = {
+		name: "vcs-workflow",
+		description: "Safe and disciplined Git workflow — staging, committing, branching, and hook discipline.",
+		filePath: "/skills/vcs-workflow/SKILL.md",
+		baseDir: "/skills/vcs-workflow",
+		sourceInfo: { path: "/skills/vcs-workflow/SKILL.md", source: "local", scope: "project", origin: "top-level" },
+		disableModelInvocation: false,
+	}
+
+	async function fireAgentStart(
+		fire: (event: string, payload: unknown) => Promise<unknown>,
+		prompt: string,
+		skills: Skill[],
+	): Promise<AgentStartResult> {
+		return (await fire("before_agent_start", { prompt, systemPromptOptions: { skills } })) as AgentStartResult
+	}
+
+	/** Run the context pass over a single user message; returns its final text. */
+	async function fireContext(
+		fire: (event: string, payload: unknown) => Promise<unknown>,
+		prompt: string,
+	): Promise<string> {
+		const context = (await fire("context", { messages: [{ role: "user", content: prompt }] })) as
+			| { messages?: Array<{ role: string; content: string }> }
+			| undefined
+		// No transform → the handler returns undefined → the message is unchanged.
+		const messages = context?.messages ?? [{ role: "user", content: prompt }]
+		const lastUser = [...messages].reverse().find((m) => m.role === "user")
+		return typeof lastUser?.content === "string" ? lastUser.content : ""
+	}
+
+	it("appends the reminder to the user message on a matching prompt", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		const start = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		expect(start.systemPrompt).toContain("## Available Tools")
+
+		const userText = await fireContext(fire, "git commit and push these changes")
+
+		// The reminder rides the user's own message (never a separate synthetic
+		// user message — consumers read the last user message as user-authored),
+		// appended after the original prompt text.
+		expect(userText).toContain("git commit and push these changes")
+		expect(userText.indexOf("git commit and push these changes")).toBeLessThan(userText.indexOf("<system-reminder>"))
+		expect(userText).toContain("<system-reminder>")
+		expect(userText).toContain("vcs-workflow")
+		expect(userText).toContain("skill_view")
+	})
+
+	it("appends nothing on a non-matching prompt — the normal outcome", async () => {
+		const { fire, emittedEvents } = buildSkillSuggestHandlers()
+
+		await fireAgentStart(fire, "fix the failing parser test in the lexer", [VCS_SKILL])
+		const userText = await fireContext(fire, "fix the failing parser test in the lexer")
+
+		expect(userText).toBe("fix the failing parser test in the lexer")
+		expect(emittedEvents.filter((e) => e.channel === SKILL_SUGGEST_EVENT)).toEqual([])
+	})
+
+	it("latches per skill — a repeated matching prompt gets no second reminder", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const first = await fireContext(fire, "git commit and push these changes")
+		expect(first).toContain("<system-reminder>")
+
+		await fireAgentStart(fire, "commit and push the git changes now", [VCS_SKILL])
+		const second = await fireContext(fire, "commit and push the git changes now")
+		expect(second).not.toContain("<system-reminder>")
+	})
+
+	it("emits the telemetry domain event with the suggested skills", async () => {
+		const { fire, emittedEvents } = buildSkillSuggestHandlers()
+
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+
+		const fired = emittedEvents.find((e) => e.channel === SKILL_SUGGEST_EVENT)
+		expect(fired).toBeDefined()
+		expect(fired?.payload).toEqual({
+			skills: [{ name: "vcs-workflow", filePath: "/skills/vcs-workflow/SKILL.md" }],
+			latched: 0,
+		})
+	})
+
+	it("works on the very first prompt — no prior inventory needed", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		// A single before_agent_start with both the prompt and the inventory:
+		// the first user turn of a real session provides exactly this event.
+		const result = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const userText = await fireContext(fire, "git commit and push these changes")
+		expect(userText).toContain("<system-reminder>")
+		expect(result.systemPrompt).toContain("## Available Tools")
+	})
+
+	it("does not suggest a skill the user already loaded via /skill (session 01a0a5f1)", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		// Turn 1: the user ran /skill:vcs-workflow — the prompt arrives already
+		// expanded into a <skill> block, and no reminder fires for it.
+		await fireAgentStart(
+			fire,
+			'<skill name="vcs-workflow" location="/skills/vcs-workflow/SKILL.md">\nBody.\n</skill>',
+			[VCS_SKILL],
+		)
+		const expansionText = await fireContext(
+			fire,
+			'<skill name="vcs-workflow" location="/skills/vcs-workflow/SKILL.md">\nBody.\n</skill>',
+		)
+		expect(expansionText).not.toContain("<system-reminder>")
+
+		// Turn 2: the matching request — the loaded skill must stay silent.
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const second = await fireContext(fire, "git commit and push these changes")
+		expect(second).not.toContain("<system-reminder>")
+	})
+
+	it("does not suggest a skill the agent already loaded via skill_view", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		await fire("tool_execution_start", {
+			toolCallId: "tc-1",
+			toolName: "skill_view",
+			args: { name: "vcs-workflow" },
+		})
+
+		// The latch alone would re-arm on the strong repeat; the loaded mark
+		// must hold regardless.
+		await fireAgentStart(fire, "use the vcs workflow to manage git", [VCS_SKILL])
+		const userText = await fireContext(fire, "use the vcs workflow to manage git")
+		expect(userText).not.toContain("<system-reminder>")
+	})
+
+	it("resets suggester state on session_shutdown — the same session id can be re-suggested", async () => {
+		const { fire } = buildSkillSuggestHandlers()
+
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const first = await fireContext(fire, "git commit and push these changes")
+		expect(first).toContain("<system-reminder>")
+
+		await fire("session_shutdown", {})
+
+		// A fresh session reusing the same id must start from a clean suggester:
+		// no leaked latch, no leaked loaded marks.
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const second = await fireContext(fire, "git commit and push these changes")
+		expect(second).toContain("<system-reminder>")
+	})
+
+	it("does not suggest in subagent mode", async () => {
+		const { fire, emittedEvents } = buildSkillSuggestHandlers({ subagent: true })
+
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const userText = await fireContext(fire, "git commit and push these changes")
+
+		expect(userText).not.toContain("<system-reminder>")
+		expect(emittedEvents.filter((e) => e.channel === SKILL_SUGGEST_EVENT)).toEqual([])
 	})
 })

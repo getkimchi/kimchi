@@ -90,6 +90,10 @@ export class TelemetryContext {
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
 	toolStartTimes = new Map<string, number>()
+	/** Skill-suggest conversion tracking: skills named in a recently delivered
+	 *  reminder, awaiting a skill_view call or SKILL.md read within the
+	 *  conversion window (see handlers/tools.ts). */
+	skillSuggestPending: Array<{ name: string; fileHashes: string[]; firedAtTurn: number }> = []
 	cumulative: CumulativeState
 	inFlight = new Set<Promise<void>>()
 	shuttingDown = false
@@ -140,6 +144,7 @@ export class TelemetryContext {
 		this.toolStartTimes.clear()
 		this.lastSessionType = undefined
 		this.compactionCount = 0
+		this.skillSuggestPending = []
 		this.cumulative = getOrCreateAccumulator(this.telemetryId)
 		this.inFlight.clear()
 		this.shuttingDown = false
