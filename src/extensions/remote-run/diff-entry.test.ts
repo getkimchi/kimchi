@@ -23,7 +23,7 @@ const DETAILS = {
 		"+new",
 		" context",
 	].join("\n"),
-	patchPath: "/tmp/out/remote-diff.patch",
+	patchPath: "/tmp/out/remote-diff.diff",
 }
 
 function rendered(details: unknown, expanded: boolean): string {
@@ -48,7 +48,7 @@ describe("renderRemoteRunDiff", () => {
 
 		expect(out).toContain("[b]kimchi/fix-login — 2 files (+3/-1)[/b]")
 		expect(out).toContain("2 files changed, 3 insertions(+), 1 deletion(-)")
-		expect(out).toContain("patch: /tmp/out/remote-diff.patch")
+		expect(out).toContain("patch: /tmp/out/remote-diff.diff")
 		expect(out).toContain("[b]diff --git a/src/a.ts b/src/a.ts[/b]")
 		expect(out).toContain("[muted]+++ b/src/a.ts[/muted]")
 		// Beyond the 3-line preview — collapsed hides these.
@@ -69,7 +69,7 @@ describe("renderRemoteRunDiff", () => {
 	it("expanded notes the cap when the persisted patch was capped", () => {
 		const out = rendered({ ...DETAILS, capped: true }, true)
 
-		expect(out).toContain(`capped at ${DIFF_MESSAGE_CAP_LINES} lines — full patch: /tmp/out/remote-diff.patch`)
+		expect(out).toContain(`capped at ${DIFF_MESSAGE_CAP_LINES} lines — full patch: /tmp/out/remote-diff.diff`)
 	})
 
 	it("renders identically from entry data alone (survives transcript reload)", () => {

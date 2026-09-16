@@ -688,9 +688,9 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(details.stat).toBe("2 files changed, 8 insertions(+), 3 deletions(-)")
 		expect(details.patch).toBe("diff --git a/src/a.ts b/src/a.ts\n+hello\n")
 		expect(details.capped).toBeUndefined()
-		expect(details.patchPath).toBe(join(tmp, "t2", "remote-diff.patch"))
+		expect(details.patchPath).toBe(join(tmp, "t2", "remote-diff.diff"))
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("remote-diff.patch — persisted in this transcript"),
+			expect.stringContaining("remote-diff.diff — persisted in this transcript"),
 			"info",
 		)
 
@@ -704,9 +704,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 
 		expect(appendEntry).toHaveBeenCalledTimes(1)
 		// The patch file kept the first stream's content only.
-		expect(readFileSync(join(tmp, "t2", "remote-diff.patch"), "utf8")).toBe(
-			"diff --git a/src/a.ts b/src/a.ts\n+hello\n",
-		)
+		expect(readFileSync(join(tmp, "t2", "remote-diff.diff"), "utf8")).toBe("diff --git a/src/a.ts b/src/a.ts\n+hello\n")
 	})
 
 	it("renders warning lines for leftover uncommitted files and touched baseline files", async () => {
@@ -1104,7 +1102,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 			gitWorkflow: GIT,
 		})
 
-		const patchPath = join(tmp, "t-ext", "remote-diff.patch")
+		const patchPath = join(tmp, "t-ext", "remote-diff.diff")
 		expect(mockOpenExternalDiff).toHaveBeenCalledWith(patchPath)
 		expect(readFileSync(patchPath, "utf8")).toBe(patch)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(`Opened the diff externally: ${patchPath}`, "info")

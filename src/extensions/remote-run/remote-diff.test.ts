@@ -156,7 +156,7 @@ describe("streamRemotePatch", () => {
 			onStdoutChunk?.("+hello\n")
 			return Promise.resolve(gitResult(""))
 		})
-		const patchPath = join(tmp, "case-1", "remote-diff.patch")
+		const patchPath = join(tmp, "case-1", "remote-diff.diff")
 		const chunks: Array<[number, string]> = []
 
 		const stream = streamRemotePatch({

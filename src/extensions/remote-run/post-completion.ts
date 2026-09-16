@@ -681,7 +681,7 @@ async function secretScannedConsentPush(
 	const branch = git.branch
 
 	// 1. Re-harvest the CURRENT diff (post-steer state, deterministic range).
-	const patchPath = run.opts.transcriptPath ? join(dirname(run.opts.transcriptPath), "remote-diff.patch") : undefined
+	const patchPath = run.opts.transcriptPath ? join(dirname(run.opts.transcriptPath), "remote-diff.diff") : undefined
 	if (patchPath) writeFileSync(patchPath, "", "utf-8")
 	let patchText = ""
 	try {
@@ -863,7 +863,7 @@ async function showDiffOverlay(
 	},
 ): Promise<boolean> {
 	const { transcriptPath, baseSha, connection, viewerTitle, statText, diffPersisted } = opts
-	const patchPath = !diffPersisted && transcriptPath ? join(dirname(transcriptPath), "remote-diff.patch") : undefined
+	const patchPath = !diffPersisted && transcriptPath ? join(dirname(transcriptPath), "remote-diff.diff") : undefined
 	let stream: RemotePatchStream | undefined
 	let streamError: Error | undefined
 
@@ -944,7 +944,7 @@ async function showDiffExternally(
 ): Promise<boolean> {
 	const { transcriptPath, baseSha, connection, branch, diffPersisted } = opts
 	const patchPath = transcriptPath
-		? join(dirname(transcriptPath), "remote-diff.patch")
+		? join(dirname(transcriptPath), "remote-diff.diff")
 		: join(tmpdir(), `kimchi-remote-diff-${branch.replace(/[^\w.-]/g, "-")}.patch`)
 
 	if (!diffPersisted) {
