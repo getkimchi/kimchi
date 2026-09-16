@@ -155,6 +155,31 @@ export const AgentMessageInputSchema = Type.Union([
 	ChildUpdateParamsSchema,
 ])
 
+const ReplyToSchema = Type.Optional(
+	Type.String({
+		description: "Exact open question ID; only for answer or decline. May be inside the payload or outside.",
+	}),
+)
+
+/** SDK input shape; the child adapter normalizes reply_to before strict domain validation. */
+export const AgentMessageToolSchema = Type.Object(
+	{
+		recipient: AgentMessageRecipientSchema,
+		payload: Type.Union([
+			AgentQuestionPayloadSchema,
+			Type.Object({ ...AgentAnswerPayloadSchema.properties, reply_to: ReplyToSchema }, { additionalProperties: false }),
+			Type.Object(
+				{ ...AgentDeclinePayloadSchema.properties, reply_to: ReplyToSchema },
+				{ additionalProperties: false },
+			),
+			AgentStatusPayloadSchema,
+			AgentHandoffInputPayloadSchema,
+		]),
+		reply_to: ReplyToSchema,
+	},
+	{ additionalProperties: false },
+)
+
 export type AgentMessageRecipient = { type: "parent" } | { type: "user" } | { type: "agent"; agentId: string }
 
 export type AgentQuestionPayload = {
@@ -235,6 +260,8 @@ export type AgentMessageReceiptStatus =
 	| "saturated"
 
 export interface AgentMessageReceipt {
+	/** Authorized open questions from this recipient, supplied only to correct an unmatched reply. */
+	openQuestionIds?: string[]
 	messageId?: string
 	threadId?: string
 	status: AgentMessageReceiptStatus
@@ -300,6 +327,21 @@ export function validateAgentMessageInput(
 	value: unknown,
 ): { valid: true; value: AgentMessageInput; bytes: number } | { valid: false; reason: string } {
 	if (!Value.Check(AgentMessageInputSchema, value)) {
+		if (Value.Check(AgentMessageToolSchema, value)) {
+			const isReply = value.payload.kind === "answer" || value.payload.kind === "decline"
+			if (!isReply && value.reply_to !== undefined) {
+				return {
+					valid: false,
+					reason: `Remove reply_to from this ${value.payload.kind} message. New questions and updates start their own thread. Only answer or decline replies use reply_to.`,
+				}
+			}
+			if (isReply && value.reply_to === undefined) {
+				return {
+					valid: false,
+					reason: "An answer or decline requires reply_to with the exact open question message ID.",
+				}
+			}
+		}
 		return { valid: false, reason: "Message must use one supported recipient and payload combination." }
 	}
 	const bytes = serializedAgentMessageBytes(value)

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope, hasEverHadTodos } from "./store.js"
@@ -124,6 +125,35 @@ function customTodosEntry(id: string, content: string, status: TodoStatus = "pen
 describe("todos extension session state", () => {
 	beforeEach(() => {
 		__resetTodoStore()
+	})
+
+	it("restores a worker's TODOs on resume and branch changes without touching its parent", async () => {
+		await runAsAgentWorker(async () => {
+			const harness = createTodosHarness()
+			applyWriteTodos({ todos: [{ content: "parent work", status: "pending" }] }, "parent")
+			await harness.fire(
+				"session_start",
+				{ reason: "resume" },
+				createContext("worker", [writeTodosEntry("worker-evidence", "worker check", "completed")]),
+			)
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "worker")).toMatchObject([
+				{ content: "worker check", status: "completed" },
+			])
+			await harness.fire(
+				"session_tree",
+				{},
+				createContext("worker", [writeTodosEntry("earlier-work", "worker check", "pending")]),
+			)
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "worker")[0].status).toBe("pending")
+			await harness.fire("session_shutdown", {}, createContext("worker", []))
+			await harness.fire(
+				"before_agent_start",
+				{},
+				createContext("worker", [writeTodosEntry("resumed-work", "resumed check", "in_progress")]),
+			)
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "worker")[0].content).toBe("resumed check")
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "parent")[0].content).toBe("parent work")
+		})
 	})
 
 	it("restores todos from the active session branch instead of the previous store", async () => {

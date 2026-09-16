@@ -3,10 +3,17 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { isAgentWorker, runAsAgentWorker } from "../../agent-worker-context.js"
 import dapExtension from "../../dap.js"
+import { FERMENT_V2_CUSTOM_ENTRY_TYPE, FERMENT_V2_TOOL_NAMES } from "../../ferment-v2/constants.js"
+import { createFermentV2, putFermentV2Entry } from "../../ferment-v2/reducer.js"
+import todosExtension from "../../todos/index.js"
+import { TODO_TOOL_NAMES } from "../../todos/tool.js"
 
-vi.mock("@earendil-works/pi-coding-agent", async () => {
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
 	return {
+		...actual,
 		DefaultResourceLoader: vi.fn().mockImplementation(() => ({
 			reload: vi.fn().mockResolvedValue(undefined),
 		})),
@@ -156,7 +163,9 @@ type Subscriber = (event: SessionEvent) => void
 
 function runInlineExtension(extension: InlineExtension | undefined, pi: ExtensionAPI): void | Promise<void> {
 	const factory = typeof extension === "function" ? extension : extension?.factory
-	return factory?.(pi)
+	return runAsAgentWorker(async () => {
+		await factory?.(pi)
+	})
 }
 
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
@@ -272,6 +281,7 @@ function makeFakeSession({
 	// Attach extensionRunner directly so callers can inspect it without destructuring.
 	const fullSession = Object.assign(session, {
 		extensionRunner: { emit: vi.fn().mockResolvedValue(true) },
+		sessionManager: { getBranch: vi.fn().mockReturnValue([]) },
 	})
 	return fullSession
 }
@@ -373,6 +383,65 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("activates local TODO and Ferment tools only when the worker opts in", async () => {
+		const session = makeFakeSession({ activeToolNames: [...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES] })
+		mockCreateAgentSession.mockResolvedValue({ session } as unknown as Awaited<ReturnType<typeof createAgentSession>>)
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "verify delegated task", {
+			pi: pi as unknown as RunOptions["pi"],
+			fermentV2: true,
+		})
+		expect(mockDefaultResourceLoader.mock.calls[0][0]?.extensionFactories).toContain(todosExtension)
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith([...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "task", {
+				pi: pi as unknown as RunOptions["pi"],
+				fermentV2: true,
+				isolated: true,
+			}),
+		).rejects.toThrow("non-isolated")
+	})
+
+	it("reports the current objective status after shutdown and resume", async () => {
+		const session = makeFakeSession()
+		const goal = createFermentV2(undefined, "verify delegated task", "goal-1", new Date().toISOString())
+		const branch = (status: "complete" | "paused", revision: number) => [
+			{
+				type: "custom",
+				customType: FERMENT_V2_CUSTOM_ENTRY_TYPE,
+				data: putFermentV2Entry({ ...goal, status, revision }),
+			},
+		]
+		session.extensionRunner.emit.mockImplementation(async () => {
+			session.sessionManager.getBranch.mockReturnValue(branch("complete", 1))
+			return true
+		})
+		mockCreateAgentSession.mockResolvedValue({ session } as unknown as Awaited<ReturnType<typeof createAgentSession>>)
+		const first = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", goal.objective, {
+			pi: pi as unknown as RunOptions["pi"],
+			fermentV2: true,
+		})
+		expect(first.fermentV2).toMatchObject({ id: goal.id, revision: 1, status: "complete" })
+		session.extensionRunner.emit.mockImplementation(async () => {
+			session.sessionManager.getBranch.mockReturnValue(branch("paused", 2))
+			return true
+		})
+		const resumed = await resumeAgent(first.session, "check changed evidence")
+		expect(resumed.aborted).toBe(false)
+		expect(resumed.fermentV2).toMatchObject({ id: goal.id, revision: 2, status: "paused" })
+	})
+
+	it("keeps resumed prompts in worker context", async () => {
+		const session = makeFakeSession()
+		vi.mocked(session.prompt).mockImplementation(async () => {
+			await Promise.resolve()
+			expect(isAgentWorker()).toBe(true)
+		})
+		const result = await resumeAgent(session as unknown as Parameters<typeof resumeAgent>[0], "continue")
+		expect(result.fermentV2).toBeUndefined()
+		expect(isAgentWorker()).toBe(false)
+		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" })
 	})
 
 	it("registers Auto routing only for children that use Auto", async () => {
@@ -484,7 +553,7 @@ describe("runAgent — telemetry extension", () => {
 		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const toolCallHandlers: Array<(event: unknown) => void> = []
 		for (const factory of workerFactories) {
-			runInlineExtension(factory, {
+			await runInlineExtension(factory, {
 				on: (event: string, handler: (event: unknown) => void) => {
 					if (event === "tool_call") toolCallHandlers.push(handler)
 				},
@@ -525,8 +594,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(4)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(3)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(5)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(4)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -544,7 +613,7 @@ describe("runAgent — telemetry extension", () => {
 			promptAction: async (emit) => {
 				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[3]
 				const registerTool = vi.fn()
-				runInlineExtension(factory, { registerTool } as unknown as ExtensionAPI)
+				await runInlineExtension(factory, { registerTool } as unknown as ExtensionAPI)
 				const tool = registerTool.mock.calls[0]?.[0]
 				await tool.execute(
 					"report-1",
@@ -613,13 +682,14 @@ describe("runAgent — telemetry extension", () => {
 		const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const registerTool = vi.fn()
 		for (const factory of factories)
-			runInlineExtension(factory, { registerTool, on: vi.fn() } as unknown as ExtensionAPI)
+			await runInlineExtension(factory, { registerTool, on: vi.fn() } as unknown as ExtensionAPI)
 		expect(registerTool.mock.calls.map(([tool]) => (tool as { name: string }).name)).toEqual([
 			"submit_agent_report",
 			"list_agent_contacts",
 			"send_agent_message",
 			"post_agent_note",
 			"read_agent_board",
+			...TODO_TOOL_NAMES,
 		])
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith([
 			"list_agent_contacts",
@@ -663,7 +733,7 @@ describe("runAgent — telemetry extension", () => {
 			agentMessage: capability,
 		})
 
-		expect(mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories).toHaveLength(3)
+		expect(mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories).toHaveLength(4)
 		expect(mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories).toHaveLength(3)
 		expect(ordinary.setActiveToolsByName).toHaveBeenCalledWith([])
 		expect(isolated.setActiveToolsByName).toHaveBeenCalledWith([])
@@ -693,7 +763,7 @@ describe("runAgent — telemetry extension", () => {
 				const registerTool = vi.fn()
 				const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 				for (const factory of factories)
-					runInlineExtension(factory, { registerTool, on: vi.fn() } as unknown as ExtensionAPI)
+					await runInlineExtension(factory, { registerTool, on: vi.fn() } as unknown as ExtensionAPI)
 				const tools = new Map(registerTool.mock.calls.map(([tool]) => [(tool as { name: string }).name, tool]))
 				await (tools.get("send_agent_message") as { execute: (...args: unknown[]) => Promise<unknown> }).execute(
 					"message-1",
@@ -1353,7 +1423,7 @@ describe("runAgent — profile tool access", () => {
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
 	})
 
-	it("strips all ferment tools from subagents regardless of registered extensions", async () => {
+	it("strips parent reconciliation and ferment tools from subagents regardless of registered extensions", async () => {
 		// Subagents must not mutate ferment state (lifecycle, planning, discovery).
 		// All ferment tool names are in EXCLUDED_TOOL_NAMES so they are filtered
 		// out at session init regardless of which extensions are loaded.
@@ -1365,7 +1435,7 @@ describe("runAgent — profile tool access", () => {
 			"request_ferment_workflow",
 		]
 		const session = makeFakeSession({
-			activeToolNames: ["read", "grep", "web_search", ...fermentToolsInSession],
+			activeToolNames: ["read", "grep", "web_search", "reconcile_agent_result", ...fermentToolsInSession],
 		})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -1382,6 +1452,7 @@ describe("runAgent — profile tool access", () => {
 		for (const name of FERMENT_TOOL_NAMES) {
 			expect(calledWith, `ferment tool "${name}" must be excluded from subagents`).not.toContain(name)
 		}
+		expect(calledWith).not.toContain("reconcile_agent_result")
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("grep")
 		expect(calledWith).toContain("web_search")

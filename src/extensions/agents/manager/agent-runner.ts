@@ -22,6 +22,9 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import { FERMENT_V2_CUSTOM_ENTRY_TYPE, FERMENT_V2_TOOL_NAMES } from "../../ferment-v2/constants.js"
+import { createWorkerFermentV2Extension } from "../../ferment-v2/index.js"
+import { restoreFermentV2 } from "../../ferment-v2/reducer.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
@@ -32,6 +35,8 @@ import { createAutoModelExtension } from "../../router/index.js"
 import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
+import todosExtension from "../../todos/index.js"
+import { TODO_TOOL_NAMES } from "../../todos/tool.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
@@ -52,6 +57,7 @@ import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
+	type AgentFermentV2Outcome,
 	type SubagentType,
 	type ThinkingLevel,
 } from "../personas/types.js"
@@ -71,7 +77,14 @@ import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type Lifet
  *   ferment state. The discovery tool (list_ferments)
  *   are also excluded — they are only meaningful to the top-level planner.
  */
-const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
+const EXCLUDED_TOOL_NAMES = [
+	"Agent",
+	"resume_subagent",
+	"get_subagent_result",
+	"reconcile_agent_result",
+	"steer_subagent",
+	...FERMENT_TOOL_NAMES,
+]
 
 function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
 	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
@@ -210,6 +223,8 @@ export interface ToolActivity {
 }
 
 export interface RunOptions {
+	/** Run the assigned task under a session-local Ferment v2 controller. */
+	fermentV2?: boolean
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
@@ -256,6 +271,7 @@ export interface RunOptions {
 }
 
 export interface RunResult {
+	fermentV2?: AgentFermentV2Outcome
 	responseText: string
 	session: AgentSession
 	/** True if the agent was hard-aborted by max turns or token budget. */
@@ -332,6 +348,22 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.cacheWrite = 0
 }
 
+const workerGoalStops = new WeakMap<AgentSession, () => void>()
+
+function readWorkerGoalOutcome(session: AgentSession): AgentFermentV2Outcome | undefined {
+	if (!workerGoalStops.has(session)) return undefined
+	const state = restoreFermentV2(
+		session.sessionManager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE ? [entry.data] : [],
+			),
+	)
+	if (!state) return undefined
+	const { id, revision, status, lastEvaluation, blockedReason } = state
+	return { id, revision, status, lastEvaluation, blockedReason }
+}
+
 /**
  * Hard-abort the session: kill any in-flight bash process tree, then abort the agent loop.
  * session.abort() alone does NOT kill in-flight bash (upstream gap), so we call abortBash()
@@ -339,6 +371,7 @@ function resetUsage(usage: LifetimeUsage): void {
  * without abortBash don't break.
  */
 function hardAbort(session: AgentSession): void {
+	workerGoalStops.get(session)?.()
 	session.abortBash?.()
 	session.abort()
 }
@@ -390,7 +423,12 @@ async function runAgentInner(
 	const parentSystemPrompt = ctx.getSystemPrompt()
 
 	const extensions = options.isolated ? false : config.extensions
-	const effectiveExtensions = options.workerReport && extensions === false ? [] : extensions
+	if (options.fermentV2 && (options.isolated || options.workerReport)) {
+		throw new Error("Worker Ferment v2 requires a local non-isolated worker without a Ferment v1 task reference.")
+	}
+	const workerGoal = options.fermentV2 ? createWorkerFermentV2Extension(prompt) : undefined
+	const enableTodos = !options.isolated && (extensions !== false || !!options.agentMessage || !!workerGoal)
+	const effectiveExtensions = (options.workerReport || enableTodos) && extensions === false ? [] : extensions
 	const skills = options.isolated ? false : config.skills
 
 	const extras: PromptExtras = {
@@ -399,6 +437,8 @@ async function runAgentInner(
 	}
 
 	let toolNames = getToolNamesForType(type)
+	if (enableTodos) toolNames = [...toolNames, ...TODO_TOOL_NAMES]
+	if (workerGoal) toolNames = [...toolNames, ...FERMENT_V2_TOOL_NAMES]
 	const communicationCapability = options.isolated ? undefined : options.agentMessage
 	if (communicationCapability) {
 		toolNames = [...toolNames, LIST_AGENT_CONTACTS_TOOL_NAME, SEND_AGENT_MESSAGE_TOOL_NAME]
@@ -446,7 +486,11 @@ ${skillLines}`
 		}
 	}
 
-	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+	const disallowedSet = new Set(agentConfig?.disallowedTools)
+	if (!workerGoal) for (const name of FERMENT_V2_TOOL_NAMES) disallowedSet.add(name)
+	if (workerGoal && [...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES].some((name) => disallowedSet.has(name))) {
+		throw new Error("Worker Ferment v2 requires all TODO and Ferment v2 tools; the persona disallows one.")
+	}
 
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
 
@@ -538,6 +582,8 @@ ${skillLines}`
 	if (communicationCapability) {
 		extensionFactories.push(createAgentMessageExtension(communicationCapability))
 	}
+	if (enableTodos) extensionFactories.push(todosExtension)
+	if (workerGoal) extensionFactories.push(workerGoal.extension)
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
@@ -577,6 +623,7 @@ ${skillLines}`
 	}
 
 	const { session } = await createAgentSession(sessionOpts)
+	if (workerGoal) workerGoalStops.set(session, workerGoal.stop)
 
 	await session.bindExtensions({
 		onError: (err) => {
@@ -855,6 +902,7 @@ ${skillLines}`
 	return {
 		responseText,
 		session,
+		fermentV2: readWorkerGoalOutcome(session),
 		aborted: reportAccepted ? false : aborted || budgetAborted,
 		abortReason: reportAccepted ? undefined : abortReason,
 		steered: softLimitReached,
@@ -867,7 +915,15 @@ ${skillLines}`
 /**
  * Send a new prompt to an existing session (resume).
  */
-export async function resumeAgent(
+export function resumeAgent(
+	session: AgentSession,
+	prompt: string,
+	options: Parameters<typeof resumeAgentInner>[2] = {},
+): Promise<RunResult> {
+	return runAsAgentWorker(() => resumeAgentInner(session, prompt, options))
+}
+
+async function resumeAgentInner(
 	session: AgentSession,
 	prompt: string,
 	options: {
@@ -1022,6 +1078,7 @@ export async function resumeAgent(
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
+		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	}
 
 	const finalUsageDelta = usageDelta(getSessionUsage(session), observedUsage)
@@ -1045,6 +1102,7 @@ export async function resumeAgent(
 	return {
 		responseText,
 		session,
+		fermentV2: readWorkerGoalOutcome(session),
 		aborted: terminationToolCompleted ? false : aborted || budgetAborted,
 		abortReason: terminationToolCompleted ? undefined : abortReason,
 		steered: softLimitReached,

@@ -589,6 +589,30 @@ describe("agent communication lifecycle", () => {
 		expect(result.content[0]?.text).toContain("queued_for_running_session")
 	})
 
+	it.each([
+		"rejected",
+		"unavailable",
+		"saturated",
+	] as const)("reports a %s parent reply as a tool error with its host receipt", async (status) => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const receipt = { status, reason: "thread_closed", escapeHatch: "Inspect the worker result." }
+		manager.replyToAgentMessage.mockResolvedValue(receipt)
+		const reply = getRegisteredTool(pi, "reply_to_agent_message")
+
+		await expect(
+			reply.execute(
+				"reply-call",
+				{ message_id: "closed-question", answer: "Proceed.", max_turns: 2, max_duration: 30 },
+				undefined,
+				undefined,
+				makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-1" }),
+			),
+		).rejects.toThrow(JSON.stringify(receipt))
+		expect(manager.replyToAgentMessage).toHaveBeenCalledOnce()
+	})
+
 	it("renders coordinator guidance only while the reply tool is active", async () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
@@ -613,157 +637,120 @@ describe("agent communication lifecycle", () => {
 		expect(await beforeAgentStart({ systemPrompt: "BASE" }, undefined)).toBeUndefined()
 	})
 
-	describe("coordination board digest", () => {
-		it("renders populated digest when boards exist", async () => {
+	describe("coordinator board context", () => {
+		async function setupBoard() {
 			const pi = makeMockPi()
 			agentsExtension(pi)
-
-			// Simulate session_start to set parentCommunicationContext with a known root.
-			const sessionStart = firstHandler(pi, "session_start")
-			await sessionStart(
-				{},
-				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
-			)
-
-			// Get the AgentManager instance from the mock — it was created when agentsExtension ran.
+			const ctx = makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" })
+			await firstHandler(pi, "session_start")({}, ctx)
 			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-			if (!manager) throw new Error("AgentManager not created")
+			return { pi, ctx, manager, context: firstHandler(pi, "context") }
+		}
 
-			// Wire the mock to return the populated digest.
+		const summary = {
+			groupId: "batch-1",
+			total: 1,
+			latest: [{ id: "bd-first", authorAgentId: "agent-x", kind: "finding", title: "changed contract", postedAt: 1 }],
+		}
+
+		it("delivers a mid-run finding on the next request without queuing a follow-up turn", async () => {
+			const { pi, ctx, manager, context } = await setupBoard()
+			await latestHandler(pi, "before_agent_start")({ systemPrompt: "BASE" }, ctx)
+			expect(await context({ messages: [] }, ctx)).toBeUndefined()
+			manager.getBoardSummariesForRoot.mockReturnValue([summary])
+			const post = {
+				action: "posted",
+				rootSessionId: "root-test",
+				groupId: summary.groupId,
+				entryId: "bd-first",
+				kind: "finding",
+				authorAgentId: "agent-x",
+				title: "changed contract",
+			}
+			manager.setBoardEventHandler.mock.calls[0][0](post)
+			expect(pi.events.emit).toHaveBeenCalledWith("subagents:board", post)
+			for (const [name, listener] of vi.mocked(pi.events.on).mock.calls) {
+				if (name === "subagents:board") listener(post)
+			}
+			const result = await context({ messages: [] }, ctx)
+			expect(result).toMatchObject({
+				messages: [
+					{
+						role: "custom",
+						customType: "coordinator-board-state",
+						display: false,
+						content: expect.stringContaining("finding | agent-x | changed contract | bd-first"),
+					},
+				],
+			})
+			expect(manager.getBoardSummariesForRoot).toHaveBeenLastCalledWith("root-test")
+			expect(pi.sendMessage).not.toHaveBeenCalled()
+			expect(pi.appendEntry).not.toHaveBeenCalled()
+		})
+
+		it("replaces its previous snapshot and preserves unrelated context", async () => {
+			const { ctx, manager, context } = await setupBoard()
 			manager.getBoardSummariesForRoot.mockReturnValue([
+				{ ...summary, latest: [{ ...summary.latest[0], id: "bd-correction", title: "contract corrected" }] },
+			])
+			const unrelated = {
+				role: "custom",
+				customType: "other-extension",
+				content: "keep me",
+				display: false,
+				timestamp: 1,
+			}
+			const result = await context(
 				{
-					groupId: "batch-1",
-					total: 2,
-					latest: [
-						{ id: "bd-aaa11111", authorAgentId: "agent-x", kind: "finding", title: "parsed config", postedAt: 1 },
+					messages: [
+						unrelated,
+						{ role: "custom", customType: "coordinator-board-state", content: "stale", display: false, timestamp: 1 },
 					],
 				},
-			])
-
-			const beforeAgentStart = latestHandler(pi, "before_agent_start")
-			const rendered = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
-			const prompt = (rendered as { systemPrompt: string }).systemPrompt
-			expect(prompt).toContain("### Coordination board (group batch-1)")
-			expect(prompt).toContain("2 entries")
-			expect(prompt).toContain("finding | agent-x | parsed config | bd-aaa11111")
-		})
-
-		it("skips digest when board is empty", async () => {
-			const pi = makeMockPi()
-			agentsExtension(pi)
-
-			// No session_start called, so parentCommunicationContext is undefined.
-			const beforeAgentStart = latestHandler(pi, "before_agent_start")
-			const rendered = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
-			const prompt = (rendered as { systemPrompt: string }).systemPrompt
-			expect(prompt).not.toContain("### Coordination board")
-			expect(prompt).toContain("## Subagent messages")
-			expect(prompt).toContain("## Subagent tasks")
-		})
-
-		it("does not strip or rebuild digest — prompt with existing digest gets same digest appended", async () => {
-			const pi = makeMockPi()
-			agentsExtension(pi)
-			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-			if (!manager) throw new Error("AgentManager not created")
-
-			const sessionStart = firstHandler(pi, "session_start")
-			await sessionStart(
-				{},
-				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
+				ctx,
 			)
-
-			// Populate digest
-			manager.getBoardSummariesForRoot.mockReturnValue([
-				{
-					groupId: "batch-1",
-					total: 2,
-					latest: [
-						{ id: "bd-aaa11111", authorAgentId: "agent-x", kind: "finding", title: "parsed config", postedAt: 1 },
-					],
-				},
-			])
-
-			const beforeAgentStart = latestHandler(pi, "before_agent_start")
-			// First call with empty prompt
-			const first = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
-			const firstPrompt = (first as { systemPrompt: string }).systemPrompt
-			expect(firstPrompt).toContain("## Coordination board digest")
-
-			// Second call with same summaries — handler returns undefined (no change)
-			const second = await beforeAgentStart({ systemPrompt: firstPrompt }, undefined)
-			expect(second).toBeUndefined()
-		})
-
-		it("leaves digest section in place when boards become empty — no per-turn strip", async () => {
-			const pi = makeMockPi()
-			agentsExtension(pi)
-			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-			if (!manager) throw new Error("AgentManager not created")
-
-			const sessionStart = firstHandler(pi, "session_start")
-			await sessionStart(
-				{},
-				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
-			)
-
-			// Populate digest
-			manager.getBoardSummariesForRoot.mockReturnValue([
-				{
-					groupId: "batch-1",
-					total: 2,
-					latest: [
-						{ id: "bd-aaa11111", authorAgentId: "agent-x", kind: "finding", title: "parsed config", postedAt: 1 },
-					],
-				},
-			])
-
-			const beforeAgentStart = latestHandler(pi, "before_agent_start")
-			const first = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
-			const firstPrompt = (first as { systemPrompt: string }).systemPrompt
-			expect(firstPrompt).toContain("## Coordination board digest")
-			expect(firstPrompt).toContain("### Coordination board")
-
-			// Second call — boards now empty; handler returns undefined (no change)
-			const second = await beforeAgentStart({ systemPrompt: firstPrompt }, undefined)
-			expect(second).toBeUndefined()
-		})
-
-		it("appears on second call when first call had empty boards", async () => {
-			const pi = makeMockPi()
-			agentsExtension(pi)
-			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-			if (!manager) throw new Error("AgentManager not created")
-
-			const sessionStart = firstHandler(pi, "session_start")
-			await sessionStart(
-				{},
-				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
-			)
-
-			// First call — no digest (empty boards)
+			expect(result).toMatchObject({
+				messages: [unrelated, { content: expect.stringContaining("contract corrected") }],
+			})
+			expect(JSON.stringify(result)).not.toContain("stale")
 			manager.getBoardSummariesForRoot.mockReturnValue([])
+			expect(await context({ messages: [unrelated] }, ctx)).toBeUndefined()
+		})
 
-			const beforeAgentStart = latestHandler(pi, "before_agent_start")
-			const first = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
-			const firstPrompt = (first as { systemPrompt: string }).systemPrompt
-			// Dynamic-only needle (static guidance text mentions the section name)
-			expect(firstPrompt).not.toContain("## Coordination board digest\n### Coordination board")
+		it("removes stale context when tools are disabled, the root changes, or the session shuts down", async () => {
+			const { pi, ctx, manager, context } = await setupBoard()
+			manager.getBoardSummariesForRoot.mockReturnValue([summary])
+			const stale = {
+				role: "custom",
+				customType: "coordinator-board-state",
+				content: "stale",
+				display: false,
+				timestamp: 1,
+			}
+			pi.getActiveTools.mockReturnValue([])
+			expect(await context({ messages: [stale] }, ctx)).toEqual({ messages: [] })
+			pi.getActiveTools.mockReturnValue(["reply_to_agent_message"])
+			const other = makeMockCtx(undefined, undefined, { rootSessionId: "other-root", hasUI: false, mode: "json" })
+			expect(await context({ messages: [stale] }, other)).toEqual({ messages: [] })
+			await pi.fireShutdown()
+			expect(await context({ messages: [stale] }, ctx)).toEqual({ messages: [] })
+		})
 
-			// Second call — boards now populated
+		it("limits each group to three summaries and keeps board claims out of the system prompt", async () => {
+			const { pi, ctx, manager, context } = await setupBoard()
 			manager.getBoardSummariesForRoot.mockReturnValue([
 				{
-					groupId: "batch-sec",
-					total: 1,
-					latest: [{ id: "bd-ccc33333", authorAgentId: "agent-z", kind: "finding", title: "late config", postedAt: 3 }],
+					...summary,
+					total: 4,
+					latest: [0, 1, 2, 3].map((i) => ({ ...summary.latest[0], id: `bd-${i}`, title: `finding-${i}` })),
 				},
 			])
-
-			const second = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
-			const secondPrompt = (second as { systemPrompt: string }).systemPrompt
-			expect(secondPrompt).toContain("## Coordination board digest\n### Coordination board (group batch-sec)")
-			expect(secondPrompt).toContain("1 entries")
-			expect(secondPrompt).toContain("finding | agent-z | late config | bd-ccc33333")
+			const result = await context({ messages: [] }, ctx)
+			expect(JSON.stringify(result)).toContain("finding-2")
+			expect(JSON.stringify(result)).not.toContain("finding-3")
+			const prompt = await latestHandler(pi, "before_agent_start")({ systemPrompt: "BASE" }, ctx)
+			expect(JSON.stringify(prompt)).not.toContain("finding-0")
+			expect(JSON.stringify(result)).toContain("claims")
 		})
 	})
 
@@ -1144,6 +1131,7 @@ describe("Agent tool multi-mode model guard", () => {
 				subagent_type: "general-purpose",
 				run_in_background: true,
 				communication: "group",
+				ferment_v2: true,
 			},
 			undefined,
 			undefined,
@@ -1155,7 +1143,7 @@ describe("Agent tool multi-mode model guard", () => {
 			expect.anything(),
 			expect.anything(),
 			expect.anything(),
-			expect.objectContaining({ communication: "group", rootSessionId: "test-session" }),
+			expect.objectContaining({ communication: "group", rootSessionId: "test-session", fermentV2: true }),
 		)
 	})
 

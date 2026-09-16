@@ -3,7 +3,8 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 
-const TODO_TOOL_NAME_SET = new Set<string>(["write_todos", ...TODO_TOOL_NAMES])
+// Other extensions may write through the same store and return WriteTodosDetails.
+const TODO_TOOL_NAME_SET = new Set<string>(["write_todos", "reconcile_agent_result", ...TODO_TOOL_NAMES])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"

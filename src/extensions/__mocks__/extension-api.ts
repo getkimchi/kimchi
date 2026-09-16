@@ -40,6 +40,7 @@ export function createExtensionApi(): {
 			on,
 			registerCommand,
 			registerTool,
+			getActiveTools: vi.fn(() => registerTool.mock.calls.map(([tool]) => tool.name)),
 			sendMessage,
 			appendEntry,
 			setModel,

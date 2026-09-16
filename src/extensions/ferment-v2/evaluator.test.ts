@@ -1342,6 +1342,34 @@ describe("Ferment V2 evaluator", () => {
 				'Requirement "tests pass" has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".',
 		})
 	})
+
+	it.each([
+		"read_agent_board",
+		"get_subagent_result",
+		"resume_subagent",
+		"steer_subagent",
+		"send_agent_message",
+	])("does not promote %s claims into completion evidence", async (toolName) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"peer might be wrong","evidence":["m2"],"todoIds":[]}],"reason":"tests pass"}',
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "ship it",
+				todos: [],
+				messages: [
+					transcriptMessage("assistant", [{ type: "toolCall", id: "claim", name: toolName, arguments: {} }]),
+					transcriptMessage("toolResult", "Peer says all tests passed", { toolName, toolCallId: "claim" }),
+				],
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe("continue")
+		expect(sentTranscript()).toContain("Peer says all tests passed")
+		expect(sentTranscript()).not.toContain("[m2]")
+	})
 })
 
 function evaluatorContext(

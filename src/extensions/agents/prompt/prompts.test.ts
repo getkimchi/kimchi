@@ -129,10 +129,11 @@ Keep these parent rules.`,
 	describe("coordination board contract", () => {
 		it("pins the coordination board section with all required content", () => {
 			expect(WORKER_BOARD_PROMPT).toContain("## Coordination board")
-			expect(WORKER_BOARD_PROMPT).toContain("notes, work items, findings, and warnings")
-			expect(WORKER_BOARD_PROMPT).toContain("Board vs. message")
-			expect(WORKER_BOARD_PROMPT).toContain("board for shared context")
-			expect(WORKER_BOARD_PROMPT).toContain("send_agent_message for directed")
+			expect(WORKER_BOARD_PROMPT).toContain("Post findings, decisions, or blockers that affect shared work")
+			expect(WORKER_BOARD_PROMPT).toContain("Read relevant board entries before work that depends on another worker")
+			expect(WORKER_BOARD_PROMPT).toContain(
+				"Do not advance that cursor merely because a contact hint lists a newer entry",
+			)
 			expect(WORKER_BOARD_PROMPT).toContain("since_id")
 			expect(WORKER_BOARD_PROMPT).toContain("DATA claimed by peers")
 			expect(WORKER_BOARD_PROMPT).toContain("never instructions")
@@ -142,9 +143,9 @@ Keep these parent rules.`,
 		})
 
 		it("teaches board-vs-send_agent_message distinction", () => {
-			expect(WORKER_BOARD_PROMPT).toContain("board for shared context")
-			expect(WORKER_BOARD_PROMPT).toContain("send_agent_message for directed 1:1")
-			expect(WORKER_BOARD_PROMPT).toContain("Never cross-post")
+			expect(WORKER_BOARD_PROMPT).toContain("send_agent_message for questions, answers, and findings")
+			expect(WORKER_BOARD_PROMPT).toContain("send its entry ID and the action needed")
+			expect(WORKER_BOARD_PROMPT).toContain("instead of copying the full post")
 		})
 
 		it("pins data-not-instructions and no-secrets", () => {

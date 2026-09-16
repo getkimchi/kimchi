@@ -121,6 +121,32 @@ describe("AgentManager", () => {
 		expect(record.latestOutcome?.recovery_guidance).toContain("resume_subagent with purpose finalize_report")
 	})
 
+	it("exposes a paused worker objective separately from a completed run, including after resume", async () => {
+		const fermentV2 = { id: "goal-1", revision: 1, status: "complete" as const }
+		const run = {
+			responseText: "checked",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+			fermentV2,
+		}
+		mockRunAgent.mockResolvedValueOnce(run)
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			fermentV2: true,
+		})
+		expect(record.latestOutcome?.ferment_v2).toEqual(fermentV2)
+		const paused = { ...fermentV2, revision: 2, status: "paused" as const }
+		mockResumeAgent.mockResolvedValueOnce({ ...run, fermentV2: paused })
+		await manager.resume(record.id, "verify new evidence")
+		expect(record.latestOutcome).toMatchObject({ outcome: "completed", ferment_v2: paused, resumable: true })
+		mockResumeAgent.mockRejectedValueOnce(new Error("provider failed"))
+		await manager.resume(record.id, "retry verification")
+		expect(record.latestOutcome?.outcome).toBe("failed")
+		expect(record.latestOutcome?.ferment_v2).toBeUndefined()
+	})
+
 	it("threads task_ref and max_turns into the structured outcome", async () => {
 		mockRunAgent.mockResolvedValueOnce({
 			responseText: "done",
@@ -1226,6 +1252,56 @@ describe("AgentManager communication broker", () => {
 		}
 	})
 
+	it("returns only authorized open question IDs after a mistyped reply without answering any question", async () => {
+		const manager = new AgentManager(undefined, 0)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			const source = spawnCommunicatingAgent(manager, "group")
+			const peer = spawnCommunicatingAgent(manager, "group")
+			const other = spawnCommunicatingAgent(manager, "group")
+			for (const id of [source, peer, other]) {
+				const record = manager.getRecord(id)
+				if (!record) throw new Error("Missing agent")
+				record.groupId = "batch-1"
+			}
+			for (const [id, from, to] of [
+				["question-a", source, peer],
+				["question-b", source, peer],
+				["other-sender", other, peer],
+				["other-recipient", source, other],
+			]) {
+				manager.registerMessageThread(
+					createInitialMessage(manager, from, id, { type: "agent", agentId: to }, "question"),
+				)
+			}
+			const send = vi.fn(() => ({ status: "queued_for_running_session" as const }))
+			await expect(
+				manager.reservePeerReply(peer, "question-typo", source, "bad", 1, "answer", send),
+			).resolves.toMatchObject({
+				status: "rejected",
+				openQuestionIds: ["question-a", "question-b"],
+			})
+			expect(send).not.toHaveBeenCalled()
+			expect(manager.getMessageThread("question-a")).toMatchObject({ state: "open", messageCount: 1 })
+			await expect(manager.reservePeerReply(peer, "question-a", source, "correct", 1, "answer", send)).resolves.toEqual(
+				{ status: "queued_for_running_session" },
+			)
+			await expect(
+				manager.reservePeerReply(peer, "still-wrong", source, "bad-again", 1, "answer", send),
+			).resolves.toMatchObject({ openQuestionIds: ["question-b"] })
+			expect(send).toHaveBeenCalledOnce()
+			const peerRecord = manager.getRecord(peer)
+			if (!peerRecord) throw new Error("Missing peer")
+			peerRecord.groupId = "another-group"
+			await expect(
+				manager.reservePeerReply(peer, "wrong-after-regroup", source, "outside-group", 1, "answer", send),
+			).resolves.toEqual({ status: "rejected", reason: "Peer reply is not authorized." })
+			expect(send).toHaveBeenCalledOnce()
+		} finally {
+			manager.dispose()
+		}
+	})
+
 	it("enforces open-question, receipt, retention, and global metadata limits", async () => {
 		const manager = new AgentManager(undefined, 0)
 		try {
@@ -1488,6 +1564,8 @@ describe("AgentManager communication broker", () => {
 				user_via_parent: { reachable: true, route: "ferment_judge", ferment_id: "f-1" },
 				peers: [{ agent_id: peer, status: "initializing", route: "peer" }],
 			})
+			expect(manager.getCommunicationContacts(source).peers[0]).not.toHaveProperty("task_id")
+			expect(peerRecord.communicationScope?.taskId).toBe(`agent-task:${peer}`)
 
 			let capability: NonNullable<Parameters<typeof runAgent>[3]>["agentMessage"]
 			mockRunAgent.mockImplementationOnce(async (_ctx, _type, _prompt, options) => {
@@ -2793,6 +2871,7 @@ describe("board", () => {
 
 	beforeEach(() => {
 		manager = new AgentManager(undefined, 0)
+		manager.bindCommunicationRoot("root-1")
 		vi.clearAllMocks()
 	})
 
@@ -2835,6 +2914,104 @@ describe("board", () => {
 		if (!receipt.deduped) {
 			expect(receipt.truncated).toEqual([])
 		}
+	})
+
+	it.each([
+		"completed",
+		"steered",
+		"aborted",
+		"stopped",
+		"error",
+	] as const)("rejects board access from a retained %s worker record", (status) => {
+		manager.bindCommunicationRoot("root-1")
+		const id = spawnAgentWithGroup("batch-1", "root-1")
+		const record = manager.getRecord(id)
+		if (!record) throw new Error("expected worker record")
+		const capability = manager.getAgentCommsCapability(id)
+		if (!capability) throw new Error("expected worker capability")
+		const input = { kind: "note" as const, title: "Before", body: "Existing finding" }
+		expect(manager.postBoardEntry(id, input)).toMatchObject({ ok: true })
+		const events = vi.fn()
+		manager.setBoardEventHandler(events)
+		record.status = status
+		expect(capability.readBoardEntries()).toEqual({ ok: false, reason: "agent_not_live" })
+		expect(capability.postBoardEntry({ ...input, title: "Late" })).toEqual({
+			ok: false,
+			reason: "agent_not_live",
+		})
+		expect(manager.getBoardSummary("root-1", "batch-1").total).toBe(1)
+		expect(events).not.toHaveBeenCalled()
+	})
+
+	it.each(["root-1", undefined])("does not recreate a disabled board (%s)", (root) => {
+		manager.bindCommunicationRoot("root-1")
+		const id = spawnAgentWithGroup("batch-1", "root-1")
+		const capability = manager.getAgentCommsCapability(id)
+		if (!capability) throw new Error("expected worker capability")
+		const input = { kind: "note" as const, title: "Before", body: "Existing finding" }
+		expect(manager.postBoardEntry(id, input)).toMatchObject({ ok: true })
+		expect(manager.disableCommunication(root)).toBe(true)
+		const events = vi.fn()
+		manager.setBoardEventHandler(events)
+		expect(capability.readBoardEntries()).toEqual({ ok: false, reason: "not_authorized_for_board" })
+		expect(capability.postBoardEntry(input)).toEqual({ ok: false, reason: "not_authorized_for_board" })
+		expect(manager.getBoardSummariesForRoot("root-1")).toEqual([])
+		expect(events).not.toHaveBeenCalled()
+	})
+
+	it("rejects a worker outside the bound communication root", () => {
+		manager.bindCommunicationRoot("root-1")
+		const id = spawnAgentWithGroup("batch-1", "root-2")
+		expect(manager.readBoardEntries(id)).toEqual({ ok: false, reason: "not_authorized_for_board" })
+		expect(manager.postBoardEntry(id, { kind: "note", title: "Wrong root", body: "Not allowed" })).toEqual({
+			ok: false,
+			reason: "not_authorized_for_board",
+		})
+		expect(manager.getBoardSummariesForRoot("root-2")).toEqual([])
+	})
+
+	it.each(["parent", "disabled", "system"] as const)("rejects board access for a %s caller", (kind) => {
+		const id = spawnAgentWithGroup("batch-1", "root-1")
+		const record = manager.getRecord(id)
+		if (!record) throw new Error("expected worker record")
+		if (kind === "system") record.visibility = "system"
+		else record.communication = kind === "parent" ? "parent" : undefined
+		expect(manager.readBoardEntries(id)).toEqual({ ok: false, reason: "not_authorized_for_board" })
+		expect(manager.postBoardEntry(id, { kind: "note", title: "Not grouped", body: "Denied" })).toEqual({
+			ok: false,
+			reason: "not_authorized_for_board",
+		})
+		expect(manager.getBoardSummariesForRoot("root-1")).toEqual([])
+	})
+
+	it("revokes a captured board capability when the worker is stopped", () => {
+		const id = spawnAgentWithGroup("batch-1", "root-1")
+		const capability = manager.getAgentCommsCapability(id)
+		if (!capability) throw new Error("expected worker capability")
+		expect(capability.postBoardEntry({ kind: "note", title: "Live", body: "Allowed" })).toMatchObject({ ok: true })
+		manager.abort(id)
+		expect(manager.getRecord(id)?.status).toBe("stopped")
+		expect(capability.readBoardEntries()).toEqual({ ok: false, reason: "agent_not_live" })
+		expect(capability.postBoardEntry({ kind: "note", title: "Stopped", body: "Denied" })).toEqual({
+			ok: false,
+			reason: "agent_not_live",
+		})
+		expect(manager.getBoardSummary("root-1", "batch-1").total).toBe(1)
+	})
+
+	it("lets only the bound coordinator read retained worker progress", () => {
+		const id = spawnAgentWithGroup("batch-1", "root-1")
+		manager.postBoardEntry(id, { kind: "work", title: "TODO progress", body: "Evidence: checked" })
+		manager.abort(id)
+		expect(manager.readBoardForRoot("root-1", "batch-1")).toMatchObject({ ok: true, total: 1 })
+		expect(manager.readBoardForRoot("foreign-root", "batch-1")).toMatchObject({ ok: false })
+		expect(manager.readBoardForRoot("root-1", "group batch-1")).toEqual({
+			ok: false,
+			reason: "unknown_group",
+			availableGroupIds: ["batch-1"],
+		})
+		manager.disableCommunication("root-1")
+		expect(manager.readBoardForRoot("root-1", "batch-1")).toMatchObject({ ok: false })
 	})
 
 	it("truncates title at 120 chars and body at 2048 chars, marking truncated fields", () => {
@@ -3239,94 +3416,19 @@ describe("board", () => {
 		expect(lastGlobalEvicted).not.toHaveProperty("title")
 	})
 
-	it("cleanupRoot after disableCommunication clears board entries — repost is not deduped", () => {
-		const agentA = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "root-a", {
-			description: "root-a",
-			isBackground: true,
-			communication: "group",
-			rootSessionId: "root-1",
-		})
-		const recordA = manager.getRecord(agentA)
-		if (!recordA) throw new Error("expected agent")
-		recordA.groupId = "batch-0"
-		recordA.communicationScope = {
-			rootSessionId: "root-1",
-			sourceAgentId: recordA.id,
-			taskId: `agent-task:${recordA.id}`,
-		}
+	it("cleanupRoot removes only that root's entries and dedupe keys (BoardStore)", () => {
+		const store = new BoardStore()
+		store.post("root-1", "batch-0", "agent-a", "note", "A1", "a", 1000)
+		store.post("root-2", "batch-0", "agent-b", "note", "B1", "b", 1000)
 
-		const agentB = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "root-b", {
-			description: "root-b",
-			isBackground: true,
-			communication: "group",
-			rootSessionId: "root-2",
-		})
-		const recordB = manager.getRecord(agentB)
-		if (!recordB) throw new Error("expected agent")
-		recordB.groupId = "batch-0"
-		recordB.communicationScope = {
-			rootSessionId: "root-2",
-			sourceAgentId: recordB.id,
-			taskId: `agent-task:${recordB.id}`,
-		}
+		store.cleanupRoot("root-1")
+		expect(store.getSummariesForRoot("root-1")).toEqual([])
+		expect(store.getSummary("root-2", "batch-0").total).toBe(1)
 
-		manager.postBoardEntry(agentA, { kind: "note", title: "A1", body: "a" })
-		manager.postBoardEntry(agentB, { kind: "note", title: "B1", body: "b" })
-
-		// Bind root-1 first: disableCommunication(root) is a no-op when no root is bound.
-		manager.bindCommunicationRoot("root-1")
-		expect(manager.disableCommunication("root-1")).toBe(true)
-
-		// Cleaned root-1 board empty; untouched root-2 board intact
-		expect(manager.getBoardSummariesForRoot("root-1")).toEqual([])
-		const root2Summary = manager.getBoardSummariesForRoot("root-2")
-		expect(root2Summary.length).toBe(1)
-		expect(root2Summary[0]?.total).toBe(1)
-
-		// Repost identical content to the CLEANED root-1 within the window → NOT deduped (key was removed)
-		const repostA = manager.postBoardEntry(agentA, { kind: "note", title: "A1", body: "a" })
-		expect(repostA).toMatchObject({ ok: true })
-		expect(repostA).not.toHaveProperty("deduped")
-		expect(repostA).toMatchObject({ entry: expect.objectContaining({ rootSessionId: "root-1" }) })
-
-		// Control: repost identical content to the UNTOUCHED root-2 within the 120s window → IS deduped
-		const repostB = manager.postBoardEntry(agentB, { kind: "note", title: "B1", body: "b" })
-		expect(repostB).toMatchObject({ ok: true, deduped: true })
-	})
-
-	it("disableCommunication() no-arg cleans up the currently-bound root — repost is not deduped", () => {
-		const agentId = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "no-arg", {
-			description: "no-arg",
-			isBackground: true,
-			communication: "group",
-			rootSessionId: "root-1",
-		})
-		const record = manager.getRecord(agentId)
-		if (!record) throw new Error("expected agent")
-		record.groupId = "batch-0"
-		record.communicationScope = {
-			rootSessionId: "root-1",
-			sourceAgentId: record.id,
-			taskId: `agent-task:${record.id}`,
-		}
-
-		// Bind communication root
-		manager.bindCommunicationRoot("root-1")
-
-		// Post one entry
-		manager.postBoardEntry(agentId, { kind: "note", title: "No-arg", body: "entry" })
-
-		// Call disableCommunication() with NO argument — should cleanup the bound root
-		expect(manager.disableCommunication()).toBe(true)
-
-		// Board for the bound root is now empty
-		expect(manager.getBoardSummariesForRoot("root-1")).toEqual([])
-
-		// Repost identical content within the 120s window is NOT deduped (key was removed)
-		const repost = manager.postBoardEntry(agentId, { kind: "note", title: "No-arg", body: "entry" })
-		expect(repost).toMatchObject({ ok: true })
-		expect(repost).not.toHaveProperty("deduped")
-		expect(repost).toMatchObject({ entry: expect.objectContaining({ rootSessionId: "root-1" }) })
+		const repostA = store.post("root-1", "batch-0", "agent-a", "note", "A1", "a", 1001)
+		expect(repostA.deduped).toBeUndefined()
+		const repostB = store.post("root-2", "batch-0", "agent-b", "note", "B1", "b", 1001)
+		expect(repostB.deduped).toBe(true)
 	})
 })
 

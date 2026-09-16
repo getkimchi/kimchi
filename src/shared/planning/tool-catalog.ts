@@ -253,6 +253,7 @@ export const WRITE_TOOLS: ToolEntry[] = [
 	{ name: "Agent", modes: ["ferment"] },
 	{ name: "resume_subagent", modes: ["ferment"] },
 	{ name: "get_subagent_result", modes: ["ferment"] },
+	{ name: "reconcile_agent_result", modes: ["ferment"] },
 ]
 
 // ---------------------------------------------------------------------------

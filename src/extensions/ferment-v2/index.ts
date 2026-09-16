@@ -199,7 +199,31 @@ function completesCurrentTodoList(
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
+	registerFermentV2(pi)
+}
 
+/** The host supplies the task; all controller state stays in the child's journal. */
+export function createWorkerFermentV2Extension(objective: string): {
+	extension: (pi: ExtensionAPI) => void
+	stop: () => void
+} {
+	let stop = () => {}
+	return {
+		extension: (pi) =>
+			registerFermentV2(pi, {
+				objective,
+				registerStop: (handler) => {
+					stop = handler
+				},
+			}),
+		stop: () => stop(),
+	}
+}
+
+function registerFermentV2(
+	pi: ExtensionAPI,
+	worker?: { objective: string; registerStop: (stop: () => void) => void },
+): void {
 	let currentFermentV2: FermentV2State
 	const mutationTails = new Map<string, Promise<void>>()
 	let currentSessionId: string | undefined
@@ -248,6 +272,30 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let releaseWorkedDurationHold: ((attachToCurrentMessage?: boolean) => void) | undefined
 	let unregisterTodoCommandMutationHandler: (() => void) | undefined
 	const fermentV2Waiters = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+	let workerRunEnded = false
+	function stopWorker(): void {
+		workerRunEnded = true
+		void abortEvaluation()
+		invalidateContinuation()
+		const current = currentFermentV2
+		if (current?.status === "active") {
+			commitFermentV2(setFermentV2Status(current, current.id, current.revision, "paused", timestamp()))
+		}
+	}
+	if (worker) {
+		pi.on("before_agent_start", (_event, ctx) => {
+			bindSession(ctx)
+			if (!workerRunEnded) return
+			workerRunEnded = false
+			const current = currentFermentV2
+			if (current && current.status !== "budget_limited") {
+				const revised = editFermentV2(current, current.id, current.revision, current.objective, timestamp())
+				const resumed = setFermentV2Status(revised, revised.id, revised.revision, "active", timestamp())
+				resetFermentV2Runtime()
+				commitFermentV2({ ...resumed, consecutiveErrorTurns: 0, unchangedContinuationTurns: 0 })
+			}
+		})
+	}
 
 	function releaseEvaluationIndicator(): void {
 		releaseEvaluationWorkingIndicator?.()
@@ -255,6 +303,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function holdFermentV2PromptSummary(): void {
+		if (worker) return
 		releasePromptSummaryHold ??= holdPromptSummary()
 	}
 
@@ -264,10 +313,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function holdFermentV2WorkedDuration(): void {
+		if (worker) return
 		releaseWorkedDurationHold ??= holdWorkedDuration()
 	}
 
 	function holdFermentV2WorkedForMessage(): void {
+		if (worker) return
 		releaseWorkedForMessageHold ??= holdWorkedForMessage()
 	}
 
@@ -442,6 +493,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function replaySession(ctx: ExtensionContext): void {
+		worker?.registerStop(stopWorker)
 		currentContext = ctx
 		// Abort before replay rebuilds state: a rewind can reuse the same Ferment V2 id/revision.
 		void abortEvaluation()
@@ -558,6 +610,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function syncRunStatus(fermentV2: FermentV2State): void {
+		if (worker) return
 		currentContext?.ui.setStatus("ferment-v2", formatFermentV2Status(fermentV2, evaluationAbort !== undefined))
 	}
 
@@ -1528,6 +1581,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		replaySession(ctx)
+		if (worker && !currentFermentV2) {
+			const initial = createFermentV2(undefined, worker.objective, randomUUID(), timestamp())
+			commitFermentV2(initial)
+			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.STARTED, initial)
+		}
 		// Defer a resumed Ferment V2's kick so an embedder's incoming prompt wins the
 		// streaming-slot race; the timer rechecks busy, pending, and Ferment V2 identity.
 		// No waiter is held open, and pendingContinuation keeps repeated resumes idempotent.
@@ -2350,6 +2408,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.sessionManager.getSessionId() !== currentSessionId) return
+		if (worker) workerRunEnded = true
 		unregisterTodoCommandMutationHandler?.()
 		unregisterTodoCommandMutationHandler = undefined
 		void abortEvaluation()

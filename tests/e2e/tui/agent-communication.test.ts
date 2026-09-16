@@ -1,10 +1,100 @@
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
+
+function enableCommunication(homeDir: string): void {
+	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(path, "utf-8"))
+	settings.resources = { ...settings.resources, "extensions.agent-communication": true }
+	writeFileSync(path, `${JSON.stringify(settings)}\n`, "utf-8")
+}
+
+test("parent verifies a worker that finished after a soft-limit warning and completes its TODO", async ({
+	terminal,
+}) => {
+	const call = (id: string, name: string, args: Record<string, unknown>) => ({
+		id,
+		function: { name, arguments: JSON.stringify(args) },
+	})
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "agent-communication-steered-reconciliation",
+			seedHome: (homeDir, workDir) => {
+				enableCommunication(homeDir)
+				const agentsDir = join(workDir, ".kimchi", "agents")
+				mkdirSync(agentsDir, { recursive: true })
+				writeFileSync(
+					join(agentsDir, "marker-reader.md"),
+					"---\ndescription: marker reader\nprompt_mode: append\nextensions: true\nskills: false\n---\nRead INPUT.txt and report its marker.",
+				)
+				writeFileSync(join(workDir, "INPUT.txt"), "verified-marker\n")
+			},
+			models: [{ slug: "basic", displayName: "Fake Basic", input: ["text"] }],
+			responses: [
+				{
+					toolCalls: [
+						call("create-marker-todo", "create_todos", {
+							todos: [{ content: "Verify worker marker", status: "in_progress" }],
+						}),
+					],
+				},
+				{
+					toolCalls: [
+						call("start-marker-reader", "Agent", {
+							prompt: "Read INPUT.txt and report the exact marker.",
+							description: "marker reader",
+							subagent_type: "marker-reader",
+							communication: "parent",
+							max_turns: 1,
+						}),
+					],
+				},
+				{
+					forSubagent: true,
+					toolCalls: [call("worker-read-marker", "read", { path: "INPUT.txt" })],
+				},
+				{ forSubagent: true, stream: ["INPUT.txt contains verified-marker."] },
+				{
+					toolCalls: [
+						call("reconcile-before-check", "reconcile_agent_result", {
+							agent_id: "__AGENT_ID__",
+							todo_id: 1,
+							note: "Worker reported the marker.",
+						}),
+					],
+				},
+				{ toolCalls: [call("parent-read-marker", "read", { path: "INPUT.txt" })] },
+				{
+					toolCalls: [
+						call("reconcile-after-check", "reconcile_agent_result", {
+							agent_id: "__AGENT_ID__",
+							todo_id: 1,
+							note: "Parent read confirms the worker reported verified-marker correctly.",
+							verification_tool_call_id: "parent-read-marker",
+						}),
+					],
+				},
+				{ stream: ["MARKER-REVIEW-DONE"] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Delegate the marker read, verify it and reconcile its TODO")
+			await waitForText(terminal, "MARKER-REVIEW-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("worker finished after its soft limit and parent checked the marker")
+			terminal.write("/todos")
+			await waitForText(terminal, "/todos")
+			terminal.submit("")
+			await waitForText(terminal, "1/1 done · 0 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).toContain("Verify worker marker")
+			trace.step("verified worker result completed the existing TODO")
+		},
+	)
+})
 
 test("communicating child asks through parent, resumes after reply, and shows its final result", async ({
 	terminal,
@@ -14,6 +104,7 @@ test("communicating child asks through parent, resumes after reply, and shows it
 		{
 			artifactName: "agent-communication-question-reply-resume",
 			seedHome: (_homeDir, workDir) => {
+				enableCommunication(_homeDir)
 				const agentsDir = join(workDir, ".kimchi", "agents")
 				mkdirSync(agentsDir, { recursive: true })
 				writeFileSync(
@@ -102,12 +193,13 @@ test("communicating child asks through parent, resumes after reply, and shows it
 	)
 })
 
-test("two same-batch workers post and read via the coordination board", async ({ terminal }) => {
+test("a worker TODO update reaches its peer through the coordination board", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "agent-communication-board-workflow",
 			seedHome: (_homeDir, workDir) => {
+				enableCommunication(_homeDir)
 				const agentsDir = join(workDir, ".kimchi", "agents")
 				mkdirSync(agentsDir, { recursive: true })
 				writeFileSync(
@@ -126,7 +218,7 @@ test("two same-batch workers post and read via the coordination board", async ({
 							function: {
 								name: "Agent",
 								arguments: JSON.stringify({
-									prompt: "ALPHA task: post a finding to the coordination board and list contacts, then settle.",
+									prompt: "ALPHA task: complete a TODO with a checked result and list contacts, then settle.",
 									description: "board worker alpha",
 									subagent_type: "board-worker",
 									communication: "group",
@@ -177,11 +269,9 @@ test("two same-batch workers post and read via the coordination board", async ({
 						{
 							id: "call_alpha_post",
 							function: {
-								name: "post_agent_note",
+								name: "create_todos",
 								arguments: JSON.stringify({
-									kind: "finding",
-									title: "Shared resource: needs fresh fetch",
-									body: "The cached data is stale. All workers should fetch fresh data before proceeding.",
+									todos: [{ content: "Check source marker", status: "completed", note: "Evidence: source-marker-42" }],
 								}),
 							},
 						},
@@ -196,29 +286,37 @@ test("two same-batch workers post and read via the coordination board", async ({
 					stream: ["ALPHA: posted and listing contacts"],
 					toolCalls: [
 						{
-							id: "call_alpha_list_contacts",
+							id: "call_alpha_ready",
 							function: {
-								name: "list_agent_contacts",
-								arguments: JSON.stringify({}),
+								name: "write",
+								arguments: JSON.stringify({ path: "alpha-ready.txt", content: "ready" }),
 							},
 						},
 					],
 				},
-				{ forSubagent: true, stream: ["ALPHA-DONE: board posted"] },
+				{
+					forSubagent: true,
+					match: (request) =>
+						JSON.stringify(request.body).includes("ALPHA task") &&
+						JSON.stringify(request.body).includes("call_alpha_ready"),
+					stream: ["ALPHA-DONE: board posted"],
+				},
 				{
 					forSubagent: true,
 					match: (request) => {
 						const body = JSON.stringify(request.body ?? {})
-						return body.includes("BETA task") && !body.includes("call_beta_read")
+						return body.includes("BETA task") && !body.includes("call_beta_wait")
 					},
 					textDelayMs: 1500,
 					stream: ["BETA: will read the board"],
 					toolCalls: [
 						{
-							id: "call_beta_read",
+							id: "call_beta_wait",
 							function: {
-								name: "read_agent_board",
-								arguments: JSON.stringify({}),
+								name: "bash",
+								arguments: JSON.stringify({
+									command: "for i in {1..100}; do test -f alpha-ready.txt && exit 0; sleep 0.05; done; exit 1",
+								}),
 							},
 						},
 					],
@@ -226,21 +324,33 @@ test("two same-batch workers post and read via the coordination board", async ({
 				{
 					forSubagent: true,
 					match: (request) => {
-						const body = JSON.stringify(request.body ?? {})
-						return body.includes("BETA task") && body.includes("call_beta_read") && !body.includes("BETA-DONE")
+						const body = JSON.stringify(request.body)
+						return body.includes("BETA task") && body.includes("call_beta_wait") && !body.includes("call_beta_read")
 					},
-					stream: ["BETA: read board; now listing contacts for hint"],
-					toolCalls: [
-						{
-							id: "call_beta_list_contacts",
-							function: {
-								name: "list_agent_contacts",
-								arguments: JSON.stringify({}),
-							},
-						},
-					],
+					toolCalls: [{ id: "call_beta_read", function: { name: "read_agent_board", arguments: "{}" } }],
 				},
-				{ forSubagent: true, stream: ["BETA-DONE: board read and settled"] },
+
+				{
+					forSubagent: true,
+					match: (request) => {
+						const body = JSON.stringify(request.body ?? {})
+						return (
+							body.includes("BETA task") &&
+							body.includes("call_beta_read") &&
+							body.includes("TODO progress: 1/1 completed") &&
+							body.includes("source-marker-42") &&
+							!body.includes("BETA-DONE")
+						)
+					},
+					stream: ["BETA-DONE: read TODO progress and source-marker-42"],
+				},
+				{
+					forSubagent: true,
+					match: (request) =>
+						JSON.stringify(request.body).includes("BETA task") &&
+						JSON.stringify(request.body).includes("call_beta_read"),
+					stream: ["BETA-DONE: missing snapshot"],
+				},
 			],
 		},
 		async (_fixture, trace) => {
@@ -253,7 +363,7 @@ test("two same-batch workers post and read via the coordination board", async ({
 			// receipt-level correctness is covered by probe-c and unit tests.
 			const view = viewText(terminal)
 			expect(view).toContain("ALPHA-DONE: board posted")
-			expect(view).toContain("BETA-DONE: board read and settled")
+			expect(view).toContain("BETA-DONE: read TODO progress and source-marker-42")
 			expect(view).toContain("PROBE-BOARD-DONE: board workflow complete")
 		},
 	)

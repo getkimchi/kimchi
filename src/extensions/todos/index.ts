@@ -71,9 +71,10 @@ function hiddenTodoMessage(text: string) {
 }
 
 export default function todosExtension(pi: ExtensionAPI): void {
+	const worker = isAgentWorker()
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
-	registerFermentTodoPromptBlock(pi)
+	if (!worker) registerFermentTodoPromptBlock(pi)
 
 	registerTodoContextState(pi)
 
@@ -84,10 +85,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// handler would mask a block-pipeline regression that the cache-stability
 	// contract tests are designed to catch.
 
-	if (isAgentWorker()) return
-
-	registerTodosCommand(pi)
-	registerTodoShortcut(pi)
+	if (!worker) {
+		registerTodosCommand(pi)
+		registerTodoShortcut(pi)
+	}
 
 	const _activeSessionContexts = new Map<string, ExtensionContext>()
 	let unsubscribeTodoStore: (() => void) | undefined
@@ -109,25 +110,37 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager)
 		resetToolCallsSinceTodoWrite(sessionId)
-		syncTodoWidget(ctx)
+		if (!worker) syncTodoWidget(ctx)
 	}
 
-	pi.on("session_start", (_event, ctx) => {
+	function startSession(ctx: ExtensionContext): void {
 		const sessionId = ctx.sessionManager.getSessionId()
 		setSessionContext(sessionId, ctx)
 
-		resetTodoWidgetState(ctx)
-		ensureTodoWidget(ctx)
+		if (!worker) {
+			resetTodoWidgetState(ctx)
+			ensureTodoWidget(ctx)
+		}
 
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore((_, emitterSessionId) => {
-			resetToolCallsSinceTodoWrite(emitterSessionId)
 			const sessionCtx = getSessionContext(emitterSessionId)
-			if (sessionCtx) syncTodoWidget(sessionCtx)
+			if (!sessionCtx) return
+			resetToolCallsSinceTodoWrite(emitterSessionId)
+			if (!worker) syncTodoWidget(sessionCtx)
 		})
 
 		replayAndSync(ctx)
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		startSession(ctx)
 	})
+	if (worker) {
+		pi.on("before_agent_start", (_event, ctx) => {
+			if (!getSessionContext(ctx.sessionManager.getSessionId())) startSession(ctx)
+		})
+	}
 
 	pi.on("session_tree", (_event, ctx) => {
 		replayAndSync(ctx)
@@ -168,13 +181,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (!isRecord(message) || message.role !== "assistant") return
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
-		syncTodoWidget(ctx)
+		if (!worker) syncTodoWidget(ctx)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = undefined
-		disposeTodoWidget(ctx)
+		if (!worker) disposeTodoWidget(ctx)
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		deleteSessionContext(sessionId)

@@ -3,6 +3,7 @@
  */
 
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { SessionFermentV2 } from "../../ferment-v2/types.js"
 import type { ModelTier } from "../../orchestration/model-registry/types.js"
 import type { ModelRole } from "../../orchestration/model-roles.js"
 import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
@@ -48,6 +49,11 @@ export interface AgentReport {
 	submitted_at: number
 }
 
+export type AgentFermentV2Outcome = Pick<
+	SessionFermentV2,
+	"id" | "revision" | "status" | "lastEvaluation" | "blockedReason"
+>
+
 export interface AgentOutcome {
 	agent_id: string
 	/** Raw runtime status kept for UI/backward debugging; use outcome for orchestration decisions. */
@@ -64,6 +70,8 @@ export interface AgentOutcome {
 	report?: AgentReport
 	summary?: string
 	recovery_guidance?: string
+	/** Objective status is independent of whether the worker returned successfully. */
+	ferment_v2?: AgentFermentV2Outcome
 	task_ref?: AgentTaskRef
 	resume_attempts: number
 }
@@ -188,6 +196,7 @@ export interface AgentRecord {
 	currentAttemptId: number
 	agentReport?: AgentReport
 	latestOutcome?: AgentOutcome
+	fermentV2?: AgentFermentV2Outcome
 	resumeAttempts?: AgentResumeAttempt[]
 	lastTurnCount?: number
 	maxTurns?: number

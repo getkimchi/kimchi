@@ -105,6 +105,7 @@ interface SpawnArgs {
 }
 
 export interface SpawnOptions {
+	fermentV2?: boolean
 	description: string
 	visibility?: AgentVisibility
 	communication?: AgentCommunicationMode
@@ -429,6 +430,7 @@ export class AgentManager {
 			: record.acp
 				? this._runAcp(record, prompt, options, ctx)
 				: runAgent(ctx, type, prompt, {
+						fermentV2: options.fermentV2,
 						pi,
 						model: options.model,
 						requiresVision: options.requiresVision,
@@ -503,28 +505,41 @@ export class AgentManager {
 		const promise = record.remote
 			? this.wireRemoteCompletion(record, runPromise, { detach, maxTurns: options.maxTurns })
 			: runPromise
-					.then(async ({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
-						await this.pendingDrainPromises.get(record)
-						record.session = session
-						if (record.status !== "stopped") {
-							this.transitionToTerminalRecord(record, aborted ? "aborted" : steered ? "steered" : "completed")
-						}
-						record.abortReason = abortReason
-						const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
-						record.result = finalText
-						record.lastTurnCount = turnsUsed
-						// Preserve the effective, normalized turn cap returned by the runner.
-						record.maxTurns = maxTurns ?? options.maxTurns
-						record.completedAt ??= Date.now()
-						record.latestOutcome = buildAgentOutcome(record)
+					.then(
+						async ({
+							responseText,
+							session,
+							aborted,
+							abortReason,
+							steered,
+							turnsUsed,
+							maxTurns,
+							planPath,
+							fermentV2,
+						}) => {
+							await this.pendingDrainPromises.get(record)
+							record.session = session
+							if (record.status !== "stopped") {
+								this.transitionToTerminalRecord(record, aborted ? "aborted" : steered ? "steered" : "completed")
+							}
+							record.fermentV2 = fermentV2
+							record.abortReason = abortReason
+							const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+							record.result = finalText
+							record.lastTurnCount = turnsUsed
+							// Preserve the effective, normalized turn cap returned by the runner.
+							record.maxTurns = maxTurns ?? options.maxTurns
+							record.completedAt ??= Date.now()
+							record.latestOutcome = buildAgentOutcome(record)
 
-						if (record.isBackground) {
-							this.runningBackground--
-							this.onComplete?.(record)
-							this.drainQueue()
-						}
-						return finalText
-					})
+							if (record.isBackground) {
+								this.runningBackground--
+								this.onComplete?.(record)
+								this.drainQueue()
+							}
+							return finalText
+						},
+					)
 					.catch(async (err) => {
 						await this.pendingDrainPromises.get(record)
 						if (record.status !== "stopped") {
@@ -831,6 +846,7 @@ export class AgentManager {
 		record.lastTurnCount = 0
 		record.currentAttemptId++
 		record.agentReport = undefined
+		record.fermentV2 = undefined
 		const attemptStartedAt = Date.now()
 		const attempt: AgentResumeAttempt = {
 			attempt_id: record.currentAttemptId,
@@ -886,6 +902,7 @@ export class AgentManager {
 				this.transitionToTerminalRecord(record, result.aborted ? "aborted" : result.steered ? "steered" : "completed")
 			}
 			record.abortReason = result.abortReason
+			record.fermentV2 = result.fermentV2
 			record.result = result.responseText
 			record.lastTurnCount = result.turnsUsed
 			record.maxTurns = result.maxTurns ?? attemptLimits.maxTurns
@@ -1025,7 +1042,6 @@ export class AgentManager {
 		const peers = active
 			? this.listCommunicationPeers(agentId).map((record) => ({
 					agent_id: record.id,
-					task_id: record.communicationScope?.taskId,
 					persona: record.type,
 					description: record.description,
 					status: record.session || record.acp ? record.status : "initializing",
@@ -1050,12 +1066,18 @@ export class AgentManager {
 	 */
 	postBoardEntry(agentId: string, input: { kind: BoardEntryKind; title: string; body: string }): BoardPostReceipt {
 		const record = this.agents.get(agentId)
-		if (!record) return { ok: false, reason: "agent_not_live" }
-		if (!record.groupId) return { ok: false, reason: "not_authorized_for_board" }
+		if (!record || (record.status !== "running" && record.status !== "queued")) {
+			return { ok: false, reason: "agent_not_live" }
+		}
+		if (!record.groupId || record.communication !== "group" || record.visibility === "system") {
+			return { ok: false, reason: "not_authorized_for_board" }
+		}
 
 		const rootSessionId = record.communicationScope?.rootSessionId
 		const groupId = record.groupId
-		if (!rootSessionId) return { ok: false, reason: "not_authorized_for_board" }
+		if (!rootSessionId || this.communicationDisabled || this.communicationRootSessionId !== rootSessionId) {
+			return { ok: false, reason: "not_authorized_for_board" }
+		}
 		const result = this.boardStore.post(
 			rootSessionId,
 			groupId,
@@ -1109,12 +1131,18 @@ export class AgentManager {
 		opts?: { sinceId?: string; kind?: BoardEntryKind; limit?: number },
 	): BoardReadReceipt {
 		const record = this.agents.get(agentId)
-		if (!record) return { ok: false, reason: "agent_not_live" }
-		if (!record.groupId) return { ok: false, reason: "not_authorized_for_board" }
+		if (!record || (record.status !== "running" && record.status !== "queued")) {
+			return { ok: false, reason: "agent_not_live" }
+		}
+		if (!record.groupId || record.communication !== "group" || record.visibility === "system") {
+			return { ok: false, reason: "not_authorized_for_board" }
+		}
 
 		const rootSessionId = record.communicationScope?.rootSessionId
 		const groupId = record.groupId
-		if (!rootSessionId) return { ok: false, reason: "not_authorized_for_board" }
+		if (!rootSessionId || this.communicationDisabled || this.communicationRootSessionId !== rootSessionId) {
+			return { ok: false, reason: "not_authorized_for_board" }
+		}
 
 		const entries = this.boardStore.read(rootSessionId, groupId, opts)
 		return { ok: true, entries, total: this.boardStore.getSummary(rootSessionId, groupId).total }
@@ -1125,6 +1153,30 @@ export class AgentManager {
 	 */
 	getBoardSummary(rootSessionId: string, groupId: string): BoardSummary {
 		return this.boardStore.getSummary(rootSessionId, groupId)
+	}
+
+	/** Read through the coordinator's bound session, including finished workers' notes. */
+	readBoardForRoot(
+		rootSessionId: string,
+		groupId: string,
+		opts: { sinceId?: string; kind?: BoardEntryKind; limit?: number } = {},
+	): BoardReadReceipt {
+		if (this.communicationDisabled || this.communicationRootSessionId !== rootSessionId) {
+			return { ok: false, reason: "not_authorized_for_board" }
+		}
+		const groups = [
+			...new Set(
+				[...this.agents.values()].flatMap((record) =>
+					record.communicationScope?.rootSessionId === rootSessionId && record.groupId ? [record.groupId] : [],
+				),
+			),
+		]
+		if (!groups.includes(groupId)) return { ok: false, reason: "unknown_group", availableGroupIds: groups }
+		return {
+			ok: true,
+			entries: this.boardStore.read(rootSessionId, groupId, opts),
+			total: this.boardStore.getSummary(rootSessionId, groupId).total,
+		}
 	}
 
 	/**
@@ -1642,15 +1694,37 @@ export class AgentManager {
 		const cached = this.messageReceipts.get(idempotencyKey)
 		if (cached) return cached.promise
 
+		const rejectUnmatchedReply = (): Promise<AgentMessageReceipt> => {
+			const openQuestionIds = [...this.messageThreads.values()]
+				.filter(
+					(candidate) =>
+						candidate.state === "open" &&
+						candidate.rootSessionId === scope.rootSessionId &&
+						candidate.sourceAgentId === targetAgentId &&
+						candidate.recipient.type === "agent" &&
+						candidate.recipient.agentId === responderAgentId,
+				)
+				.map((candidate) => candidate.questionMessageId)
+			return Promise.resolve(
+				openQuestionIds.length
+					? {
+							status: "rejected",
+							reason:
+								"reply_to does not match a question from this peer addressed to you. Copy the intended openQuestionIds value exactly; no answer was sent.",
+							openQuestionIds,
+						}
+					: { status: "rejected", reason: "Peer reply is not authorized." },
+			)
+		}
 		const thread = this.messageThreads.get(messageId)
-		if (!thread) return Promise.resolve({ status: "rejected", reason: "Peer reply is not authorized." })
+		if (!thread) return rejectUnmatchedReply()
 		if (
 			thread.recipient.type !== "agent" ||
 			thread.recipient.agentId !== responderAgentId ||
 			thread.sourceAgentId !== targetAgentId ||
 			scope.rootSessionId !== thread.rootSessionId
 		) {
-			return Promise.resolve({ status: "rejected", reason: "Peer reply is not authorized." })
+			return rejectUnmatchedReply()
 		}
 		if (thread.state !== "open") return Promise.resolve({ status: "rejected", reason: "thread_closed" })
 		if (payloadBytes > AGENT_MESSAGE_LIMITS.maxPayloadBytes) {
@@ -2640,7 +2714,7 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 	const text = record.result?.trim() || record.error?.trim()
 	const resumable =
 		record.session != null &&
-		outcome !== "completed" &&
+		(outcome !== "completed" || (record.fermentV2 != null && record.fermentV2.status !== "complete")) &&
 		outcome !== "stopped" &&
 		(record.taskRef?.kind !== "ferment_step" ||
 			(record.resumeAttempts?.filter((attempt) => attempt.purpose === "continuation").length ?? 0) <
@@ -2659,6 +2733,7 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		report: record.agentReport?.attempt_id === record.currentAttemptId ? record.agentReport : undefined,
 		summary: record.agentReport?.attempt_id === record.currentAttemptId ? undefined : text,
 		recovery_guidance: recoveryGuidance,
+		ferment_v2: record.fermentV2,
 		task_ref: record.taskRef,
 		resume_attempts: record.resumeAttempts?.length ?? 0,
 	}

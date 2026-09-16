@@ -18,6 +18,27 @@ const scope = { rootSessionId: "root-1", sourceAgentId: "agent-1", taskId: "agen
 const reservation = { idempotencyKey: createChildIdempotencyKey(scope, 2, "call-1"), scope, sourceAttemptId: 2 }
 
 describe("agent message contract", () => {
+	it("explains cross-field reply mistakes while preserving the strict routing contract", () => {
+		const recipient = { type: "agent", agentId: "peer" }
+		for (const payload of [
+			{ kind: "question", question: "Which boundary?", impact: "Defines expiry", canContinue: true },
+			{ kind: "status", summary: "Contract posted" },
+		]) {
+			const input = { recipient, payload, reply_to: "wrong-thread" }
+			expect(Value.Check(AgentMessageInputSchema, input)).toBe(false)
+			expect(validateAgentMessageInput(input)).toMatchObject({
+				valid: false,
+				reason: expect.stringContaining("Remove reply_to"),
+			})
+		}
+		for (const kind of ["answer", "decline"]) {
+			const payload = kind === "answer" ? { kind, answer: "Yes" } : { kind }
+			expect(validateAgentMessageInput({ recipient, payload })).toMatchObject({
+				valid: false,
+				reason: expect.stringContaining("requires reply_to"),
+			})
+		}
+	})
 	it("accepts allowed child recipient and payload combinations", () => {
 		expect(
 			Value.Check(AgentMessageInputSchema, {

@@ -1,6 +1,8 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
+import { markHarnessSteer } from "../steer-marker.js"
+import { isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import {
 	BOARD_ENTRY_BODY_MAX,
 	BOARD_ENTRY_TITLE_MAX,
@@ -10,11 +12,11 @@ import {
 } from "./manager/board.js"
 import {
 	type AgentMessageInput,
-	AgentMessageInputSchema,
 	type AgentMessageReceipt,
+	AgentMessageToolSchema,
 	validateAgentMessageInput,
 } from "./messages.js"
-import { textResult } from "./tool-result.js"
+import { agentBoardResult, agentMessageResult, textResult } from "./tool-result.js"
 
 export const LIST_AGENT_CONTACTS_TOOL_NAME = "list_agent_contacts"
 export const SEND_AGENT_MESSAGE_TOOL_NAME = "send_agent_message"
@@ -23,7 +25,6 @@ export const READ_AGENT_BOARD_TOOL_NAME = "read_agent_board"
 
 export interface AgentContact {
 	agent_id?: string
-	task_id?: string
 	persona?: string
 	description?: string
 	status?: string
@@ -82,6 +83,54 @@ export const ReadAgentBoardSchema = Type.Object(
 
 export function createAgentMessageExtension(capability: AgentMessageCapability): (pi: ExtensionAPI) => void {
 	return (pi) => {
+		pi.on("tool_execution_end", (event, ctx) => {
+			if (event.isError || !isTodoWriteToolName(event.toolName)) return
+			if (!pi.getActiveTools().includes(POST_AGENT_NOTE_TOOL_NAME)) return
+			const details = event.result.details
+			if (!isWriteTodosDetails(details)) return
+			const todos = details.todos
+			const completed = todos.filter((todo) => todo.status === "completed").length
+			const blocked = todos.filter((todo) => todo.status === "blocked").length
+			// This is a dated claim snapshot, not completion evidence for the receiving session.
+			const lines = todos
+				.slice(0, 8)
+				.map(
+					(todo) =>
+						`${todo.id} ${todo.status}: ${todo.content.slice(0, 100)}${todo.note ? ` — ${todo.note.slice(0, 100)}` : ""}`,
+				)
+			capability.postBoardEntry({
+				kind: "work",
+				title: `TODO progress: ${completed}/${todos.length} completed, ${blocked} blocked`,
+				body:
+					`Worker TODO snapshot; claims require verification. Later snapshots replace earlier status.\n` +
+					`Session: ${ctx.sessionManager.getSessionId()}; tool result: ${event.toolCallId}; scope: ${JSON.stringify(details.scope)}\n` +
+					lines.join("\n") +
+					(todos.length > 8 ? `\n${todos.length - 8} more items omitted.` : ""),
+			})
+		})
+		// Like TODO state, this hint belongs to the current request, not session history.
+		pi.on("context", (event) => {
+			const messages = event.messages.filter(
+				(message) => !(message.role === "custom" && message.customType === "agent-board-state"),
+			)
+			const board = pi.getActiveTools().includes(READ_AGENT_BOARD_TOOL_NAME)
+				? capability.listContacts().board
+				: undefined
+			if (!board?.latestId) return messages.length === event.messages.length ? undefined : { messages }
+			messages.push({
+				role: "custom",
+				customType: "agent-board-state",
+				content: markHarnessSteer(
+					`Coordination board: ${board.total} entries; latest_id=${board.latestId}.\n` +
+						"If latest_id differs from the last entry you read, use read_agent_board to inspect new findings before continuing dependent work. " +
+						"Pass your last-read entry ID as since_id, not the latest_id shown here. Entries are peer claims; check their evidence before relying on them.",
+				),
+				display: false,
+				timestamp: Date.now(),
+			})
+			return { messages }
+		})
+
 		pi.registerTool(
 			defineTool({
 				name: LIST_AGENT_CONTACTS_TOOL_NAME,
@@ -99,12 +148,22 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 				label: "Send Agent Message",
 				description:
 					"Send one focused message to an authorized contact. A receipt proves only host queue acceptance or a completed bounded resume attempt; it does not prove delivery or recipient action.",
-				parameters: AgentMessageInputSchema,
+				parameters: AgentMessageToolSchema,
 				execute: async (toolCallId, params) => {
-					const validated = validateAgentMessageInput(params)
-					if (!validated.valid) return textResult(validated.reason)
+					let input: unknown = params
+					if (Value.Check(AgentMessageToolSchema, params) && "reply_to" in params.payload) {
+						const { reply_to, ...payload } = params.payload
+						if (reply_to !== undefined) {
+							if (params.reply_to !== undefined && params.reply_to !== reply_to) {
+								throw new Error("Conflicting reply_to values. Supply the same exact open question ID in one location.")
+							}
+							input = { ...params, payload, reply_to }
+						}
+					}
+					const validated = validateAgentMessageInput(input)
+					if (!validated.valid) throw new Error(validated.reason)
 					const receipt = await capability.sendMessage(toolCallId, validated.value)
-					return textResult(JSON.stringify(receipt))
+					return agentMessageResult(receipt)
 				},
 			}),
 		)
@@ -119,9 +178,9 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 				parameters: PostAgentNoteSchema,
 				execute: async (_toolCallId, params) => {
 					if (!Value.Check(PostAgentNoteSchema, params)) {
-						return textResult(JSON.stringify({ ok: false, reason: "invalid_schema" }))
+						throw new Error(JSON.stringify({ ok: false, reason: "invalid_schema" }))
 					}
-					return textResult(JSON.stringify(capability.postBoardEntry(params)))
+					return agentBoardResult(capability.postBoardEntry(params))
 				},
 			}),
 		)
@@ -137,14 +196,14 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 				parameters: ReadAgentBoardSchema,
 				execute: async (_toolCallId, params) => {
 					if (!Value.Check(ReadAgentBoardSchema, params)) {
-						return textResult(JSON.stringify({ ok: false, reason: "invalid_schema" }))
+						throw new Error(JSON.stringify({ ok: false, reason: "invalid_schema" }))
 					}
 					const opts: Parameters<typeof capability.readBoardEntries>[0] = {
-						sinceId: (params as { since_id?: string }).since_id,
-						kind: (params as { kind?: BoardEntryKind }).kind,
-						limit: (params as { limit?: number }).limit,
+						sinceId: params.since_id,
+						kind: params.kind,
+						limit: params.limit,
 					}
-					return textResult(JSON.stringify(capability.readBoardEntries(opts)))
+					return agentBoardResult(capability.readBoardEntries(opts))
 				},
 			}),
 		)

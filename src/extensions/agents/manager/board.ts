@@ -56,6 +56,7 @@ export type BoardPostReceipt =
 export type BoardReadReceipt =
 	| { ok: true; entries: BoardEntry[]; total: number }
 	| { ok: false; reason: "not_authorized_for_board" | "agent_not_live" }
+	| { ok: false; reason: "unknown_group"; availableGroupIds: string[] }
 
 export type BoardEvent =
 	| {

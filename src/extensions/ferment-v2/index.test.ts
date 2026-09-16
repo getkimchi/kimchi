@@ -20,7 +20,9 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
@@ -40,7 +42,7 @@ import {
 } from "./constants.js"
 import { FERMENT_V2_EVENTS } from "./domain-events.js"
 import { evaluateFermentV2 } from "./evaluator.js"
-import fermentV2Extension from "./index.js"
+import fermentV2Extension, { createWorkerFermentV2Extension } from "./index.js"
 import { objectiveFilePath, saveObjectiveFile } from "./objective-file.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "./plan-executor.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
@@ -151,6 +153,41 @@ describe("Ferment V2 extension", () => {
 
 		const result = await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})
 		expect(result.details.fermentV2).toBeNull()
+	})
+
+	it("starts and restores a worker-local objective without changing its parent's objective", async () => {
+		await harness.command("parent task")
+		const parentId = harness.currentFermentV2()?.id
+		await runAsAgentWorker(async () => {
+			const child = createHarness({ cwd, hasUI: false, workerObjective: "verify delegated task" })
+			child.setSession("worker-session", [])
+			await child.fire("session_start", { reason: "new" })
+			const childId = child.currentFermentV2()?.id
+			expect(child.currentFermentV2()).toMatchObject({ objective: "verify delegated task", status: "active" })
+			expect(childId).not.toBe(parentId)
+			expect(harness.currentFermentV2()?.id).toBe(parentId)
+			expect(child.sendMessage).not.toHaveBeenCalled()
+			child.reloadUnboundWorkerExtension()
+			child.stopWorker()
+			expect(child.currentFermentV2()?.status).toBe("paused")
+			await child.fire("session_shutdown", {})
+			await child.fire("before_agent_start", {})
+			expect(child.currentFermentV2()).toMatchObject({ id: childId, revision: 2, status: "active" })
+			const context = await child.fire("context", {
+				messages: [
+					{
+						role: "custom",
+						customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
+						content: "Replay the old accepted answer",
+						display: false,
+						timestamp: Date.now(),
+						details: { fermentV2Id: childId, revision: 1, source: "evaluation_accepted" },
+					},
+				],
+			})
+			expect(JSON.stringify(context)).not.toContain("Replay the old accepted answer")
+			await child.fire("session_shutdown", {})
+		})
 	})
 
 	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {
@@ -906,8 +943,14 @@ describe("Ferment V2 extension", () => {
 		})
 	})
 
-	it("records a cancelled completion-candidate evaluation exactly once", async () => {
-		await harness.command("ship feature A")
+	it.each([
+		"command",
+		"worker",
+	])("records a cancelled completion-candidate evaluation exactly once via %s", async (stopKind) => {
+		if (stopKind === "worker") {
+			harness = createHarness({ cwd, hasUI: false, workerObjective: "ship feature A" })
+			await harness.fire("session_start", { reason: "new" })
+		} else await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const active = harness.currentFermentV2()
 		const message = assistantTextMessage("finishing now", "toolUse")
@@ -924,7 +967,7 @@ describe("Ferment V2 extension", () => {
 		)
 		const ended = harness.fire("agent_end", { type: "agent_end", messages: [] })
 		await vi.waitFor(() => expect(evaluateFermentV2Mock).toHaveBeenCalledOnce())
-		const pause = harness.command("pause")
+		const pause = stopKind === "worker" ? Promise.resolve(harness.stopWorker()) : harness.command("pause")
 		await vi.waitFor(() => expect(evaluateFermentV2Mock.mock.calls[0]?.[0].signal?.aborted).toBe(true))
 		release({
 			verdict: "continue",
@@ -2298,13 +2341,16 @@ describe("Ferment V2 extension", () => {
 		).toBeUndefined()
 	})
 
-	it("ignores a Todo result from the superseded turn after an edit", async () => {
+	it.each([
+		"mark_todo",
+		"reconcile_agent_result",
+	])("ignores a %s result from the superseded turn after an edit", async (toolName) => {
 		await harness.command("original objective")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.command("edit edited objective")
 
 		await modelTodoResult(harness, [{ id: 1, content: "Stale work", status: "completed", note: "Evidence: stale" }], {
-			toolName: "mark_todo",
+			toolName,
 			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 
@@ -4221,6 +4267,23 @@ describe("Ferment V2 extension", () => {
 		).toBeUndefined()
 	})
 
+	it("consumes reconciled worker evidence through the existing TODO result contract", async () => {
+		await harness.command("finish the parser")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const note = "Evidence: parser regression passes [agent worker-1, attempt 1; parent bash check-1]"
+		await modelTodoResult(harness, [{ id: 1, content: "Fix parser", status: "completed", note }], {
+			toolName: "reconcile_agent_result",
+		})
+		await settleFermentV2(harness, "continue")
+		expect(evaluateFermentV2Mock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				todos: [expect.objectContaining({ id: 1, status: "completed", note })],
+				lessons: [expect.objectContaining({ kind: "evidence", text: expect.stringContaining("parent bash check-1") })],
+			}),
+			expect.anything(),
+		)
+	})
+
 	it("retains bounded lessons after terminal todos leave the post-compaction snapshot", async () => {
 		await harness.command("preserve durable findings")
 		harness.setBranch([
@@ -4442,7 +4505,7 @@ describe("Ferment V2 extension", () => {
 	})
 })
 
-function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
+function createHarness(options: { hasUI?: boolean; cwd?: string; workerObjective?: string } = {}) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, CommandConfig>()
 	const tools = new Map<string, ToolConfig>()
@@ -4513,9 +4576,13 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 		},
 	} as unknown as ExtensionCommandContext
 
-	fermentV2Extension(pi)
+	const worker = options.workerObjective ? createWorkerFermentV2Extension(options.workerObjective) : undefined
+	if (worker) worker.extension(pi)
+	else fermentV2Extension(pi)
 
 	return {
+		stopWorker: () => worker?.stop(),
+		reloadUnboundWorkerExtension: () => worker?.extension(createExtensionApi().api),
 		pi,
 		commands,
 		tools,

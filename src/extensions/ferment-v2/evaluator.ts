@@ -34,6 +34,19 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
 const INVALID_JSON_RETRY_PROMPT =
 	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and include observedAnswer only for final_answer checks."
 
+// Transport receipts and other agents' reports remain context, not proof of their claims.
+const AGENT_CLAIM_TOOLS = new Set([
+	"Agent",
+	"get_subagent_result",
+	"resume_subagent",
+	"steer_subagent",
+	"read_agent_board",
+	"post_agent_note",
+	"send_agent_message",
+	"reply_to_agent_message",
+	"list_agent_contacts",
+])
+
 const EVALUATOR_SYSTEM_PROMPT = `<ferment_v2_evaluator>
 You independently decide whether a persistent coding Ferment V2 should continue.
 
@@ -687,7 +700,8 @@ function renderTranscriptEntry(
 	const rendered = renderMessage(message, callLabelsById)
 	if (!rendered) return undefined
 	const id = `m${index + 1}`
-	const evidence = linkedToolResultIndexes.has(index)
+	const evidence =
+		linkedToolResultIndexes.has(index) && !("toolName" in message && AGENT_CLAIM_TOOLS.has(message.toolName))
 	return {
 		index,
 		id,
