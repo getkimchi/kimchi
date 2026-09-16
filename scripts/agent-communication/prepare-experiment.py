@@ -1,5 +1,6 @@
 """Prepare isolated local homes and sandbox profiles; does not start inference."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -10,6 +11,16 @@ import tempfile
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--arms", nargs="+", choices=["solo", "workers", "messages", "board"],
+                        default=["solo", "workers", "messages", "board", "board", "messages", "workers", "solo"])
+    parser.add_argument("--purpose", choices=["comparison", "calibration"], default="comparison")
+    parser.add_argument("--max-total-tokens", type=int, default=2000000)
+    parser.add_argument("--max-output-tokens", type=int, default=60000)
+    parser.add_argument("--wall-seconds", type=int, default=1080)
+    args = parser.parse_args()
+    if len(args.arms) < 2 or min(args.max_total_tokens, args.max_output_tokens, args.wall_seconds) <= 0:
+        parser.error("Use at least two isolated homes and positive limits")
     os.umask(0o077)
     scripts = Path(__file__).resolve().parent
     repo = scripts.parents[1]
@@ -40,8 +51,9 @@ def main():
     provider = {**provider, "models": [model for model in provider["models"] if model["id"] == "glm-5.3-flash"]}
     assert len(provider["models"]) == 1
     trials = []
-    # Reverse the arm order in the second repetition.
-    for index, arm in enumerate(["solo", "workers", "messages", "board", "board", "messages", "workers", "solo"], 1):
+    repetitions = {}
+    for index, arm in enumerate(args.arms, 1):
+        repetitions[arm] = repetitions.get(arm, 0) + 1
         label = f"trial-{index:02d}"
         trial = root / label
         home = trial / "home"
@@ -94,19 +106,21 @@ def main():
         }
         (trial / "env.json").write_text(json.dumps(environment, indent=2) + "\n")
         shutil.copytree(seed, trial / "probe", dirs_exist_ok=True, symlinks=True)
-        trials.append({"label": label, "arm": arm, "repetition": 1 if index <= 4 else 2, "directory": str(trial)})
+        trials.append({"label": label, "arm": arm, "repetition": repetitions[arm], "directory": str(trial)})
     manifest = {
         "runner_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
         "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
         "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
         "binary_sha256": hashlib.sha256((root / "runtime/bin/kimchi").read_bytes()).hexdigest(),
         "model": "kimchi-dev/glm-5.3-flash", "thinking": "low", "worker_ferment": False,
-        "max_output_tokens": 60000, "max_total_tokens": 2000000, "wall_seconds": 1080,
+        "purpose": args.purpose,
+        "max_output_tokens": args.max_output_tokens, "max_total_tokens": args.max_total_tokens,
+        "wall_seconds": args.wall_seconds,
         "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
         "trials": trials,
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print("Eight isolated homes prepared; inference has not started.")
+    print(f"{len(trials)} isolated homes prepared; inference has not started.")
 
 
 if __name__ == "__main__":
