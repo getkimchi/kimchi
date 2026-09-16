@@ -1,0 +1,2061 @@
+{
+  "date": "2026-09-16",
+  "artifact_root": "/private/tmp/kimchi-compaction-arms-xryygkps",
+  "protocol": {
+    "runner_head": "a2d41292d7123b4fc06b3b1b429c98e008dab3f2",
+    "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+    "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
+    "binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
+    "model": "kimchi-dev/glm-5.3-flash",
+    "thinking": "low",
+    "worker_ferment": false,
+    "purpose": "comparison",
+    "max_output_tokens": 80000,
+    "max_total_tokens": 24000000,
+    "wall_seconds": 1800,
+    "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+    "trials": [
+      {
+        "label": "trial-01",
+        "arm": "solo",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-01"
+      },
+      {
+        "label": "trial-02",
+        "arm": "workers",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-02"
+      },
+      {
+        "label": "trial-03",
+        "arm": "messages",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-03"
+      },
+      {
+        "label": "trial-04",
+        "arm": "board",
+        "repetition": 1,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-04"
+      },
+      {
+        "label": "trial-05",
+        "arm": "board",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-05"
+      },
+      {
+        "label": "trial-06",
+        "arm": "messages",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-06"
+      },
+      {
+        "label": "trial-07",
+        "arm": "workers",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-07"
+      },
+      {
+        "label": "trial-08",
+        "arm": "solo",
+        "repetition": 2,
+        "directory": "/private/tmp/kimchi-compaction-arms-xryygkps/trial-08"
+      }
+    ],
+    "protocol_head": "a2d41292d7123b4fc06b3b1b429c98e008dab3f2",
+    "product_binary_source_head": "97d528a4b2e4e9f7ccf6f3fc9802d8b9b0fbc80d",
+    "comparison_version": "after-budget-calibration",
+    "changes_from_pilot": [
+      "24 million aggregate recorded tokens, including cached input; 80000 output tokens; 1800-second wall limit",
+      "Repair owner output allowance 20000; other worker bounds unchanged",
+      "Common team instruction explains yielding or explicit result retrieval; no required board posts",
+      "Original, repeated-process and six behavior checks fixed before inference"
+    ],
+    "grading_manifests": {
+      "docs/subagentComms/compaction-preflight.json": "fb140536325cf45b067e352f5f0da65f6c266de687994ed32143dcf29662238a",
+      "docs/subagentComms/compaction-repeat-preflight.json": "507ec04b5f73007418fc63090c2598cb887d82640dca1ed250af6bbad1eebefe",
+      "docs/subagentComms/compaction-contract-preflight.json": "d6d2fec345cafec749627ebc7556de32eb93e26132c6b4be7820122c27ebc265"
+    }
+  },
+  "seal_sha256": "74cd8ce21dc7181e5734deedec8534b814650d882bc2fd548db7237e7471dbd2",
+  "results": [
+    {
+      "label": "trial-01",
+      "arm": "solo",
+      "repetition": 1,
+      "finish_reason": "settled",
+      "elapsed_seconds": 610.2,
+      "usage": {
+        "input": 184456,
+        "output": 37007,
+        "cacheRead": 3804864,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 4026327,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 60,
+      "observed_sessions": 1,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 60
+      },
+      "launches": [],
+      "initial_workers_single_batch": false,
+      "repair_workers": 0,
+      "worker_statuses": [],
+      "malformed_tool_names": 0,
+      "tool_errors": 6,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/model-guard.test.ts"
+      ],
+      "grading": {
+        "label": "trial-01",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "8d11406680d5f1efd0049f876950e8d96105e3f930ab04af336f16b481379a8c",
+        "process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 5,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "passed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "settled",
+        "root_settled_events": 1,
+        "last_root_event_seconds": 604.11,
+        "observer_valid": true
+      },
+      "attempt_classification": "completed",
+      "classification_evidence": "Parent settled after collecting workers; final output saved before independent grading.",
+      "accepted_launch_parameters": [],
+      "event_contracts": {
+        "passed": 4,
+        "failed": 2,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called 2 times, but got 3 times"
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          }
+        ]
+      },
+      "board_body_kinds": {},
+      "production_diff": [
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 153,
+          "removed_lines": 42
+        },
+        {
+          "file": "src/tool-call-in-flight.ts",
+          "added_lines": 53,
+          "removed_lines": 19
+        }
+      ]
+    },
+    {
+      "label": "trial-02",
+      "arm": "workers",
+      "repetition": 1,
+      "finish_reason": "settled",
+      "elapsed_seconds": 1072.6,
+      "usage": {
+        "input": 489865,
+        "output": 79827,
+        "cacheRead": 7067904,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 7637596,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 195,
+      "observed_sessions": 5,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 198
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "e05c4cce-84d2-4c1",
+          "batch": "83c20d6a"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "093e7810-5023-4dd",
+          "batch": "83c20d6a"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "6132abc1-6ee9-4b5",
+          "batch": "83c20d6a"
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "d5c3758e-4a8f-444",
+          "batch": "c0d6180f"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 1,
+      "worker_statuses": [
+        {
+          "id": "e05c4cce-84d2-4c1",
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "id": "093e7810-5023-4dd",
+          "description": "Boundary investigator",
+          "status": "aborted"
+        },
+        {
+          "id": "6132abc1-6ee9-4b5",
+          "description": "Implementation owner",
+          "status": "aborted"
+        },
+        {
+          "id": "d5c3758e-4a8f-444",
+          "description": "Repair owner",
+          "status": "aborted"
+        }
+      ],
+      "malformed_tool_names": 0,
+      "tool_errors": 10,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/model-guard.test.ts"
+      ],
+      "grading": {
+        "label": "trial-02",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "084dde23bcad903e2bd6e2a4ea0d0f7dd3cbfb188ebd926313bb82f099795e1c",
+        "process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 3,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "passed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 2,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "settled",
+        "root_settled_events": 5,
+        "last_root_event_seconds": 1066.356,
+        "observer_valid": true
+      },
+      "attempt_classification": "completed",
+      "classification_evidence": "Parent settled after collecting workers; final output saved before independent grading.",
+      "accepted_launch_parameters": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "e05c4cce-84d2-4c1",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "093e7810-5023-4dd",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "6132abc1-6ee9-4b5",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "d5c3758e-4a8f-444",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        }
+      ],
+      "repair_launch_gap_seconds": 50.8,
+      "event_contracts": {
+        "passed": 3,
+        "failed": 3,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called once, but got 2 times"
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called 2 times, but got 3 times"
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          }
+        ]
+      },
+      "board_body_kinds": {},
+      "production_diff": [
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 185,
+          "removed_lines": 31
+        },
+        {
+          "file": "src/tool-call-in-flight.ts",
+          "added_lines": 74,
+          "removed_lines": 0
+        }
+      ]
+    },
+    {
+      "label": "trial-03",
+      "arm": "messages",
+      "repetition": 1,
+      "finish_reason": "settled",
+      "elapsed_seconds": 44.0,
+      "usage": {
+        "input": 5751,
+        "output": 370,
+        "cacheRead": 68032,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 74153,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 6,
+      "observed_sessions": 1,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 5
+      },
+      "launches": [],
+      "initial_workers_single_batch": false,
+      "repair_workers": 0,
+      "worker_statuses": [],
+      "malformed_tool_names": 0,
+      "tool_errors": 0,
+      "changed_source_files": [],
+      "grading": {
+        "label": "trial-03",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "1da68c1db69e6ddf2fa6a5d8ed21d9dd6486fad797a403bbabc26a635d285f08",
+        "process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "failed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 6,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "request",
+        "root_settled_events": 0,
+        "last_root_event_seconds": 40.351,
+        "observer_valid": false
+      },
+      "attempt_classification": "observer_invalid",
+      "classification_evidence": "No root settled event; a provider request started at 40.351s before the old error caused cutoff at 43.988s.",
+      "accepted_launch_parameters": [],
+      "board_body_kinds": {},
+      "production_diff": []
+    },
+    {
+      "label": "trial-04",
+      "arm": "board",
+      "repetition": 1,
+      "finish_reason": "settled",
+      "elapsed_seconds": 805.1,
+      "usage": {
+        "input": 534806,
+        "output": 65064,
+        "cacheRead": 7024064,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 7623934,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 79,
+        "unique_reader_entry_pairs": 71,
+        "known_peer_body_returns": 35,
+        "parent_body_returns": 18,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 200,
+      "observed_sessions": 5,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 203
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "0e5179a2-e41e-42b",
+          "batch": "300312f5"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "ec0d25fb-878f-4c3",
+          "batch": "300312f5"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "37d4b79f-dbd3-423",
+          "batch": "300312f5"
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "ffe26120-2b9e-4aa",
+          "batch": "c2140286"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 1,
+      "worker_statuses": [
+        {
+          "id": "0e5179a2-e41e-42b",
+          "description": "Lifecycle investigator",
+          "status": "steered"
+        },
+        {
+          "id": "ec0d25fb-878f-4c3",
+          "description": "Boundary investigator",
+          "status": "aborted"
+        },
+        {
+          "id": "37d4b79f-dbd3-423",
+          "description": "Implementation owner",
+          "status": "aborted"
+        },
+        {
+          "id": "ffe26120-2b9e-4aa",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "malformed_tool_names": 2,
+      "tool_errors": 13,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/mid-turn-compaction.ts"
+      ],
+      "grading": {
+        "label": "trial-04",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "eef438660ce3beda1938cf7abb6fa196335cc786f84638cd348fb535ddcb903b",
+        "process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 5,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "settled",
+        "root_settled_events": 5,
+        "last_root_event_seconds": 799.207,
+        "observer_valid": true
+      },
+      "attempt_classification": "completed",
+      "classification_evidence": "Parent settled after collecting workers; final output saved before independent grading.",
+      "accepted_launch_parameters": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "0e5179a2-e41e-42b",
+          "ferment_v2_explicit": false,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "ec0d25fb-878f-4c3",
+          "ferment_v2_explicit": false,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "37d4b79f-dbd3-423",
+          "ferment_v2_explicit": false,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "ffe26120-2b9e-4aa",
+          "ferment_v2_explicit": false,
+          "parameters_match": true,
+          "differences": {}
+        }
+      ],
+      "repair_launch_gap_seconds": 60.6,
+      "event_contracts": {
+        "passed": 3,
+        "failed": 3,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called once, but got 2 times"
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called 2 times, but got 3 times"
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          }
+        ]
+      },
+      "board_body_kinds": {
+        "work": 76,
+        "finding": 3
+      },
+      "production_diff": [
+        {
+          "file": "src/extensions/mid-turn-compaction.ts",
+          "added_lines": 360,
+          "removed_lines": 0
+        },
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 56,
+          "removed_lines": 43
+        }
+      ]
+    },
+    {
+      "label": "trial-05",
+      "arm": "board",
+      "repetition": 2,
+      "finish_reason": "settled",
+      "elapsed_seconds": 911.2,
+      "usage": {
+        "input": 490265,
+        "output": 69893,
+        "cacheRead": 7717376,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 8277534,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 44,
+        "unique_reader_entry_pairs": 41,
+        "known_peer_body_returns": 29,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 211,
+      "observed_sessions": 5,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 214
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "2d4cd5b8-1258-4d5",
+          "batch": "ff251740"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "9f9a8657-1858-4a5",
+          "batch": "ff251740"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "81fa2764-4492-4dc",
+          "batch": "ff251740"
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "e3abcf6b-2b1b-467",
+          "batch": "cae0705d"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 1,
+      "worker_statuses": [
+        {
+          "id": "2d4cd5b8-1258-4d5",
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "id": "9f9a8657-1858-4a5",
+          "description": "Boundary investigator",
+          "status": "aborted"
+        },
+        {
+          "id": "81fa2764-4492-4dc",
+          "description": "Implementation owner",
+          "status": "aborted"
+        },
+        {
+          "id": "e3abcf6b-2b1b-467",
+          "description": "Repair owner",
+          "status": "aborted"
+        }
+      ],
+      "malformed_tool_names": 2,
+      "tool_errors": 13,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-thresholds.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/model-guard.test.ts"
+      ],
+      "grading": {
+        "label": "trial-05",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "c0ee0b807e78c4965b4d10c0e71deaa018c8e6d54c293c638488f114716c8465",
+        "process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 5,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "passed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "settled",
+        "root_settled_events": 5,
+        "last_root_event_seconds": 904.998,
+        "observer_valid": true
+      },
+      "attempt_classification": "completed",
+      "classification_evidence": "Parent settled after collecting workers; final output saved before independent grading.",
+      "accepted_launch_parameters": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "2d4cd5b8-1258-4d5",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "9f9a8657-1858-4a5",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "81fa2764-4492-4dc",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "e3abcf6b-2b1b-467",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        }
+      ],
+      "repair_launch_gap_seconds": 42.9,
+      "event_contracts": {
+        "passed": 6,
+        "failed": 0,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "passed",
+            "failure": null
+          }
+        ]
+      },
+      "board_body_kinds": {
+        "work": 42,
+        "finding": 2
+      },
+      "production_diff": [
+        {
+          "file": "src/extensions/compaction-thresholds.ts",
+          "added_lines": 10,
+          "removed_lines": 0
+        },
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 121,
+          "removed_lines": 43
+        },
+        {
+          "file": "src/tool-call-in-flight.ts",
+          "added_lines": 47,
+          "removed_lines": 2
+        }
+      ]
+    },
+    {
+      "label": "trial-06",
+      "arm": "messages",
+      "repetition": 2,
+      "finish_reason": "settled",
+      "elapsed_seconds": 784.0,
+      "usage": {
+        "input": 540412,
+        "output": 61767,
+        "cacheRead": 6513088,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 7115267,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 1,
+        "parsed_message_receipts": 1,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 199,
+      "observed_sessions": 5,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 201
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "c7786670-a2c6-4f1",
+          "batch": "9d800d97"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "a29cf5b0-d246-4ed",
+          "batch": "9d800d97"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "96289f00-637b-4c7",
+          "batch": "9d800d97"
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "0ce4a3f3-8f46-421",
+          "batch": "ea62dea6"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 1,
+      "worker_statuses": [
+        {
+          "id": "c7786670-a2c6-4f1",
+          "description": "Lifecycle investigator",
+          "status": "steered"
+        },
+        {
+          "id": "a29cf5b0-d246-4ed",
+          "description": "Boundary investigator",
+          "status": "aborted"
+        },
+        {
+          "id": "96289f00-637b-4c7",
+          "description": "Implementation owner",
+          "status": "aborted"
+        },
+        {
+          "id": "0ce4a3f3-8f46-421",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "malformed_tool_names": 3,
+      "tool_errors": 18,
+      "changed_source_files": [
+        "src/upstream-inline-compact-patch.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-thresholds.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/model-guard.test.ts"
+      ],
+      "grading": {
+        "label": "trial-06",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "1c42ed485d7d6beb00a77300bb02b1e9b7fd3317bea6d3be17038d1f0bffdf21",
+        "process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 3,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "passed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 5,
+          "failed": 1,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "passed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "settled",
+        "root_settled_events": 5,
+        "last_root_event_seconds": 777.715,
+        "observer_valid": true
+      },
+      "attempt_classification": "completed",
+      "classification_evidence": "Parent settled after collecting workers; final output saved before independent grading.",
+      "accepted_launch_parameters": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "c7786670-a2c6-4f1",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "a29cf5b0-d246-4ed",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "96289f00-637b-4c7",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "0ce4a3f3-8f46-421",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        }
+      ],
+      "repair_launch_gap_seconds": 44.2,
+      "event_contracts": {
+        "passed": 5,
+        "failed": 1,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "passed",
+            "failure": null
+          }
+        ]
+      },
+      "board_body_kinds": {},
+      "production_diff": [
+        {
+          "file": "src/extensions/compaction-thresholds.ts",
+          "added_lines": 94,
+          "removed_lines": 1
+        },
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 143,
+          "removed_lines": 48
+        },
+        {
+          "file": "src/tool-call-in-flight.ts",
+          "added_lines": 43,
+          "removed_lines": 0
+        },
+        {
+          "file": "src/upstream-inline-compact-patch.ts",
+          "added_lines": 8,
+          "removed_lines": 5
+        }
+      ]
+    },
+    {
+      "label": "trial-07",
+      "arm": "workers",
+      "repetition": 2,
+      "finish_reason": "settled",
+      "elapsed_seconds": 656.0,
+      "usage": {
+        "input": 425334,
+        "output": 54867,
+        "cacheRead": 5517888,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 5998089,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 175,
+      "observed_sessions": 5,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 177
+      },
+      "launches": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "f195cc67-6ff3-498",
+          "batch": "42e3cf25"
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "808911b9-cd33-417",
+          "batch": "42e3cf25"
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "4ead5597-9d5d-485",
+          "batch": "42e3cf25"
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "04b24d29-d94f-4a1",
+          "batch": "53e1b927"
+        }
+      ],
+      "initial_workers_single_batch": true,
+      "repair_workers": 1,
+      "worker_statuses": [
+        {
+          "id": "f195cc67-6ff3-498",
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "id": "808911b9-cd33-417",
+          "description": "Boundary investigator",
+          "status": "aborted"
+        },
+        {
+          "id": "4ead5597-9d5d-485",
+          "description": "Implementation owner",
+          "status": "aborted"
+        },
+        {
+          "id": "04b24d29-d94f-4a1",
+          "description": "Repair owner",
+          "status": "completed"
+        }
+      ],
+      "malformed_tool_names": 0,
+      "tool_errors": 14,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/upstream-inline-compact-patch.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-thresholds.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts"
+      ],
+      "grading": {
+        "label": "trial-07",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 0,
+          "build:binary": 0
+        },
+        "binary_sha256": "3e319a09cec1fdd271ff80383ae6ddc5ae467a8860a67955c0ed12c42a604f81",
+        "process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 1,
+          "failed": 3,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "passed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 4,
+          "failed": 2,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "passed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "settled",
+        "root_settled_events": 1,
+        "last_root_event_seconds": 649.635,
+        "observer_valid": true
+      },
+      "attempt_classification": "completed",
+      "classification_evidence": "Parent settled after collecting workers; final output saved before independent grading.",
+      "accepted_launch_parameters": [
+        {
+          "description": "Lifecycle investigator",
+          "agent_id": "f195cc67-6ff3-498",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Boundary investigator",
+          "agent_id": "808911b9-cd33-417",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Implementation owner",
+          "agent_id": "4ead5597-9d5d-485",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        },
+        {
+          "description": "Repair owner",
+          "agent_id": "04b24d29-d94f-4a1",
+          "ferment_v2_explicit": null,
+          "parameters_match": true,
+          "differences": {}
+        }
+      ],
+      "repair_launch_gap_seconds": 43.1,
+      "event_contracts": {
+        "passed": 4,
+        "failed": 2,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          }
+        ]
+      },
+      "board_body_kinds": {},
+      "production_diff": [
+        {
+          "file": "src/extensions/compaction-thresholds.ts",
+          "added_lines": 10,
+          "removed_lines": 0
+        },
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 192,
+          "removed_lines": 35
+        },
+        {
+          "file": "src/tool-call-in-flight.ts",
+          "added_lines": 59,
+          "removed_lines": 6
+        },
+        {
+          "file": "src/upstream-inline-compact-patch.ts",
+          "added_lines": 4,
+          "removed_lines": 1
+        }
+      ]
+    },
+    {
+      "label": "trial-08",
+      "arm": "solo",
+      "repetition": 2,
+      "finish_reason": "wall_limit",
+      "elapsed_seconds": 1801.1,
+      "usage": {
+        "input": 159779,
+        "output": 26326,
+        "cacheRead": 3814720,
+        "cacheWrite": 0
+      },
+      "total_recorded_tokens": 4000825,
+      "budget_overshoot": 0,
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "trace_warnings": [],
+      "provider_requests": 68,
+      "observed_sessions": 1,
+      "unavailable_tools_observed": [],
+      "models": {
+        "kimchi-dev/glm-5.3-flash": 68
+      },
+      "launches": [],
+      "initial_workers_single_batch": false,
+      "repair_workers": 0,
+      "worker_statuses": [],
+      "malformed_tool_names": 0,
+      "tool_errors": 5,
+      "changed_source_files": [
+        "src/tool-call-in-flight.test.ts",
+        "src/tool-call-in-flight.ts",
+        "src/extensions/compaction-evaluation.test.ts",
+        "src/extensions/model-guard.ts",
+        "src/extensions/model-guard.test.ts"
+      ],
+      "grading": {
+        "label": "trial-08",
+        "protected_changes": [],
+        "own_checks": {
+          "test:compaction-local": 0,
+          "typecheck": 0,
+          "check:compaction-style": 1,
+          "build:binary": 0
+        },
+        "binary_sha256": "41f7f8f93b331002efce07f625363f9509a0a30ed2a67efb1899dc1a04e164be",
+        "process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "adapter": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 4,
+          "cases": [
+            {
+              "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "sustains four effective compaction cycles in one session",
+              "status": "failed"
+            },
+            {
+              "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+              "status": "failed"
+            },
+            {
+              "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+              "status": "failed"
+            }
+          ]
+        },
+        "repeated_process": {
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "cases": [
+            {
+              "title": "a --print tool run completes two effective compaction cycles without another prompt",
+              "status": "passed"
+            },
+            {
+              "title": "cancelling during summarization ends the run without scheduling another task request",
+              "status": "passed"
+            }
+          ]
+        },
+        "contracts": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 6,
+          "cases": [
+            {
+              "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: successful final responses rearm four pressure cycles",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+              "status": "failed"
+            },
+            {
+              "title": "behavior contract: a missing inline adapter does not abort the current run",
+              "status": "failed"
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "lifecycle_audit": {
+        "last_root_event": "request",
+        "root_settled_events": 0,
+        "last_root_event_seconds": 468.063,
+        "observer_valid": true
+      },
+      "attempt_classification": "permission_blocked",
+      "classification_evidence": "Final TUI waits for approval of rm -rf scratch; the public test command did not execute. No approval was injected.",
+      "accepted_launch_parameters": [],
+      "event_contracts": {
+        "passed": 2,
+        "failed": 4,
+        "cases": [
+          {
+            "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "title": "event contract: successful final responses rearm four pressure cycles",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called 4 times, but got 1 times"
+          },
+          {
+            "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to be called 2 times, but got 1 times"
+          },
+          {
+            "title": "event contract: late completion cannot notify or release a replacement attempt",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          },
+          {
+            "title": "event contract: a missing inline adapter does not abort the current run",
+            "status": "failed",
+            "failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+          }
+        ]
+      },
+      "board_body_kinds": {},
+      "production_diff": [
+        {
+          "file": "src/extensions/model-guard.ts",
+          "added_lines": 180,
+          "removed_lines": 16
+        },
+        {
+          "file": "src/tool-call-in-flight.ts",
+          "added_lines": 14,
+          "removed_lines": 10
+        }
+      ]
+    }
+  ],
+  "scope": "One historical repair, fixed model and budgets; completed outputs are separated from an observer-invalid attempt and a permission-blocked attempt. No causal or general communication advantage is established.",
+  "permission_mode": "auto",
+  "supplemental_event_fixture": {
+    "artifact_root": "/private/tmp/kimchi-event-check-dxszu68c",
+    "patch": "scripts/agent-communication/event-compaction.diff",
+    "patch_sha256": "1c960e17c21deae89f3e035cee5123875f60f3d2a2880367cc11c35fbd78a979",
+    "reference_passed": 6,
+    "baseline_passed": 0,
+    "reference_typecheck": 0,
+    "post_output": true,
+    "note": "Same six assertions; consistent branch, entries, leaf, cached messages, toolResults and call IDs; fresh context objects and next context event. Earlier fixture attempts are retained in the artifact root."
+  }
+}

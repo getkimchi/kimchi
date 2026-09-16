@@ -1,0 +1,104 @@
+--- a/src/extensions/model-guard.test.ts
++++ b/src/extensions/model-guard.test.ts
+@@ -891,17 +891,44 @@
+ 		clearActiveFermentId()
+ 	})
+ 
++	function makeBoundaryPI() {
++		const mock = makeMockPI()
++		return { ...mock, async trigger(event: string, payload: unknown, ctx?: ExtensionContext) {
++			const response = event === "turn_end" ? payload as ReturnType<typeof makeTurnEndEvent> : undefined
++			const messages = ctx?.sessionManager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : []) ?? []
++			let prepared = payload
++			if (response && ctx) {
++				const tokens = response.message.usage.totalTokens
++				ctx.getContextUsage = () => ({ tokens, contextWindow: CONTEXT_WINDOW, percent: tokens / CONTEXT_WINDOW * 100 })
++				if (response.message.stopReason === "toolUse") {
++					const assistant = [...messages].reverse().find((message) => message.role === "assistant")
++					prepared = { ...response,
++						message: { ...response.message, content: assistant?.content ?? response.message.content },
++						toolResults: messages.filter((message) => message.role === "toolResult") }
++				}
++			}
++			const result = await mock.trigger(event, prepared, ctx && { ...ctx })
++			if (response?.message.stopReason === "toolUse" && ctx) {
++				await mock.trigger("context", { type: "context", messages }, { ...ctx })
++			}
++			return result
++		} }
++	}
++
+ 	function contractContext(inlineCompact: ExtensionContext["inlineCompact"], branch = makePairedBranchEntries()) {
+ 		const ctx = makeMidTurnCtx({ inlineCompact })
+ 		ctx.ui.notify = vi.fn()
+ 		ctx.compact = vi.fn()
+ 		ctx.sessionManager.getBranch = () => branch
++		ctx.sessionManager.getEntries = () => branch
++		ctx.sessionManager.getLeafId = () => branch.at(-1)?.id ?? null
++		ctx.sessionManager.getSessionId = () => "contract-session"
+ 		__setLatestMessagesForTest(branch.flatMap((entry) => entry.type === "message" ? [entry.message] : []))
+ 		return ctx
+ 	}
+ 
+-	it("behavior contract: an incomplete current pair defers and a completed pair permits compaction", async () => {
+-		const { pi, trigger } = makeMockPI()
++	it("event contract: an incomplete current pair defers and a completed pair permits compaction", async () => {
++		const { pi, trigger } = makeBoundaryPI()
+ 		modelGuardExtension(pi)
+ 		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
+ 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"),
+@@ -911,8 +938,8 @@
+ 		expect(inlineCompact).toHaveBeenCalledOnce()
+ 	})
+ 
+-	it("behavior contract: a call abandoned before a new user turn does not prevent compaction", async () => {
+-		const { pi, trigger } = makeMockPI()
++	it("event contract: a call abandoned before a new user turn does not prevent compaction", async () => {
++		const { pi, trigger } = makeBoundaryPI()
+ 		modelGuardExtension(pi)
+ 		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
+ 		const abandoned = structuredClone(makePairedBranchEntries()[1])
+@@ -926,8 +953,8 @@
+ 		expect(inlineCompact).toHaveBeenCalledOnce()
+ 	})
+ 
+-	it("behavior contract: successful final responses rearm four pressure cycles", async () => {
+-		const { pi, trigger } = makeMockPI()
++	it("event contract: successful final responses rearm four pressure cycles", async () => {
++		const { pi, trigger } = makeBoundaryPI()
+ 		modelGuardExtension(pi)
+ 		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
+ 		const ctx = contractContext(inlineCompact)
+@@ -938,8 +965,8 @@
+ 		expect(inlineCompact).toHaveBeenCalledTimes(4)
+ 	})
+ 
+-	it("behavior contract: ineffective attempts stay suppressed until successful positive relief", async () => {
+-		const { pi, trigger } = makeMockPI()
++	it("event contract: ineffective attempts stay suppressed until successful positive relief", async () => {
++		const { pi, trigger } = makeBoundaryPI()
+ 		modelGuardExtension(pi)
+ 		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
+ 		const ctx = contractContext(inlineCompact)
+@@ -959,8 +986,8 @@
+ 		expect(inlineCompact).toHaveBeenCalledTimes(2)
+ 	})
+ 
+-	it("behavior contract: late completion cannot notify or release a replacement attempt", async () => {
+-		const { pi, trigger } = makeMockPI()
++	it("event contract: late completion cannot notify or release a replacement attempt", async () => {
++		const { pi, trigger } = makeBoundaryPI()
+ 		modelGuardExtension(pi)
+ 		let releaseFirst!: () => void
+ 		let releaseSecond!: () => void
+@@ -989,8 +1016,8 @@
+ 		await second
+ 	})
+ 
+-	it("behavior contract: a missing inline adapter does not abort the current run", async () => {
+-		const { pi, trigger, sendMessage } = makeMockPI()
++	it("event contract: a missing inline adapter does not abort the current run", async () => {
++		const { pi, trigger, sendMessage } = makeBoundaryPI()
+ 		modelGuardExtension(pi)
+ 		const ctx = contractContext(undefined)
+ 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)

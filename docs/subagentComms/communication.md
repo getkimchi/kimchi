@@ -58,6 +58,8 @@ These results support optional communication for a concrete dependency or findin
 
 The later [research review](communication-research.md) compares blackboard and information-asymmetry papers with coding teams, scientific research systems and warehouse agents. It identifies workloads and controls that our small repair comparisons have not covered.
 
+The [longer compaction comparison](compaction-comparison.md) covers solo work, ordinary workers, directed messages and messages with a board. One board output passed every tested lifecycle case, while the other tied its ordinary-worker counterpart. Shared findings were consumed, but the traces do not establish a repeatable quality or time gain caused by the board. The report retains observer and permission failures separately from completed outputs.
+
 Research checked on 2026-09-12. Agent count, execution order and model choice are separate decisions: sequential workers still use multiple agents, and one agent can switch models.
 
 | Source | What it supports | Evidence limit |
