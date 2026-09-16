@@ -68,20 +68,22 @@ export function resolveBundledSkillsDir(home: string = homedir(), execPath?: str
 	return null
 }
 
-function mapConfigPath(path: string, cwd: string, home: string): string {
-	if (isAbsolute(path)) return path
-	if (path.startsWith(".config/") || path.startsWith(".config\\")) return join(home, path)
-	return join(cwd, path)
+interface MappedConfigPath {
+	/** Resolved absolute directory. */
+	dir: string
+	/** True when the path resolved under the project cwd — project-scoped, so gated on trust. */
+	cwdResolved: boolean
 }
 
 /**
- * A config path that resolves under the project cwd (relative, non-`.config/`
- * entries such as `.claude/skills` or `.pi/agent/skills`): project-scoped, so
- * gated on project trust. Absolute and home-resolved config paths are the
- * user's own and stay ungated.
+ * Map a configured skill path: absolute → as-is, `.config/` → home, else →
+ * cwd. The cwdResolved classification is the single source of truth for the
+ * trust gate (a project-resolved config path is project scope).
  */
-function isCwdResolvedConfigPath(path: string): boolean {
-	return !isAbsolute(path) && !path.startsWith(".config/") && !path.startsWith(".config\\")
+function mapConfigPath(path: string, cwd: string, home: string): MappedConfigPath {
+	if (isAbsolute(path)) return { dir: path, cwdResolved: false }
+	if (path.startsWith(".config/") || path.startsWith(".config\\")) return { dir: join(home, path), cwdResolved: false }
+	return { dir: join(cwd, path), cwdResolved: true }
 }
 
 /**
@@ -107,9 +109,9 @@ export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[
 	if (bundled) roots.push({ dir: bundled, kind: "bundled" })
 	roots.push({ dir: resolveHarnessSkillsDir(home), kind: "harness" })
 	for (const p of options.configPaths ?? DEFAULT_CONFIG_PATHS) {
-		const dir = mapConfigPath(p, options.cwd, home)
+		const { dir, cwdResolved } = mapConfigPath(p, options.cwd, home)
 		if (!existsSync(dir)) continue
-		if (isCwdResolvedConfigPath(p) && !projectScopeAllowed) continue
+		if (cwdResolved && !projectScopeAllowed) continue
 		roots.push({ dir, kind: "config" })
 	}
 	if (projectScopeAllowed) {

@@ -216,13 +216,11 @@ export function isSubagent(): boolean {
 
 /**
  * Configured skill paths come from kimchi config (global + trusted project
- * `.kimchi/config.json`). They are accepted as a getter so resource discovery,
+ * `.kimchi/config.json`) and are accepted as a getter so resource discovery,
  * which re-runs after the trust decision (pi reloads resources post-trust),
  * always sees the current config instead of a startup-time snapshot.
  */
-export default function (skillPathsFromConfig: string[] | (() => string[])) {
-	const resolveConfiguredSkillPaths = (): string[] =>
-		typeof skillPathsFromConfig === "function" ? skillPathsFromConfig() : skillPathsFromConfig
+export default function (getSkillPathsFromConfig: () => string[]) {
 	return (pi: ExtensionAPI) => {
 		const subagentMode = isSubagent()
 
@@ -620,7 +618,7 @@ export default function (skillPathsFromConfig: string[] | (() => string[])) {
 			// every downstream surface (base prompt skills section, /skill:<name>,
 			// autocomplete, /resources) sees them. All discovery, filtering, and
 			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
-			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, resolveConfiguredSkillPaths())
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, getSkillPathsFromConfig())
 			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
 			if (skillPaths.length === 0) return undefined
 			return { skillPaths }

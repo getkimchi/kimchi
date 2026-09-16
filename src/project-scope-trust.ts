@@ -1,6 +1,40 @@
 import { dirname, resolve } from "node:path"
 
 /**
+ * Project-local entries (relative to a directory) whose presence makes a
+ * folder trust-requiring for the Kimchi harness: config, permissions, hooks
+ * (bash, kimchi-native, claude), skills, agents, memory, MCP servers, tags,
+ * plans, and ferments.
+ *
+ * This is the single source of truth for kimchi-side detection. The pi patch
+ * (patches/@earendil-works__pi-coding-agent@0.84.1.patch) embeds the same
+ * list in KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES inside pi's
+ * hasTrustRequiringProjectResources (checked in cwd and ancestors, with the
+ * user's home excluded); a unit test in project-scope-trust.test.ts
+ * cross-checks the two so a newly gated reader cannot silently miss the scan.
+ */
+export const TRUST_REQUIRING_PROJECT_RESOURCES: readonly string[] = [
+	".kimchi/config.json",
+	".kimchi/permissions.json",
+	".kimchi/permissions.local.json",
+	".kimchi/hooks.json",
+	".kimchi/hooks.local.json",
+	".kimchi/hooks",
+	".kimchi/skills",
+	".kimchi/agents",
+	".kimchi/agents.json",
+	".kimchi/agent-memory",
+	".kimchi/agent-memory-local",
+	".kimchi/mcp.json",
+	".kimchi/tags.json",
+	".kimchi/plans",
+	".kimchi/ferments",
+	".claude/skills",
+	".claude/settings.json",
+	".claude/settings.local.json",
+]
+
+/**
  * Process-wide gate for project-scoped Kimchi and Claude Code resources
  * (`.kimchi/`, `.claude/`).
  *

@@ -32,13 +32,16 @@ any of:
 | Folder | Trust-requiring entries |
 | --- | --- |
 | `.config/kimchi/harness/` | `settings.json`, `extensions/`, `skills/`, `prompts/`, `themes/`, `SYSTEM.md`, `APPEND_SYSTEM.md` (pi's own project scope) |
-| `.kimchi/` | `config.json`, `permissions.json`, `permissions.local.json`, `hooks/`, `skills/`, `agents/`, `agents.json`, `agent-memory/`, `agent-memory-local/`, `tags.json`, `plans/` |
+| `.kimchi/` | `config.json`, `permissions.json`, `permissions.local.json`, `hooks.json`, `hooks.local.json`, `hooks/`, `skills/`, `agents/`, `agents.json`, `agent-memory/`, `agent-memory-local/`, `mcp.json`, `tags.json`, `plans/`, `ferments/` |
 | `.claude/` | `skills/`, `settings.json`, `settings.local.json` |
-| any ancestor | `.agents/skills/` |
+| any ancestor | `.agents/skills/`, plus the `.kimchi/`/`.claude/` entries above — detection walks cwd and its ancestors (the skills/tags readers walk ancestors, so detection must match), with the user's home directory excluded |
 
 The kimchi-specific entries come from a patch to the pinned
 `@earendil-works/pi-coding-agent` (`patches/@earendil-works__pi-coding-agent@0.84.1.patch`
-— see the header there for removal criteria).
+— see the header there for removal criteria). The entry list lives canonically
+in `TRUST_REQUIRING_PROJECT_RESOURCES` (`src/project-scope-trust.ts`); a unit
+test cross-checks the patch's embedded copy against the constant, so gating a
+new reader without adding its scan entry fails CI.
 
 Headless runs (`--print`, ACP/IDE sessions) never prompt: they honor a
 persisted decision, then the `defaultProjectTrust` setting (`always` / `never` /
@@ -52,15 +55,24 @@ reader of project scope calls `isProjectScopeAllowed(cwd)`:
 
 - `src/config.ts` — `loadConfig()` skips project `.kimchi/config.json`
   (endpoint, API key, skill paths, search settings)
+- `src/extensions/mcp-adapter/config.ts` — project `.kimchi/mcp.json` (server
+  registration/provenance — an untrusted repo must not spawn MCP servers)
 - `src/extensions/permissions/config.ts` — project + local permission files
 - `src/resources/bash-hook-discovery.ts` — project `.kimchi/hooks/bash/`
+- `src/extensions/kimchi-hooks/definition.ts` — project
+  `.kimchi/hooks.json` / `hooks.local.json` (registered in /resources so
+  their default-enabled execution is visible and toggleable)
 - `src/extensions/claude-code-hook-adapter/definition.ts` — project `.claude` hook settings
-- `src/extensions/claude-code-skills/definition.ts` — project `.claude/skills`
+- `src/extensions/claude-code-skills/definition.ts` — project `.claude/skills`,
+  including the cwd expansion of relative configured skill paths
 - `src/shared/skill-discovery/resolve-skill-roots.ts` — project `.kimchi/skills`
   and cwd-resolved config roots (`.pi/agent/skills`, `.claude/skills`)
 - `src/extensions/agents/settings.ts`, `personas/custom-agents.ts`,
-  `agents/memory/memory.ts` — project agents settings, personas, memory
+  `agents/memory/memory.ts`, and the `/agents` menu's project file reads —
+  project agents settings, personas, memory
 - `src/config/tags.ts` — project `.kimchi/tags.json`
+- `src/ferment/store.ts` — project `.kimchi/ferments` (falls back to the
+  user-global store while untrusted)
 - `src/extensions/ferment-v2/objective-file.ts` — project `.kimchi/plans` objective files
 
 ## When trust takes effect

@@ -25,6 +25,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -2335,8 +2336,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 	const personalAgentsDir = () => join(getAgentDir(), "agents")
 
 	function findAgentFile(name: string): { path: string; location: "project" | "personal" } | undefined {
-		const projectPath = join(projectAgentsDir(), `${name}.md`)
-		if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+		// The project location is gated on project trust: an untrusted repo's
+		// shipped agent files are only reachable through explicit user action
+		// (naming the agent), but even that must not read untrusted content.
+		if (isProjectScopeAllowed(process.cwd())) {
+			const projectPath = join(projectAgentsDir(), `${name}.md`)
+			if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+		}
 		const personalPath = join(personalAgentsDir(), `${name}.md`)
 		if (existsSync(personalPath)) return { path: personalPath, location: "personal" }
 		return undefined

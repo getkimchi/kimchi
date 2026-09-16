@@ -143,6 +143,11 @@ function materializeClaudeCodeSkillDir(
 function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	const home = resolve(homedir())
 	const projectDir = resolve(cwd)
+	// The cwd expansion of a relative configured path is project-scoped:
+	// while the project is untrusted, a repo must not contribute skills
+	// through the user's configured (relative) skill paths — mirroring the
+	// DEFAULT_CONFIG_PATHS gating in shared/skill-discovery.
+	const projectScopeAllowed = isProjectScopeAllowed(cwd)
 	const expanded: string[] = []
 	for (const path of paths) {
 		if (isAbsolute(path)) {
@@ -153,7 +158,7 @@ function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 			const fromHome = resolve(home, path)
 			const fromCwd = resolve(projectDir, path)
 			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
-			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
+			if (projectScopeAllowed && isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
 		}
 	}
 	return expanded

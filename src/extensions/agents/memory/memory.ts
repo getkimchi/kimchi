@@ -93,9 +93,11 @@ export function ensureMemoryDir(memoryDir: string): void {
  *
  * Project and local scopes are gated on project trust: an untrusted repo's
  * shipped MEMORY.md must not be injected into an agent's system prompt.
+ * The scope and cwd parameters are required so the compiler enforces the
+ * gate at every call site.
  */
-export function readMemoryIndex(memoryDir: string, scope?: MemoryScope, cwd?: string): string | undefined {
-	if (scope && scope !== "user" && cwd && !isProjectScopeAllowed(cwd)) return undefined
+export function readMemoryIndex(memoryDir: string, scope: MemoryScope, cwd: string): string | undefined {
+	if (scope !== "user" && !isProjectScopeAllowed(cwd)) return undefined
 	if (isSymlink(memoryDir)) return undefined
 
 	const memoryFile = join(memoryDir, "MEMORY.md")

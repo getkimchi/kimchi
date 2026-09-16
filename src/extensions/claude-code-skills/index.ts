@@ -20,19 +20,14 @@ const SkillToolSchema = Type.Object({
 type SkillToolArgs = Static<typeof SkillToolSchema>
 
 /**
- * `configuredSkillPaths` comes from kimchi config (global + trusted project
- * `.kimchi/config.json`) and is accepted as a getter so post-trust resource
+ * `getSkillPaths` resolves kimchi config's skill paths (global + trusted
+ * project `.kimchi/config.json`); it is a getter so post-trust resource
  * discovery sees the current config rather than a startup-time snapshot.
  */
-export default function claudeCodeSkillsExtension(
-	pi: ExtensionAPI,
-	configuredSkillPaths: string[] | (() => string[]) = [],
-): void {
-	const resolveConfiguredSkillPaths = (): string[] =>
-		typeof configuredSkillPaths === "function" ? configuredSkillPaths() : configuredSkillPaths
+export default function claudeCodeSkillsExtension(pi: ExtensionAPI, getSkillPaths: () => string[] = () => []): void {
 	pi.on("resources_discover", (event) => {
 		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd, {
-			excludeSkillNames: getConfiguredNativeSkillNames(event.cwd, resolveConfiguredSkillPaths()),
+			excludeSkillNames: getConfiguredNativeSkillNames(event.cwd, getSkillPaths()),
 		})
 		if (skillPaths.length === 0) return undefined
 		return { skillPaths }

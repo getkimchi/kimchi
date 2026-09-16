@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSyn
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
-
+import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import { normalizeSuccessCriteria, successCriteriaToAnswer } from "./success-criteria.js"
 import type {
@@ -95,7 +95,11 @@ export function resolveFermentsDir(cwd?: string): string {
 	const envDir = process.env.KIMCHI_FERMENTS_DIR
 	if (envDir) return envDir
 	const project = detectProjectRoot(cwd)
-	if (project) return resolve(project, ".kimchi", "ferments")
+	// Project-local ferments (.kimchi/ferments at the git root) are gated on
+	// project trust: an untrusted repo's shipped ferment state must not load
+	// (or be mutated by crash-recovery pausing) — fall back to the user's
+	// global store.
+	if (project && isProjectScopeAllowed(cwd ?? process.cwd())) return resolve(project, ".kimchi", "ferments")
 	return getGlobalFermentsDir()
 }
 

@@ -204,7 +204,7 @@ describe("prompt enrichment tool visibility", () => {
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
 
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 		const visibility = createToolVisibility(pi)
 		visibility.disable(["bash"])
 
@@ -239,7 +239,7 @@ describe("prompt enrichment tool visibility", () => {
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
 
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 
 		const beforeAgentStart = handlers.get("before_agent_start")
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
@@ -578,7 +578,7 @@ describe("model role startup warnings", () => {
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
 
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 
 		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning:"))
 	})
@@ -596,7 +596,7 @@ describe("model role startup warnings", () => {
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
 
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 
 		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning:"))
 	})
@@ -617,7 +617,7 @@ describe("model role startup warnings", () => {
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
 
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning: orchestrator"))
 	})
@@ -636,7 +636,7 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 		getActiveTools: () => [],
 		getFlag: () => false,
 	} as unknown as ExtensionAPI
-	promptEnrichmentExtension(skillPaths)(pi)
+	promptEnrichmentExtension(() => skillPaths)(pi)
 	return {
 		handlers,
 		resourcesDiscover: handlers.get("resources_discover"),
@@ -692,7 +692,7 @@ describe("deprecated model notification", () => {
 			getActiveTools: () => [],
 			getFlag: () => false,
 		} as unknown as ExtensionAPI
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 		return {
 			handlers,
 			sessionStart: handlers.get("session_start"),
@@ -1346,7 +1346,7 @@ describe("continuation nudge turn_end handler", () => {
 			events: { on: () => {}, emit: () => {} },
 		} as unknown as ExtensionAPI
 
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 
 		const fire = async (event: string, payload: unknown) => {
 			const handlers = handlerMap.get(event) ?? []
@@ -1609,7 +1609,7 @@ describe("debug prompts cleanup", () => {
 			getActiveTools: () => [],
 			getFlag: (name: string) => (name === "debug-prompts" ? debugPrompts : undefined),
 		} as unknown as ExtensionAPI
-		promptEnrichmentExtension([])(pi)
+		promptEnrichmentExtension(() => [])(pi)
 		return {
 			beforeAgentStart: handlers.get("before_agent_start"),
 		}
