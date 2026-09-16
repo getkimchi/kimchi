@@ -1,0 +1,160 @@
+{
+  "artifact_root": "/private/tmp/kimchi-compaction-contracts-y4oxr37g",
+  "scope": "Supplemental adapter behavior checks; original scores remain unchanged. No diagnostic event names or success-message wording asserted. Branch and cached messages both represent the same active context.",
+  "grading_file": "src/extensions/model-guard.test.ts",
+  "original_sha256": "bb808e92ff0041bb9091b3175dea63cb7aeee24f395884006ab51028a94293b8",
+  "patch": "scripts/agent-communication/compaction-contracts.diff",
+  "patch_sha256": "8c703459bf14036a1e765fcfb3d3f94c82e02e05d6b96b0e6c73013a5974982a",
+  "selector": "behavior contract:",
+  "reference_typecheck_exit_code": 0,
+  "results": {
+    "baseline": {
+      "passed": 0,
+      "failed": 6,
+      "cases": [
+        {
+          "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called once, but got 0 times"
+        },
+        {
+          "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called once, but got 0 times"
+        },
+        {
+          "title": "behavior contract: successful final responses rearm four pressure cycles",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called 4 times, but got 0 times"
+        },
+        {
+          "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called once, but got 0 times"
+        },
+        {
+          "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called 2 times, but got 0 times"
+        },
+        {
+          "title": "behavior contract: a missing inline adapter does not abort the current run",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+        }
+      ]
+    },
+    "reference": {
+      "passed": 6,
+      "failed": 0,
+      "cases": [
+        {
+          "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: successful final responses rearm four pressure cycles",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: a missing inline adapter does not abort the current run",
+          "status": "passed",
+          "first_failure": null
+        }
+      ]
+    },
+    "solo": {
+      "passed": 1,
+      "failed": 5,
+      "cases": [
+        {
+          "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called once, but got 0 times"
+        },
+        {
+          "title": "behavior contract: successful final responses rearm four pressure cycles",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called 4 times, but got 1 times"
+        },
+        {
+          "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called 2 times, but got 1 times"
+        },
+        {
+          "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called 2 times, but got 3 times"
+        },
+        {
+          "title": "behavior contract: a missing inline adapter does not abort the current run",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+        }
+      ]
+    },
+    "workers": {
+      "passed": 3,
+      "failed": 3,
+      "cases": [
+        {
+          "title": "behavior contract: an incomplete current pair defers and a completed pair permits compaction",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: a call abandoned before a new user turn does not prevent compaction",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: successful final responses rearm four pressure cycles",
+          "status": "passed",
+          "first_failure": null
+        },
+        {
+          "title": "behavior contract: ineffective attempts stay suppressed until successful positive relief",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to be called once, but got 2 times"
+        },
+        {
+          "title": "behavior contract: late completion cannot notify or release a replacement attempt",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+        },
+        {
+          "title": "behavior contract: a missing inline adapter does not abort the current run",
+          "status": "failed",
+          "first_failure": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+        }
+      ]
+    }
+  },
+  "retained_fixture_failures": [
+    "Initial probe omitted spies for notify and compact; assertions failed before behavior checks.",
+    "The first historical-call fixture disconnected the new turn from old history; linking parentId restored the actual branch."
+  ]
+}

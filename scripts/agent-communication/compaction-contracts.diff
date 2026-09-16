@@ -1,0 +1,116 @@
+--- a/src/extensions/model-guard.test.ts
++++ b/src/extensions/model-guard.test.ts
+@@ -889,6 +889,113 @@
+ 		vi.mocked(getCompactionEnabled).mockReturnValue(true)
+ 		__resetImagesDetectedForTest()
+ 		clearActiveFermentId()
++	})
++
++	function contractContext(inlineCompact: ExtensionContext["inlineCompact"], branch = makePairedBranchEntries()) {
++		const ctx = makeMidTurnCtx({ inlineCompact })
++		ctx.ui.notify = vi.fn()
++		ctx.compact = vi.fn()
++		ctx.sessionManager.getBranch = () => branch
++		__setLatestMessagesForTest(branch.flatMap((entry) => entry.type === "message" ? [entry.message] : []))
++		return ctx
++	}
++
++	it("behavior contract: an incomplete current pair defers and a completed pair permits compaction", async () => {
++		const { pi, trigger } = makeMockPI()
++		modelGuardExtension(pi)
++		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"),
++			contractContext(inlineCompact, makePairedBranchEntries().slice(0, 2)))
++		expect(inlineCompact).not.toHaveBeenCalled()
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), contractContext(inlineCompact))
++		expect(inlineCompact).toHaveBeenCalledOnce()
++	})
++
++	it("behavior contract: a call abandoned before a new user turn does not prevent compaction", async () => {
++		const { pi, trigger } = makeMockPI()
++		modelGuardExtension(pi)
++		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
++		const abandoned = structuredClone(makePairedBranchEntries()[1])
++		if (abandoned.type !== "message" || abandoned.message.role !== "assistant") throw new Error("bad fixture")
++		abandoned.id = "abandoned-entry"
++		abandoned.parentId = "abandoned-user"
++		abandoned.message.content = [{ type: "toolCall", id: "abandoned-call", name: "bash", arguments: {} }]
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"),
++			contractContext(inlineCompact, [{ ...makePairedBranchEntries()[0], id: "abandoned-user" }, abandoned,
++				{ ...makePairedBranchEntries()[0], parentId: "abandoned-entry" }, ...makePairedBranchEntries().slice(1)]))
++		expect(inlineCompact).toHaveBeenCalledOnce()
++	})
++
++	it("behavior contract: successful final responses rearm four pressure cycles", async () => {
++		const { pi, trigger } = makeMockPI()
++		modelGuardExtension(pi)
++		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
++		const ctx = contractContext(inlineCompact)
++		for (let cycle = 0; cycle < 4; cycle++) {
++			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
++			await trigger("turn_end", { ...makeTurnEndEvent(10_000, "stop"), message: makeAssistant(10_000) }, ctx)
++		}
++		expect(inlineCompact).toHaveBeenCalledTimes(4)
++	})
++
++	it("behavior contract: ineffective attempts stay suppressed until successful positive relief", async () => {
++		const { pi, trigger } = makeMockPI()
++		modelGuardExtension(pi)
++		const inlineCompact = vi.fn(async () => makeCompactionResult(300_000))
++		const ctx = contractContext(inlineCompact)
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 5_000, "toolUse"), ctx)
++		expect(inlineCompact).toHaveBeenCalledOnce()
++		for (const reason of ["error", "aborted"]) {
++			await trigger("turn_end", makeTurnEndEvent(10_000, reason), ctx)
++			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 5_000, "toolUse"), ctx)
++			expect(inlineCompact).toHaveBeenCalledOnce()
++		}
++		await trigger("turn_end", { ...makeTurnEndEvent(0, "stop"), message: makeAssistant(0) }, ctx)
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 5_000, "toolUse"), ctx)
++		expect(inlineCompact).toHaveBeenCalledOnce()
++		await trigger("turn_end", { ...makeTurnEndEvent(10_000, "stop"), message: makeAssistant(10_000) }, ctx)
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
++		expect(inlineCompact).toHaveBeenCalledTimes(2)
++	})
++
++	it("behavior contract: late completion cannot notify or release a replacement attempt", async () => {
++		const { pi, trigger } = makeMockPI()
++		modelGuardExtension(pi)
++		let releaseFirst!: () => void
++		let releaseSecond!: () => void
++		const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
++		const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve })
++		const inlineCompact = vi.fn()
++			.mockImplementationOnce(() => firstGate.then(() => makeCompactionResult(300_000)))
++			.mockImplementationOnce(() => secondGate.then(() => makeCompactionResult(300_000)))
++			.mockResolvedValue(makeCompactionResult(300_000))
++		const firstCtx = contractContext(inlineCompact)
++		const first = trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), firstCtx)
++		await settle()
++		await trigger("session_shutdown", { type: "session_shutdown" }, firstCtx)
++		const secondCtx = contractContext(inlineCompact)
++		const second = trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), secondCtx)
++		await settle()
++		expect(inlineCompact).toHaveBeenCalledTimes(2)
++		releaseFirst()
++		await first
++		expect(firstCtx.ui.notify).not.toHaveBeenCalled()
++		// Relief must not let the old attempt's finally block release the new one.
++		await trigger("turn_end", makeTurnEndEvent(10_000, "toolUse"), secondCtx)
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), secondCtx)
++		expect(inlineCompact).toHaveBeenCalledTimes(2)
++		releaseSecond()
++		await second
++	})
++
++	it("behavior contract: a missing inline adapter does not abort the current run", async () => {
++		const { pi, trigger, sendMessage } = makeMockPI()
++		modelGuardExtension(pi)
++		const ctx = contractContext(undefined)
++		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
++		expect(ctx.compact).not.toHaveBeenCalled()
++		expect(sendMessage).not.toHaveBeenCalled()
+ 	})
+ 
+ 	it("awaits inlineCompact inside the turn_end handler; manual compact and sendMessage are never used", async () => {

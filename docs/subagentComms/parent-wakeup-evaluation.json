@@ -1,0 +1,129 @@
+{
+  "artifact_root": "/private/tmp/kimchi-compaction-arms-jcxfk360",
+  "purpose": "parent-wakeup-probe",
+  "runner_head": "f30537293cfde3bd0eb92a5950f0de8bdde4d64d",
+  "binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "conditions": [
+    "native",
+    "guided",
+    "guided",
+    "native"
+  ],
+  "isolation_checks": 38,
+  "guidance_benefit": "Not established; both guided runs ended before launching a worker.",
+  "trials": [
+    {
+      "label": "trial-01",
+      "condition": "native",
+      "finish_reason": "settled",
+      "elapsed_seconds": 13.781,
+      "usage": {
+        "input": 3035,
+        "output": 13,
+        "cacheRead": 13440,
+        "cacheWrite": 0
+      },
+      "workers": [],
+      "artifact_exact": false,
+      "tracked_changes": [],
+      "parent_calls": [],
+      "final_text": "Let me read TASK.md to get the worker assignment.",
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-02",
+      "condition": "guided",
+      "finish_reason": "settled",
+      "elapsed_seconds": 11.527,
+      "usage": {
+        "input": 3101,
+        "output": 13,
+        "cacheRead": 13440,
+        "cacheWrite": 0
+      },
+      "workers": [],
+      "artifact_exact": false,
+      "tracked_changes": [],
+      "parent_calls": [],
+      "final_text": "Let me read TASK.md to get the worker assignment.",
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-03",
+      "condition": "guided",
+      "finish_reason": "settled",
+      "elapsed_seconds": 9.314,
+      "usage": {
+        "input": 3098,
+        "output": 9,
+        "cacheRead": 13440,
+        "cacheWrite": 0
+      },
+      "workers": [],
+      "artifact_exact": false,
+      "tracked_changes": [],
+      "parent_calls": [],
+      "final_text": "Let me read TASK.md first.",
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "label": "trial-04",
+      "condition": "native",
+      "finish_reason": "settled",
+      "elapsed_seconds": 43.014,
+      "usage": {
+        "input": 9120,
+        "output": 1216,
+        "cacheRead": 123904,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed",
+          "abortReason": null
+        }
+      ],
+      "artifact_exact": true,
+      "tracked_changes": [],
+      "parent_calls": [
+        {
+          "name": "read",
+          "wait": null
+        },
+        {
+          "name": "Agent.run_in_background",
+          "wait": null
+        },
+        {
+          "name": "Agent",
+          "wait": null
+        },
+        {
+          "name": "get_subagent_result",
+          "wait": true
+        },
+        {
+          "name": "bash",
+          "wait": null
+        }
+      ],
+      "final_text": "Done. Summary of the probe:\n\n- **Worker**: one background General-Purpose agent (`22168f8f-1e8a-4cd`, glm-5.3-flash, thinking low, max_turns 35, max_duration 900, token_budget 10000).\n- **Observed worker status**: `completed` \u2014 4 turns used, ~20s wall time (matches the 15s deliberate delay), 4.9k tokens, not resumable. No other worker launched; I did none of its work.\n- **Artifact verified independently** (byte-for-byte via `od -c`):\n  - Path: `/private/tmp/kimchi-compaction-arms-jcxfk360/trial-04/tmp/kimchi-harness-live-hsaL9H/worker-result.json`\n  - Content: `{\"value\": 2310}` followed by a trailing newline (`{ \" v a l u e \" :   2 3 1 0 } \\n`) \u2014 exact match to the assignment.\n- Repository source untouched; no installs, research, or commits.",
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    }
+  ]
+}

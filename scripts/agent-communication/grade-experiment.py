@@ -25,7 +25,7 @@ def execute(command, directory, log, environment):
             return 124
 
 
-def grade(root, label, repo, frozen, repeated=False):
+def grade(root, label, repo, frozen, repeated=False, contracts=False):
     source = root / f"{label}-final"
     assert source.is_dir(), "Only atomically published final snapshots can be graded"
     base = root / "grading"
@@ -61,9 +61,12 @@ def grade(root, label, repo, frozen, repeated=False):
         }
         if repeated:
             commands["repeated_process"] = commands["process"]
+        if contracts:
+            commands["contracts"] = ["pnpm", "exec", "vitest", "run", "src/extensions/model-guard.test.ts", "-t", "behavior contract:"]
         for kind, command in commands.items():
-            if kind == "repeated_process":
-                supplement = json.loads((repo / "docs/subagentComms/compaction-repeat-preflight.json").read_text())
+            if kind in {"repeated_process", "contracts"}:
+                name = "compaction-repeat-preflight.json" if kind == "repeated_process" else "compaction-contract-preflight.json"
+                supplement = json.loads((repo / "docs/subagentComms" / name).read_text())
                 patch = repo / supplement["patch"]
                 assert preflight.digest(patch) == supplement["patch_sha256"], "Supplemental fixture changed"
                 subprocess.run(["git", "apply", "--check", str(patch)], cwd=destination, check=True)
@@ -86,11 +89,12 @@ def main():
     parser.add_argument("root", type=Path)
     parser.add_argument("labels", nargs="+")
     parser.add_argument("--repeated", action="store_true", help="Also run the separately preflighted two-cycle process probe")
+    parser.add_argument("--contracts", action="store_true", help="Also run lifecycle checks independent of diagnostic wording")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     frozen = json.loads((repo / "docs/subagentComms/compaction-preflight.json").read_text())
     with ThreadPoolExecutor(max_workers=2) as pool:
-        pending = [pool.submit(grade, args.root.resolve(), label, repo, frozen, args.repeated) for label in args.labels]
+        pending = [pool.submit(grade, args.root.resolve(), label, repo, frozen, args.repeated, args.contracts) for label in args.labels]
         for future in pending:
             future.result()
 
