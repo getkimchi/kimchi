@@ -26,6 +26,23 @@ import type { ServerEntry } from "./types.js"
 /** Auth status for a server */
 export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 
+/**
+ * Detect the MCP SDK error raised when the authorization server has no RFC 7591
+ * registration endpoint and no pre-registered client is configured. Google's
+ * OAuth server is the known case: it never supports dynamic client registration.
+ */
+export function isDynamicRegistrationUnsupportedError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes("does not support dynamic client registration")
+}
+
+function dcrUnsupportedMessage(serverName: string): string {
+	return (
+		`Server "${serverName}" requires OAuth, but its authorization server does not support dynamic client registration. ` +
+		`Register an OAuth client with the provider manually, then add "oauth": { "clientId": "...", "clientSecret": "..." } ` +
+		`to the "${serverName}" entry in mcp.json and run /mcp-auth ${serverName}.`
+	)
+}
+
 // Track pending transports for auth completion
 const pendingTransports = new Map<string, StreamableHTTPClientTransport>()
 
@@ -167,6 +184,11 @@ export async function startAuth(
 		await client.close().catch(() => {})
 		await transport.close().catch(() => {})
 		await stopCallbackServerIfIdle()
+		// Without a pre-registered client the SDK only has DCR to fall back on.
+		// Translate its failure into actionable guidance instead of the raw SDK error.
+		if (!config.clientId && isDynamicRegistrationUnsupportedError(error)) {
+			throw new Error(dcrUnsupportedMessage(serverName), { cause: error })
+		}
 		throw error
 	}
 }
