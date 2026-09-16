@@ -25,7 +25,7 @@ def execute(command, directory, log, environment):
             return 124
 
 
-def grade(root, label, repo, frozen):
+def grade(root, label, repo, frozen, repeated=False):
     source = root / f"{label}-final"
     assert source.is_dir(), "Only atomically published final snapshots can be graded"
     base = root / "grading"
@@ -55,10 +55,19 @@ def grade(root, label, repo, frozen):
             assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, f"Frozen grader changed: {name}"
             (destination / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination / name)
-        for kind, command in {
+        commands = {
             "process": ["pnpm", "exec", "vitest", "run", "--config", "tests/smoke/vitest.config.ts", preflight.GRADING_FILES[0]],
             "adapter": ["pnpm", "exec", "vitest", "run", "src/extensions/model-guard.test.ts", "-t", preflight.DIAGNOSTICS],
-        }.items():
+        }
+        if repeated:
+            commands["repeated_process"] = commands["process"]
+        for kind, command in commands.items():
+            if kind == "repeated_process":
+                supplement = json.loads((repo / "docs/subagentComms/compaction-repeat-preflight.json").read_text())
+                patch = repo / supplement["patch"]
+                assert preflight.digest(patch) == supplement["patch_sha256"], "Supplemental fixture changed"
+                subprocess.run(["git", "apply", "--check", str(patch)], cwd=destination, check=True)
+                subprocess.run(["git", "apply", str(patch)], cwd=destination, check=True)
             report = base / f"{label}-{kind}.json"
             code = execute([*command, "--reporter=json", f"--outputFile={report}"], destination,
                            base / f"{label}-{kind}.log", environment)
@@ -76,11 +85,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("labels", nargs="+")
+    parser.add_argument("--repeated", action="store_true", help="Also run the separately preflighted two-cycle process probe")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     frozen = json.loads((repo / "docs/subagentComms/compaction-preflight.json").read_text())
     with ThreadPoolExecutor(max_workers=2) as pool:
-        pending = [pool.submit(grade, args.root.resolve(), label, repo, frozen) for label in args.labels]
+        pending = [pool.submit(grade, args.root.resolve(), label, repo, frozen, args.repeated) for label in args.labels]
         for future in pending:
             future.result()
 

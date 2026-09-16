@@ -1,0 +1,65 @@
+{
+  "date": "2026-09-16",
+  "artifact_root": "/private/tmp/kimchi-compaction-repeat-j7_asm8x",
+  "refs": {
+    "baseline": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+    "reference": "716bd797c9802b20ef1da4ccde7caace26173a22"
+  },
+  "original_grader": "docs/subagentComms/compaction-preflight.json",
+  "source_fixture_sha256": "1ee66079392632353392f9be47b1fc163b72e4e0f1f5b9d1c51e44033d36283d",
+  "patch": "scripts/agent-communication/repeated-compaction.diff",
+  "patch_sha256": "9a98b9e3a4af44277b208325677e573330e2338f7581f203ee924d19d8b37235",
+  "generated_fixture_sha256": "d97ef342caedde4866d08d06c8e26b723748a17df59f03141d5aef3d9d5e8de3",
+  "results": {
+    "baseline": {
+      "binary_sha256": "1ae877ecb934b7433f5024d9dc561e3ca480c2a5e8d2421e403f5a23628c43e2",
+      "passed": 1,
+      "failed": 1,
+      "cases": [
+        {
+          "title": "a --print tool run completes two effective compaction cycles without another prompt",
+          "status": "failed"
+        },
+        {
+          "title": "cancelling during summarization ends the run without scheduling another task request",
+          "status": "passed"
+        }
+      ]
+    },
+    "reference": {
+      "binary_sha256": "885368b18ca0d1259f86c3e01c36221b7de952a5082364a025b83eb0b224519c",
+      "passed": 2,
+      "failed": 0,
+      "cases": [
+        {
+          "title": "a --print tool run completes two effective compaction cycles without another prompt",
+          "status": "passed"
+        },
+        {
+          "title": "cancelling during summarization ends the run without scheduling another task request",
+          "status": "passed"
+        }
+      ]
+    }
+  },
+  "retained_attempts": [
+    "baseline.json",
+    "reference.json",
+    "reference-debug.json (no tests: debug fixture creation failed)",
+    "reference-debug-02.json",
+    "baseline-fixed.json",
+    "reference-fixed.json",
+    "baseline-full.json",
+    "reference-full.json",
+    "baseline-patched.json",
+    "reference-patched.json",
+    "baseline-verified.json",
+    "reference-verified.json"
+  ],
+  "fixture_corrections": [
+    "The first draft routed initial/split summaries but missed updating an existing summary, so the fake server consumed a task response for the second summary. Route using the summarizer system message.",
+    "The generated cancellation case incorrectly expected two summaries despite cancelling during the first. Its expected count remains one.",
+    "Use distinct tool-call IDs and check that each result references a preceding call."
+  ],
+  "scope": "Two effective compactions within the original print request, compacted subsequent requests, ordered tool pairing, exact remaining task requests, cancellation. This supplements the frozen single-cycle grader; no model comparison is claimed."
+}

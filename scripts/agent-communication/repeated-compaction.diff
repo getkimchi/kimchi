@@ -1,0 +1,140 @@
+--- a/tests/smoke/print-mid-turn-compaction.test.ts
++++ b/tests/smoke/print-mid-turn-compaction.test.ts
+@@ -63,16 +63,16 @@
+ const SUMMARY_MARKER = "PR1NT_SUMMARY_MARKER_7c"
+ const FINAL_ANSWER = "PR1NT_FINAL_ANSWER_3b: all work complete"
+ 
+-/** Upstream's compaction makes two kinds of summarization LLM calls: the
+- *  regular history summary ("structured context checkpoint summary") and,
+- *  when the cut lands mid-turn (single-turn tool chains — the cut point is an
+- *  assistant message), the split-turn prefix summary. Both are "the summary
+- *  request" for routing and assertion purposes. */
++/** Initial, split-turn and updated summaries use different user prompts.
++ *  Route them by the summarizer system message; task history may contain
++ *  copied summary instructions. */
+ function isSummarizationRequest(body: unknown): boolean {
+-	const text = JSON.stringify(body ?? "")
+-	return (
+-		text.includes("structured context checkpoint summary") ||
+-		text.includes("PREFIX of a turn that was too large to keep")
++	const messages = (body as { messages?: Array<{ role?: string; content?: unknown }> }).messages ?? []
++	return messages.some(
++		(message) =>
++			message.role === "system" &&
++			typeof message.content === "string" &&
++			message.content.startsWith("You are a context summarization assistant."),
+ 	)
+ }
+ 
+@@ -82,23 +82,22 @@
+ function orphanedToolResultIds(body: unknown): string[] {
+ 	const messages = (body as { messages?: Array<Record<string, unknown>> }).messages ?? []
+ 	const callIds = new Set<string>()
+-	for (const message of messages) {
+-		if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) continue
+-		for (const call of message.tool_calls as Array<{ id?: unknown }>) {
+-			if (typeof call.id === "string") callIds.add(call.id)
+-		}
+-	}
+ 	const orphans: string[] = []
+ 	for (const message of messages) {
+-		if (message.role !== "tool") continue
+-		const toolCallId = message.tool_call_id
+-		if (typeof toolCallId === "string" && !callIds.has(toolCallId)) orphans.push(toolCallId)
++		if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
++			for (const call of message.tool_calls as Array<{ id?: unknown }>) {
++				if (typeof call.id === "string") callIds.add(call.id)
++			}
++		} else if (message.role === "tool") {
++			const toolCallId = message.tool_call_id
++			if (typeof toolCallId === "string" && !callIds.has(toolCallId)) orphans.push(toolCallId)
++		}
+ 	}
+ 	return orphans
+ }
+ 
+ function bashToolCall(command: string) {
+-	return { function: { name: "bash", arguments: JSON.stringify({ command }) } }
++	return { id: `call_${command.split("-").at(-1)}`, function: { name: "bash", arguments: JSON.stringify({ command }) } }
+ }
+ 
+ interface PrintRun {
+@@ -179,6 +178,22 @@
+ 			toolCalls: [bashToolCall("echo print-smoke-turn-three")],
+ 			usage: { prompt_tokens: 20_000, completion_tokens: 200 },
+ 		},
++		// A second pressure cycle after the successful below-threshold response.
++		{
++			stream: [RECENT_TEXT],
++			toolCalls: [bashToolCall("echo print-smoke-turn-four")],
++			usage: { prompt_tokens: THRESHOLD + 600, completion_tokens: 100 },
++		},
++		{
++			match: (request) => isSummarizationRequest(request.body),
++			stream: [`${SUMMARY_MARKER}: SECOND_CYCLE; turn four completed, work continues.`],
++			usage: { prompt_tokens: 1_000, completion_tokens: 200 },
++		},
++		{
++			stream: ["Continuing after the second compaction."],
++			toolCalls: [bashToolCall("echo print-smoke-turn-five")],
++			usage: { prompt_tokens: 20_000, completion_tokens: 200 },
++		},
+ 		// Final answer.
+ 		{
+ 			stream: [FINAL_ANSWER],
+@@ -197,7 +212,7 @@
+ 	return false
+ }
+ 
+-it("a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0", {
++it("a --print tool run completes two effective compaction cycles without another prompt", {
+ 	timeout: 120_000,
+ }, async () => {
+ 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-mid-turn-compaction-"))
+@@ -217,7 +232,7 @@
+ 			homeDir,
+ 			workDir,
+ 			sessionPath,
+-			"Run the three bash echo steps in order, then state the final answer.",
++			"Run the five bash echo steps in order, then state the final answer.",
+ 		)
+ 
+ 		// Held phase: the summarization request arrives and is held open.
+@@ -239,15 +254,15 @@
+ 		expect(code, failure).toBe(0)
+ 		expect(run.stdout(), failure).toContain(FINAL_ANSWER)
+ 
+-		// Request-content regression: exactly one summarization call, exactly
+-		// four task calls — remaining work ran exactly once, no synthetic turn.
++		// Request-content regression: exactly two summarization calls, exactly
++		// six task calls — remaining work ran exactly once, no synthetic turn.
+ 		// Recompute from the live request log: the held-phase snapshot predates
+ 		// the post-compaction turns.
+ 		const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+ 		const summaryRequests = chatRequests.filter((request) => isSummarizationRequest(request.body))
+ 		const taskRequests = chatRequests.filter((request) => !isSummarizationRequest(request.body))
+-		expect(summaryRequests.length, failure).toBe(1)
+-		expect(taskRequests.length, failure).toBe(4)
++		expect(summaryRequests.length, failure).toBe(2)
++		expect(taskRequests.length, failure).toBe(6)
+ 
+ 		// Sanity: the filler was really on the wire before compaction.
+ 		expect(JSON.stringify(taskRequests[1].body)).toContain(FILLER_TOKEN)
+@@ -260,6 +275,8 @@
+ 			expect(body, failure).not.toContain(FILLER_TOKEN)
+ 			expect(orphanedToolResultIds(request.body), failure).toEqual([])
+ 		}
++
++		for (const request of taskRequests.slice(4)) expect(JSON.stringify(request.body)).toContain("SECOND_CYCLE")
+ 
+ 		// Session history: the compaction entry lands before the remaining work.
+ 		const sessionLines = readFileSync(sessionPath, "utf-8")
+@@ -310,7 +327,7 @@
+ 			homeDir,
+ 			workDir,
+ 			sessionPath,
+-			"Run the three bash echo steps in order, then state the final answer.",
++			"Run the five bash echo steps in order, then state the final answer.",
+ 		)
+ 
+ 		const summaryArrived = await waitForSummaryRequest(fake)
