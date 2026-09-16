@@ -4,7 +4,7 @@
 // ACP speaks JSON-RPC over stdio — no node-pty like the TUI fixture.
 
 import { type ChildProcess, spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
@@ -357,6 +357,13 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH
 		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
+
+		// ACP is headless (no trust prompt), and the project-trust gate
+		// fail-closes without a persisted decision — tests that seed .kimchi/
+		// resources in the workDir need the decision pre-recorded, mirroring
+		// what an interactive session's first run persists. Keyed by the
+		// realpath of the workDir (pi's trust store canonicalizes paths).
+		writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"), "utf-8")
 
 		proc = spawn(BINARY_PATH, ["--mode", "acp", ...extraArgs], {
 			stdio: ["pipe", "pipe", "inherit"],

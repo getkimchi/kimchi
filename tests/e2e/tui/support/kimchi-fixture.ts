@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -128,6 +128,14 @@ export interface CreateKimchiFixtureOptions {
 	ollama?: StartFakeOllamaServerOptions
 	/** Seed the isolated Kimchi home with a repository-owned MCP server. */
 	mcp?: McpFixtureOptions
+	/**
+	 * Pre-record a persisted trust decision for the session workDir (default
+	 * true). The project-trust gate fail-closes without one, so tests that
+	 * seed .kimchi/ resources in the workDir need it — mirroring what an
+	 * interactive session's first run persists. Tests that deliberately
+	 * exercise the untrusted/prompt path pass false.
+	 */
+	trustWorkDir?: boolean
 }
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
@@ -188,6 +196,16 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		)
 
 		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models, providerId)
+		// Pre-record a persisted trust decision for the workDir unless the test
+		// opts out (the project-trust-gate scenarios answer the live prompt
+		// instead). Keyed by the realpath — pi's trust store canonicalizes.
+		if (options.trustWorkDir !== false) {
+			writeFileSync(
+				join(agentDir, "trust.json"),
+				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
+				"utf-8",
+			)
+		}
 		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
 
 		const rawSeed = options.seedHome?.(homeDir, workDir)

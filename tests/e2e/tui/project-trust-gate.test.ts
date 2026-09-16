@@ -88,6 +88,7 @@ test("an untrusted repo's .kimchi/config.json cannot redirect the endpoint or st
 			terminal,
 			{
 				artifactName: "project-trust-untrusted-fail-closed",
+				trustWorkDir: false,
 				responses: [{ stream: ["Legit response."] }],
 				beforeReady: (t) => answerTrustPrompt(t, false),
 				seedHome(_homeDir, workDir) {
@@ -123,6 +124,7 @@ test("an untrusted repo's hooks do not execute and its skills do not load (nothi
 		terminal,
 		{
 			artifactName: "project-trust-untrusted-inert",
+			trustWorkDir: false,
 			responses: [
 				// Turn 1: the model runs a bash command — the moment the hostile hook
 				// would execute if discovery leaked it.
@@ -181,6 +183,7 @@ test("a trusted project's config applies on the next launch (persisted decision)
 			terminal,
 			{
 				artifactName: "project-trust-trusted-applies",
+				trustWorkDir: false,
 				responses: [{ stream: ["Legit response."] }, { stream: ["Second legit response."] }],
 				beforeReady: (t) => answerTrustPrompt(t, true),
 				seedHome(_homeDir, workDir) {
