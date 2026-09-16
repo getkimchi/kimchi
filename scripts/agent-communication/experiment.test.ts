@@ -41,5 +41,11 @@ describe("communication comparison protocol", () => {
 		expect(checkLaunch({ ...input, ferment_v2: true }, "workers", new Set())).toContain("ferment_v2")
 		expect(checkLaunch(input, "workers", new Set(["Implementation owner"]))).toContain("already started")
 		expect(checkLaunch(input, "solo", new Set())).toContain("solo arm")
+		const repair = { ...input, description: "Repair owner" }
+		for (const arm of ["workers", "messages", "board"] as const) {
+			const launch = arm === "workers" ? repair : { ...repair, communication: "group" }
+			expect(checkLaunch(launch, arm, new Set())).toBeUndefined()
+			expect(checkLaunch({ ...launch, token_budget: 10000 }, arm, new Set())).toContain("token_budget")
+		}
 	})
 })

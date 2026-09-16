@@ -47,7 +47,7 @@ export function checkLaunch(input: Record<string, unknown>, arm: Arm, used: Set<
 		run_in_background: true,
 		max_turns: owner ? 70 : 35,
 		max_duration: 900,
-		token_budget: role === "Implementation owner" ? 20000 : 10000,
+		token_budget: owner ? 20000 : 10000,
 		communication: arm === "workers" ? undefined : "group",
 	}
 	const mismatches = Object.entries(required)
