@@ -1210,7 +1210,6 @@ describe("skill suggest wiring", () => {
 
 	interface AgentStartResult {
 		systemPrompt?: string
-		message?: { customType?: string; content?: Array<{ type: string; text: string }>; display?: boolean }
 	}
 
 	function buildSkillSuggestHandlers(options?: { subagent?: boolean }) {
@@ -1286,38 +1285,58 @@ describe("skill suggest wiring", () => {
 		return (await fire("before_agent_start", { prompt, systemPromptOptions: { skills } })) as AgentStartResult
 	}
 
-	it("returns a branded skill-suggest message on a matching prompt", async () => {
+	/** Run the context pass over a single user message; returns its final text. */
+	async function fireContext(
+		fire: (event: string, payload: unknown) => Promise<unknown>,
+		prompt: string,
+	): Promise<string> {
+		const context = (await fire("context", { messages: [{ role: "user", content: prompt }] })) as
+			| { messages?: Array<{ role: string; content: string }> }
+			| undefined
+		// No transform → the handler returns undefined → the message is unchanged.
+		const messages = context?.messages ?? [{ role: "user", content: prompt }]
+		const lastUser = [...messages].reverse().find((m) => m.role === "user")
+		return typeof lastUser?.content === "string" ? lastUser.content : ""
+	}
+
+	it("appends the reminder to the user message on a matching prompt", async () => {
 		const { fire } = buildSkillSuggestHandlers()
 
-		const result = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const start = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		expect(start.systemPrompt).toContain("## Available Tools")
 
-		expect(result.message?.customType).toBe("skill-suggest")
-		expect(result.message?.display).toBe(false)
-		expect(result.message?.content?.[0]?.text).toContain("<system-reminder>")
-		expect(result.message?.content?.[0]?.text).toContain("vcs-workflow")
-		expect(result.message?.content?.[0]?.text).toContain("skill_view")
-		// The rebuilt system prompt is still returned alongside the message.
-		expect(result.systemPrompt).toContain("## Available Tools")
+		const userText = await fireContext(fire, "git commit and push these changes")
+
+		// The reminder rides the user's own message (never a separate synthetic
+		// user message — consumers read the last user message as user-authored),
+		// appended after the original prompt text.
+		expect(userText).toContain("git commit and push these changes")
+		expect(userText.indexOf("git commit and push these changes")).toBeLessThan(userText.indexOf("<system-reminder>"))
+		expect(userText).toContain("<system-reminder>")
+		expect(userText).toContain("vcs-workflow")
+		expect(userText).toContain("skill_view")
 	})
 
-	it("returns no message on a non-matching prompt — the normal outcome", async () => {
+	it("appends nothing on a non-matching prompt — the normal outcome", async () => {
 		const { fire, emittedEvents } = buildSkillSuggestHandlers()
 
-		const result = await fireAgentStart(fire, "fix the failing parser test in the lexer", [VCS_SKILL])
+		await fireAgentStart(fire, "fix the failing parser test in the lexer", [VCS_SKILL])
+		const userText = await fireContext(fire, "fix the failing parser test in the lexer")
 
-		expect(result.message).toBeUndefined()
-		expect(result.systemPrompt).toContain("## Available Tools")
+		expect(userText).toBe("fix the failing parser test in the lexer")
 		expect(emittedEvents.filter((e) => e.channel === SKILL_SUGGEST_EVENT)).toEqual([])
 	})
 
-	it("latches per skill — a repeated matching prompt returns nothing new", async () => {
+	it("latches per skill — a repeated matching prompt gets no second reminder", async () => {
 		const { fire } = buildSkillSuggestHandlers()
 
-		const first = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
-		expect(first.message?.customType).toBe("skill-suggest")
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const first = await fireContext(fire, "git commit and push these changes")
+		expect(first).toContain("<system-reminder>")
 
-		const second = await fireAgentStart(fire, "commit and push the git changes now", [VCS_SKILL])
-		expect(second.message).toBeUndefined()
+		await fireAgentStart(fire, "commit and push the git changes now", [VCS_SKILL])
+		const second = await fireContext(fire, "commit and push the git changes now")
+		expect(second).not.toContain("<system-reminder>")
 	})
 
 	it("emits the telemetry domain event with the suggested skills", async () => {
@@ -1339,7 +1358,9 @@ describe("skill suggest wiring", () => {
 		// A single before_agent_start with both the prompt and the inventory:
 		// the first user turn of a real session provides exactly this event.
 		const result = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
-		expect(result.message?.customType).toBe("skill-suggest")
+		const userText = await fireContext(fire, "git commit and push these changes")
+		expect(userText).toContain("<system-reminder>")
+		expect(result.systemPrompt).toContain("## Available Tools")
 	})
 
 	it("does not suggest a skill the user already loaded via /skill (session 01a0a5f1)", async () => {
@@ -1347,16 +1368,21 @@ describe("skill suggest wiring", () => {
 
 		// Turn 1: the user ran /skill:vcs-workflow — the prompt arrives already
 		// expanded into a <skill> block, and no reminder fires for it.
-		const expansion = await fireAgentStart(
+		await fireAgentStart(
 			fire,
 			'<skill name="vcs-workflow" location="/skills/vcs-workflow/SKILL.md">\nBody.\n</skill>',
 			[VCS_SKILL],
 		)
-		expect(expansion.message).toBeUndefined()
+		const expansionText = await fireContext(
+			fire,
+			'<skill name="vcs-workflow" location="/skills/vcs-workflow/SKILL.md">\nBody.\n</skill>',
+		)
+		expect(expansionText).not.toContain("<system-reminder>")
 
 		// Turn 2: the matching request — the loaded skill must stay silent.
-		const second = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
-		expect(second.message).toBeUndefined()
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const second = await fireContext(fire, "git commit and push these changes")
+		expect(second).not.toContain("<system-reminder>")
 	})
 
 	it("does not suggest a skill the agent already loaded via skill_view", async () => {
@@ -1371,30 +1397,34 @@ describe("skill suggest wiring", () => {
 
 		// The latch alone would re-arm on the strong repeat; the loaded mark
 		// must hold regardless.
-		const result = await fireAgentStart(fire, "use the vcs workflow to manage git", [VCS_SKILL])
-		expect(result.message).toBeUndefined()
+		await fireAgentStart(fire, "use the vcs workflow to manage git", [VCS_SKILL])
+		const userText = await fireContext(fire, "use the vcs workflow to manage git")
+		expect(userText).not.toContain("<system-reminder>")
 	})
 
 	it("resets suggester state on session_shutdown — the same session id can be re-suggested", async () => {
 		const { fire } = buildSkillSuggestHandlers()
 
-		const first = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
-		expect(first.message?.customType).toBe("skill-suggest")
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const first = await fireContext(fire, "git commit and push these changes")
+		expect(first).toContain("<system-reminder>")
 
 		await fire("session_shutdown", {})
 
 		// A fresh session reusing the same id must start from a clean suggester:
 		// no leaked latch, no leaked loaded marks.
-		const second = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
-		expect(second.message?.customType).toBe("skill-suggest")
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const second = await fireContext(fire, "git commit and push these changes")
+		expect(second).toContain("<system-reminder>")
 	})
 
 	it("does not suggest in subagent mode", async () => {
 		const { fire, emittedEvents } = buildSkillSuggestHandlers({ subagent: true })
 
-		const result = await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		await fireAgentStart(fire, "git commit and push these changes", [VCS_SKILL])
+		const userText = await fireContext(fire, "git commit and push these changes")
 
-		expect(result.message).toBeUndefined()
+		expect(userText).not.toContain("<system-reminder>")
 		expect(emittedEvents.filter((e) => e.channel === SKILL_SUGGEST_EVENT)).toEqual([])
 	})
 })

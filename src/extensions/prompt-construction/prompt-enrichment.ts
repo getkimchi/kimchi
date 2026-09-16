@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
-import type { BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
@@ -204,6 +204,35 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
+/**
+ * Append a harness reminder to the last user message in the list: string
+ * content gains a trailing paragraph, block content gains a trailing text
+ * block. Returns a new array, or undefined when there is no user message
+ * to append to (the caller keeps its pending delivery for the next
+ * context pass).
+ */
+export function appendToLastUserMessage(
+	messages: OrchestratorMessages,
+	reminder: string,
+): OrchestratorMessages | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		// biome-ignore lint/suspicious/noExplicitAny: narrowing the AgentMessage union to its user variant
+		const userMessage = message as any
+		if (userMessage?.role !== "user") continue
+		const next = [...messages]
+		if (typeof userMessage.content === "string") {
+			next[i] = { ...userMessage, content: `${userMessage.content}\n\n${reminder}` }
+		} else if (Array.isArray(userMessage.content)) {
+			next[i] = { ...userMessage, content: [...userMessage.content, { type: "text", text: reminder }] }
+		} else {
+			return undefined
+		}
+		return next as OrchestratorMessages
+	}
+	return undefined
+}
+
 export function isSubagent(): boolean {
 	return isAgentWorker()
 }
@@ -222,15 +251,22 @@ export default function (skillPathsFromConfig: string[]) {
 			registerModelRolesCommand(pi)
 		}
 
-		// Session-keyed skill suggesters. Defined at factory scope because the
-		// shared before_agent_start below feeds the inventory for every session.
-		// Suggestion runs inside that handler, gated on !subagentMode: subagent
-		// sessions never reach it, because they are created with their own
-		// DefaultResourceLoader whose inline extension-factory list does not
-		// include this extension (repo-native extensions from cli.ts are not
-		// discovered by a child loader), so their before_agent_start events are
-		// handled by their own runner, not this one.
+		// Session-keyed skill suggesters and pending reminders. Defined at
+		// factory scope because the shared before_agent_start below feeds the
+		// inventory for every session. Suggestion runs inside that handler,
+		// gated on !subagentMode: subagent sessions never reach it, because
+		// they are created with their own DefaultResourceLoader whose inline
+		// extension-factory list does not include this extension (repo-native
+		// extensions from cli.ts are not discovered by a child loader), so
+		// their before_agent_start events are handled by their own runner,
+		// not this one.
 		const skillSuggesterMap = new Map<string, SkillSuggester>()
+		// Reminders awaiting delivery: matched at before_agent_start, appended
+		// to the run's user message in the context handler (never a separate
+		// synthetic user message — consumers legitimately treat user messages
+		// as user-authored, and the memory extension sets the appended-
+		// reminder precedent).
+		const pendingSkillReminder = new Map<string, string>()
 
 		function getSkillSuggester(sessionId: string): SkillSuggester {
 			let suggester = skillSuggesterMap.get(sessionId)
@@ -284,6 +320,7 @@ export default function (skillPathsFromConfig: string[]) {
 				const sessionId = ctx.sessionManager.getSessionId()
 				deprecatedNotificationFired.delete(sessionId)
 				skillSuggesterMap.delete(sessionId)
+				pendingSkillReminder.delete(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
@@ -473,6 +510,7 @@ export default function (skillPathsFromConfig: string[]) {
 			})
 
 			pi.on("context", async (event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
 				const effectiveModel = getEffectiveModel(ctx)
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
@@ -485,6 +523,18 @@ export default function (skillPathsFromConfig: string[]) {
 				}
 				messages = tagSelfEchoes(messages)
 				messages = brandUnmarkedSteers(messages)
+				// Skill-suggest delivery: append the pending reminder to the run's
+				// user message. Never a separate synthetic user message — consumers
+				// legitimately treat the last user message as user-authored (the
+				// memory extension sets the appended-reminder precedent).
+				const pendingReminder = pendingSkillReminder.get(sessionId)
+				if (pendingReminder) {
+					const appended = appendToLastUserMessage(messages, pendingReminder)
+					if (appended) {
+						messages = appended
+						pendingSkillReminder.delete(sessionId)
+					}
+				}
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -533,6 +583,10 @@ export default function (skillPathsFromConfig: string[]) {
 			syncSessionModelState(pi, ctx)
 
 			const sessionId = ctx.sessionManager.getSessionId()
+			// Every run re-evaluates the skill suggestion from scratch — a stashed
+			// reminder from a run that never reached a context pass (e.g. aborted)
+			// must not attach to a later turn's message.
+			pendingSkillReminder.delete(sessionId)
 			const effectiveModel = getEffectiveModel(ctx)
 
 			const activeToolNames = new Set(pi.getActiveTools())
@@ -553,7 +607,6 @@ export default function (skillPathsFromConfig: string[]) {
 			// is a nudge, not a directive; no match is the normal outcome and
 			// nothing is injected. Keyed on this session so an in-process
 			// subagent's inventory never crosses into the parent's suggester.
-			let skillSuggestMessage: BeforeAgentStartEventResult["message"]
 			if (!subagentMode) {
 				const suggester = getSkillSuggester(sessionId)
 				suggester.updateSkills(skills)
@@ -576,11 +629,10 @@ export default function (skillPathsFromConfig: string[]) {
 						skills: suggestions.map((s) => ({ name: s.name, filePath: s.filePath })),
 						latched,
 					} satisfies SkillSuggestEventPayload)
-					skillSuggestMessage = {
-						customType: "skill-suggest",
-						content: [{ type: "text", text: markHarnessSteer(buildSkillReminder(suggestions)) }],
-						display: false,
-					}
+					// Delivery happens in the context handler below: the reminder is
+					// appended to the run's user message there (a separate synthetic
+					// user message broke consumers that read the last user message).
+					pendingSkillReminder.set(sessionId, markHarnessSteer(buildSkillReminder(suggestions)))
 				}
 			}
 
@@ -658,7 +710,7 @@ export default function (skillPathsFromConfig: string[]) {
 				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
-			return skillSuggestMessage ? { systemPrompt, message: skillSuggestMessage } : { systemPrompt }
+			return { systemPrompt }
 		})
 	}
 }
