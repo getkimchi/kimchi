@@ -159,7 +159,7 @@ test("PR completion dropdown: push is consent-gated and gh failure lands on the 
 
 			// Exactly the eight PR-intent entries, user-visible.
 			await waitForText(terminal, "Show the diff", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "Show diff in browser", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Review the diff in browser (comment & decide)", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Show diff in external viewer", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Request changes (steer the remote agent)", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Push branch and open draft PR", { timeoutMs: INPUT_TIMEOUT_MS })
@@ -170,7 +170,7 @@ test("PR completion dropdown: push is consent-gated and gh failure lands on the 
 
 			// Declining push consent: choose Push → consent prompt → Cancel →
 			// back at the dropdown. No push, no gh, no session deletion.
-			terminal.keyDown() // → Show diff in browser (1)
+			terminal.keyDown() // → Review the diff in browser (1)
 			terminal.keyDown() // → Show diff in external viewer (2)
 			terminal.keyDown() // → Request changes (3)
 			terminal.keyDown() // → Push branch and open draft PR (4)
@@ -203,6 +203,57 @@ test("PR completion dropdown: push is consent-gated and gh failure lands on the 
 				timeoutMs: INPUT_TIMEOUT_MS,
 			})
 			trace.step("exact manual command visible")
+		},
+	)
+})
+
+/**
+ * The browser Review surface end to end at the seam level: choosing
+ * "Review the diff in browser (comment & decide)" with
+ * KIMCHI_E2E_FAKE_BROWSER_REVIEW=approve MUST route through the same
+ * consent-gated push as the menu's "Push branch and open draft PR" — the
+ * browser is a decision surface, not an authority bypass.
+ * (Real browser/server round-trip is unit-tested in review-server.test.ts;
+ * a browser cannot be driven from this TUI rig.)
+ */
+test("browser review approval flows into the consent-gated push", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "remote-pr-flow-browser-review",
+			gitInit: true,
+			env: {
+				KIMCHI_REMOTE_RUN: "1",
+				KIMCHI_REMOTE_ENDPOINT: "http://127.0.0.1:1",
+				KIMCHI_E2E_FAKE_REMOTE_COMPLETION: "1",
+				KIMCHI_E2E_FAKE_SANDBOX_GIT: "1",
+				KIMCHI_E2E_FAKE_BROWSER_REVIEW: "approve",
+			},
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
+			responses: [{ stream: ["Standing by."] }],
+		},
+		async (_fixture, trace) => {
+			await waitForText(terminal, "Remote branch kimchi/e2e-fix-login is ready", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			// Menu → Review in browser (index 1) → canned approve → consent gate.
+			terminal.keyDown()
+			terminal.submit("")
+			trace.step("browser review chosen, canned approval posted")
+
+			await waitForText(terminal, "Push kimchi/e2e-fix-login to origin and open a draft PR?", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+			})
+			trace.step("push consent prompt visible — approval did NOT skip consent")
+
+			// Accept: push (canned) succeeds; gh lands on the manual fallback.
+			terminal.submit("")
+			await waitForText(terminal, "The branch was pushed, but no PR was opened", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			await waitForText(terminal, "gh pr create --draft", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("push done — browser approval ended in the manual gh fallback")
 		},
 	)
 })

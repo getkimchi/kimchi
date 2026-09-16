@@ -30,7 +30,9 @@ const {
 	mockPullBranchLocally,
 	mockOpenExternalDiff,
 	mockOpenInBrowser,
+	mockStartReviewServer,
 	mockWriteDiffHtmlFile,
+	mockBuildDiffHtmlDocument,
 } = vi.hoisted(() => ({
 	mockPushBranchRemotely: vi.fn(),
 	mockPushViaLocalFallback: vi.fn(),
@@ -38,7 +40,9 @@ const {
 	mockPullBranchLocally: vi.fn(),
 	mockOpenExternalDiff: vi.fn(),
 	mockOpenInBrowser: vi.fn(),
+	mockStartReviewServer: vi.fn(),
 	mockWriteDiffHtmlFile: vi.fn(),
+	mockBuildDiffHtmlDocument: vi.fn(),
 }))
 vi.mock("./push-and-pr.js", () => ({
 	pushBranchRemotely: mockPushBranchRemotely,
@@ -54,7 +58,11 @@ vi.mock("./push-and-pr.js", () => ({
 	classifyPushFailure: vi.fn(),
 }))
 vi.mock("./ui/external-viewer.js", () => ({ openExternalDiff: mockOpenExternalDiff, openInBrowser: mockOpenInBrowser }))
-vi.mock("./ui/diff-html.js", () => ({ writeDiffHtmlFile: mockWriteDiffHtmlFile }))
+vi.mock("./ui/review-server.js", () => ({ startReviewServer: mockStartReviewServer }))
+vi.mock("./ui/diff-html.js", () => ({
+	writeDiffHtmlFile: mockWriteDiffHtmlFile,
+	buildDiffHtmlDocument: mockBuildDiffHtmlDocument,
+}))
 const { mockApplyAndPersist, mockSetActive } = vi.hoisted(() => ({
 	mockApplyAndPersist: vi.fn(),
 	mockSetActive: vi.fn(),
@@ -594,6 +602,12 @@ describe("handleRemoteCompletion — PR intent", () => {
 		mockPullBranchLocally.mockReturnValue({ kind: "pulled", action: "created" })
 		mockOpenExternalDiff.mockReturnValue({ opened: false, detail: "no editor" })
 		mockOpenInBrowser.mockReturnValue({ opened: true, detail: "open /path/remote-diff.html" })
+		mockStartReviewServer.mockImplementation(() => ({
+			url: "http://127.0.0.1:4711/tok/",
+			decision: new Promise(() => {}), // stays pending — THE user walks away
+			close: vi.fn(),
+		}))
+		mockBuildDiffHtmlDocument.mockReturnValue("<html>interactive</html>")
 		mockWriteDiffHtmlFile.mockImplementation((patchPath: string) => join(dirname(patchPath), "remote-diff.html"))
 		mockRecoverBaseShaFromMergeBase.mockResolvedValue(undefined)
 		// Mimics the real stream: chunks flow to onChunk AND append to the patch file.
@@ -647,7 +661,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(title).toContain("2 files changed, 8 insertions(+), 3 deletions(-)")
 		expect(options).toEqual([
 			"Show the diff",
-			"Show diff in browser",
+			"Review the diff in browser (comment & decide)",
 			"Show diff in external viewer",
 			"Request changes (steer the remote agent)",
 			"Push branch and open draft PR",
@@ -1096,34 +1110,105 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(mockDeleteRemoteSession).not.toHaveBeenCalled()
 	})
 
-	it("Show diff in browser streams the patch, builds a self-contained html, and opens it with the OS opener", async () => {
-		const patch = "diff --git a/a.ts b/a.ts\n+hello\n"
+	it("Review in browser: approval maps onto the consent-gated push & draft-PR path", async () => {
 		mockStreamRemotePatch.mockImplementation(
 			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
-				onChunk(1, patch)
-				if (patchPath) appendFileSync(patchPath, patch)
-				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: patch.length, cancelled: false }) }
+				onChunk(1, "diff --git a/a b/a\n")
+				if (patchPath) appendFileSync(patchPath, "diff --git a/a b/a\n")
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: 20, cancelled: false }) }
 			},
 		)
+		mockStartReviewServer.mockImplementation(() => ({
+			url: "http://127.0.0.1:4711/tok/",
+			decision: Promise.resolve({ kind: "approve" }),
+			close: vi.fn(),
+		}))
+		mockPushBranchRemotely.mockResolvedValue({ ok: true })
+		mockCreateDraftPr.mockReturnValue({ kind: "created", url: "https://github.com/x/y/pull/1" })
 		const pi = makePi()
 		const ctx = makeCtx()
 		;(ctx.ui.select as ReturnType<typeof vi.fn>)
-			.mockResolvedValueOnce("Show diff in browser")
-			.mockResolvedValueOnce("Done (keep the remote session for later)")
+			.mockResolvedValueOnce("Review the diff in browser (comment & decide)")
+			.mockResolvedValueOnce("Push kimchi/fix-login to origin and open a draft PR")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
-			transcriptPath: join(tmp, "t-browser", "agent.jsonl"),
+			transcriptPath: join(tmp, "t-review-approve", "agent.jsonl"),
+			remoteSession: REMOTE,
+			acpSessionId: "acp-X",
+			gitWorkflow: GIT,
+		})
+
+		expect(mockBuildDiffHtmlDocument).toHaveBeenCalledWith(expect.objectContaining({ interactive: true }))
+		expect(mockOpenInBrowser).toHaveBeenCalledWith("http://127.0.0.1:4711/tok/")
+		expect(mockPushBranchRemotely).toHaveBeenCalled()
+		expect(mockCreateDraftPr).toHaveBeenCalled()
+	})
+
+	it("Review in browser: request-changes steers the remote agent with the anchored comments", async () => {
+		mockStreamRemotePatch.mockImplementation(
+			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
+				onChunk(1, "diff --git a/a b/a\n")
+				if (patchPath) appendFileSync(patchPath, "diff --git a/a b/a\n")
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: 20, cancelled: false }) }
+			},
+		)
+		mockStartReviewServer.mockImplementation(() => ({
+			url: "http://127.0.0.1:4711/tok/",
+			decision: Promise.resolve({
+				kind: "request-changes",
+				summary: "almost there",
+				comments: [{ file: "src/login.ts", line: 42, side: "new", text: "add a delay here" }],
+			}),
+			close: vi.fn(),
+		}))
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Review the diff in browser (comment & decide)")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: join(tmp, "t-review-changes", "agent.jsonl"),
+			remoteSession: REMOTE,
+			acpSessionId: "acp-X",
+			gitWorkflow: GIT,
+		})
+
+		const text = mockContinueCloudAgent.mock.calls[0]?.[2] as string
+		expect(text).toContain("almost there")
+		expect(text).toContain("[src/login.ts:42] add a delay here")
+		expect(text).toContain("Address every comment above")
+		expect(mockPushBranchRemotely).not.toHaveBeenCalled()
+	})
+
+	it("Review in browser: cancel returns to the dropdown without side effects", async () => {
+		mockStreamRemotePatch.mockImplementation(
+			({ patchPath, onChunk }: { patchPath?: string; onChunk: (v: 1, c: string) => void }) => {
+				onChunk(1, "diff --git a/a b/a\n")
+				if (patchPath) appendFileSync(patchPath, "diff --git a/a b/a\n")
+				return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: 20, cancelled: false }) }
+			},
+		)
+		mockStartReviewServer.mockImplementation(() => ({
+			url: "http://127.0.0.1:4711/tok/",
+			decision: Promise.resolve({ kind: "closed" }),
+			close: vi.fn(),
+		}))
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce("Review the diff in browser (comment & decide)")
+			.mockResolvedValueOnce("Done (keep the remote session for later)")
+
+		const turned = await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: join(tmp, "t-review-closed", "agent.jsonl"),
 			remoteSession: REMOTE,
 			gitWorkflow: GIT,
 		})
 
-		const patchPath = join(tmp, "t-browser", "remote-diff.diff")
-		const htmlPath = join(tmp, "t-browser", "remote-diff.html")
-		expect(mockWriteDiffHtmlFile).toHaveBeenCalledWith(patchPath, expect.objectContaining({ patch }))
-		expect(mockOpenInBrowser).toHaveBeenCalledWith(htmlPath)
-		expect(ctx.ui.notify).toHaveBeenCalledWith(`Opened the diff in your browser: ${htmlPath}`, "info")
-		// The editor fallback path is NOT touched.
-		expect(mockOpenExternalDiff).not.toHaveBeenCalled()
+		// Cancel → menu re-showed; Done closed it with NO push/steer side effects.
+		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
+		expect(mockContinueCloudAgent).not.toHaveBeenCalled()
+		expect(mockPushBranchRemotely).not.toHaveBeenCalled()
+		void turned
 	})
 
 	it("Show diff in external viewer streams the full patch to disk and opens the system viewer", async () => {

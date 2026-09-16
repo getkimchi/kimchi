@@ -24,8 +24,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
-import { registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
 import { REMOTE_DIFF_ENTRY_TYPE, renderRemoteRunDiff } from "./diff-entry.js"
+import { registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
 import { handleRemoteCompletion } from "./post-completion.js"
 import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 

@@ -42,15 +42,16 @@ import {
 } from "./remote-diff.js"
 import { continueCloudAgent } from "./runner.js"
 import { recoverBaseShaFromMergeBase, resolveSandboxGitConnection, type SandboxGitConnection } from "./sandbox-git.js"
-import { writeDiffHtmlFile } from "./ui/diff-html.js"
+import { buildDiffHtmlDocument } from "./ui/diff-html.js"
 import { DiffViewer } from "./ui/diff-viewer.js"
 import { openExternalDiff, openInBrowser } from "./ui/external-viewer.js"
+import { type ReviewComment, type ReviewDecision, type ReviewServer, startReviewServer } from "./ui/review-server.js"
 
 const REVIEW = "Review the remote agent's results in the local session"
 const SYNC = "Pull the changes to my machine and finish"
 const CUSTOM = "Describe what to do next"
 const SHOW_DIFF = "Show the diff"
-const SHOW_DIFF_BROWSER = "Show diff in browser"
+const SHOW_DIFF_BROWSER = "Review the diff in browser (comment & decide)"
 const SHOW_DIFF_EXTERNAL = "Show diff in external viewer"
 
 /** Plannotator shared event bus action for its browser code-review UI. */
@@ -527,6 +528,51 @@ async function handlePrCompletion(
 	}
 
 	let diffPersisted = false
+
+	// Steer the kept-alive agent with new instructions. Terminal on success
+	// (the dropdown closes and the agent runs); false when not steerable.
+	const doRequestChanges = async (feedback: string): Promise<boolean> => {
+		if (!opts.acpSessionId) {
+			ctx.ui.notify(
+				"Cannot steer: this run's ACP session id was not captured, so the kept session cannot be steered. The session stays alive — use the remote-sessions panel.",
+				"error",
+			)
+			return false
+		}
+		// Background continuation: the dropdown closes NOW; on completion a
+		// fresh handleRemoteCompletion (same gitWorkflow on the new record)
+		// re-runs the diff collection and re-enters this PR menu.
+		await continueCloudAgent(pi, ctx, feedback, {
+			remoteSession: opts.remoteSession,
+			acpSessionId: opts.acpSessionId,
+			gitWorkflow: git,
+			origin: promptPrefix,
+			fermentId: opts.fermentId,
+		})
+		return true
+	}
+
+	// Consent-gated push + draft-PR terminal action.
+	const doPushAndPr = async (): Promise<boolean> => {
+		const pushed = await pushAndOpenDraftPr(pi, ctx, {
+			connection,
+			baseSha,
+			git,
+			result,
+			opts,
+			apiKey,
+		})
+		// Not terminal (declined / failed): back to the menu loop.
+		if (!pushed) return false
+		// Terminal: same cleanup + result injection as the sync exit.
+		completeFerment(opts.fermentId)
+		injectRemoteResult(pi, result, promptPrefix, opts, {
+			actionSuffix:
+				"\n\n---\n\nThe user pushed the remote branch and opened a draft PR. Review the PR when ready; no local sync was performed.",
+		})
+		return true
+	}
+
 	for (;;) {
 		const menuTitle = [`Remote branch ${git.branch} is ready — ${statText}.`, ...warnings, "What next?"].join("\n")
 		const choice = await withBlocked(pi.events, "Remote execution complete", () =>
@@ -557,7 +603,7 @@ async function handlePrCompletion(
 			continue
 		}
 		if (choice === SHOW_DIFF_BROWSER) {
-			diffPersisted = await showDiffInBrowser(ctx, {
+			const reviewed = await runBrowserReview(ctx, {
 				transcriptPath: opts.transcriptPath,
 				baseSha,
 				connection,
@@ -566,6 +612,19 @@ async function handlePrCompletion(
 				statText,
 				diffPersisted,
 			})
+			if (!reviewed) continue // stream/server failure — notified inside
+			diffPersisted = reviewed.persisted
+			const { decision } = reviewed
+			if (decision.kind === "closed") continue
+			if (decision.kind === "approve") {
+				ctx.ui.notify("Approved in the browser — moving to push & draft PR.", "info")
+				if (await doPushAndPr()) return true
+				continue
+			}
+			// request-changes: assemble the annotated prompt and steer.
+			const steerText = formatReviewComments(decision.summary, decision.comments)
+			if (!steerText) continue // empty review — nothing to steer on
+			if (await doRequestChanges(steerText)) return true
 			continue
 		}
 		if (choice === SHOW_DIFF_EXTERNAL) {
@@ -584,43 +643,12 @@ async function handlePrCompletion(
 				() => ctx.ui.input?.("What should the remote agent change?") ?? Promise.resolve(undefined),
 			)
 			if (!feedback?.trim()) continue
-			if (!opts.acpSessionId) {
-				ctx.ui.notify(
-					"Cannot steer: this run's ACP session id was not captured, so the kept session cannot be steered. The session stays alive — use the remote-sessions panel.",
-					"error",
-				)
-				continue
-			}
-			// Background continuation: the dropdown closes NOW; on completion a
-			// fresh handleRemoteCompletion (same gitWorkflow on the new record)
-			// re-runs the diff collection and re-enters this PR menu.
-			await continueCloudAgent(pi, ctx, feedback.trim(), {
-				remoteSession: opts.remoteSession,
-				acpSessionId: opts.acpSessionId,
-				gitWorkflow: git,
-				origin: promptPrefix,
-				fermentId: opts.fermentId,
-			})
-			return true
+			if (await doRequestChanges(feedback.trim())) return true
+			continue
 		}
 		if (choice === PUSH_AND_PR) {
-			const pushed = await pushAndOpenDraftPr(pi, ctx, {
-				connection,
-				baseSha,
-				git,
-				result,
-				opts,
-				apiKey,
-			})
-			// Not terminal (declined / failed): back to the menu loop.
-			if (!pushed) continue
-			// Terminal: same cleanup + result injection as the sync exit.
-			completeFerment(opts.fermentId)
-			injectRemoteResult(pi, result, promptPrefix, opts, {
-				actionSuffix:
-					"\n\n---\n\nThe user pushed the remote branch and opened a draft PR. Review the PR when ready; no local sync was performed.",
-			})
-			return true
+			if (await doPushAndPr()) return true
+			continue
 		}
 		if (choice === PUSH_AND_PULL) {
 			const pulled = await pushAndPullLocally(pi, ctx, {
@@ -1006,10 +1034,13 @@ async function ensurePatchOnDisk(
 }
 
 /**
- * Browser viewer: one self-contained html file (patch + inlined diff2html
- * bundles — opens fully offline). Zero reliance on installed editors.
+ * INTERACTIVE browser review: serves the diff page from a one-shot local
+ * server (plannotator-style) and BLOCKS on the human's decision — approve,
+ * request-changes with per-line comments, or cancel back to the menu.
+ * The page opens fully offline; the only network hop is the loopback POST
+ * that carries the decision.
  */
-async function showDiffInBrowser(
+async function runBrowserReview(
 	ctx: ExtensionContext,
 	opts: {
 		transcriptPath?: string
@@ -1020,22 +1051,77 @@ async function showDiffInBrowser(
 		statText: string
 		diffPersisted: boolean
 	},
-): Promise<boolean> {
+): Promise<{ decision: ReviewDecision; persisted: boolean } | undefined> {
 	const ensured = await ensurePatchOnDisk(ctx, opts)
-	if (!ensured) return opts.diffPersisted
+	if (!ensured) return undefined
 	const patch = readFileSync(ensured.patchPath, "utf-8")
-	const htmlPath = writeDiffHtmlFile(ensured.patchPath, {
+
+	// E2E seam: canned decision, no server/browser (real browser can't be
+	// driven from the TUI test rig; server paths are unit-tested).
+	const canned = process.env.KIMCHI_E2E_FAKE_BROWSER_REVIEW
+	if (canned) {
+		const decision: ReviewDecision = canned.startsWith("changes")
+			? {
+					kind: "request-changes",
+					summary: canned.includes(":") ? canned.slice(canned.indexOf(":") + 1) : undefined,
+					comments: [
+						{
+							file: "src/login.ts",
+							line: 42,
+							side: "new",
+							code: "const attempts = 3",
+							text: "make this 5 and add a delay",
+						},
+					],
+				}
+			: canned === "approve"
+				? { kind: "approve" }
+				: { kind: "closed" }
+		return { decision, persisted: ensured.persisted }
+	}
+
+	const html = buildDiffHtmlDocument({
 		title: opts.viewerTitle,
 		subtitle: opts.statText,
 		patch,
+		interactive: true,
 	})
-	const opened = openInBrowser(htmlPath)
-	if (opened.opened) {
-		ctx.ui.notify(`Opened the diff in your browser: ${htmlPath}`, "info")
-	} else {
-		ctx.ui.notify(`Could not open the browser (${opened.detail}). The page is at ${htmlPath}`, "warning")
+	let server: ReviewServer
+	try {
+		server = await startReviewServer({ html })
+	} catch (err) {
+		ctx.ui.notify(`Could not start the review server: ${errMessage(err)} — back to the menu.`, "warning")
+		return undefined
 	}
-	return ensured.persisted
+	const opened = openInBrowser(server.url)
+	ctx.ui.notify(
+		opened.opened
+			? `Interactive review open in your browser — decide there; this terminal is waiting. (${server.url})`
+			: `Could not open the browser (${opened.detail}). Open manually: ${server.url}`,
+		"info",
+	)
+	const decision = await server.decision
+	return { decision, persisted: ensured.persisted }
+}
+
+/**
+ * Browser review comments → steering prompt for the remote agent. Every
+ * comment carries its file/line anchor plus the code snippet it was placed
+ * on; the agent is asked to address ALL of them.
+ */
+function formatReviewComments(summary: string | undefined, comments: ReviewComment[]): string {
+	const parts: string[] = []
+	if (summary?.trim()) parts.push(`Overall note: ${summary.trim()}`)
+	if (comments.length > 0) {
+		parts.push("The reviewer left these comments on the diff:")
+		comments.forEach((c, i) => {
+			const anchor = c.file ? (c.line ? `${c.file}:${c.line}` : c.file) : "(unanchored)"
+			parts.push(`${i + 1}. [${anchor}] ${c.text}${c.code ? `\n   on: ${c.code}` : ""}`)
+		})
+	}
+	if (parts.length === 0) return ""
+	parts.push("Address every comment above. The server-side workflow (commit, artifacts) stays exactly the same.")
+	return parts.join("\n")
 }
 
 /**

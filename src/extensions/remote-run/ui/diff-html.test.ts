@@ -26,6 +26,18 @@ describe("buildDiffHtmlDocument", () => {
 		expect(doc).not.toContain("<branch>")
 	})
 
+	it("interactive mode embeds the decision buttons, comment panel, and the decision fetch", () => {
+		const doc = buildDiffHtmlDocument({ title: "t", patch: "d", interactive: true })
+		expect(doc).toContain("Approve ")
+		expect(doc).toContain("Request changes")
+		expect(doc).toContain('id="kr-comment-panel"')
+		expect(doc).toContain('fetch("decision"')
+		expect(doc).toContain("kr-has-comment")
+		// Static mode stays feature-free.
+		const plain = buildDiffHtmlDocument({ title: "t", patch: "d" })
+		expect(plain).not.toContain("kr-comment-panel")
+	})
+
 	it("renders the diff2html entry points client-side with an offline fallback", () => {
 		const doc = buildDiffHtmlDocument({ title: "t", patch: "" })
 		expect(doc).toContain("new Diff2HtmlUI(target, patch, config)")
