@@ -80,11 +80,13 @@ export interface StateBlockPersistenceOptions {
 	render: (key: string, previous: string | undefined) => string | undefined
 	/** Wire change sources: call `notify(key)` whenever the rendered block
 	 *  for that session key may have changed. Keys default to the current
-	 *  session id captured at session_start/session_tree. Optionally return an
-	 *  unsubscribe handle — invoked on session_shutdown. Sources are typically
-	 *  process-global (e.g. the todo store's listener set), so without this the
-	 *  closure (capturing this session's pi) lingers after the runtime is
-	 *  invalidated, and its stale pi throws into whoever notifies next. */
+	 *  session id captured at session_start/session_tree; keys naming OTHER
+	 *  sessions are dropped — the registrar only persists its own session's
+	 *  block. Optionally return an unsubscribe handle — invoked on
+	 *  session_shutdown. Sources are typically process-global (e.g. the todo
+	 *  store's listener set), so without this the closure (capturing this
+	 *  session's pi) lingers after the runtime is invalidated, and its stale
+	 *  pi throws into whoever notifies next. */
 	subscribe: (notify: (key?: string) => void) => (() => void) | undefined
 	/** Optional hook on session_start/session_tree, before the history scan
 	 *  (e.g. to capture the sessionManager handle for flag lookups). */
@@ -209,12 +211,18 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 
 	const unsubscribeFromSource = subscribe((key?: string) => {
 		if (shutDown) return
-		const effectiveKey = key ?? currentSessionKey
+		// Drop foreign-session notifications: sources broadcast on
+		// process-global stores (the todo store reports EVERY session's
+		// writes), and persisting another session's rendered block into this
+		// history would show foreign todos as this session's current state
+		// (observed with in-process subagent workers bleeding their list into
+		// the parent's context — the key forwarding was accidental).
+		if (key !== undefined && key !== currentSessionKey) return
 		if (agentBusy > 0) {
-			pendingFlush.add(effectiveKey)
+			pendingFlush.add(currentSessionKey)
 			return
 		}
-		persistIfChanged(effectiveKey, forceReemit.delete(effectiveKey))
+		persistIfChanged(currentSessionKey, forceReemit.delete(currentSessionKey))
 	})
 
 	// Release the change-source listener when the session shuts down cleanly.

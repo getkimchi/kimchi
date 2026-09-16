@@ -239,7 +239,7 @@ describe("registerStateBlockPersistence — compaction re-emit", () => {
 
 		await h.fire("agent_start")
 		h.setStore("item B")
-		h.notify("foreign-session") // deferred under a foreign key
+		h.notify("foreign-session") // rejected at entry (foreign key), never queued
 		h.setStore("item C")
 		h.notify() // deferred under currentSessionKey
 
@@ -247,6 +247,39 @@ describe("registerStateBlockPersistence — compaction re-emit", () => {
 		await h.fire("agent_end")
 		await h.fire("agent_settled")
 
+		expect(h.persisted()).toEqual(["## State\nitem A"])
+	})
+
+	it("ignores foreign-session notifications — no state bleed into this history", async () => {
+		const h = createHarness()
+		await startSession(h)
+		h.setStore("item A")
+		h.notify()
+		expect(h.persisted()).toEqual(["## State\nitem A"])
+
+		// A process-global store broadcast for ANOTHER session: its rendered
+		// content must never land in this session's history.
+		h.setStore("item B")
+		h.notify("foreign-session")
+		expect(h.persisted()).toEqual(["## State\nitem A"])
+
+		// The own session's next change still persists normally.
+		h.notify()
+		expect(h.persisted()).toEqual(["## State\nitem A", "## State\nitem B"])
+	})
+
+	it("does not queue foreign-session writes for a later flush while busy", async () => {
+		const h = createHarness()
+		await startSession(h)
+		h.setStore("item A")
+		h.notify()
+
+		await h.fire("agent_start")
+		h.setStore("item B")
+		h.notify("foreign-session")
+
+		await h.fire("agent_end")
+		await h.fire("agent_settled")
 		expect(h.persisted()).toEqual(["## State\nitem A"])
 	})
 
