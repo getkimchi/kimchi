@@ -248,7 +248,7 @@ describe("tags system prompt block", () => {
 	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
 		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, createContext({ hasUI: false }))
 
-	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
+	it("no longer injects phase-tagging instructions into the system prompt", async () => {
 		const pi = makeTagsPi()
 
 		try {
@@ -262,11 +262,12 @@ describe("tags system prompt block", () => {
 				sessionId: TEST_SESSION_ID,
 			})
 
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("Call `set_phase` when the work type changes")
-			expect(result).toContain("Subagents set their phase automatically from their persona")
+			// The Phase Management payload was removed from the prompt — the
+			// phase tooling remains registered for analytics, but its guidance
+			// no longer rides every prompt.
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("Call `set_phase` when the work type changes")
 			expect(result).not.toContain("questionnaire")
-			expect(result.indexOf("## Phase Management")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()
 		}
