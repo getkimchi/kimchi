@@ -1,0 +1,84 @@
+{
+  "runner_head": "f1db7e397742620945d5225e976690a8d3031245",
+  "refs": {
+    "baseline": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+    "reference": "716bd797c9802b20ef1da4ccde7caace26173a22"
+  },
+  "repository": "/Users/tautvydas/Desktop/castai/kimchi-dev-feat-agent-comms-imprv",
+  "binaries": {
+    "baseline": "1ae877ecb934b7433f5024d9dc561e3ca480c2a5e8d2421e403f5a23628c43e2",
+    "reference": "885368b18ca0d1259f86c3e01c36221b7de952a5082364a025b83eb0b224519c"
+  },
+  "grading_files": {
+    "tests/smoke/print-mid-turn-compaction.test.ts": "1ee66079392632353392f9be47b1fc163b72e4e0f1f5b9d1c51e44033d36283d",
+    "tests/smoke/print-config.ts": "ebab3c6bfd2eb13deb11fd96f6d87a64d9ed6270fad0a24f0cc06a523b19a8d4",
+    "tests/e2e/tui/support/fake-openai-server.ts": "0a362031a466e94fb7b6d8738127b9c141f32c78135af0a5ceb50212ac1450c8"
+  },
+  "results": {
+    "baseline": {
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "--config",
+        "tests/smoke/vitest.config.ts",
+        "tests/smoke/print-mid-turn-compaction.test.ts",
+        "--reporter=json",
+        "--outputFile=../baseline-process-tests.json"
+      ],
+      "exit_code": 1,
+      "passed": 1,
+      "failed": 1,
+      "cases": [
+        {
+          "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+          "status": "failed"
+        },
+        {
+          "title": "cancelling during summarization ends the run without scheduling another task request",
+          "status": "passed"
+        }
+      ]
+    },
+    "reference": {
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "--config",
+        "tests/smoke/vitest.config.ts",
+        "tests/smoke/print-mid-turn-compaction.test.ts",
+        "--reporter=json",
+        "--outputFile=../reference-process-tests.json"
+      ],
+      "exit_code": 0,
+      "passed": 2,
+      "failed": 0,
+      "cases": [
+        {
+          "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+          "status": "passed"
+        },
+        {
+          "title": "cancelling during summarization ends the run without scheduling another task request",
+          "status": "passed"
+        }
+      ]
+    }
+  },
+  "scope": "Grader preflight only; no agent-generated changes or communication comparison.",
+  "date": "2026-09-16",
+  "kind": "historical workload and grader preflight; no agent comparison",
+  "artifact_root": "/private/var/folders/cx/pkdk8_6n2hv_42mfhpzzq40h0000gn/T/kimchi-comms-compaction-yk4nggz4",
+  "preflight_script": "scripts/agent-communication/preflight-compaction.py",
+  "script_sha256": "0e31fb51dfb9d6962aa103fcea946b0c452c1438867483cec4d297209370bee5",
+  "initial_manual_preflight": "/var/folders/cx/pkdk8_6n2hv_42mfhpzzq40h0000gn/T/kimchi-comms-compaction-1wpx_gl7",
+  "limitations": [
+    "Two process tests establish continuation and cancellation behavior only.",
+    "Repeated pressure, ineffective compaction and session-generation races still require independent checks.",
+    "No inference trial has been run for this workload.",
+    "The reference test overlay is applied after building; agent trials must use fresh baseline archives, not these grader directories."
+  ]
+}
