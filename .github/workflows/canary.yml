@@ -144,6 +144,15 @@ jobs:
       - name: Set version
         run: node scripts/set-version.js "${{ needs.preflight.outputs.version }}"
 
+      # Imports the Developer ID cert into a throwaway keychain and exports
+      # CSC_NAME for the build step (no-op without the secrets → ad-hoc).
+      - name: Set up Developer ID signing
+        if: ${{ matrix.os == 'darwin' }}
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: bash scripts/setup-codesign.sh
+
       - name: Build binary
         if: ${{ matrix.os != 'windows' }}
         run: pnpm run build:binary
