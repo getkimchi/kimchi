@@ -24,6 +24,11 @@ import {
 	setAutoRoutingState,
 } from "./state.js"
 
+/** Printed when the Auto router picks a concrete model — mimics upstream status lines like "TUI mode: fullscreen". */
+function formatAutoPickNotice(modelId: string): string {
+	return `Auto-model picked ${modelId}.`
+}
+
 function branchHasImages(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
 		(entry) =>
@@ -265,6 +270,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				const state = { status: "resolved", model: resolution.model } satisfies AutoRoutingState
 				setAutoRoutingState(sessionId, state)
 				pi.appendEntry(AUTO_RESOLUTION_ENTRY, resolvedEntry(resolution.model))
+				ctx.ui.notify(formatAutoPickNotice(resolution.model.id))
 				return state
 			})
 		})

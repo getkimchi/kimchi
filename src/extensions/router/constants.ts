@@ -4,7 +4,7 @@ export const AUTO_MODEL_PROVIDER = "kimchi-dev"
 export const AUTO_MODEL_ID = "auto"
 export const AUTO_MODEL_REF = `${AUTO_MODEL_PROVIDER}/${AUTO_MODEL_ID}`
 export const AUTO_MODEL_API = "kimchi-auto"
-export const AUTO_MODEL_NAME = "Auto (Kimchi Router)"
+export const AUTO_MODEL_NAME = "Picks the best model for your tasks automatically."
 
 export function isAutoModel<T extends Pick<Model<string>, "provider" | "id">>(
 	model: T | undefined,

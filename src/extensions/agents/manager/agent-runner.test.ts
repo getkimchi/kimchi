@@ -162,7 +162,7 @@ const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", 
 
 const AUTO_MODEL: Model<Api> = {
 	id: "auto",
-	name: "Auto (Kimchi Router)",
+	name: "Picks the best model for your tasks automatically.",
 	api: "kimchi-auto",
 	provider: "kimchi-dev",
 	baseUrl: "https://llm.kimchi.dev/openai/v1",
