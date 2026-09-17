@@ -53,7 +53,10 @@ jobs:
       - name: Push master and the tag
         run: |
           # The script commits directly on master; push master plus the tag.
-          # The tag push triggers the Release workflow; the stamp commits carry
-          # [skip ci] so ci.yml is not re-run.
+          # The tag push triggers the Release workflow. The Release commit
+          # deliberately carries NO [skip ci]: it is the tagged commit, and a
+          # skip keyword there would suppress the tag-triggered Release
+          # workflow. The Start next cycle commit carries [skip ci] so the
+          # master push does not re-run ci.yml.
           git push origin master
           git push origin "v${{ inputs.version }}"

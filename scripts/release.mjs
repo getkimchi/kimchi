@@ -11,14 +11,17 @@
 //      current branch == default branch, CHANGELOG.md has "## [Unreleased]"
 //      with content ("nothing to release" otherwise), tag v<x.y.z> free.
 //   2. Stamp "[Unreleased]" -> "[X.Y.Z] - YYYY-MM-DD", bump package.json,
-//      commit "Release vX.Y.Z [skip ci]", tag v<x.y.z> on that commit.
+//      commit "Release vX.Y.Z" (NO [skip ci]: this commit is what the tag
+//      points at, and a skip keyword there would suppress the tag-triggered
+//      Release workflow), tag v<x.y.z> on that commit.
 //   3. Reseed a fresh "## [Unreleased]" section, commit
-//      "Start next cycle [skip ci]".
+//      "Start next cycle [skip ci]" (suppresses ci.yml on the master push;
+//      this commit is never tagged).
 //   4. Print instructions: push the default branch and the tag (the script
 //      itself never pushes). The CI "Release prepare" workflow
 //      (.github/workflows/release-prep.yml) automates the whole flow; the
-//      [skip ci] markers keep the pushed master commits from re-triggering
-//      ci.yml.
+//      [skip ci] marker on the Start next cycle commit keeps the pushed
+//      master commits from re-triggering ci.yml.
 //
 // --dry-run computes and prints everything without touching files or git.
 
@@ -189,7 +192,7 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 		console.log(mutation.reseeded)
 		console.log(`package.json: version ${previousVersion} -> ${version}`)
 		console.log(
-			`\nThen: commit "Release ${tag} [skip ci]", tag ${tag}, reseed [Unreleased], commit "Start next cycle [skip ci]".`,
+			`\nThen: commit "Release ${tag}", tag ${tag}, reseed [Unreleased], commit "Start next cycle [skip ci]".`,
 		)
 		return { dryRun: true, tag }
 	}
@@ -199,7 +202,7 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 	writeFileSync(changelogPath, mutation.stamped)
 	bumpPackageVersion(cwd, version)
 	git(["add", "CHANGELOG.md", "package.json"], cwd)
-	git(["commit", "-m", `Release ${tag} [skip ci]`], cwd)
+	git(["commit", "-m", `Release ${tag}`], cwd)
 	git(["tag", tag], cwd)
 
 	writeFileSync(changelogPath, mutation.reseeded)
@@ -208,7 +211,7 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 
 	console.log(`Released ${version}: stamped CHANGELOG.md, bumped package.json ${previousVersion} -> ${version}.`)
 	console.log(
-		`Created commits "Release ${tag} [skip ci]" (tagged ${tag}) and "Start next cycle [skip ci]" on ${defaultBranch(cwd)} (fresh [Unreleased] reseeded on top).`,
+		`Created commits "Release ${tag}" (tagged ${tag}) and "Start next cycle [skip ci]" on ${defaultBranch(cwd)} (fresh [Unreleased] reseeded on top).`,
 	)
 	console.log("\nNext steps:")
 	console.log(`  git push origin ${defaultBranch(cwd)}`)
