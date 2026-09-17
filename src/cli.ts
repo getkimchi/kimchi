@@ -229,6 +229,14 @@ if (originalArgs[0] === "memory-capture") {
 	process.exit(await runCaptureWorkerMain(originalArgs.slice(1)))
 }
 
+// Bulk fact import for the memory store (benchmark oracle-capture arm;
+// routes the same way as the capture worker — before telemetry/session
+// setup, exiting at the dispatch site).
+if (originalArgs[0] === "memory-import") {
+	const { runImportMain } = await import("./extensions/memory/import.js")
+	process.exit(await runImportMain(originalArgs.slice(1)))
+}
+
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
 const infrastructureErrorTracker = createInfrastructureErrorTracker()
