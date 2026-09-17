@@ -65,14 +65,15 @@ curl -fsSL -o "$G2_PATH" "https://www.apple.com/certificateauthority/DeveloperID
 security import "$G2_PATH" -k "$KEYCHAIN" -A || true
 rm -f "$G2_PATH"
 
-# Find a Developer ID Application identity; report when none is available.
+# Require exactly one Developer ID Application identity; fail fast otherwise.
 IDENTITIES=$(security find-identity -v -p codesigning "$KEYCHAIN")
-IDENTITY=$(awk -F '"' '/Developer ID Application/ {print $2; exit}' <<< "$IDENTITIES")
-if [ -z "$IDENTITY" ]; then
-	echo "No 'Developer ID Application' identity found after import — check CSC_LINK/CSC_KEY_PASSWORD." >&2
+MATCHES=$(awk '/Developer ID Application/ {count++} END {print count+0}' <<< "$IDENTITIES")
+if [ "$MATCHES" -ne 1 ]; then
+	echo "Expected exactly one 'Developer ID Application' identity after import, found $MATCHES — check CSC_LINK/CSC_KEY_PASSWORD." >&2
 	printf '%s\n' "$IDENTITIES" >&2
 	exit 1
 fi
+IDENTITY=$(awk -F '"' '/Developer ID Application/ {print $2}' <<< "$IDENTITIES")
 
 echo "Signing identity: $IDENTITY"
 if [ -n "${GITHUB_ENV:-}" ]; then
