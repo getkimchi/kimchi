@@ -6,7 +6,7 @@ import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 import { AUTO_MODEL_ID, isAutoModel } from "./router/constants.js"
-import { getEffectiveModel } from "./router/state.js"
+import { formatAutoModelLabel, getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {
@@ -117,7 +117,7 @@ function formatUsageRows(
 function resolveAutoModelLabel(ctx: ExtensionContext): string | undefined {
 	if (!isAutoModel(ctx.model)) return undefined
 	const effective = getEffectiveModel(ctx)
-	return effective && effective.id !== AUTO_MODEL_ID ? `auto (${effective.id})` : undefined
+	return effective && effective.id !== AUTO_MODEL_ID ? formatAutoModelLabel(effective.id) : undefined
 }
 
 const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
@@ -130,10 +130,11 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
 
+	let labelWidth: number
 	if (!data.subagents) {
 		// No subagents — single compact row
 		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
 		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
@@ -141,9 +142,6 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 			values += `${COL_GAP}cache-read ${formatCount(t.cacheRead)}${COL_GAP}cache-write ${formatCount(t.cacheWrite)}`
 		}
 		container.addChild(new Text(INDENT + theme.fg("dim", tokensLabel.padEnd(labelWidth)) + values, 0, 0))
-		if (data.model) {
-			container.addChild(new Text(INDENT + theme.fg("dim", "model".padEnd(labelWidth)) + data.model, 0, 0))
-		}
 	} else {
 		// Multi-row breakdown when subagents were involved
 		const rows: Array<{ label: string; totals: UsageTotals }> = []
@@ -160,14 +158,15 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 		rows.push({ label: "total:", totals: data.total })
 
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		for (const line of formatUsageRows(rows, theme, labelWidth)) {
 			container.addChild(new Text(line, 0, 0))
 		}
-		if (data.model) {
-			container.addChild(new Text(INDENT + theme.fg("dim", "model".padEnd(labelWidth)) + data.model, 0, 0))
-		}
+	}
+
+	if (data.model) {
+		container.addChild(new Text(INDENT + theme.fg("dim", "model".padEnd(labelWidth)) + data.model, 0, 0))
 	}
 
 	for (const extra of data.extras ?? []) {
