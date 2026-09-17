@@ -1323,7 +1323,7 @@ describe("context handler steer branding", () => {
 
 		const unbranded = {
 			role: "custom",
-			customType: "exploration-guard-steer",
+			customType: "custom-steer-message",
 			content: "Act on your hypothesis now.",
 			display: false,
 			timestamp: 1,

@@ -662,10 +662,9 @@ state service would consume the same module.
 | File | Role |
 |------|------|
 | `src/extensions/ferment/index.ts` | Extension entrypoint — event handlers, slash commands |
-| `src/extensions/ferment/events.ts` | `turn_end` / `agent_end` handlers — nudge dispatch, abort/error recovery, lifecycle guard integration |
-| `src/extensions/ferment/lifecycle-obligation-guard.ts` | Lifecycle obligation guard — retry budget, obligation keying, exhaustion diagnostics (automated mode) |
-| `src/extensions/ferment/stalled-payload.ts` | Shared `FermentStalledPayload` builder for `FERMENT_EVENTS.STALLED` telemetry (used by crash-recovery and the guard) |
-| `src/extensions/ferment/nudge.ts` | Tool-using stop nudges, scoping progress/stop nudges, scoping explore turn tracking |
+| `src/extensions/ferment/events.ts` | `turn_end` / `agent_end` handlers — abort/error recovery |
+| `src/extensions/ferment/stalled-payload.ts` | Shared `FermentStalledPayload` builder for `FERMENT_EVENTS.STALLED` telemetry (used by crash-recovery) |
+| `src/extensions/ferment/nudge.ts` | Knowledge-ref appends + step/phase completion bookkeeping |
 | `src/extensions/ferment/scheduler.ts` | `scheduleNextFermentAction` — builds and delivers continuation nudges via `steer` / `followUp` |
 | `src/extensions/ferment/tools/*.ts` | Tool registrations (lifecycle, phases, steps, knowledge) |
 | `src/extensions/ferment/tool-scope.ts` | Lifecycle-keyed tool profiles (`planning` / `implementation`) via `pi.setActiveTools()` |
