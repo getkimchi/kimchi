@@ -245,7 +245,6 @@ describe("system-prompt block cache contract (source)", () => {
 
 	it("delivers dynamic state via persist-on-change, never via tail-push", () => {
 		const contextState = readSource("src/extensions/todos/context-state.ts")
-		const lifecycleContext = readSource("src/extensions/ferment/lifecycle-context.ts")
 		const stateMarkdown = readSource("src/extensions/todos/state-markdown.ts")
 		const todosIndex = readSource("src/extensions/todos/index.ts")
 
@@ -257,7 +256,6 @@ describe("system-prompt block cache contract (source)", () => {
 		expect(sharedPersistence).toContain("isStateBlockEntry")
 		expect(contextState).toContain("registerStateBlockPersistence")
 		expect(contextState).toContain("renderTodoStateMarkdown")
-		expect(lifecycleContext).toContain("registerStateBlockPersistence")
 
 		// Tail-push ban: no writes to the message array inside a context handler.
 		// The context handlers in these files are strip-only (drop superseded
@@ -265,8 +263,6 @@ describe("system-prompt block cache contract (source)", () => {
 		// tail permanently poisons the provider cache breakpoint.
 		expect(contextState).not.toContain("messages.push")
 		expect(contextState).not.toContain("event.messages.push")
-		expect(lifecycleContext).not.toContain("messages.push")
-		expect(lifecycleContext).not.toContain("event.messages.push")
 		expect(sharedPersistence).not.toContain("messages.push")
 		expect(sharedPersistence).not.toContain("event.messages.push")
 

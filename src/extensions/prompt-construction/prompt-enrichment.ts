@@ -36,7 +36,6 @@ import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
-import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
@@ -392,16 +391,6 @@ export default function (skillPathsFromConfig: string[]) {
 				// retires within the notice window. Deduplicated per session+model,
 				// so cycling back and forth warns at most once per model.
 				notifyIfDeprecated(ctx, ctx.model?.id)
-			})
-
-			pi.on("turn_end", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId()
-
-				// Track stall: increment counter each turn so the headless prompt
-				// block can detect when the orchestrator hasn't updated step todos.
-				// Scoped to this session so concurrent sessions do not share a counter.
-				bumpStallCounter(sessionId)
-				fireStepStallSteerIfStalled(pi, sessionId)
 			})
 
 			pi.on("context", async (event, ctx) => {

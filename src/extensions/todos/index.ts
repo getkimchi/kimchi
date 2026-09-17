@@ -8,23 +8,11 @@ import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
 import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
 import {
-	createThresholdSteerTracker,
-	sendHiddenSteer,
-	stalenessIndicator,
-	TODO_STALENESS_CUSTOM_TYPE,
-	TODO_STALENESS_THRESHOLDS,
-} from "./staleness-steers.js"
-import {
-	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
-	getTodosForScope,
-	getToolCallsSinceTodoWrite,
 	getWorkToolCalls,
 	hasEverHadTodos,
 	hasTodoNudgeFired,
 	markTodoNudgeFired,
-	resetToolCallsSinceTodoWrite,
-	resolveTodoScope,
 	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
@@ -42,7 +30,6 @@ export * from "./constants.js"
 export * from "./ferment-prompt-block.js"
 export * from "./prompt-block.js"
 export * from "./reducer.js"
-export * from "./staleness-steers.js"
 export * from "./state-markdown.js"
 export * from "./store.js"
 export * from "./tool.js"
@@ -101,11 +88,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	const _activeSessionContexts = new Map<string, ExtensionContext>()
 	let unsubscribeTodoStore: (() => void) | undefined
 
-	// One-shot staleness steers: fires once per threshold per write-epoch,
-	// reset whenever the todo store is written (the subscribeTodoStore
-	// listener below resets both the counter and this tracker).
-	const stalenessTracker = createThresholdSteerTracker()
-
 	function setSessionContext(sessionId: string, ctx: ExtensionContext): void {
 		_activeSessionContexts.set(sessionId, ctx)
 	}
@@ -119,10 +101,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	const replayAndSync = (ctx: ExtensionContext) => {
-		const sessionId = ctx.sessionManager.getSessionId()
-
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager)
-		resetToolCallsSinceTodoWrite(sessionId)
 		syncTodoWidget(ctx)
 	}
 
@@ -135,8 +114,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore((_, emitterSessionId) => {
-			resetToolCallsSinceTodoWrite(emitterSessionId)
-			stalenessTracker.reset(emitterSessionId)
 			const sessionCtx = getSessionContext(emitterSessionId)
 			if (sessionCtx) syncTodoWidget(sessionCtx)
 		})
@@ -154,7 +131,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		// Always count non-todo tool calls for the one-shot early nudge —
 		// it tracks work done without a todo list, so it must increment even
-		// when no todos exist (opposite of the staleness counter below).
+		// when no todos exist.
 		bumpWorkToolCalls(sessionId)
 
 		// One-shot early nudge: if the session has done several non-todo tool
@@ -167,32 +144,12 @@ export default function todosExtension(pi: ExtensionAPI): void {
 				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "steer" })
 			}
 		}
-
-		// Only track staleness when there are existing todos to keep in sync.
-		const scope = resolveTodoScope()
-		if (getTodosForScope(scope, sessionId).length === 0) return
-
-		bumpToolCallsSinceTodoWrite(sessionId)
-
-		// Staleness pressure as bounded one-shot steers, not as volatile text
-		// inside the persisted state block (which must stay byte-identical
-		// between real writes for prefix-cache stability).
-		const changes = getToolCallsSinceTodoWrite(sessionId)
-		stalenessTracker.fireCrossed({
-			sessionId,
-			count: changes,
-			thresholds: TODO_STALENESS_THRESHOLDS,
-			send: (threshold) => {
-				const text = stalenessIndicator(changes)
-				if (text) sendHiddenSteer(pi, TODO_STALENESS_CUSTOM_TYPE, text, { reason: "staleness", threshold })
-			},
-		})
 	})
 
 	pi.on("turn_end", (event, ctx) => {
 		// Sync the widget on terminal turns but do NOT force reconciliation.
 		// The model updates todos on its own schedule guided by the system
-		// prompt and the one-shot staleness steers.
+		// prompt and the one-shot early nudge.
 		const message = event.message
 		if (!isRecord(message) || message.role !== "assistant") return
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
