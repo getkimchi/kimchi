@@ -542,4 +542,3 @@ describe("set_phase / phase absence regression", () => {
 		expect(Object.keys(SLASH_COMMANDS)).not.toContain("phase")
 	})
 })
-

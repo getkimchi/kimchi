@@ -2838,7 +2838,7 @@ function genericToolLabel(name: string): string {
 
 function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Component {
 	ctx.state._openAiPatchFiles = []
-	if (name === "submit_plan") {
+	if (name === "ExitPlanMode") {
 		// The tool call is persisted and replayed; its plan must remain readable even when tools are collapsed.
 		const transcript = new Container()
 		transcript.addChild(new Text(toolHeader("Submit Plan", "", theme, toolStatusDot(ctx, theme)), 0, 0))

@@ -6,7 +6,7 @@
  *
  * | Flow | Written when | Filename |
  * |---|---|---|
- * | adhoc plan mode | plan is produced (`submit_plan` tool call) | `<slug-of-plan-title>.md` |
+ * | adhoc plan mode | `ExitPlanMode` is called | `<slug-of-plan-title>.md` |
  * | ferment scoping | `propose_ferment_scoping` builds the plan | `ferment-<slug>-<first12(fermentId)>.md` |
  *
  * All files land under `<cwd>/.kimchi/plans/`. Saving is overwrite-in-place:
@@ -102,7 +102,7 @@ export interface SavePlanMarkdownOptions {
 	readonly cwd: string
 	/** Filename base; slugified via {@link slugifyPlanName} before use. */
 	readonly name: string
-	/** Markdown content to persist (written verbatim). */
+	/** Markdown content to persist. */
 	readonly planText: string
 }
 

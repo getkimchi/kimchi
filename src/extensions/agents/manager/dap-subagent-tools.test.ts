@@ -211,7 +211,7 @@ describe("DAP tools in subagent sessions", () => {
 		const planText = "# Child Plan\n\n## Goal\nPersist this plan."
 		const result = await tool.execute("exit-plan", { plan: planText }, undefined, undefined, {} as ExtensionContext)
 		const planPath = join(tmp, ".kimchi", "plans", "child-plan.md")
-		expect(result.details).toEqual({ planPath })
+		expect(result.details).toEqual({ submitted: true, source: "worker", planPath })
 		expect(result.terminate).toBe(true)
 		expect(existsSync(planPath)).toBe(true)
 		expect(readFileSync(planPath, "utf8")).toBe(`${planText}\n`)

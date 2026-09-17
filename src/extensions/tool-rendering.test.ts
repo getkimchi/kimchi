@@ -227,7 +227,7 @@ describe("hidden tool block rendering", () => {
 		const tui = new TuiMainScreen(new ProcessTerminal())
 		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
 		const create = (input: typeof args) =>
-			new ToolExecutionComponent("submit_plan", "tc-plan", input, {}, undefined, tui, "/tmp")
+			new ToolExecutionComponent("ExitPlanMode", "tc-plan", input, {}, undefined, tui, "/tmp")
 		const component = create({ plan: "# Draft" })
 		component.updateArgs(args)
 		component.setArgsComplete()

@@ -147,6 +147,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model collects structured input from the user
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
+	// interactive — model presents the completed plan for approval
+	{ name: "ExitPlanMode", modes: ["adhoc"], routing: "interactive" },
 ]
 
 const ADHOC_ONLY_TOOL_NAMES = new Set(ADHOC_MODE_TOOLS.map((t) => t.name))
@@ -161,15 +163,6 @@ const ADHOC_ONLY_TOOL_NAMES = new Set(ADHOC_MODE_TOOLS.map((t) => t.name))
 export function isAdhocOnlyToolName(name: string): boolean {
 	return ADHOC_ONLY_TOOL_NAMES.has(name)
 }
-
-/**
- * Plan-submission tool available in both adhoc plan mode and ferment
- * planning phase. The model calls it when the plan is ready for user
- * review. Visible only in planning profiles — hidden in idle, worker,
- * and implementation-ferment. This is the only "write-like" tool visible
- * during planning (edit, write, bash-write are all suppressed).
- */
-export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: "submit_plan", modes: ["adhoc"] }]
 
 /**
  * Tools gated behind the ferment lifecycle.
@@ -286,7 +279,6 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 			return [
 				...SHARED_CORE_TOOLS,
 				...ADHOC_MODE_TOOLS,
-				...SHARED_PLANNING_TOOLS,
 				// bash is the only write tool in adhoc planning mode
 				...WRITE_TOOLS.filter((t) => t.modes.includes("adhoc")),
 			]

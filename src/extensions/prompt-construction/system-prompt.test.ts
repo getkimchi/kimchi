@@ -287,7 +287,7 @@ describe("buildSystemPrompt", () => {
 			)
 
 			expect(prompt).not.toContain("## Working Practices")
-			expect(prompt).toContain("Always wrap shell commands with a timeout")
+			expect(prompt).toContain("the bash tool's `timeout` parameter")
 			expect(prompt).toContain("Never run interactive commands")
 			expect(prompt).toContain("Ask before unrequested actions that publish externally")
 			expect(subagentPrompt).toContain("## Working Practices")

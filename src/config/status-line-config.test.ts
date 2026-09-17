@@ -230,7 +230,7 @@ describe("readStatusLineConfig (stat cache)", () => {
 	it("writeStatusLineConfig is visible to the next read without explicit invalidation", () => {
 		seed("{}")
 		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
-		writeStatusLineConfig({ pinned: ["phase"] })
-		expect(readStatusLineConfig().pinned).toEqual(["phase"])
+		writeStatusLineConfig({ pinned: ["tags"] })
+		expect(readStatusLineConfig().pinned).toEqual(["tags"])
 	})
 })

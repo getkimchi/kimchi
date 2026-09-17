@@ -49,7 +49,7 @@ const TOOL_NAMES = {
 		...TODO_TOOL_NAMES,
 		...FERMENT_V2_TOOL_NAMES,
 	],
-	adhocOnly: ["questionnaire"],
+	adhocOnly: ["questionnaire", "ExitPlanMode"],
 	fermentPlanningTools: [
 		"propose_ferment_scoping",
 		"scope_ferment",
@@ -86,7 +86,7 @@ describe("SHARED_CORE_TOOLS", () => {
 
 describe("ADHOC_MODE_TOOLS", () => {
 	it("contains --plan-only tools", () => {
-		expect(ADHOC_MODE_TOOLS).toHaveLength(1)
+		expect(ADHOC_MODE_TOOLS).toHaveLength(2)
 		for (const name of TOOL_NAMES.adhocOnly) {
 			expect(ADHOC_MODE_TOOLS).toContainEqual(expect.objectContaining({ name }))
 		}
@@ -184,6 +184,18 @@ describe("WRITE_TOOLS", () => {
 })
 
 describe("getToolsForProfile", () => {
+	it.each<ToolProfile>([
+		"idle",
+		"worker",
+		"planning-adhoc",
+		"planning-ferment",
+		"implementation-ferment",
+	])("uses ExitPlanMode as the only adhoc planning exit in %s", (profile) => {
+		const names = namesOf(getToolsForProfile(profile))
+		expect(names).not.toContain("submit_plan")
+		expect(names.includes("ExitPlanMode")).toBe(profile === "planning-adhoc")
+	})
+
 	describe("idle", () => {
 		it("returns only shared core tools", () => {
 			const result = getToolsForProfile("idle")

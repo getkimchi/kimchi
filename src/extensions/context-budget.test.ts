@@ -58,14 +58,14 @@ const CHARS_PER_TOKEN = 4
 
 /** Budget slices (estimated tokens). Headroom over the measured baseline below. */
 const BUDGET = {
-	/** buildSystemPrompt with the canonical single-mode options below
-	 *  (tool descriptions live in the API payload, the phase payload is gated
-	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
-	systemPrompt: 2050,
+	/** Preserve master's 2050 cap plus the static Working Practices section
+	 *  (1036 chars / 259 estimated tokens), retained after phase removal.
+	 *  Tool descriptions remain API-only; the measured prompt is 2273 tokens. */
+	systemPrompt: 2309,
 	/** Sum of name + description chars across resources/skills frontmatter. */
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
-	total: 2150,
+	total: 2409,
 	/** Total canonical tool surface (26 tools after the DAP session-tool +
 	 *  bash_control deferrals, the mcp zero-server registration gate, and the
 	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH

@@ -138,11 +138,10 @@ multiple options apply; single for one choice.
 
 STEP 3 — use the \`questionnaire\` tool to confirm criteria with the user.
 
-STEP 5 — call the \`submit_plan\` tool with the full plan as the \`plan\` parameter.
-Your turn ends when the tool returns. The harness saves the submitted plan to
-\`.kimchi/plans/<slug>.md\` automatically.
-Do NOT call \`submit_plan\` on incomplete drafts, while assumptions remain unresolved, or
-when asking clarifying questions.
+STEP 5 — draft the complete plan directly in your response, resolve all open questions,
+then call ExitPlanMode with the complete plan for user approval. The harness saves the
+approved plan automatically; do not write plan files yourself or call ExitPlanMode on
+incomplete drafts.
 
 # Tool Usage
 - Use the find tool for file pattern matching (NOT the bash find command)

@@ -147,7 +147,7 @@ Call \`set_phase\` when the work type changes.
 
 ### Phase-specific behaviour
 
-During **plan** phase:
+When planning:
 - Write a plan.
 
 ## Rules
@@ -156,16 +156,16 @@ Keep these parent rules.`
 			activeToolNames: ["read"],
 			guidelinesBlock: `## Role Guidelines (build)
 
-During **build** phase:
+When implementing:
 - Implement the requested change.`,
 		})
 
 		expect(output).not.toContain("## Working Practices")
 		expect(output).not.toContain("Call `set_phase`")
-		expect(output).not.toContain("During **plan** phase")
+		expect(output).not.toContain("When planning")
 		expect(output).toContain("Keep these parent rules.")
 		expect(output).toContain("## Role Guidelines (build)")
-		expect(output).toContain("During **build** phase")
+		expect(output).toContain("When implementing")
 	})
 
 	it("Explore agent assembles expected prompt (replace mode)", () => {
@@ -238,8 +238,9 @@ During **build** phase:
 
 		// Plan-Agent-specific tool bindings (override the shared planning process).
 		expect(output).toContain("`questionnaire`")
-		expect(output).toContain("`submit_plan`")
-		expect(output).toContain("harness saves the submitted plan")
+		expect(output).toContain("harness saves completed plans automatically")
+		expect(output).toContain("ExitPlanMode")
+		expect(output).not.toContain("submit_plan")
 
 		// The shared planning process must be embedded verbatim. Asserting on the
 		// imported constant means any legitimate tweak to the shared process is
