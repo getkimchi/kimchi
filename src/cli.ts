@@ -112,7 +112,6 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
-import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
 import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -635,7 +634,6 @@ try {
 			// session_start handlers are awaited in order; warn after the migration dialog closes.
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
-			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
