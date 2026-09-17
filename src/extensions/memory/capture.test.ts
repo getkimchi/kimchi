@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import {
+	captureDisabled,
 	createIncrementalCaptureState,
 	extractMessages,
 	incrementalCapture,
@@ -67,6 +68,75 @@ describe("spawnCaptureWorker (error listener)", () => {
 		} finally {
 			consoleError.mockRestore()
 		}
+	})
+})
+
+describe("captureDisabled", () => {
+	afterEach(() => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE
+	})
+
+	it("is disabled only for the exact value 'off'", () => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE
+		expect(captureDisabled()).toBe(false)
+		process.env.KIMCHI_MEMORY_CAPTURE = "off"
+		expect(captureDisabled()).toBe(true)
+		process.env.KIMCHI_MEMORY_CAPTURE = "on"
+		expect(captureDisabled()).toBe(false)
+		process.env.KIMCHI_MEMORY_CAPTURE = ""
+		expect(captureDisabled()).toBe(false)
+	})
+})
+
+describe("wireMemoryCapture — capture kill-switch", () => {
+	const realHome = process.env.HOME
+	const realCaptureEnv = process.env.KIMCHI_MEMORY_CAPTURE
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-capture-off-"))
+		process.env.HOME = home
+		vi.mocked(spawn).mockClear()
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		if (realCaptureEnv === undefined) delete process.env.KIMCHI_MEMORY_CAPTURE
+		else process.env.KIMCHI_MEMORY_CAPTURE = realCaptureEnv
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	it("KIMCHI_MEMORY_CAPTURE=off: no handlers registered, no job files, no spawns", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE = "off"
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api)
+		// The gate returns before registering: no handlers exist at all.
+		expect(() => getHandler("session_shutdown")).toThrow()
+		expect(() => getHandler("session_before_compact")).toThrow()
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending")
+		expect(existsSync(pendingDir) ? readdirSync(pendingDir) : []).toHaveLength(0)
+		expect(spawn).not.toHaveBeenCalled()
+	})
+
+	it("default (unset) keeps normal capture", () => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api)
+		const shutdown = getHandler("session_shutdown")
+		const child = new EventEmitter() as unknown as ChildProcess
+		child.unref = vi.fn()
+		vi.mocked(spawn).mockImplementation(() => child)
+		const entry = {
+			type: "message",
+			message: { role: "user", content: "remember this" },
+		} as unknown as SessionEntry
+		const ctx = createContext({ sessionManager: { getEntries: () => [entry] } })
+
+		shutdown({ type: "session_shutdown" }, ctx)
+
+		const pending = readdirSync(join(home, ".config", "kimchi", "memory", "pending"))
+		expect(pending).toHaveLength(1)
+		expect(spawn).toHaveBeenCalledTimes(1)
 	})
 })
 
