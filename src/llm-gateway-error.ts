@@ -149,15 +149,53 @@ export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | un
 const RATE_LIMIT_UNTIL_RE = /rate.?limited\s+until\s+([0-9T][0-9TZ:+.-]*[0-9Z])/i
 const EXPLICIT_ZONE_RE = /[Zz]$|[+-]\d{2}:?\d{2}$/
 
+// A plain 429 does not use the gateway's "rate limited until" wording. What it
+// carries instead is a Retry-After, which reaches this extension only as text --
+// pi hands the message along and not the response -- rendered as a relative
+// wait. Without this, "429 Too Many Requests, retry after 30 seconds" yields no
+// deadline at all and the retry backs off blindly against a limit that had just
+// said how long it lasts.
+const RATE_LIMIT_IN_RE =
+	/(?:retry|try again|available|reset[s]?)\s*(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hours?)\b/i
+
+const UNIT_MS: Record<string, number> = {
+	ms: 1,
+	millisecond: 1,
+	milliseconds: 1,
+	s: 1_000,
+	sec: 1_000,
+	secs: 1_000,
+	second: 1_000,
+	seconds: 1_000,
+	m: 60_000,
+	min: 60_000,
+	mins: 60_000,
+	minute: 60_000,
+	minutes: 60_000,
+	h: 3_600_000,
+	hour: 3_600_000,
+	hours: 3_600_000,
+}
+
 /** Epoch ms the gateway says the limit lifts, or undefined when it named none or it has passed. */
 export function parseRateLimitRetryAt(rawMessage: string, now: number = Date.now()): number | undefined {
 	const match = RATE_LIMIT_UNTIL_RE.exec(rawMessage)
-	if (!match?.[1]) return undefined
-	const stamp = match[1]
-	// The gateway reports UTC; Date.parse would read an unzoned stamp as local time.
-	const retryAt = Date.parse(EXPLICIT_ZONE_RE.test(stamp) ? stamp : `${stamp}Z`)
-	if (Number.isNaN(retryAt) || retryAt <= now) return undefined
-	return retryAt
+	if (match?.[1]) {
+		const stamp = match[1]
+		// The gateway reports UTC; Date.parse would read an unzoned stamp as local time.
+		const retryAt = Date.parse(EXPLICIT_ZONE_RE.test(stamp) ? stamp : `${stamp}Z`)
+		if (Number.isNaN(retryAt) || retryAt <= now) return undefined
+		return retryAt
+	}
+
+	// The absolute form is preferred above because it needs no arithmetic; this
+	// is the fallback for a message that states a duration instead.
+	const relative = RATE_LIMIT_IN_RE.exec(rawMessage)
+	if (!relative?.[1]) return undefined
+	const amount = Number(relative[1])
+	const unit = UNIT_MS[relative[2].toLowerCase()]
+	if (!Number.isFinite(amount) || amount <= 0 || unit === undefined) return undefined
+	return now + amount * unit
 }
 
 /** The gateway reports UTC; only local wall-clock time tells the user when to come back. */
