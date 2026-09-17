@@ -31,7 +31,6 @@ import {
 	clearBlockRetry,
 	clearCompactionInFlight,
 	clearLastMidTurnFireTokens,
-	clearLifecycleGuardRetryState,
 	clearMidTurnCompactionTracking,
 	clearMidTurnOneshotWarnings,
 	clearPendingCompaction,
@@ -87,9 +86,6 @@ export interface FermentRuntime {
 	setContinuationPolicy(policy: ContinuationPolicy): void
 	isAutomatedContinuationEnabled(): boolean
 	setAutomatedContinuationEnabled(enabled: boolean): void
-	/** Coordinate session-local recovery state after a state-machine command
-	 *  has been successfully persisted. */
-	onLifecycleTransitionApplied(fermentId: string): void
 	now(): Date
 	nowIso(): string
 	markHumanInput(): void
@@ -172,7 +168,6 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setContinuationPolicy,
 		isAutomatedContinuationEnabled,
 		setAutomatedContinuationEnabled,
-		onLifecycleTransitionApplied: clearLifecycleGuardRetryState,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
 		markHumanInput: () => {

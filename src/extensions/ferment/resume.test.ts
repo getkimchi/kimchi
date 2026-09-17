@@ -21,7 +21,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
-import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import {
 	deletePendingProposal,
 	loadPendingProposal,
@@ -121,7 +120,6 @@ afterEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	setActive(undefined)
-	resetAllScopingStopNudgeCounts()
 	clearPendingPlanReviewTrigger()
 	if (prevFermentsDir === undefined) {
 		process.env.KIMCHI_FERMENTS_DIR = undefined
@@ -404,13 +402,6 @@ describe("resumeFerment still-paused state", () => {
 			return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: "simulated resume failure" } }
 		})
 
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
-			kind: "claimed",
-			reason: "exhausted",
-		})
-
 		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
 
 		// Resume contract: no actionable hidden message is sent.
@@ -422,10 +413,6 @@ describe("resumeFerment still-paused state", () => {
 		const noticeText = pausedNotice?.content?.map((c) => c.text ?? "").join("") ?? ""
 		expect(noticeText).toContain("currently paused")
 		expect(noticeText).toContain("/ferment resume")
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
-			kind: "claimed",
-			reason: "exhausted",
-		})
 	})
 })
 
@@ -483,7 +470,7 @@ describe("resumeFerment early-return states", () => {
 	})
 })
 
-describe("resumeFerment scoping-stop budget reset", () => {
+describe("resumeFerment scoping telemetry restore", () => {
 	it("restores draft scoping telemetry without emitting another ferment.started", () => {
 		const draft = h.eventStorage.create("Telemetry Resume")
 
@@ -495,32 +482,5 @@ describe("resumeFerment scoping-stop budget reset", () => {
 			expect.objectContaining({ fermentId: draft.id, startedAtMs: Date.parse(draft.createdAt) }),
 		)
 		expect(emit).not.toHaveBeenCalledWith(FERMENT_EVENTS.STARTED, expect.anything())
-	})
-
-	it("resets the scoping-stop budget so a resumed draft gets a fresh nudge budget", () => {
-		// /ferment resume calls resumeFerment directly without
-		// a session_start. Before the fix, the process-global
-		// scopingStopNudgeCounts was never cleared on resume, so a draft that
-		// reached exhaustion stayed permanently `claimed` — no recovery nudge
-		// was ever sent again within the same session. resumeFerment must reset
-		// the budget just like session_start does.
-		const draft = h.eventStorage.create("Exhausted Then Resumed")
-		h.runtime.setActive(draft)
-
-		// Exhaust the scoping-stop budget via the function under test.
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
-			kind: "claimed",
-			reason: "exhausted",
-		})
-
-		// Same-session explicit resume — no session_start fires.
-		resumeFerment(h.pi, draft.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
-
-		// After resume, the same qualifying turn must schedule a nudge again.
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-
-		h.runtime.setActive(undefined)
 	})
 })

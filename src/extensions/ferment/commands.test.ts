@@ -14,8 +14,6 @@ import {
 	startFermentForIntent,
 	startInteractiveFerment,
 } from "./commands.js"
-import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
-import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -58,8 +56,6 @@ afterEach(() => {
 	writeFileSyncMock.mockReset()
 	writeFileSyncMock.mockImplementation(actualFs.writeFileSync)
 	clearAllPendingPlanReviews()
-	clearAllLifecycleGuards()
-	resetAllScopingStopNudgeCounts()
 })
 
 interface RegisteredCommand {
@@ -537,39 +533,6 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getPendingScope(other.id)).toBeDefined()
 		expect(h.runtime.isScopingInteractive(other.id)).toBe(true)
 		expect(h.runtime.isScopingConfirmed(other.id)).toBe(true)
-	})
-
-	it("/ferment exit resets reactive nudges and prevents the exited ferment from continuing", async () => {
-		const h = createHarness()
-		const controller = new FermentCommandController()
-		const ferment = createPlannedFerment(h, "No Nudge After Exit")
-		h.runtime.setContinuationPolicy("automated")
-		h.runtime.setActive(ferment)
-		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
-		expect(h.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "steer" }),
-		)
-
-		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
-		vi.mocked(h.pi.sendMessage).mockClear()
-
-		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
-
-		expect(result).toEqual({ handled: true })
-		expect(h.runtime.getActive()).toBeUndefined()
-		expect(h.pi.sendMessage).not.toHaveBeenCalled()
-
-		const resumed = createApplyAndPersist(h.runtime)(ferment.id, { type: "resume" })
-		if (!resumed.ok) throw new Error(resumed.error.message)
-		vi.mocked(h.pi.sendMessage).mockClear()
-
-		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
-
-		expect(h.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "steer" }),
-		)
 	})
 
 	it("keeps headless one-shot without intent on the usage path", async () => {
@@ -1495,38 +1458,6 @@ describe("registerFermentCommands", () => {
 			}),
 			{ triggerTurn: false },
 		)
-	})
-
-	it("/ferment resume does not reset an exhausted draft scoping-stop budget when there is nothing to resume", async () => {
-		const h = createHarness()
-		const draft = h.storage.create("Exhausted Draft")
-		h.runtime.setActive(draft)
-
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
-			kind: "claimed",
-			reason: "exhausted",
-		})
-
-		const commands = new Map<string, RegisteredCommand>()
-		const pi = {
-			...h.pi,
-			registerCommand: (name: string, command: RegisteredCommand) => {
-				commands.set(name, command)
-			},
-		} as unknown as ExtensionAPI
-		registerFermentCommands(pi, h.runtime)
-
-		const fermentCommand = commands.get("ferment")
-		if (!fermentCommand) throw new Error("ferment command was not registered")
-		await fermentCommand.handler("resume", h.ctx)
-
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
-			kind: "claimed",
-			reason: "exhausted",
-		})
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith('"Exhausted Draft" is draft; nothing to resume.')
 	})
 
 	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {
