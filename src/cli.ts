@@ -58,7 +58,6 @@ import bashControlExtension from "./extensions/bash-background/bash-control-exte
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
-import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
@@ -681,11 +680,10 @@ try {
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
-			// Background bash: MUST register before bashToolGuard so its background
-			// `execute` wins the first-registration-per-name race (runner.js).
-			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
-			// Background mode is opt-in via `checkin_interval`; without it, bash
-			// runs synchronously as before.
+			// Background bash carries the tool-selection steering description
+			// (bash-description.ts) and wins the first-registration-per-name race
+			// for `bash`. Background mode is opt-in via `checkin_interval`; without
+			// it, bash runs synchronously as before.
 			bashBackgroundExtension,
 			// bash_control companion tool. While a background process awaits a
 			// continue/stop decision, other tool calls are hard-blocked with a
@@ -697,10 +695,8 @@ try {
 			// EXPERIMENTAL: gated behind --enable-experimental-features.
 			...(experimentalFeatures ? [daemonExtension] : []),
 			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
-			// and `user_bash` events. Must run before bashToolGuardExtension so
-			// hooks see the original command and any rewrite/block propagates.
+			// and `user_bash` events.
 			bashHooksAdapterExtension,
-			bashToolGuardExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,

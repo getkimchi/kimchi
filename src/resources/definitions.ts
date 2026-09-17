@@ -57,14 +57,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
-		id: "extensions.bash-tool-guard",
-		kind: "extensions",
-		label: "Bash-tool guard",
-		description:
-			"Warn when the LLM uses `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool, and remind it that `cd` does not persist between bash calls. Disabling stops runtime guard messages; the core prompt continues to prefer dedicated tools.",
-		defaultEnabled: true,
-	},
-	{
 		id: "extensions.bash-default-timeout",
 		kind: "extensions",
 		label: "Bash default timeout",

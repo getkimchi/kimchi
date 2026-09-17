@@ -70,21 +70,6 @@ describe("resource definitions", () => {
 		})
 	})
 
-	it("registers bash-tool-guard as a toggleable extension", () => {
-		const resources = getResourceDefinitions()
-		const resource = resources.find((r) => r.id === "extensions.bash-tool-guard")
-		expect(resource).toMatchObject({
-			kind: "extensions",
-			label: "Bash-tool guard",
-			defaultEnabled: true,
-			description: expect.stringContaining("core prompt continues to prefer dedicated tools"),
-		})
-		// Toggling is dynamic — the tool_call handler consults
-		// isResourceEnabled on every bash call, so no restart is
-		// required when the user flips the /resources toggle.
-		expect(resource?.restartRequired).toBeFalsy()
-	})
-
 	it("registers Ferment V2 as an opt-in experimental feature", () => {
 		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.ferment-v2")).toMatchObject({
 			kind: "extensions",

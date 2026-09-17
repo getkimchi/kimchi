@@ -7,7 +7,7 @@
  *
  * Privacy: payloads carry structured fields only (detector, count,
  * is_subagent). Raw tool args, command text, and the human reason string
- * are intentionally NOT emitted — mirroring the bash-tool-guard stance.
+ * are intentionally NOT emitted.
  */
 
 export const LOOP_GUARD_EVENTS = {
