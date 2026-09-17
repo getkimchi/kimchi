@@ -9,6 +9,9 @@
 #
 # No-op when CSC_LINK is absent (forks, local runs): build-binary.js falls
 # back to ad-hoc signing.
+# With CSC_LINK set, only disposable GitHub-hosted runners are supported.
+# The keychain search list and default must persist into the later build step;
+# they are not restored when this script exits.
 #
 # Hardening lessons ported from kimchi-studio's .gitlab .mac-signing anchor:
 #   * Import into OUR OWN keychain and allow it via
@@ -28,6 +31,11 @@ if [ -z "${CSC_LINK:-}" ]; then
 	exit 0
 fi
 
+if [ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]; then
+	echo "Developer ID setup requires a disposable GitHub-hosted runner; it changes user keychain state without restoring it." >&2
+	exit 1
+fi
+
 RUNNER_TEMP="${RUNNER_TEMP:-$(mktemp -d)}"
 KEYCHAIN="$RUNNER_TEMP/kimchi-signing.keychain-db"
 KEYCHAIN_PW=$(openssl rand -hex 16)
@@ -40,6 +48,9 @@ security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
 security default-keychain -s "$KEYCHAIN"
 
 P12_PATH="$RUNNER_TEMP/developer-id.p12"
+G2_PATH="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+trap 'rm -f "$P12_PATH" "$G2_PATH"' EXIT
+
 echo "$CSC_LINK" | base64 -D -o "$P12_PATH"
 security import "$P12_PATH" -k "$KEYCHAIN" -P "${CSC_KEY_PASSWORD:?CSC_KEY_PASSWORD is required when CSC_LINK is set}" -A -T /usr/bin/codesign -T /usr/bin/security
 rm -f "$P12_PATH"
@@ -50,16 +61,16 @@ security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN
 
 # Developer ID G2 intermediate certificate, for chain building during
 # verification. Import is idempotent (duplicate import errors are tolerated).
-G2_PATH="$RUNNER_TEMP/DeveloperIDG2CA.cer"
 curl -fsSL -o "$G2_PATH" "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"
 security import "$G2_PATH" -k "$KEYCHAIN" -A || true
 rm -f "$G2_PATH"
 
-# Expect exactly one Developer ID Application identity; fail fast otherwise.
-IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -n 1 | awk -F '"' '{print $2}')
+# Find a Developer ID Application identity; report when none is available.
+IDENTITIES=$(security find-identity -v -p codesigning "$KEYCHAIN")
+IDENTITY=$(awk -F '"' '/Developer ID Application/ {print $2; exit}' <<< "$IDENTITIES")
 if [ -z "$IDENTITY" ]; then
 	echo "No 'Developer ID Application' identity found after import — check CSC_LINK/CSC_KEY_PASSWORD." >&2
-	security find-identity -v -p codesigning "$KEYCHAIN" >&2 || true
+	printf '%s\n' "$IDENTITIES" >&2
 	exit 1
 fi
 

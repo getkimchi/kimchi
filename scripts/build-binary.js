@@ -49,6 +49,9 @@ const target = TARGETS[targetKey]
 if (!target) {
 	throw new Error(`Unsupported build target: ${targetKey}`)
 }
+if (target.os === "darwin" && platform() !== "darwin") {
+	throw new Error("macOS binaries must be built on macOS so they can be signed and verified.")
+}
 
 const crossTarget = targetArg ? target.bun : undefined
 const isCrossCompile = !!crossTarget
