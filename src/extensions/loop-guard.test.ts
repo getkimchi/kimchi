@@ -24,7 +24,7 @@ function repeat<T>(value: T, n: number): T[] {
 }
 
 describe("LoopGuard.reset", () => {
-	it("clears history so n-gram detection restarts", () => {
+	it("clears history so consecutive-identical detection restarts", () => {
 		const guard = new LoopGuard()
 		feed(guard, repeat(rec({ toolArgs: '{"command":"a"}', isError: true, outputFingerprint: FP_A }), 6))
 		guard.reset()
@@ -60,7 +60,7 @@ describe("LoopGuard window of 30 records", () => {
 		expect(next.state).toBe("ok")
 	})
 
-	it("n-gram detection only considers records inside the window", () => {
+	it("detection only considers records inside the window", () => {
 		const guard = new LoopGuard()
 		// Vary fingerprints so detector 1 (consecutive identical) does not fire.
 		for (let i = 0; i < 4; i++) {
@@ -150,148 +150,6 @@ describe("Consecutive identical errors detector", () => {
 	})
 })
 
-describe("Fuzzy ngram detector (toolName + toolArgs only)", () => {
-	it("does not fire at exactly 6 reps of a 2-gram (12 records)", () => {
-		const guard = new LoopGuard()
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 6; i++) {
-			states.push(guard.record(rec({ toolArgs: '{"command":"a"}', outputFingerprint: `a-${i}` })))
-			states.push(guard.record(rec({ toolArgs: '{"command":"b"}', outputFingerprint: `b-${i}` })))
-		}
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-	})
-
-	it("fires above 6 reps of a 2-gram", () => {
-		const guard = new LoopGuard()
-		for (let i = 0; i < 7; i++) {
-			guard.record(rec({ toolArgs: '{"command":"a"}', outputFingerprint: `a-${i}` }))
-			guard.record(rec({ toolArgs: '{"command":"b"}', outputFingerprint: `b-${i}` }))
-		}
-		expect(guard.isWarned()).toBe(true)
-	})
-
-	it("does not fire at exactly 4 reps of a 3-gram (12 records)", () => {
-		const guard = new LoopGuard()
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 4; i++) {
-			states.push(guard.record(rec({ toolArgs: '{"command":"a"}', outputFingerprint: `a-${i}` })))
-			states.push(guard.record(rec({ toolArgs: '{"command":"b"}', outputFingerprint: `b-${i}` })))
-			states.push(guard.record(rec({ toolArgs: '{"command":"c"}', outputFingerprint: `c-${i}` })))
-		}
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-	})
-
-	it("fires above 4 reps of a 3-gram", () => {
-		const guard = new LoopGuard()
-		for (let i = 0; i < 5; i++) {
-			guard.record(rec({ toolArgs: '{"command":"a"}', outputFingerprint: `a-${i}` }))
-			guard.record(rec({ toolArgs: '{"command":"b"}', outputFingerprint: `b-${i}` }))
-			guard.record(rec({ toolArgs: '{"command":"c"}', outputFingerprint: `c-${i}` }))
-		}
-		expect(guard.isWarned()).toBe(true)
-	})
-
-	it("ignores isError and outputFingerprint differences", () => {
-		const guard = new LoopGuard()
-		for (let i = 0; i < 7; i++) {
-			guard.record(
-				rec({
-					toolArgs: '{"command":"a"}',
-					isError: i % 2 === 1,
-					outputFingerprint: `out-${i}`,
-				}),
-			)
-			guard.record(
-				rec({
-					toolArgs: '{"command":"b"}',
-					isError: (i + 1) % 2 === 1,
-					outputFingerprint: `outb-${i}`,
-				}),
-			)
-		}
-		expect(guard.isWarned()).toBe(true)
-	})
-
-	it("does not fire when the alternation breaks before threshold", () => {
-		const guard = new LoopGuard()
-		const a = rec({ toolArgs: '{"command":"a"}' })
-		const b = rec({ toolArgs: '{"command":"b"}' })
-		const c = rec({ toolArgs: '{"command":"c"}' })
-		for (let i = 0; i < 4; i++) {
-			guard.record(a)
-			guard.record(b)
-		}
-		guard.record(c)
-		guard.record(b)
-		expect(guard.isWarned()).toBe(false)
-	})
-})
-
-describe("Exact ngram detector (all 4 fields)", () => {
-	it("does not fire at exactly 5 reps of an exact 2-gram (10 records)", () => {
-		const guard = new LoopGuard()
-		const a = rec({ toolArgs: '{"command":"a"}', isError: true, outputFingerprint: FP_A })
-		const b = rec({ toolArgs: '{"command":"b"}', isError: true, outputFingerprint: FP_B })
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 5; i++) {
-			states.push(guard.record(a))
-			states.push(guard.record(b))
-		}
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-	})
-
-	it("fires above 5 reps of an exact 2-gram", () => {
-		const guard = new LoopGuard()
-		const a = rec({ toolArgs: '{"command":"a"}', isError: true, outputFingerprint: FP_A })
-		const b = rec({ toolArgs: '{"command":"b"}', isError: true, outputFingerprint: FP_B })
-		for (let i = 0; i < 5; i++) {
-			guard.record(a)
-			guard.record(b)
-		}
-		guard.record(a)
-		const last = guard.record(b)
-		expect(last.state === "warn" || last.state === "terminate").toBe(true)
-	})
-
-	it("does not fire at exactly 3 reps of an exact 3-gram (9 records)", () => {
-		const guard = new LoopGuard()
-		const a = rec({ toolArgs: '{"command":"a"}', outputFingerprint: FP_A })
-		const b = rec({ toolArgs: '{"command":"b"}', outputFingerprint: FP_B })
-		const c = rec({ toolArgs: '{"command":"c"}', outputFingerprint: FP_C })
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 3; i++) {
-			states.push(guard.record(a))
-			states.push(guard.record(b))
-			states.push(guard.record(c))
-		}
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-	})
-
-	it("fires above 3 reps of an exact 3-gram", () => {
-		const guard = new LoopGuard()
-		const a = rec({ toolArgs: '{"command":"a"}', outputFingerprint: FP_A })
-		const b = rec({ toolArgs: '{"command":"b"}', outputFingerprint: FP_B })
-		const c = rec({ toolArgs: '{"command":"c"}', outputFingerprint: FP_C })
-		for (let i = 0; i < 3; i++) {
-			guard.record(a)
-			guard.record(b)
-			guard.record(c)
-		}
-		guard.record(a)
-		guard.record(b)
-		const last = guard.record(c)
-		expect(last.state === "warn" || last.state === "terminate").toBe(true)
-	})
-
-	it("requires isError and outputFingerprint to match (not just toolArgs)", () => {
-		const guard = new LoopGuard()
-		for (let i = 0; i < 6; i++) {
-			guard.record(rec({ toolArgs: '{"command":"a"}', isError: i % 2 === 1, outputFingerprint: `fp-${i}` }))
-		}
-		expect(guard.isWarned()).toBe(false)
-	})
-})
-
 describe("Shared warning fuse", () => {
 	it("second detection from a different detector also warns (never terminates)", () => {
 		const guard = new LoopGuard()
@@ -299,20 +157,25 @@ describe("Shared warning fuse", () => {
 		expect(guard.isWarned()).toBe(true)
 
 		// After the first warn, counters are reset. A different detector
-		// triggers on a new pattern — should warn again, not terminate.
-		// The exact 2-gram fires at rep 6 (12 records), which triggers
-		// another warn (not terminate) and clears history again.
-		const a = rec({ toolArgs: '{"command":"x"}', outputFingerprint: "x1" })
-		const b = rec({ toolArgs: '{"command":"y"}', outputFingerprint: "y1" })
+		// (edit-run cycle) triggers on a new pattern — should warn again,
+		// not terminate.
 		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 7; i++) {
-			states.push(guard.record(a))
-			states.push(guard.record(b))
+		for (let i = 0; i < 8; i++) {
+			states.push(
+				guard.record({ toolName: "edit", toolArgs: '{"path":"src/a.ts"}', isError: false, outputFingerprint: `e${i}` }),
+			)
+			states.push(
+				guard.record({
+					toolName: "bash",
+					toolArgs: '{"command":"pnpm run build"}',
+					isError: false,
+					outputFingerprint: `b${i}`,
+				}),
+			)
 		}
-		// At least one of the states should be a warn (the second detection).
 		const warns = states.filter((s) => s.state === "warn")
 		expect(warns.length).toBeGreaterThanOrEqual(1)
-		expect(warns[0].state).toBe("warn")
+		expect(warns[0].detector).toBe("edit_run")
 	})
 
 	it("two near-misses below threshold stay ok", () => {
@@ -902,134 +765,5 @@ describe("normalizeBashCommand", () => {
 		// cp is NOT a preamble command (it's a real action). It gets
 		// collapsed on the first path argument.
 		expect(normalizeBashCommand("cp /app/src.c /tmp/build/")).toBe("cp /app/src.c")
-	})
-})
-
-describe("Bash-only loop detector", () => {
-	// Catches the case where the model repeats the same bash command many times
-	// without file edits — e.g. repeated yt-dlp downloads, curl calls, etc.
-
-	function feedBashCalls(guard: LoopGuard, commands: string[], fingerprint: string): void {
-		for (const cmd of commands) {
-			guard.record({
-				toolName: "bash",
-				toolArgs: `{"command":${JSON.stringify(cmd)}}`,
-				isError: false,
-				outputFingerprint: fingerprint,
-			})
-		}
-	}
-
-	it("does not fire below window threshold", () => {
-		// Use varying fingerprints so consecutive-identical doesn't fire.
-		// Only the bash-repetition detector should be under test here.
-		const guard = new LoopGuard()
-		const commands = Array(11).fill("yt-dlp https://example.com/video")
-		for (let i = 0; i < commands.length; i++) {
-			guard.record({
-				toolName: "bash",
-				toolArgs: `{"command":${JSON.stringify(commands[i])}}`,
-				isError: false,
-				outputFingerprint: `fp-${i}`,
-			})
-		}
-		expect(guard.isWarned()).toBe(false)
-	})
-
-	it("does not fire when commands have no repeat (11 different commands)", () => {
-		const guard = new LoopGuard()
-		const commands = Array.from({ length: 11 }, (_, i) => `echo unique-cmd-${i}`)
-		feedBashCalls(guard, commands, "fp_same")
-		expect(guard.isWarned()).toBe(false)
-	})
-
-	it("fires at window threshold (12 same-prefix calls)", () => {
-		const guard = new LoopGuard()
-		feedBashCalls(guard, Array(12).fill("yt-dlp https://example.com/video"), "fp_same")
-		expect(guard.isWarned()).toBe(true)
-	})
-
-	it("does not require file edits to fire", () => {
-		// Same prefix, no edits — should still fire.
-		const guard = new LoopGuard()
-		const commands = Array(12).fill("curl https://api.example.com/data")
-		feedBashCalls(guard, commands, "fp_same")
-		expect(guard.isWarned()).toBe(true)
-	})
-
-	it("catches varied flag patterns via normalization", () => {
-		// Without normalization, each `gcc` invocation has a different raw prefix.
-		// With normalization, they all collapse to "gcc /app/gpt2.c".
-		const guard = new LoopGuard()
-		const commands = [
-			"rm -f /app/a.out && gcc -O3 -lm /app/gpt2.c -o /app/a.out",
-			"wc -c /app/gpt2.c && gcc -O0 -g /app/gpt2.c",
-			"gcc -O3 /app/gpt2.c -o /app/v3",
-			"rm -f /tmp/test && gcc /app/gpt2.c",
-			"gcc -O2 /app/gpt2.c",
-		]
-		// Feed 3 copies of each so 15 total — enough to trigger.
-		const repeated = commands.flatMap((c) => [c, c, c])
-		feedBashCalls(guard, repeated, "fp_same")
-		expect(guard.isWarned()).toBe(true)
-	})
-
-	it("does not fire when bash commands are genuinely different", () => {
-		const guard = new LoopGuard()
-		const commands = [
-			"git status",
-			"git diff",
-			"git log --oneline -5",
-			"npm test",
-			"pnpm run build",
-			"pytest tests/",
-			"ls -la",
-			"grep -r TODO src/",
-			"wc -l src/*.ts",
-			"find . -name '*.test.ts'",
-		]
-		feedBashCalls(guard, commands, "fp_same")
-		expect(guard.isWarned()).toBe(false)
-	})
-
-	it("window counts reset after warn so the model gets a fresh budget", () => {
-		const guard = new LoopGuard()
-		feedBashCalls(guard, Array(12).fill("apt-get install -y some-package"), "fp_a")
-		expect(guard.isWarned()).toBe(true)
-		// After warn, window is cleared. Next batch doesn't immediately re-fire.
-		feedBashCalls(guard, Array(12).fill("apt-get install -y another-package"), "fp_b")
-		// Total counts may re-trigger after enough accumulates.
-		// Window should be clear though.
-		expect(guard.isWarned()).toBe(true) // task-total re-triggered
-	})
-
-	it("task-total fired keys are decremented so the same threshold doesn't fire on every subsequent record", () => {
-		// Regression test: before the fix, task-total keys were never
-		// decremented after a warn, so the same threshold would fire on
-		// every subsequent record for the rest of the session, flooding
-		// the model with repeated steers.
-		//
-		// We verify the decrement directly via getTotalBashCount rather
-		// than testing the secondary "warn doesn't fire" behavior, because
-		// the window threshold (12) is lower than the task-total threshold
-		// (15), making it impossible to reach task-total without the
-		// window detector firing first.
-		const cmd = "curl https://api.example.com"
-		const guard = new LoopGuard()
-
-		// Feed enough to trigger task-total bash repetition (15 calls).
-		for (let i = 0; i < 15; i++) {
-			guard.record({
-				toolName: "bash",
-				toolArgs: `{"command":${JSON.stringify(cmd)}}`,
-				isError: false,
-				outputFingerprint: `fp-${i}`,
-			})
-		}
-		expect(guard.isWarned()).toBe(true)
-
-		// The fired key should be decremented by the threshold count (15).
-		// After warn: count = 15 - 15 = 0.
-		expect(guard.getTotalBashCount(cmd)).toBe(0)
 	})
 })

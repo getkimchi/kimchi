@@ -21,13 +21,7 @@ export type LoopGuardEventChannel = (typeof LOOP_GUARD_EVENTS)[keyof typeof LOOP
  * Which loop detector fired. Kept short and stable so telemetry can
  * aggregate without receiving raw tool-arg / command text.
  */
-export type LoopGuardDetector =
-	| "consecutive_identical"
-	| "exact_ngram"
-	| "fuzzy_ngram"
-	| "edit_run"
-	| "edit_run_total"
-	| "bash_repetition"
+export type LoopGuardDetector = "consecutive_identical" | "edit_run" | "edit_run_total"
 
 export interface LoopGuardWarnPayload {
 	/** The detector that fired this warn. */
