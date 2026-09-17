@@ -151,23 +151,7 @@ Evaluated events are emitted once at invocation settlement, before applying the 
 
 ---
 
-## 5. Bash Tool Guard Events
-
-**Source:** `src/extensions/bash-tool-guard-events.ts`
-
-| Channel | Payload type | When |
-|---|---|---|
-| `bash_tool_guard:warn` | `BashToolGuardWarnPayload` | A bash command matches a guarded pattern (cat, sed, etc.) |
-| `bash_tool_guard:block` | `BashToolGuardBlockPayload` | A guarded bash command is blocked |
-| `bash_tool_guard:allowed_by_user_request` | `BashToolGuardAllowedByUserRequestPayload` | User explicitly allowed a guarded command |
-
-Payloads carry category, tool, count — no raw command text (privacy).
-
-**Consumers:** `telemetry/index.ts`
-
----
-
-## 6. Loop Guard Events
+## 5. Loop Guard Events
 
 **Source:** `src/extensions/loop-guard-events.ts`
 
@@ -182,7 +166,7 @@ Payloads carry detector, count, is_subagent — no raw tool args.
 
 ---
 
-## 7. Workflow Telemetry
+## 6. Workflow Telemetry
 
 **Source:** `src/extensions/telemetry/workflow-events.ts`
 
@@ -198,7 +182,7 @@ Emitted by `@kimchi-dev/kimchi-workflows` (external package). This file is a mir
 
 ---
 
-## 8. Notification Channel
+## 7. Notification Channel
 
 **Source:** Generic (emitted by multiple extensions)
 

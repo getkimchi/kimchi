@@ -497,9 +497,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const content = getAssistantContentParts(event.message.content)
 		const stopReason = (event.message as { stopReason?: string }).stopReason
 
-		// User abort (Esc/Ctrl+C): pause the active ferment and reset all
-		// nudge counters so the agent loop actually stops. Mirrors the
-		// abort guard in orchestration/continuation-nudge.ts.
+		// User abort (Esc/Ctrl+C): pause the active ferment so the agent
+		// loop actually stops.
 		if (stopReason === "aborted") {
 			const abortedFerment = runtime.getActive()
 			if (abortedFerment && (abortedFerment.status === "running" || abortedFerment.status === "planned")) {
