@@ -1,15 +1,13 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
-import { isStaleCtxError } from "./stale-ctx.js"
-
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AUTO_MODEL_ID, isAutoModel } from "./router/constants.js"
 import { getEffectiveModel } from "./router/state.js"
+import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {
 	input: number
