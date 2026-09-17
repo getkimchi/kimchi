@@ -26,7 +26,6 @@ Performed once by an administrator; afterwards every release is a two-click affa
 
 3. **Store the private key.** Add the **private** key (`release-bot_key`) as a repository Actions secret named `RELEASE_DEPLOY_KEY`. The Release prepare workflow fails fast with a pointer to this section if the secret is missing.
 
-4. **Optional second gate.** Configure the `release` environment (GitHub auto-creates it on first workflow run) with **required reviewers**, so a maintainer must approve each release run before any commit is stamped. The workflow already declares `environment: release`.
 
 Alternative: instead of a deploy key, use a GitHub App with `contents: write` added as the ruleset bypass actor, mint a short-lived token in the workflow with `actions/create-github-app-token`, and push with that token. Pick this if the team prefers app-based credentials over a long-lived deploy key; the rest of this document assumes the deploy key.
 

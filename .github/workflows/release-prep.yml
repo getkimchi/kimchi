@@ -22,9 +22,6 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Optional second gate: configure the "release" environment with required
-    # reviewers to require approval before the stamp runs.
-    environment: release
 
     steps:
       - name: Preflight - require the release deploy key
