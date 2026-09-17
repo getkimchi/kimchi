@@ -73,7 +73,6 @@ import customizeStatusLineExtension from "./extensions/customize-status-line-com
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
-import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
@@ -678,7 +677,6 @@ try {
 			// session_start handlers are awaited in order; warn after the migration dialog closes.
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
-			explorationGuardExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,
