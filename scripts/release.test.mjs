@@ -13,8 +13,6 @@ import test from "node:test"
 
 import { runRelease } from "./release.mjs"
 
-const SCAFFOLD_COMMENT = '<!--\n  Curated by maintainers. See AGENTS.md → "Changelog" for format rules.\n-->'
-
 function git(dir, ...args) {
 	return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trimEnd()
 }
@@ -26,7 +24,7 @@ function commitAll(dir, message) {
 
 function makeTempRepo() {
 	const dir = mkdtempSync(path.join(tmpdir(), "release-test-"))
-	git(dir, "init", "-b", "main")
+	git(dir, "init", "-b", "master")
 	git(dir, "config", "user.name", "test")
 	git(dir, "config", "user.email", "test@example.com")
 	writeFileSync(
@@ -40,8 +38,6 @@ All notable user-facing changes.
 ### Added
 
 - New folder browser.
-
-${SCAFFOLD_COMMENT}
 `,
 	)
 	writeFileSync(
@@ -66,7 +62,7 @@ test("release stamps the changelog, bumps the version, commits, tags, and reseed
 
 		const changelog = readFileSync(path.join(dir, "CHANGELOG.md"), "utf-8")
 		assert.ok(changelog.includes("## [Unreleased]"), "fresh [Unreleased] section seeded")
-		assert.ok(changelog.includes(SCAFFOLD_COMMENT), "scaffold comment reseeded")
+		assert.ok(!changelog.includes("<!--"), "no HTML comment scaffold in output")
 		assert.ok(changelog.includes(`## [1.2.3] - ${todayStamp()}`), "versioned section stamped with today's date")
 		assert.ok(changelog.includes("- New folder browser."), "release body preserved")
 		assert.ok(changelog.indexOf("## [Unreleased]") < changelog.indexOf("## [1.2.3]"), "Unreleased stays on top")
@@ -127,7 +123,7 @@ test("release refuses to run when the tag already exists", () => {
 test("release refuses when there is nothing to release", () => {
 	const dir = mkdtempSync(path.join(tmpdir(), "release-test-"))
 	try {
-		git(dir, "init", "-b", "main")
+		git(dir, "init", "-b", "master")
 		git(dir, "config", "user.name", "test")
 		git(dir, "config", "user.email", "test@example.com")
 		writeFileSync(
@@ -135,8 +131,6 @@ test("release refuses when there is nothing to release", () => {
 			`# Changelog
 
 ## [Unreleased]
-
-${SCAFFOLD_COMMENT}
 `,
 		)
 		writeFileSync(

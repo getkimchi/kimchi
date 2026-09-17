@@ -23,12 +23,7 @@ import process from "node:process"
 import { pathToFileURL } from "node:url"
 
 const UNRELEASED_HEADER = "## [Unreleased]"
-const DEFAULT_BRANCH_FALLBACK = "main"
-const DEFAULT_SCAFFOLD_COMMENT = `<!--
-  Curated by maintainers. See AGENTS.md → "Changelog" for format rules.
-  Releases prior to the changelog introduction are documented on the GitHub Releases page:
-  https://github.com/getkimchi/kimchi/releases
--->`
+const DEFAULT_BRANCH_FALLBACK = "master"
 
 const SEMVER_RE = /^\d+\.\d+\.\d+$/
 
@@ -164,7 +159,7 @@ function computeChangelogMutation(changelogContent, version, dateStamp) {
 	const versionSection = `## [${version}] - ${dateStamp}\n\n${content}\n`
 	const stamped = `${preamble}\n${versionSection}\n${rest}`.replace(/\n*$/, "\n")
 	const reseeded =
-		`${preamble}\n${UNRELEASED_HEADER}\n\n${comment ?? DEFAULT_SCAFFOLD_COMMENT}\n\n${versionSection}${rest}`.replace(
+		`${preamble}\n${UNRELEASED_HEADER}\n\n${comment ? `${comment}\n\n` : ""}${versionSection}${rest}`.replace(
 			/\n*$/,
 			"\n",
 		)

@@ -88,7 +88,7 @@ Labels drive PR triage; GitHub release notes come from `CHANGELOG.md`, not label
 - **Location**: root `CHANGELOG.md` — single file, not per-package.
 - **All new entries go under `## [Unreleased]`**, in subsections `### Breaking Changes`, `### Added`, `### Changed`, `### Fixed`, `### Removed` (in that order). Append to an existing subsection; never duplicate a subsection or an entry.
 - **Released sections are immutable.** Never edit a `## [X.Y.Z]` section once it has been released.
-- **Entries land via the `main` / PR flow only** — never commit changelog entries on feature branches.
+- **Entries land via the `master` / PR flow only** — never commit changelog entries on feature branches.
 - **Entry format**: user-visible changes only, one bullet per change, attributed to the PR: `([#456](https://github.com/getkimchi/kimchi/pull/456))`.
 - **Headers MUST be at column 0.** The TUI parser requires `## [X.Y.Z]` with no leading whitespace; indented headers are silently dropped.
 - **Consumers**: `/changelog` and the startup "What's New" popup in the TUI, plus GitHub release notes (extracted at release time). See `docs/releases.md` for the full methodology.

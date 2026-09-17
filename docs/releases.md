@@ -4,9 +4,9 @@ How kimchi releases are prepared, published, and consumed. The single source of 
 
 ## Lifecycle
 
-1. **Curate.** Maintainers append user-visible changes to `## [Unreleased]` in `CHANGELOG.md` as PRs land on `main`. Format rules live in `AGENTS.md` → "Changelog".
+1. **Curate.** Maintainers append user-visible changes to `## [Unreleased]` in `CHANGELOG.md` as PRs land on `master`. Format rules live in `AGENTS.md` → "Changelog".
 2. **Prepare.** Run `node scripts/release.mjs X.Y.Z`. The script stamps `## [Unreleased]` as `## [X.Y.Z] - YYYY-MM-DD`, bumps `package.json`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, seeds a fresh empty `## [Unreleased]`, and prints the push instructions. It never pushes.
-3. **Push.** Push `main` and the tag (`git push origin main && git push origin vX.Y.Z`).
+3. **Push.** Push `master` and the tag (`git push origin master && git push origin vX.Y.Z`).
 4. **CI.** The tag push triggers the release workflow: binaries are built and a GitHub release is published with notes extracted from the changelog's `[X.Y.Z]` section (`scripts/release-notes.mjs`).
 5. **Homebrew.** The workflow updates the homebrew-tap formula, as before. This step is unchanged.
 
