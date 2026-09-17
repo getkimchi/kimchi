@@ -103,7 +103,7 @@ export function resolveEffectiveModel<TApi extends string>(
 	return state.status === "resolved" ? (state.model as Model<TApi>) : model
 }
 
-function isPersistedAutoResolution(data: unknown): data is PersistedAutoResolution {
+export function isPersistedAutoResolution(data: unknown): data is PersistedAutoResolution {
 	return (
 		data !== null &&
 		typeof data === "object" &&
