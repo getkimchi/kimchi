@@ -55,7 +55,6 @@ import bashControlExtension from "./extensions/bash-background/bash-control-exte
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
-import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
@@ -660,7 +659,6 @@ try {
 			// hooks see the original command and any rewrite/block propagates.
 			bashHooksAdapterExtension,
 			bashToolGuardExtension,
-			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
