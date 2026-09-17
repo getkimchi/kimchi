@@ -1,10 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { Ferment, Phase } from "../../ferment/types.js"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
-import { FERMENT_EVENTS } from "../ferment/domain-events.js"
 import { setActive } from "../ferment/state.js"
-import { registerFermentTodoSync } from "../ferment/todo-sync.js"
 import { FERMENT_TODO_GUIDANCE, renderFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "./state-markdown.js"
@@ -24,82 +21,6 @@ function writeTodo(content: string, status: TodoStatus, sessionId: string = TEST
 function createAndUpdateTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
 	writeTodo(content, status, sessionId)
 	writeTodo(content, status, sessionId)
-}
-
-// ─── Cross-session stall-counter helpers ────────────────────────────────────
-
-function createFakePI(): {
-	pi: ExtensionAPI
-	emit: (channel: string, payload: unknown) => void
-	sendMessage: ExtensionAPI["sendMessage"]
-} {
-	const listeners = new Map<string, Array<(payload: unknown) => void>>()
-
-	const events = {
-		on: (channel: string, handler: (payload: unknown) => void) => {
-			if (!listeners.has(channel)) {
-				listeners.set(channel, [])
-			}
-			const list = listeners.get(channel)
-			if (list) {
-				list.push(handler)
-			}
-			return () => {
-				const list = listeners.get(channel)
-				if (list) {
-					const idx = list.indexOf(handler)
-					if (idx !== -1) list.splice(idx, 1)
-				}
-			}
-		},
-		emit: (channel: string, payload: unknown) => {
-			const list = listeners.get(channel)
-			if (list) {
-				for (const fn of list) {
-					fn(payload)
-				}
-			}
-		},
-	}
-
-	const sendMessage = vi.fn()
-	const pi = {
-		events,
-		sendMessage,
-	} as unknown as ExtensionAPI
-
-	return { pi, emit: events.emit, sendMessage: sendMessage as unknown as ExtensionAPI["sendMessage"] }
-}
-
-function createTestFerment(phaseId: string, stepCount: number): Ferment {
-	const steps = Array.from({ length: stepCount }, (_, i) => ({
-		id: `step-${i + 1}`,
-		index: i + 1,
-		description: `Step ${i + 1}`,
-		status: "pending" as const,
-	}))
-
-	const phase: Phase = {
-		id: phaseId,
-		index: 1,
-		name: "Test Phase",
-		goal: "Test phase goal",
-		status: "active",
-		steps,
-	}
-
-	return {
-		id: "ferment-prompt-block-test",
-		name: "Test Ferment",
-		status: "running",
-		worktree: { path: "/tmp" },
-		scoping: {},
-		phases: [phase],
-		decisions: [],
-		memories: [],
-		createdAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-	}
 }
 
 // ─── Test suites ────────────────────────────────────────────────────────────

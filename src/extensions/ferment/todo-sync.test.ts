@@ -11,7 +11,7 @@ import type { Ferment, Phase } from "../../ferment/types.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { setActive } from "./state.js"
-import { __getRunningSteps, registerFermentTodoSync } from "./todo-sync.js"
+import { registerFermentTodoSync } from "./todo-sync.js"
 
 const TEST_SESSION_ID = "test-session"
 

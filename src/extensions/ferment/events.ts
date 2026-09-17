@@ -314,7 +314,6 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
 		runtime.clearAllPendingPlanReviews()
-		runtime.clearAllPendingCompactions()
 		clearFermentCache()
 
 		const envId = getActiveFermentId()

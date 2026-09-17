@@ -38,10 +38,9 @@ export function isTerminal(ferment: Ferment | undefined): boolean {
 }
 
 /** The "bail out / clear guard" predicate: missing, terminal, or paused.
- *  Used by the scheduler and error-
- *  recovery paths to decide whether a ferment can no longer make progress
- *  this turn. Keeps the five hand-written `!f || f.status === ...` sites
- *  from drifting as statuses evolve. */
+ *  Used by the scheduler and error-recovery paths to decide whether a ferment
+ *  can no longer make progress this turn, so the hand-written
+ *  `!f || f.status === ...` sites don't drift as statuses evolve. */
 export function isInactiveOrPaused(ferment: Ferment | undefined): boolean {
 	return !ferment || isTerminal(ferment) || ferment.status === "paused"
 }
@@ -408,124 +407,6 @@ export function clearAllScopingGates(): void {
 	scopingConfirmed.clear()
 }
 
-// ─── Pending compaction requests (transient) ─────────────────────────────────
-// Recorded on successful complete_ferment_step / complete_ferment_phase so the
-// agent_end hook can auto-compact the session context. Cleared when the
-// compaction fires. Not persisted — single-session handoff only.
-
-export interface PendingCompaction {
-	kind: "step" | "phase"
-	fermentId: string
-	phaseId: string
-	stepId?: string
-	completedAt: string
-}
-
-const pendingCompactions = new Map<string, PendingCompaction>()
-/** Ferment IDs whose compaction is currently in-flight. Kept in state so it
- *  resets with clearFermentState and doesn't leak across test runtimes. */
-const compactionInFlight = new Set<string>()
-
-export function setPendingCompaction(fermentId: string, pending: PendingCompaction): void {
-	pendingCompactions.set(fermentId, pending)
-}
-
-export function getPendingCompaction(fermentId: string): PendingCompaction | undefined {
-	return pendingCompactions.get(fermentId)
-}
-
-export function clearPendingCompaction(fermentId: string): void {
-	pendingCompactions.delete(fermentId)
-}
-
-/** Drain pending compactions that are NOT currently in-flight.
- *  Items for in-flight ferments are left in the map so the next
- *  turn_end / agent_end can retry them once the current compaction finishes. */
-export function drainPendingCompactions(): PendingCompaction[] {
-	const ready: PendingCompaction[] = []
-	for (const [fermentId, pending] of pendingCompactions) {
-		if (!compactionInFlight.has(fermentId)) {
-			ready.push(pending)
-			pendingCompactions.delete(fermentId)
-		}
-	}
-	return ready
-}
-
-export function markCompactionInFlight(fermentId: string): void {
-	compactionInFlight.add(fermentId)
-}
-
-export function clearCompactionInFlight(fermentId: string): void {
-	compactionInFlight.delete(fermentId)
-}
-
-export function isCompactionInFlight(fermentId: string): boolean {
-	return compactionInFlight.has(fermentId)
-}
-
-export function clearAllPendingCompactions(): void {
-	pendingCompactions.clear()
-	compactionInFlight.clear()
-}
-
-// ─── Mid-turn oneshot overrun warnings (per session) ─────────────────────────
-// Tracks which one-shot ferments have already emitted a mid-turn context-overrun
-// breadcrumb so we don't spam on every turn_end above threshold. Kept in state
-// (not a module-level Set in auto-compaction.ts) so it is scoped to the runtime
-// instance and resets with session_start.
-const midTurnOneshotWarnings = new Set<string>()
-
-export function markMidTurnOneshotWarning(fermentId: string): void {
-	midTurnOneshotWarnings.add(fermentId)
-}
-
-export function hasMidTurnOneshotWarning(fermentId: string): boolean {
-	return midTurnOneshotWarnings.has(fermentId)
-}
-
-export function clearMidTurnOneshotWarnings(): void {
-	midTurnOneshotWarnings.clear()
-}
-
-// ─── Mid-turn inline-compaction effect validation (per session) ──────────────
-// Suppress-abort inline compaction rewrites `agent.state.messages`, which the
-// running agent loop (context snapshotted at run start) never reads — a
-// "successful" mid-turn inline compaction can leave the live context untouched,
-// and the next over-threshold turn_end fires again (run 019ffb83 storm: 6
-// consecutive no-op fires, ~1.5M uncached summarization tokens, 10+ min).
-// Detection: record usage at fire time; the next turn_end below the compaction
-// threshold proves the wire shrank and clears the marker. A new mid-turn
-// trigger while the marker is still set proves the previous fire never took
-// effect — suppress the inline path and use the abort fallback from then on.
-const lastMidTurnFireTokens = new Map<string, number>()
-const midTurnInlineSuppressed = new Set<string>()
-
-export function setLastMidTurnFireTokens(fermentId: string, tokens: number): void {
-	lastMidTurnFireTokens.set(fermentId, tokens)
-}
-
-export function getLastMidTurnFireTokens(fermentId: string): number | undefined {
-	return lastMidTurnFireTokens.get(fermentId)
-}
-
-export function clearLastMidTurnFireTokens(fermentId: string): void {
-	lastMidTurnFireTokens.delete(fermentId)
-}
-
-export function markMidTurnInlineSuppressed(fermentId: string): void {
-	midTurnInlineSuppressed.add(fermentId)
-}
-
-export function isMidTurnInlineSuppressed(fermentId: string): boolean {
-	return midTurnInlineSuppressed.has(fermentId)
-}
-
-export function clearMidTurnCompactionTracking(): void {
-	lastMidTurnFireTokens.clear()
-	midTurnInlineSuppressed.clear()
-}
-
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After
@@ -776,14 +657,6 @@ export function clearFermentState(fermentId: string): void {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
 	hydratedFerments.delete(fermentId)
-	// Per-ferment compaction state: a pending request left in the map for a
-	// completed/abandoned/deleted ferment will never be drained, and an
-	// in-flight marker that outlives the ferment blocks future compactions
-	// for the same id (key collisions are vanishingly unlikely but cheap to avoid).
-	pendingCompactions.delete(fermentId)
-	compactionInFlight.delete(fermentId)
-	lastMidTurnFireTokens.delete(fermentId)
-	midTurnInlineSuppressed.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }
 
