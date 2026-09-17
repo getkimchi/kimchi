@@ -30,7 +30,7 @@ for (const [action, key] of [
 						toolCalls: [
 							{
 								function: {
-									name: "submit_plan",
+									name: "ExitPlanMode",
 									arguments: JSON.stringify({ plan: "## Goal\nCreate example.txt and verify its contents." }),
 								},
 							},
