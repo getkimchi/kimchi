@@ -42,6 +42,11 @@ function isCustomMessage(
 	return m.role === "custom"
 }
 
+/** True when the message's customType is a display-only UI marker. */
+function isUiOnlyCustomType(m: OrchestratorMessages[number]): boolean {
+	return UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")
+}
+
 function replaceMessageContent(m: OrchestratorMessages[number], text: string): OrchestratorMessages[number] {
 	if (!("content" in m)) return m
 	if (typeof m.content === "string") {
@@ -76,17 +81,20 @@ function extractMessageText(content: unknown): string {
  */
 export function tagSelfEchoes(messages: OrchestratorMessages): OrchestratorMessages {
 	let changed = false
-	const result = messages.map((m, i) => {
+	// Text of the most recent assistant message seen so far — carried forward in
+	// one pass instead of rescanning the prefix per message (O(n), not O(n²)).
+	let prevAssistantText: string | undefined
+	const result = messages.map((m) => {
+		if (m.role === "assistant") {
+			prevAssistantText = extractMessageText(m.content).trim()
+			return m
+		}
 		if (m.role !== "user" && m.role !== "custom") return m
 
 		const text = extractMessageText(m.content).trim()
 		if (!text) return m
 
-		const prevAssistant = messages.slice(0, i).findLast((msg) => msg.role === "assistant")
-		if (!prevAssistant) return m
-
-		const prevText = extractMessageText(prevAssistant.content).trim()
-		if (!prevText || text !== prevText) return m
+		if (!prevAssistantText || text !== prevAssistantText) return m
 
 		changed = true
 		const annotated = markHarnessSteer(
@@ -106,9 +114,7 @@ export function tagSelfEchoes(messages: OrchestratorMessages): OrchestratorMessa
  * into `agent.state.messages` as user-role messages.
  */
 export function stripUiOnlyMessages(messages: OrchestratorMessages): OrchestratorMessages {
-	const filtered = messages.filter(
-		(m) => !(isCustomMessage(m) && UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")),
-	)
+	const filtered = messages.filter((m) => !(isCustomMessage(m) && isUiOnlyCustomType(m)))
 	return filtered.length === messages.length ? messages : filtered
 }
 
@@ -135,7 +141,7 @@ export function brandUnmarkedSteers(messages: OrchestratorMessages): Orchestrato
 	let changed = false
 	const result = messages.map((m) => {
 		if (!isCustomMessage(m)) return m
-		if (UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")) return m
+		if (isUiOnlyCustomType(m)) return m
 		const text = extractMessageText(m.content)
 		if (!text.trim()) return m
 		if (isHarnessSteer(text)) return m

@@ -9,20 +9,17 @@ import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
-import { withPrintGate } from "../print-mode.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
-	clearPendingCompaction,
 	getActive,
 	getActiveFermentId,
 	isAutomatedContinuationEnabled,
 	setActive,
 	setContinuationPolicy,
-	setPendingCompaction,
 } from "./state.js"
 import { filterSentMessages } from "./test-helpers.js"
 import { createApplyAndPersist } from "./tool-helpers.js"

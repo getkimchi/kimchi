@@ -19,56 +19,39 @@ import {
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
-import type { ContinuationPolicy, PendingCompaction } from "./state.js"
+import type { ContinuationPolicy } from "./state.js"
 import {
 	bumpBlockRetry,
 	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
-	clearAllPendingCompactions,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
-	clearCompactionInFlight,
-	clearLastMidTurnFireTokens,
-	clearMidTurnCompactionTracking,
-	clearMidTurnOneshotWarnings,
-	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeScopingGate,
-	drainPendingCompactions,
 	getActive,
 	getActiveId,
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
-	getLastMidTurnFireTokens,
 	getLastPhaseRefusal,
-	getPendingCompaction,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
-	hasMidTurnOneshotWarning,
 	isAutomatedContinuationEnabled,
-	isCompactionInFlight,
-	isMidTurnInlineSuppressed,
 	isScopingConfirmed,
 	isScopingInteractive,
-	markCompactionInFlight,
 	markHumanInput,
-	markMidTurnInlineSuppressed,
-	markMidTurnOneshotWarning,
 	markScopingConfirmed,
 	markScopingInteractive,
 	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
-	setLastMidTurnFireTokens,
 	setLastPhaseRefusal,
-	setPendingCompaction,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
@@ -124,26 +107,6 @@ export interface FermentRuntime {
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
-	setPendingCompaction(fermentId: string, pending: PendingCompaction): void
-	getPendingCompaction(fermentId: string): PendingCompaction | undefined
-	clearPendingCompaction(fermentId: string): void
-	/** Drain ready (non-in-flight) pending compactions, leaving in-flight ones for the next tick. */
-	drainPendingCompactions(): PendingCompaction[]
-	markCompactionInFlight(fermentId: string): void
-	clearCompactionInFlight(fermentId: string): void
-	isCompactionInFlight(fermentId: string): boolean
-	clearAllPendingCompactions(): void
-	markMidTurnOneshotWarning(fermentId: string): void
-	hasMidTurnOneshotWarning(fermentId: string): boolean
-	clearMidTurnOneshotWarnings(): void
-	/** Record totalTokens at the last mid-turn inline-compaction fire. */
-	setLastMidTurnFireTokens(fermentId: string, tokens: number): void
-	getLastMidTurnFireTokens(fermentId: string): number | undefined
-	clearLastMidTurnFireTokens(fermentId: string): void
-	/** Proven no-op inline path — use the aborting fallback from now on. */
-	markMidTurnInlineSuppressed(fermentId: string): void
-	isMidTurnInlineSuppressed(fermentId: string): boolean
-	clearMidTurnCompactionTracking(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -211,23 +174,6 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,
-		getPendingCompaction,
-		setPendingCompaction,
-		clearPendingCompaction,
-		drainPendingCompactions,
-		markCompactionInFlight,
-		clearCompactionInFlight,
-		isCompactionInFlight,
-		clearAllPendingCompactions,
-		markMidTurnOneshotWarning,
-		hasMidTurnOneshotWarning,
-		clearMidTurnOneshotWarnings,
-		setLastMidTurnFireTokens,
-		getLastMidTurnFireTokens,
-		clearLastMidTurnFireTokens,
-		markMidTurnInlineSuppressed,
-		isMidTurnInlineSuppressed,
-		clearMidTurnCompactionTracking,
 	}
 	return runtime
 }

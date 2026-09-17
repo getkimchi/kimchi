@@ -385,8 +385,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
-		runtime.clearMidTurnOneshotWarnings()
-		runtime.clearMidTurnCompactionTracking()
 
 		// (Re)wire the ferment todo bridge to the current session id. The
 		// session-scoped todo store requires every store call to target a
@@ -510,7 +508,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// of demonstrate non-interactive runs. A --print run launched WITH
 	// -oneshot=true keeps everything: that session IS the one-shot
 	// planner, and its toolset composes via shouldSuppressFermentModeTools().
-	// The spawn guard is an event guard, not tool surface — always registered.
 	if (!shouldSuppressFermentModeTools()) {
 		registerLifecycleTools(pi, runtime)
 		registerPhaseTools(pi, runtime)
