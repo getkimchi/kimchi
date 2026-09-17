@@ -33,3 +33,11 @@ export const markOrchestratorSteer = markHarnessSteer
 export function isHarnessSteer(text: string): boolean {
 	return text.startsWith(SYSTEM_REMINDER_OPEN) && text.endsWith(SYSTEM_REMINDER_CLOSE)
 }
+
+/**
+ * Message annotation marking an assistant message whose text output was
+ * withheld from the user (e.g. a raw plan draft captured by ferment-v2 before
+ * the final-answer turn). Checked by harness code that reacts to message
+ * content — a withheld message is not real user-visible output.
+ */
+export const ASSISTANT_OUTPUT_WITHHELD = Symbol.for("kimchi.assistant-output-withheld")

@@ -11,7 +11,7 @@ import * as startupContext from "../../startup-context.js"
 import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import * as multiModelModule from "../multi-model.js"
-import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import type { OrchestratorMessages } from "../orchestration/context-hygiene.js"
 import * as modelRolesModule from "../orchestration/model-roles.js"
 import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
@@ -663,7 +663,6 @@ describe("deprecated model notification", () => {
 			sessionStart: handlers.get("session_start"),
 			sessionShutdown: handlers.get("session_shutdown"),
 			modelSelect: handlers.get("model_select"),
-			modelInput: handlers.get("input"),
 		}
 	}
 
@@ -766,15 +765,14 @@ describe("deprecated model notification", () => {
 		]
 		setupAvailableModels(models)
 
-		const { sessionStart, modelInput } = buildExtensionWithHandlers()
-		if (!sessionStart || !modelInput) throw new Error("session_start/input handlers not registered")
+		const { sessionStart } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
 
 		// Session start notifies once; duplicate session starts and the first
 		// user message must not re-fire the per-model notification.
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 		await sessionStart({}, ctx)
-		await modelInput({ source: "interactive" }, ctx)
 
 		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
@@ -800,20 +798,18 @@ describe("deprecated model notification", () => {
 		]
 		setupAvailableModels(models)
 
-		const { sessionStart, sessionShutdown, modelInput } = buildExtensionWithHandlers()
-		if (!sessionStart || !modelInput) throw new Error("session_start/input handlers not registered")
+		const { sessionStart, sessionShutdown } = buildExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
 		if (!sessionShutdown) throw new Error("session_shutdown handler not registered")
 
 		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 
 		// First run: notification fires at session start.
 		await sessionStart({}, ctx)
-		await modelInput({ source: "interactive" }, ctx)
 		// Shutdown clears the per-session tracking...
 		await sessionShutdown({}, ctx)
-		// ...so restarting and messaging notifies again.
+		// ...so restarting notifies again.
 		await sessionStart({}, ctx)
-		await modelInput({ source: "interactive" }, ctx)
 
 		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(2)
@@ -935,15 +931,13 @@ describe("deprecated model notification", () => {
 		]
 		setupAvailableModels(models)
 
-		const { sessionStart, modelSelect, modelInput } = buildExtensionWithHandlers()
-		if (!sessionStart || !modelSelect || !modelInput)
-			throw new Error("session_start/model_select/input handlers not registered")
+		const { sessionStart, modelSelect } = buildExtensionWithHandlers()
+		if (!sessionStart || !modelSelect) throw new Error("session_start/model_select handlers not registered")
 
 		// Session starts on an active model and the first user message is sent —
 		// the conversation is underway.
 		const firstCtx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
 		await sessionStart({}, firstCtx)
-		await modelInput({ source: "interactive" }, firstCtx)
 		expect((firstCtx.ui.notify as Mock).mock.calls.length).toBe(0)
 
 		// Switching to a deprecated model mid-conversation still warns once —
@@ -1266,7 +1260,7 @@ describe("retired model substitution notification", () => {
 	})
 })
 
-describe("continuation nudge turn_end handler", () => {
+describe("context handler steer branding", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
 	})
@@ -1323,194 +1317,6 @@ describe("continuation nudge turn_end handler", () => {
 
 		return { fire, sendMessageCalls }
 	}
-
-	function makeAssistantWithStop(
-		content: AssistantMessage["content"],
-		stopReason: AssistantMessage["stopReason"] = "stop",
-	): AssistantMessage {
-		return { ...makeAssistant(content), stopReason }
-	}
-
-	it("sends a continuation nudge on a text-only turn with no tools called", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Simulate a tool having been called earlier in the session so the
-		// fresh-session suppression does not apply. Then a new user-input cycle.
-		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
-
-		// Model responds with text-only, stopReason "stop".
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
-		})
-
-		// A continuation nudge should have been sent.
-		expect(sendMessageCalls.length).toBe(1)
-		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
-	})
-
-	it("does not send a second nudge when model responds to nudge with stopReason 'stop'", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Tool called earlier in the session so the fresh-session guard is past.
-		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
-
-		// First text-only turn triggers the continuation nudge.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
-		})
-		expect(sendMessageCalls.length).toBe(1)
-
-		// Model responds to the nudge with text and stopReason "stop".
-		// The handler should NOT send a second nudge.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "OK, I am done." }]),
-		})
-		expect(sendMessageCalls.length).toBe(1) // no new nudge
-	})
-
-	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		await fire("tool_execution_start", {})
-		await fire("input", { source: "user" })
-
-		// First text-only turn triggers the continuation nudge.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
-		})
-		expect(sendMessageCalls.length).toBe(1)
-
-		// Model responds with stopReason "length" (e.g. output truncated).
-		// The handler should allow a second nudge since the model did not
-		// intentionally stop.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length"),
-		})
-		expect(sendMessageCalls.length).toBe(2)
-	})
-
-	it("does not send an empty-turn nudge after tools were called this agent run", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Start a fresh agent run.
-		await fire("agent_start", {})
-
-		// Simulate user input.
-		await fire("input", { source: "user" })
-
-		// Model calls a tool — marks the run as having used tools.
-		await fire("tool_execution_start", {})
-
-		// Model then produces an empty response (thinking-only or truly empty).
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "thinking", thinking: "I am done." }]),
-		})
-
-		// No nudge should fire — tools were called this run, so the empty
-		// response is the model finishing, not a glitch.
-		expect(sendMessageCalls.length).toBe(0)
-	})
-
-	it("sends an empty-turn nudge when no tools have been called this run", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Start a fresh agent run.
-		await fire("agent_start", {})
-
-		// Simulate user input.
-		await fire("input", { source: "user" })
-
-		// Model returns an empty response with no prior tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([]),
-		})
-
-		// Empty-turn nudge should fire — no tools have been called, the model
-		// might be stuck.
-		expect(sendMessageCalls.length).toBe(1)
-		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
-	})
-
-	it("does not nudge after a model switch when the previous model called tools", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Previous model called a tool during the session.
-		await fire("tool_execution_start", {})
-
-		// User switches models (e.g. via the UI model picker).
-		await fire("model_select", {
-			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
-			previousModel: undefined,
-			source: "set",
-		})
-
-		// New user input after the switch.
-		await fire("input", { source: "user" })
-
-		// New model responds with orientation text only, no tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
-		})
-
-		// No nudge should fire — the model switch reset the session-level
-		// tool latch, so the new model's orientation turn is treated like a
-		// fresh session.
-		expect(sendMessageCalls.length).toBe(0)
-	})
-
-	it("does not nudge after a model cycle when the previous model called tools", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Previous model called a tool during the session.
-		await fire("tool_execution_start", {})
-
-		// User cycles models (e.g. via the keyboard shortcut).
-		await fire("model_select", {
-			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
-			previousModel: undefined,
-			source: "cycle",
-		})
-
-		// New user input after the cycle.
-		await fire("input", { source: "user" })
-
-		// New model responds with orientation text only, no tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
-		})
-
-		// Cycling is a user-initiated switch and must also reset the latch.
-		expect(sendMessageCalls.length).toBe(0)
-	})
-
-	it("still nudges after a model restore when the previous model called tools", async () => {
-		const { fire, sendMessageCalls } = buildNudgeHandlers()
-
-		// Previous model called a tool during the session.
-		await fire("tool_execution_start", {})
-
-		// Session restore is not a user-initiated switch; the conversation
-		// continues and the session-level tool latch must stay true.
-		await fire("model_select", {
-			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
-			previousModel: undefined,
-			source: "restore",
-		})
-
-		// New user input after restore.
-		await fire("input", { source: "user" })
-
-		// Model responds with text only, no tool calls.
-		await fire("turn_end", {
-			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
-		})
-
-		// Nudge should fire because restore must not reset the latch.
-		expect(sendMessageCalls.length).toBe(1)
-		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
-	})
 
 	it("brands unbranded custom messages in the context handler", async () => {
 		const { fire } = buildNudgeHandlers()
