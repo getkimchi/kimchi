@@ -5,12 +5,30 @@ How kimchi releases are prepared, published, and consumed. The single source of 
 ## Lifecycle
 
 1. **Curate.** Maintainers append user-visible changes to `## [Unreleased]` in `CHANGELOG.md` as PRs land on `master`. Format rules live in `AGENTS.md` → "Changelog".
-2. **Prepare.** Run `node scripts/release.mjs X.Y.Z`. The script stamps `## [Unreleased]` as `## [X.Y.Z] - YYYY-MM-DD`, bumps `package.json`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, seeds a fresh empty `## [Unreleased]`, and prints the push instructions. It never pushes.
-3. **Push.** Push `master` and the tag (`git push origin master && git push origin vX.Y.Z`).
-4. **CI.** The tag push triggers the release workflow: binaries are built and a GitHub release is published with notes extracted from the changelog's `[X.Y.Z]` section (`scripts/release-notes.mjs`).
-5. **Homebrew.** The workflow updates the homebrew-tap formula, as before. This step is unchanged.
+2. **Prepare & publish from GitHub.** Go to Actions → **Release prepare** → *Run workflow* and enter the version, e.g. `1.2.0`. The workflow stamps `## [Unreleased]` as `## [X.Y.Z] - YYYY-MM-DD` on master (bot commits `Release vX.Y.Z [skip ci]` and `Start next cycle [skip ci]`), bumps `package.json`, tags `vX.Y.Z`, and pushes master and the tag. The tag push triggers the release workflow: binaries are built, notes are extracted from the changelog's `[X.Y.Z]` section (`scripts/release-notes.mjs extract`), the GitHub release is published, and the homebrew tap formula is updated.
 
-`node scripts/release.mjs X.Y.Z --dry-run` previews the stamp/bump without touching the working tree or git history.
+> **master stays protected for humans.** Direct pushes to master remain impossible for everyone; only the `release-bot` deploy key bypasses the ruleset, and only through the Release prepare workflow. Humans release by clicking *Run workflow*.
+
+`node scripts/release.mjs X.Y.Z --dry-run` previews the stamp/bump without touching the working tree or git history. The script can also be run by hand (it creates the `release/vX.Y.Z` branch, the release commits, and the tag locally, then prints push instructions), but the GitHub workflow is the supported path.
+
+## One-time setup
+
+Performed once by an administrator; afterwards every release is a two-click affair.
+
+1. **Create the deploy key.** Generate an SSH keypair, then add the **public** key as a deploy key with **write access** on this repository, named `release-bot`:
+
+   ```sh
+   ssh-keygen -t ed25519 -C "release-bot" -f release-bot_key
+   gh repo deploy-key add release-bot_key.pub --title release-bot --allow-write
+   ```
+
+2. **Allow the bypass.** In the master branch ruleset, add the `release-bot` deploy key as a **bypass actor**. Without this the workflow's push to master is rejected.
+
+3. **Store the private key.** Add the **private** key (`release-bot_key`) as a repository Actions secret named `RELEASE_DEPLOY_KEY`. The Release prepare workflow fails fast with a pointer to this section if the secret is missing.
+
+4. **Optional second gate.** Configure the `release` environment (GitHub auto-creates it on first workflow run) with **required reviewers**, so a maintainer must approve each release run before any commit is stamped. The workflow already declares `environment: release`.
+
+Alternative: instead of a deploy key, use a GitHub App with `contents: write` added as the ruleset bypass actor, mint a short-lived token in the workflow with `actions/create-github-app-token`, and push with that token. Pick this if the team prefers app-based credentials over a long-lived deploy key; the rest of this document assumes the deploy key.
 
 ## What goes in the changelog
 

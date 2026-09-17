@@ -75,8 +75,8 @@ test("release stamps the changelog, bumps the version, commits, tags, and reseed
 		assert.equal(pkg.version, "1.2.3")
 
 		const log = git(dir, "log", "--format=%s")
-		assert.ok(log.includes("Release v1.2.3"))
-		assert.ok(log.includes("Start next cycle"))
+		assert.ok(log.includes("Release v1.2.3 [skip ci]"))
+		assert.ok(log.includes("Start next cycle [skip ci]"))
 		assert.deepEqual(git(dir, "tag"), "v1.2.3")
 
 		// The tag points at the release commit (stamped changelog, bumped

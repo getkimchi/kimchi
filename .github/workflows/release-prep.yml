@@ -1,0 +1,63 @@
+name: Release prepare
+
+# Stamps the changelog on master, bumps package.json, creates the release
+# commits + tag, and pushes master and the tag. The tag push triggers the
+# Release workflow, which builds and publishes (see docs/releases.md).
+#
+# master is protected: only the release-bot deploy key (ruleset bypass actor)
+# may push to it, so this workflow can never be replicated by a human push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Optional second gate: configure the "release" environment with required
+    # reviewers to require approval before the stamp runs.
+    environment: release
+
+    steps:
+      - name: Preflight - require the release deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        if: ${{ env.DEPLOY_KEY == '' }}
+        run: |
+          echo "::error::The RELEASE_DEPLOY_KEY secret is not set. This workflow cannot push the release commits and tag without it. See docs/releases.md (One-time setup) for how to create the release-bot deploy key and store it as a repository secret."
+          exit 1
+
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master
+          # Checkout configures the SSH agent and the git@ remote from this
+          # key, which is what authorizes the push to the protected master
+          # (the deploy key is a ruleset bypass actor).
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      - name: Configure release-bot git identity
+        run: |
+          git config user.name "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+
+      - name: Stamp changelog, bump version, commit and tag
+        run: node scripts/release.mjs "${{ inputs.version }}"
+
+      - name: Push master and the tag
+        run: |
+          # The script commits on release/vX.Y.Z on top of master; push that
+          # ref to master (fast-forward) plus the tag. The tag push triggers
+          # the Release workflow; the stamp commits carry [skip ci] so ci.yml
+          # is not re-run.
+          git push origin "release/v${{ inputs.version }}:master"
+          git push origin "v${{ inputs.version }}"
