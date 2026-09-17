@@ -1,7 +1,9 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import promptSummaryExtension, { holdPromptSummary } from "./prompt-summary.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
 
@@ -111,6 +113,64 @@ describe("prompt summary Agent token accounting", () => {
 
 		expect(staleCtx.isIdle).toHaveBeenCalledOnce()
 		expect(harness.sent).toEqual([])
+	})
+})
+
+describe("prompt summary auto-model row", () => {
+	afterEach(() => {
+		clearAutoRoutingState("test-session")
+	})
+
+	it("reports the auto-routed model like the status bar does", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { id: "glm-5.3", provider: "kimchi-dev", name: "GLM 5.3" } as Model<string>,
+		})
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { model: { id: "auto", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const message = harness.sent[0] as { details: { model?: string } }
+		expect(message.details.model).toBe("auto (glm-5.3)")
+	})
+
+	it("omits the model row when Auto has not resolved a target yet", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		setAutoRoutingState("test-session", { status: "unresolved" })
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { model: { id: "auto", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const message = harness.sent[0] as { details: { model?: string } }
+		expect(message.details.model).toBeUndefined()
+	})
+
+	it("omits the model row for concrete model selections", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { model: { id: "glm-5.3", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const message = harness.sent[0] as { details: { model?: string } }
+		expect(message.details.model).toBeUndefined()
 	})
 })
 

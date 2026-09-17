@@ -130,7 +130,7 @@ test("/model autocomplete shows and selects Auto without experimental features",
 			trace.step("model autocomplete open")
 
 			terminal.write("auto")
-			await waitForText(terminal, "Auto (Kimchi Router)", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Picks the best model for your tasks automatically.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			// Upstream 0.85.1 added a "✓ current model" marker column: the row renders
 			// as "→   auto [kimchi-dev]" (cursor, marker column, then the label).
 			expect(viewText(terminal)).toMatch(/→\s+auto \[kimchi-dev\]/)

@@ -437,7 +437,7 @@ describe("Auto model extension", () => {
 		)
 	})
 
-	it("routes once and records the concrete model without showing a notification", async () => {
+	it("routes once, records the concrete model, and announces the pick as a status line", async () => {
 		const { getHandler, appendEntry, ctx, target } = harness()
 		vi.stubGlobal(
 			"fetch",
@@ -463,7 +463,10 @@ describe("Auto model extension", () => {
 			provider: "kimchi-dev",
 			modelId: target.id,
 		})
-		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// The pick is announced the moment the decision happens — a status-line
+		// notice (gray, padded) like "TUI mode: fullscreen", not a tips-widget hint.
+		expect(ctx.ui.notify).toHaveBeenCalledOnce()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(`Auto-model picked ${target.id}.`)
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "resolved", model: target })
 	})
 
