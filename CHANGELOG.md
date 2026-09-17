@@ -7,7 +7,4 @@ Releases prior to the changelog introduction are documented on the [GitHub Relea
 
 ## [Unreleased]
 
-### Changed
-
-- Auto-model is now the default: kimchi picks the best model for your tasks automatically. See [auto-model docs](https://kimchi.dev/docs/auto-model). Type `/model` anytime to switch models manually.
 
