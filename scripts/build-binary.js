@@ -102,12 +102,23 @@ run(
 	`bun scripts/compile-binary.js src/binary-entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
-// Bun --compile produces binaries with an invalid code signature on macOS.
-// The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
-// Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (!isCrossCompile && platform() === "darwin") {
+// Bun --compile produces binaries with an invalid code signature on macOS: the
+// app payload is grafted onto a pre-signed runtime, leaving an unverifiable
+// signature behind ("code or signature have been modified").
+//   - arm64: the kernel kills badly-signed binaries outright (SIGKILL, exit 137);
+//     same-arch grafts luckily keep a working ad-hoc signature, so CI survived.
+//   - x64: the kernel tolerates the invalid (bun Developer ID) signature, but the
+//     Security framework partitions keychain items by code-signing identity —
+//     reads then miss items the same process just wrote (surfaced in CI by
+//     `kimchi mcp keyring-check` on darwin-x64).
+// CI always passes --target (even when it matches the host arch), so this must
+// key off the target OS, not cross-compile-ness. All darwin matrix jobs build
+// on macOS runners, where codesign exists.
+// See: https://github.com/oven-sh/bun/issues/7208
+if (target.os === "darwin" && platform() === "darwin") {
 	run("codesign (strip)", `codesign --remove-signature dist/bin/${target.binaryName}`)
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${target.binaryName}`)
+	run("codesign (verify)", `codesign --verify -v dist/bin/${target.binaryName}`)
 }
 
 run("copy resources", "node scripts/copy-resources.js")
