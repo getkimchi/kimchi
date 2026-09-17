@@ -52,9 +52,8 @@ jobs:
 
       - name: Push master and the tag
         run: |
-          # The script commits on release/vX.Y.Z on top of master; push that
-          # ref to master (fast-forward) plus the tag. The tag push triggers
-          # the Release workflow; the stamp commits carry [skip ci] so ci.yml
-          # is not re-run.
-          git push origin "release/v${{ inputs.version }}:master"
+          # The script commits directly on master; push master plus the tag.
+          # The tag push triggers the Release workflow; the stamp commits carry
+          # [skip ci] so ci.yml is not re-run.
+          git push origin master
           git push origin "v${{ inputs.version }}"

@@ -1,5 +1,5 @@
-// Release preparation: stamp CHANGELOG.md, bump package.json, commit on a
-// release branch, and tag the release commit (see docs/releases.md).
+// Release preparation: stamp CHANGELOG.md, bump package.json, commit on the
+// default branch, and tag the release commit (see docs/releases.md).
 //
 // Adapted from https://github.com/earendil-works/pi (Apache-2.0).
 //
@@ -10,16 +10,15 @@
 //   1. Validate: semver version, run from the repo root, clean working tree,
 //      current branch == default branch, CHANGELOG.md has "## [Unreleased]"
 //      with content ("nothing to release" otherwise), tag v<x.y.z> free.
-//   2. Create and switch to branch "release/vX.Y.Z" (fails if it exists).
-//   3. Stamp "[Unreleased]" -> "[X.Y.Z] - YYYY-MM-DD", bump package.json,
+//   2. Stamp "[Unreleased]" -> "[X.Y.Z] - YYYY-MM-DD", bump package.json,
 //      commit "Release vX.Y.Z [skip ci]", tag v<x.y.z> on that commit.
-//   4. Reseed a fresh "## [Unreleased]" section, commit
+//   3. Reseed a fresh "## [Unreleased]" section, commit
 //      "Start next cycle [skip ci]".
-//   5. Print instructions: push the release branch, open a PR, and after the
-//      merge, push the tag (the script itself never pushes or opens PRs).
-//      The CI "Release prepare" workflow (.github/workflows/release-prep.yml)
-//      automates the whole flow; the [skip ci] markers keep the pushed
-//      master commits from re-triggering ci.yml.
+//   4. Print instructions: push the default branch and the tag (the script
+//      itself never pushes). The CI "Release prepare" workflow
+//      (.github/workflows/release-prep.yml) automates the whole flow; the
+//      [skip ci] markers keep the pushed master commits from re-triggering
+//      ci.yml.
 //
 // --dry-run computes and prints everything without touching files or git.
 
@@ -82,20 +81,6 @@ function splitChangelog(content) {
 	return { preamble, rest, unreleasedBody }
 }
 
-// Separate the scaffold guidance comment (trailing "<!-- ... -->" block) from
-// the entry content. The comment stays with the next [Unreleased] section.
-function splitComment(unreleasedBody) {
-	const commentStart = unreleasedBody.lastIndexOf("<!--")
-	if (commentStart !== -1) {
-		const tail = unreleasedBody.slice(commentStart)
-		const commentEnd = tail.indexOf("-->")
-		if (commentEnd !== -1 && tail.slice(commentEnd + 3).trim() === "") {
-			return { comment: tail.trim(), content: unreleasedBody.slice(0, commentStart).trim() }
-		}
-	}
-	return { comment: undefined, content: unreleasedBody.trim() }
-}
-
 function assertValidVersion(version) {
 	if (version === undefined) {
 		fail("Usage: node scripts/release.mjs <x.y.z> [--dry-run]")
@@ -135,17 +120,6 @@ function assertOnDefaultBranch(cwd) {
 	}
 }
 
-function assertBranchFree(branch, cwd) {
-	try {
-		git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], cwd)
-		fail(`Branch ${branch} already exists.`)
-	} catch (error) {
-		if (error instanceof Error && error.message.startsWith("Branch ")) {
-			throw error
-		}
-	}
-}
-
 function assertTagFree(tag, cwd) {
 	try {
 		git(["rev-parse", "-q", "--verify", `refs/tags/${tag}`], cwd)
@@ -170,17 +144,13 @@ function bumpPackageVersion(cwd, version) {
 // that follows the tag commit.
 function computeChangelogMutation(changelogContent, version, dateStamp) {
 	const { preamble, rest, unreleasedBody } = splitChangelog(changelogContent)
-	const { comment, content } = splitComment(unreleasedBody)
+	const content = unreleasedBody.trim()
 	if (content === "") {
 		fail('Nothing to release: the "## [Unreleased]" section has no entries.')
 	}
 	const versionSection = `## [${version}] - ${dateStamp}\n\n${content}\n`
 	const stamped = `${preamble}\n${versionSection}\n${rest}`.replace(/\n*$/, "\n")
-	const reseeded =
-		`${preamble}\n${UNRELEASED_HEADER}\n\n${comment ? `${comment}\n\n` : ""}${versionSection}${rest}`.replace(
-			/\n*$/,
-			"\n",
-		)
+	const reseeded = `${preamble}\n${UNRELEASED_HEADER}\n\n${versionSection}${rest}`.replace(/\n*$/, "\n")
 	return { releasedBody: content, reseeded, stamped }
 }
 
@@ -189,7 +159,6 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 	assertRepoRoot(cwd)
 
 	const tag = `v${version}`
-	const releaseBranch = `release/${tag}`
 	const changelogPath = path.join(cwd, "CHANGELOG.md")
 	const changelogContent = readFileSync(changelogPath, "utf-8")
 	const pkg = JSON.parse(readFileSync(path.join(cwd, "package.json"), "utf-8"))
@@ -216,19 +185,16 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 
 	if (dryRun) {
 		console.log(`Dry run for release ${version} (no changes written):\n`)
-		console.log(`A branch "${releaseBranch}" would be created from the current HEAD.`)
 		console.log("CHANGELOG.md would become:\n")
 		console.log(mutation.reseeded)
 		console.log(`package.json: version ${previousVersion} -> ${version}`)
 		console.log(
 			`\nThen: commit "Release ${tag} [skip ci]", tag ${tag}, reseed [Unreleased], commit "Start next cycle [skip ci]".`,
 		)
-		return { dryRun: true, releaseBranch, tag }
+		return { dryRun: true, tag }
 	}
 
 	assertTagFree(tag, cwd)
-	assertBranchFree(releaseBranch, cwd)
-	git(["switch", "-c", releaseBranch], cwd)
 
 	writeFileSync(changelogPath, mutation.stamped)
 	bumpPackageVersion(cwd, version)
@@ -242,17 +208,14 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 
 	console.log(`Released ${version}: stamped CHANGELOG.md, bumped package.json ${previousVersion} -> ${version}.`)
 	console.log(
-		`Created branch "${releaseBranch}" with commits "Release ${tag} [skip ci]" (tagged ${tag}) and "Start next cycle [skip ci]"`,
+		`Created commits "Release ${tag} [skip ci]" (tagged ${tag}) and "Start next cycle [skip ci]" on ${defaultBranch(cwd)} (fresh [Unreleased] reseeded on top).`,
 	)
-	console.log(`([Unreleased] reseeded on top).`)
 	console.log("\nNext steps:")
-	console.log(`  git push origin ${releaseBranch}`)
-	console.log(`  gh pr create   # open a PR from ${releaseBranch} into ${defaultBranch(cwd)}`)
-	console.log(`\nAfter the PR is merged, push the tag (it points at the "Release ${tag}" commit):`)
-	console.log(`  git push origin ${tag}`)
+	console.log(`  git push origin ${defaultBranch(cwd)}`)
+	console.log(`  git push origin ${tag}   # points at the "Release ${tag}" commit`)
 	console.log("The tag push triggers the release workflow (see docs/releases.md).")
 	console.log('The CI "Release prepare" workflow (.github/workflows/release-prep.yml) automates this whole flow.')
-	return { dryRun: false, releaseBranch, releasedBody: mutation.releasedBody, tag }
+	return { dryRun: false, releasedBody: mutation.releasedBody, tag }
 }
 
 function main() {

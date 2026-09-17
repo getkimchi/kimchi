@@ -66,10 +66,6 @@ test("release stamps the changelog, bumps the version, commits, tags, and reseed
 		assert.ok(changelog.includes(`## [1.2.3] - ${todayStamp()}`), "versioned section stamped with today's date")
 		assert.ok(changelog.includes("- New folder browser."), "release body preserved")
 		assert.ok(changelog.indexOf("## [Unreleased]") < changelog.indexOf("## [1.2.3]"), "Unreleased stays on top")
-		assert.ok(
-			!changelog.includes(`## [1.2.3] - ${todayStamp()}\n\n<!--`),
-			"scaffold comment not stamped into the release section",
-		)
 
 		const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf-8"))
 		assert.equal(pkg.version, "1.2.3")
@@ -87,6 +83,7 @@ test("release stamps the changelog, bumps the version, commits, tags, and reseed
 		const taggedPkg = JSON.parse(git(dir, "show", "v1.2.3:package.json"))
 		assert.equal(taggedPkg.version, "1.2.3")
 		assert.equal(git(dir, "rev-parse", "v1.2.3^{commit}"), git(dir, "rev-parse", "HEAD^"))
+		assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "master", "stays on the default branch")
 
 		// The tree stays clean afterwards, so the next release can run.
 		assert.equal(git(dir, "status", "--porcelain"), "")

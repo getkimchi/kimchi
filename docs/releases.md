@@ -9,7 +9,7 @@ How kimchi releases are prepared, published, and consumed. The single source of 
 
 > **master stays protected for humans.** Direct pushes to master remain impossible for everyone; only the `release-bot` deploy key bypasses the ruleset, and only through the Release prepare workflow. Humans release by clicking *Run workflow*.
 
-`node scripts/release.mjs X.Y.Z --dry-run` previews the stamp/bump without touching the working tree or git history. The script can also be run by hand (it creates the `release/vX.Y.Z` branch, the release commits, and the tag locally, then prints push instructions), but the GitHub workflow is the supported path.
+`node scripts/release.mjs X.Y.Z --dry-run` previews the stamp/bump without touching the working tree or git history. The script can also be run by hand on master (it stamps the changelog, bumps `package.json`, creates the release commits, and tags locally, then prints push instructions), but the GitHub workflow is the supported path.
 
 ## One-time setup
 
