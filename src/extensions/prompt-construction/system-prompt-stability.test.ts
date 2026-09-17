@@ -9,7 +9,6 @@ import { tool } from "../behaviours/triggers.js"
 import type { TriggeredBehaviour } from "../behaviours/types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "../behaviours/wiring.js"
 import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
-import { registerFermentLifecycleContext } from "../ferment/lifecycle-context.js"
 import { buildFermentPromptBlock } from "../ferment/prompt-block.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { setActive } from "../ferment/state.js"
@@ -174,7 +173,6 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 			suppress: () => new Set(),
 			render: () => buildFermentPromptBlock(ctx, pi, runtime),
 		})
-		registerFermentLifecycleContext(pi, runtime)
 	}
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
@@ -295,13 +293,6 @@ describe("system prompt stability contract", () => {
 					const promptBefore = await harness.buildFinalSystemPrompt()
 					expect(promptBefore).toContain("## Todos")
 					expect(await harness.buildContextText()).not.toContain("## Current Todos")
-
-					if (surface !== "non-ferment") {
-						// Production emits phase activation before the first running-phase
-						// turn; the lifecycle block arrives via that persisted event.
-						emitFermentDomainEvent(harness.pi.events, { type: "activate_phase", phaseId: "phase-1" }, makeFerment())
-						expect(await harness.buildContextText()).toContain("## Current lifecycle state")
-					}
 
 					applyWriteTodos({ todos: [{ content: "initial task", status: "pending" }] }, SESSION_ID)
 					const afterAdd = await harness.buildContextText()
@@ -541,7 +532,6 @@ describe("system prompt stability contract", () => {
 					const contextBefore = await harness.buildContextText()
 					expect(promptBefore).toContain("## Todos")
 					expect(contextBefore).toContain("## Current Todos")
-					expect(contextBefore).toContain("## Current lifecycle state")
 					expect(contextBefore).toContain("write parser")
 
 					// State blocks must have arrived via persistence, not context pushes.
@@ -549,7 +539,7 @@ describe("system prompt stability contract", () => {
 						harness
 							.getSentMessages()
 							.map((call) => (call.message as { customType?: string }).customType)
-							.filter((type) => type === "todo-state" || type === "ferment-lifecycle"),
+							.filter((type) => type === "todo-state"),
 					).not.toHaveLength(0)
 
 					const completedStepFerment: Ferment = {

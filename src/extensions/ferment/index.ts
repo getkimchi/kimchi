@@ -32,12 +32,10 @@ import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
-import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
-import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
@@ -431,11 +429,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			}, 0)
 		}
 
-		// Drain any remaining pending compactions at agent_end (catches the case
-		// where the ferment completes within a single agent run and the turn_end
-		// handler already cleared most pending entries).
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
 		// Completing the final phase does not complete the ferment: complete_ferment
 		// still has to run its C-gates and journey grading. If the model ends its run
 		// between those two lifecycle actions, retain that final action as a hidden
@@ -465,7 +458,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// persistence layer subscribes to agent_start/agent_end/agent_settled, and
 	// its handlers must not precede the main agent_end handler in the
 	// registration order (test fixtures fetch the first-registered handler).
-	registerFermentLifecycleContext(pi, runtime)
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)
