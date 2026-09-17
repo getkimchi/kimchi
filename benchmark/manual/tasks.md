@@ -36,7 +36,7 @@ Requirements:
 - Thread-safe implementation
 - Put the code in directory: rate-limiter/
 - Include a README.md explaining usage
-- Switch the main model to another available model in the kimchi-dev provider every time you change the phase. Use the /model command or the model switching capability to do this.
+- Switch the main model to another available model in the kimchi-dev provider every time you change the role. Use the /model command or the model switching capability to do this.
 ```
 
 **Expected:** single subagent, light/standard model, <5 min, tests included, no external deps, model switches observed in session logs.
@@ -60,7 +60,7 @@ Requirements:
 - Put all code in directory: task-api/
 ```
 
-**Expected:** multi-model orchestration, plan phase (heavy model) + implementation phase (standard model), 1–5 subagents, <10 min, clean layer separation, map-based tests, stdlib only.
+**Expected:** multi-model orchestration, planner role (heavy model) + builder role (standard model), 1–5 subagents, <10 min, clean layer separation, map-based tests, stdlib only.
 
 **Baseline (Claude):** model.go, repository interface + in-memory impl, service with interface, handler with manual routing, atomic counter for IDs, map-based service tests, no external deps, no comments.
 
@@ -109,7 +109,7 @@ Requirements:
 - Put all code in directory: $DIR/buildtool/
 ```
 
-**Expected:** plan phase (heavy model) + multiple implementation subagents, 3–6 subagents, <15 min, clean package separation, comprehensive tests, stdlib only.
+**Expected:** planner (heavy) + builder role + build both, 3–6 subagents, <15 min, clean separation, comprehensive tests, stdlib only.
 
 **Baseline (Claude):** parser package (line-by-line state machine), graph package (Kahn's algorithm for topo sort, DFS for cycle detection), engine package (worker pool with channels, context cancellation, SIGINT trap), cli package (flag parsing), main.go wiring. Map-based tests covering: empty buildfile, single target, diamond dependencies, direct cycle, indirect cycle, malformed indentation, partial-target build, fail-fast propagation.
 
@@ -136,7 +136,7 @@ Requirements:
 - Do not change the project structure or add external dependencies.
 ```
 
-**Expected:** explore phase (light model) + plan phase (heavy model) + build phase (standard model), 2–4 subagents, <10 min, all validation gaps found and fixed, tests added.
+**Expected:** explore role (light model) + planner role (heavy model) + builder role (standard model), 2–4 subagents, <10 min, all validation gaps found and fixed, tests added.
 
 **Baseline (Claude):**
 Validation gaps in the seed project:

@@ -122,6 +122,59 @@ index ce8a9a2a613c08de483a6c94ef4f6341efff0457..a544673865fbe886ae36b03f755b16b9
                          options?.onComplete?.(result);
                      }
                      catch (error) {
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+index 324d30ad5708b842f1a536f8d14950469a5ed707..4548f5931476ca51f334b29c52388ba1da1ce0af 100644
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -29,6 +29,20 @@ import { readPiManifest } from "../pi-manifest.js";
+ import { createSyntheticSourceInfo } from "../source-info.js";
+ import { time } from "../timings.js";
+ /** Modules available to extensions via virtualModules (for compiled Bun binary) */
++// When Bun bundles the binary it renames Google GenAI's `Type` enum to `Type2`
++// (collision with typebox's `Type`). The pi-ai compat module re-exports `Type`
++// from typebox via `export { Type } from "typebox"`, but the bundled getter
++// for `.Type` references the broken `Type2` binding, producing
++// `ReferenceError: Type2 is not defined` when an extension accesses it.
++// This Proxy overrides `.Type` with the typebox namespace directly —
++// the same object pi-ai re-exports.
++const _bundledPiAiCompatSafe = new Proxy(_bundledPiAiCompat, {
++    get(target, prop, receiver) {
++        if (prop === "Type")
++            return _bundledTypebox.Type;
++        return Reflect.get(target, prop, receiver);
++    },
++});
+ const VIRTUAL_MODULES = {
+     typebox: _bundledTypebox,
+     "typebox/compile": _bundledTypeboxCompile,
+@@ -41,15 +55,23 @@ const VIRTUAL_MODULES = {
+     // Extensions resolve the pi-ai root to the compat entrypoint (a strict
+     // superset of the core entrypoint): existing extensions using the old
+     // global API keep working at runtime until compat is removed.
+-    "@earendil-works/pi-ai": _bundledPiAiCompat,
+-    "@earendil-works/pi-ai/compat": _bundledPiAiCompat,
++    //
++    // Bun's bundler renames Google GenAI's `Type` enum to `Type2` (collision
++    // with typebox's `Type`), but the renamed `Type2` binding is not
++    // accessible from the getter that `_bundledPiAiCompat.Type` triggers,
++    // producing `ReferenceError: Type2 is not defined` when an extension
++    // accesses `.Type` (e.g. `Type.Object(...)`). The Proxy intercepts `Type`
++    // and returns the typebox namespace directly — it is the same object
++    // pi-ai re-exports via `export { Type } from "typebox"`.
++    "@earendil-works/pi-ai": _bundledPiAiCompatSafe,
++    "@earendil-works/pi-ai/compat": _bundledPiAiCompatSafe,
+     "@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
+     "@earendil-works/pi-ai/providers/all": _bundledPiAiProviders,
+     "@earendil-works/pi-coding-agent": _bundledPiCodingAgent,
+     "@mariozechner/pi-agent-core": _bundledPiAgentCore,
+     "@mariozechner/pi-tui": _bundledPiTui,
+-    "@mariozechner/pi-ai": _bundledPiAiCompat,
+-    "@mariozechner/pi-ai/compat": _bundledPiAiCompat,
++    "@mariozechner/pi-ai": _bundledPiAiCompatSafe,
++    "@mariozechner/pi-ai/compat": _bundledPiAiCompatSafe,
+     "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
+     "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
+     "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
 index cb7b8e7cfb9d1fb07f4f8c3161d25927b3186e94..7ee0096f0bfc71534b34a17015525acd1bc45316 100644
 --- a/dist/core/extensions/types.d.ts
@@ -177,8 +230,58 @@ index 7d93ba62bdb5d47e129751e8075cbb34620322ad..89c8147bdfcd8ce91ea6a51ea4822c81
              .map((provider) => provider.id === "radius"
              ? provider
              : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
+diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
+index 97af6cd94931d70ce7d17e02df5b6da8c61ed04c..7790a251a684779936470faa69b7d3561c066160 100644
+--- a/dist/core/resource-loader.js
++++ b/dist/core/resource-loader.js
+@@ -458,9 +458,16 @@ export class DefaultResourceLoader {
+     addExtensionConflictDiagnostics(extensionsResult) {
+         // Detect extension conflicts (tools, commands, flags with same names from different extensions)
+         // Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
++        // Tool conflicts are hard errors; flag conflicts are warnings (kimchi
++        // built-in extensions load first and win at runtime).
+         const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
+         for (const conflict of conflicts) {
+-            extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
++            if (conflict.severity === "warning") {
++                extensionsResult.warnings ??= [];
++                extensionsResult.warnings.push({ path: conflict.path, message: conflict.message });
++            } else {
++                extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
++            }
+         }
+     }
+     mapSkillPath(resource, metadataByPath) {
+@@ -841,7 +848,7 @@ export class DefaultResourceLoader {
+         const toolOwners = new Map();
+         const flagOwners = new Map();
+         for (const ext of extensions) {
+-            // Check tools
++            // Check tools — hard errors (genuinely ambiguous at runtime)
+             for (const toolName of ext.tools.keys()) {
+                 const existingOwner = toolOwners.get(toolName);
+                 if (existingOwner && existingOwner !== ext.path) {
+@@ -854,13 +861,16 @@ export class DefaultResourceLoader {
+                     toolOwners.set(toolName, ext.path);
+                 }
+             }
+-            // Check flags
++            // Check flags — warnings only (first registration wins at runtime;
++            // kimchi built-in extensions load first, so clashes from npm
++            // extensions are benign)
+             for (const flagName of ext.flags.keys()) {
+                 const existingOwner = flagOwners.get(flagName);
+                 if (existingOwner && existingOwner !== ext.path) {
+                     conflicts.push({
+                         path: ext.path,
+-                        message: `Flag "--${flagName}" conflicts with ${existingOwner}`,
++                        severity: "warning",
++                        message: `Flag "--${flagName}" conflicts with ${existingOwner}; kimchi's registration takes precedence.`,
+                     });
+                 }
+                 else {
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b7630b8e8cb 100644
+index f274908793624a5870008ab738fa19ac6758165c..bdee7b8122c1986aa5729945f044e83c4e927323 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -81,6 +81,12 @@ export function createLocalBashOperations(options) {
@@ -295,96 +398,6 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      }
      dispose() {
          this.countdown?.dispose();
-diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index afdb7896d9c55cb04ca529d25f1d3e21ae707757..1c87b9030bc72e31587e37b3ecc0cddd103430d9 100644
---- a/dist/modes/interactive/components/model-selector.js
-+++ b/dist/modes/interactive/components/model-selector.js
-@@ -33,6 +33,7 @@ export class ModelSelectorComponent extends Container {
-     refreshStatusMessage = "Refreshing model catalogs…";
-     refreshStatusSuccess = false;
-     tui;
-+    sessionId;
-     scopedModels;
-     scope = "all";
-     scopeText;
-@@ -40,9 +41,10 @@ export class ModelSelectorComponent extends Container {
-     refreshAbortController = new AbortController();
-     refreshTimeout;
-     closed = false;
--    constructor(tui, currentModel, settingsManager, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput) {
-+    constructor(tui, currentModel, settingsManager, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput, sessionId) {
-         super();
-         this.tui = tui;
-+        this.sessionId = sessionId;
-         this.currentModel = currentModel;
-         this.settingsManager = settingsManager;
-         this.modelRuntime = modelRuntime;
-@@ -100,6 +102,14 @@ export class ModelSelectorComponent extends Container {
-             model,
-         }));
-         this.allModels = this.sortModels(models);
-+        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
-+        if (orchRef) {
-+            const orchId = orchRef.split('/').pop();
-+            const orchEntry = this.allModels.find(m => m.id === orchId);
-+            if (orchEntry) {
-+                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
-+            }
-+        }
-         this.scopedModels = this.scopedModels.map((scoped) => {
-             const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
-             return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -109,6 +119,13 @@ export class ModelSelectorComponent extends Container {
-             id: scoped.model.id,
-             model: scoped.model,
-         }));
-+        if (orchRef) {
-+            const orchIdScoped = orchRef.split('/').pop();
-+            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
-+            if (orchScopedEntry) {
-+                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
-+            }
-+        }
-         this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-         this.filteredModels = this.activeModels;
-         const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -225,17 +242,21 @@ export class ModelSelectorComponent extends Container {
-             if (!item)
-                 continue;
-             const isSelected = i === this.selectedIndex;
--            const isCurrent = modelsAreEqual(this.currentModel, item.model);
-+            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
-+            const isCurrent = item._isMultiModel
-+                ? isMultiModelEnabled
-+                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
-+            const displayId = item._isMultiModel ? 'multi-model' : item.id;
-             let line = "";
-             if (isSelected) {
-                 const prefix = theme.fg("accent", "→ ");
--                const modelText = `${item.id}`;
-+                const modelText = `${displayId}`;
-                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
-                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-                 line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
-             }
-             else {
--                const modelText = `  ${item.id}`;
-+                const modelText = `  ${displayId}`;
-                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
-                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-                 line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -314,6 +335,11 @@ export class ModelSelectorComponent extends Container {
-     }
-     handleSelect(model) {
-         this.dispose();
-+        const selectedItem = this.filteredModels[this.selectedIndex];
-+        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
-+            process.__kimchiMultiModelEnabled = new Map();
-+        }
-+        process.__kimchiMultiModelEnabled.set(this.sessionId, !!selectedItem?._isMultiModel);
-         // Save as new default
-         this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
-         this.onSelectCallback(model);
 diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
 index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
@@ -459,7 +472,7 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9bec63d9e3 100644
+index 42e655de0fee8081a31cb588426edd30992d893c..ad2bb8bba5f5d4f42efe7b26349ed86316398e3c 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1844,6 +1844,7 @@ export class InteractiveMode {
@@ -496,58 +509,7 @@ index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9b
          };
      }
      /**
-@@ -3815,6 +3826,33 @@ export class InteractiveMode {
-             this.showModelSelector();
-             return;
-         }
-+        // Handle "multi-model" as a virtual model selection
-+        if (searchTerm === 'multi-model') {
-+            const sessionId = this.sessionManager.getSessionId();
-+            const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(sessionId) : undefined;
-+            const orchParts = orchRef ? orchRef.split('/') : [];
-+            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
-+            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
-+            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
-+            if (orchestratorModel) {
-+                if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
-+                    process.__kimchiMultiModelEnabled = new Map();
-+                }
-+                process.__kimchiMultiModelEnabled.set(sessionId, true);
-+                try {
-+                    await this.session.setModel(orchestratorModel);
-+                    this.footer.invalidate();
-+                    this.updateEditorBorderColor();
-+                    this.showStatus('Model: multi-model');
-+                } catch (error) {
-+                    process.__kimchiMultiModelEnabled.set(sessionId, false);
-+                    this.showError(error instanceof Error ? error.message : String(error));
-+                }
-+            } else {
-+                this.showError('Multi-model orchestrator is not available.');
-+            }
-+            return;
-+        }
-         const model = await this.findExactModelMatch(searchTerm);
-         if (model) {
-             try {
-@@ -3947,6 +3985,7 @@ export class InteractiveMode {
-     }
-     showModelSelector(initialSearchInput) {
-         this.showSelector((done) => {
-+            const sessionId = this.sessionManager.getSessionId();
-             const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRuntime, this.session.scopedModels, async (model) => {
-                 try {
-                     await this.session.setModel(model);
-@@ -3964,7 +4003,7 @@ export class InteractiveMode {
-             }, () => {
-                 done();
-                 this.ui.requestRender();
--            }, initialSearchInput);
-+            }, initialSearchInput, sessionId);
-             return { component: selector, focus: selector, dispose: () => selector.dispose() };
-         });
-     }
-@@ -4823,7 +4862,7 @@ export class InteractiveMode {
+@@ -4823,7 +4834,7 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
@@ -556,104 +518,3 @@ index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9b
                  this.showStatus(`Session exported to: ${filePath}`);
              }
              else {
-diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
---- a/dist/core/extensions/loader.js
-+++ b/dist/core/extensions/loader.js
-@@ -29,6 +29,20 @@
- import { createSyntheticSourceInfo } from "../source-info.js";
- import { time } from "../timings.js";
- /** Modules available to extensions via virtualModules (for compiled Bun binary) */
-+// When Bun bundles the binary it renames Google GenAI's `Type` enum to `Type2`
-+// (collision with typebox's `Type`). The pi-ai compat module re-exports `Type`
-+// from typebox via `export { Type } from "typebox"`, but the bundled getter
-+// for `.Type` references the broken `Type2` binding, producing
-+// `ReferenceError: Type2 is not defined` when an extension accesses it.
-+// This Proxy overrides `.Type` with the typebox namespace directly —
-+// the same object pi-ai re-exports.
-+const _bundledPiAiCompatSafe = new Proxy(_bundledPiAiCompat, {
-+    get(target, prop, receiver) {
-+        if (prop === "Type")
-+            return _bundledTypebox.Type;
-+        return Reflect.get(target, prop, receiver);
-+    },
-+});
- const VIRTUAL_MODULES = {
-     typebox: _bundledTypebox,
-     "typebox/compile": _bundledTypeboxCompile,
-@@ -41,15 +55,23 @@
-     // Extensions resolve the pi-ai root to the compat entrypoint (a strict
-     // superset of the core entrypoint): existing extensions using the old
-     // global API keep working at runtime until compat is removed.
--    "@earendil-works/pi-ai": _bundledPiAiCompat,
--    "@earendil-works/pi-ai/compat": _bundledPiAiCompat,
-+    //
-+    // Bun's bundler renames Google GenAI's `Type` enum to `Type2` (collision
-+    // with typebox's `Type`), but the renamed `Type2` binding is not
-+    // accessible from the getter that `_bundledPiAiCompat.Type` triggers,
-+    // producing `ReferenceError: Type2 is not defined` when an extension
-+    // accesses `.Type` (e.g. `Type.Object(...)`). The Proxy intercepts `Type`
-+    // and returns the typebox namespace directly — it is the same object
-+    // pi-ai re-exports via `export { Type } from "typebox"`.
-+    "@earendil-works/pi-ai": _bundledPiAiCompatSafe,
-+    "@earendil-works/pi-ai/compat": _bundledPiAiCompatSafe,
-     "@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
-     "@earendil-works/pi-ai/providers/all": _bundledPiAiProviders,
-     "@earendil-works/pi-coding-agent": _bundledPiCodingAgent,
-     "@mariozechner/pi-agent-core": _bundledPiAgentCore,
-     "@mariozechner/pi-tui": _bundledPiTui,
--    "@mariozechner/pi-ai": _bundledPiAiCompat,
--    "@mariozechner/pi-ai/compat": _bundledPiAiCompat,
-+    "@mariozechner/pi-ai": _bundledPiAiCompatSafe,
-+    "@mariozechner/pi-ai/compat": _bundledPiAiCompatSafe,
-     "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
-     "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
-     "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
-diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
---- a/dist/core/resource-loader.js
-+++ b/dist/core/resource-loader.js
-@@ -458,9 +458,16 @@
-     addExtensionConflictDiagnostics(extensionsResult) {
-         // Detect extension conflicts (tools, commands, flags with same names from different extensions)
-         // Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
-+        // Tool conflicts are hard errors; flag conflicts are warnings (kimchi
-+        // built-in extensions load first and win at runtime).
-         const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
-         for (const conflict of conflicts) {
--            extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
-+            if (conflict.severity === "warning") {
-+                extensionsResult.warnings ??= [];
-+                extensionsResult.warnings.push({ path: conflict.path, message: conflict.message });
-+            } else {
-+                extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
-+            }
-         }
-     }
-     mapSkillPath(resource, metadataByPath) {
-@@ -841,7 +848,7 @@
-         const toolOwners = new Map();
-         const flagOwners = new Map();
-         for (const ext of extensions) {
--            // Check tools
-+            // Check tools — hard errors (genuinely ambiguous at runtime)
-             for (const toolName of ext.tools.keys()) {
-                 const existingOwner = toolOwners.get(toolName);
-                 if (existingOwner && existingOwner !== ext.path) {
-@@ -854,13 +861,16 @@
-                     toolOwners.set(toolName, ext.path);
-                 }
-             }
--            // Check flags
-+            // Check flags — warnings only (first registration wins at runtime;
-+            // kimchi built-in extensions load first, so clashes from npm
-+            // extensions are benign)
-             for (const flagName of ext.flags.keys()) {
-                 const existingOwner = flagOwners.get(flagName);
-                 if (existingOwner && existingOwner !== ext.path) {
-                     conflicts.push({
-                         path: ext.path,
--                        message: `Flag "--${flagName}" conflicts with ${existingOwner}`,
-+                        severity: "warning",
-+                        message: `Flag "--${flagName}" conflicts with ${existingOwner}; kimchi's registration takes precedence.`,
-                     });
-                 }
-                 else {

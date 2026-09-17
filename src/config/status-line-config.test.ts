@@ -52,8 +52,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 12 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(12)
+	it("has 11 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(11)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -74,7 +74,6 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"agents",
 			"context",
 			"usage",
-			"phase",
 			"tags",
 			"team",
 			"credits",
@@ -231,7 +230,7 @@ describe("readStatusLineConfig (stat cache)", () => {
 	it("writeStatusLineConfig is visible to the next read without explicit invalidation", () => {
 		seed("{}")
 		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
-		writeStatusLineConfig({ pinned: ["phase"] })
-		expect(readStatusLineConfig().pinned).toEqual(["phase"])
+		writeStatusLineConfig({ pinned: ["tags"] })
+		expect(readStatusLineConfig().pinned).toEqual(["tags"])
 	})
 })

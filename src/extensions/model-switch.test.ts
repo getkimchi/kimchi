@@ -12,7 +12,6 @@ import modelSwitchExtension, {
 	getModelTier,
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
-import { getMultiModelEnabled, resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type RegisteredTool = {
@@ -175,6 +174,7 @@ describe("modelSwitchExtension", () => {
 		const invalidInputs: Array<{ label: string; value: string }> = [
 			{ label: "empty string", value: "" },
 			{ label: "no slash", value: "kimi-k2.6" },
+			{ label: "removed virtual model", value: "multi-model" },
 			{ label: "leading slash (missing provider)", value: "/kimi-k2.6" },
 			{ label: "trailing slash (missing model)", value: "kimchi-dev/" },
 		]
@@ -954,31 +954,10 @@ describe("modelSwitchExtension", () => {
 			} as ExtensionContext
 		}
 
-		let argvSpy: ReturnType<typeof vi.spyOn> | null = null
-
-		function setArgv(args: string[]): void {
-			argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(args)
-		}
-
-		function clearArgv(): void {
-			if (argvSpy) {
-				argvSpy.mockRestore()
-				argvSpy = null
-			}
-		}
-
-		/** Reset the process side-channel map for our test session id. */
-		function resetProcessMap(): void {
-			const proc = process as NodeJS.Process & { __kimchiMultiModelEnabled?: Map<string, boolean> }
-			proc.__kimchiMultiModelEnabled?.delete("test-session")
-		}
-
 		beforeEach(() => {
 			__resetModelSwitchStateForTest()
 			__resetImagesDetectedForTest()
 			vi.clearAllMocks()
-			clearArgv()
-			resetProcessMap()
 		})
 
 		it("skips when isRevertingModel guard is set", async () => {
@@ -1324,45 +1303,6 @@ describe("modelSwitchExtension", () => {
 			)
 			expect(setModel).not.toHaveBeenCalled()
 			expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("vision"), "error")
-		})
-
-		it("syncs multi-model process flag to extension state on model_select from /models UI", async () => {
-			const { pi, trigger } = createHarnessWithTrigger()
-			const ctx = createContext({ tokens: 10_000 })
-			modelSwitchExtension(pi)
-
-			setMultiModelEnabled("test-session", true)
-			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(true)
-
-			await trigger(
-				"model_select",
-				{
-					type: "model_select",
-					model: { id: "nemotron-3-ultra-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
-					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
-					source: "set",
-				},
-				ctx,
-			)
-
-			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(false)
-		})
-
-		it("--model flag sets startup default to false but does not override runtime selection", async () => {
-			setArgv(["node", "script", "--model"])
-			const ctx = createContext({ tokens: 10_000 })
-
-			// Runtime selection (user entered multi-session multi-model mode) outranks CLI
-			setMultiModelEnabled("test-session", true)
-			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(true)
-			expect(resolveMultiModelEnabled(ctx.sessionManager)).toEqual({ value: true, source: "runtime" })
-
-			// Clear the process map so only CLI flag applies
-			resetProcessMap()
-
-			// Now CLI flag takes effect (no runtime override)
-			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(false)
-			expect(resolveMultiModelEnabled(ctx.sessionManager)).toEqual({ value: false, source: "cli" })
 		})
 
 		it("reverts when getContextUsage returns null but local estimate exceeds target context window", async () => {

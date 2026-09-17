@@ -24,8 +24,6 @@ import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -72,7 +70,8 @@ export function findNextCompatibleModel(
 	const currentModelHasVision = currentModel?.input.includes("image") ?? false
 	const skipped: SkippedModel[] = []
 
-	for (let offset = 1; offset < len; offset++) {
+	const candidateCount = currentIndex === -1 ? len : len - 1
+	for (let offset = 1; offset <= candidateCount; offset++) {
 		const idx = (currentIndex + offset) % len
 		const candidate = available[idx]
 
@@ -131,19 +130,38 @@ let workingAnimator: WorkingAnimator | undefined
 let workingAnimationPauseDepth = 0
 const workingIndicatorHolds = new Set<symbol>()
 const workedForMessageHolds = new Set<symbol>()
+const HELD_WORKING_WIDGET_KEY = "kimchi-held-working-indicator"
+let heldWorkingUi: Pick<ExtensionContext, "ui"> | undefined
+
+function clearHeldWorkingWidget(): void {
+	heldWorkingUi?.ui.setWidget(HELD_WORKING_WIDGET_KEY, undefined, { placement: "aboveEditor" })
+	heldWorkingUi = undefined
+}
+
+function mountHeldWorkingWidget(ctx: Pick<ExtensionContext, "ui">): void {
+	heldWorkingUi = ctx
+	// The upstream loader is gated on session.isStreaming. Replace it with the
+	// same animator output in a single widget while a settled-turn hold exists.
+	ctx.ui.setWorkingVisible(false)
+	ctx.ui.setWidget(HELD_WORKING_WIDGET_KEY, [], { placement: "aboveEditor" })
+}
 
 // Module-level so `holdWorkingIndicator` can re-arm the animator itself when it
 // isn't already running — extension handler order relative to this file's
 // `message_end` (which stops the animator) isn't guaranteed, so a caller taking
 // a hold can't assume the animator is still alive.
 function startWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): void {
-	ctx.ui.setWorkingVisible(true)
+	ctx.ui.setWorkingVisible(!heldWorkingUi)
 	workingAnimator?.stop()
 	workingAnimationPauseDepth = 0
 	workingAnimator = createWorkingAnimator((char, message) => {
 		const accent = resolvedAccentFg(ctx.ui.theme)
-		ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-		ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
+		const frame = `${accent}${char}${RST_FG}`
+		const text = `${accent}${message}${RST_FG}`
+		ctx.ui.setWorkingIndicator({ frames: [frame] })
+		ctx.ui.setWorkingMessage(text)
+		if (heldWorkingUi)
+			heldWorkingUi.ui.setWidget(HELD_WORKING_WIDGET_KEY, [`${frame} ${text}`], { placement: "aboveEditor" })
 	})
 }
 
@@ -152,6 +170,7 @@ function stopWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): void {
 	workingAnimator?.stop()
 	workingAnimator = undefined
 	workingAnimationPauseDepth = 0
+	clearHeldWorkingWidget()
 	ctx.ui.setWorkingVisible(false)
 }
 
@@ -160,6 +179,7 @@ export function holdWorkingIndicator(ctx: Pick<ExtensionContext, "ui">): () => v
 	workingIndicatorHolds.add(hold)
 	if (workingAnimator) ctx.ui.setWorkingVisible(true)
 	else startWorkingIndicator(ctx)
+	mountHeldWorkingWidget(ctx)
 	return () => {
 		if (!workingIndicatorHolds.delete(hold)) return
 		if (workingIndicatorHolds.size > 0) return
@@ -178,6 +198,7 @@ export function holdWorkedForMessage(): () => void {
 export function pauseWorkingAnimation(): void {
 	if (workingAnimationPauseDepth === 0) {
 		workingAnimator?.pause()
+		if (heldWorkingUi) heldWorkingUi.ui.setWidget(HELD_WORKING_WIDGET_KEY, undefined, { placement: "aboveEditor" })
 	}
 	workingAnimationPauseDepth++
 }
@@ -199,6 +220,7 @@ export function __setWorkingAnimatorForTest(controller: WorkingAnimator | undefi
 	workingAnimator = controller
 	workingIndicatorHolds.clear()
 	workedForMessageHolds.clear()
+	heldWorkingUi = undefined
 }
 
 /** Cascade: text → clear, streaming → abort, otherwise → exit. */
@@ -389,9 +411,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		const sessionId = ctx.sessionManager.getSessionId()
-
 		setSessionModeOnboardingStatusLineSuppressed(false)
+		clearHeldWorkingWidget()
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()
@@ -485,7 +506,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		// Register a global terminal input listener so ctrl+p (model cycle forward)
 		// works even when a permission prompt or other dialog has focus.
-		// The cycle includes a virtual "multi-model" entry after the last real model.
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
@@ -535,52 +555,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						const orchRef = getOrchestratorModelRef(sessionId)
-						const orchParsed = splitModelRef(orchRef)
-						const orchestratorModel = orchParsed
-							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
-							: undefined
-
-						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
-						// kimi-k2.6 appears as a regular model AND multi-model appears
-						// as a separate virtual entry right after the last real model.
-						if (getMultiModelEnabled(ctx.sessionManager)) {
-							// Currently on the virtual multi-model entry — wrap to first real model.
-							// Check ALL models (including the orchestrator itself) because we are
-							// leaving the virtual entry, not a real model — the orchestrator in
-							// single-model mode is a valid distinct destination.
-							if (available.length > 0) {
-								const usage = ctx.getContextUsage()
-								const tokens = usage?.tokens ?? null
-								const images = sessionHasImages()
-								const curVision = current?.input.includes("image") ?? false
-								let firstReal: Model<Api> | undefined
-								for (const candidate of available) {
-									if (tokens !== null && candidate.contextWindow < tokens) continue
-									if (images && !candidate.input.includes("image") && curVision) continue
-									firstReal = candidate
-									break
-								}
-								if (firstReal) {
-									setMultiModelEnabled(sessionId, false)
-									if (current && modelsAreEqual(firstReal, current)) {
-										// Model object is the same (orchestrator → orchestrator) so setModel
-										// won't emit model_select and the status line won't re-render.
-										// Force a re-render via a no-op status update.
-										ctx.ui.setStatus("__model_cycle", undefined)
-									} else {
-										pi.setModel(firstReal).catch((err) => {
-											ctx.ui.notify(
-												`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
-												"warning",
-											)
-										})
-									}
-								}
-							}
-						} else if (available.length > 0 && current) {
-							let idx = available.findIndex((m) => modelsAreEqual(m, current))
-							if (idx === -1) idx = 0
+						if (available.length > 0 && current) {
+							const idx = available.findIndex((m) => modelsAreEqual(m, current))
 
 							const usage = ctx.getContextUsage()
 							const { model: next, skipped } = findNextCompatibleModel(
@@ -591,25 +567,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 								current,
 							)
 
-							const nextIdx = next ? available.findIndex((m) => modelsAreEqual(m, next)) : -1
-							const wouldWrap = next === undefined || nextIdx <= idx
-
-							if (wouldWrap && orchestratorModel) {
-								// Reached end of real models — enter multi-model.
-								setMultiModelEnabled(sessionId, true)
-								if (modelsAreEqual(orchestratorModel, current)) {
-									// Already on the orchestrator — setModel won't emit model_select
-									// so the status line won't re-render.  Force it.
-									ctx.ui.setStatus("__model_cycle", undefined)
-								} else {
-									pi.setModel(orchestratorModel).catch((err) => {
-										ctx.ui.notify(
-											`Failed to switch to multi-model: ${err instanceof Error ? err.message : String(err)}`,
-											"warning",
-										)
-									})
-								}
-							} else if (next && !modelsAreEqual(next, current)) {
+							if (next && !modelsAreEqual(next, current)) {
 								if (skipped.length > 0) {
 									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 									ctx.ui.notify(
@@ -631,6 +589,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
+		clearHeldWorkingWidget()
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()

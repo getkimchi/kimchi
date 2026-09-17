@@ -99,7 +99,7 @@ for (const referenceState of ["changed", "missing"] as const) {
 			responses: [
 				{
 					stream: [plan],
-					toolCalls: [{ id: "submit", function: { name: "submit_plan", arguments: JSON.stringify({ plan }) } }],
+					toolCalls: [{ id: "submit", function: { name: "ExitPlanMode", arguments: JSON.stringify({ plan }) } }],
 				},
 				blockedResponse,
 				{
@@ -240,7 +240,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		responses: [
 			{
 				stream: [plan],
-				toolCalls: [{ id: "submit-editable", function: { name: "submit_plan", arguments: JSON.stringify({ plan }) } }],
+				toolCalls: [{ id: "submit-editable", function: { name: "ExitPlanMode", arguments: JSON.stringify({ plan }) } }],
 			},
 			{
 				toolCalls: [

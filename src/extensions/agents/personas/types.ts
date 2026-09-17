@@ -3,8 +3,7 @@
  */
 
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { ModelTier } from "../../orchestration/model-registry/types.js"
-import type { ModelRole } from "../../orchestration/model-roles.js"
+import type { ModelRole, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
@@ -101,9 +100,6 @@ export const DEFAULT_AGENT_NAMES = [
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local"
 
-/** Isolation mode for agent execution. */
-export type IsolationMode = "worktree"
-
 /** Re-export orchestration types used in agent configs. */
 export type { ModelRole, ModelTier }
 
@@ -145,8 +141,6 @@ export interface AgentConfig {
 	includeCoreGuidelines?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
 	memory?: MemoryScope
-	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
-	isolation?: IsolationMode
 	/** true = this is an embedded default agent (informational) */
 	isDefault?: boolean
 	/** false = agent is hidden from the registry */
@@ -154,8 +148,8 @@ export interface AgentConfig {
 	/** Where this agent was loaded from */
 	source?: "default" | "project" | "global" | "package"
 	/**
-	 * Task roles this persona is optimized for. Used by the orchestrator
-	 * auto-pick logic when no model is explicitly specified and models[] is empty.
+	 * Task roles this persona is optimized for. Selects role-specific prompt guidance;
+	 * does not select or constrain the model.
 	 */
 	roles?: ModelRole[]
 }

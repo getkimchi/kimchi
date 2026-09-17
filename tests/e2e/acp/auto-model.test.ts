@@ -23,12 +23,11 @@ describe("ACP Auto model", () => {
 		await fixture?.stop()
 	})
 
-	it("keeps a saved Auto model working while hiding it without the experimental flag", async () => {
+	it("defaults a fresh session to Auto and advertises it without the experimental flag", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-auto-saved-default",
 			providerId: "kimchi-dev",
-			defaultProvider: "kimchi-dev",
-			defaultModel: "auto",
+			initialModel: false,
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE],
 			responses: [{ stream: ["ACP Auto works."] }],
@@ -36,7 +35,7 @@ describe("ACP Auto model", () => {
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
 		expect(session.models?.currentModelId).toBe("kimchi-dev/auto")
-		expect(session.models?.availableModels.map((model) => model.modelId)).not.toContain("kimchi-dev/auto")
+		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
 
 		const result = await prompt(fixture, session.sessionId, "Use the saved Auto model")
 		expect(result.stopReason).toBe("end_turn")
@@ -47,18 +46,19 @@ describe("ACP Auto model", () => {
 		expect(chat[0]?.body).toMatchObject({ model: "routed" })
 	})
 
-	it("advertises Auto when experimental features are enabled", async () => {
+	it("keeps an explicit concrete choice while advertising Auto", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-auto-visible-with-flag",
 			providerId: "kimchi-dev",
+			initialModel: "routed",
 			defaultProvider: "kimchi-dev",
 			defaultModel: "routed",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			responses: [],
 		})
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		expect(session.models?.currentModelId).toBe("kimchi-dev/routed")
 		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
 	})
 })

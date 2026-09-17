@@ -3,22 +3,64 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+	applyModelEnvArgs,
+	findDeprecatedMultiModelFlag,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	parseCliArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
-	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+
+describe("applyModelEnvArgs", () => {
+	it.each(["-n", "-e", "-t", "-xt"])("consumes flag-shaped values for upstream %s", (flag) => {
+		const args = [flag, "--model", "hello"]
+		expect(applyModelEnvArgs(args, "moonshotai/kimi-k3")).toEqual(["--model", "moonshotai/kimi-k3", ...args])
+		expect(parseCliArgs(args).options.model).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag([flag, "--multi-model"])).toBeUndefined()
+	})
+	it("forwards an inherited model as an explicit launch argument", () => {
+		const args = applyModelEnvArgs(["--mode", "json", "--session", "/tmp/worker.jsonl", "-p"], "kimchi-dev/glm-5.3")
+		populateCliArgs(args)
+		expect(getParsedCliArgs().options.model).toBe("kimchi-dev/glm-5.3")
+		expect(args.slice(0, 2)).toEqual(["--model", "kimchi-dev/glm-5.3"])
+	})
+
+	it.each([
+		["--model", "kimchi-dev/auto"],
+		["--model=kimchi-dev/auto"],
+		["--provider", "other"],
+		["--models", "kimchi-dev/auto,kimchi-dev/other"],
+	])("preserves explicit launch selection %j", (...args) => {
+		expect(applyModelEnvArgs(args, "kimchi-dev/glm-5.3")).toBe(args)
+	})
+
+	it("does not mistake flag-shaped prompt content for explicit selection", () => {
+		const args = ["--system-prompt", "--model", "--", "--provider"]
+		expect(applyModelEnvArgs(args, "kimchi-dev/glm-5.3")).toEqual(["--model", "kimchi-dev/glm-5.3", ...args])
+	})
+
+	it("leaves ordinary invocations unchanged without an inherited model", () => {
+		const args = ["hello"]
+		expect(applyModelEnvArgs(args, undefined)).toBe(args)
+	})
+
+	it("caches only an explicitly supplied model scope", () => {
+		populateCliArgs(["--models", "kimchi-dev/auto,kimchi-dev/glm-5.3"])
+		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
+		populateCliArgs([])
+		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -97,12 +139,17 @@ describe("isPreDispatchValueFlag", () => {
 		["--api-key"],
 		["--system-prompt"],
 		["--append-system-prompt"],
+		["--name"],
+		["-n"],
 		["--session"],
+		["--session-id"],
 		["--fork"],
 		["--session-dir"],
 		["--models"],
 		["--tools"],
 		["-t"],
+		["--exclude-tools"],
+		["-xt"],
 		["--thinking"],
 		["--export"],
 		["--extension"],
@@ -110,6 +157,11 @@ describe("isPreDispatchValueFlag", () => {
 		["--skill"],
 		["--prompt-template"],
 		["--theme"],
+		["--mode"],
+		["--allow-tool"],
+		["--deny-tool"],
+		["--permissions-config"],
+		["--tui-mode"],
 	])("detects %s as consuming a value during pre-dispatch scans", (arg) => {
 		expect(isPreDispatchValueFlag(arg)).toBe(true)
 	})
@@ -268,65 +320,43 @@ describe("stripExperimentalFeaturesArg", () => {
 	})
 })
 
-describe("stripMultiModelArgs", () => {
-	it("strips --multi-model", () => {
-		expect(stripMultiModelArgs(["--multi-model"])).toEqual([])
+describe("findDeprecatedMultiModelFlag", () => {
+	it.each(["--multi-model", "--multi-model=true", "--multi-model=false"])("detects %s", (arg) => {
+		expect(findDeprecatedMultiModelFlag(["--provider", "kimchi-dev", arg])).toBe(arg)
 	})
 
-	it("strips --model multi-model", () => {
-		expect(stripMultiModelArgs(["--model", "multi-model"])).toEqual([])
+	it.each([
+		"multi-model",
+		"multi-model:high",
+		"orchestration/multi-model",
+		"kimchi-dev/multi-model:max",
+	])("rejects removed model selection %s", (model) => {
+		expect(findDeprecatedMultiModelFlag(["--model", model])).toBe(`--model ${model}`)
+		expect(findDeprecatedMultiModelFlag([`--model=${model}`])).toBe(`--model ${model}`)
 	})
 
-	it("strips --model=multi-model", () => {
-		expect(stripMultiModelArgs(["--model=multi-model"])).toEqual([])
+	it("does not inspect a value consumed by a preceding option", () => {
+		expect(findDeprecatedMultiModelFlag(["--model", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--session", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--mode", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--permissions-config", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--allow-tool", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--deny-tool", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--name", "--multi-model"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--tui-mode", "--multi-model"])).toBeUndefined()
 	})
 
-	it("preserves real --model values", () => {
-		expect(stripMultiModelArgs(["--model", "kimchi-dev/kimi-k2.7"])).toEqual(["--model", "kimchi-dev/kimi-k2.7"])
-		expect(stripMultiModelArgs(["--model=kimchi-dev/kimi-k2.7"])).toEqual(["--model=kimchi-dev/kimi-k2.7"])
+	it("does not inspect positional arguments after the option terminator", () => {
+		expect(findDeprecatedMultiModelFlag(["--", "--multi-model"])).toBeUndefined()
 	})
 
-	it("preserves surrounding args", () => {
-		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])).toEqual([
-			"--provider",
-			"kimchi-dev",
-			"fix tests",
-		])
-	})
-
-	it("returns the array unchanged when no multi-model flags are present", () => {
-		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"])).toEqual([
-			"--provider",
-			"kimchi-dev",
-			"--model",
-			"kimi-k2.7",
-			"fix tests",
-		])
-	})
-
-	it("strips --multi-model when combined with a real --model value", () => {
-		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
-		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	it("ignores concrete model values", () => {
+		expect(findDeprecatedMultiModelFlag(["--model", "kimchi-dev/kimi-k2.7"])).toBeUndefined()
+		expect(findDeprecatedMultiModelFlag(["--model=kimchi-dev/kimi-k2.7"])).toBeUndefined()
 	})
 })
 
 describe("populateCliArgs / getParsedCliArgs", () => {
-	it("parses --model multi-model", () => {
-		populateCliArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])
-		expect(getParsedCliArgs()).toEqual({
-			options: { provider: "kimchi-dev", model: "multi-model" },
-			positionals: ["fix tests"],
-		})
-	})
-
-	it("parses --multi-model", () => {
-		populateCliArgs(["--multi-model", "fix tests"])
-		expect(getParsedCliArgs()).toEqual({
-			options: { "multi-model": true },
-			positionals: ["fix tests"],
-		})
-	})
-
 	it("parses real --model values", () => {
 		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7", "fix tests"])
 		expect(getParsedCliArgs()).toEqual({ options: { model: "kimchi-dev/kimi-k2.7" }, positionals: ["fix tests"] })
@@ -338,24 +368,9 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 	})
 
 	it("reuses the cached parse across calls", () => {
-		populateCliArgs(["--multi-model"])
-		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7"])
+		expect(getParsedCliArgs()).toEqual({ options: { model: "kimchi-dev/kimi-k2.7" }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
-		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
-	})
-
-	it.each([
-		["canonical", ["--model", "kimchi-dev/auto"]],
-		["provider and id", ["--provider", "kimchi-dev", "--model", "auto"]],
-		["bare id", ["--model", "auto"]],
-		["thinking suffix", ["--model", "kimchi-dev/auto:high"]],
-	] as const)("recognizes an explicit Auto selection in %s form", (_label, args) => {
-		populateCliArgs([...args])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(true)
-	})
-
-	it("does not mistake another provider's auto model for kimchi-dev/auto", () => {
-		populateCliArgs(["--provider", "custom", "--model", "auto"])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
+		expect(getParsedCliArgs()).toEqual({ options: { model: "kimchi-dev/kimi-k2.7" }, positionals: [] })
 	})
 })
