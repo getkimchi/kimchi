@@ -376,6 +376,7 @@ try {
 		const rejectedEnvironmentKeyMessage =
 			"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+		let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
 		try {
 			if (envKey) {
 				const discover = () =>
@@ -385,6 +386,7 @@ try {
 					})
 				const discovered = await discover()
 				models = discovered.models
+				environmentOllamaModels = discovered.ollamaModels
 				installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 			} else {
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
@@ -455,7 +457,7 @@ try {
 		// Wire Ollama-discovered models into the explorer / reviewer / builder
 		// role pools. Runs after setAvailableModels so the resolved roles
 		// singleton reflects the same model list the picker exposes.
-		const ollamaModelsForRoles = readOllamaModelsFromConfig(modelsJsonPath)
+		const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
 		if (ollamaModelsForRoles.length > 0) {
 			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
 		}

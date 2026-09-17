@@ -559,7 +559,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 										// Force a re-render via a no-op status update.
 										ctx.ui.setStatus("__model_cycle", undefined)
 									} else {
-										pi.setModel(firstReal).catch((err) => {
+										pi.setModel(firstReal, { persist: true }).catch((err) => {
 											ctx.ui.notify(
 												`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
 												"warning",
