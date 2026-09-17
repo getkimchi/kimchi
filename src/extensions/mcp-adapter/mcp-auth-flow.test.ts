@@ -1,8 +1,24 @@
+/**
+ * Tests for the MCP OAuth flow (mcp-auth-flow.ts).
+ *
+ * Covers the OAuth callback server lifecycle (binding, sharing, shutdown,
+ * port selection) and the no-DCR fallback in `startAuth`: when an
+ * authorization server (e.g. Google) does not support RFC 7591 dynamic
+ * client registration and no pre-registered `oauth.clientId` is configured,
+ * the MCP SDK throws "Incompatible auth server: does not support dynamic
+ * client registration" during connect, and `startAuth` must translate that
+ * into actionable guidance instead of surfacing the raw SDK error.
+ */
+
 import { mkdtempSync, rmSync } from "node:fs"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { isDynamicRegistrationUnsupportedError } from "./mcp-auth-flow.js"
+
+const DCR_ERROR_MESSAGE = "Incompatible auth server: does not support dynamic client registration"
 
 async function getFreePort(): Promise<number> {
 	const server = createServer()
@@ -27,7 +43,7 @@ async function sendCallback(port: number, path: string, state: string, code: str
 	expect(response.ok).toBe(true)
 }
 
-async function loadAuthFlowForPort(port: number, options: { connectGate?: Promise<void> } = {}) {
+async function loadAuthFlowForPort(port: number, options: { connectGate?: Promise<void>; connectError?: Error } = {}) {
 	const authDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-oauth-test-"))
 	vi.resetModules()
 	vi.stubEnv("MCP_OAUTH_CALLBACK_PORT", String(port))
@@ -67,6 +83,9 @@ async function loadAuthFlowForPort(port: number, options: { connectGate?: Promis
 			async connect(transport: { authProvider?: { redirectToAuthorization?: (url: URL) => void | Promise<void> } }) {
 				connectStarted()
 				await options.connectGate
+				if (options.connectError) {
+					throw options.connectError
+				}
 				await transport.authProvider?.redirectToAuthorization?.(new URL("https://auth.example.test/authorize"))
 				throw new UnauthorizedError("authorization required")
 			}
@@ -260,6 +279,69 @@ describe("MCP OAuth callback lifecycle", () => {
 		} finally {
 			await flow.shutdownOAuth()
 			await new Promise<void>((resolve) => blocker.close(() => resolve()))
+			rmSync(authDir, { recursive: true, force: true })
+		}
+	})
+
+	it("detects the MCP SDK no-DCR error string and rejects unrelated errors", () => {
+		expect(isDynamicRegistrationUnsupportedError(new Error(DCR_ERROR_MESSAGE))).toBe(true)
+		expect(isDynamicRegistrationUnsupportedError(new Error("connection refused"))).toBe(false)
+		expect(isDynamicRegistrationUnsupportedError("does not support dynamic client registration")).toBe(false)
+		expect(isDynamicRegistrationUnsupportedError(undefined)).toBe(false)
+	})
+
+	it("replaces the no-DCR SDK error with actionable guidance when no clientId is configured", async () => {
+		const port = await getFreePort()
+		const { authDir, flow } = await loadAuthFlowForPort(port, { connectError: new Error(DCR_ERROR_MESSAGE) })
+
+		try {
+			const failure = await flow
+				.startAuth("gmail", "https://mcp.example.com/mcp", { url: "https://mcp.example.com/mcp" })
+				.catch((error: unknown) => error)
+
+			expect(failure).toBeInstanceOf(Error)
+			const message = (failure as Error).message
+			expect(message).toContain("cannot register clients dynamically")
+			expect(message).toContain('"oauth": { "clientId"')
+			expect(message).toContain('"gmail"')
+			expect(message).toContain("/mcp-auth gmail")
+			// The guidance must not contain the matched substring itself, so a
+			// translated error can never be re-translated by the same code path.
+			expect(isDynamicRegistrationUnsupportedError(failure)).toBe(false)
+			expect((failure as Error).cause).toBeInstanceOf(Error)
+		} finally {
+			await flow.shutdownOAuth()
+			rmSync(authDir, { recursive: true, force: true })
+		}
+	})
+
+	it("rethrows the raw no-DCR error when a pre-registered clientId is configured", async () => {
+		const port = await getFreePort()
+		const { authDir, flow } = await loadAuthFlowForPort(port, { connectError: new Error(DCR_ERROR_MESSAGE) })
+
+		try {
+			await expect(
+				flow.startAuth("gmail", "https://mcp.example.com/mcp", {
+					url: "https://mcp.example.com/mcp",
+					oauth: { clientId: "pre-registered-client" },
+				}),
+			).rejects.toThrow(DCR_ERROR_MESSAGE)
+		} finally {
+			await flow.shutdownOAuth()
+			rmSync(authDir, { recursive: true, force: true })
+		}
+	})
+
+	it("rethrows unrelated connect errors unchanged", async () => {
+		const port = await getFreePort()
+		const { authDir, flow } = await loadAuthFlowForPort(port, { connectError: new Error("ECONNREFUSED") })
+
+		try {
+			await expect(
+				flow.startAuth("gmail", "https://mcp.example.com/mcp", { url: "https://mcp.example.com/mcp" }),
+			).rejects.toThrow("ECONNREFUSED")
+		} finally {
+			await flow.shutdownOAuth()
 			rmSync(authDir, { recursive: true, force: true })
 		}
 	})
