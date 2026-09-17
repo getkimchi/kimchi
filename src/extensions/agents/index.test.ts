@@ -586,7 +586,12 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(managerInstance).toBeDefined()
 
 		const registry = makeMockModelRegistry([
-			{ id: "auto", name: "Picks the best model for your tasks automatically.", provider: "kimchi-dev", input: ["text", "image"] },
+			{
+				id: "auto",
+				name: "Picks the best model for your tasks automatically.",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+			},
 		])
 		const branch = [
 			{
