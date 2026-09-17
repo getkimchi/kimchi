@@ -3,13 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import { digestDbPath } from "./config.js"
-import {
-	importDbPath,
-	importFacts,
-	parseFactsJsonl,
-	parseImportArgs,
-	type ImportBackend,
-} from "./import.js"
+import { type ImportBackend, importDbPath, importFacts, parseFactsJsonl, parseImportArgs } from "./import.js"
 
 describe("parseImportArgs", () => {
 	it("defaults: personal scope, process cwd, no facts file", () => {
