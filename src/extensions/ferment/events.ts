@@ -8,7 +8,6 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { getEffectiveModel } from "../router/state.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -600,24 +599,5 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
-
-		// Trigger compaction after any turn that completed a step or phase.
-		// Fires between turns in automated-continuation mode, so the next
-		// phase starts with a fresh compacted session.
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		// Mid-turn guard: if the context crossed the auto-compaction threshold
-		// while a step is still in progress, compact now and resume the step.
-		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
-		// Awaited so the compacted session and step-resume nudge are in place
-		// before pi-mono builds the next turn's context (see note below); wrapped
-		// because this handler has no outer catch and must never reject out.
-		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
-			try {
-				await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
-			} catch (err) {
-				ctx.ui?.notify?.(`Mid-turn compaction error: ${err instanceof Error ? err.message : String(err)}`, "warning")
-			}
-		}
 	})
 }
