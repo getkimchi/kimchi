@@ -69,6 +69,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import doneSoundExtension from "./extensions/done-sound.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -638,6 +639,7 @@ try {
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
+			doneSoundExtension,
 			lspExtension,
 			dapExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
