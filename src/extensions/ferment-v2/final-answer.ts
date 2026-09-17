@@ -1,7 +1,11 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { AgentEndEvent, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
-import { isHarnessSteer, SYSTEM_REMINDER_CLOSE, SYSTEM_REMINDER_OPEN } from "../steer-marker.js"
+import {
+	ASSISTANT_OUTPUT_WITHHELD,
+	isHarnessSteer,
+	SYSTEM_REMINDER_CLOSE,
+	SYSTEM_REMINDER_OPEN,
+} from "../steer-marker.js"
 import { FERMENT_V2_CONTROL_MESSAGE_TYPE } from "./constants.js"
 import { isRecord } from "./reducer.js"
 import type { PendingFermentV2Continuation, SessionFermentV2 } from "./types.js"

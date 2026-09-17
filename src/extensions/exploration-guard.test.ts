@@ -4,7 +4,7 @@ import explorationGuardExtension, {
 	type ExplorationGuardOptions,
 	STEER_MESSAGE_TYPE,
 } from "./exploration-guard.js"
-import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
+import { ASSISTANT_OUTPUT_WITHHELD } from "./steer-marker.js"
 
 function createGuard(options?: ExplorationGuardOptions): ExplorationGuard {
 	return new ExplorationGuard(options)

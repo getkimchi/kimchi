@@ -41,15 +41,10 @@ import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	brandUnmarkedSteers,
-	ContinuationNudge,
-	EMPTY_TURN_NUDGE_TEXT,
-	EmptyTurnNudge,
-	NUDGE_CUSTOM_TYPE,
 	type OrchestratorMessages,
-	stripStaleNudges,
 	stripUiOnlyMessages,
 	tagSelfEchoes,
-} from "../orchestration/continuation-nudge.js"
+} from "../orchestration/context-hygiene.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
 	DEFAULT_MODEL_ROLES,
@@ -135,10 +130,6 @@ function syncSessionModelState(
 	}
 
 	return { multiModelEnabled: resolution.value, orchestratorModelRef }
-}
-
-function isDelegationToolCallName(name: string | undefined): boolean {
-	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
 function isToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
@@ -409,169 +400,26 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				notifyIfDeprecated(ctx, deprecationModelId)
 			})
 
-			pi.on("model_select", async (event, ctx) => {
+			pi.on("model_select", async (_event, ctx) => {
 				// A model is now selected — surface its deprecation notice if it
 				// retires within the notice window. Deduplicated per session+model,
 				// so cycling back and forth warns at most once per model.
 				notifyIfDeprecated(ctx, ctx.model?.id)
-
-				// A user-initiated model switch (UI picker, /model, or cycling)
-				// is a fresh start for tool-calling behaviour from the new model's
-				// perspective. Reset the session-level latch so the first text-only
-				// turn after the switch is treated like the first turn of a new
-				// session (nudge suppressed until the new model calls a tool).
-				// Session restore is deliberately excluded: a restored session is
-				// continuing an existing conversation, not starting fresh.
-				if (event.source === "set" || event.source === "cycle") {
-					const sessionId = ctx.sessionManager.getSessionId()
-					const continuationNudge = getContinuationNudge(sessionId)
-					const emptyTurnNudge = getEmptyTurnNudge(sessionId)
-					continuationNudge.resetForModelSwitch()
-					emptyTurnNudge.resetForModelSwitch()
-				}
 			})
 
-			// Detect the inverse of the context-event nudge below: the orchestrator reasons
-			// in prose, announces it will delegate, and ends its turn without emitting a
-			// delegation tool call. The agent loop would otherwise exit and wait for another
-			// user prompt. Nudge once per user-input cycle, and only when no tool has fired
-			// that cycle — so genuine end-of-task summaries are left alone. Mirrors AISI
-			// Inspect's `on_continue`.
-			//
-			// The reset handler is registered BEFORE the enrichment handler below because
-			// that one returns `{action: "handled"}` in interactive mode, which short-
-			// circuits the input-handler chain.
-			const continuationNudgeMap = new Map<string, ContinuationNudge>()
-			const emptyTurnNudgeMap = new Map<string, EmptyTurnNudge>()
-
-			function getContinuationNudge(sessionId: string): ContinuationNudge {
-				let nudge = continuationNudgeMap.get(sessionId)
-				if (!nudge) {
-					nudge = new ContinuationNudge()
-					continuationNudgeMap.set(sessionId, nudge)
-				}
-				return nudge
-			}
-
-			function getEmptyTurnNudge(sessionId: string): EmptyTurnNudge {
-				let nudge = emptyTurnNudgeMap.get(sessionId)
-				if (!nudge) {
-					nudge = new EmptyTurnNudge()
-					emptyTurnNudgeMap.set(sessionId, nudge)
-				}
-				return nudge
-			}
-
-			pi.on("agent_start", async (_event, ctx) => {
+			pi.on("turn_end", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
-				const continuationNudge = getContinuationNudge(sessionId)
-				continuationNudge.resetForNewAgentRun()
-			})
-
-			pi.on("input", async (event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId()
-				const continuationNudge = getContinuationNudge(sessionId)
-				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
-
-				if (event.source === "extension") {
-					// Agent result arriving. Clear the delegation-pending flag so the
-					// continuation nudge can fire normally once the model has processed
-					// the output (at the next turn_end, after any tool calls it makes).
-					continuationNudge.clearDelegationPending()
-					return
-				}
-				continuationNudge.resetForNewUserInput()
-				emptyTurnNudge.resetForNewUserInput()
-			})
-
-			pi.on("tool_execution_start", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId()
-				const continuationNudge = getContinuationNudge(sessionId)
-				continuationNudge.recordToolCall()
-			})
-
-			pi.on("message_update", (event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId()
-				const continuationNudge = getContinuationNudge(sessionId)
-
-				if (!continuationNudge.isNudgeResponsePending()) return
-				const ame = event.assistantMessageEvent
-				if (ame.type !== "text_delta") return
-				const message = event.message as AssistantMessage
-				const content = message.content[ame.contentIndex]
-				if (content?.type === "text") {
-					continuationNudge.accumulateResponse(content.text)
-					content.text = ""
-				}
-			})
-
-			pi.on("turn_end", async (event, ctx) => {
-				if (event.message.role !== "assistant") return
-				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
-				const assistantMsg = event.message as AssistantMessage
-
-				const sessionId = ctx.sessionManager.getSessionId()
-				const continuationNudge = getContinuationNudge(sessionId)
-				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
 
 				// Track stall: increment counter each turn so the headless prompt
 				// block can detect when the orchestrator hasn't updated step todos.
 				// Scoped to this session so concurrent sessions do not share a counter.
 				bumpStallCounter(sessionId)
 				fireStepStallSteerIfStalled(pi, sessionId)
-
-				// Mark each delegation tool call so the continuation nudge stays
-				// suppressed until all delegated-agent results have been received.
-				// A single turn may contain multiple parallel agent calls.
-				for (const c of assistantMsg.content) {
-					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
-						continuationNudge.markDelegationCall()
-					}
-				}
-
-				if (continuationNudge.isNudgeResponsePending()) {
-					if (continuationNudge.isDoneSignalReceived() || assistantMsg.stopReason === "stop") {
-						// The model either explicitly sent the <done> signal or ended its
-						// turn with stopReason "stop" (intentional end-of-turn). Either
-						// way, respect the stop — do not send another nudge that would
-						// trigger a new turn and make the model think it received user input.
-						return
-					}
-					// While a continuation nudge response is pending, the model is already
-					// in a recovery cycle. Skip empty-turn nudge here to avoid sending
-					// mixed instructions ("call a tool" vs "summarize or continue").
-					// Fall through to continuationNudge.evaluateTurn below.
-				} else if (
-					// Suppress the empty-turn nudge when any tool was called during this
-					// agent run. After a completed tool sequence, an empty response is
-					// almost certainly the model finishing, not a model glitch. Without
-					// this check the model treats the nudge as user input and continues
-					// working after it was already done.
-					!continuationNudge.hasToolBeenCalledThisRun() &&
-					emptyTurnNudge.evaluateTurn(assistantMsg)
-				) {
-					pi.sendMessage(
-						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
-						{ deliverAs: "followUp" },
-					)
-					return
-				}
-
-				if (!continuationNudge.evaluateTurn(assistantMsg)) return
-				pi.sendMessage(
-					{
-						customType: NUDGE_CUSTOM_TYPE,
-						content: continuationNudge.getNudgeText(),
-						display: false,
-					},
-					{ deliverAs: "followUp" },
-				)
 			})
 
 			pi.on("context", async (event, ctx) => {
 				const effectiveModel = getEffectiveModel(ctx)
-				let messages = stripStaleNudges(event.messages)
-				messages = stripEmptyToolCalls(messages)
+				let messages = stripEmptyToolCalls(event.messages)
 				messages = stripUiOnlyMessages(messages)
 				// kimi-k2.x stalls on historical tool calls whose IDs are not in
 				// Moonshot's canonical format (issue #1063) — normalize for those

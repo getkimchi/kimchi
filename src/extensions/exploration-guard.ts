@@ -1,8 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
-import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
-import { markHarnessSteer } from "./steer-marker.js"
+import { ASSISTANT_OUTPUT_WITHHELD, markHarnessSteer } from "./steer-marker.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
