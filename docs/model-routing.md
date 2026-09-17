@@ -16,7 +16,7 @@ To select Auto explicitly:
 kimchi --model auto
 ```
 
-You can also select **Auto (Kimchi Router)** from `/model`. No experimental flag is required.
+You can also select the Auto model from `/model` (listed as **Picks the best model for your tasks automatically.**). No experimental flag is required.
 
 The router uses your existing Kimchi API key. There is no separate router authentication to configure.
 
