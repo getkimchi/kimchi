@@ -21,12 +21,25 @@ import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREM
 import { resolveProjectScope } from "./scope.js"
 
 export function wireMemoryCapture(pi: ExtensionAPI): void {
+	if (captureDisabled()) return
 	pi.on("session_before_compact", (event, ctx) => {
 		captureMessages(extractMessages(event.branchEntries), ctx.cwd)
 	})
 	pi.on("session_shutdown", (_event, ctx) => {
 		captureMessages(extractMessages(ctx.sessionManager.getEntries()), ctx.cwd)
 	})
+}
+
+/**
+ * Capture kill-switch: with KIMCHI_MEMORY_CAPTURE=off, the session skips
+ * capture entirely — no handlers registered, no job files written, no
+ * workers spawned. The benchmark's shared-store mode uses this to freeze
+ * the memory store across question launches (each question session runs
+ * with the store as-is instead of adding its own content). Unset or any
+ * other value keeps normal capture.
+ */
+export function captureDisabled(): boolean {
+	return process.env.KIMCHI_MEMORY_CAPTURE === "off"
 }
 
 /**
@@ -130,7 +143,7 @@ export function messageText(content: unknown): string {
 }
 
 function captureMessages(messages: CaptureMessage[], cwd: string): void {
-	if (messages.length === 0) return
+	if (captureDisabled() || messages.length === 0) return
 	try {
 		const dbPath = digestDbPath()
 		const pendingDir = join(defaultMemoryDir(), "pending")
