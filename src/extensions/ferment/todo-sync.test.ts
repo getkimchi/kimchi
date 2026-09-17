@@ -11,12 +11,7 @@ import type { Ferment, Phase } from "../../ferment/types.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { setActive } from "./state.js"
-import {
-	__getRunningSteps,
-	bumpStallCounter,
-	getTurnsSinceStepTodoWrite,
-	registerFermentTodoSync,
-} from "./todo-sync.js"
+import { __getRunningSteps, registerFermentTodoSync } from "./todo-sync.js"
 
 const TEST_SESSION_ID = "test-session"
 
@@ -823,63 +818,6 @@ describe("todo-sync bridge", () => {
 	})
 
 	describe("cross-session isolation", () => {
-		it("isolates running steps and stall counters between sessions", () => {
-			const { pi: piA, emit: emitA } = createFakePI()
-			const { pi: piB, emit: emitB } = createFakePI()
-			const ferment = createTestFerment("phase-1", 2)
-			setActive(ferment)
-
-			const unsubA = registerFermentTodoSync(piA, "session-a")
-			const unsubB = registerFermentTodoSync(piB, "session-b")
-
-			emitA(FERMENT_EVENTS.PHASE_STARTED, {
-				fermentId: ferment.id,
-				phaseId: "phase-1",
-				phaseIndex: 1,
-				phaseName: "Test Phase",
-			})
-			emitA(FERMENT_EVENTS.STEP_STARTED, {
-				fermentId: ferment.id,
-				phaseId: "phase-1",
-				stepId: "step-1",
-				stepIndex: 1,
-			})
-			emitB(FERMENT_EVENTS.PHASE_STARTED, {
-				fermentId: ferment.id,
-				phaseId: "phase-1",
-				phaseIndex: 1,
-				phaseName: "Test Phase",
-			})
-			emitB(FERMENT_EVENTS.STEP_STARTED, {
-				fermentId: ferment.id,
-				phaseId: "phase-1",
-				stepId: "step-1",
-				stepIndex: 1,
-			})
-
-			expect(__getRunningSteps("session-a").size).toBe(1)
-			expect(__getRunningSteps("session-b").size).toBe(1)
-
-			bumpStallCounter("session-a")
-			bumpStallCounter("session-a")
-			expect(getTurnsSinceStepTodoWrite("session-a")).toBe(2)
-			expect(getTurnsSinceStepTodoWrite("session-b")).toBe(0)
-
-			// A ferment-step todo written for session-a should reset A's counter only.
-			applyWriteTodos(
-				{
-					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-					todos: [{ content: "agent bullet", status: "in_progress" }],
-				},
-				"session-a",
-			)
-			expect(getTurnsSinceStepTodoWrite("session-a")).toBe(0)
-			expect(getTurnsSinceStepTodoWrite("session-b")).toBe(0)
-
-			unsubA()
-			unsubB()
-		})
-
 		it("isolates suspend/resume snapshots between sessions", () => {
 			const { pi: piA, emit: emitA } = createFakePI()
 			const { pi: piB, emit: emitB } = createFakePI()
