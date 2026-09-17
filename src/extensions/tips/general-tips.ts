@@ -12,9 +12,9 @@ export const GENERAL_TIPS = [
 		message: "Run `/settings > Themes` to change colors.",
 	},
 	{
-		id: "multi-model-switch",
+		id: "auto-model-switch",
 		scope: "general",
-		message: "Use `ctrl+p` or `/model` to select multi-model for auto routing.",
+		message: "Use `ctrl+p` or `/model` to select Auto for routing.",
 	},
 	{
 		id: "single-model-mode",
@@ -55,11 +55,6 @@ export const GENERAL_TIPS = [
 		id: "export-bug-report",
 		scope: "general",
 		message: "Run `/bug` to create GitHub issue with a bug report.",
-	},
-	{
-		id: "multi-model-roles",
-		scope: "general",
-		message: "Run `/multi-model` to assign models to each role.",
 	},
 	{
 		id: "help-command",

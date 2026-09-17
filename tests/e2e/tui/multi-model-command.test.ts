@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
@@ -42,6 +42,40 @@ const TWO_MODELS = [
 	{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 },
 	{ slug: "heavy", displayName: "Fake Heavy", contextWindow: 1_000_000, maxTokens: 4096 },
 ] as const
+
+test("legacy multi-model is hidden from the model picker and command suggestions", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-hidden",
+			models: [...TWO_MODELS],
+			initialModel: "basic",
+			responses: [],
+			seedHome: (homeDir) => {
+				const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(path, "utf-8"))
+				settings.modelRoles = { ...settings.modelRoles, orchestrator: "fake/basic" }
+				writeFileSync(path, JSON.stringify(settings))
+			},
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/model")
+			await waitForText(terminal, "Only showing models from configured providers", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
+			expect(viewText(terminal)).not.toContain("multi-model")
+			trace.step("picker omits legacy model")
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.write("/multi")
+			await waitForText(terminal, "/multi", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await new Promise((resolve) => setTimeout(resolve, 250))
+			expect(viewText(terminal)).not.toContain("/multi-model")
+			trace.step("autocomplete omits legacy command")
+		},
+	)
+})
 
 test("/multi-model opens the main menu with the role summary and bottom-row entries", async ({ terminal }) => {
 	await runKimchiSession(
@@ -365,7 +399,7 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 				.split("\n")
 				.find((line) => /^> \[/.test(line))
 				?.match(/kimchi-dev\/(\S+)/)?.[1]
-			expect(firstCursorModel).not.toBe("basic")
+			expect(firstCursorModel).not.toBe("auto")
 			trace.step(`cursor on row 1 (${firstCursorModel}) after first open`)
 
 			// Escape cancels back to main menu.
@@ -374,7 +408,7 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			trace.step("back at main menu")
 
 			// Re-open Builder picker. The cursor MUST be back on row 0
-			// ("basic"), not on the previous row 1 ("heavy").
+			// ("auto"), not on the previous row 1 ("basic").
 			await navigateMenuTo(terminal, trace, "Builder")
 			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("toggle-select re-opened")
@@ -384,7 +418,7 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 				.split("\n")
 				.find((line) => /^> \[/.test(line))
 				?.match(/kimchi-dev\/(\S+)/)?.[1]
-			expect(reOpenCursorModel).toBe("basic")
+			expect(reOpenCursorModel).toBe("auto")
 			trace.step(`cursor reset to row 0 (${reOpenCursorModel}) after re-open`)
 
 			terminal.keyEscape()
@@ -568,7 +602,7 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 
 			const view = viewText(terminal)
 			expect(view).not.toContain("Enter custom model")
-			expect(view).not.toContain("kimchi-dev/auto")
+			expect(view).toContain("kimchi-dev/auto")
 			trace.step("no Enter custom model... option visible")
 
 			terminal.keyEscape()
@@ -577,12 +611,11 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 	)
 })
 
-test("/multi-model offers Auto when experimental features are enabled", async ({ terminal }) => {
+test("/multi-model offers Auto without experimental features", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "multi-model-experimental-auto",
-			extraArgs: ["--enable-experimental-features"],
+			artifactName: "multi-model-auto",
 			// Deliberately reverse the API order so this scenario also verifies sorting.
 			models: [TWO_MODELS[1], TWO_MODELS[0]],
 			responses: [],
