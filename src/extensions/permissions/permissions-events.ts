@@ -8,7 +8,7 @@
  *
  * Privacy: payloads carry structured fields only (tool name, mode, decision
  * type). Raw command text, file paths, and user feedback strings are intentionally
- * NOT emitted — mirroring the bash-tool-guard and loop-guard stance.
+ * NOT emitted — mirroring the loop-guard stance.
  *
  * Interception: these channels are notification-only (fire-and-forget).
  * The EventBus.emit() returns void. For interception/blocking, extensions
