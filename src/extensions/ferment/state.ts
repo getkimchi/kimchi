@@ -38,7 +38,7 @@ export function isTerminal(ferment: Ferment | undefined): boolean {
 }
 
 /** The "bail out / clear guard" predicate: missing, terminal, or paused.
- *  Used by the lifecycle-obligation guard, stop-nudge, scheduler, and error-
+ *  Used by the scheduler and error-
  *  recovery paths to decide whether a ferment can no longer make progress
  *  this turn. Keeps the five hand-written `!f || f.status === ...` sites
  *  from drifting as statuses evolve. */
@@ -265,38 +265,6 @@ export function isAutomatedContinuationEnabled(): boolean {
 
 export function setAutomatedContinuationEnabled(v: boolean): void {
 	continuationPolicy = v ? "automated" : "manual"
-}
-
-// ─── Lifecycle obligation guard retry state ──────────────────────────────────
-// Session-local recovery budget. This is deliberately not persisted: it tracks
-// agent-loop stalls, not Ferment domain progress. Successful persisted lifecycle
-// transitions clear the entry through FermentRuntime's coordination hook.
-
-export interface LifecycleGuardRetryState {
-	/** Current obligation key for this Ferment. */
-	key: string
-	/** Number of retries scheduled so far for this key (1 after the first stop). */
-	count: number
-	/** Whether exhaustion has already been reported for this key. */
-	reported: boolean
-}
-
-const lifecycleGuardRetryStates = new Map<string, LifecycleGuardRetryState>()
-
-export function getLifecycleGuardRetryState(fermentId: string): LifecycleGuardRetryState | undefined {
-	return lifecycleGuardRetryStates.get(fermentId)
-}
-
-export function setLifecycleGuardRetryState(fermentId: string, state: LifecycleGuardRetryState): void {
-	lifecycleGuardRetryStates.set(fermentId, state)
-}
-
-export function clearLifecycleGuardRetryState(fermentId: string): void {
-	lifecycleGuardRetryStates.delete(fermentId)
-}
-
-export function clearAllLifecycleGuardRetryStates(): void {
-	lifecycleGuardRetryStates.clear()
 }
 
 // ─── Last human input timestamp (used by the /ferment progress dialog title) ─
@@ -785,45 +753,12 @@ function persistFerment(fermentId: string): void {
 	})
 }
 
-// ─── Scoping exploration turn counter ─────────────────────────────────────────
-// Tracks consecutive turns during draft scoping where the model only called
-// read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
-// without calling any scoping-progression tool (ask_user,
-// confirm_ferment_completion_criteria, propose_ferment_scoping, scope_ferment, Agent).
-// After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
-// telling the model to stop exploring and advance to the next scoping step.
-//
-// Threshold is intentionally generous: thorough exploration is part of a good
-// plan. Bench data shows ~3 productive exploration turns are normal before the
-// model can write a well-grounded scope. We only want to catch the long-tail
-// case where the model is genuinely stuck.
-
-const scopingExploreTurns = new Map<string, number>()
-
-export const MAX_SCOPING_EXPLORE_TURNS = 8
-
-export function bumpScopingExploreTurns(fermentId: string): number {
-	const next = (scopingExploreTurns.get(fermentId) ?? 0) + 1
-	scopingExploreTurns.set(fermentId, next)
-	return next
-}
-
-export function getScopingExploreTurns(fermentId: string): number {
-	return scopingExploreTurns.get(fermentId) ?? 0
-}
-
-export function resetScopingExploreTurns(fermentId: string): void {
-	scopingExploreTurns.delete(fermentId)
-}
-
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
 export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
-	scopingExploreTurns.delete(fermentId)
-	clearLifecycleGuardRetryState(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)

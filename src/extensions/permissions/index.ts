@@ -18,13 +18,6 @@ import {
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
 } from "../../shared/planning/plan-review-bus.js"
-import {
-	contentHasToolCall,
-	hasPlanSubmitToolCall,
-	isNudgeSuppressed,
-	PLAN_MODE_STOP_NUDGE,
-	shouldNudge,
-} from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
@@ -236,11 +229,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// released when the plan is approved (execute / start-as-ferment) or the
 	// session restarts.
 	let activePlanSlug: string | undefined
-	// Per-session count of plan-mode stall nudges (model stopped after tool
-	// calls without calling submit_plan). Keyed by session ID so concurrent
-	// sessions don't share a budget. Reset when submit_plan is called, when
-	// the mode leaves plan, and on session restart.
-	const planStopNudgeCounts = new Map<string, number>()
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
@@ -381,7 +369,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
 			activePlanSlug = undefined
-			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
 		if (next.mode === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
@@ -511,7 +498,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		applyingPermissionMode = false
 		cliMode = undefined
 		activePlanSlug = undefined
-		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -633,45 +619,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// registration cannot widen the restricted tool surface.
 			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
 		}
-	})
-
-	// Plan-mode stall recovery: when the model made tool calls in plan mode and
-	// then ended the turn with stopReason "stop" without calling submit_plan,
-	// the session would stall silently — nudge it to resolve open questions and
-	// submit the plan. Capped per session; agent workers are excluded (they
-	// submit via submit_plan in their own terminate-on-tool-return flow).
-	pi.on("turn_end", (event, ctx) => {
-		if (isAgentWorker()) return
-		if (getRuntimePermissionMode().mode !== "plan") return
-		if (event.message.role !== "assistant") return
-		const content = Array.isArray(event.message.content) ? event.message.content : []
-		const toolNames = content
-			.filter((c) => (c as { type: string }).type === "toolCall" || (c as { type: string }).type === "tool_use")
-			.map((c) => (c as { name?: unknown }).name)
-			.filter((name): name is string => typeof name === "string")
-		if (hasPlanSubmitToolCall(toolNames)) {
-			// The review flow owns the turn now. Reset the stall budget so a
-			// rework round starts fresh.
-			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
-			return
-		}
-		const stopReason = (event.message as { stopReason?: string }).stopReason
-		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason, completionSignalPresent: false })) {
-			return
-		}
-		const sessionId = ctx.sessionManager.getSessionId()
-		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
-		planStopNudgeCounts.set(sessionId, count)
-		if (isNudgeSuppressed(count)) return
-		safeSendMessage(
-			pi,
-			{
-				customType: "plan-mode-stop-nudge",
-				content: PLAN_MODE_STOP_NUDGE,
-				display: false,
-			},
-			{ triggerTurn: true, deliverAs: "steer" },
-		)
 	})
 
 	// submit_plan tool — the adhoc plan-mode completion signal.

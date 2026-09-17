@@ -3,8 +3,7 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { emitFermentScopingResumed } from "./domain-events-emitter.js"
-import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
-import { appendRefEntry, resetScopingStopNudgeCount } from "./nudge.js"
+import { appendRefEntry } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
 import { triggerPendingPlanReview } from "./plan-review-trigger.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
@@ -69,7 +68,6 @@ export function resumeFerment(
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return
 	}
-	clearLifecycleGuard(existing.id)
 
 	if (existing.status === "complete" || existing.status === "abandoned") {
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
@@ -195,7 +193,6 @@ export function resumeFerment(
 
 	// Renew draft-scoping recovery only once resume has passed every
 	// blocking check and will actually schedule another model turn.
-	resetScopingStopNudgeCount(existing.id)
 
 	// Draft without pending review: send one ferment_resume_nudge directly and
 	// return. This preserves the existing draft-scoping behavior without
