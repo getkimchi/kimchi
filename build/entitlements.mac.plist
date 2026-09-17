@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <!--
-      Hardened runtime is implied by Developer ID signing (--options runtime);
+      Hardened runtime is enabled explicitly when signing with Developer ID;
       these entitlements carve out only what the Bun runtime needs.
 
       Allow JIT: JavaScriptCore compiles JS to executable memory at runtime;
