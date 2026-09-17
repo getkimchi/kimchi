@@ -334,7 +334,6 @@ export class LoopGuard {
 			detector: "edit_run_total",
 		}
 	}
-
 }
 
 // \u0000 cannot appear in stable-stringified JSON (control chars are always
