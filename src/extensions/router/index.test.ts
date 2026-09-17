@@ -4,10 +4,12 @@ import { join } from "node:path"
 import type { Model } from "@earendil-works/pi-ai"
 import type {
 	BeforeAgentStartEvent,
+	CustomEntry,
 	ExtensionEvent,
 	InputEvent,
 	SessionEntry,
 	SessionStartEvent,
+	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -463,11 +465,43 @@ describe("Auto model extension", () => {
 			provider: "kimchi-dev",
 			modelId: target.id,
 		})
-		// The pick is announced the moment the decision happens — a status-line
-		// notice (gray, padded) like "TUI mode: fullscreen", not a tips-widget hint.
-		expect(ctx.ui.notify).toHaveBeenCalledOnce()
-		expect(ctx.ui.notify).toHaveBeenCalledWith(`Auto-model picked ${target.id}.`)
+		// The pick shows via the persisted entry's renderer, not a toast: the same
+		// line stays visible on resume without entering LLM context.
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "resolved", model: target })
+	})
+
+	it("renders the persisted resolution entry as the pick status line", () => {
+		const { getEntryRenderer } = harness()
+		const theme = {
+			fg: (_name: string, value: string) => value,
+			bold: (value: string) => value,
+		} as unknown as Theme
+		const resolveEntry = (data: unknown): CustomEntry => ({
+			type: "custom",
+			id: crypto.randomUUID(),
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			customType: AUTO_RESOLUTION_ENTRY,
+			data,
+		})
+
+		const rendered = getEntryRenderer(AUTO_RESOLUTION_ENTRY)(
+			resolveEntry({ version: 1, status: "resolved", provider: "kimchi-dev", modelId: "kimi-k2.5" }),
+			{ expanded: false },
+			theme,
+		)
+		expect(rendered?.render(120).join("\n").trimEnd()).toBe("Auto-model picked kimi-k2.5.")
+
+		// Unrecognized payloads (older versions, failures) render nothing.
+		expect(
+			getEntryRenderer(AUTO_RESOLUTION_ENTRY)(
+				resolveEntry({ version: 1, status: "failed" }),
+				{ expanded: false },
+				theme,
+			),
+		).toBeUndefined()
+		expect(getEntryRenderer(AUTO_RESOLUTION_ENTRY)(resolveEntry(undefined), { expanded: false }, theme)).toBeUndefined()
 	})
 
 	it("applies the routed model's reasoning capability to the Auto session", async () => {

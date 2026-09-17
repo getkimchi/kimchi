@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
+import { Text } from "@earendil-works/pi-tui"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
@@ -17,12 +18,13 @@ import {
 	clearAutoRoutingState,
 	getAutoRoutingState,
 	hydrateAutoRoutingState,
+	isPersistedAutoResolution,
 	resolvedEntry,
 	sessionSelectsAuto,
 	setAutoRoutingState,
 } from "./state.js"
 
-/** Printed when the Auto router picks a concrete model — mimics upstream status lines like "TUI mode: fullscreen". */
+/** Rendered when the Auto router picks a concrete model — mimics upstream status lines like "TUI mode: fullscreen". */
 function formatAutoPickNotice(modelId: string): string {
 	return `Auto-model picked ${modelId}.`
 }
@@ -82,6 +84,14 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 	return (pi: ExtensionAPI) => {
 		// Pi clears custom API handlers on /reload, so register with each extension lifecycle.
 		registerAutoApiProvider()
+
+		// The resolution entry doubles as the persisted pick notice: rendering it
+		// keeps the notice in the transcript, including on resume, without leaking
+		// the pick into LLM context (custom entries stay out of context).
+		pi.registerEntryRenderer(AUTO_RESOLUTION_ENTRY, (entry, _options, theme) => {
+			if (!isPersistedAutoResolution(entry.data)) return undefined
+			return new Text(theme.fg("dim", formatAutoPickNotice(entry.data.modelId)), 0, 0)
+		})
 
 		pi.on("session_start", async (event, ctx) => {
 			const sessionId = ctx.sessionManager.getSessionId()
@@ -221,7 +231,6 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				const state = { status: "resolved", model: resolution.model } satisfies AutoRoutingState
 				setAutoRoutingState(sessionId, state)
 				pi.appendEntry(AUTO_RESOLUTION_ENTRY, resolvedEntry(resolution.model))
-				ctx.ui.notify(formatAutoPickNotice(resolution.model.id))
 				return state
 			})
 		})
