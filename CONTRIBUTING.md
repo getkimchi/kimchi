@@ -36,6 +36,11 @@ Kimchi is licensed under the **Apache License 2.0**. By contributing, you agree 
 4. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
 5. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
 
+## Changelog
+
+Do not edit `CHANGELOG.md`. Changelog entries are added by maintainers for user-visible changes.
+See `docs/releases.md` for the full release methodology.
+
 ## What we will and won't accept
 
 **Likely to be accepted:**
