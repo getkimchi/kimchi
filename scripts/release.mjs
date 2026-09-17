@@ -218,7 +218,7 @@ export function runRelease(version, { cwd = process.cwd(), dryRun = false } = {}
 	console.log(`Released ${version}: stamped CHANGELOG.md, bumped package.json ${previousVersion} -> ${version}.`)
 	console.log(`Created commit "Release ${tag}" and tag ${tag}, then reseeded [Unreleased] ("Start next cycle").`)
 	console.log("\nPublish with:")
-	console.log(`  git push origin <branch>   # your current branch`)
+	console.log(`  git push origin ${defaultBranch(cwd)}`)
 	console.log(`  git push origin ${tag}`)
 	return { dryRun: false, releasedBody: mutation.releasedBody, tag }
 }

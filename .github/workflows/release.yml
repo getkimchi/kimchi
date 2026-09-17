@@ -215,19 +215,6 @@ jobs:
           cd artifacts
           sha256sum kimchi_*.tar.gz kimchi_*.zip > checksums.txt
 
-      - name: Refuse to mutate an already published release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          isDraft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null || true)"
-          if [ "$isDraft" = "false" ]; then
-            echo "Release $GITHUB_REF_NAME already published — refusing to mutate" >&2
-            exit 1
-          fi
-          if [ "$isDraft" = "true" ]; then
-            gh release delete "$GITHUB_REF_NAME" --yes
-          fi
-
       - name: Extract release notes from CHANGELOG.md
         run: node scripts/release-notes.mjs extract --version "${GITHUB_REF_NAME#v}" --tag "$GITHUB_REF_NAME" --out RELEASE_NOTES.md
 

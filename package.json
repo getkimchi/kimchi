@@ -22,7 +22,6 @@
 		"lint": "biome check src/ scripts/ tests/",
 		"lint:fix": "biome check --write src/ scripts/ tests/",
 		"typecheck": "tsc --noEmit",
-		"release": "node scripts/release.mjs",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src && pnpm run test:scripts",
 		"test:scripts": "node --test 'scripts/*.test.mjs'",
