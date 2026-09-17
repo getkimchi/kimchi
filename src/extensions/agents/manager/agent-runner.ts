@@ -607,24 +607,6 @@ ${skillLines}`
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
 
-	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
-		{
-			threshold: 0.5,
-			message:
-				"You're at 50% of your turn budget. Pause briefly to evaluate your progress and confirm you're still on the right path. Adjust course if needed.",
-		},
-		{
-			threshold: 0.75,
-			message:
-				"You're at 75% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
-		},
-		{
-			threshold: 0.9,
-			message:
-				"You're at 90% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
-		},
-	]
-	let nextProgressIdx = 0
 	let tokenSoftLimitSteered = false
 
 	function buildProgressSummary(): string {
@@ -661,12 +643,6 @@ ${skillLines}`
 					aborted = true
 					abortReason = "max_turns"
 					hardAbort(session)
-				} else if (!softLimitReached && nextProgressIdx < PROGRESS_STEER_POINTS.length) {
-					const point = PROGRESS_STEER_POINTS[nextProgressIdx]
-					if (point && turnCount >= effectiveMaxTurns * point.threshold) {
-						nextProgressIdx++
-						steerAsOrchestrator(session, point.message)
-					}
 				}
 			}
 		}
