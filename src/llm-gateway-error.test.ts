@@ -355,6 +355,35 @@ describe("parseRateLimitRetryAt", () => {
 	])("returns undefined for $name", ({ message }) => {
 		expect(parseRateLimitRetryAt(message, NOW)).toBeUndefined()
 	})
+
+	// A plain 429 does not use the gateway's "rate limited until" wording. It
+	// carries a Retry-After, which reaches this extension only as text, rendered
+	// as a relative wait -- so without this the deadline is lost and the retry
+	// backs off blindly against a limit that just said how long it lasts.
+	it.each([
+		{ name: "seconds", message: "429 Too Many Requests, retry after 30 seconds", ms: 30_000 },
+		{ name: "abbreviated seconds", message: "Too many requests. Try again in 45s.", ms: 45_000 },
+		{ name: "minutes", message: "Rate limit exceeded; please try again in 2 minutes", ms: 120_000 },
+		{ name: "hours", message: "quota exhausted, resets in 1 hour", ms: 3_600_000 },
+		{ name: "milliseconds", message: "rate limited, retry after 1500ms", ms: 1_500 },
+		{ name: "a fractional amount", message: "retry after 1.5 seconds", ms: 1_500 },
+	])("reads a relative wait stated in $name", ({ message, ms }) => {
+		expect(parseRateLimitRetryAt(message, NOW)).toBe(NOW + ms)
+	})
+
+	it("prefers the absolute deadline when the message states both", () => {
+		// The absolute form needs no arithmetic and no assumption about when the
+		// message was produced.
+		expect(parseRateLimitRetryAt("rate limited until 2026-08-05T16:27:33Z, retry after 5 seconds", NOW)).toBe(EXPECTED)
+	})
+
+	it.each([
+		{ name: "a zero wait", message: "retry after 0 seconds" },
+		{ name: "an unknown unit", message: "retry after 5 fortnights" },
+		{ name: "a duration with no retry wording", message: "the request took 30 seconds" },
+	])("returns undefined for $name", ({ message }) => {
+		expect(parseRateLimitRetryAt(message, NOW)).toBeUndefined()
+	})
 })
 
 describe("formatWait", () => {
