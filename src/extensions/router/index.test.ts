@@ -9,11 +9,19 @@ import type {
 	SessionEntry,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// The Auto-by-default gate performs a network lookup; default it to "on" so the
+// existing Auto-default expectations below exercise the routing logic itself.
+vi.mock("./auto-default-gate.js", () => ({
+	shouldDefaultToAuto: vi.fn(async () => true),
+}))
+
 import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingAttempt, consumeAutoRoutingAttempt } from "./api-provider.js"
+import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import autoModelExtension, { createAutoModelExtension } from "./index.js"
 import { ROUTER_IMAGE_METADATA } from "./router-query.js"
 import {
@@ -93,6 +101,50 @@ afterEach(() => {
 	vi.restoreAllMocks()
 })
 
+describe("Auto-by-default gating", () => {
+	beforeEach(() => {
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(true)
+	})
+
+	it.each([
+		"startup",
+		"new",
+	] as const)("leaves a fresh %s session on its existing model for a non-cast.ai user", async (reason) => {
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const concrete = model("concrete")
+		const ctx = createContext({ model: concrete, modelRegistry: { find: () => model("auto") } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
+	it("still restores a saved Auto session for a non-cast.ai user", async () => {
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const ctx = createContext({ model: auto, modelRegistry: { find: () => auto } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+
+		expect(getAutoRoutingState(SESSION_ID)).toBeDefined()
+	})
+
+	it("does not consult the gate when the launch choice is explicit", async () => {
+		populateCliArgs(["--model", "concrete"])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => model("auto") } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
+	})
+})
+
 describe("Auto model extension", () => {
 	it.each([
 		"startup",
@@ -154,8 +206,9 @@ describe("Auto model extension", () => {
 		expect(extension.setModel).toHaveBeenCalledWith(auto)
 	})
 
-	it("preserves a concrete model on an existing empty session", async () => {
+	it("preserves a concrete model on an existing empty session", async ({ onTestFinished }) => {
 		const sessionRoot = mkdtempSync(join(tmpdir(), "kimchi-router-resume-"))
+		onTestFinished(() => rmSync(sessionRoot, { recursive: true, force: true }))
 		const sessionFile = join(sessionRoot, "empty-session.jsonl")
 		writeFileSync(
 			sessionFile,
@@ -168,22 +221,18 @@ describe("Auto model extension", () => {
 			})}\n`,
 			"utf8",
 		)
-		try {
-			populateCliArgs(["--session", sessionFile])
-			const extension = createExtensionApi()
-			autoModelExtension(extension.api)
-			const ctx = createContext({
-				model: model("concrete"),
-				modelRegistry: { find: () => model("auto") },
-				sessionManager: { getEntries: () => [], getSessionFile: () => sessionFile },
-			})
+		populateCliArgs(["--session", sessionFile])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({
+			model: model("concrete"),
+			modelRegistry: { find: () => model("auto") },
+			sessionManager: { getEntries: () => [], getSessionFile: () => sessionFile },
+		})
 
-			await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
-			expect(extension.setModel).not.toHaveBeenCalled()
-		} finally {
-			rmSync(sessionRoot, { recursive: true, force: true })
-		}
+		expect(extension.setModel).not.toHaveBeenCalled()
 	})
 
 	it.each([

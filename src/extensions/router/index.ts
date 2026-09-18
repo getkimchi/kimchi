@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-wor
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
+import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, isAutoModel } from "./constants.js"
 import { routeQuery } from "./router-client.js"
 import { getRouterConfig, type RouterConfig } from "./router-config.js"
@@ -111,8 +112,18 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const explicitLaunchChoice =
 				event.reason === "startup" &&
 				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
-			if (options.handleCliModelSelection && freshSession && !explicitLaunchChoice) {
+			// Auto-by-default is gated to @cast.ai accounts. The gate controls only
+			// the fresh-session default — Auto stays selectable and resumable for
+			// everyone.
+			if (
+				options.handleCliModelSelection &&
+				freshSession &&
+				!explicitLaunchChoice &&
+				!isAutoModel(autoModel) &&
+				(await shouldDefaultToAuto())
+			) {
 				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
+				if (isAutoModel(autoModel)) setMultiModelEnabled(sessionId, false)
 			}
 			if (!isAutoModel(autoModel)) {
 				if (!sessionSelectsAuto(entries)) {
