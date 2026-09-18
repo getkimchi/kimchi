@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
+import { hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 import type { McpConfig } from "pi-mcp-adapter/types"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { LEGACY_PROJECT_MCP_CONFIG } from "./config.js"
 import { resolveMcpProjectTrust } from "./project-trust.js"
 
 const USER_CONFIG: McpConfig = { mcpServers: { personal: { command: "personal-server" } } }
@@ -54,6 +55,34 @@ describe("MCP project trust", () => {
 			resolveMcpProjectTrust(ctx, { projectConfig: PROJECT_CONFIG, userConfig: USER_CONFIG, agentDir }),
 		).resolves.toBe(false)
 		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("gates the legacy .kimchi/mcp.json through pi's project trust (scan entry + resolution)", async () => {
+		// Seed the legacy project config file — the only trust-requiring
+		// resource in the cwd.
+		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
+		mkdirSync(join(cwd, ".kimchi"), { recursive: true })
+		writeFileSync(legacyPath, JSON.stringify({ mcpServers: { project: { command: "project-server" } } }))
+
+		// The patched scan flags it, so pi's "Trust project folder?" prompt
+		// fires for a repo shipping only .kimchi/mcp.json (headless fail-closes).
+		expect(hasTrustRequiringProjectResources(cwd)).toBe(true)
+
+		// A declined session (isProjectTrusted false) selects the user-only
+		// config — the legacy servers never load.
+		const declined = context({ isProjectTrusted: () => false })
+		await expect(
+			resolveMcpProjectTrust(declined, { projectConfig: PROJECT_CONFIG, userConfig: USER_CONFIG, agentDir }),
+		).resolves.toBe(false)
+		expect(declined.ui.select).not.toHaveBeenCalled()
+
+		// A trusted session short-circuits through the trust-requiring scan
+		// (pi's own prompt already answered Trust) — the legacy servers load.
+		const trusted = context()
+		await expect(
+			resolveMcpProjectTrust(trusted, { projectConfig: PROJECT_CONFIG, userConfig: USER_CONFIG, agentDir }),
+		).resolves.toBe(true)
+		expect(trusted.ui.select).not.toHaveBeenCalled()
 	})
 
 	it("prompts for MCP-only project configuration and persists trust", async () => {
