@@ -64,4 +64,20 @@ describe("ACP Auto model", () => {
 		const nextSession = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
 		expect(nextSession.models?.currentModelId).toBe("kimchi-dev/auto")
 	})
+
+	it("leaves a new session off Auto for an external account", async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-auto-default-external",
+			providerId: "kimchi-dev",
+			defaultModel: false,
+			models: MODELS,
+			responses: [],
+			userEmail: "tester@example.com",
+		})
+
+		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		expect(session.models?.currentModelId).not.toBe("kimchi-dev/auto")
+		// Auto stays selectable for everyone — only the default is gated.
+		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
+	})
 })
