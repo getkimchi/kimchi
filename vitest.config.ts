@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath, URL } from "node:url"
 import { defineConfig } from "vitest/config"
 
@@ -32,6 +35,15 @@ export default defineConfig({
 			// resolution uses its own package detection inside tests rather than
 			// following a stale install prefix.
 			PI_PACKAGE_DIR: "",
+			// Unit tests instantiate the MCP extension, and pi-mcp-adapter reaches
+			// the OS credential store through @napi-rs/keyring. Point the keyring
+			// bridge (src/extensions/mcp/keyring-require-bridge.ts) at a throwaway
+			// file-backed store so no unit test touches the developer's real login
+			// keychain — accessing items created by the installed kimchi binary from
+			// an unsigned test process pops a blocking macOS keychain ACL dialog and
+			// stalls the first test in a fresh worker by ~10s. Tests that need a
+			// known store still override per-test via vi.stubEnv.
+			KIMCHI_MCP_E2E_KEYRING_DIR: mkdtempSync(join(tmpdir(), "kimchi-test-keyring-")),
 		},
 		alias: {
 			// The deep-import path used in clipboard-read.ts is not in the package's

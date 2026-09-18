@@ -58,13 +58,13 @@ function parseSteeringImages(attachments: unknown): ImageContent[] {
  * message was queued, or "promptRequired" when no turn is in progress (this
  * handler must never start a new turn).
  *
- * Error handling is deliberately narrow, matched against pi-mono 0.84.1's
- * actual steer() failure surface: steer() only throws when the text is an
- * extension command ("Extension command ... cannot be queued") — a caller
- * input error mapped to invalidParams. There is no idle-race throw in this
- * pi version (_queueSteer never rejects), so no catch-all: unexpected errors
- * propagate to the client as JSON-RPC internal errors rather than being
- * silently relabeled promptRequired.
+ * Error handling is deliberately narrow, matching steer()'s actual failure
+ * surface: it only throws when the text is an extension command ("Extension
+ * command ... cannot be queued") — a caller input error mapped to
+ * invalidParams. Queueing itself never rejects, so there is no catch-all:
+ * unexpected errors propagate to the client as JSON-RPC internal errors
+ * rather than being silently relabeled promptRequired. Re-check this against
+ * steer() whenever the pi dependency is upgraded.
  */
 export async function handleSteering(
 	getTarget: (sessionId: string) => SteeringTarget | undefined,

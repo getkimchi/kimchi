@@ -171,10 +171,7 @@ it("intercepts the user-facing /login command and runs Kimchi browser auth", asy
 		"test-token-123",
 	)
 	expect(registry.refresh).toHaveBeenCalledOnce()
-	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
-		id: "kimi-k2.6",
-		provider: "kimchi-dev",
-	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 	expect(getFeedbackMessages(fakeIm)).toContain(
 		"Logged in to Kimchi. Selected kimi-k2.6. Credentials saved to /tmp/kimchi-login-test/auth.json",
 	)
@@ -205,10 +202,7 @@ it("does not reuse a saved Kimchi key for explicit /login", async () => {
 		"/tmp/kimchi-api-login-test/models.json",
 		"fresh-token",
 	)
-	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
-		id: "kimi-k2.6",
-		provider: "kimchi-dev",
-	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 })
 
 it("surfaces the login URL in the TUI so it can be copied into the right browser/profile", async () => {
@@ -252,10 +246,7 @@ it("falls back to the first available model when the default is not present", as
 	await patched.call(fakeIm, "login")
 	await selectCurrentLoginOption(fakeIm)
 
-	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
-		id: "other-model",
-		provider: "kimchi-dev",
-	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "other-model", provider: "kimchi-dev" }, { persist: true })
 	expect(getFeedbackMessages(fakeIm)).toContainEqual(
 		expect.stringContaining("Logged in to Kimchi. Selected other-model. Credentials saved to "),
 	)
@@ -336,10 +327,7 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 		"/tmp/kimchi-api-login-test/models.json",
 		"api-key-123",
 	)
-	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
-		id: "kimi-k2.6",
-		provider: "kimchi-dev",
-	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 })
 
 it("uses a custom Kimchi endpoint for API-key model discovery and config persistence", async () => {
@@ -374,7 +362,10 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 		"/tmp/kimchi-api-login-test/models.json",
 		"api-key-456",
 	)
-	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "custom-model", provider: "kimchi-dev" })
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith(
+		{ id: "custom-model", provider: "kimchi-dev" },
+		{ persist: true },
+	)
 })
 
 it("does not persist API-key login when model discovery rejects an invalid key", async () => {

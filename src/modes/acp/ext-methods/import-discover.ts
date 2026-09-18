@@ -1,6 +1,6 @@
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import type { AgentDefinition } from "../../../agent-discovery/index.js"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../../agent-discovery/index.js"
-import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 
 /**
  * import_discover over ACP — a sessionless, read-only method that tells a

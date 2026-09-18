@@ -1,4 +1,4 @@
-import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { claudeCode } from "./agents/claude-code.js"
 import { cursor } from "./agents/cursor.js"
 import { openCode } from "./agents/opencode.js"

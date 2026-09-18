@@ -45,9 +45,7 @@ test("starts a cached lazy MCP server only when a tool is called", async ({ term
 
 			const beforeRestart = fixture.mcp.checkpoint()
 			await session.restart()
-			terminal.write("/mcp tools")
-			await waitForText(terminal, "/mcp tools", { timeoutMs: STREAM_TIMEOUT_MS })
-			terminal.submit("")
+			terminal.submit("/mcp tools")
 			await waitForText(terminal, "MCP Tools:", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(
 				fixture.mcp
@@ -110,9 +108,7 @@ test("recovers a crashed MCP server through the reconnect command", async ({ ter
 			})
 			const afterCrash = fixture.mcp.checkpoint()
 
-			terminal.write("/mcp reconnect fixture")
-			await waitForText(terminal, "/mcp reconnect fixture", { timeoutMs: STREAM_TIMEOUT_MS })
-			terminal.submit("")
+			terminal.submit("/mcp reconnect fixture")
 			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
 			const recoveryEvents = fixture.mcp.readEvents().slice(afterCrash)
 			expect(recoveryEvents.filter((event) => event.type === "process_started")).toHaveLength(1)
@@ -194,10 +190,7 @@ test("single-flights concurrent calls that start a cached lazy MCP server", asyn
 	)
 })
 
-// Fixed upstream in pi-mcp-adapter v2.12.0 by PR #194's client-close state handling.
-// Remove test.fail once the bundled adapter includes that fix; the current adapter cannot
-// reconnect after a stdio process exit.
-test.fail("reconnects a keep-alive MCP server after its process crashes", async ({ terminal }) => {
+test("reconnects a keep-alive MCP server after its process crashes", async ({ terminal }) => {
 	const disconnect = gatewayMcpCall("disconnect")
 	const afterRecovery = gatewayMcpCall("echo", { message: "keep-alive-recovered" })
 	const disconnectExitCode = 17

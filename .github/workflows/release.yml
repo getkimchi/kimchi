@@ -39,6 +39,13 @@ jobs:
       - name: Check (lint + type check)
         run: pnpm run check
 
+      # The codesign step parses entitlements with AMFI's strict XML
+      # deserializer; plutil is lenient (accepts "--" inside comments) and
+      # cannot gate this. Python's expat-backed plistlib is strict like AMFI
+      # and fails here in seconds instead of mid-build on a macOS runner.
+      - name: Validate entitlements plist (strict XML)
+        run: python3 -c "import plistlib; plistlib.load(open('build/entitlements.mac.plist', 'rb'))"
+
       - name: Test
         run: pnpm run test
 
@@ -96,8 +103,41 @@ jobs:
       - name: Build proxy-helper
         run: node scripts/build-proxy-helper.js --target ${{ matrix.target }}
 
+      # Imports the Developer ID cert into a throwaway keychain and exports
+      # CSC_NAME for the build step. No-ops when the secrets are absent
+      # (e.g. on forks) — the build then falls back to ad-hoc signing.
+      - name: Set up Developer ID signing
+        if: ${{ matrix.os == 'darwin' }}
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: bash scripts/setup-codesign.sh
+
       - name: Build binary
         run: node scripts/build-binary.js --target ${{ matrix.target }}
+
+      - name: Install Linux credential-store service
+        if: ${{ matrix.os == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring
+
+      - name: Verify MCP native keyring
+        if: ${{ matrix.os == 'darwin' }}
+        run: ./dist/bin/kimchi mcp keyring-check --json
+
+      - name: Verify MCP native keyring on Linux
+        if: ${{ matrix.os == 'linux' }}
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            printf "\n" | gnome-keyring-daemon --unlock --components=secrets
+            ./dist/bin/kimchi mcp keyring-check --json
+          '
+
+      - name: Verify MCP native keyring on Windows
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: .\dist\bin\kimchi.exe mcp keyring-check --json
 
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}

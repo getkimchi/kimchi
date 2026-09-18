@@ -93,7 +93,8 @@ import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
-import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./extensions/mcp/index.js"
+import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
@@ -618,6 +619,9 @@ try {
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
 		const effectiveSkillPaths = [...new Set([...skillPaths])]
+		const mcpAdapterExtensions = enabledExtensionFactories([
+			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+		] satisfies ManagedExtensionFactory[])
 		const extensionFactories = [
 			// First so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.
@@ -668,9 +672,7 @@ try {
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
-			...enabledExtensionFactories([
-				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
-			] satisfies ManagedExtensionFactory[]),
+			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			...enabledExtensionFactories([
@@ -750,11 +752,15 @@ try {
 
 		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
-			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
 			await runAcpMode({
 				extensionFactories,
 				agentDir,
-				mcpServerManager: new McpServerManager(),
+				...(mcpAdapterExtensions.length > 0
+					? {
+							mcpExtensionFactory: createKimchiMcpAdapterExtension,
+							mcpProbe: new UpstreamMcpProbe(),
+						}
+					: {}),
 				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
 			})
 		} else {

@@ -1,0 +1,428 @@
+diff --git a/agent-dir.ts b/agent-dir.ts
+index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
+--- a/agent-dir.ts
++++ b/agent-dir.ts
+@@ -1,3 +1,5 @@
++// Host project-path compatibility; tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/491
++// Remove when upstream supports a project config directory independent of the user config directory.
+ import { readFileSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join, resolve } from "node:path";
+@@ -7,6 +9,11 @@ export function getConfigDirName(): string {
+   return typeof configDir === "string" && configDir.trim() ? configDir.trim() : ".pi";
+ }
+ 
++export function getMcpProjectConfigDirName(): string {
++  const configDir = readPiConfig()?.mcpProjectConfigDir;
++  return typeof configDir === "string" && configDir.trim() ? configDir.trim() : getConfigDirName();
++}
++
+ export function getAgentDir(): string {
+   const piConfig = readPiConfig();
+   const name = piConfig?.name;
+@@ -39,12 +46,12 @@ export function getAgentPath(...segments: string[]): string {
+  *
+  * Falls back to "pi", which is what pi's own APP_NAME resolves to.
+  */
+-function readPiConfig(): { name?: unknown; configDir?: unknown; clientUri?: unknown } | undefined {
++function readPiConfig(): { name?: unknown; configDir?: unknown; mcpProjectConfigDir?: unknown; clientUri?: unknown } | undefined {
+   const dir = process.env.PI_PACKAGE_DIR?.trim()
+   if (!dir) return undefined
+   try {
+     const manifest = JSON.parse(readFileSync(join(resolve(dir), "package.json"), "utf8")) as {
+-      piConfig?: { name?: unknown; configDir?: unknown; clientUri?: unknown }
++      piConfig?: { name?: unknown; configDir?: unknown; mcpProjectConfigDir?: unknown; clientUri?: unknown }
+     }
+     return manifest.piConfig
+   } catch {
+diff --git a/config.ts b/config.ts
+index dfcccbfe12646daf4593f193c2649d422c2d4195..450b02972b7f624e38130aef2d00ee304d6632a4 100644
+--- a/config.ts
++++ b/config.ts
+@@ -4,7 +4,7 @@ import { homedir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { parse as parseToml } from "smol-toml";
+ import stripJsonComments from "strip-json-comments";
+-import { getAgentPath, getConfigDirName } from "./agent-dir.ts";
++import { getAgentPath, getMcpProjectConfigDirName } from "./agent-dir.ts";
+ import { getAgentPluginSummaries, loadAgentPluginConfigs, type AgentPluginSummary } from "./agent-plugin-loader.ts";
+ import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.ts";
+ import { loadClaudePluginBundles } from "./claude-plugin-loader.ts";
+@@ -192,7 +192,7 @@ export function getProjectConfigPath(cwd = process.cwd()): string {
+ }
+ 
+ export function getProjectPiConfigPath(cwd = process.cwd()): string {
+-  return resolve(cwd, getConfigDirName(), PROJECT_PI_CONFIG_NAME);
++  return resolve(cwd, getMcpProjectConfigDirName(), PROJECT_PI_CONFIG_NAME);
+ }
+ 
+ export function getSharedConfigPath(target: SharedConfigTarget, cwd = process.cwd()): string {
+diff --git a/dist/agent-dir.d.ts b/dist/agent-dir.d.ts
+index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1a228c714 100644
+--- a/dist/agent-dir.d.ts
++++ b/dist/agent-dir.d.ts
+@@ -1,4 +1,5 @@
+ export declare function getConfigDirName(): string;
++export declare function getMcpProjectConfigDirName(): string;
+ export declare function getAgentDir(): string;
+ export declare function getAgentPath(...segments: string[]): string;
+ export declare function getAppName(): string;
+diff --git a/dist/agent-dir.js b/dist/agent-dir.js
+index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392a4f58410 100644
+--- a/dist/agent-dir.js
++++ b/dist/agent-dir.js
+@@ -1,3 +1,5 @@
++// Host project-path compatibility; tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/491
++// Remove when upstream supports a project config directory independent of the user config directory.
+ import { readFileSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join, resolve } from "node:path";
+@@ -5,6 +7,10 @@ export function getConfigDirName() {
+     const configDir = readPiConfig()?.configDir;
+     return typeof configDir === "string" && configDir.trim() ? configDir.trim() : ".pi";
+ }
++export function getMcpProjectConfigDirName() {
++    const configDir = readPiConfig()?.mcpProjectConfigDir;
++    return typeof configDir === "string" && configDir.trim() ? configDir.trim() : getConfigDirName();
++}
+ export function getAgentDir() {
+     const piConfig = readPiConfig();
+     const name = piConfig?.name;
+diff --git a/dist/config.js b/dist/config.js
+index 20b6adba1a0b861838f9dd59084e7af57d914ff8..fce831379e644ee680ca607d77956220c6e15bc8 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -4,7 +4,7 @@ import { homedir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { parse as parseToml } from "smol-toml";
+ import stripJsonComments from "strip-json-comments";
+-import { getAgentPath, getConfigDirName } from "./agent-dir.js";
++import { getAgentPath, getMcpProjectConfigDirName } from "./agent-dir.js";
+ import { getAgentPluginSummaries, loadAgentPluginConfigs } from "./agent-plugin-loader.js";
+ import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.js";
+ import { loadClaudePluginBundles } from "./claude-plugin-loader.js";
+@@ -93,7 +93,7 @@ export function getProjectConfigPath(cwd = process.cwd()) {
+     return resolve(cwd, PROJECT_CONFIG_NAME);
+ }
+ export function getProjectPiConfigPath(cwd = process.cwd()) {
+-    return resolve(cwd, getConfigDirName(), PROJECT_PI_CONFIG_NAME);
++    return resolve(cwd, getMcpProjectConfigDirName(), PROJECT_PI_CONFIG_NAME);
+ }
+ export function getSharedConfigPath(target, cwd = process.cwd()) {
+     return target === "project" ? getProjectConfigPath(cwd) : getGenericGlobalConfigPath();
+diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
+index d9e5f56365e917600bd9dd52f16efd0f418e04f0..387fe166a6439a8da6f4f4de7bf6fc3f6a8427d0 100644
+--- a/dist/metadata-cache.js
++++ b/dist/metadata-cache.js
+@@ -246,6 +246,7 @@ export function serializeTools(tools) {
+             ...(t.description !== undefined ? { description: t.description } : {}),
+             ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
+             ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
++            ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
+             ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+             ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+             ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index c0adc21f5eeb733062f3bceea41dbf256f88c55a..3404384567d0f575b6720e94bc0e760ece1b9b02 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -512,6 +512,7 @@ export interface CachedTool {
+     description?: string;
+     inputSchema?: unknown;
+     outputSchema?: unknown;
++    annotations?: ListToolsResult["tools"][number]["annotations"];
+     uiResourceUri?: string;
+     uiVisibility?: UiToolVisibility[];
+     uiStreamMode?: "eager" | "stream-first";
+@@ -560,6 +561,7 @@ export interface McpPanelResult {
+     disabledChanges: Map<string, boolean>;
+     cancelled: boolean;
+ }
++export declare const MAX_TOOL_NAME_LENGTH = 128;
+ export declare function getServerPrefix(serverName: string, mode: ToolPrefix): string;
+ /**
+  * Format a tool name with server prefix.
+diff --git a/dist/types.js b/dist/types.js
+index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547a0af6065 100644
+--- a/dist/types.js
++++ b/dist/types.js
+@@ -96,33 +96,56 @@ function encodeServerNamespace(name) {
+     }).join("");
+ }
+ export const MCP_TOOL_APPROVAL_REQUEST_EVENT = "pi-mcp-adapter:tool-approval-request";
++// Host tool-name compatibility; tracking: getkimchi/kimchi#1168 (sanitize MCP
++// tool names to the provider pattern). Remove when upstream sanitizes both name
++// parts and caps wire names at the 128-char provider limit.
++export const MAX_TOOL_NAME_LENGTH = 128;
++const INVALID_TOOL_NAME_CHAR = /[^a-zA-Z0-9_-]/g;
++function sanitizeNamePart(value) {
++    return value.replace(INVALID_TOOL_NAME_CHAR, "_");
++}
+ /**
+  * Get server prefix based on tool prefix mode.
+  */
+-function sanitizeServerPrefix(serverName, preserveProviderValid = true) {
+-    const validCharacters = preserveProviderValid ? /^[A-Za-z0-9_-]$/ : /^[A-Za-z0-9]$/;
+-    return Array.from(serverName, char => validCharacters.test(char) ? char : `_${char.codePointAt(0).toString(16)}_`).join("");
++function sanitizeServerPrefix(serverName) {
++    return sanitizeNamePart(serverName);
+ }
+ export function getServerPrefix(serverName, mode) {
+     if (mode === "none")
+         return "";
+     if (mode === "short") {
+-        let short = sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""));
++        let short = sanitizeNamePart(serverName.replace(/-?mcp$/i, "").replace(/-/g, "_"));
+         if (!short)
+             short = "mcp";
+         return short;
+     }
+     if (mode === "mcp")
+-        return `mcp__${sanitizeServerPrefix(serverName)}`;
+-    return sanitizeServerPrefix(serverName);
++        return `mcp__${sanitizeNamePart(serverName.replace(/-/g, "_"))}`;
++    return sanitizeNamePart(serverName.replace(/-/g, "_"));
+ }
++const warnedTruncatedNames = new Set();
+ /**
+- * Format a tool name with server prefix.
++ * Format a tool name with server prefix. The result always matches
++ * ^[a-zA-Z0-9_-]{1,128}$: structurally valid tool names pass through
++ * byte-for-byte (hyphens in the tool name are kept), anything else is replaced
++ * with "_". Overlong names are truncated — server prefix first, tool tail
++ * preserved so the model can still reference the tool — with a warning once
++ * per distinct original name.
+  */
+ export function formatToolName(toolName, serverName, prefix) {
+-    const p = getServerPrefix(serverName, prefix);
+-    const sanitized = toolName.replace(/\./g, "_");
+-    return p ? `${p}_${sanitized}` : sanitized;
++    const toolPart = sanitizeNamePart(toolName) || "tool";
++    const serverPrefix = getServerPrefix(serverName, prefix);
++    const name = serverPrefix ? `${serverPrefix}_${toolPart}` : toolPart;
++    if (name.length <= MAX_TOOL_NAME_LENGTH)
++        return name;
++    const limited = toolPart.length >= MAX_TOOL_NAME_LENGTH
++        ? toolPart.slice(0, MAX_TOOL_NAME_LENGTH)
++        : `${name.slice(0, MAX_TOOL_NAME_LENGTH - toolPart.length - 1)}_${toolPart}`;
++    if (!warnedTruncatedNames.has(name)) {
++        warnedTruncatedNames.add(name);
++        console.warn(`MCP: tool name "${name}" exceeds ${MAX_TOOL_NAME_LENGTH} chars; truncated to "${limited}" — may collide with similarly-named tools`);
++    }
++    return limited;
+ }
+ export function resolveToolPrefix(definition, globalPrefix) {
+     return definition?.toolPrefix ?? globalPrefix ?? "server";
+@@ -175,13 +198,17 @@ export function formatPromptCommandName(promptName, serverName, prefix) {
+     return `mcp__${serverPart}__${sanitizePromptName(promptName)}`;
+ }
+ function getLegacyServerPrefix(serverName, mode) {
++    // Pre-sanitization era spellings (vendored ≤2.4.x adapter): only hyphens
++    // were replaced with "_", everything else passed through raw — including
++    // spaces, which is exactly the spelling users see in older provider error
++    // messages and write down in includeTools/excludeTools.
+     if (mode === "none")
+         return "";
+     if (mode === "short")
+-        return sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""), false) || "mcp";
++        return serverName.replace(/-?mcp$/i, "").replace(/-/g, "_") || "mcp";
+     if (mode === "mcp")
+-        return `mcp__${sanitizeServerPrefix(serverName, false)}`;
+-    return sanitizeServerPrefix(serverName, false);
++        return `mcp__${serverName.replace(/-/g, "_")}`;
++    return serverName.replace(/-/g, "_");
+ }
+ function formatLegacyToolName(toolName, serverName, prefix) {
+     const serverPrefix = getLegacyServerPrefix(serverName, prefix);
+@@ -226,14 +253,27 @@ export function createToolSelectorCandidateIndex(allCurrentCandidates, additiona
+         ...(additionalCurrentCandidatesByToolName ? { additionalCurrentCandidatesByToolName } : {}),
+     };
+ }
++// Host exclusion compatibility; tracking: getkimchi/kimchi#1168. Patterns
++// fuzzy-match the way master's fix did: hyphens and invalid characters
++// normalize to "_" on BOTH sides, so excludes written with the raw name (as
++// it appears in provider error messages) or the sanitized form both match.
++function normalizeSelectorValue(value) {
++    return value.replace(/[^a-zA-Z0-9_]/g, "_");
++}
+ export function matchesToolPattern(candidates, patterns) {
+     if (!Array.isArray(patterns) || patterns.length === 0)
+         return false;
+     for (const pattern of patterns) {
+         if (typeof pattern !== "string")
+             continue;
+-        if (!pattern.includes("*") && !pattern.includes("?") && candidates.has(pattern)) {
+-            return true;
++        if (!pattern.includes("*") && !pattern.includes("?")) {
++            if (candidates.has(pattern))
++                return true;
++            const normalized = normalizeSelectorValue(pattern);
++            for (const candidate of candidates) {
++                if (normalizeSelectorValue(candidate) === normalized)
++                    return true;
++            }
+         }
+         if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
+             return true;
+diff --git a/metadata-cache.ts b/metadata-cache.ts
+index 0b449fe35389429912739bcfe10ce906ecb1ab33..a47d0ce9f3725b17b1f20c8071d67826c6bcd1a6 100644
+--- a/metadata-cache.ts
++++ b/metadata-cache.ts
+@@ -302,6 +302,7 @@ export function serializeTools(tools: McpTool[]): CachedTool[] {
+         ...(t.description !== undefined ? { description: t.description } : {}),
+         ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
+         ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
++        ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
+         ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+         ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+         ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+diff --git a/types.ts b/types.ts
+index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632aa729e057 100644
+--- a/types.ts
++++ b/types.ts
+@@ -88,6 +88,7 @@ export interface McpTool {
+   description?: SdkTool["description"];
+   inputSchema?: SdkTool["inputSchema"]; // JSON Schema
+   outputSchema?: SdkTool["outputSchema"]; // JSON Schema for structuredContent
++  annotations?: SdkTool["annotations"];
+   _meta?: SdkTool["_meta"];
+ }
+ 
+@@ -730,6 +731,11 @@ export interface CachedTool {
+   description?: string;
+   inputSchema?: unknown;
+   outputSchema?: unknown;
++  // Host read-only classification; tracking: getkimchi/kimchi — Kimchi's
++  // planning mode admits read-only-qualified MCP tools (spec annotations
++  // with a name convention fallback), which requires annotations to survive
++  // into the persistent cache. Remove when upstream caches annotations.
++  annotations?: SdkTool["annotations"];
+   uiResourceUri?: string;
+   uiVisibility?: UiToolVisibility[];
+   uiStreamMode?: "eager" | "stream-first";
+@@ -781,14 +787,22 @@ export interface McpPanelResult {
+   cancelled: boolean;
+ }
+ 
++// Host tool-name compatibility; tracking: getkimchi/kimchi#1168 (sanitize MCP
++// tool names to the provider pattern). Remove when upstream sanitizes both name
++// parts and caps wire names at the 128-char provider limit.
++export const MAX_TOOL_NAME_LENGTH = 128;
++
++const INVALID_TOOL_NAME_CHAR = /[^a-zA-Z0-9_-]/g;
++
++function sanitizeNamePart(value: string): string {
++  return value.replace(INVALID_TOOL_NAME_CHAR, "_");
++}
++
+ /**
+  * Get server prefix based on tool prefix mode.
+  */
+-function sanitizeServerPrefix(serverName: string, preserveProviderValid = true): string {
+-  const validCharacters = preserveProviderValid ? /^[A-Za-z0-9_-]$/ : /^[A-Za-z0-9]$/;
+-  return Array.from(serverName, char =>
+-    validCharacters.test(char) ? char : `_${char.codePointAt(0)!.toString(16)}_`,
+-  ).join("");
++function sanitizeServerPrefix(serverName: string): string {
++  return sanitizeNamePart(serverName);
+ }
+ 
+ export function getServerPrefix(
+@@ -797,25 +811,44 @@ export function getServerPrefix(
+ ): string {
+   if (mode === "none") return "";
+   if (mode === "short") {
+-    let short = sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""));
++    let short = sanitizeNamePart(serverName.replace(/-?mcp$/i, "").replace(/-/g, "_"));
+     if (!short) short = "mcp";
+     return short;
+   }
+-  if (mode === "mcp") return `mcp__${sanitizeServerPrefix(serverName)}`;
+-  return sanitizeServerPrefix(serverName);
++  if (mode === "mcp") return `mcp__${sanitizeNamePart(serverName.replace(/-/g, "_"))}`;
++  return sanitizeNamePart(serverName.replace(/-/g, "_"));
+ }
+ 
++const warnedTruncatedNames = new Set<string>();
++
+ /**
+- * Format a tool name with server prefix.
++ * Format a tool name with server prefix. The result always matches
++ * ^[a-zA-Z0-9_-]{1,128}$: structurally valid tool names pass through
++ * byte-for-byte (hyphens in the tool name are kept), anything else is replaced
++ * with "_". Overlong names are truncated — server prefix first, tool tail
++ * preserved so the model can still reference the tool — with a warning once
++ * per distinct original name.
+  */
+ export function formatToolName(
+   toolName: string,
+   serverName: string,
+   prefix: ToolPrefix
+ ): string {
+-  const p = getServerPrefix(serverName, prefix);
+-  const sanitized = toolName.replace(/\./g, "_");
+-  return p ? `${p}_${sanitized}` : sanitized;
++  const toolPart = sanitizeNamePart(toolName) || "tool";
++  const serverPrefix = getServerPrefix(serverName, prefix);
++  const name = serverPrefix ? `${serverPrefix}_${toolPart}` : toolPart;
++  if (name.length <= MAX_TOOL_NAME_LENGTH) return name;
++  const limited =
++    toolPart.length >= MAX_TOOL_NAME_LENGTH
++      ? toolPart.slice(0, MAX_TOOL_NAME_LENGTH)
++      : `${name.slice(0, MAX_TOOL_NAME_LENGTH - toolPart.length - 1)}_${toolPart}`;
++  if (!warnedTruncatedNames.has(name)) {
++    warnedTruncatedNames.add(name);
++    console.warn(
++      `MCP: tool name "${name}" exceeds ${MAX_TOOL_NAME_LENGTH} chars; truncated to "${limited}" — may collide with similarly-named tools`,
++    );
++  }
++  return limited;
+ }
+ 
+ export function resolveToolPrefix(
+@@ -881,10 +914,14 @@ export function formatPromptCommandName(
+ }
+ 
+ function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
++  // Pre-sanitization era spellings (vendored ≤2.4.x adapter): only hyphens
++  // were replaced with "_", everything else passed through raw — including
++  // spaces, which is exactly the spelling users see in older provider error
++  // messages and write down in includeTools/excludeTools.
+   if (mode === "none") return "";
+-  if (mode === "short") return sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""), false) || "mcp";
+-  if (mode === "mcp") return `mcp__${sanitizeServerPrefix(serverName, false)}`;
+-  return sanitizeServerPrefix(serverName, false);
++  if (mode === "short") return serverName.replace(/-?mcp$/i, "").replace(/-/g, "_") || "mcp";
++  if (mode === "mcp") return `mcp__${serverName.replace(/-/g, "_")}`;
++  return serverName.replace(/-/g, "_");
+ }
+ 
+ function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
+@@ -944,13 +981,25 @@ export function createToolSelectorCandidateIndex(
+   };
+ }
+ 
++// Host exclusion compatibility; tracking: getkimchi/kimchi#1168. Patterns
++// fuzzy-match the way master's fix did: hyphens and invalid characters
++// normalize to "_" on BOTH sides, so excludes written with the raw name (as
++// it appears in provider error messages) or the sanitized form both match.
++function normalizeSelectorValue(value: string): string {
++  return value.replace(/[^a-zA-Z0-9_]/g, "_");
++}
++
+ export function matchesToolPattern(candidates: Set<string>, patterns?: unknown): boolean {
+   if (!Array.isArray(patterns) || patterns.length === 0) return false;
+ 
+   for (const pattern of patterns) {
+     if (typeof pattern !== "string") continue;
+-    if (!pattern.includes("*") && !pattern.includes("?") && candidates.has(pattern)) {
+-      return true;
++    if (!pattern.includes("*") && !pattern.includes("?")) {
++      if (candidates.has(pattern)) return true;
++      const normalized = normalizeSelectorValue(pattern);
++      for (const candidate of candidates) {
++        if (normalizeSelectorValue(candidate) === normalized) return true;
++      }
+     }
+     if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
+       return true;
