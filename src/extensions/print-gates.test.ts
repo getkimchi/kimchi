@@ -5,6 +5,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { withPrintGate } from "../extensions/print-mode.js"
+import modelSwitchExtension from "./model-switch.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import questionnaireExtension from "./questionnaire/questionnaire.js"
 import tagsExtension from "./tags.js"
@@ -91,6 +92,35 @@ describe("set_phase ferment-mode gate (Chunk 7)", () => {
 				const { pi, tools } = makePi()
 				tagsExtension(pi)
 				expect(tools.map((t) => t.name)).toContain("set_phase")
+			})
+		} finally {
+			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })
+		}
+	})
+})
+
+describe("set_model interactive gate (cost-parity consolidation)", () => {
+	it("interactive run: registers set_model", () => {
+		const { pi, tools } = makePi()
+		modelSwitchExtension(pi)
+		expect(tools.map((t) => t.name)).toContain("set_model")
+	})
+
+	it("plain print run: does not register set_model", () => {
+		return withPrintGate({ print: true }, async () => {
+			const { pi, tools } = makePi()
+			modelSwitchExtension(pi)
+			expect(tools.map((t) => t.name)).not.toContain("set_model")
+		})
+	})
+
+	it("multi-model print run: keeps set_model registered (orchestrator role switching)", () => {
+		vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: true, source: "cli" })
+		try {
+			return withPrintGate({ print: true }, async () => {
+				const { pi, tools } = makePi()
+				modelSwitchExtension(pi)
+				expect(tools.map((t) => t.name)).toContain("set_model")
 			})
 		} finally {
 			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })

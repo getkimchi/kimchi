@@ -36,6 +36,7 @@ import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
+import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
@@ -652,7 +653,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// tool catalog). The model calls it when the plan is ready for review.
 	// For ferment, the model should call propose_ferment_scoping first (to
 	// populate the structured scope), then submit_plan to trigger the review.
-	pi.registerTool({
+	// The review is a TUI flow, so the tool is dead surface in plain --print
+	// runs (0 calls in the TB 2.1 cost-parity run) — suppress it there like
+	// the ferment-mode gate does for set_phase. ferment-oneshot print runs
+	// keep it (submit_plan is part of their planning catalog).
+	if (!shouldSuppressFermentModeTools()) {
+		pi.registerTool({
 		name: "submit_plan",
 		label: "Submit Plan",
 		description:
@@ -815,6 +821,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 		},
 	})
+	}
 
 	// Decision handler for adhoc plan reviews — handles decisions from both
 	// the TUI menu and plannotator's browser UI (first decision wins).
