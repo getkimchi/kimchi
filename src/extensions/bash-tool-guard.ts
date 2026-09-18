@@ -167,7 +167,7 @@ const NO_DAEMON_STEER =
 function backgroundSuggestion(): string {
 	const daemon = isExperimentalFeaturesEnabled()
 	return (
-		"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
+		'Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control (use its "detach" action for session-scoped services like port-forward so your other tools stay unblocked). ' +
 		"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. " +
 		(daemon
 			? `Managed background (bash + bash_control) is killed when the session ends; ${DAEMON_STEER}`
@@ -193,6 +193,8 @@ Execute a bash command for operations without a dedicated tool: build commands, 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
 
 DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly and set a realistic timeout. For long-running commands (builds, tests, training), set a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60), then drive the process via bash_control.
+
+While a background bash handle is pending, other tools are blocked until you decide via bash_control. For blocking SERVICES you only need for the rest of this session (e.g. kubectl port-forward, a local server you will probe with other tools), call bash_control with action "detach" after the first checkin: the process keeps running without blocking your other tools and is killed automatically when the session ends (kill it earlier with action "stop"; its deadline still applies — extend it with extend_seconds).
 
 DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management. Managed background (timeout/checkin_interval + bash_control) is killed when the session ends — use the \`daemon\` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).
 

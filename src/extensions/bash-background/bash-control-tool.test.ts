@@ -8,7 +8,7 @@
 
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createBashControlToolDefinition } from "./bash-control-tool.js"
+import { type BashControlInput, createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry } from "./process-registry.js"
 
 // ─── Fake BashOperations ─────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ function setup() {
 
 async function callExecute(
 	tool: ReturnType<typeof createBashControlToolDefinition>,
-	params: { handle: string; action: "continue" | "stop"; extend_seconds?: number; checkin_interval?: number },
+	params: Pick<BashControlInput, "handle" | "action" | "extend_seconds" | "checkin_interval">,
 ) {
 	const result = await tool.execute("call-1", params as never, undefined, undefined, undefined as never)
 	return result
@@ -85,13 +85,18 @@ describe("createBashControlToolDefinition — shape", () => {
 		expect(tool.name).toBe("bash_control")
 	})
 
-	it("schema has handle, action (continue|stop), optional extend_seconds and checkin_interval", () => {
+	it("schema has handle, action (continue|stop|detach), optional extend_seconds and checkin_interval", () => {
 		const tool = createBashControlToolDefinition(() => undefined)
-		const schema = tool.parameters as unknown as { properties: Record<string, unknown> }
+		const schema = tool.parameters as unknown as {
+			properties: Record<string, { anyOf?: { const: string }[] }>
+		}
 		expect(schema.properties).toHaveProperty("handle")
 		expect(schema.properties).toHaveProperty("action")
 		expect(schema.properties).toHaveProperty("extend_seconds")
 		expect(schema.properties).toHaveProperty("checkin_interval")
+		// The action union accepts exactly continue | stop | detach.
+		const actions = (schema.properties.action?.anyOf ?? []).map((literal) => literal.const)
+		expect(actions).toEqual(["continue", "stop", "detach"])
 	})
 
 	it("description distinguishes checkin_interval (cadence) from extend_seconds (deadline)", () => {
@@ -275,5 +280,63 @@ describe("bash_control — error cases", () => {
 		expect(result.details.exited).toBe(true)
 		expect(result.details.reason).toBe("unknown-handle")
 		expect((result.content[0] as { text: string }).text).toContain("unknown handle")
+	})
+})
+
+describe("bash_control — detach", () => {
+	it("description mentions detach", () => {
+		const tool = createBashControlToolDefinition(() => undefined)
+		expect(tool.description).toContain("detach")
+	})
+
+	it("resolves immediately without arming a checkin, keeping the process running", async () => {
+		const { tool, registry, handle } = setup()
+		// The spawn interval is 1s: if detach awaited a checkin it would need
+		// fake timers. Resolving with real timers proves it returns at once.
+		const result = await callExecute(tool, { handle, action: "detach" })
+		expect(result.details.action).toBe("detach")
+		expect(result.details.detached).toBe(true)
+		expect(result.details.exited).toBe(false)
+		expect((result.content[0] as { text: string }).text).toContain("Process detached")
+		expect((result.content[0] as { text: string }).text).toContain("killed automatically at session end")
+		// The registry entry and deadline stay live — stop/continue still work.
+		expect(registry.getEntry(handle)?.state).toBe("running")
+	})
+
+	it("extend_seconds pushes the deadline out before detaching", async () => {
+		const { tool, registry, handle } = setup()
+		const before = registry.getEntry(handle)?.deadlineMs
+		await callExecute(tool, { handle, action: "detach", extend_seconds: 600 })
+		expect(registry.getEntry(handle)?.deadlineMs).toBe((before ?? 0) + 600_000)
+		expect(registry.getEntry(handle)?.state).toBe("running")
+	})
+
+	it("rejects checkin_interval with detach (continue-only param)", async () => {
+		const { tool, registry, handle } = setup()
+		const result = await callExecute(tool, { handle, action: "detach", checkin_interval: 5 })
+		expect((result.content[0] as { text: string }).text).toContain(
+			"checkin_interval is only valid with action 'continue'",
+		)
+		expect(result.details.reason).toBe("invalid-params")
+		expect(registry.getEntry(handle)?.state).toBe("running")
+	})
+
+	it("detach on an already-exited process returns the final output and removes the entry", async () => {
+		const { ops, registry, tool, handle } = setup()
+		ops.emit("final output\n")
+		await ops.exit(0)
+		await registry.whenExited(handle)
+		const result = await callExecute(tool, { handle, action: "detach" })
+		expect(result.details.exited).toBe(true)
+		expect(result.details.exitCode).toBe(0)
+		expect(result.details.action).toBe("detach")
+		expect((result.content[0] as { text: string }).text).toContain("final output")
+		expect(registry.getEntry(handle)).toBeUndefined()
+	})
+
+	it("detach on an already deadline-killed process throws the terminal timeout", async () => {
+		const { registry, tool, handle } = setup()
+		await registry.kill(handle, "deadline")
+		await expect(callExecute(tool, { handle, action: "detach" })).rejects.toThrow(/timed out/)
 	})
 })

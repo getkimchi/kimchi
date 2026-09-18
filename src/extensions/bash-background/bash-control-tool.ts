@@ -2,7 +2,7 @@
  * `bash_control` companion tool.
  *
  * After the background `bash` tool resolves at a checkin with a `handle`,
- * the agent drives the process to completion via this tool. Two actions:
+ * the agent drives the process to completion via this tool. Three actions:
  *
  *  - `continue` (optionally with `extend_seconds`): if `extend_seconds > 0`,
  *    push the registry deadline out by that many seconds (preventing the
@@ -15,12 +15,20 @@
  *    settlement so final output is flushed), then resolve with the final
  *    tail-window + exit code. Removes the entry so the handle can't be reused.
  *
+ *  - `detach` (optionally with `extend_seconds`): release the process to keep
+ *    running in the background WITHOUT gating the agent's other tools (the
+ *    missing tier for session-scoped services such as `kubectl
+ *    port-forward`). The registry entry and deadline stay live; the agent
+ *    can still `stop`/`continue` the handle later. Session shutdown drains
+ *    the registry, so a detached process dies with the session.
+ *
  * The tool reads the session registry via `getSessionRegistry()` so it
  * shares one process table with the background `bash` tool.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
+import type { ProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
@@ -28,14 +36,14 @@ const bashControlSchema = Type.Object({
 	handle: Type.String({
 		description: "Handle of the background bash process to control (returned by the bash tool).",
 	}),
-	action: Type.Union([Type.Literal("continue"), Type.Literal("stop")], {
+	action: Type.Union([Type.Literal("continue"), Type.Literal("stop"), Type.Literal("detach")], {
 		description:
-			"'continue' re-arms the next checkin (optionally extend the deadline first); 'stop' kills the process and returns final output.",
+			"'continue' re-arms the next checkin (optionally extend the deadline first); 'stop' kills the process and returns final output; 'detach' keeps the process running in the background without blocking your other tools.",
 	}),
 	extend_seconds: Type.Optional(
 		Type.Number({
 			description:
-				"Only valid with action 'continue'. Pushes the process deadline out by this many seconds before re-arming the checkin. Omit or use 0 to keep the existing deadline.",
+				"Only valid with action 'continue' or 'detach'. Pushes the process deadline out by this many seconds. Omit or use 0 to keep the existing deadline.",
 		}),
 	),
 	checkin_interval: Type.Optional(
@@ -56,15 +64,49 @@ export interface BashControlDetails {
 	exited: boolean
 	/** Process exit code (null until exit / if killed without an exit code). */
 	exitCode: number | null
-	/** The action taken: "continue" | "stop". */
-	action: "continue" | "stop"
+	/** The action taken: "continue" | "stop" | "detach". */
+	action: "continue" | "stop" | "detach"
 	/** True when this result is a mid-run checkin (process still alive). */
 	checkin?: boolean
+	/** True when the process was detached (gate released, keeps running). */
+	detached?: boolean
 	/** Reason the process stopped, if any ("stop" | "deadline" | "aborted" | …). */
 	reason?: string | null
 }
 
 export const BASH_CONTROL_TOOL_NAME = "bash_control"
+
+/**
+ * Shared terminal path for `continue`/`detach` on a process that has already
+ * exited: snapshot the final output (throwing on deadline / non-zero exit
+ * via `throwIfTerminal`) and remove the registry entry so the handle can't
+ * be reused. Both actions resolve identically apart from the `action` tag.
+ */
+async function terminalResult(
+	registry: ProcessRegistry,
+	handle: string,
+	action: "continue" | "detach",
+	deadlineSeconds: number,
+): Promise<{
+	content: { type: "text"; text: string }[]
+	details: BashControlDetails
+}> {
+	const final = registry.finalSnapshot(handle)
+	const snapshot = registry.snapshotTail(handle)
+	await registry.remove(handle).catch(() => {})
+	const fullOutput = final?.content ?? snapshot.text
+	throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
+	return {
+		content: [{ type: "text", text: fullOutput }],
+		details: {
+			handle,
+			exited: true,
+			exitCode: snapshot.exitCode,
+			action,
+			reason: snapshot.reason,
+		},
+	}
+}
 
 export const BASH_CONTROL_TOOL_DESCRIPTION = `Control a background bash process started by the \`bash\` tool.
 
@@ -72,6 +114,7 @@ After the \`bash\` tool spawns a long-running command in the background and retu
 
 - action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill), and/or \`checkin_interval\` to change how often you are woken with status updates — for long builds, prefer a longer interval (e.g. 60–300s) over polling every 15s.
 - action "stop": kill the process immediately and return its final tail-window of output plus exit code.
+- action "detach": keep the process running in the background WITHOUT blocking your other tools — use this for session-scoped services you need alive while you keep working (e.g. \`kubectl port-forward\`, a local server you will probe with other tools). The process is killed automatically when the session ends; its deadline still applies (pass \`extend_seconds\` to push it out). Call bash_control with the handle later to "stop" it early, or "continue" to resume checkins.
 
 Use this tool only when a \`bash\` result includes a \`handle\` in its details (i.e. the command is still running in the background). For commands that ran synchronously (timeout <= 5), there is no handle and no need to call this tool.`
 
@@ -94,7 +137,7 @@ export function createBashControlToolDefinition(
 		details: BashControlDetails
 	}> {
 		const { handle, action, extend_seconds, checkin_interval } = params
-		if (action === "stop" && checkin_interval !== undefined) {
+		if (action !== "continue" && checkin_interval !== undefined) {
 			return {
 				content: [
 					{
@@ -172,25 +215,42 @@ export function createBashControlToolDefinition(
 			}
 		}
 
+		// ── detach ──────────────────────────────────────────────────────
+		if (action === "detach") {
+			// Already exited between the previous checkin and this call: resolve
+			// with the final output, mirroring the continue terminal path.
+			if (entry.state !== "running") {
+				return terminalResult(registry, handle, "detach", entry.deadlineSeconds)
+			}
+
+			// Optionally push the deadline out before walking away (detaching
+			// does not disable the auto-kill deadline).
+			if (extend_seconds !== undefined && extend_seconds > 0) {
+				registry.extend(handle, extend_seconds)
+			}
+
+			// Resolve immediately — no checkin is armed and the extension's
+			// gate releases the handle based on `detached: true` in details.
+			const snapshot = registry.snapshotTail(handle)
+			const statusLine = `\n\n[Process detached — it keeps running in the background for the rest of this session and your other tools are no longer blocked. It is killed automatically at session end; its deadline still applies. Call bash_control with action "stop" and handle ${handle} to kill it earlier, or "continue" to resume checkins.]`
+			return {
+				content: [{ type: "text", text: `${snapshot.text}${statusLine}` }],
+				details: {
+					handle,
+					exited: false,
+					exitCode: null,
+					action: "detach",
+					detached: true,
+					reason: null,
+				},
+			}
+		}
+
 		// ── continue ────────────────────────────────────────────────────
 		// If the process already exited (e.g. between the previous checkin and
 		// this call), return the final output immediately.
 		if (entry.state !== "running") {
-			const final = registry.finalSnapshot(handle)
-			const snapshot = registry.snapshotTail(handle)
-			await registry.remove(handle).catch(() => {})
-			const fullOutput = final?.content ?? snapshot.text
-			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-				},
-			}
+			return terminalResult(registry, handle, "continue", entry.deadlineSeconds)
 		}
 
 		// Optionally extend the deadline BEFORE re-arming, so an imminent
@@ -223,20 +283,7 @@ export function createBashControlToolDefinition(
 		}
 		const exited = snapshot.state !== "running"
 		if (exited) {
-			const final = registry.finalSnapshot(handle)
-			await registry.remove(handle).catch(() => {})
-			const fullOutput = final?.content ?? snapshot.text
-			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-				},
-			}
+			return terminalResult(registry, handle, "continue", entry.deadlineSeconds)
 		}
 
 		// Process still running — return tail window + handle.

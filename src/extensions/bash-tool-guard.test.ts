@@ -876,6 +876,20 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 		expect(bashToolDescription()).toMatch(/timeout=1800/)
 		expect(bashToolDescription()).toMatch(/checkin_interval/)
 	})
+
+	it("steers session-scoped services (port-forward) toward bash_control detach", () => {
+		const description = bashToolDescription()
+		expect(description).toContain('action "detach"')
+		expect(description).toMatch(/services/i)
+		expect(description).toContain("kubectl port-forward")
+	})
+
+	it("keeps the detach steer when experimental features are disabled", () => {
+		setExperimentalFeaturesEnabled(false)
+		const description = bashToolDescription()
+		expect(description).toContain('action "detach"')
+		expect(description).not.toContain("`daemon`")
+	})
 })
 
 describe("toolDescriptionOverride", () => {

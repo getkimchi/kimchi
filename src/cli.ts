@@ -651,8 +651,11 @@ try {
 			// Background bash: MUST register before bashToolGuard so its background
 			// `execute` wins the first-registration-per-name race (runner.js).
 			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
-			// Background mode is opt-in via `checkin_interval`; without it, bash
-			// runs synchronously as before.
+			// Background checkin mode is the DEFAULT for any bash call with
+			// timeout > 5s or omitted (the default-timeout extension injects
+			// 120s); only timeout <= 5s runs synchronously. `checkin_interval`
+			// tunes the wake-up cadence; bash_control `detach` releases the gate
+			// for session-scoped services (e.g. port-forward).
 			bashBackgroundExtension,
 			// bash_control companion tool. While a background process awaits a
 			// continue/stop decision, other tool calls are hard-blocked with a
