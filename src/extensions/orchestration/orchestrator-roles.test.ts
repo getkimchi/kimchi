@@ -8,8 +8,8 @@ import {
 } from "./orchestrator-roles.js"
 
 describe("resolveModelRoleNames", () => {
-	it("returns orchestrator and planner for default kimi-k2.7 orchestrator", () => {
-		expect(resolveModelRoleNames("kimi-k2.7", DEFAULT_MODEL_ROLES)).toEqual(["orchestrator", "planner", "reviewer"])
+	it("returns orchestrator and reviewer for default kimi-k3 orchestrator", () => {
+		expect(resolveModelRoleNames("kimi-k3", DEFAULT_MODEL_ROLES)).toEqual(["orchestrator", "reviewer"])
 	})
 })
 
@@ -19,7 +19,7 @@ describe("orchestratorShouldReceivePhaseGuidelines", () => {
 	})
 
 	it("includes review guidelines when orchestrator owns reviewer", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k3", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
 	it("omits review guidelines when orchestrator lacks reviewer", () => {
@@ -28,7 +28,8 @@ describe("orchestratorShouldReceivePhaseGuidelines", () => {
 	})
 
 	it("includes plan guidelines when orchestrator owns planner", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("plan", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		const roles = { ...DEFAULT_MODEL_ROLES, planner: "kimchi-dev/kimi-k3" }
+		expect(orchestratorShouldReceivePhaseGuidelines("plan", "kimi-k3", roles)).toBe(true)
 	})
 
 	it("omits explore guidelines when orchestrator lacks explorer", () => {
@@ -42,7 +43,8 @@ describe("orchestratorShouldReceivePhaseGuidelines", () => {
 
 describe("shouldDelegatePlanning", () => {
 	it("returns false when orchestrator is the planner model", () => {
-		expect(shouldDelegatePlanning("kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		const roles = { ...DEFAULT_MODEL_ROLES, planner: "kimchi-dev/kimi-k3" }
+		expect(shouldDelegatePlanning("kimi-k3", roles)).toBe(false)
 	})
 
 	it("returns true when orchestrator is not the planner model", () => {
@@ -71,7 +73,7 @@ describe("shouldDelegatePlanning", () => {
 
 describe("shouldDelegateReview", () => {
 	it("returns false when orchestrator is the reviewer model", () => {
-		expect(shouldDelegateReview("kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(shouldDelegateReview("kimi-k3", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("returns true when orchestrator is not the reviewer model", () => {

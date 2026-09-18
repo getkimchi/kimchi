@@ -1094,22 +1094,22 @@ describe("orchestrator default remap on session_start", () => {
 	it("remaps the default orchestrator to the sidecar replacement when the default is unavailable", async () => {
 		writeFileSync(
 			join(dir, "model-deprecations.json"),
-			JSON.stringify({ "kimi-k2.7": { deprecated_at: "2025-01-01T00:00:00Z", replacement_model: "kimi-k3" } }),
+			JSON.stringify({ "kimi-k3": { deprecated_at: "2025-01-01T00:00:00Z", replacement_model: "kimi-k4" } }),
 		)
 		remapConfigMock(dir)
 		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
 		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
-		setupAvailableModels([availableMetadata("kimi-k3"), availableMetadata("minimax-m3")])
+		setupAvailableModels([availableMetadata("kimi-k4"), availableMetadata("minimax-m3")])
 
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k3" } })
 		await sessionStart({}, ctx)
 
 		expect(saveSpy).toHaveBeenCalledTimes(1)
-		expect(saveSpy.mock.calls[0][0].orchestrator).toBe("kimchi-dev/kimi-k3")
+		expect(saveSpy.mock.calls[0][0].orchestrator).toBe("kimchi-dev/kimi-k4")
 		const notifyMock = ctx.ui.notify as Mock
-		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining('Remapped to "kimchi-dev/kimi-k3"'), "warning")
+		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining('Remapped to "kimchi-dev/kimi-k4"'), "warning")
 	})
 
 	it("respects a user-configured orchestrator override", async () => {

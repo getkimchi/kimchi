@@ -138,19 +138,19 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			trace.step("metadata picker open")
 
 			// Pick the first model in the picker (cursor starts on it). The
-			// default orchestrator is "kimchi-dev/kimi-k2.7" and it has
-			// builtin metadata, so the wizard will offer "keep current (X)"
-			// options alongside the explicit choices.
-			await waitForText(terminal, "kimchi-dev/kimi-k2.7", { timeoutMs: INPUT_TIMEOUT_MS })
+			// default orchestrator is "kimchi-dev/kimi-k3" and it has builtin
+			// metadata, so the wizard will offer "keep current (X)" options
+			// alongside the explicit choices.
+			await waitForText(terminal, "kimchi-dev/kimi-k3", { timeoutMs: INPUT_TIMEOUT_MS })
 			// Explicit assertion: if the default orchestrator ref ever
 			// changes, this surfaces the failure here at the picker rather
 			// than as a confusing downstream timeout waiting for the submenu.
-			expect(viewText(terminal)).toContain("kimchi-dev/kimi-k2.7")
+			expect(viewText(terminal)).toContain("kimchi-dev/kimi-k3")
 			terminal.submit("")
 			// The submenu title is `${ref} — metadata`. Matching the full
-			// `kimchi-dev/kimi-k2.7 — metadata` string avoids matching the
+			// `kimchi-dev/kimi-k3 — metadata` string avoids matching the
 			// picker's own "Choose a model to edit metadata" header.
-			await waitForText(terminal, "kimchi-dev/kimi-k2.7 — metadata", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "kimchi-dev/kimi-k3 — metadata", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("model selected, submenu open")
 
 			// Submenu offers "Edit" (cursor starts on it) / "Cancel".
@@ -198,7 +198,7 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 
 			// After the last step the wizard closes and surfaces a
 			// "Metadata saved for X." notification.
-			await waitForText(terminal, /Metadata saved for kimchi-dev\/kimi-k2\.7\./, { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, /Metadata saved for kimchi-dev\/kimi-k3\./, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("metadata saved notification")
 
 			// Verify on-disk state. Assert against the parsed JSON object
@@ -206,7 +206,7 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			// can't silently shift the failure mode.
 			const settingsPath = `${fixture.homeDir}/.config/kimchi/harness/settings.json`
 			const settings = await readSettingsJson(settingsPath)
-			const meta = settings.modelMetadata?.["kimchi-dev/kimi-k2.7"]
+			const meta = settings.modelMetadata?.["kimchi-dev/kimi-k3"]
 			expect(meta).toBeDefined()
 			expect(meta).toMatchObject({ tier: "heavy", vision: true })
 			expect(meta?.description).toContain("heavy model for complex work")
@@ -459,7 +459,7 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			trace.step("toggle-select open for Builder")
 
 			// Initial state: the Builder role's current assignment is the
-			// single-model default "kimchi-dev/kimi-k2.6" (not in TWO_MODELS
+			// single-model default "kimchi-dev/glm-5.3-flash" (not in TWO_MODELS
 			// but it still counts toward selected.size), so the title and
 			// bottom row both read "(1 selected)".
 			const beforeView = viewText(terminal)
@@ -557,7 +557,7 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 			trace.step("main menu open")
 
 			// Orchestrator is the first role row, so its summary block
-			// ("Orchestrator:\n    kimchi-dev/minimax-m3") is the cursor's
+			// ("Orchestrator:\n    kimchi-dev/kimi-k3") is the cursor's
 			// starting position. Press Enter directly to open the picker.
 			terminal.submit("")
 			await waitForText(terminal, "Orchestrator", { timeoutMs: INPUT_TIMEOUT_MS })
