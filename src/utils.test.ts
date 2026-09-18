@@ -12,9 +12,13 @@ describe("getVersion", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("returns 'dev' when package.json has 0.0.0 and no PI_PACKAGE_DIR", async () => {
-		// Ensure PI_PACKAGE_DIR is not set so getVersion falls back to workspace package.json
-		vi.stubEnv("PI_PACKAGE_DIR", "")
+	it("returns 'dev' when package.json has 0.0.0", async () => {
+		// Must not depend on the workspace package.json version: since the
+		// changelog release flow stamps a real version onto master, the repo
+		// file is no longer guaranteed to be 0.0.0. Use a hermetic fixture.
+		const tmpDir = mkdtempSync(resolve(tmpdir(), "kimchi-test-"))
+		writeFileSync(resolve(tmpDir, "package.json"), JSON.stringify({ name: "kimchi-test", version: "0.0.0" }))
+		vi.stubEnv("PI_PACKAGE_DIR", tmpDir)
 		const { getVersion } = await import("./utils.js")
 		const v = getVersion()
 		expect(v).toBe("dev")
