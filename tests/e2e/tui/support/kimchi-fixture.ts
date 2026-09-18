@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./assertions.js"
@@ -196,16 +197,6 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		)
 
 		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models, providerId)
-		// Pre-record a persisted trust decision for the workDir unless the test
-		// opts out (the project-trust-gate scenarios answer the live prompt
-		// instead). Keyed by the realpath — pi's trust store canonicalizes.
-		if (options.trustWorkDir !== false) {
-			writeFileSync(
-				join(agentDir, "trust.json"),
-				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
-				"utf-8",
-			)
-		}
 		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
 
 		const rawSeed = options.seedHome?.(homeDir, workDir)
@@ -219,6 +210,21 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			...(seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}),
 		}
 		const seedResult = seedIsResult ? (rawSeed as SeedHomeResult).data : rawSeed
+
+		// Pre-record a persisted trust decision for the workDir when its seeded
+		// content is trust-requiring (so the gate does not block tests that
+		// expect their project resources to load), unless the test opts out —
+		// the project-trust-gate scenarios answer the live prompt instead, and
+		// workDirs without trust-requiring resources (e.g. .mcp.json-only)
+		// must stay untrusted so their own trust flows fire. Keyed by the
+		// realpath — pi's trust store canonicalizes.
+		if (options.trustWorkDir !== false && hasTrustRequiringProjectResources(workDir)) {
+			writeFileSync(
+				join(agentDir, "trust.json"),
+				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
+				"utf-8",
+			)
+		}
 
 		return {
 			homeDir,

@@ -244,11 +244,12 @@ export class FermentStorage {
 
 	constructor(dir?: string) {
 		this.dir = dir ?? resolveFermentsDir()
-		this.ensureDir()
-	}
-
-	private ensureDir(): void {
-		if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true })
+		// Deliberately NOT creating the directory here: eagerly mkdir-ing
+		// `<project>/.kimchi/ferments` on every construction self-arms the
+		// project-trust scan (the dir is a trust-requiring entry) in projects
+		// that never had ferments — flipping later in-session trust resolutions
+		// (e.g. the MCP project-config gate) from "ask" to "trusted". Reads
+		// treat a missing dir as empty; writes create it on demand.
 	}
 
 	private filePath(id: string): string {
@@ -300,7 +301,9 @@ export class FermentStorage {
 
 	/** List all ferments as summary items. */
 	list(): FermentListItem[] {
-		this.ensureDir()
+		// A missing directory is an empty store — do not create it here (see
+		// the constructor comment: eager creation self-arms the trust scan).
+		if (!existsSync(this.dir)) return []
 		let files: string[]
 		try {
 			files = readdirSync(this.dir).filter((f) => f.endsWith(".json"))

@@ -167,6 +167,9 @@ describe("ACP integration — plan updates from todo writes", () => {
 			clientCapabilities: FULL_CAPABILITIES,
 			clientMeta: PI_META,
 			extraArgs,
+			// The test seeds .kimchi/ferments into the workDir and expects them to
+			// load; ACP is headless and the gate fail-closes without a decision.
+			pretrustWorkDir: true,
 		})
 	}
 
