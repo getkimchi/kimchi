@@ -17,7 +17,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
-import { getEffectiveModel } from "../extensions/router/state.js"
+import { formatAutoModelLabel, getEffectiveModel } from "../extensions/router/state.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -216,7 +216,7 @@ export function buildModelAbbrev(
 	modelId: string,
 	routedModelId?: string,
 ): Segment {
-	const label = multiModel ? `m-m (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
+	const label = multiModel ? `m-m (${modelId})` : routedModelId ? formatAutoModelLabel(routedModelId) : modelId
 	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
 	return {
 		id: "model",
@@ -451,7 +451,7 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const selectedModelId = ctx.model?.id ?? "n/a"
 	const modelId = selectedModelId
 	const routedModelId = resolveRoutedModelId(ctx)
-	const label = multiModel ? `multi-model (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
+	const label = multiModel ? `multi-model (${modelId})` : routedModelId ? formatAutoModelLabel(routedModelId) : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
 	return {
 		id: "model",

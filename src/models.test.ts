@@ -1023,7 +1023,7 @@ describe("injectAutoModel", () => {
 
 		expect(auto).toMatchObject({
 			id: "auto",
-			name: "Auto (Kimchi Router)",
+			name: "Auto — Picks the best model for your tasks automatically.",
 			api: "kimchi-auto",
 			reasoning: true,
 			thinkingLevelMap: { off: "none", max: "max" },

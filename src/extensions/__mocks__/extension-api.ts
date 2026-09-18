@@ -12,6 +12,8 @@ export function createExtensionApi(): {
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
+	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
+	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
 	emitEvent: ReturnType<typeof vi.fn>
 	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
 	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
@@ -26,6 +28,7 @@ export function createExtensionApi(): {
 		handlers.set(event, registered)
 	})
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>()
+	const registerEntryRenderer = vi.fn<ExtensionAPI["registerEntryRenderer"]>()
 	const appendedEntries: Array<{ type: string; payload: unknown }> = []
 	const appendEntry = vi.fn((type: string, payload: unknown) => {
 		appendedEntries.push({ type, payload })
@@ -59,6 +62,7 @@ export function createExtensionApi(): {
 			sendMessage,
 			appendEntry,
 			setModel,
+			registerEntryRenderer,
 			events,
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
@@ -76,6 +80,12 @@ export function createExtensionApi(): {
 		},
 		sendMessage,
 		setModel,
+		registerEntryRenderer,
+		getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1] {
+			const call = registerEntryRenderer.mock.calls.find(([type]) => type === customType)
+			if (!call) throw new Error(`No entry renderer registered for ${customType}`)
+			return call[1]
+		},
 		emitEvent: emit,
 		registerTool,
 		setActiveTools,

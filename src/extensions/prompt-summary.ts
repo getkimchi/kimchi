@@ -1,10 +1,12 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { AUTO_MODEL_ID, isAutoModel } from "./router/constants.js"
+import { formatAutoModelLabel, getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {
@@ -36,6 +38,8 @@ interface PromptSummaryData {
 	subagentsByModel?: Array<{ model: string; totals: UsageTotals }>
 	total: UsageTotals
 	extras?: string[]
+	/** `auto (<routed model id>)` label for the model row — only when Auto routed. */
+	model?: string
 }
 
 const pendingExtras: string[] = []
@@ -105,6 +109,17 @@ function formatUsageRows(
 	})
 }
 
+/**
+ * Value for the model row, mirroring the status bar's model segment: once the
+ * Auto router resolves a concrete model, show `auto (<model id>)`. Undefined
+ * for concrete selections and unresolved Auto sessions — those add no row.
+ */
+function resolveAutoModelLabel(ctx: ExtensionContext): string | undefined {
+	if (!isAutoModel(ctx.model)) return undefined
+	const effective = getEffectiveModel(ctx)
+	return effective && effective.id !== AUTO_MODEL_ID ? formatAutoModelLabel(effective.id) : undefined
+}
+
 const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
 	const data = message.details as PromptSummaryData
 	if (!data) return undefined
@@ -115,10 +130,11 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
 
+	let labelWidth: number
 	if (!data.subagents) {
 		// No subagents — single compact row
 		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
 		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
@@ -142,11 +158,15 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 		rows.push({ label: "total:", totals: data.total })
 
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		for (const line of formatUsageRows(rows, theme, labelWidth)) {
 			container.addChild(new Text(line, 0, 0))
 		}
+	}
+
+	if (data.model) {
+		container.addChild(new Text(INDENT + theme.fg("dim", "model".padEnd(labelWidth)) + data.model, 0, 0))
 	}
 
 	for (const extra of data.extras ?? []) {
@@ -245,6 +265,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			subagentsByModel,
 			total: grandTotal,
 			extras: summaryExtras.length > 0 ? [...summaryExtras] : undefined,
+			model: resolveAutoModelLabel(ctx),
 		}
 		pendingSummary = true
 		const version = ++summaryVersion
