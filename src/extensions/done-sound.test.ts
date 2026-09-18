@@ -107,7 +107,9 @@ describe("playSound", () => {
 		const spawnMock = vi.mocked(spawn)
 		spawnMock.mockClear()
 		const spawnImpl = vi.fn(() => ({ on: vi.fn() }))
-		playSound(undefined, "darwin", spawnImpl as never)
+		// Inject fileExists: CI (ubuntu) has no /System/Library/... — the test
+		// must not depend on the host's filesystem.
+		playSound(undefined, "darwin", spawnImpl as never, () => true)
 		expect(spawnImpl).toHaveBeenCalledWith("afplay", [GLASS], { stdio: "ignore" })
 	})
 

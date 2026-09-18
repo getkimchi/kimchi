@@ -117,22 +117,20 @@ describe("FocusEventFilter", () => {
 		expect(f.isFocused()).toBe(true)
 	})
 
-	it("holds a lone trailing ESC and merges it with the next chunk", async () => {
+	it("never holds a lone trailing ESC (a real Escape keypress passes through)", async () => {
 		const mod = await freshFocusModule()
-		// Split focus event: "\x1b" at end of one chunk, "[O" at the start of the next.
+		// A single Escape key arrives as exactly \x1b; holding it would swallow
+		// the keypress or fuse it with the next keystroke.
 		const f = new mod.FocusEventFilter()
-		expect(f.feed(`x${ESC}`)).toBe("x")
-		expect(f.feed("[O")).toBe("")
-		expect(f.isFocused()).toBe(false)
-		// The same lone ESC followed by bytes that DON'T complete a focus
-		// sequence passes through byte-preservingly.
+		expect(f.feed(`x${ESC}`)).toBe(`x${ESC}`)
+		expect(f.feed("O")).toBe("O")
+		expect(f.feed(`${ESC}I`)).toBe(`${ESC}I`)
+		expect(f.isFocused()).toBe(true)
+		// Reassemble a focus event split after the ESC[ prefix.
 		const g = new mod.FocusEventFilter()
-		expect(g.feed(`x${ESC}`)).toBe("x")
-		expect(g.feed("O")).toBe(`${ESC}O`)
-		expect(g.isFocused()).toBe(true)
-		// A bare I/O with nothing pending is plain input, not a focus event.
-		expect(g.feed("I")).toBe("I")
-		expect(g.isFocused()).toBe(true)
+		expect(g.feed(`x${ESC}[`)).toBe("x")
+		expect(g.feed("O")).toBe("")
+		expect(g.isFocused()).toBe(false)
 	})
 })
 

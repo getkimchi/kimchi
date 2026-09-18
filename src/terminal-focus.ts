@@ -51,8 +51,7 @@ export function canDetectFocus(env: FocusEnv = process.env): boolean {
 	// Apple Terminal.app never implemented DECSET 1004.
 	if (env.TERM_PROGRAM === "Apple_Terminal") return false
 	// Windows conhost doesn't implement it; Windows Terminal sets WT_SESSION.
-	if (platform === "win32" && !env.WT_SESSION) return false
-	return true
+	return !(platform === "win32" && !env.WT_SESSION);
 }
 
 /**
@@ -98,11 +97,13 @@ function extractFocusEvents(data: string): { out: string; events: FocusEvent[]; 
 				continue
 			}
 		}
-		// A trailing ESC or ESC[ at the end of the chunk may be the start of a
-		// focus sequence split across chunks — hold it for the next feed.
-		// (Trailing ESC[ is also the prefix of any CSI key sequence, so this
-		// only delays emission, never reorders bytes.)
-		if (i === n - 1 && data[i] === ESC) break
+		// A trailing ESC[ at the end of the chunk may be the start of a focus
+		// sequence split across chunks (e.g. tmux/SSH re-chunking) — hold it
+		// for the next feed. A LONE trailing ESC is never held: a single Escape
+		// keypress arrives as exactly that byte, and stashing it would swallow
+		// or corrupt the user's key (it would be emitted fused with the next
+		// keystroke). Focus events are written atomically by terminals, so only
+		// the ESC[ tail needs reassembly.
 		if (i === n - 2 && data[i] === ESC && data[i + 1] === "[") break
 		out += data[i]
 		i += 1
