@@ -4,18 +4,24 @@ import { validateExplicitTodoScope } from "./scope.js"
 import { applyWriteTodos, getTodosForScope, resolveTodoScope } from "./store.js"
 import { TODO_STATUSES, type TodoDraft, type TodoScope, type TodoStatus, type WriteTodosParams } from "./types.js"
 
+export const TODOS_TOOL_NAME = "todos"
+// Legacy per-action tool names, kept for session-log recognition
+// (isTodoWriteToolName) and ferment-v2 shape detection — old session
+// transcripts and in-flight tests still carry them. Never registered.
 export const UPDATE_TODOS_TOOL_NAME = "update_todos"
 export const CREATE_TODOS_TOOL_NAME = "create_todos"
 export const ADD_TODO_TOOL_NAME = "add_todo"
 export const MARK_TODO_TOOL_NAME = "mark_todo"
 export const CLEAR_TODOS_TOOL_NAME = "clear_todos"
-export const TODO_TOOL_NAMES = [
+export const LEGACY_TODO_TOOL_NAMES = [
 	CREATE_TODOS_TOOL_NAME,
 	UPDATE_TODOS_TOOL_NAME,
 	ADD_TODO_TOOL_NAME,
 	MARK_TODO_TOOL_NAME,
 	CLEAR_TODOS_TOOL_NAME,
 ] as const
+/** The only todo tool the model sees: the consolidated action tool. */
+export const TODO_TOOL_NAMES = [TODOS_TOOL_NAME] as const
 
 const TODO_STATUS_PARAMETER = Type.Union([
 	Type.Literal("pending"),
@@ -30,38 +36,35 @@ const SCOPE_DESCRIPTION =
 const ACTIVE_FORM_DESCRIPTION =
 	"Present-continuous label shown while the item is in progress, e.g. 'Writing auth tests'. Not a category tag like 'task' or 'step'."
 
-const TODO_TOOL_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
-	todos: Type.Array(
-		Type.Object({
-			id: Type.Optional(Type.Number()),
-			content: Type.String(),
-			status: TODO_STATUS_PARAMETER,
-			activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
-			note: Type.Optional(Type.String()),
-		}),
+const TODOS_TOOL_PARAMETERS = Type.Object({
+	action: Type.Union(
+		[Type.Literal("create"), Type.Literal("update"), Type.Literal("add"), Type.Literal("mark"), Type.Literal("clear")],
+		{
+			description:
+				"'create' = initial list for non-trivial work; 'update' = replace the whole list when the plan changes significantly; 'add' = append one item; 'mark' = routine status change by id (the default for progress updates); 'clear' = wipe the list when done or obsolete.",
+		},
 	),
-})
-
-const ADD_TODO_PARAMETERS = Type.Object({
 	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
-	content: Type.String(),
-	status: Type.Optional(TODO_STATUS_PARAMETER),
+	todos: Type.Optional(
+		Type.Array(
+			Type.Object({
+				id: Type.Optional(Type.Number()),
+				content: Type.String(),
+				status: TODO_STATUS_PARAMETER,
+				activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
+				note: Type.Optional(Type.String()),
+			}),
+			{ description: "The full list. Required for create/update." },
+		),
+	),
+	content: Type.Optional(Type.String({ description: "The single item text. Required for add." })),
+	id: Type.Optional(Type.Number({ description: "The todo id. Required for mark." })),
+	status: Type.Optional(Type.Union([TODO_STATUS_PARAMETER], { description: "Required for mark; optional for add." })),
 	activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
 	note: Type.Optional(Type.String()),
 })
 
-const MARK_TODO_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
-	id: Type.Number(),
-	status: TODO_STATUS_PARAMETER,
-	activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
-	note: Type.Optional(Type.String()),
-})
-
-const CLEAR_TODOS_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
-})
+type TodoAction = "create" | "update" | "add" | "mark" | "clear"
 
 const FERMENT_SCOPE_ERROR =
 	"Phase todo lists are managed by the ferment lifecycle; write your tasks to the step scope (omit scope while a step runs) or to global."
@@ -82,8 +85,35 @@ interface MarkTodoParams {
 	note?: string
 }
 
-interface ClearTodosParams {
-	scope?: unknown
+/**
+ * Action dispatch helper for transcripts/tool-call blocks: with the
+ * consolidated tool the model calls `todos` with an `action` argument; older
+ * session logs carry the five legacy tool names. Returns the action for
+ * either shape, undefined for non-todo calls.
+ */
+export function todoActionOf(toolName: string, args: unknown): TodoAction | undefined {
+	if (toolName === TODOS_TOOL_NAME) {
+		const action = isRecord(args) ? args.action : undefined
+		return typeof action === "string" ? (action as TodoAction) : undefined
+	}
+	switch (toolName) {
+		case CREATE_TODOS_TOOL_NAME:
+			return "create"
+		case UPDATE_TODOS_TOOL_NAME:
+			return "update"
+		case ADD_TODO_TOOL_NAME:
+			return "add"
+		case MARK_TODO_TOOL_NAME:
+			return "mark"
+		case CLEAR_TODOS_TOOL_NAME:
+			return "clear"
+		default:
+			return undefined
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object"
 }
 
 function todoErrorMessage(error: unknown): string {
@@ -219,7 +249,7 @@ async function executeMarkTodo(
 		const existing = todos.find((todo) => todo.id === id)
 		if (!existing) {
 			// Soft steer, not an error: an unknown id usually means the list was
-			// replaced (e.g. by update_todos or another scope) — tell the model to
+			// replaced (e.g. by update or another scope) — tell the model to
 			// re-read state rather than retry the same mark.
 			return {
 				content: [
@@ -273,7 +303,7 @@ async function executeMarkTodo(
 
 async function executeClearTodos(
 	_toolCallId: string,
-	params: ClearTodosParams,
+	params: { scope?: unknown },
 	_signal: AbortSignal | undefined,
 	_onUpdate: unknown,
 	ctx: ExtensionContext,
@@ -298,59 +328,64 @@ async function executeClearTodos(
 	}
 }
 
+function argError(text: string) {
+	return { content: [{ type: "text" as const, text }], details: null }
+}
+
+async function executeTodos(
+	toolCallId: string,
+	params: {
+		action: TodoAction
+		scope?: unknown
+		todos?: Array<{ id?: number; content: string; status: TodoStatus; activeForm?: string; note?: string }>
+		content?: string
+		id?: number
+		status?: TodoStatus
+		activeForm?: string
+		note?: string
+	},
+	signal: AbortSignal | undefined,
+	onUpdate: unknown,
+	ctx: ExtensionContext,
+) {
+	switch (params.action) {
+		case "create":
+		case "update":
+			if (!Array.isArray(params.todos)) {
+				return argError(`Error: todos action "${params.action}" requires the \`todos\` array.`)
+			}
+			return executeWriteTodos(toolCallId, { scope: params.scope, todos: params.todos }, signal, onUpdate, ctx)
+		case "add":
+			if (typeof params.content !== "string" || !params.content.trim()) {
+				return argError('Error: todos action "add" requires `content`.')
+			}
+			return executeAddTodo(toolCallId, params as AddTodoParams, signal, onUpdate, ctx)
+		case "mark":
+			if (params.id === undefined) {
+				return argError('Error: todos action "mark" requires `id`.')
+			}
+			if (params.status === undefined) {
+				return argError('Error: todos action "mark" requires `status`.')
+			}
+			return executeMarkTodo(toolCallId, params as MarkTodoParams, signal, onUpdate, ctx)
+		case "clear":
+			return executeClearTodos(toolCallId, params, signal, onUpdate, ctx)
+		default:
+			return argError(
+				`Unknown todos action "${String(params.action)}". Valid actions: create, update, add, mark, clear.`,
+			)
+	}
+}
+
 export function registerTodosTool(pi: ExtensionAPI): void {
 	pi.registerTool({
-		name: CREATE_TODOS_TOOL_NAME,
-		label: "Create Todos",
+		name: TODOS_TOOL_NAME,
+		label: "Todos",
 		description:
-			"Create the initial todo list for non-trivial work. Use before starting multi-step tasks, when the user asks you to track work, or when there is no current todo list. Always pair this with the first work tool call in the same turn — do not make a turn that is only a todo creation.",
-		promptSnippet: "Create the initial todo list before multi-step work",
-		parameters: TODO_TOOL_PARAMETERS,
+			"Manage the session todo list. Actions: 'create' = initial list for non-trivial work; 'update' = replace the whole list when the plan changes significantly; 'add' = append one item; 'mark' = routine status change by id (the primary progress update); 'clear' = wipe when done or obsolete. Always pair a todos call with the next work tool call in the same turn — never make a turn that is only a todo update. Keep at most one in_progress; preserve user-created todos and existing ids.",
+		promptSnippet: "manage the session todo list (create/update/add/mark/clear)",
+		parameters: TODOS_TOOL_PARAMETERS,
 		executionMode: "parallel",
-		execute: executeWriteTodos,
-	})
-
-	pi.registerTool({
-		name: UPDATE_TODOS_TOOL_NAME,
-		label: "Update Todos",
-		description:
-			"Replace the entire todo list. Use only when the plan changes significantly (adding, removing, or reordering items). For routine status changes, use mark_todo instead — it is lighter and pairs more naturally with a work tool call. For appending a single item, use add_todo instead of rewriting the whole list. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo update.",
-		promptSnippet: "Replace the whole todo list when the plan changes",
-		parameters: TODO_TOOL_PARAMETERS,
-		executionMode: "parallel",
-		execute: executeWriteTodos,
-	})
-
-	pi.registerTool({
-		name: ADD_TODO_TOOL_NAME,
-		label: "Add Todo",
-		description:
-			"Add one todo to the current list. Use for a missing follow-up item. Prefer this over rewriting the whole list with update_todos just to append one item. Pair this with the next work tool call in the same turn when possible.",
-		promptSnippet: "Add one todo — prefer over rewriting the list",
-		parameters: ADD_TODO_PARAMETERS,
-		executionMode: "parallel",
-		execute: executeAddTodo,
-	})
-
-	pi.registerTool({
-		name: MARK_TODO_TOOL_NAME,
-		label: "Mark Todo",
-		description:
-			"Mark one todo as pending, in_progress, blocked, or completed by id. This is the primary tool for routine progress updates — use it to mark the current item completed and the next one in_progress as you work. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo status change.",
-		promptSnippet: "Mark one todo's progress by id",
-		parameters: MARK_TODO_PARAMETERS,
-		executionMode: "parallel",
-		execute: executeMarkTodo,
-	})
-
-	pi.registerTool({
-		name: CLEAR_TODOS_TOOL_NAME,
-		label: "Clear Todos",
-		description:
-			"Clear the current todo list when the work is done or obsolete. Pair this with the next work tool call in the same turn when possible.",
-		promptSnippet: "Clear the todo list",
-		parameters: CLEAR_TODOS_PARAMETERS,
-		executionMode: "parallel",
-		execute: executeClearTodos,
+		execute: executeTodos,
 	})
 }

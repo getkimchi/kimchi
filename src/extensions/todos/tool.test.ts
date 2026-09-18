@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetTodoStore, GLOBAL_TODO_SCOPE, getTodosForScope, subscribeTodoStore } from "./store.js"
-import { CREATE_TODOS_TOOL_NAME, registerTodosTool, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
+import { registerTodosTool, TODO_TOOL_NAMES, TODOS_TOOL_NAME } from "./tool.js"
 
 function fakeCtx(sessionId: string): ExtensionContext {
 	return {
@@ -14,36 +14,41 @@ function fakeCtx(sessionId: string): ExtensionContext {
 	} as unknown as ExtensionContext
 }
 
-function registeredTools() {
+function registeredTool() {
 	const registerTool = vi.fn()
 	registerTodosTool({ registerTool } as never)
-	return Object.fromEntries(registerTool.mock.calls.map(([tool]) => [tool.name, tool]))
+	return registerTool.mock.calls[0][0]
 }
 
-describe("todo tools", () => {
+describe("todos tool", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 	})
 
-	it("registers todo tool aliases", () => {
+	it("registers exactly the consolidated action tool", () => {
 		const registerTool = vi.fn()
 		registerTodosTool({ registerTool } as never)
 
 		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([...TODO_TOOL_NAMES])
-		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([
-			CREATE_TODOS_TOOL_NAME,
-			UPDATE_TODOS_TOOL_NAME,
-			"add_todo",
-			"mark_todo",
-			"clear_todos",
-		])
+		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([TODOS_TOOL_NAME])
+	})
+
+	it("describes all five actions and the pairing rule", () => {
+		const tool = registeredTool()
+
+		for (const action of ["create", "update", "add", "mark", "clear"]) {
+			expect(tool.description).toContain(`'${action}'`)
+		}
+		expect(tool.description).toContain("pair a todos call with the next work tool call in the same turn")
+		expect(tool.promptSnippet).toBe("manage the session todo list (create/update/add/mark/clear)")
 	})
 
 	it("returns a structured error when reducer validation fails", async () => {
-		const tool = registeredTools()[UPDATE_TODOS_TOOL_NAME]
+		const tool = registeredTool()
 		const result = await tool.execute(
 			"call-1",
 			{
+				action: "update",
 				todos: [
 					{ id: 1, content: "one", status: "pending" },
 					{ id: 1, content: "two", status: "pending" },
@@ -60,37 +65,40 @@ describe("todo tools", () => {
 		})
 	})
 
-	it("describes update_todos as whole-list replacement for plan changes only", () => {
-		const tools = registeredTools()
-		const tool = tools[UPDATE_TODOS_TOOL_NAME]
-
-		expect(tool.description).toContain("Replace the entire todo list")
-		expect(tool.description).toContain("mark_todo instead")
-		expect(tool.description).toContain("add_todo instead")
-		// Guards against regressing to the "batch progress updates" wording that
-		// invited whole-list rewrites for routine status changes.
-		expect(tool.promptSnippet).toBe("Replace the whole todo list when the plan changes")
+	it("create/update require the todos array", async () => {
+		const tool = registeredTool()
+		const result = await tool.execute("c-1", { action: "create" }, undefined, undefined, fakeCtx("session"))
+		expect(result.content[0].text).toContain("requires the `todos` array")
+		expect(result.details).toBeNull()
 	})
 
-	it("describes add_todo as the preferred single-item append path", () => {
-		const tools = registeredTools()
-		const tool = tools.add_todo
-
-		expect(tool.promptSnippet).toBe("Add one todo — prefer over rewriting the list")
-		expect(tool.description).toContain("Prefer this over rewriting the whole list")
+	it("add requires content", async () => {
+		const tool = registeredTool()
+		const result = await tool.execute("a-1", { action: "add" }, undefined, undefined, fakeCtx("session"))
+		expect(result.content[0].text).toContain("requires `content`")
 	})
 
-	it("describes and executes create_todos as the initial planning path", async () => {
-		const tools = registeredTools()
-		const tool = tools[CREATE_TODOS_TOOL_NAME]
+	it("mark requires id and status", async () => {
+		const tool = registeredTool()
+		const ctx = fakeCtx("session")
+		const noId = await tool.execute("m-1", { action: "mark", status: "completed" }, undefined, undefined, ctx)
+		expect(noId.content[0].text).toContain("requires `id`")
+		const noStatus = await tool.execute("m-2", { action: "mark", id: 1 }, undefined, undefined, ctx)
+		expect(noStatus.content[0].text).toContain("requires `status`")
+	})
 
-		expect(tool.description).toContain("Create the initial todo list")
-		expect(tool.description).toContain("before starting multi-step tasks")
-		expect(tool.promptSnippet).toBe("Create the initial todo list before multi-step work")
+	it("unknown action is a soft error", async () => {
+		const tool = registeredTool()
+		const result = await tool.execute("x-1", { action: "nope" }, undefined, undefined, fakeCtx("session"))
+		expect(result.content[0].text).toContain("Unknown todos action")
+	})
+
+	it("executes create as the initial planning path", async () => {
+		const tool = registeredTool()
 
 		const result = await tool.execute(
 			"create-1",
-			{ todos: [{ content: "inspect trace", status: "in_progress" }] },
+			{ action: "create", todos: [{ content: "inspect trace", status: "in_progress" }] },
 			undefined,
 			undefined,
 			fakeCtx("session"),
@@ -101,13 +109,13 @@ describe("todo tools", () => {
 	})
 
 	it("marking an unchanged status is a no-op with a corrective notice", async () => {
-		const tools = registeredTools()
+		const tool = registeredTool()
 		const ctx = fakeCtx("session")
 
-		await tools.add_todo.execute("add-1", { content: "alpha", status: "pending" }, undefined, undefined, ctx)
+		await tool.execute("add-1", { action: "add", content: "alpha", status: "pending" }, undefined, undefined, ctx)
 		const before = getTodosForScope(GLOBAL_TODO_SCOPE, "session")
 
-		const result = await tools.mark_todo.execute("mark-1", { id: 1, status: "pending" }, undefined, undefined, ctx)
+		const result = await tool.execute("mark-1", { action: "mark", id: 1, status: "pending" }, undefined, undefined, ctx)
 
 		expect(result.content).toEqual([
 			{
@@ -120,13 +128,13 @@ describe("todo tools", () => {
 	})
 
 	it("marking the same status with a new note still writes", async () => {
-		const tools = registeredTools()
+		const tool = registeredTool()
 		const ctx = fakeCtx("session")
 
-		await tools.add_todo.execute("add-1", { content: "alpha" }, undefined, undefined, ctx)
-		const result = await tools.mark_todo.execute(
+		await tool.execute("add-1", { action: "add", content: "alpha" }, undefined, undefined, ctx)
+		const result = await tool.execute(
 			"mark-1",
-			{ id: 1, status: "pending", note: "blocked on fixture" },
+			{ action: "mark", id: 1, status: "pending", note: "blocked on fixture" },
 			undefined,
 			undefined,
 			ctx,
@@ -139,10 +147,10 @@ describe("todo tools", () => {
 	})
 
 	it("marking an unknown id returns a soft steer, not an error", async () => {
-		const tools = registeredTools()
-		const result = await tools.mark_todo.execute(
+		const tool = registeredTool()
+		const result = await tool.execute(
 			"mark-1",
-			{ id: 42, status: "completed" },
+			{ action: "mark", id: 42, status: "completed" },
 			undefined,
 			undefined,
 			fakeCtx("session"),
@@ -157,18 +165,18 @@ describe("todo tools", () => {
 	})
 
 	it("adds, marks, and clears todos", async () => {
-		const tools = registeredTools()
+		const tool = registeredTool()
 		const ctx = fakeCtx("session")
 
-		await tools.add_todo.execute("add-1", { content: "alpha" }, undefined, undefined, ctx)
-		await tools.add_todo.execute("add-2", { content: "bravo" }, undefined, undefined, ctx)
+		await tool.execute("add-1", { action: "add", content: "alpha" }, undefined, undefined, ctx)
+		await tool.execute("add-2", { action: "add", content: "bravo" }, undefined, undefined, ctx)
 
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["alpha", "bravo"])
 
-		await tools.mark_todo.execute("mark-1", { id: 1, status: "completed" }, undefined, undefined, ctx)
+		await tool.execute("mark-1", { action: "mark", id: 1, status: "completed" }, undefined, undefined, ctx)
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").find((todo) => todo.id === 1)?.status).toBe("completed")
 
-		const clearResult = await tools.clear_todos.execute("clear-1", {}, undefined, undefined, ctx)
+		const clearResult = await tool.execute("clear-1", { action: "clear" }, undefined, undefined, ctx)
 		expect(clearResult.details.todos).toEqual([])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")).toEqual([])
 	})
@@ -187,10 +195,11 @@ describe("todo tools", () => {
 			)
 		})
 		try {
-			const tools = registeredTools()
-			const result = await tools[CREATE_TODOS_TOOL_NAME].execute(
+			const tool = registeredTool()
+			const result = await tool.execute(
 				"create-1",
 				{
+					action: "create",
 					todos: [
 						{ content: "Checking mothership config for per-resource optimization toggles", status: "in_progress" },
 						{ content: "Verify how toggles are exposed", status: "pending" },
@@ -210,20 +219,20 @@ describe("todo tools", () => {
 	})
 
 	it("writes through to the session id reported by ctx.sessionManager", async () => {
-		const tools = registeredTools()
+		const tool = registeredTool()
 		const ctxA = fakeCtx("session-a")
 		const ctxB = fakeCtx("session-b")
 
-		await tools.update_todos.execute(
+		await tool.execute(
 			"u-a",
-			{ todos: [{ content: "alpha", status: "in_progress" }] },
+			{ action: "update", todos: [{ content: "alpha", status: "in_progress" }] },
 			undefined,
 			undefined,
 			ctxA,
 		)
-		await tools.update_todos.execute(
+		await tool.execute(
 			"u-b",
-			{ todos: [{ content: "beta", status: "pending" }] },
+			{ action: "update", todos: [{ content: "beta", status: "pending" }] },
 			undefined,
 			undefined,
 			ctxB,

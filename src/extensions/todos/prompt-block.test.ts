@@ -30,20 +30,18 @@ describe("todo prompt block", () => {
 		__resetTodoStore()
 	})
 
-	it("renders guidance without a current list", () => {
+	it("renders the slimmed guidance block", () => {
 		const block = __test_renderTodoPromptBlock()
 		expect(block).toContain("## Todos")
-		expect(block).toContain("contract with the user")
-		expect(block).toContain("code changes, debugging, reviews, investigations")
-		expect(block).toContain("start short (2-3 items)")
-		expect(block).toContain("Skip it for single-step answers")
-		expect(block).toContain("Do not leave TODO placeholders in code")
-		expect(block).toContain("always pair todo updates with the next work tool call")
-		expect(block).toContain("natural breakpoint")
-		expect(block).toContain("staleness warning")
+		expect(block).toContain("`todos`")
+		expect(block).toContain("create, add, mark, clear")
+		expect(block).toContain("pair status updates with the next work tool call in the same turn")
 		expect(block).toContain("never authorize")
-		expect(block).toContain("explicit user approval")
+		expect(block).toContain("skip todos for single-step exchanges")
 		expect(block).not.toContain("before your final response")
+		// The full 297-token guidance body was slimmed to one discovery
+		// paragraph (cost-parity consolidation) — keep it compact.
+		expect(block.length).toBeLessThan(700)
 	})
 
 	it("keeps guidance stable when todos exist", () => {
@@ -363,13 +361,13 @@ describe("ferment-conditional todo guidance", () => {
 		expect(supplement).toContain("sub-task todo list is OPTIONAL")
 	})
 
-	it("ferment step guidance permits focused steps to skip todo lists (measured run: 22 create_todos in 28 steps manufactured churn)", () => {
+	it("ferment step guidance permits focused steps to skip todo lists (measured run: 22 list creations in 28 steps manufactured churn)", () => {
 		setActive(makeFerment())
 		const supplement = renderFermentTodoPromptBlock()
 		expect(supplement).toContain("skip the list and just do the work")
 		expect(supplement).toContain("roughly 5+ tool calls")
 		expect(supplement).toContain("state of record")
-		expect(supplement).toContain("one batched update_todos call")
+		expect(supplement).toContain('one batched todos call (action "update")')
 		expect(supplement).toContain("never spend a whole turn only updating todos")
 	})
 

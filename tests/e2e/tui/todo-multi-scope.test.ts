@@ -34,7 +34,7 @@ function getMessageWithTodos(fixture: KimchiFixture): string | undefined {
 
 /**
  * The model must see its own todo state on every LLM call in TUI mode.
- * After the model writes todos via update_todos, the ## Current Todos block
+ * After the model writes todos via the todos tool (action "update"), the ## Current Todos block
  * is injected at the tail of the message context for subsequent requests.
  *
  * The injection happens via the `context` event (fires per LLM call) rather
@@ -54,8 +54,9 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: [
 										{ content: "write the code", status: "in_progress" },
 										{ content: "run tests", status: "pending" },
@@ -127,8 +128,9 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: [
 										{ content: "global task A", status: "in_progress" },
 										{ content: "global task B", status: "pending" },
@@ -144,8 +146,9 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
 									todos: [
 										{ content: "Write code", status: "completed" },

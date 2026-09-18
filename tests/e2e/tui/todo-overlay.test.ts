@@ -18,8 +18,9 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 						{
 							id: "call_create_todos",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "create",
 									todos: [
 										{ content: "sticky panel", status: "pending" },
 										{ content: "follow-up prompt", status: "pending" },
@@ -83,7 +84,7 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 	)
 })
 
-test("todo overlay stays visible after non-todo work and hides when clear_todos is called", async ({ terminal }) => {
+test("todo overlay stays visible after non-todo work and hides when todos are cleared", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -96,8 +97,9 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 						{
 							id: "call_leave_active_todo",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "create",
 									todos: [
 										{ content: "create branch", status: "completed" },
 										{ content: "edit workflow", status: "completed" },
@@ -123,12 +125,12 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 				// follow-up mechanism was removed (commit 3c7b939b). The
 				// overlay stays visible; the user must prompt again to clear.
 				{ stream: ["Work finished."] },
-				// Turn 4: user prompts to clear → model calls clear_todos.
+				// Turn 4: user prompts to clear → model calls todos action clear.
 				{
 					toolCalls: [
 						{
 							id: "call_clear_reconciled_todos",
-							function: { name: "clear_todos", arguments: JSON.stringify({}) },
+							function: { name: "todos", arguments: JSON.stringify({ action: "clear" }) },
 						},
 					],
 				},
@@ -146,7 +148,7 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 			await waitForText(terminal, "Work finished.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			trace.step("terminal turn rendered — overlay stays visible")
 
-			// User explicitly prompts to clear todos → model calls clear_todos
+			// User explicitly prompts to clear todos → model calls todos action clear
 			// → overlay hides.
 			terminal.submit("clear the todos")
 			trace.step("submitted 'clear the todos'")

@@ -407,8 +407,11 @@ function fermentV2Responses(
 				{
 					id: "create-ferment-v2-todo",
 					function: {
-						name: "create_todos",
-						arguments: JSON.stringify({ todos: [{ content: "Finish feature A", status: "in_progress" }] }),
+						name: "todos",
+						arguments: JSON.stringify({
+							action: "create",
+							todos: [{ content: "Finish feature A", status: "in_progress" }],
+						}),
 					},
 				},
 			],
@@ -424,8 +427,9 @@ function fermentV2Responses(
 				{
 					id: "finish-ferment-v2-todo",
 					function: {
-						name: "mark_todo",
+						name: "todos",
 						arguments: JSON.stringify({
+							action: "mark",
 							id: 1,
 							status: "completed",
 							note: "Evidence: scripted verification completed",
@@ -468,8 +472,11 @@ function unparseableEvaluatorResponses() {
 				{
 					id: "create-ferment-v2-todo",
 					function: {
-						name: "create_todos",
-						arguments: JSON.stringify({ todos: [{ content: "Finish feature A", status: "in_progress" }] }),
+						name: "todos",
+						arguments: JSON.stringify({
+							action: "create",
+							todos: [{ content: "Finish feature A", status: "in_progress" }],
+						}),
 					},
 				},
 			],

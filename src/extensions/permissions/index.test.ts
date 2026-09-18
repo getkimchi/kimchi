@@ -1253,11 +1253,9 @@ describe("plan mode assumption detection", () => {
 			// Adhoc-only tools must NOT be present (per the tool-swap contract at
 			// permissions/index.ts:524-562).
 			expect(toolSet).not.toContain("questionnaire")
-			// Todo lifecycle tools are shared core — they ARE present in ferment
+			// The consolidated todo tool is shared core — it IS present in ferment
 			// mode (used for step-level sub-task tracking during implementation).
-			expect(toolSet).toContain("update_todos")
-			expect(toolSet).toContain("add_todo")
-			// Shared core tools MUST remain visible.
+			expect(toolSet).toContain("todos") // Shared core tools MUST remain visible.
 			expect(toolSet).toContain("read")
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })

@@ -91,7 +91,8 @@ export function createDaemonToolDefinition(
 		name: DAEMON_TOOL_NAME,
 		label: "daemon",
 		description: DAEMON_TOOL_DESCRIPTION,
-		promptSnippet: "start a detached service that must outlive this session (or list/status/logs/stop existing daemons)",
+		promptSnippet:
+			"start a detached service that must outlive this session (or list/status/logs/stop existing daemons)",
 		parameters: daemonSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const action = params.action ?? "start"

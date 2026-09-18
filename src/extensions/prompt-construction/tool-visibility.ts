@@ -216,9 +216,11 @@ class Handle implements ToolVisibilityAPI {
 			if (this.registry.sessionTool(name).disable(this)) newlyHidden.push(name)
 		}
 		if (newlyHidden.length === 0) return
-		const current = new Set(this.pi.getActiveTools())
-		for (const n of newlyHidden) current.delete(n)
-		this.pi.setActiveTools([...current])
+		if (typeof this.pi.setActiveTools === "function") {
+			const current = new Set(this.pi.getActiveTools())
+			for (const n of newlyHidden) current.delete(n)
+			this.pi.setActiveTools([...current])
+		}
 		this.registry.publish({ type: "disable", names: newlyHidden })
 	}
 
@@ -242,6 +244,7 @@ class Handle implements ToolVisibilityAPI {
 		// never re-surface the tool.
 		this.registry.publish({ type: "enable", names: released })
 		if (reSurface.length === 0) return
+		if (typeof this.pi.setActiveTools !== "function") return
 		const current = new Set(this.pi.getActiveTools())
 		for (const n of reSurface) current.add(n)
 		this.pi.setActiveTools([...current])

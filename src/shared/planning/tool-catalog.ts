@@ -130,17 +130,13 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "debug_watch_change", modes: ["shared"] },
 	{ name: "debug_set_variable", modes: ["shared"] },
 	{ name: "debug_restart", modes: ["shared"] },
-	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
+	// Consolidated todo tool — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
 	// These are general-purpose session tools used in all modes (adhoc chat,
 	// ferment planning, and ferment implementation). The system prompt,
 	// the ferment todo-sync bridge, and BUILTIN_ALLOW_TOOL_NAMES all treat
 	// them as universally available. Cataloging them as `shared` ensures
 	// every profile derived from getToolsForProfile includes them.
-	{ name: "create_todos", modes: ["shared"] },
-	{ name: "update_todos", modes: ["shared"] },
-	{ name: "add_todo", modes: ["shared"] },
-	{ name: "mark_todo", modes: ["shared"] },
-	{ name: "clear_todos", modes: ["shared"] },
+	{ name: "todos", modes: ["shared"] },
 	...FERMENT_V2_TOOL_NAMES.map<ToolEntry>((name) => ({ name, modes: ["shared"] })),
 ]
 

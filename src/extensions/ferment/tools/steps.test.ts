@@ -968,7 +968,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		expect(text).toContain("cleanup sub-task")
 		// Batching rule: step-todo edits must not become standalone turns
 		// (pure todo turns cost a full context read each).
-		expect(text).toContain("single update_todos call per turn")
+		expect(text).toContain('one todos call (action "update") per turn')
 	})
 
 	it("start response makes direct execution the default with residue-based delegation triggers (measured runs 019ff530/019ff6c1)", async () => {

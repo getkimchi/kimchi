@@ -11,7 +11,7 @@
  *   stop    — SIGTERM the process group, grace, SIGKILL; removes the
  *             state record. Idempotent: an already-dead or unknown id is
  *             reported softly, NOT thrown as a tool error (hard errors
- *             cause error→retry churn — same lesson as mark_todo).
+ *             cause error→retry churn — same lesson as the old mark_todo).
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"

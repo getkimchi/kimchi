@@ -3776,8 +3776,10 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "tested" })
 	})
 
-	it("does not start when only part of the Todo toolset is visible", async () => {
-		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES, TODO_TOOL_NAMES[0]])
+	it("does not start when the todos tool is neither active nor registered", async () => {
+		// getAllTools mirrors the active set in this harness, so dropping
+		// "todos" from the active set models it being unregistered entirely.
+		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES])
 		await harness.command("keep going")
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
@@ -4520,6 +4522,7 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 		sendMessage,
 		events,
 		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => activeTools.map((name) => ({ name }))),
 	} as unknown as ExtensionAPI
 	const ctx = {
 		cwd: options.cwd ?? process.cwd(),
