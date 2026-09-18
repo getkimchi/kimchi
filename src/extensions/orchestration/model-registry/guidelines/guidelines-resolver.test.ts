@@ -274,9 +274,8 @@ describe("builtin-model guideline content", () => {
 	})
 
 	it("universal core guidelines warn against interactive CLI commands and prescribe non-interactive flags", () => {
-		expect(CORE_GUIDELINES).toContain("Never run interactive commands")
-		expect(CORE_GUIDELINES).toContain("non-interactive flags")
+		expect(CORE_GUIDELINES).toContain("avoid interactive CLI flags")
 		expect(CORE_GUIDELINES).toContain("GIT_EDITOR=true")
-		expect(CORE_GUIDELINES).toContain("redirect stdin from `/dev/null`")
+		expect(CORE_GUIDELINES).toContain("< /dev/null")
 	})
 })

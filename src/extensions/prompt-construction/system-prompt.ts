@@ -69,7 +69,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
-	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
 	const filteredSkills = filterSkillsForMode(skills, mode)
@@ -93,7 +92,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	return buildPrompt({
 		mode,
 		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
-		toolsSection,
 		environmentSection,
 		projectContext,
 		skillsSection: formatSkills(filteredSkills),
@@ -114,7 +112,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 interface PromptParts {
 	mode: PromptMode
 	toolNames: ReadonlySet<string>
-	toolsSection: string
 	environmentSection: string
 	projectContext: string
 	skillsSection: string
@@ -128,7 +125,7 @@ interface PromptParts {
 }
 
 const BASE_INSTRUCTIONS =
-	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you. Your available tools are listed under **Available Tools** below — use only those, never guess or invent tool names."
+	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you — use only those, never guess or invent tool names."
 
 const SINGLE_INTRO = BASE_INSTRUCTIONS
 
@@ -192,9 +189,7 @@ function buildSingleModelInstructions(currentModelId?: string, hasUserLoop = tru
 		: ""
 	return `## Single-Model Mode
 
-${orientation}You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
-
-Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
+${orientation}Single-model session.${modelClause} All work runs on this model — handle tasks directly yourself. Only spawn \`Agent\` subagents when the user explicitly asks; when you do, pass your own model ID in \`model\`.`
 }
 
 /** @deprecated The standalone ## Documents section was removed from the
@@ -203,18 +198,16 @@ Do not spawn subagents with the \`Agent\` tool by default — only do so when th
 export const DOCUMENTS_SECTION =
 	"Use the Documents directory (see Environment) for transient working files: research notes, findings, verification reports, inter-agent handoffs. Final plans and specs go to .kimchi/plans/<slug>.md — never the project or temp directories."
 
-export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate completed steps — act and move on.
-- Gather context before starting: requirements, naming conventions, frameworks and libraries in use, how to run and test. Read existing code rather than assuming.
-- Follow existing conventions; use only libraries/frameworks present in the codebase; never add dependencies without explicit instruction.
-- Deliver complete, working code — no placeholders, omissions, or TODOs.
-- Verify your work: edited files complete and correct, tests or the code run if possible.
+export const CORE_GUIDELINES = `- Be concise; act and move on without restating completed steps.
+- Gather context before starting: read existing code, follow its conventions and the project's build/test commands.
+- Use only libraries present in the codebase; never add dependencies without explicit instruction.
+- Deliver complete, working code — no placeholders or TODOs; verify with tests or a run.
 - Use absolute file paths.
 - Put transient AI working files (research notes, verification reports, inter-agent handoffs) in the Documents directory; final plans and specs go to .kimchi/plans/<slug>.md — never the project or temp directories.
 - Do NOT introduce security vulnerabilities.
-- After every tool result, ALWAYS produce text — the next tool call with explicit reasoning, or a final summary. Never re-issue the same call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
-- Bound shell commands with the bash tool's \`timeout\` parameter (default 60s) — never the GNU \`timeout\` binary (missing on macOS and Windows).
-- Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
+- After every tool result, ALWAYS produce text — the next call with reasoning, or a final summary. Never repeat a call after a successful result.
+- If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
+- Bound shell commands with the bash tool's \`timeout\` parameter (default 60s); avoid interactive CLI flags — use \`--yes\`, \`GIT_EDITOR=true\`, or \`< /dev/null\`.
 - **Git commits**: end the message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise. Do not restate completed steps — act and move on.
@@ -236,10 +229,8 @@ function resolveCoreGuidelines(mode: PromptMode): string {
 	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
 }
 
-export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate. Claims must rest on data concretely obtained this session. Do not over-escalate minor issues or blame the user for request phrasing.
-- Never invent people's names, roles, or contact details — ask the user if human input is needed.
-- "I don't know" is valid. When requirements or facts are unavailable through tools or user messages, say so and ask — do not fill gaps with plausible-sounding content.
-- Label uncertain reasoning as an assumption and ask for confirmation before acting on it.`
+export const FACTUAL_ACCURACY = `- Never guess or fabricate: claims must rest on data concretely obtained this session, and "I don't know" + asking is always preferable to a plausible-sounding invention.
+- Label uncertain reasoning as an assumption and ask the user to confirm before acting on it.`
 
 /**
  * Combine the shared guideline sections into a single string, formatted
@@ -383,12 +374,13 @@ function buildPrompt(parts: PromptParts): string {
 		sections.push(AUTONOMOUS_SESSION_NOTE)
 	}
 
-	// 7. Rest: system prompt blocks, tools, skills, environment, project context
+	// 7. Rest: system prompt blocks, skills, environment, project context.
+	// Note: no "Available Tools" name list — the API tools payload already
+	// advertises names + schemas; a duplicated list paid ~1.6k chars/round
+	// while adding zero information (cost-parity trim).
 	if (parts.systemPromptBlocks) {
 		sections.push(parts.systemPromptBlocks)
 	}
-
-	sections.push(parts.toolsSection)
 
 	if (!parts.suppressed.has("skills") && parts.skillsSection) {
 		sections.push(parts.skillsSection)
@@ -407,29 +399,15 @@ function buildPrompt(parts: PromptParts): string {
 // Section formatters
 // ---------------------------------------------------------------------------
 
-function formatToolsSection(tools: readonly ToolInfo[]): string {
-	if (tools.length === 0) return "## Available Tools\n\n(No tools available)"
-	// The API request already carries each
-	// tool's description in the function-calling payload, so embedding a second
-	// copy here pays ~3,000 est per call for duplicated text. Keep the prompt
-	// section to the discovery surface (names) — the model learns what each
-	// tool does from the API-side description.
-	const names = tools.map((t) => t.name).join(", ")
-	return `## Available Tools\n\n${names}`
-}
-
 export function formatEnvironmentSection(env: EnvironmentInfo): string {
-	const shellFamily = inferShellFamily(env)
 	const lines = [
 		"## Environment",
 		"",
 		`- OS: ${env.os}`,
 		`- OS version: ${env.osVersion}`,
-		`- Raw platform: ${env.rawPlatform}`,
+		`- Platform: ${env.rawPlatform}`,
 		`- CPU architecture: ${env.cpuArchitecture}`,
 		`- Shell: ${env.shell}`,
-		`- Shell family: ${shellFamily}`,
-		"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 		`- Username: ${env.username}`,
 		`- Home directory: "${env.homeDir}"`,
 		`- Working directory: "${env.cwd}"`,
@@ -440,17 +418,6 @@ export function formatEnvironmentSection(env: EnvironmentInfo): string {
 	if (env.gitBranch !== undefined) lines.push(`- Git branch: ${env.gitBranch}`)
 	if (env.gitRemote !== undefined) lines.push(`- Git remote: ${env.gitRemote}`)
 	return lines.join("\n")
-}
-
-function inferShellFamily(env: EnvironmentInfo): string {
-	const shell = env.shell.toLowerCase()
-	const platform = env.rawPlatform.toLowerCase()
-	if (shell.includes("powershell") || shell.includes("pwsh")) return "powershell"
-	if (/(^|[/\\])cmd(\.exe)?$/.test(shell)) return "cmd"
-	if (shell.includes("bash") || shell.includes("zsh") || shell.includes("fish") || /(^|[/\\])sh$/.test(shell)) {
-		return platform === "win32" ? "posix-on-windows" : "posix"
-	}
-	return platform === "win32" ? "windows-unknown" : "posix-unknown"
 }
 
 function shiftHeadings(text: string): string {

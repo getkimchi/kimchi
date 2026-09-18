@@ -226,24 +226,23 @@ describe("system prompt blocks", () => {
 		expect(result).toContain("## B Block")
 		expect(result).not.toContain("Project rule.")
 		expect(result).toContain("## Orchestration")
-		expect(result).toContain("## Available Tools")
 	})
 
-	it("places rendered blocks between project context and tools", () => {
+	it("places rendered blocks before environment and project context", () => {
 		const pi = makePi()
 		const blocks = createSystemPromptBlocks(pi, "test")
 		blocks.register({ id: "frame", render: () => "## Frame\n\nUse this frame." })
 
 		const result = prompt(pi)
+		const environment = result.indexOf("## Environment")
 		const project = result.indexOf("## Project Guidelines")
 		const frame = result.indexOf("## Frame")
-		const tools = result.indexOf("## Available Tools")
 
 		expect(project).toBeGreaterThan(-1)
 		expect(frame).toBeGreaterThan(-1)
-		expect(tools).toBeGreaterThan(-1)
-		expect(frame).toBeLessThan(tools)
-		expect(tools).toBeLessThan(project)
+		expect(environment).toBeGreaterThan(-1)
+		expect(frame).toBeLessThan(environment)
+		expect(environment).toBeLessThan(project)
 	})
 
 	it("joins rendered blocks with blank lines and prepends a blank line before the first block", () => {
@@ -254,7 +253,7 @@ describe("system prompt blocks", () => {
 
 		const result = prompt(pi)
 		expect(result).toContain("Alpha\n\n## Second")
-		expect(result).toContain("Beta\n\n## Available Tools")
+		expect(result).toContain("Beta\n\n## Environment")
 	})
 
 	it("matches the idle prompt when no blocks are active", () => {

@@ -19,9 +19,17 @@ import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 export default function powershellGateExtension(pi: ExtensionAPI): void {
 	if (process.platform === "win32") return
 	const visibility = createToolVisibility(pi)
-	pi.on("session_start", () => {
+	// Upstream activates builtins asynchronously during extension load and
+	// runtime (re)builds: at session_start time powershell may not yet be in
+	// the active list even though it lands there before the first prompt is
+	// rendered. Vote defensively at both points — the visibility handle
+	// dedupes repeat disables, and the prompt builder runs after all
+	// before_agent_start handlers, so a vote here still takes effect.
+	const hideIfActive = () => {
 		if (pi.getActiveTools().includes("powershell")) {
 			visibility.disable(["powershell"])
 		}
-	})
+	}
+	pi.on("session_start", hideIfActive)
+	pi.on("before_agent_start", hideIfActive)
 }

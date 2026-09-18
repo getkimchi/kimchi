@@ -18,7 +18,6 @@ import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
-import { toolNamesFromSection } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
@@ -181,7 +180,7 @@ describe("stripEmptyToolCalls", () => {
 })
 
 describe("prompt enrichment tool visibility", () => {
-	it("omits hidden tools from the rendered available tools section", async () => {
+	it("renders no available-tools section regardless of hidden tools", async () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 		const tools = [
 			{ name: "read", description: "Read file contents" },
@@ -213,14 +212,15 @@ describe("prompt enrichment tool visibility", () => {
 		try {
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
-			expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
+			// The prompt no longer enumerates tool names — discovery lives in
+			// the API tools payload — so hidden tools cannot leak either.
+			expect(result.systemPrompt).not.toContain("## Available Tools")
 		} finally {
 			visibility.enable(["bash"])
 		}
 	})
 
-	it("omits inactive tools from the rendered available tools section", async () => {
+	it("renders no available-tools section regardless of inactive tools", async () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 		const tools = [
 			{ name: "read", description: "Read file contents" },
@@ -245,8 +245,7 @@ describe("prompt enrichment tool visibility", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-		expect(toolNamesFromSection(result.systemPrompt)).toContain("read")
-		expect(toolNamesFromSection(result.systemPrompt)).not.toContain("bash")
+		expect(result.systemPrompt).not.toContain("## Available Tools")
 	})
 })
 
@@ -268,7 +267,7 @@ describe("prompt enrichment environment context", () => {
 
 			expect(result.systemPrompt).not.toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
-			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
+			expect(result.systemPrompt).toContain(`- Platform: ${platform()}`)
 			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
 			expect(result.systemPrompt).toContain("- Shell: /bin/test-shell")
 		} finally {

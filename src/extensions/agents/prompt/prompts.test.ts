@@ -43,8 +43,8 @@ describe("default agents — subagent system prompt snapshot", () => {
 		expect(output).toContain("You are a general-purpose coding agent for complex, multi-step tasks.")
 		expect(output).toContain("## Working Style")
 		// Core guidelines are injected (includeCoreGuidelines: true)
-		expect(output).toContain("Be concise in your responses")
-		expect(output).toContain("Never guess, assume, or fabricate")
+		expect(output).toContain("Be concise; act and move on")
+		expect(output).toContain("Never guess or fabricate")
 		expect(output).toContain("Documents directory")
 		// Available tools are listed
 		expect(output).toContain("## Available Tools")
@@ -406,8 +406,8 @@ describe("includeCoreGuidelines", () => {
 			includeCoreGuidelines: true,
 		}
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
-		expect(output).toContain("Be concise in your responses")
-		expect(output).toContain("Never guess, assume, or fabricate")
+		expect(output).toContain("Be concise; act and move on")
+		expect(output).toContain("Never guess or fabricate")
 		expect(output).toContain("Documents directory")
 		// Consolidated sections that subagents need: tool substitution,
 		// output capping, and consent. Phase Management is deliberately
@@ -454,7 +454,7 @@ describe("includeCoreGuidelines", () => {
 		}
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
 		expect(output).not.toContain("Be concise in your responses")
-		expect(output).not.toContain("Never guess, assume, or fabricate")
+		expect(output).not.toContain("Never guess or fabricate")
 		expect(output).not.toContain("## Tool Selection")
 		expect(output).not.toContain("## Output & Truncation")
 		expect(output).not.toContain("## Consent & Irreversible Actions")

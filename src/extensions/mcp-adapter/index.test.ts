@@ -198,7 +198,9 @@ describe("mcp adapter system prompt block", () => {
 			// Consolidated core section must still cover the MCP guidance.
 			expect(result).toContain("## Tool Selection")
 			expect(result).toContain("mcp({ search")
-			expect(toolNamesFromSection(result)).toContain("mcp")
+			// The prompt no longer enumerates tool names; assert registration
+			// via the runtime tool list instead.
+			expect(pi.getAllTools().map((t) => t.name)).toContain("mcp")
 		} finally {
 			await pi.fireShutdown()
 		}
