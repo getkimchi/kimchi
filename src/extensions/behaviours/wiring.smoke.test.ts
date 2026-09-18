@@ -345,7 +345,7 @@ describe("wireBehaviours — before_agent_start", () => {
 
 		expect(sp).toContain("## Rules")
 		expect(sp).toContain("Always do X.")
-		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("## Available Tools"))
+		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("## Environment"))
 		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("Project rule."))
 	})
 

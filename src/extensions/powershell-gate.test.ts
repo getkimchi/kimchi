@@ -37,6 +37,26 @@ describe("powershellGateExtension", () => {
 		expect(setActiveCalls).toBe(0)
 	})
 
+	it.skipIf(process.platform === "win32")("hides powershell when it only becomes active before the first turn", () => {
+		const { api, getHandler, getHandlers } = createExtensionApi()
+		powershellGateExtension(api)
+
+		// Upstream activates builtins asynchronously: powershell may not be in
+		// the active list at session_start but lands there before the first
+		// before_agent_start prompt build.
+		const active = new Set(["read", "bash"])
+		api.getActiveTools = () => [...active]
+		api.setActiveTools = (names: string[]) => {
+			active.clear()
+			for (const n of names) active.add(n)
+		}
+
+		getHandler("session_start")({} as never, createContext())
+		active.add("powershell") // late upstream activation
+		for (const handler of getHandlers("before_agent_start")) handler({} as never, createContext())
+		expect(active.has("powershell")).toBe(false)
+	})
+
 	it.skipIf(process.platform !== "win32")("is a no-op on Windows", () => {
 		const { api } = createExtensionApi()
 		powershellGateExtension(api)

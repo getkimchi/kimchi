@@ -46,11 +46,9 @@ describe("formatEnvironmentSection", () => {
 				"",
 				"- OS: Linux",
 				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
-				"- Raw platform: linux",
+				"- Platform: linux",
 				"- CPU architecture: x64",
 				"- Shell: /bin/bash",
-				"- Shell family: posix",
-				"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 				"- Username: testuser",
 				'- Home directory: "/home/testuser"',
 				'- Working directory: "/home/testuser/projects/myapp"',
@@ -59,18 +57,6 @@ describe("formatEnvironmentSection", () => {
 				"- Git repository: no",
 			].join("\n"),
 		)
-	})
-
-	it("classifies shell families from platform and shell", () => {
-		expect(formatEnvironmentSection({ ...testEnv, rawPlatform: "darwin", shell: "/bin/zsh" })).toContain(
-			"- Shell family: posix",
-		)
-		expect(formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "pwsh.exe" })).toContain(
-			"- Shell family: powershell",
-		)
-		expect(
-			formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "C:\\Program Files\\Git\\bin\\bash.exe" }),
-		).toContain("- Shell family: posix-on-windows")
 	})
 })
 
@@ -167,7 +153,6 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
-			expect(result).toContain("## Available Tools")
 			expect(result).not.toContain("## Documents")
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("## Orchestration")
@@ -181,7 +166,6 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
 			// Descriptions are intentionally not duplicated in the prompt: the API
 			// tools parameter already carries them.
 			expect(result).not.toContain("<available_tools>")
@@ -211,7 +195,6 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("(No tools available)")
 		})
 
 		it("injects project context files", () => {
@@ -281,7 +264,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
 			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
@@ -452,19 +435,18 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Available Tools\n\nread, bash")
 			expect(result).not.toContain("Agent, ")
 			expect(result).not.toContain("get_subagent_result")
 			expect(result).not.toContain("steer_subagent")
 		})
 
-		it("includes all other tools", () => {
+		it("does not list tool names either", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Available Tools\n\nread, bash")
+			expect(result).not.toContain("## Available Tools")
 		})
 
 		it("contains subagent instructions", () => {
@@ -510,7 +492,6 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).toContain("(No tools available)")
 		})
 
 		it("injects project context files", () => {
@@ -546,7 +527,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
 			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
@@ -598,18 +579,17 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
-			expect(result).toContain("## Available Tools")
 			expect(result).not.toContain("## Documents")
 			expect(result).toContain("## Guidelines")
 		})
 
-		it("includes all tools", () => {
+		it("does not list tool names (the API tools payload owns discovery)", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
+			expect(result).not.toContain("## Available Tools")
 		})
 
 		// Interactive single-model sessions expose set_phase — phase payloads are
@@ -645,7 +625,7 @@ describe("buildSystemPrompt", () => {
 			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
 			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
 			expect(result).toContain("the bash tool's `timeout` parameter")
-			expect(result).toContain("Never run interactive commands")
+			expect(result).toContain("avoid interactive CLI flags")
 		})
 
 		it("keeps Phase Management out of subagent mode too", () => {
@@ -706,14 +686,12 @@ describe("buildSystemPrompt", () => {
 				mode: "single",
 			})
 			// New behavior: default is to handle work directly, do not spawn subagents.
-			expect(result).toContain("Handle tasks directly yourself.")
-			expect(result).toContain("Do not spawn subagents")
-			expect(result).toContain("only do so when the user explicitly asks for delegation")
-			// When a subagent IS spawned, default to the parent's model and only
-			// use a different model if the user explicitly instructs it.
+			expect(result).toContain("handle tasks directly yourself")
+			expect(result).toContain("Only spawn `Agent` subagents")
+			expect(result).toContain("Only spawn `Agent` subagents when the user explicitly asks")
+			// When a subagent IS spawned, default to the parent's model unless a
+			// different model is explicitly instructed.
 			expect(result).toContain("pass your own model ID")
-			expect(result).toContain("by default")
-			expect(result).toContain("only use a different model if the user explicitly instructs")
 			// Old autonomous-delegate phrasing must be gone.
 			expect(result).not.toContain("clearly beneficial")
 			expect(result).not.toContain("MUST always pass")
@@ -762,7 +740,7 @@ describe("buildSystemPrompt", () => {
 			// The non-interactive core of the single-model section stays.
 			expect(result).toContain("## Single-Model Mode")
 			expect(result).toContain("Your model ID is `kimi-k3`")
-			expect(result).toContain("Do not spawn subagents")
+			expect(result).toContain("Only spawn `Agent` subagents")
 		})
 
 		it("keeps task-execution sections regardless of the gate", () => {
