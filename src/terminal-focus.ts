@@ -51,7 +51,7 @@ export function canDetectFocus(env: FocusEnv = process.env): boolean {
 	// Apple Terminal.app never implemented DECSET 1004.
 	if (env.TERM_PROGRAM === "Apple_Terminal") return false
 	// Windows conhost doesn't implement it; Windows Terminal sets WT_SESSION.
-	return !(platform === "win32" && !env.WT_SESSION);
+	return !(platform === "win32" && !env.WT_SESSION)
 }
 
 /**
