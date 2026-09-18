@@ -72,17 +72,3 @@ export function createContext(
 		} as SessionManager,
 	} as unknown as ExtensionContext
 }
-
-/**
- * Command-handler ctx — createContext plus the session-control surface
- * (ExtensionCommandContext). The stubs cover what command tests touch;
- * the cast mirrors createContext's mock pattern.
- */
-export function createCommandContext(): ExtensionCommandContext {
-	return {
-		...createContext(),
-		getSystemPromptOptions: vi.fn(),
-		waitForIdle: vi.fn(async () => {}),
-		newSession: vi.fn(async () => ({ cancelled: false })),
-	} as unknown as ExtensionCommandContext
-}
