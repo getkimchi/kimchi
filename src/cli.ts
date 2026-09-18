@@ -77,6 +77,7 @@ import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
 import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
+import powershellGateExtension from "./extensions/powershell-gate.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
@@ -697,6 +698,9 @@ try {
 			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
 			// and `user_bash` events.
 			bashHooksAdapterExtension,
+			// Powershell is Windows-only: hide it when a config activates it on
+			// another platform (dead schema weight otherwise).
+			powershellGateExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,

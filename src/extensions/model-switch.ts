@@ -11,8 +11,9 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
-import { setMultiModelEnabled } from "./multi-model.js"
+import { resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
+import { shouldSuppressInteractiveTools } from "./print-mode.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
 import { resolveEffectiveModel } from "./router/state.js"
@@ -60,7 +61,12 @@ export default function modelSwitchExtension(
 	pi: ExtensionAPI,
 	startNewSessionWithModel: StartNewSessionWithModel = startNewInteractiveSessionWithModel,
 ) {
-	pi.registerTool({
+	// Model switching is an interactive action: in --print runs the model is
+	// pinned by the CLI and set_model is dead schema weight (0 calls in the
+	// TB 2.1 cost-parity run). Multi-model print sessions keep it — the
+	// orchestrator may legitimately switch roles mid-run.
+	if (!(shouldSuppressInteractiveTools() && !resolveMultiModelEnabled(null).value)) {
+		pi.registerTool({
 		name: "set_model",
 		label: "Switch Model",
 		description:
@@ -210,6 +216,7 @@ export default function modelSwitchExtension(
 			}
 		},
 	})
+	}
 
 	pi.on("model_select", async (event, ctx) => {
 		// Skip if a revert is already in progress
