@@ -1028,14 +1028,14 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
+		const droppedQueue = this.drainQueue(entry)
+		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
 		unregisterAcpPrompter(sessionId)
 		unregisterSessionPermissionFlagController(sessionId)
 		clearPermissionModeEnv(sessionId)
 		entry.unsubscribe()
 		if (entry.turn) {
 			entry.turn.cancelled = true
-			const droppedQueue = this.drainQueue(entry)
-			notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
 			try {
 				await entry.session.abort()
 			} catch {
