@@ -28,6 +28,7 @@ export const AVAILABLE_EXT_METHODS = {
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {
 	pi_notify: `_${CAPABILITIES_KEY}/pi_notify`,
+	queue_dropped: `_${CAPABILITIES_KEY}/queue_dropped`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS

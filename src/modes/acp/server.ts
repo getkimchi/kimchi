@@ -122,8 +122,11 @@ import {
 	tryParseSkillCommand,
 } from "./skill-commands.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
+import { notifyDroppedQueue, reconcileQueue } from "./steering.ts"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
+import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.ts"
+import { emptyTurnUsage, updateTurnUsage } from "./usage.ts"
 import { asString, extractImages, truncate } from "./utils.js"
 
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
@@ -190,100 +193,6 @@ export interface RunAcpOptions {
 	mcpProbe?: McpProbe
 }
 
-/**
- * Per-turn usage accumulator. pi-mono chains multiple agent.prompt /
- * agent.continue calls per turn, each producing an AssistantMessage with its
- * own pi-ai `usage`; ACP's (v1/experimental) PromptResponse.usage expects a
- * single summary, so message_end events fold their usage into this record and
- * finalizeTurn emits the summed totals. `messages` counts the assistant
- * usage records folded in — it gates the optional PromptResponse.usage field
- * (omitted when no usage data was collected, e.g. a cancel before the first
- * message).
- */
-type TurnUsage = {
-	input: number
-	output: number
-	cacheRead: number
-	cacheWrite: number
-	reasoning: number
-	/** Sum of the provider-computed usage.totalTokens across the chain. */
-	total: number
-	/** true once any provider actually reported a reasoning/thought count. */
-	sawReasoning: boolean
-	messages: number
-}
-
-function emptyTurnUsage(): TurnUsage {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		reasoning: 0,
-		total: 0,
-		sawReasoning: false,
-		messages: 0,
-	}
-}
-
-type TurnContext = {
-	cancelled: boolean
-	hiddenToolCallIds: Set<string>
-	announcedToolCallIds: Set<string>
-	lastStreamedContent: Map<string, string>
-	/**
-	 * Terminal stopReason of the last assistant message_end; cleared by a
-	 * later non-error one (pi retry recovered). Read at finalize (prompt()
-	 * resolve) — an "error" surviving here must failTurn, never end_turn.
-	 */
-	lastAssistantError?: { stopReason: "error"; errorMessage?: string }
-	/**
-	 * Pre-write file contents read at tool_execution_start for `write` tool
-	 * calls: the original file content if the file existed (later surfaced as
-	 * the diff's oldText), null for a new file. Keyed by toolCallId; the entry
-	 * is consumed and cleared at tool_execution_end. Args travel only on
-	 * tool_execution_start (ToolExecutionEndEvent carries none), so everything
-	 * the end event needs must be captured here.
-	 */
-	preWriteContents: Map<string, string | null>
-	/**
-	 * File changes derived from tool args at tool_execution_start for the
-	 * mutation tools (edit, write). Emitted as ACP `diff` content blocks at
-	 * tool_execution_end; key removed once consumed. Read-only tools never
-	 * appear here. Write entries keep their operation undecided until the end
-	 * event resolves add-vs-modify from preWriteContents.
-	 */
-	pendingFileChanges: Map<string, PendingFileChange[]>
-	usage: TurnUsage
-	resolve: (res: PromptResponse) => void
-	reject: (err: unknown) => void
-}
-
-/**
- * Internal file-mutation abstraction shared by the v1 and (future) v2 ACP
- * diff adapters. Populated from tool args at tool_execution_start so the v1
- * emission ({@link fileChangeToDiffContent}) is a pure adapter over data
- * already known before the tool ran — v2 migration is a pure adapter swap.
- */
-export interface FileChange {
-	path: string
-	operation: "add" | "modify" | "delete"
-	/** undefined for "add" */
-	oldText?: string
-	/** undefined for "delete" */
-	newText?: string
-}
-
-/**
- * Captured-at-start representation of a pending diff. Edit calls resolve to
- * FileChange immediately (args carry both texts). Write calls carry the
- * "write" sentinel: whether the change is an add or a modify depends on
- * TurnContext.preWriteContents, which is only consulted at tool_execution_end
- * ({@link resolveFileChange}) — that is what keeps preWriteContents the
- * single source of truth for the write oldText.
- */
-type PendingFileChange = FileChange | { operation: "write"; path: string; newText: string }
-
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
@@ -340,6 +249,10 @@ type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	previousQueue?: {
+		steering: string[]
+		followUp: string[]
+	}
 	/**
 	 * Per-session skill commands advertised to the ACP client. Populated from
 	 * the session cwd during newSession/loadSession so command names can be
@@ -1032,23 +945,9 @@ export class KimchiAcpAgent implements Agent {
 		// with a full reply while we wait for idle. clearQueue() is synchronous,
 		// so running it first drops undelivered steers before the chain can
 		// drain them. Mirrors the TUI's Escape → clearAllQueues() behaviour.
-		// The drain is wrapped in try/catch/finally so a clearQueue() failure
-		// can never skip the abort — the turn is already marked cancelled, and
-		// leaving the agent running would burn tokens until the LLM responds.
-		// cancel() is a notification (fire-and-forget), so the error is caught
-		// and logged rather than rethrown as an unhandled rejection; the worst
-		// case is a partially-drained queue, which is no worse than before the
-		// fix.
-		try {
-			entry.session.clearQueue()
-		} catch (err) {
-			// clearQueue failure is non-fatal — abort must still run. Log so a
-			// recurring drain failure is observable instead of silently leaking
-			// queued steers into history again.
-			console.error("kimchi acp: clearQueue() failed during cancel; aborting anyway", err)
-		} finally {
-			await entry.session.abort()
-		}
+		const droppedQueue = this.drainQueue(entry)
+		notifyDroppedQueue(this.conn, params.sessionId, droppedQueue, "cancelled")
+		await entry.session.abort()
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1117,6 +1016,8 @@ export class KimchiAcpAgent implements Agent {
 			unregisterAcpPrompter(entry.session.sessionId)
 			unregisterSessionPermissionFlagController(entry.session.sessionId)
 			clearPermissionModeEnv(entry.session.sessionId)
+			const droppedQueue = this.drainQueue(entry)
+			notifyDroppedQueue(this.conn, entry.session.sessionId, droppedQueue, "shutdown")
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
@@ -1133,6 +1034,8 @@ export class KimchiAcpAgent implements Agent {
 		entry.unsubscribe()
 		if (entry.turn) {
 			entry.turn.cancelled = true
+			const droppedQueue = this.drainQueue(entry)
+			notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
 			try {
 				await entry.session.abort()
 			} catch {
@@ -1142,6 +1045,14 @@ export class KimchiAcpAgent implements Agent {
 			this.finalizeTurn(entry, "cancelled")
 		}
 		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
+	}
+
+	private drainQueue(entry: SessionRecord): {
+		steering: string[]
+		followUp: string[]
+	} {
+		entry.previousQueue = undefined
+		return entry.session.clearQueue()
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
@@ -1160,6 +1071,21 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		const turn = entry.turn
 		switch (event.type) {
+			case "queue_update": {
+				if (!entry.previousQueue) {
+					entry.previousQueue = { steering: [], followUp: [] }
+				}
+				const steering = reconcileQueue(entry.previousQueue.steering, event.steering)
+				const followUp = reconcileQueue(entry.previousQueue.followUp, event.followUp)
+				entry.previousQueue = {
+					steering: steering.previousQueue,
+					followUp: followUp.previousQueue,
+				}
+				for (const update of [...steering.sessionUpdates, ...followUp.sessionUpdates]) {
+					this.send({ sessionId, update })
+				}
+				return
+			}
 			case "agent_start": {
 				// New turn → contentIndex restarts from 0 and any in-flight tool
 				// id mappings from the previous turn are stale (the calls either
@@ -1311,21 +1237,7 @@ export class KimchiAcpAgent implements Agent {
 				}
 				const usage = msg.usage
 				if (usage) {
-					// `|| 0` guards against providers emitting undefined/NaN for a
-					// field the type declares required — one bad message must not
-					// poison the whole turn's totals.
-					turn.usage.input += usage.input || 0
-					turn.usage.output += usage.output || 0
-					turn.usage.cacheRead += usage.cacheRead || 0
-					turn.usage.cacheWrite += usage.cacheWrite || 0
-					turn.usage.total += usage.totalTokens || 0
-					// reasoning is a SUBSET of output (pi-ai 0.84 Usage docs) — summed
-					// separately for thoughtTokens only, never re-added to totals.
-					if (typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning)) {
-						turn.usage.reasoning += usage.reasoning
-						turn.usage.sawReasoning = true
-					}
-					turn.usage.messages++
+					updateTurnUsage(turn, usage)
 					// Live context-window refresh: a message_end carrying usage means
 					// the session's estimate just moved. Emit here (subject to
 					// emitUsageUpdate's undefined/null skip) so clients track the

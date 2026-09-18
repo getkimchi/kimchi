@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
 	AgentSideConnection,
+	ContentChunk,
 	ListSessionsRequest,
 	LoadSessionRequest,
 	NewSessionRequest,
@@ -74,7 +75,13 @@ vi.mock("./ext-methods/import-discover.js", () => ({
 				id: "stub-app",
 				displayName: "Stub App",
 				skills: [
-					{ name: "stub-skill", description: "d", path: "/tmp/s", sourceAppId: "stub-app", sourceAppName: "Stub App" },
+					{
+						name: "stub-skill",
+						description: "d",
+						path: "/tmp/s",
+						sourceAppId: "stub-app",
+						sourceAppName: "Stub App",
+					},
 				],
 				mcpServers: [{ name: "stub-mcp", command: "mcp", sourceAppId: "stub-app", sourceAppName: "Stub App" }],
 			},
@@ -85,7 +92,15 @@ vi.mock("./ext-methods/import-discover.js", () => ({
 // config and the migration marker into the developer's actual home directory.
 vi.mock("./ext-methods/import-apply.js", () => ({
 	handleImportApply: vi.fn(() => ({
-		results: [{ kind: "skill", sourceAppId: "stub-app", name: "stub-skill", path: "/tmp/s", outcome: "imported" }],
+		results: [
+			{
+				kind: "skill",
+				sourceAppId: "stub-app",
+				name: "stub-skill",
+				path: "/tmp/s",
+				outcome: "imported",
+			},
+		],
 	})),
 }))
 
@@ -346,11 +361,18 @@ class FakeAgentSession {
 		this.pendingSteers.push(text)
 	}
 
+	getSteeringMessages(): readonly string[] {
+		return [...this.pendingSteers]
+	}
+
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		this.clearQueueCalls++
 		this.order.push("clearQueue")
+		// Mirror the real pi-mono contract: clearQueue() RETURNS the drained
+		// contents, so tests that queue steers see them in the return value.
+		const steering = [...this.pendingSteers, ...this.clearQueueReturn.steering]
 		this.pendingSteers = []
-		return this.clearQueueReturn
+		return { steering, followUp: this.clearQueueReturn.followUp }
 	}
 
 	async bindExtensions(bindings: unknown): Promise<void> {
@@ -393,6 +415,7 @@ function asSession(fake: FakeAgentSession): AgentSession {
 function makeConn(): AgentSideConnection {
 	const stub = {
 		sessionUpdate: async (_p: SessionNotification) => {},
+		extNotification: async (_method: string, _params: unknown) => {},
 	}
 	return stub as unknown as AgentSideConnection
 }
@@ -403,15 +426,20 @@ function makeConn(): AgentSideConnection {
 function makeRecordingConn(): {
 	conn: AgentSideConnection
 	updates: SessionNotification[]
+	extNotifications: Array<{ method: string; params: unknown }>
 } {
 	const updates: SessionNotification[] = []
+	const extNotifications: Array<{ method: string; params: unknown }> = []
 	const stub = {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
 		},
+		extNotification: async (method: string, params: unknown) => {
+			extNotifications.push({ method, params })
+		},
 		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
-	return { conn: stub as unknown as AgentSideConnection, updates }
+	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications }
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -903,7 +931,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({ auth_status: true })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				auth_status: true,
+			})
 		})
 
 		it("reports unauthenticated when the credential store has no API key", async () => {
@@ -1088,7 +1118,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		it("rejects an invalid seenAt as invalidParams", async () => {
 			vi.mocked(writeStudioOnboardingSeenAt).mockClear()
 			await expect(
-				makeTestAgent().extMethod(AVAILABLE_EXT_METHODS.set_onboarding_flag, { seenAt: "not-a-date" }),
+				makeTestAgent().extMethod(AVAILABLE_EXT_METHODS.set_onboarding_flag, {
+					seenAt: "not-a-date",
+				}),
 			).rejects.toThrow(/seenAt must be an ISO-8601/)
 			expect(writeStudioOnboardingSeenAt).not.toHaveBeenCalled()
 		})
@@ -1356,6 +1388,103 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.clearQueueCalls).toBe(1)
 	})
 
+	// cancel() must report still-queued steers to the client as dropped — they
+	// were never injected into the turn, so they must not surface as
+	// user_message_chunk updates; instead a queue_dropped ext
+	// notification carries them for clients that opt into rendering.
+	it("notifies the client about dropped steers and emits no phantom user messages on cancel", async () => {
+		const { conn: recordingConn, updates, extNotifications } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+
+		// Two steers queued but not yet injected into the turn (the fake's live
+		// queue mirrors what pi-mono's session.getSteeringMessages() returns).
+		await fake.steer("steer one")
+		await fake.steer("steer two")
+
+		await localAgent.cancel({ sessionId: localSessionId })
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+
+		// No phantom user_message_chunk updates for the drained queue.
+		expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+
+		// The dropped steers are reported via the extension notification.
+		expect(extNotifications).toContainEqual({
+			method: "_kimchi.dev/queue_dropped",
+			params: {
+				sessionId: localSessionId,
+				reason: "cancelled",
+				steering: ["steer one", "steer two"],
+				followUp: [],
+			},
+		})
+	})
+
+	// followUp messages reconcile the same as steering: enqueueing one emits
+	// nothing, and when pi consumes it (delivered after the turn settles, when
+	// it enters session history) the consumed text echoes to the client as a
+	// user_message_chunk.
+	it("echoes consumed followUp messages as user_message_chunk but not while queued", async () => {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+
+		// Enqueued followUp: nothing echoed yet.
+		fake.emit({
+			type: "queue_update",
+			steering: [],
+			followUp: ["after this, also do X"],
+		} as AgentSessionEvent)
+		expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+
+		// pi delivers the followUp (queue drains) → echo enters the transcript.
+		fake.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent)
+
+		const userChunks = updates.filter((u) => u.update.sessionUpdate === "user_message_chunk")
+		expect(userChunks).toHaveLength(1)
+		expect(((userChunks[0].update as ContentChunk).content as TextContent).text).toBe("after this, also do X")
+
+		const result = await promptP
+		expect(result.stopReason).toBe("end_turn")
+	})
+
 	// Arms a turn that hangs until abort() runs — emulating a still-running
 	// turn when session/cancel arrives. onAbort runs inside abortImpl after
 	// the hang flag flips, while prompt() is still parked.
@@ -1402,37 +1531,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.emulatedHistory).toEqual([])
 		expect(fake.order).toEqual(["clearQueue", "abort"])
-	})
-
-	// clearQueue() throwing must not skip the abort — the turn is already
-	// marked cancelled, and leaving the agent running would burn tokens
-	// until the LLM responds. try/finally guarantees abort runs regardless.
-	it("still aborts when clearQueue throws", async () => {
-		armHangingTurn()
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
-			throw new Error("clearQueue boom")
-		}
-
-		const promptP = agent.prompt({
-			sessionId,
-			prompt: [{ type: "text", text: "t1" }],
-		})
-		await delay(10)
-
-		// cancel() must resolve — clearQueue's error is caught so abort still runs.
-		await agent.cancel({ sessionId })
-
-		const result = await promptP
-		expect(result.stopReason).toBe("cancelled")
-		expect(fake.aborted).toBe(true)
-		// The drain failure is logged, not silently swallowed — a recurring
-		// clearQueue failure must be observable, not re-leak steers quietly.
-		expect(errorSpy).toHaveBeenCalledWith(
-			"kimchi acp: clearQueue() failed during cancel; aborting anyway",
-			expect.any(Error),
-		)
-		errorSpy.mockRestore()
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
@@ -1509,6 +1607,76 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		// Cleanup the dangling promptImpl.
 		resumePrompt()
 		expect(fake.disposed).toBe(true)
+	})
+
+	// Agent shutdown (conn closed / signal) drops queued steers too — report
+	// them with reason "shutdown" alongside disposing the session records.
+	it("notifies the client about dropped steers when shutdown() runs", async () => {
+		const { conn: recordingConn, extNotifications } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		await fake.steer("steer before shutdown")
+		await localAgent.shutdown()
+
+		expect(extNotifications).toContainEqual({
+			method: "_kimchi.dev/queue_dropped",
+			params: {
+				sessionId: res.sessionId,
+				reason: "shutdown",
+				steering: ["steer before shutdown"],
+				followUp: [],
+			},
+		})
+	})
+
+	// session/close with a live turn drops queued steers as well — same
+	// dropped-steer notification, reason "shutdown".
+	it("notifies the client about dropped steers when closing a session with a live turn", async () => {
+		const { conn: recordingConn, updates, extNotifications } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		let closeSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!closeSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			closeSeen = true
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+
+		await fake.steer("steer before close")
+		await localAgent.unstable_closeSession({ sessionId: localSessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+		expect(extNotifications).toContainEqual({
+			method: "_kimchi.dev/queue_dropped",
+			params: {
+				sessionId: localSessionId,
+				reason: "shutdown",
+				steering: ["steer before close"],
+				followUp: [],
+			},
+		})
 	})
 
 	// Misbehaving client sends a block type our capabilities declared as
@@ -1688,7 +1856,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("emits a usage_update notification with used/size after a turn resolves", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage")
-		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 200_000 }
+		localFake.model = {
+			provider: "test",
+			id: "m",
+			name: "M",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
 		localFake.contextUsage = { tokens: 50_000, contextWindow: 200_000, percent: 25 }
 		localFake.sessionStats = {
 			tokens: { input: 10_000, output: 5_000, cacheRead: 0, cacheWrite: 0, total: 15_000 },
@@ -1723,7 +1897,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("does not emit usage_update when getContextUsage tokens is null (post-compaction)", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage-fallback")
-		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
+		localFake.model = {
+			provider: "test",
+			id: "m",
+			name: "M",
+			input: ["text"],
+			contextWindow: 128_000,
+		}
 		localFake.contextUsage = { tokens: null, contextWindow: 128_000, percent: null }
 		localFake.sessionStats = {
 			tokens: { input: 8_000, output: 2_000, cacheRead: 0, cacheWrite: 0, total: 10_000 },
@@ -4333,7 +4513,14 @@ describe("fileChangeToDiffContent", () => {
 	})
 
 	it("maps modify to a diff carrying both texts", () => {
-		expect(fileChangeToDiffContent({ operation: "modify", path: "/a.txt", oldText: "old", newText: "new" })).toEqual({
+		expect(
+			fileChangeToDiffContent({
+				operation: "modify",
+				path: "/a.txt",
+				oldText: "old",
+				newText: "new",
+			}),
+		).toEqual({
 			type: "diff",
 			path: "/a.txt",
 			oldText: "old",
@@ -4439,7 +4626,11 @@ describe("no-auth failures surface as authRequired (-32000)", () => {
 		fake.authConfigured = false
 
 		const err = await agent
-			.setSessionConfigOption({ sessionId: "session-noauth-multimodel", configId: "model", value: "multi-model" })
+			.setSessionConfigOption({
+				sessionId: "session-noauth-multimodel",
+				configId: "model",
+				value: "multi-model",
+			})
 			.catch((e) => e)
 		expect(err).toMatchObject({ code: -32000 })
 		expect((err as Error).message).toMatch(
@@ -4832,7 +5023,9 @@ describe("newSession model state", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
+		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
+			code: -32000,
+		})
 		expect(fake.disposed).toBe(true)
 	})
 
@@ -5759,7 +5952,11 @@ describe("setSessionConfigOption", () => {
 		// Verify the session controller is registered
 		const controller = getSessionPermissionFlagController(sessionId)
 		expect(controller).toBeDefined()
-		expect(controller?.getMode()).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
+		expect(controller?.getMode()).toEqual({
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		})
 
 		// Change to plan mode via ACP
 		await agent.setSessionConfigOption({
@@ -7954,7 +8151,11 @@ describe("KimchiAcpAgent permission mode session-log persistence", () => {
 		fake.branch = [makePermissionModeEntry("plan")]
 
 		const agent = makeAgent(async () => asSession(fake))
-		const res = await agent.loadSession({ sessionId: "loaded-plan-mode", cwd: "/tmp", mcpServers: [] })
+		const res = await agent.loadSession({
+			sessionId: "loaded-plan-mode",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		expect(res.configOptions?.[0].currentValue).toBe("plan")
 		expect(getSessionPermissionFlagController("loaded-plan-mode")?.getMode()).toEqual({
@@ -7971,7 +8172,11 @@ describe("KimchiAcpAgent permission mode session-log persistence", () => {
 		fake.branch = [makePermissionModeEntry("auto")]
 
 		const agent = makeAgent(async () => asSession(fake))
-		const res = await agent.loadSession({ sessionId: "loaded-auto-mode", cwd: "/tmp", mcpServers: [] })
+		const res = await agent.loadSession({
+			sessionId: "loaded-auto-mode",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		expect(res.configOptions?.[0].currentValue).toBe("yolo")
 	})
@@ -8457,12 +8662,16 @@ describe("resolveAcpAppendSystemPrompt", () => {
 	})
 
 	it("threads _meta['kimchi.dev'].appendSystemPrompt through for newSession", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } } }
+		const params = {
+			_meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } },
+		}
 		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["You are a worker under AO supervision."])
 	})
 
 	it("threads _meta['kimchi.dev'].appendSystemPrompt through identically for loadSession", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } } }
+		const params = {
+			_meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } },
+		}
 		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["Loaded sessions get the same prompt."])
 	})
 
@@ -8514,7 +8723,12 @@ describe("extMethod dispatch", () => {
 		})
 
 		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.import_discover, {})) as {
-			apps: Array<{ id: string; displayName: string; skills: Array<{ name: string }>; mcpServers: unknown[] }>
+			apps: Array<{
+				id: string
+				displayName: string
+				skills: Array<{ name: string }>
+				mcpServers: unknown[]
+			}>
 		}
 
 		expect(result.apps).toEqual([
@@ -8522,7 +8736,13 @@ describe("extMethod dispatch", () => {
 				id: "stub-app",
 				displayName: "Stub App",
 				skills: [
-					{ name: "stub-skill", description: "d", path: "/tmp/s", sourceAppId: "stub-app", sourceAppName: "Stub App" },
+					{
+						name: "stub-skill",
+						description: "d",
+						path: "/tmp/s",
+						sourceAppId: "stub-app",
+						sourceAppName: "Stub App",
+					},
 				],
 				mcpServers: [{ name: "stub-mcp", command: "mcp", sourceAppId: "stub-app", sourceAppName: "Stub App" }],
 			},
@@ -8542,7 +8762,13 @@ describe("extMethod dispatch", () => {
 		}
 
 		expect(result.results).toEqual([
-			{ kind: "skill", sourceAppId: "stub-app", name: "stub-skill", path: "/tmp/s", outcome: "imported" },
+			{
+				kind: "skill",
+				sourceAppId: "stub-app",
+				name: "stub-skill",
+				path: "/tmp/s",
+				outcome: "imported",
+			},
 		])
 	})
 

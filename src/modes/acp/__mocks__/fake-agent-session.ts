@@ -52,6 +52,9 @@ export class BaseFakeAgentSession {
 	async bindExtensions(): Promise<void> {}
 	async prompt(): Promise<void> {}
 	async abort(): Promise<void> {}
+	getSteeringMessages(): readonly string[] {
+		return []
+	}
 	dispose(): void {
 		this.disposed = true
 	}
