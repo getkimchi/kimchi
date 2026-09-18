@@ -27,6 +27,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 		description:
 			"Search the web for current, authoritative information. Use this when: the task names a specific library, framework, build tool, or vendor kit whose version/API/install steps you will rely on; you need to verify a library/framework version assumption; you are unsure whether an API exists or what its current signature is; you encounter an error message or behaviour you do not recognise; a 'best practice' may be out of date; or you are working with a library you may not know. " +
 			"Prefer primary sources (official docs, GitHub READMEs, RFCs, changelogs) and corroborate key claims with multiple sources. " +
+			"Companion to web_fetch: call web_fetch({url}) to read a page found here. " +
 			"Include links for cited sources in the final response. " +
 			"Use the recency parameter when the query is time-sensitive. " +
 			"Use search_depth='deep' only for complex queries requiring high precision — it costs more and is slower. " +

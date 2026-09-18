@@ -25,10 +25,12 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import {
 	type DEFAULT_MODEL_ROLES,
 	getAllowedMultiModelRefs,
@@ -105,6 +107,9 @@ import {
 	type Theme,
 	type UICtx,
 } from "./ui/agent-widget.js"
+
+/** Tools hidden until the session spawns its first subagent (see deferral block below). */
+export const AGENT_CONTINUATION_TOOL_NAMES = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
 
 // ---- Shared helpers ----
 
@@ -2328,6 +2333,27 @@ ${AGENT_TOOL_GUIDELINES}`,
 			},
 		}),
 	)
+
+	// ---- continuation-tool deferral ----
+	// resume_subagent / steer_subagent / get_subagent_result (~700 est tokens of
+	// schema text) stay registered but hidden until the session actually has a
+	// subagent — `Agent` is the always-visible anchor and its description already
+	// names the continuation tools for discovery. Reveal is one-way on the
+	// first Agent tool_result, mirroring the bash_control pattern. Agent workers
+	// keep full visibility (their profiles list these tools as shared and the
+	// profile manager filters against visibility votes).
+	const visibility = createToolVisibility(pi)
+	const deferContinuationTools = !isAgentWorker()
+	let continuationToolsRevealed = !deferContinuationTools
+
+	pi.on("session_start", () => {
+		if (!continuationToolsRevealed) visibility.disable(AGENT_CONTINUATION_TOOL_NAMES)
+	})
+	pi.on("tool_result", (event) => {
+		if (event.toolName !== "Agent" || continuationToolsRevealed) return
+		continuationToolsRevealed = true
+		visibility.enable(AGENT_CONTINUATION_TOOL_NAMES)
+	})
 
 	// ---- /agents interactive menu ----
 
