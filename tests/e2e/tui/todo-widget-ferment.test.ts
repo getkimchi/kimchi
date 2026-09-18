@@ -111,8 +111,6 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 						},
 					],
 				},
-				// Turn 2 (post-confirmation keepalive): mirrors ferment-new-runs-planning.
-				{},
 				// Turn 3 (host nudge): activate the implementation phase.
 				{
 					stream: ["Starting implementation."],
