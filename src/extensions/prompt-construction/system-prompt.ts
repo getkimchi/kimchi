@@ -197,6 +197,9 @@ ${orientation}You are running in single-model mode.${modelClause} All work in th
 Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
 
+/** @deprecated The standalone ## Documents section was removed from the
+ *  main prompt (cost-parity consolidation — it showed negative value in
+ *  headless runs); retained only for replace-mode persona prompts. */
 export const DOCUMENTS_SECTION =
 	"Use the Documents directory (see Environment) for transient working files: research notes, findings, verification reports, inter-agent handoffs. Final plans and specs go to .kimchi/plans/<slug>.md — never the project or temp directories."
 
@@ -206,6 +209,7 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate c
 - Deliver complete, working code — no placeholders, omissions, or TODOs.
 - Verify your work: edited files complete and correct, tests or the code run if possible.
 - Use absolute file paths.
+- Put transient AI working files (research notes, verification reports, inter-agent handoffs) in the Documents directory; final plans and specs go to .kimchi/plans/<slug>.md — never the project or temp directories.
 - Do NOT introduce security vulnerabilities.
 - After every tool result, ALWAYS produce text — the next tool call with explicit reasoning, or a final summary. Never re-issue the same call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
@@ -342,8 +346,8 @@ Approval covers exactly the action the user requested — not escalations or wor
 - GitLab CLI: same rule — mutating \`glab\` verbs (incl. approve, note resolve, rebase, retry) and \`glab api POST/PUT/PATCH/DELETE\` need explicit approval.
 - Git remote ops: pushing branches, force-push, deleting branches/tags need explicit approval.`
 
-/** Replacement for the user-presence-only sections (Consent, Harness Notes,
- *  Documents) when the session has no human in the loop: one directive instead
+/** Replacement for the user-presence-only sections (Consent, Harness
+ *  Notes) when the session has no human in the loop: one directive instead
  *  of ~4.5k chars of interactive-session policy. */
 export const AUTONOMOUS_SESSION_NOTE = `## Autonomous Session
 
@@ -368,11 +372,6 @@ function buildPrompt(parts: PromptParts): string {
 	// 4. Guidelines
 	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
-
-	// 5. Documents (only relevant when a human or multi-agent flow reads artifacts)
-	if (parts.hasUserLoop) {
-		sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
-	}
 
 	// 6. Consolidated core sections: output, tool selection, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
