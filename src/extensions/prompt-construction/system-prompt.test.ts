@@ -85,6 +85,52 @@ function createSkill(overrides: Partial<Skill> & { name: string; description: st
 }
 
 describe("buildSystemPrompt", () => {
+	it.each(["single", "orchestrator"] as const)("provides default communication guidance in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result.match(/^## Communication$/gm)).toHaveLength(1)
+		expect(result).toContain("Explicit output formats, including code-only or structured data, take precedence")
+		expect(result).toContain("When asked for JSON only, emit the JSON value directly without Markdown fences")
+		expect(result).toContain("Distinguish verified outcomes from expectations, and partial success from completion")
+		expect(result).toContain("Carry authorized work through to completion")
+		expect(result).not.toContain("proceed quietly")
+		expect(result).not.toContain("Do not repeat what you just did or summarize completed steps")
+		expect(result).not.toContain("After every tool result, ALWAYS produce text")
+	})
+
+	it.each([
+		"single",
+		"orchestrator",
+	] as const)("bounds clarification without limiting complete answers in %s mode", (mode) => {
+		const result = buildSystemPrompt({
+			tools: [],
+			env: testEnv,
+			mode,
+			contextFiles: [{ path: "AGENTS.md", content: "Project instruction marker." }],
+		})
+		expect(result.indexOf("## Communication")).toBeGreaterThan(result.indexOf("Project instruction marker."))
+		expect(result).toContain("A clarification-only reply is at most two short sentences")
+		expect(result).toContain("Lead with the input request; add a reason only when useful")
+		expect(result).not.toContain("the essential limitation, if needed, then one question or request")
+		expect(result).not.toContain("When evidence is unavailable, state the limit briefly")
+		expect(result).toContain("Do not bundle several fields into that request")
+		expect(result).toContain(
+			"Ask for one diagnostic artifact and stop; listing common causes does not answer that question",
+		)
+		expect(result).toContain(
+			"Give a full checklist or general explanation only when the user explicitly asks for that broader content",
+		)
+		expect(result).toContain(
+			"Find missing facts with available tools before asking the user, respecting tool restrictions",
+		)
+		expect(result).not.toContain("state that clearly and ask the user to provide them")
+	})
+
+	it("keeps human communication guidance out of the subagent output protocol", () => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode: "subagent" })
+		expect(result).not.toContain("## Communication")
+		expect(result).toContain("Do NOT add any text before or after the JSON")
+	})
+
 	const tools = [
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },

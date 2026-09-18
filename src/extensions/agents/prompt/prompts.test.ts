@@ -29,6 +29,20 @@ function getRequired(name: string): ReturnType<typeof DEFAULT_AGENTS.get> & obje
 }
 
 describe("default agents — subagent system prompt snapshot", () => {
+	it.each([
+		undefined,
+		["read"],
+	])("omits human response style from inherited worker prompts (tools: %s)", (activeToolNames) => {
+		const agent: AgentConfig = { ...getRequired(AGENT_GENERAL_PURPOSE), promptMode: "append" }
+		const parent =
+			"## Rules\nKeep rules.\n\n## Environment\nKeep environment.\n\n## Communication\nHuman-only instructions."
+		const result = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parent, { activeToolNames })
+		expect(result).not.toContain("Communication")
+		expect(result).not.toContain("Human-only instructions")
+		expect(result).toContain("Keep rules.")
+		expect(result).toContain("Keep environment.")
+	})
+
 	it("General-Purpose agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
