@@ -208,11 +208,12 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
-			// Give the parent turn one plain assistant response after the worker report.
+			// The parent acknowledges the worker report and completes the step in
+			// the same turn. Post-nudge-guard-cull, a plain assistant reply ends
+			// the agent loop — nothing re-nudges the next lifecycle call — so the
+			// script must keep acting while its turn is open. The step uses the
+			// real Agent id returned by the Agent tool result.
 			stream: ["Linked worker report submitted."],
-		},
-		{
-			// Complete the step using the real Agent id returned by the Agent tool result.
 			toolCalls: [
 				{
 					id: "call_complete_step",
