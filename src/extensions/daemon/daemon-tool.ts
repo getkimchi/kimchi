@@ -16,34 +16,64 @@
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { executeDaemonControl } from "./daemon-control-tool.js"
 import { spawnDaemon } from "./spawn.js"
 import { daemonStateDir, validateDaemonName } from "./state.js"
 
 const daemonSchema = Type.Object({
-	command: Type.String({
-		description:
-			"Bash command line to run as the daemon (compound commands like 'a && b' are fine — the whole line runs in one shell). The returned pid is the process-group leader; a thin shell wrapper may remain if the command doesn't end in exec. Output is redirected to the daemon's log file automatically.",
-	}),
+	action: Type.Optional(
+		Type.Union(
+			[Type.Literal("start"), Type.Literal("list"), Type.Literal("status"), Type.Literal("logs"), Type.Literal("stop")],
+			{
+				description:
+					"'start' (default) launches a detached daemon (requires command); 'list' shows all live daemons; 'status'/'logs'/'stop' manage one daemon by id.",
+			},
+		),
+	),
+	command: Type.Optional(
+		Type.String({
+			description:
+				"Required for action 'start'. Bash command line to run as the daemon (compound commands like 'a && b' are fine — the whole line runs in one shell). The returned pid is the process-group leader; a thin shell wrapper may remain if the command doesn't end in exec. Output is redirected to the daemon's log file automatically.",
+		}),
+	),
 	name: Type.Optional(
 		Type.String({
 			description:
-				"Short identifier for the daemon (alphanumerics/dash/underscore only, max 40 chars). Used as a prefix for its id and log files. Pick something meaningful like 'pypi-server' or 'dev-web'.",
+				"Only valid with action 'start'. Short identifier for the daemon (alphanumerics/dash/underscore only, max 40 chars). Used as a prefix for its id and log files. Pick something meaningful like 'pypi-server' or 'dev-web'.",
+		}),
+	),
+	id: Type.Optional(
+		Type.String({
+			description: "Daemon id (returned by action 'start'). Required for status/logs/stop.",
+		}),
+	),
+	max_bytes: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			description: "Only valid with action 'logs'. Max bytes to return from the end of the log file (default 8192).",
 		}),
 	),
 })
 
 export const DAEMON_TOOL_NAME = "daemon"
 
-export const DAEMON_TOOL_DESCRIPTION = `Start a detached background process that KEEPS RUNNING after this session ends.
+export const DAEMON_TOOL_DESCRIPTION = `Start a detached background process that KEEPS RUNNING after this session ends — or inspect/stop existing daemons.
 
-Use ONLY for long-lived services that someone connects to after you finish:
+Actions (default "start"):
+- "start": launch a detached daemon (requires command)
+- "list": show all live daemons (id, pid, uptime, command, log file)
+- "status": check one daemon — alive?, uptime, command, log path
+- "logs": return the tail of a daemon's log file
+- "stop": terminate a daemon's whole process group and remove its record
+
+Use "start" ONLY for long-lived services that someone connects to after you finish:
 - web servers, APIs, databases, caches the user (or a grader) will query afterwards
 - emulators / VMs that must stay up for external access
 - anything whose whole purpose is to outlive you
 
-Do NOT use for: builds, installs, tests, downloads, training runs, or ANY command with a natural end — use \`bash\` with a realistic timeout for those (and checkin_interval + bash_control for managed background). Managed background is the right default; it gets progress checkins, a deadline auto-kill, and cleanup at session end. Daemons get NONE of those: no timeout, no streamed output, no automatic cleanup. They just run.
+Do NOT use for: builds, installs, tests, downloads, training runs, or ANY command with a natural end — use \`bash\` with a realistic timeout for those (and checkin_interval + bash_control for managed background). Managed background is the right default; it gets progress checkins, a deadline auto-kill, and cleanup at session end. Daemons get NONE of those: no timeout, no streamed output, no automatic cleanup. They just run. Note: daemons are NOT managed by bash_control — those handles belong to the bash tool's session-scoped background mode, a different lifecycle (killed at session end).
 
-After starting, verify the service actually works (e.g. curl it) and report the address to the user. Manage later via daemon_control (list / status / logs / stop).`
+After starting, verify the service actually works (e.g. curl it) and report the address to the user. Manage later with this tool: action "list" / "status" / "logs" / "stop".`
 
 export interface DaemonToolOptions {
 	/** Override the state dir (tests use a temp dir). */
@@ -61,9 +91,20 @@ export function createDaemonToolDefinition(
 		name: DAEMON_TOOL_NAME,
 		label: "daemon",
 		description: DAEMON_TOOL_DESCRIPTION,
-		promptSnippet: "start a detached service that must outlive this session (manage via daemon_control)",
+		promptSnippet: "start a detached service that must outlive this session (or list/status/logs/stop existing daemons)",
 		parameters: daemonSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const action = params.action ?? "start"
+			if (action !== "start") {
+				return executeDaemonControl({ action, id: params.id, max_bytes: params.max_bytes }, stateDir)
+			}
+			if (!params.command?.trim()) {
+				return {
+					content: [{ type: "text", text: 'Error: action "start" requires a `command`.' }],
+					details: { action, error: "missing-command" },
+				}
+			}
+
 			// Coerce empty-string name to undefined so it takes the default
 			// `daemon-` prefix instead of producing a `-a1b2c3`-style id.
 			const name = params.name === "" ? undefined : params.name
@@ -99,10 +140,10 @@ export function createDaemonToolDefinition(
 						type: "text",
 						text:
 							`Daemon started.\n  id:       ${record.id}\n  pid:      ${record.pid}\n  command:  ${record.command}\n  log file: ${record.logFile}\n\n` +
-							`It is detached and will keep running after this session ends. Verify it works (e.g. curl / connect) and tell the user how to reach it. Manage with daemon_control: action "status" | "logs" | "stop", id "${record.id}".`,
+							`It is detached and will keep running after this session ends. Verify it works (e.g. curl / connect) and tell the user how to reach it. Manage with daemon: action "status" | "logs" | "stop", id "${record.id}".`,
 					},
 				],
-				details: { id: record.id, pid: record.pid, logFile: record.logFile },
+				details: { action, id: record.id, pid: record.pid, logFile: record.logFile },
 			}
 		},
 	}

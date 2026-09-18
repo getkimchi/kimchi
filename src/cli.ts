@@ -689,7 +689,7 @@ try {
 			// continue/stop decision, other tool calls are hard-blocked with a
 			// steering reason; natural process exit releases the gate.
 			bashControlExtension,
-			// Session-surviving daemons: daemon + daemon_control tools.
+			// Session-surviving daemons: the consolidated daemon tool.
 			// Deliberate last resort for services that must outlive the session —
 			// session_shutdown intentionally kills nothing here.
 			// EXPERIMENTAL: gated behind --enable-experimental-features.

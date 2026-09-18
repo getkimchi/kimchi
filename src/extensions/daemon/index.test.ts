@@ -1,7 +1,7 @@
 /**
  * Extension-level tests for the daemon extension factory.
  *
- * The factory is thin: register both tools on session_start, and on
+ * The factory is thin: register the single daemon tool on session_start, and on
  * session_shutdown notify (TUI only) when detached daemons are still
  * running. The shutdown notice uses the REAL default state dir by
  * default, which would leak `~/.config/kimchi` into tests — the current
@@ -19,7 +19,7 @@ afterEach(() => {
 })
 
 describe("daemonExtension", () => {
-	it("registers daemon and daemon_control tools on session_start", () => {
+	it("registers the consolidated daemon tool on session_start", () => {
 		setExperimentalFeaturesEnabled(true)
 		const { api, getHandler } = createExtensionApi()
 		const registerTool = vi.mocked(api.registerTool)
@@ -28,8 +28,7 @@ describe("daemonExtension", () => {
 		getHandler("session_start")({} as never, createContext())
 
 		const names = registerTool.mock.calls.map(([tool]) => tool.name)
-		expect(names).toContain("daemon")
-		expect(names).toContain("daemon_control")
+		expect(names).toEqual(["daemon"])
 	})
 
 	it("registers no tools when experimental features are disabled", () => {

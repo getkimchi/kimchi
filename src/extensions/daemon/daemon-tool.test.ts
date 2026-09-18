@@ -70,7 +70,7 @@ describePosix("daemon tool execute (real processes)", () => {
 		const text = result.content[0].type === "text" ? result.content[0].text : ""
 		expect(text).toContain("Daemon started")
 		expect(text).toContain("webserver-")
-		expect(text).toContain("daemon_control")
+		expect(text).toContain('Manage with daemon: action "status"')
 
 		const id = result.details?.id as string
 		const record = readDaemon(dir, id)
@@ -92,6 +92,20 @@ describePosix("daemon tool execute (real processes)", () => {
 		expect(result.details?.error).toBe("invalid-name")
 	})
 
+	it("control actions dispatch through the same tool (list with no daemons)", async () => {
+		const result = await tool().execute("tc-ctl", { action: "list" }, undefined, undefined, fakeCtx(dir))
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("No live daemons")
+		expect(result.details?.action).toBe("list")
+	})
+
+	it("start without a command returns a soft error", async () => {
+		const result = await tool().execute("tc-nocmd", { action: "start" }, undefined, undefined, fakeCtx(dir))
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("requires a `command`")
+		expect(result.details?.error).toBe("missing-command")
+	})
+
 	it("empty-string name falls back to the default daemon- prefix", async () => {
 		const result = await tool().execute("tc2b", { command: "sleep 5", name: "" }, undefined, undefined, fakeCtx(dir))
 		expect(result.details?.error).toBeUndefined()
@@ -102,7 +116,7 @@ describePosix("daemon tool execute (real processes)", () => {
 
 	it("empty command returns an error result", async () => {
 		const result = await tool().execute("tc3", { command: "  " }, undefined, undefined, fakeCtx(dir))
-		expect(result.details?.error).toBe("spawn-failed")
+		expect(result.details?.error).toBe("missing-command")
 	})
 
 	it("instant-crash command surfaces the failure with log tail", async () => {
