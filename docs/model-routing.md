@@ -4,21 +4,19 @@ Auto (`kimchi-dev/auto`) is a virtual model that asks the Kimchi router to choos
 
 Auto is useful when you want Kimchi to choose between the models available to you without changing models manually for every new task.
 
-## Enable model routing
+## Select model routing
 
-Start Kimchi with experimental features enabled, then select Auto:
+Auto is available to all customers, and is opt-in for now: multi-model remains the default, and Auto appears as the first entry in `/model` and the Ctrl+P cycle. Selecting Auto (via `/model` or Ctrl+P) is persisted like any other model choice — it becomes your saved default, so new sessions start with Auto and resuming a session preserves its model. Explicit launch model/provider choices and model scopes take precedence for that launch. For `@cast.ai` accounts, fresh sessions are also promoted to Auto by default when no model was selected.
+
+For scripted runs and subprocesses, `KIMCHI_MODEL=provider/model` supplies an inherited launch selection. Explicit CLI selections take precedence. The benchmark adapter sets it to keep workflow subprocesses on the run's configured model.
+
+To select Auto explicitly:
 
 ```sh
-kimchi --enable-experimental-features --model auto
+kimchi --model auto
 ```
 
-You can also start Kimchi with `--enable-experimental-features` and select **Auto (Kimchi Router)** from `/model`.
-
-The experimental flag controls whether Auto is offered as a new choice. It does not disable Auto if you already selected it:
-
-- a saved Auto default continues to work without the flag;
-- a session saved with Auto can be resumed without the flag;
-- explicitly selecting Auto for a new session still requires the flag.
+You can also select **Auto (Kimchi Router)** from `/model`. No experimental flag is required.
 
 The router uses your existing Kimchi API key. There is no separate router authentication to configure.
 

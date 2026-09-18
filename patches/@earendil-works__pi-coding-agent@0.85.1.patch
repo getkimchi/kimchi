@@ -26,6 +26,15 @@
 #   - Flag conflict crash: when an npm extension registers a flag that kimchi
 #     already provides (e.g. `--plan`), the conflict is downgraded from a hard
 #     error to a warning (kimchi built-in extensions load first and win).
+#   - Multi-model stays a selectable option: the model-selector injects the
+#     virtual "multi-model" row directly below Auto, so the list always leads
+#     with Auto then multi-model. The virtual row borrows the orchestrator's
+#     model object, which needs two guards in sortModels/render: the
+#     current-model rule is skipped while multi-model is active (otherwise the
+#     orchestrator claims the top slot and pushes Auto down), and the
+#     "· default" badge is suppressed on the virtual row (the orchestrator
+#     still shows it on its own row). Auto also outranks the default model so
+#     it leads even when it is neither current nor default.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
 #   that routing. Do not re-add a dist hunk for it.
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
@@ -475,10 +484,20 @@ index 8220e06..b213a26 100644
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd88940..9a21d51 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
+@@ -6,5 +6,10 @@ import { theme } from "../theme/theme.js";
+ import { DynamicBorder } from "./dynamic-border.js";
+ import { keyDisplayText, keyHint } from "./keybinding-hints.js";
++// kimchi-dev: single source of truth for the Auto row; this file cannot import
++// src/extensions/router/constants.js, so keep the ids in one place here.
++const KIMCHI_AUTO_PROVIDER = 'kimchi-dev';
++const KIMCHI_AUTO_ID = 'auto';
++const isAutoModelEntry = (entry) => entry.model.provider === KIMCHI_AUTO_PROVIDER && entry.model.id === KIMCHI_AUTO_ID;
+ /**
+  * Component that renders a model selector with search
+  */
+@@ -34,6 +39,7 @@ export class ModelSelectorComponent extends Container {
      refreshStatusMessage = "Refreshing model catalogs…";
      refreshStatusSuccess = false;
      tui;
@@ -486,7 +505,7 @@ index bd88940..9a21d51 100644
      scopedModels;
      defaultModel;
      scope = "all";
-@@ -42,9 +43,10 @@ export class ModelSelectorComponent extends Container {
+@@ -42,9 +48,10 @@ export class ModelSelectorComponent extends Container {
      refreshAbortController = new AbortController();
      refreshTimeout;
      closed = false;
@@ -498,7 +517,7 @@ index bd88940..9a21d51 100644
          this.currentModel = currentModel;
          this.modelRuntime = modelRuntime;
          this.scopedModels = scopedModels;
-@@ -87,7 +89,9 @@ export class ModelSelectorComponent extends Container {
+@@ -87,7 +94,9 @@ export class ModelSelectorComponent extends Container {
          this.addChild(new Spacer(1));
          // Hint
          if (this.onSelectAsDefaultCallback) {
@@ -509,22 +528,24 @@ index bd88940..9a21d51 100644
          }
          // Add bottom border
          this.addChild(new DynamicBorder());
-@@ -107,6 +111,14 @@ export class ModelSelectorComponent extends Container {
+@@ -107,6 +116,16 @@ export class ModelSelectorComponent extends Container {
              model,
          }));
          this.allModels = this.sortModels(models);
++        // kimchi-dev: inject the virtual "multi-model" row directly below Auto.
 +        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
 +        if (orchRef) {
 +            const orchId = orchRef.split('/').pop();
 +            const orchEntry = this.allModels.find(m => m.id === orchId);
 +            if (orchEntry) {
-+                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
++                const autoIdx = this.allModels.findIndex(isAutoModelEntry);
++                this.allModels.splice(autoIdx + 1, 0, { provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
 +            }
 +        }
          this.scopedModels = this.scopedModels.map((scoped) => {
              const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
              return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -116,6 +128,13 @@ export class ModelSelectorComponent extends Container {
+@@ -116,6 +135,14 @@ export class ModelSelectorComponent extends Container {
              id: scoped.model.id,
              model: scoped.model,
          }));
@@ -532,23 +553,59 @@ index bd88940..9a21d51 100644
 +            const orchIdScoped = orchRef.split('/').pop();
 +            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
 +            if (orchScopedEntry) {
-+                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
++                const autoIdxScoped = this.scopedModelItems.findIndex(isAutoModelEntry);
++                this.scopedModelItems.splice(autoIdxScoped + 1, 0, { provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
 +            }
 +        }
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -262,12 +281,17 @@ export class ModelSelectorComponent extends Container {
+@@ -181,12 +208,28 @@ export class ModelSelectorComponent extends Container {
+         const sorted = [...models];
+         // Sort: current model first, default model second, then by provider.
+         sorted.sort((a, b) => {
+-            const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
+-            const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
++            // kimchi-dev: in multi-model mode the session model is the
++            // orchestrator, which the virtual row already represents. Skip the
++            // current-model rule so the orchestrator does not also claim the top
++            // slot and push Auto down the list.
++            const multiModelActive = process.__kimchiMultiModelEnabled instanceof Map
++                ? !!process.__kimchiMultiModelEnabled.get(this.sessionId)
++                : false;
++            const aIsCurrent = !multiModelActive && modelsAreEqual(this.currentModel, a.model);
++            const bIsCurrent = !multiModelActive && modelsAreEqual(this.currentModel, b.model);
+             if (aIsCurrent && !bIsCurrent)
+                 return -1;
+             if (!aIsCurrent && bIsCurrent)
+                 return 1;
++            // kimchi-dev: Auto is the recommended entry point, so it leads the
++            // list whenever it is not itself the current model - ranked above
++            // the default model so the pairing stays Auto, then multi-model.
++            const aIsAuto = isAutoModelEntry(a);
++            const bIsAuto = isAutoModelEntry(b);
++            if (aIsAuto && !bIsAuto)
++                return -1;
++            if (!aIsAuto && bIsAuto)
++                return 1;
+             const aIsDefault = this.isDefaultModel(a.model);
+             const bIsDefault = this.isDefaultModel(b.model);
+             if (aIsDefault && !bIsDefault)
+@@ -262,12 +305,20 @@ export class ModelSelectorComponent extends Container {
              if (!item)
                  continue;
              const isSelected = i === this.selectedIndex;
 -            const isCurrent = modelsAreEqual(this.currentModel, item.model);
+-            const isDefault = this.isDefaultModel(item.model);
 +            // kimchi-dev: multi-model virtual row tracking
 +            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
 +            const isCurrent = item._isMultiModel
 +                ? isMultiModelEnabled
 +                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
-             const isDefault = this.isDefaultModel(item.model);
++            // The virtual row borrows the orchestrator's model object, so the
++            // default badge must be suppressed for it - the orchestrator itself
++            // still shows the badge on its own row.
++            const isDefault = !item._isMultiModel && this.isDefaultModel(item.model);
              const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
 +            const displayId = item._isMultiModel ? 'multi-model' : item.id;
              const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
@@ -558,7 +615,7 @@ index bd88940..9a21d51 100644
              const providerBadge = theme.fg("muted", `[${item.provider}]`);
              const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
              this.listContainer.addChild(new Text(line, 0, 0));
-@@ -352,6 +376,11 @@ export class ModelSelectorComponent extends Container {
+@@ -352,6 +403,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
          this.dispose();

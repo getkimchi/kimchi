@@ -1,7 +1,6 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
-import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, AUTO_MODEL_REF } from "./extensions/router/constants.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -9,26 +8,35 @@ export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODE
 
 // Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
 // such as `--mode acp`, which upstream pi does not parse.
-const PRE_DISPATCH_VALUE_FLAGS = new Set([
-	"--provider",
-	"--model",
-	"--api-key",
-	"--system-prompt",
-	"--append-system-prompt",
-	"--session",
-	"--fork",
-	"--session-dir",
-	"--models",
-	"--tools",
-	"-t",
-	"--thinking",
-	"--export",
-	"--extension",
-	"-e",
-	"--skill",
-	"--prompt-template",
-	"--theme",
-])
+//
+// Each entry maps a long value-taking flag to its single-letter alias, if any.
+// Both forms must reach `PARSE_ARGS_OPTIONS` below: a short flag that parseArgs
+// does not know consumes a value would leave the following token (e.g. `-t
+// --model`) to be parsed as an explicit model selection.
+const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
+	provider: undefined,
+	model: undefined,
+	"api-key": undefined,
+	"system-prompt": undefined,
+	"append-system-prompt": undefined,
+	session: undefined,
+	fork: undefined,
+	"session-dir": undefined,
+	models: undefined,
+	tools: "t",
+	thinking: undefined,
+	export: undefined,
+	extension: "e",
+	skill: undefined,
+	"prompt-template": undefined,
+	theme: undefined,
+}
+
+const PRE_DISPATCH_VALUE_FLAGS = new Set(
+	Object.entries(PRE_DISPATCH_VALUE_FLAG_SHORTS).flatMap(([name, short]) =>
+		short ? [`--${name}`, `-${short}`] : [`--${name}`],
+	),
+)
 
 export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
@@ -104,9 +112,14 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
 	},
+	models: {
+		type: "string",
+		description: "Comma-separated model patterns for this session's model cycle",
+		placeholder: "<patterns>",
+	},
 	"enable-experimental-features": {
 		type: "boolean",
-		description: "Enable experimental features, including the kimchi-dev/auto model",
+		description: "Enable experimental features",
 	},
 	thinking: {
 		type: "string",
@@ -224,6 +237,7 @@ export interface SessionCliArgs {
 	options: {
 		provider?: string
 		model?: string
+		models?: string
 		"multi-model"?: boolean
 		thinking?: string
 		mode?: string
@@ -266,10 +280,18 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 	}
 }
 
+// Consume upstream option values so text such as --system-prompt "--model"
+// (or its short form, `-t --model`) cannot be mistaken for a model-selection
+// flag by our cached parse.
+for (const [name, short] of Object.entries(PRE_DISPATCH_VALUE_FLAG_SHORTS)) {
+	PARSE_ARGS_OPTIONS[name] ??= { type: "string", ...(short ? { short } : {}) }
+}
+
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
 const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
+	"models",
 	"multi-model",
 	"thinking",
 	"mode",
@@ -304,6 +326,14 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 	return { options, positionals }
 }
 
+/** An inherited model is an explicit launch choice; command-line selection wins. */
+export function applyModelEnvArgs(args: string[], model: string | undefined): string[] {
+	if (!model) return args
+	const { options } = parseCliArgs(args)
+	if (options.model || options.provider || options.models || options["multi-model"]) return args
+	return ["--model", model, ...args]
+}
+
 /**
  * Return parsed Kimchi-local CLI flags.
  *
@@ -316,15 +346,6 @@ export function getParsedCliArgs(): SessionCliArgs {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}
 	return cachedCliArgs
-}
-
-/** True when launch arguments explicitly request the gated Auto model. */
-export function isExplicitAutoModelSelection(args: SessionCliArgs): boolean {
-	const provider = args.options.provider?.toLowerCase()
-	const model = args.options.model?.toLowerCase().replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
-	if (!model) return false
-	if (model === AUTO_MODEL_REF) return true
-	return model === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)
 }
 
 export function normalizeResumeIdArgs(args: string[]): string[] {
