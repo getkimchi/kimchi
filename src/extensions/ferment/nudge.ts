@@ -1,50 +1,19 @@
 /**
- * LLM nudges and post-mutation hooks.
+ * Post-mutation hooks for ferment tools.
  *
  * - `appendRefEntry`: writes a hidden session entry that survives compaction —
  *   used so resumed sessions can find the active ferment.
- * - `maybeInjectFermentStopNudge`: under automated policy, injects an action-
- *   specific prompt when the model ends its turn with `stopReason "stop"` after
- *   making tool calls — i.e. it did real work but chose to stop rather than
- *   continuing the ferment lifecycle. This covers the case where the agent
- *   completes a step/phase tool call then produces a summary and exits without
- *   calling the next ferment lifecycle tool.
  * - `onStepCompleted` / `onPhaseCompleted`: stable post-mutation hooks tools
  *   call after writing storage. Today they re-sync active ferment state; keep
  *   callers on the hook so future post-mutation logic has one place to live.
- *
- * Action nudges use `deliverAs: "steer"` so they are consumed at the next
- * agent-loop boundary. A follow-up waits until the current loop drains; by then
- * the ferment may have advanced and the eagerly-rendered action can be stale.
- *
- * Zero-tool (text-only) stops are handled by the lifecycle obligation guard
- * in `lifecycle-obligation-guard.ts`, which replaced the former reactive
- * continuation nudge. See that module for the retry budget and exhaustion
- * semantics.
  *
  * User abort (Esc/Ctrl+C) is handled at the `turn_end` boundary in `events.ts`.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
-import {
-	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
-	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
-	hasFermentScopingCompletionSignal,
-	isNudgeSuppressed,
-	shouldNudge,
-} from "../../shared/planning/planning-stop-nudge.js"
-import { decideContinuation } from "./continuation.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
-import { scheduleNextFermentAction } from "./scheduler.js"
-import {
-	bumpScopingExploreTurns,
-	isInactiveOrPaused,
-	isTerminal,
-	MAX_SCOPING_EXPLORE_TURNS,
-	resetScopingExploreTurns,
-} from "./state.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	safeSendMessage(pi, {
@@ -55,86 +24,12 @@ export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	})
 }
 
-// ─── Ferment stop nudge (tool-call turn that ended with stopReason "stop") ────
-const MAX_CONSECUTIVE_STOP_NUDGES = 2
-const stopNudgeCounts = new Map<string, number>()
-
-export function resetFermentStopNudgeCount(fermentId: string): void {
-	stopNudgeCounts.delete(fermentId)
-}
-
-export function resetAllFermentStopNudgeCounts(): void {
-	stopNudgeCounts.clear()
-}
-
 export function refreshActiveFermentFromStorage(runtime: FermentRuntime): Ferment | undefined {
 	const id = runtime.getActiveId()
 	if (!id) return undefined
 	const fresh = runtime.getStorage().get(id)
 	if (fresh) runtime.setActive(fresh)
 	return fresh
-}
-
-/**
- * Fired from `turn_end` when the assistant made tool calls this turn but then
- * ended with `stopReason === "stop"` while a ferment still requires action.
- *
- * Without this nudge, the pattern:
- *
- *   complete_ferment_step → summary text → [stop]
- *
- * would leave the ferment running with no automatic prompt to call
- * `start_ferment_step` or `complete_ferment_phase` next.
- *
- * Returns true if a nudge was injected.
- */
-export function maybeInjectFermentStopNudge(
-	pi: ExtensionAPI,
-	runtime: FermentRuntime = defaultFermentRuntime,
-): boolean {
-	if (!runtime.isAutomatedContinuationEnabled()) return false
-	const id = runtime.getActiveId()
-	if (!id) return false
-	const fresh = refreshActiveFermentFromStorage(runtime)
-	if (!fresh || isTerminal(fresh)) runtime.setActive(undefined)
-	if (!fresh || isInactiveOrPaused(fresh)) {
-		stopNudgeCounts.delete(id)
-		return false
-	}
-
-	// Treat complete_ferment as continuable here: after the last phase all
-	// phases can be terminal and the engine returns a complete_ferment action,
-	// but the ferment is not yet status:"complete" until the tool is actually
-	// called. Without this flag the stop-nudge path would return idle and fail
-	// to recover the final lifecycle step.
-	const decision = decideContinuation(fresh, runtime.getContinuationPolicy(), {
-		treatCompleteFermentAsContinue: true,
-	})
-	if (decision.type !== "continue") return false
-
-	const count = stopNudgeCounts.get(fresh.id) ?? 0
-	if (count >= MAX_CONSECUTIVE_STOP_NUDGES) {
-		const suppressionText = `Ferment stop nudge suppressed after ${count} consecutive early-stop turns for "${fresh.name}".`
-		safeSendMessage(
-			pi,
-			{
-				customType: "ferment_breadcrumb",
-				content: [{ type: "text", text: suppressionText }],
-				display: true,
-				details: { text: suppressionText, variant: "step" },
-			},
-			{ triggerTurn: false },
-		)
-		return false
-	}
-
-	stopNudgeCounts.set(fresh.id, count + 1)
-	scheduleNextFermentAction(pi, fresh, runtime, {
-		tag: "Ferment stop nudge",
-		deliverAs: "steer",
-		treatCompleteFermentAsContinue: true,
-	})
-	return true
 }
 
 export function onStepCompleted(runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -148,168 +43,4 @@ export function onPhaseCompleted(runtime: FermentRuntime = defaultFermentRuntime
 	// behind the agent's back and caused every subsequent agent-initiated
 	// activate_ferment_phase to be rejected.
 	refreshActiveFermentFromStorage(runtime)
-}
-
-/**
- * Called from turn_end when a tool call is seen. Resets the stop-nudge counter
- * since the model is actively driving the ferment forward — back-to-back tool
- * turns should not count against the stop-nudge budget.
- */
-export function onFermentToolCallSeen(fermentId: string): void {
-	stopNudgeCounts.delete(fermentId)
-}
-
-// ─── Scoping exploration progress nudge ───────────────────────────────────────
-// During draft scoping, detects when the model has spent too many turns on
-// read-like exploration without progressing through the scoping steps
-// (ask_user, confirm_ferment_completion_criteria, propose_ferment_scoping).
-// Unlike the reactive continuation nudge (which only fires on text-only turns),
-// this fires even when the model IS making tool calls — just the wrong kind.
-
-/** Tool names that indicate the model is making scoping progress, not just exploring.
- *  Includes both the interactive (propose_ferment_scoping) and one-shot (scope_ferment)
- *  scoping tools so the progress nudge behaves consistently across modes. */
-const SCOPING_PROGRESS_TOOLS = new Set([
-	"ask_user",
-	"confirm_ferment_completion_criteria",
-	"propose_ferment_scoping",
-	"scope_ferment",
-	"Agent",
-])
-
-/** Check if any tool call in the turn was a scoping-progress tool. */
-export function hasScopingProgressTool(toolNames: string[]): boolean {
-	return toolNames.some((name) => SCOPING_PROGRESS_TOOLS.has(name))
-}
-
-/**
- * Called from turn_end during draft ferment scoping (one-shot or interactive).
- * If the model made tool calls but none were scoping-progress tools,
- * bump the exploration turn counter and inject a nudge after the threshold.
- *
- * The nudge text adapts to interactive vs one-shot scoping so the model is
- * pointed at the right tool (propose_ferment_scoping vs scope_ferment).
- *
- * Returns true if a nudge was injected.
- */
-export function maybeInjectScopingProgressNudge(
-	pi: ExtensionAPI,
-	fermentId: string,
-	toolNames: string[],
-	opts: { interactive: boolean } = { interactive: true },
-): boolean {
-	if (hasScopingProgressTool(toolNames)) {
-		resetScopingExploreTurns(fermentId)
-		return false
-	}
-
-	const count = bumpScopingExploreTurns(fermentId)
-	if (count < MAX_SCOPING_EXPLORE_TURNS) return false
-
-	// Reset after nudge so we don't spam every turn
-	resetScopingExploreTurns(fermentId)
-
-	const nudgeText = opts.interactive
-		? `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files. Are you ready to move to the next scoping step? If not, resolve any missing context and then move on.
-
-- Step 2 — Interview: if you still need information from the user, call ask_user.
-- Step 3 — Completion criteria: once the interview is done, call confirm_ferment_completion_criteria to confirm the completion criteria with the user.
-- Step 5 — Plan: once completion criteria are confirmed, call propose_ferment_scoping with the full plan (this proposes the full scoping to the user for approval; it is separate from Step 3 which only confirms the completion criteria).
-- If you still need more context, take one targeted action to get it, then advance.`
-		: `SCOPING PROGRESS CHECK: You have spent ${count} turns exploring without finalising the plan. Are you ready to call scope_ferment?
-
-- If you still need information, call ask_user — questions route automatically to the judge.
-- Otherwise call scope_ferment with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.
-- Record any remaining uncertainty in assumptions rather than continuing to explore.`
-
-	safeSendMessage(
-		pi,
-		{
-			customType: "ferment_scoping_progress_nudge",
-			content: [
-				{
-					type: "text",
-					text: nudgeText,
-				},
-			],
-			display: false,
-			details: undefined,
-		},
-		{ triggerTurn: true },
-	)
-	return true
-}
-
-// ─── Scoping stop nudge ───────────────────────────────────────────────────
-// During draft ferment scoping the model can also fail by stopping mid-turn
-// without ever calling scope_ferment / propose_ferment_scoping (stopReason
-// "stop" with tool calls but no scoping-completion tool). Capped per-ferment
-// to avoid flooding the context.
-
-const scopingStopNudgeCounts = new Map<string, number>()
-
-export function resetScopingStopNudgeCount(fermentId: string): void {
-	scopingStopNudgeCounts.delete(fermentId)
-}
-
-export function resetAllScopingStopNudgeCounts(): void {
-	scopingStopNudgeCounts.clear()
-}
-
-/** Outcome of evaluating a draft-scoping turn for the stop nudge.
- *
- * - `not_applicable` — the turn does not qualify for draft scoping-stop
- *   recovery (no tool calls, wrong stop reason, or a scoping-completion tool
- *   was present). Another recovery mechanism may evaluate the same turn.
- * - `scheduled` — a scoping recovery message was injected.
- * - `claimed` — the turn qualifies but the retry budget is exhausted. The
- *   scoping mechanism retains ownership of the obligation; generic Ferment
- *   stop recovery must NOT start a separate budget for the same obligation. */
-export type ScopingStopNudgeOutcome =
-	| { kind: "not_applicable" }
-	| { kind: "scheduled" }
-	| { kind: "claimed"; reason: "exhausted" }
-
-/**
- * Fires when the model made tool calls during draft scoping but ended the turn
- * with stopReason "stop" without calling any scoping-completion tool. Mirrors
- * plan-mode-supplement's stop nudge: it prevents the silent stall where the
- * model explores, decides it's done, and quits without calling scope_ferment.
- *
- * Returns an explicit outcome so the caller can distinguish "the budget is
- * exhausted, this mechanism still owns the obligation" from "this turn is not
- * applicable". Only `not_applicable` allows another recovery mechanism to act.
- */
-export function maybeInjectScopingStopNudge(
-	pi: ExtensionAPI,
-	fermentId: string,
-	toolNames: string[],
-	stopReason: string | undefined,
-	opts: { interactive: boolean } = { interactive: true },
-): ScopingStopNudgeOutcome {
-	const completionSignalPresent = hasFermentScopingCompletionSignal(toolNames)
-
-	if (!shouldNudge({ hasToolCall: toolNames.length > 0, stopReason, completionSignalPresent })) {
-		return { kind: "not_applicable" }
-	}
-
-	const count = (scopingStopNudgeCounts.get(fermentId) ?? 0) + 1
-	scopingStopNudgeCounts.set(fermentId, count)
-
-	if (isNudgeSuppressed(count)) {
-		return { kind: "claimed", reason: "exhausted" }
-	}
-
-	const nudgeText = opts.interactive ? FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE : FERMENT_SCOPING_STOP_NUDGE_ONESHOT
-	safeSendMessage(
-		pi,
-		{
-			customType: "ferment_scoping_stop_nudge",
-			content: [{ type: "text", text: nudgeText }],
-			display: false,
-			details: undefined,
-		},
-		{ triggerTurn: true },
-	)
-	return { kind: "scheduled" }
 }

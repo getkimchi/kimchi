@@ -14,10 +14,6 @@ const stateMap = new Map<string, TodosSliceState>()
 const todoStoreListeners = new Set<(details: WriteTodosDetails, sessionId: string) => void>()
 const activeScopeProviders: TodoScopeProvider[] = []
 
-/** Per-session count of non-todo tool calls since the last todo write.
- * Used by renderTodoStateMarkdown to show a passive staleness indicator. */
-const toolCallsSinceTodoWrite = new Map<string, number>()
-
 /** Per-session count of all non-todo tool calls, regardless of whether a todo
  * list exists. Used by the one-shot early nudge to detect multi-step work
  * without a todo list. Never reset (one-shot gate is `todoNudgeFired`). */
@@ -35,14 +31,6 @@ const todoNudgeFired = new Set<string>()
  * Reset to false on create, set to true on any subsequent write. */
 const todoListEverUpdated = new Set<string>()
 
-export function getToolCallsSinceTodoWrite(sessionId: string): number {
-	return toolCallsSinceTodoWrite.get(sessionId) ?? 0
-}
-
-export function bumpToolCallsSinceTodoWrite(sessionId: string): void {
-	toolCallsSinceTodoWrite.set(sessionId, (toolCallsSinceTodoWrite.get(sessionId) ?? 0) + 1)
-}
-
 /** Increment the cumulative count of non-todo tool calls for a session.
  * Used by the one-shot early nudge — always incremented, never reset. */
 export function bumpWorkToolCalls(sessionId: string): void {
@@ -52,10 +40,6 @@ export function bumpWorkToolCalls(sessionId: string): void {
 /** Returns the cumulative count of non-todo tool calls for a session. */
 export function getWorkToolCalls(sessionId: string): number {
 	return workToolCallsSinceStart.get(sessionId) ?? 0
-}
-
-export function resetToolCallsSinceTodoWrite(sessionId: string): void {
-	toolCallsSinceTodoWrite.set(sessionId, 0)
 }
 
 /** Returns true if this session has ever had any todos in its store. */
@@ -239,7 +223,6 @@ export function __resetTodoStore(): void {
 	stateMap.clear()
 	activeScopeProviders.length = 0
 	todoStoreListeners.clear()
-	toolCallsSinceTodoWrite.clear()
 	workToolCallsSinceStart.clear()
 	sessionsWithTodos.clear()
 	todoNudgeFired.clear()

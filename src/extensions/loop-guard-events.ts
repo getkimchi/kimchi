@@ -7,7 +7,7 @@
  *
  * Privacy: payloads carry structured fields only (detector, count,
  * is_subagent). Raw tool args, command text, and the human reason string
- * are intentionally NOT emitted — mirroring the bash-tool-guard stance.
+ * are intentionally NOT emitted.
  */
 
 export const LOOP_GUARD_EVENTS = {
@@ -21,13 +21,7 @@ export type LoopGuardEventChannel = (typeof LOOP_GUARD_EVENTS)[keyof typeof LOOP
  * Which loop detector fired. Kept short and stable so telemetry can
  * aggregate without receiving raw tool-arg / command text.
  */
-export type LoopGuardDetector =
-	| "consecutive_identical"
-	| "exact_ngram"
-	| "fuzzy_ngram"
-	| "edit_run"
-	| "edit_run_total"
-	| "bash_repetition"
+export type LoopGuardDetector = "consecutive_identical" | "edit_run" | "edit_run_total"
 
 export interface LoopGuardWarnPayload {
 	/** The detector that fired this warn. */

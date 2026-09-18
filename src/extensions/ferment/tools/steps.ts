@@ -8,7 +8,6 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
-import { determineNextAction } from "../../../ferment/engine.js"
 import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
@@ -59,51 +58,6 @@ type StepActionArgs = Static<typeof StepActionParams>
 type CompleteStepArgs = Static<typeof CompleteStepParams>
 
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
-
-/**
- * Record a step-level pending compaction unless this was the last step of its
- * phase. When determineNextAction returns complete_phase for the same phase,
- * the phase-level compaction (recorded by completePhase) will fire at the next
- * turn_end and summarise the same session — firing a step-level compaction now
- * would produce a redundant back-to-back compaction with only a one-turn
- * delta, so skip it. The handoff entry for the phase boundary is still
- * appended by the phase-compaction path.
- *
- * Invariant: the `ferment` argument MUST be the post-completion ferment
- * returned by `applyAndPersist` (completeOutcome.ferment or
- * verifyOutcome.ferment), not the pre-completion copy. determineNextAction is
- * a pure function of ferment state, so calling it on the post-completion
- * ferment yields the same next-action decision the broader completeStep logic
- * will act upon — if it says complete_phase, the phase IS complete and the
- * phase-compaction path WILL fire.
- */
-function maybeRecordStepCompaction(
-	runtime: FermentRuntime,
-	ferment: Ferment,
-	phase: Phase,
-	step: Step,
-	workerDelegated?: boolean,
-): void {
-	const next = determineNextAction(ferment)
-	if (next?.kind === "complete_phase" && next.phaseId === phase.id) return
-	// Worker-delegated steps keep their tool-call residue (file reads, build
-	// output, test logs) inside the worker session — the main thread only gains
-	// the worker's report summary. Forced per-step compaction was built for the
-	// direct-execution era, where the residue landed HERE; firing it after a
-	// delegated step mostly costs a summarization call and collapses the
-	// orchestrator's own reasoning (work-order designs, verdicts) — the spine
-	// workers depend on. Measured run 019ff5cc: main context held 55–85K with
-	// delegation, far below any pressure threshold. Phase-boundary compaction
-	// and the mid-turn pressure path remain the safety nets.
-	if (workerDelegated) return
-	runtime.setPendingCompaction(ferment.id, {
-		kind: "step",
-		fermentId: ferment.id,
-		phaseId: phase.id,
-		stepId: step.id,
-		completedAt: runtime.nowIso(),
-	})
-}
 
 export interface VerificationExecution {
 	ctx: ExtensionContext
@@ -493,7 +447,6 @@ async function completeStepAsSubsumed(
 	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error, undefined, multiModelEnabled)
 	runtime.clearStepStart(params.ferment_id, phase.id, step.id)
 	runtime.bumpStepCompleteAttempt(params.ferment_id, phase.id, step.id)
-	maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
 	services.onStepCompleted(runtime)
 	sendStepBreadcrumb(pi, `Step ${step.index} ✓ done — subsumed by step ${absorber.index} and verified`)
 	return toolOk(
@@ -564,7 +517,6 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -603,7 +555,6 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
 		return toolOk(
@@ -630,7 +581,6 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(

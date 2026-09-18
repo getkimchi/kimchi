@@ -9,21 +9,17 @@ import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
-import { withPrintGate } from "../print-mode.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
-import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
-	clearPendingCompaction,
 	getActive,
 	getActiveFermentId,
 	isAutomatedContinuationEnabled,
 	setActive,
 	setContinuationPolicy,
-	setPendingCompaction,
 } from "./state.js"
 import { filterSentMessages } from "./test-helpers.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -116,7 +112,6 @@ afterEach(() => {
 	globalTipRegistry.clear()
 	clearAllPendingPlanReviews()
 	requestSharedStatusLineRenderMock.mockClear()
-	clearAllLifecycleGuards()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	vi.unstubAllEnvs()
 	clearActiveFermentId()
@@ -442,101 +437,6 @@ function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
 }
 
 describe("fermentExtension question dropdown", () => {
-	it("reactively nudges automated ferments after a text-only assistant turn regardless of legacy mode", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-reactive-test-")))
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		runtime.setContinuationPolicy("automated")
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Reactive Turn")
-		const scoped = applyAndPersist(draft.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: ["Works"],
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		setActive(scoped.ferment)
-		const { handlers, pi } = registerFermentExtension(runtime)
-		const turnEnd = handlers.get("turn_end")
-		if (!turnEnd) throw new Error("turn_end handler was not registered")
-
-		const ctx = createContext()
-		await turnEnd(
-			{
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "I am waiting." }],
-				},
-			},
-			ctx,
-		)
-
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
-			}),
-			{ triggerTurn: true, deliverAs: "steer" },
-		)
-	})
-
-	it("reactively nudges automated ferments across a completed phase boundary", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-boundary-nudge-test-")))
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		runtime.setContinuationPolicy("automated")
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Boundary Turn")
-		const scoped = applyAndPersist(draft.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: ["Works"],
-			constraints: [],
-			phases: [
-				{ name: "Done", goal: "Build", steps: [] },
-				{ name: "Next", goal: "Continue", steps: [] },
-			],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
-		if (!activated.ok) throw new Error(activated.error.message)
-		const completed = applyAndPersist(draft.id, {
-			type: "complete_phase",
-			phaseId: "phase-1",
-			summary: "done",
-		})
-		if (!completed.ok) throw new Error(completed.error.message)
-		setActive(completed.ferment)
-		const { handlers, pi } = registerFermentExtension(runtime)
-		const turnEnd = handlers.get("turn_end")
-		if (!turnEnd) throw new Error("turn_end handler was not registered")
-
-		const ctx = createContext()
-		await turnEnd(
-			{
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "Phase 1 is done." }],
-				},
-			},
-			ctx,
-		)
-
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
-			}),
-			{ triggerTurn: true, deliverAs: "steer" },
-		)
-	})
-
 	it("keeps final completion pending when the agent ends before calling complete_ferment", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-final-completion-test-")))
 		const runtime: FermentRuntime = {
@@ -582,78 +482,29 @@ describe("fermentExtension question dropdown", () => {
 		await agentEnd({ type: "agent_end" }, ctx)
 
 		expect(storage.get(draft.id)?.status).not.toBe("complete")
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
-				details: expect.objectContaining({ action: "complete_ferment" }),
-			}),
-			{ triggerTurn: true, deliverAs: "steer" },
-		)
 
+		// The agent_end handler retains the final complete_ferment action as a
+		// hidden follow-up so a planned/running ferment is not left to be paused
+		// at session shutdown.
+		const completions = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(completions).toHaveLength(1)
+		expect(completions[0]?.content?.[0]?.text).toContain("complete_ferment")
+
+		// A subsequent agent_end without persisted progress does not re-schedule
+		// the same final action — the once-per-ferment latch prevents a nudge loop.
 		vi.mocked(pi.sendMessage).mockClear()
 		await turnEnd(
 			{
 				message: {
 					role: "assistant",
 					stopReason: "stop",
-					content: [
-						{ type: "toolCall", name: "complete_ferment_phase" },
-						{ type: "text", text: "Phase complete." },
-					],
+					content: [{ type: "text", text: "Still no complete_ferment call." }],
 				},
 			},
 			ctx,
 		)
 		await agentEnd({ type: "agent_end" }, ctx)
-
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
-			}),
-			expect.anything(),
-		)
-
-		// The tool-using stop above does not consume the text-only lifecycle
-		// budget, so one final bare stop receives retry 2/2.
-		vi.mocked(pi.sendMessage).mockClear()
-		await turnEnd(
-			{
-				message: {
-					role: "assistant",
-					stopReason: "stop",
-					content: [{ type: "text", text: "Completing now." }],
-				},
-			},
-			ctx,
-		)
-		await agentEnd({ type: "agent_end" }, ctx)
-
-		const retryCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
-		expect(retryCalls).toHaveLength(1)
-
-		// Once retry 2/2 is exhausted, the diagnostic is terminal for this
-		// unchanged obligation. agent_end must not re-open the legacy final-
-		// completion path and silently grant another opportunity.
-		vi.mocked(pi.sendMessage).mockClear()
-		await turnEnd(
-			{
-				message: {
-					role: "assistant",
-					stopReason: "stop",
-					content: [{ type: "text", text: "Still no tool call." }],
-				},
-			},
-			ctx,
-		)
-		await agentEnd({ type: "agent_end" }, ctx)
-
-		const postExhaustionContinuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
-		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
-		expect(postExhaustionContinuationCalls).toHaveLength(0)
-		expect(exhaustionCalls).toHaveLength(1)
+		expect(filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")).toHaveLength(0)
 	})
 
 	it("does not reactively nudge from subagent processes", async () => {
@@ -1455,79 +1306,6 @@ Does this plan look right?`,
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
 	})
-
-	describe("auto-compaction on agent_end", () => {
-		const NOW = "2026-01-01T00:00:00.000Z"
-
-		afterEach(() => {
-			vi.restoreAllMocks()
-		})
-
-		it("calls ctx.compact() when a pending compaction exists for the active ferment", async () => {
-			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-compaction-trigger-test-")))
-			const runtime: FermentRuntime = {
-				...createDefaultFermentRuntime(),
-				getStorage: () => storage,
-			}
-			const draft = storage.create("Compaction Trigger Test")
-			runtime.setActive(draft)
-			setPendingCompaction(draft.id, {
-				kind: "step",
-				fermentId: draft.id,
-				phaseId: "phase-1",
-				stepId: "step-1",
-				completedAt: NOW,
-			})
-
-			const { handlers } = registerFermentExtension(runtime)
-			const agentEnd = handlers.get("agent_end")
-			if (!agentEnd) throw new Error("agent_end handler was not registered")
-
-			const compact = vi.fn()
-			const notify = vi.fn()
-			const ctx = createContext({
-				compact,
-				ui: { notify },
-			})
-
-			await agentEnd({ type: "agent_end" }, ctx)
-
-			expect(compact).toHaveBeenCalledTimes(1)
-			expect(compact).toHaveBeenCalledWith(
-				expect.objectContaining({
-					customInstructions: expect.stringContaining("Compaction Trigger Test"),
-				}),
-			)
-
-			clearPendingCompaction(draft.id)
-		})
-
-		it("does not call ctx.compact() when no pending compaction exists", async () => {
-			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-no-compaction-test-")))
-			const runtime: FermentRuntime = {
-				...createDefaultFermentRuntime(),
-				getStorage: () => storage,
-			}
-			const draft = storage.create("No Compaction Test")
-			runtime.setActive(draft)
-			// Intentionally do NOT set a pending compaction
-
-			const { handlers } = registerFermentExtension(runtime)
-			const agentEnd = handlers.get("agent_end")
-			if (!agentEnd) throw new Error("agent_end handler was not registered")
-
-			const compact = vi.fn()
-			const notify = vi.fn()
-			const ctx = createContext({
-				compact,
-				ui: { notify },
-			})
-
-			await agentEnd({ type: "agent_end" }, ctx)
-
-			expect(compact).not.toHaveBeenCalled()
-		})
-	})
 })
 
 describe("fermentExtension abort handling", () => {
@@ -1686,79 +1464,5 @@ describe("fermentExtension abort handling", () => {
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.anything(),
 		)
-	})
-})
-
-describe("agent-spawn-guard integration", () => {
-	it("redirects an orchestrator that tries to spawn before starting the step", async () => {
-		const { allHandlers } = registerFermentExtension()
-
-		setActive(
-			makeActivePlanFerment({
-				activePhaseId: "phase-1",
-				phases: [
-					{
-						id: "phase-1",
-						index: 1,
-						name: "Phase",
-						goal: "Build",
-						status: "active",
-						steps: [{ id: "step-1", index: 1, description: "Implement guard", status: "pending" }],
-					},
-				],
-			}),
-		)
-
-		// Walk every tool_call handler the broadcast fixture collected and find
-		// the first one that returns a block. We do NOT assume the guard is
-		// last — we just assert that SOMEONE in the chain blocks with a reason
-		// that points at start_ferment_step.
-		const toolCall = { toolName: "Agent", input: { subagent_type: "Builder", prompt: "implement it" } }
-		const ctx = createContext()
-		let redirect: { block: boolean; reason?: string } | undefined
-		for (const handler of allHandlers.get("tool_call") ?? []) {
-			const r = (await handler(toolCall, ctx)) as { block: boolean; reason?: string } | undefined
-			if (r?.block) {
-				redirect = r
-				break
-			}
-		}
-
-		expect(redirect).toBeDefined()
-		// Assert on the guard's exact phrasing rather than just /start_ferment_step/.
-		// Other tool_call handlers (permissions, loop-guard) could in principle
-		// block with a different reason that happens to mention the tool name;
-		// matching the guard-specific sentence proves the agent-spawn guard is the
-		// one that fired.
-		expect(redirect?.reason ?? "").toContain("has a pending step that has not been started")
-		expect(redirect?.reason ?? "").toContain("start_ferment_step")
-	})
-})
-
-// =============================================================================
-// Print-mode suite gate (token-optimization Phase 1 Chunk 7)
-// =============================================================================
-
-describe("ferment suite print gate (Chunk 7)", () => {
-	it("interactive session registers the full ferment suite", () => {
-		const { pi } = registerFermentExtension()
-		const names = vi.mocked(pi.registerTool).mock.calls.map((call) => (call[0] as { name: string }).name)
-		expect(names.length).toBeGreaterThan(0)
-		expect(names).toContain("list_ferments")
-	})
-
-	it("plain --print run suppresses the ferment suite tools", () => {
-		return withPrintGate({ print: true }, async () => {
-			const { pi } = registerFermentExtension()
-			expect(vi.mocked(pi.registerTool).mock.calls).toHaveLength(0)
-		})
-	})
-
-	it("--print with ferment-oneshot keeps the full suite (gate composition)", () => {
-		return withPrintGate({ print: true, fermentOneshot: true }, async () => {
-			const { pi } = registerFermentExtension()
-			const names = vi.mocked(pi.registerTool).mock.calls.map((call) => (call[0] as { name: string }).name)
-			expect(names).toContain("list_ferments")
-		})
 	})
 })

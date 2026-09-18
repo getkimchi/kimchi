@@ -247,10 +247,9 @@ describe("whatNext", () => {
 
 		it("running step + later pending non-parallel step → complete_step on the running one", () => {
 			// Regression: the engine used to return start_step for the pending
-			// sibling, but the FSM rejects non-parallel concurrent starts. This
-			// caused a delegation deadlock — the agent-spawn-guard blocked Agent
-			// dispatch on start_step, while the FSM rejected the start call.
-			// Now the engine returns complete_step for the running step.
+			// sibling, but the FSM rejects non-parallel concurrent starts, causing
+			// a delegation deadlock. Now the engine returns complete_step for the
+			// running step.
 			const phase = makeP({
 				status: "active",
 				steps: [makeS({ id: "s1", index: 1, status: "running" }), makeS({ id: "s2", index: 2, status: "pending" })],

@@ -118,8 +118,8 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction | undef
 		// pending sibling.
 		//
 		// This ordering prevents a delegation deadlock in multi-step phases:
-		// the agent-spawn-guard blocks Agent dispatch when the engine returns
-		// start_step, but the FSM rejects the start because a sibling is running.
+		// the FSM rejects a start because a sibling is running, so the only
+		// actionable next step is completing the running one.
 		const runningStep = active.steps.find((s) => s.status === "running")
 		if (runningStep) {
 			const parallelPending = active.steps.find((s) => s.status === "pending" && inSameParallelCohort(runningStep, s))

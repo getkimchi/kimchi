@@ -55,8 +55,6 @@ import bashControlExtension from "./extensions/bash-background/bash-control-exte
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
-import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
-import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
@@ -70,7 +68,6 @@ import customizeStatusLineExtension from "./extensions/customize-status-line-com
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
-import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
 import fermentV2Extension from "./extensions/ferment-v2/index.js"
@@ -113,7 +110,6 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
-import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
 import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -636,19 +632,16 @@ try {
 			// session_start handlers are awaited in order; warn after the migration dialog closes.
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
-			explorationGuardExtension,
-			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
-			// Background bash: MUST register before bashToolGuard so its background
-			// `execute` wins the first-registration-per-name race (runner.js).
-			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
-			// Background mode is opt-in via `checkin_interval`; without it, bash
-			// runs synchronously as before.
+			// Background bash carries the tool-selection steering description
+			// (bash-description.ts) and wins the first-registration-per-name race
+			// for `bash`. Background mode is opt-in via `checkin_interval`; without
+			// it, bash runs synchronously as before.
 			bashBackgroundExtension,
 			// bash_control companion tool. While a background process awaits a
 			// continue/stop decision, other tool calls are hard-blocked with a
@@ -660,11 +653,8 @@ try {
 			// EXPERIMENTAL: gated behind --enable-experimental-features.
 			...(experimentalFeatures ? [daemonExtension] : []),
 			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
-			// and `user_bash` events. Must run before bashToolGuardExtension so
-			// hooks see the original command and any rewrite/block propagates.
+			// and `user_bash` events.
 			bashHooksAdapterExtension,
-			bashToolGuardExtension,
-			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },

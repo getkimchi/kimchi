@@ -26,23 +26,15 @@ export interface LoopGuardResult {
 	detector?: LoopGuardDetector
 }
 
-// Detection thresholds. Exact detectors (which require matching output) can
-// fire sooner because a true output match is strong evidence of a loop;
-// fuzzy detectors (name+args only) are deliberately laxer to avoid flagging
-// productive edit-rerun cycles that happen to reuse the same commands. All
-// "> N" checks fire on the (N+1)th repetition. Tuned by feel against
-// observed agent traces; revisit if real loops slip past or productive
-// workflows trip the guard.
+// Detection thresholds. Only high-precision detectors remain: identical
+// output N times in a row, or the same file edited AND same bash prefix run
+// N times. Fuzzy name+args detectors were removed — they false-fired on
+// productive workflows that legitimately reuse commands. Tuned by feel
+// against observed agent traces; revisit if real loops slip past.
 const WINDOW_SIZE = 30 // upper bound on detectable loop period
 const CONSECUTIVE_IDENTICAL_THRESHOLD = 3 // 3 calls in a row with identical output
-const FUZZY_2GRAM_THRESHOLD = 6 // 7× repeat of a 2-gram, output may vary
-const FUZZY_3GRAM_THRESHOLD = 4 // 5× repeat of a 3-gram, output may vary
-const EXACT_2GRAM_THRESHOLD = 5 // 6× repeat of a 2-gram with identical output
-const EXACT_3GRAM_THRESHOLD = 3 // 4× repeat of a 3-gram with identical output
 const EDIT_RUN_THRESHOLD = 8 // same file edited 8× AND same bash prefix 8× in window
 const EDIT_RUN_TOTAL_THRESHOLD = 12 // same file 12× AND same bash prefix 12× over the whole task
-const BASH_REPEAT_THRESHOLD = 12 // bash-only: same prefix 12× in window (no edit required)
-const BASH_REPEAT_TOTAL_THRESHOLD = 15 // bash-only: same prefix 15× across the task
 const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
 const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
@@ -56,25 +48,12 @@ const STEERING_MESSAGE =
 	"Do not repeat the same file edits or the same commands — the loop guard will keep firing if you do."
 
 /**
- * Detects when an agent is stuck repeating itself across tool calls. Four
- * independent detectors run over a rolling window of the most recent records
- * and share a single warning fuse: the first detection from any detector
- * issues a warning; the next detection terminates tool use for the turn.
- *
- * Detectors:
+ * Detects when an agent is stuck repeating itself across tool calls. Two
+ * detectors share a warning fuse:
  *   1. Consecutive identical calls — N calls in a row with matching tool
- *      name, args, isError flag, and output fingerprint. The error flag is
- *      not special-cased: an agent re-running the same successful query and
- *      getting the same answer is just as stuck as one retrying a failure.
- *   2. Exact n-gram repetition — a contiguous block of N calls (matching all
- *      four fields) repeats more times than the threshold allows.
- *   3. Fuzzy n-gram repetition — same as exact, but matches only on tool
- *      name + args. Catches edit/rerun loops where the output keeps changing
- *      but the agent is invoking the same calls in the same order.
- *   4. Edit-run cycle — a single file is edited repeatedly AND a single bash
- *      command prefix is run repeatedly within the window (non-contiguous).
- *      Catches the edit\u2192build\u2192run\u2192see-error\u2192edit cycle that detectors 1\u20133
- *      miss because the edit args change every iteration.
+ *      name, args, isError flag, and output fingerprint.
+ *   2. Edit-run cycle (window + task-total) — a single file is edited
+ *      repeatedly AND a single bash command prefix is run repeatedly.
  */
 export class LoopGuard {
 	private history: ToolHistoryRecord[] = []
@@ -248,7 +227,8 @@ export class LoopGuard {
 			return true
 		}
 
-		// N-gram extension check (existing logic).
+		// Consecutive-identical extension check: if a matching historical record
+		// exists, simulate the call landing at the tail and re-run the detector.
 		let proxy: ToolHistoryRecord | undefined
 		for (let i = this.history.length - 1; i >= 0; i--) {
 			const r = this.history[i]
@@ -267,7 +247,7 @@ export class LoopGuard {
 		const saved = this.history
 		this.history = [...saved.slice(-(WINDOW_SIZE - 1)), hypo]
 		try {
-			if (this.detectNgramOnly() === undefined) return false
+			if (this.detectConsecutiveIdenticalCalls() === undefined) return false
 			this.triggered = true
 			return true
 		} finally {
@@ -281,18 +261,7 @@ export class LoopGuard {
 	 *  them after a warn — otherwise the same task-total threshold would
 	 *  fire on every subsequent record for the rest of the session. */
 	private detect(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
-		return (
-			this.detectConsecutiveIdenticalCalls() ??
-			this.detectExactNgram() ??
-			this.detectFuzzyNgram() ??
-			this.detectEditRunCycle() ??
-			this.detectEditRunCycleTotal() ??
-			this.detectBashRepetition()
-		)
-	}
-
-	private detectNgramOnly(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
-		return this.detectConsecutiveIdenticalCalls() ?? this.detectExactNgram() ?? this.detectFuzzyNgram()
+		return this.detectConsecutiveIdenticalCalls() ?? this.detectEditRunCycle() ?? this.detectEditRunCycleTotal()
 	}
 
 	private detectConsecutiveIdenticalCalls():
@@ -315,38 +284,6 @@ export class LoopGuard {
 			firedKeys: [],
 			detector: "consecutive_identical",
 		}
-	}
-
-	private detectExactNgram(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
-		const r2 = countContiguousNgramReps(this.history, 2, exactKey)
-		if (r2 > EXACT_2GRAM_THRESHOLD) {
-			return {
-				reason: formatLoopReason(this.history, 2, r2, "identical results"),
-				firedKeys: [],
-				detector: "exact_ngram",
-			}
-		}
-		const r3 = countContiguousNgramReps(this.history, 3, exactKey)
-		if (r3 > EXACT_3GRAM_THRESHOLD) {
-			return {
-				reason: formatLoopReason(this.history, 3, r3, "identical results"),
-				firedKeys: [],
-				detector: "exact_ngram",
-			}
-		}
-		return undefined
-	}
-
-	private detectFuzzyNgram(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
-		const r2 = countContiguousNgramReps(this.history, 2, fuzzyKey)
-		if (r2 > FUZZY_2GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 2, r2, "same arguments"), firedKeys: [], detector: "fuzzy_ngram" }
-		}
-		const r3 = countContiguousNgramReps(this.history, 3, fuzzyKey)
-		if (r3 > FUZZY_3GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 3, r3, "same arguments"), firedKeys: [], detector: "fuzzy_ngram" }
-		}
-		return undefined
 	}
 
 	private detectEditRunCycle(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
@@ -397,54 +334,6 @@ export class LoopGuard {
 			detector: "edit_run_total",
 		}
 	}
-
-	/**
-	 * Detects bash-only loops: the same command (raw or normalized prefix)
-	 * repeated many times without requiring any file edits. Catches patterns
-	 * like repeated yt-dlp downloads, repeated curl calls, repeated make on
-	 * a project that always fails.
-	 */
-	private detectBashRepetition(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
-		// Bash-only thresholds are higher than edit-run because the signal
-		// is weaker (no paired file edit to confirm it's a loop).
-		// Window check (raw)
-		const topBashWin = mapMax(this.bashCounts)
-		if (topBashWin && topBashWin[1] >= BASH_REPEAT_THRESHOLD) {
-			return {
-				reason: `bash repetition: "${truncPreview(topBashWin[0])}" ran ${topBashWin[1]}× in last ${this.history.length} calls`,
-				firedKeys: [],
-				detector: "bash_repetition",
-			}
-		}
-		// Window check (normalized)
-		const topBashNormWin = mapMax(this.bashCountsNorm)
-		if (topBashNormWin && topBashNormWin[1] >= BASH_REPEAT_THRESHOLD) {
-			return {
-				reason: `bash repetition (normalized): "${truncPreview(topBashNormWin[0])}" ran ${topBashNormWin[1]}× in last ${this.history.length} calls`,
-				firedKeys: [],
-				detector: "bash_repetition",
-			}
-		}
-		// Task-total check (raw)
-		const topBashTotal = mapMax(this.bashCountsTotal)
-		if (topBashTotal && topBashTotal[1] >= BASH_REPEAT_TOTAL_THRESHOLD) {
-			return {
-				reason: `bash repetition (task-total): "${truncPreview(topBashTotal[0])}" ran ${topBashTotal[1]}× across the task`,
-				firedKeys: [topBashTotal[0]],
-				detector: "bash_repetition",
-			}
-		}
-		// Task-total check (normalized)
-		const topBashNormTotal = mapMax(this.bashCountsNormTotal)
-		if (topBashNormTotal && topBashNormTotal[1] >= BASH_REPEAT_TOTAL_THRESHOLD) {
-			return {
-				reason: `bash repetition (normalized task-total): "${truncPreview(topBashNormTotal[0])}" ran ${topBashNormTotal[1]}× across the task`,
-				firedKeys: [topBashNormTotal[0]],
-				detector: "bash_repetition",
-			}
-		}
-		return undefined
-	}
 }
 
 // \u0000 cannot appear in stable-stringified JSON (control chars are always
@@ -454,52 +343,9 @@ function exactKey(r: ToolHistoryRecord): string {
 	return `${r.toolName}\u0000${r.toolArgs}\u0000${r.isError}\u0000${r.outputFingerprint}`
 }
 
-function fuzzyKey(r: ToolHistoryRecord): string {
-	return `${r.toolName}\u0000${r.toolArgs}`
-}
-
 function formatCall(r: ToolHistoryRecord): string {
 	const args = r.toolArgs.length > REASON_ARG_PREVIEW ? `${r.toolArgs.slice(0, REASON_ARG_PREVIEW)}…` : r.toolArgs
 	return `${r.toolName}(${args})`
-}
-
-function formatLoopReason(history: ToolHistoryRecord[], n: number, reps: number, kind: string): string {
-	const tail = history
-		.slice(history.length - n)
-		.map(formatCall)
-		.join(", ")
-	return `${n}-step loop repeated ${reps}× with ${kind}: [${tail}]`
-}
-
-/**
- * Counts the contiguous repetitions of the trailing n-gram at the end of
- * `history`. The last `n` records define the n-gram; we walk backwards in
- * blocks of `n` and count how many consecutive blocks compare equal under
- * `key`. Returns at least 1 when `history.length >= n`.
- */
-function countContiguousNgramReps(
-	history: ToolHistoryRecord[],
-	n: number,
-	key: (r: ToolHistoryRecord) => string,
-): number {
-	if (history.length < n) return 0
-	const tailStart = history.length - n
-	const tailKeys: string[] = []
-	for (let i = 0; i < n; i++) tailKeys.push(key(history[tailStart + i]))
-	let reps = 1
-	while (history.length >= (reps + 1) * n) {
-		const start = history.length - (reps + 1) * n
-		let match = true
-		for (let i = 0; i < n; i++) {
-			if (key(history[start + i]) !== tailKeys[i]) {
-				match = false
-				break
-			}
-		}
-		if (!match) break
-		reps++
-	}
-	return reps
 }
 
 /**
@@ -662,11 +508,6 @@ function pickHigher(a: [string, number] | undefined, b: [string, number] | undef
 	if (!a) return b
 	if (!b) return a
 	return a[1] >= b[1] ? a : b
-}
-
-/** Truncate a string for display in reason messages. */
-function truncPreview(s: string): string {
-	return s.length > REASON_ARG_PREVIEW ? `${s.slice(0, REASON_ARG_PREVIEW)}…` : s
 }
 
 export default function loopGuardExtension(pi: ExtensionAPI) {

@@ -10,7 +10,6 @@ import { getCompactionEnabled } from "../settings-watcher.js"
 import { isToolCallInFlight } from "../tool-call-in-flight.js"
 import { INLINE_COMPACT_IN_PROGRESS_MESSAGE } from "../upstream-inline-compact-patch.js"
 import { COMPACTION_RESERVE_TOKENS, isExpectedCompactionError } from "./compaction-thresholds.js"
-import { hasActiveFerment } from "./ferment/state.js"
 
 /** Messages that have a content array we can inspect for images. */
 type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
@@ -514,12 +513,6 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 	// turn ends. turn_end fires after every individual LLM response inside the
 	// loop, giving us a chance to compact before the hard limit is hit.
 	_pi.on("turn_end", async (event, ctx: ExtensionContext) => {
-		// Ferment-aware mid-turn compaction lives in the ferment extension
-		// (src/extensions/ferment/auto-compaction.ts). It resumes the in-progress
-		// step after compaction. Defer to it whenever a ferment is active so we
-		// don't double-compact and so the ferment continues automatically.
-		if (hasActiveFerment()) return
-
 		const model = ctx.model
 		if (!model) return
 

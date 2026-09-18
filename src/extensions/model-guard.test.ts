@@ -1425,7 +1425,7 @@ describe("turn_end compaction guard", () => {
 		expect(inlineCompact).not.toHaveBeenCalled()
 	})
 
-	it("defers to the ferment extension when a ferment is active", async () => {
+	it("compacts mid-turn even when a ferment is active (ferment auto-compaction removed)", async () => {
 		setActiveFerment({ id: "f1", status: "running", phases: [] } as unknown as Ferment)
 		try {
 			const { pi, trigger } = makeMockPI()
@@ -1433,7 +1433,7 @@ describe("turn_end compaction guard", () => {
 			const inlineCompact = vi.fn(async () => makeCompactionResult(1))
 			const ctx = makeMidTurnCtx({ inlineCompact })
 			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
-			expect(inlineCompact).not.toHaveBeenCalled()
+			expect(inlineCompact).toHaveBeenCalled()
 		} finally {
 			clearActiveFermentId()
 		}

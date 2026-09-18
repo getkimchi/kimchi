@@ -1,19 +1,11 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { Ferment, Phase } from "../../ferment/types.js"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
-import { FERMENT_EVENTS } from "../ferment/domain-events.js"
 import { setActive } from "../ferment/state.js"
-import {
-	bumpStallCounter,
-	FERMENT_STEP_STALL_CUSTOM_TYPE,
-	fireStepStallSteerIfStalled,
-	registerFermentTodoSync,
-} from "../ferment/todo-sync.js"
 import { FERMENT_TODO_GUIDANCE, renderFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "./state-markdown.js"
-import { __resetTodoStore, applyWriteTodos, bumpToolCallsSinceTodoWrite } from "./store.js"
+import { __resetTodoStore, applyWriteTodos } from "./store.js"
 import type { TodoStatus } from "./types.js"
 
 const TEST_SESSION_ID = "test-session"
@@ -25,97 +17,10 @@ function writeTodo(content: string, status: TodoStatus, sessionId: string = TEST
 	applyWriteTodos({ todos: [{ content, status }] }, sessionId)
 }
 
-/** Write a single global todo, then bump the staleness counter N times. */
-function writeTodoAndBump(
-	content: string,
-	status: TodoStatus,
-	bumps: number,
-	sessionId: string = TEST_SESSION_ID,
-): void {
-	writeTodo(content, status, sessionId)
-	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(sessionId)
-}
-
 /** Create a todo list then write it a second time to mark it as "updated" (not create-and-forget). */
 function createAndUpdateTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
 	writeTodo(content, status, sessionId)
 	writeTodo(content, status, sessionId)
-}
-
-// ─── Cross-session stall-counter helpers ────────────────────────────────────
-
-function createFakePI(): {
-	pi: ExtensionAPI
-	emit: (channel: string, payload: unknown) => void
-	sendMessage: ExtensionAPI["sendMessage"]
-} {
-	const listeners = new Map<string, Array<(payload: unknown) => void>>()
-
-	const events = {
-		on: (channel: string, handler: (payload: unknown) => void) => {
-			if (!listeners.has(channel)) {
-				listeners.set(channel, [])
-			}
-			const list = listeners.get(channel)
-			if (list) {
-				list.push(handler)
-			}
-			return () => {
-				const list = listeners.get(channel)
-				if (list) {
-					const idx = list.indexOf(handler)
-					if (idx !== -1) list.splice(idx, 1)
-				}
-			}
-		},
-		emit: (channel: string, payload: unknown) => {
-			const list = listeners.get(channel)
-			if (list) {
-				for (const fn of list) {
-					fn(payload)
-				}
-			}
-		},
-	}
-
-	const sendMessage = vi.fn()
-	const pi = {
-		events,
-		sendMessage,
-	} as unknown as ExtensionAPI
-
-	return { pi, emit: events.emit, sendMessage: sendMessage as unknown as ExtensionAPI["sendMessage"] }
-}
-
-function createTestFerment(phaseId: string, stepCount: number): Ferment {
-	const steps = Array.from({ length: stepCount }, (_, i) => ({
-		id: `step-${i + 1}`,
-		index: i + 1,
-		description: `Step ${i + 1}`,
-		status: "pending" as const,
-	}))
-
-	const phase: Phase = {
-		id: phaseId,
-		index: 1,
-		name: "Test Phase",
-		goal: "Test phase goal",
-		status: "active",
-		steps,
-	}
-
-	return {
-		id: "ferment-prompt-block-test",
-		name: "Test Ferment",
-		status: "running",
-		worktree: { path: "/tmp" },
-		scoping: {},
-		phases: [phase],
-		decisions: [],
-		memories: [],
-		createdAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-	}
 }
 
 // ─── Test suites ────────────────────────────────────────────────────────────
@@ -316,17 +221,8 @@ describe("state markdown purity (cache-safety contract)", () => {
 		__resetTodoStore()
 	})
 
-	it("renders byte-identical output across staleness counter changes", () => {
+	it("contains no staleness or create-and-forget warnings", () => {
 		writeTodo("work", "in_progress")
-		const baseline = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-
-		for (let i = 0; i < 30; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
-
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBe(baseline)
-	})
-
-	it("contains no staleness or create-and-forget warnings at any counter value", () => {
-		writeTodoAndBump("work", "in_progress", 30)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).toContain("work")
@@ -480,129 +376,5 @@ describe("ferment-conditional todo guidance", () => {
 	it("ferment supplement block is absent once the ferment is cleared", () => {
 		setActive(undefined)
 		expect(renderFermentTodoPromptBlock()).toBeUndefined()
-	})
-})
-
-describe("cross-session stall steer isolation", () => {
-	afterEach(() => {
-		setActive(undefined)
-	})
-
-	function stallSteers(sendMessage: ExtensionAPI["sendMessage"]): unknown[] {
-		return vi
-			.mocked(sendMessage)
-			.mock.calls.filter(
-				([message]) => (message as { customType?: string }).customType === FERMENT_STEP_STALL_CUSTOM_TYPE,
-			)
-	}
-
-	it("fires the stall steer only for the session whose step stalls", () => {
-		const { pi, emit, sendMessage } = createFakePI()
-		const ferment = createTestFerment("phase-1", 1)
-		setActive(ferment)
-
-		const unsubA = registerFermentTodoSync(pi, "session-a")
-
-		emit(FERMENT_EVENTS.PHASE_STARTED, {
-			fermentId: ferment.id,
-			phaseId: "phase-1",
-			phaseIndex: 1,
-			phaseName: "Test Phase",
-		})
-		emit(FERMENT_EVENTS.STEP_STARTED, {
-			fermentId: ferment.id,
-			phaseId: "phase-1",
-			stepId: "step-1",
-			stepIndex: 1,
-		})
-
-		// Bump session A's stall counter across the 12-turn threshold.
-		for (let i = 0; i < 12; i++) {
-			bumpStallCounter("session-a")
-		}
-
-		fireStepStallSteerIfStalled(pi, "session-a")
-		// Session B has no running step and no stall counter; no steer.
-		fireStepStallSteerIfStalled(pi, "session-b")
-
-		const steers = stallSteers(sendMessage)
-		expect(steers).toHaveLength(1)
-		expect((steers[0] as [{ content: string }])[0].content).toContain("Step todos have not been updated for 12 turns")
-
-		// And the stalling session's own state block stays free of stall text.
-		const mdA = __test_renderTodoStateMarkdown("session-a")
-		expect(mdA).not.toContain("have not been updated")
-
-		unsubA()
-	})
-
-	it("is one-shot per stall epoch and resets on a step-scope todo write", () => {
-		const { pi, emit, sendMessage } = createFakePI()
-		const ferment = createTestFerment("phase-epoch", 1)
-		setActive(ferment)
-
-		const unsub = registerFermentTodoSync(pi, "session-epoch")
-
-		emit(FERMENT_EVENTS.PHASE_STARTED, {
-			fermentId: ferment.id,
-			phaseId: "phase-epoch",
-			phaseIndex: 1,
-			phaseName: "Test Phase",
-		})
-		emit(FERMENT_EVENTS.STEP_STARTED, {
-			fermentId: ferment.id,
-			phaseId: "phase-epoch",
-			stepId: "step-1",
-			stepIndex: 1,
-		})
-
-		for (let i = 0; i < 12; i++) bumpStallCounter("session-epoch")
-		fireStepStallSteerIfStalled(pi, "session-epoch")
-		for (let i = 0; i < 5; i++) bumpStallCounter("session-epoch")
-		fireStepStallSteerIfStalled(pi, "session-epoch")
-		expect(stallSteers(sendMessage)).toHaveLength(1)
-
-		// A step-scope todo write resets the epoch; crossing the threshold
-		// again fires exactly one more steer.
-		applyWriteTodos(
-			{
-				scope: { kind: "ferment-step", phaseId: "phase-epoch", stepId: "step-1" },
-				todos: [{ content: "tried X", status: "in_progress" }],
-			},
-			"session-epoch",
-		)
-		for (let i = 0; i < 12; i++) bumpStallCounter("session-epoch")
-		fireStepStallSteerIfStalled(pi, "session-epoch")
-		expect(stallSteers(sendMessage)).toHaveLength(2)
-
-		unsub()
-	})
-
-	it("does not fire at under-threshold turn counts (measured run: 5-turn nag manufactured churn)", () => {
-		const { pi, emit, sendMessage } = createFakePI()
-		const ferment = createTestFerment("phase-quiet", 1)
-		setActive(ferment)
-
-		const unsub = registerFermentTodoSync(pi, "session-quiet")
-
-		emit(FERMENT_EVENTS.PHASE_STARTED, {
-			fermentId: ferment.id,
-			phaseId: "phase-quiet",
-			phaseIndex: 1,
-			phaseName: "Test Phase",
-		})
-		emit(FERMENT_EVENTS.STEP_STARTED, {
-			fermentId: ferment.id,
-			phaseId: "phase-quiet",
-			stepId: "step-1",
-			stepIndex: 1,
-		})
-
-		for (let i = 0; i < 10; i++) bumpStallCounter("session-quiet")
-		fireStepStallSteerIfStalled(pi, "session-quiet")
-
-		expect(stallSteers(sendMessage)).toHaveLength(0)
-
-		unsub()
 	})
 })

@@ -39,9 +39,7 @@ function formatProgressSummary(todos: TodoItem[]): string {
  *
  *  This is a PURE function of the todo store: no counters, no time. Persisted
  *  todo-state blocks are cached by prefix, so two renders of the same store
- *  must be byte-identical. Staleness/stall pressure is delivered separately
- *  as bounded one-shot steers — see staleness-steers.ts (todo writes) and
- *  ferment/todo-sync.ts (step stall).
+ *  must be byte-identical.
  *
  *  The renderer lives outside any registrar file so the static import guard
  *  in the cache-stability contract test can be strict (zero allowlisted

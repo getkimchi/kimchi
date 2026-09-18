@@ -28,13 +28,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import hideThinkingExtension, { _resetState, _setHideThinking } from "../hide-thinking.js"
 import modelGuardExtension from "../model-guard.js"
-import {
-	brandUnmarkedSteers,
-	NUDGE_CUSTOM_TYPE,
-	stripStaleNudges,
-	stripUiOnlyMessages,
-	tagSelfEchoes,
-} from "../orchestration/continuation-nudge.js"
+import { brandUnmarkedSteers, stripUiOnlyMessages, tagSelfEchoes } from "../orchestration/context-hygiene.js"
 import toolRenderingExtension from "../tool-rendering.js"
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -297,47 +291,13 @@ describe("audit: model-guard context handler", () => {
 
 /** The orchestrator chain as registered for claude targets (no kimi branch). */
 async function stripChain(history: OrchestratorMessages): Promise<OrchestratorMessages> {
-	let messages = stripStaleNudges(cloneForFire(history))
-	messages = stripUiOnlyMessages(messages)
+	let messages = stripUiOnlyMessages(cloneForFire(history))
 	messages = tagSelfEchoes(messages)
 	messages = brandUnmarkedSteers(messages)
 	return messages
 }
 
 describe("audit: prompt-enrichment strips (orchestrator chain)", () => {
-	it("empty-turn nudge aging out: exactly one bounded tail-adjacent invalidation, then stable growth", async () => {
-		const nudge = customMessage(NUDGE_CUSTOM_TYPE, "nudge text")
-		// R1 ends with the nudge still tail. R2 appends an assistant reply →
-		// nudge becomes stale and is stripped → bounded invalidation AT the
-		// nudge position (tail-adjacent). R3+ resume strict growth.
-		// Shared object references across steps: persisted history entries are
-		// the SAME objects (fixed timestamps) in every round — building fresh
-		// per-step fixtures would model a history that doesn't exist.
-		const s0 = userMessage("u1")
-		const a1 = assistantToolCall("a1")
-		const r1 = toolResult("a1", "ok")
-		const a2 = assistantToolCall("a2")
-		const r2 = toolResult("a2", "ok")
-		const steps = [
-			[s0, nudge],
-			[s0, nudge, a1, r1],
-			[s0, nudge, a1, r1, a2, r2],
-		]
-		const { metrics, bodies } = await measureRounds(steps, stripChain)
-		expect(metrics[1]?.containsPrior).toBe(false) // nudge aged out → one invalidation
-		expect(metrics[2]?.containsPrior).toBe(true) // growth resumed
-		// The divergence lands at the nudge's own position in the R1 body —
-		// i.e. bounded, tail-adjacent, not a full-context rewrite: the shared
-		// user-turn prefix survives intact.
-		const div = metrics[1]?.firstDivergence ?? -1
-		// convertToLlm folds custom → user role (customType is not in the wire
-		// body), so locate the nudge by its content text
-		const nudgePos = (bodies[0] ?? "").indexOf("nudge text")
-		expect(div).toBeGreaterThan(0)
-		expect(div).toBeLessThanOrEqual(nudgePos)
-		expect(bodies[1]).not.toContain("nudge text")
-	})
-
 	it("ui-only customs + unmarked steer: deterministic transforms; strict growth across rounds", async () => {
 		const steps = growHistory(
 			[userMessage("u1"), customMessage("ferment_breadcrumb", "crumb"), customMessage("plain-steer", "unbranded")],

@@ -4,12 +4,6 @@ import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
 import {
-	BASH_TOOL_GUARD_EVENTS,
-	type BashToolGuardAllowedByUserRequestPayload,
-	type BashToolGuardBlockPayload,
-	type BashToolGuardWarnPayload,
-} from "../bash-tool-guard-events.js"
-import {
 	FERMENT_EVENTS,
 	type FermentAbandonedPayload,
 	type FermentCompletedPayload,
@@ -135,11 +129,6 @@ export function _resetFermentTrackingState(): void {
 	phaseSteeringSnapshots.clear()
 	stepSteeringSnapshots.clear()
 	resetTelemetryFermentV2Context()
-}
-
-/** @internal — exposed for testing only */
-export function _getBashGuardCounts(): { warn: number; block: number; allowedByUserRequest: number } {
-	return { ...bashGuardCounts }
 }
 
 // ---------------------------------------------------------------------------
@@ -706,65 +695,6 @@ function onUserUnblocked(raw: unknown): void {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Bash-tool-guard domain event handlers
-// ---------------------------------------------------------------------------
-
-/** Module-level accumulators for bash-tool-guard counters. Per-session. */
-const bashGuardCounts = {
-	warn: 0,
-	block: 0,
-	allowedByUserRequest: 0,
-}
-
-function resetBashGuardCounts(): void {
-	bashGuardCounts.warn = 0
-	bashGuardCounts.block = 0
-	bashGuardCounts.allowedByUserRequest = 0
-}
-
-function onBashGuardWarn(raw: unknown): void {
-	bashGuardCounts.warn++
-	if (!isEnabled()) return
-	const ctx = _telemetryCtx
-	if (!ctx) return
-	const payload = raw as BashToolGuardWarnPayload
-	// Only structured fields land in OTLP. Raw command text is
-	// intentionally NOT emitted to avoid leaking user data or secrets
-	// that may appear inside heredocs, echo payloads, or sed/awk
-	// replacement strings. Aggregation is done by category + tool.
-	ctx.emit("bash_tool_guard.warn", {
-		category: payload.category,
-		tool: payload.tool,
-		count: payload.count,
-	})
-}
-
-function onBashGuardBlock(raw: unknown): void {
-	bashGuardCounts.block++
-	if (!isEnabled()) return
-	const ctx = _telemetryCtx
-	if (!ctx) return
-	const payload = raw as BashToolGuardBlockPayload
-	ctx.emit("bash_tool_guard.block", {
-		category: payload.category,
-		tool: payload.tool,
-		count: payload.count,
-	})
-}
-
-function onBashGuardAllowedByUserRequest(raw: unknown): void {
-	bashGuardCounts.allowedByUserRequest++
-	if (!isEnabled()) return
-	const ctx = _telemetryCtx
-	if (!ctx) return
-	const payload = raw as BashToolGuardAllowedByUserRequestPayload
-	ctx.emit("bash_tool_guard.allowed_by_user_request", {
-		category: payload.category,
-		tool: payload.tool,
-	})
-}
-
 function onLoopGuardWarn(raw: unknown): void {
 	if (!isEnabled()) return
 	const ctx = _telemetryCtx
@@ -772,7 +702,7 @@ function onLoopGuardWarn(raw: unknown): void {
 	const payload = raw as LoopGuardWarnPayload
 	// Only structured fields land in OTLP. Raw tool args, command text, and
 	// the human-readable reason string are intentionally NOT emitted to
-	// avoid leaking user data. Mirrors the bash-tool-guard stance.
+	// avoid leaking user data.
 	ctx.emit("loop_guard.warn", {
 		detector: payload.detector,
 		count: payload.count,
@@ -864,12 +794,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)
 		pi.events.on(FERMENT_EVENTS.USER_UNBLOCKED, onUserUnblocked)
 
-		// Subscribe to bash-tool-guard domain events. The guard publishes
-		// facts; telemetry translates them into OTLP records for analytics.
-		pi.events.on(BASH_TOOL_GUARD_EVENTS.WARN, onBashGuardWarn)
-		pi.events.on(BASH_TOOL_GUARD_EVENTS.BLOCK, onBashGuardBlock)
-		pi.events.on(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, onBashGuardAllowedByUserRequest)
-
 		// Subscribe to loop-guard domain events. The guard publishes facts;
 		// telemetry translates them into OTLP records for analytics.
 		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
@@ -879,7 +803,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(WORKFLOW_TELEMETRY_CHANNEL, onWorkflowTelemetry)
 
 		pi.on("session_start", async (_event, ctx) => {
-			resetBashGuardCounts()
 			conversationId = randomUUID()
 			handleSessionStart(telemetryCtx, ctx)
 		})

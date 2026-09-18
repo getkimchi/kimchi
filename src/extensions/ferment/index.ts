@@ -32,13 +32,10 @@ import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
 import { runCloudAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
-import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
-import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
-import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
@@ -147,7 +144,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	let unregisterFermentTodoSync: (() => void) | undefined
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
-	let finalCompletionNudgedThisRun = false
+	/** Ferment id for which the once-per-session final-completion follow-up was already scheduled. */
+	let finalCompletionScheduledFor: string | undefined
 	// ExtensionContext is populated on session start
 	let ctx: ExtensionContext | undefined
 
@@ -387,8 +385,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
-		runtime.clearMidTurnOneshotWarnings()
-		runtime.clearMidTurnCompactionTracking()
 
 		// (Re)wire the ferment todo bridge to the current session id. The
 		// session-scoped todo store requires every store call to target a
@@ -431,23 +427,22 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			}, 0)
 		}
 
-		// Drain any remaining pending compactions at agent_end (catches the case
-		// where the ferment completes within a single agent run and the turn_end
-		// handler already cleared most pending entries).
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
 		// Completing the final phase does not complete the ferment: complete_ferment
 		// still has to run its C-gates and journey grading. If the model ends its run
 		// between those two lifecycle actions, retain that final action as a hidden
 		// follow-up instead of leaving a planned/running ferment to be paused at
 		// session shutdown. This schedules the tool call; it never applies the
 		// transition itself, so the completion gates cannot be bypassed.
+		//
+		// Scheduled at most once per ferment per session: if the model still does
+		// not call complete_ferment, session shutdown pauses the ferment.
 		const active = runtime.getActive()
-		if (!finalCompletionNudgedThisRun && active && runtime.isAutomatedContinuationEnabled()) {
+		if (active && runtime.isAutomatedContinuationEnabled() && finalCompletionScheduledFor !== active.id) {
 			const decision = decideContinuation(active, runtime.getContinuationPolicy(), {
 				treatCompleteFermentAsContinue: true,
 			})
 			if (decision.type === "continue" && decision.action.kind === "complete_ferment") {
+				finalCompletionScheduledFor = active.id
 				scheduleNextFermentAction(pi, active, runtime, {
 					deliverAs: "followUp",
 					tag: "Final completion pending",
@@ -455,22 +450,16 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				})
 			}
 		}
-		finalCompletionNudgedThisRun = false
 	})
 
 	// Registered after this module's own agent event handlers: the lifecycle
 	// persistence layer subscribes to agent_start/agent_end/agent_settled, and
 	// its handlers must not precede the main agent_end handler in the
 	// registration order (test fixtures fetch the first-registered handler).
-	registerFermentLifecycleContext(pi, runtime)
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)
-	registerFermentEvents(pi, runtime, {
-		onFinalCompletionNudgeScheduled: () => {
-			finalCompletionNudgedThisRun = true
-		},
-	})
+	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
 
 	// ─── Message renderers ────────────────────────────────────────────────────
@@ -519,12 +508,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// of demonstrate non-interactive runs. A --print run launched WITH
 	// -oneshot=true keeps everything: that session IS the one-shot
 	// planner, and its toolset composes via shouldSuppressFermentModeTools().
-	// The spawn guard is an event guard, not tool surface — always registered.
 	if (!shouldSuppressFermentModeTools()) {
 		registerLifecycleTools(pi, runtime)
 		registerPhaseTools(pi, runtime)
 		registerStepTools(pi, runtime)
 		registerKnowledgeTools(pi, runtime)
 	}
-	registerAgentSpawnGuard(pi, runtime)
 }

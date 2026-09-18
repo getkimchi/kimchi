@@ -2,16 +2,8 @@
  * Background-bash extension entry point.
  *
  * On `session_start`, re-registers the `bash` tool with the background
- * execution definition from `./bash-background-tool.ts`. Because the
- * extension runner resolves tool-name collisions by FIRST registration
- * (runner.js `getAllRegisteredTools`: first-per-name wins, iterating
- * extensions in array order), this extension MUST be placed BEFORE
- * `bashToolGuardExtension` in the `src/cli.ts` extensions array so its
- * background `execute` wins. The description is set to the bash-tool-guard
- * steering text so the tool-selection preference composes instead of being
- * clobbered (the tool-guard's own re-registration then becomes a no-op for
- * the description — same string — and its `tool_call` steering still fires
- * because the tool name stays `bash`).
+ * execution definition from `./bash-background-tool.ts`, carrying the tool-
+ * selection steering description from `./bash-description.ts`.
  *
  * A single session-scoped `ProcessRegistry` is created per session
  * (stored in `./session-registry.ts` so consumers don't import this
@@ -20,8 +12,8 @@
  * handle. The registry is drained on `session_shutdown`.
  */
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { bashToolDescription } from "../bash-tool-guard.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
+import { bashToolDescription } from "./bash-description.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
 
@@ -32,8 +24,7 @@ export { createProcessRegistry } from "./process-registry.js"
 
 /**
  * Create a background-bash extension. Registers the background `bash` tool
- * on `session_start` (carrying the bash-tool-guard steering description so
- * the two compose) and drains the process registry on `session_shutdown`.
+ * on `session_start` and drains the process registry on `session_shutdown`.
  */
 export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event: SessionStartEvent, sessionCtx) => {
@@ -43,10 +34,8 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		const registry = createProcessRegistry()
 		setSessionRegistry(registry)
 
-		// Re-register `bash` with the background execution definition.
-		// The description is the bash-tool-guard steering text so the
-		// tool-selection preference still reaches the system prompt even
-		// though our registration wins the tool-name slot.
+		// Re-register `bash` with the background execution definition, carrying
+		// the tool-selection steering description.
 		const tool = createBackgroundBashToolDefinition(sessionCtx.cwd, {
 			registry,
 		})
