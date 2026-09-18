@@ -44,6 +44,26 @@ describe("applyModelEnvArgs", () => {
 		expect(applyModelEnvArgs(args, "kimchi-dev/glm-5.3")).toEqual(["--model", "kimchi-dev/glm-5.3", ...args])
 	})
 
+	// Short aliases must consume their value too, or the token after them is
+	// parsed as a model selection and silently suppresses model inheritance.
+	it.each([
+		["-t", "--model"],
+		["-e", "--model"],
+		["-t", "--provider"],
+		["-e", "--models"],
+	])("does not mistake the value of %s for explicit selection", (...args) => {
+		expect(applyModelEnvArgs(args, "kimchi-dev/glm-5.3")).toEqual(["--model", "kimchi-dev/glm-5.3", ...args])
+	})
+
+	it.each([
+		["-t", "--model"],
+		["-e", "--model"],
+	])("leaves the model unset when %s consumes a flag-shaped value", (...args) => {
+		populateCliArgs(args)
+		expect(getParsedCliArgs().options.model).toBeUndefined()
+		populateCliArgs([])
+	})
+
 	it("leaves ordinary invocations unchanged without an inherited model", () => {
 		const args = ["hello"]
 		expect(applyModelEnvArgs(args, undefined)).toBe(args)
