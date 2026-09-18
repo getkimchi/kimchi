@@ -29,6 +29,13 @@ export function createExtensionApi(): {
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
 	const emitEvent = vi.fn()
+	// Active-tool set, mirroring the real runtime (registerTool activates).
+	// Extensions using the tool-visibility layer (deferrals) call
+	// getActiveTools/setActiveTools through these.
+	const activeTools = new Set<string>()
+	registerTool.mockImplementation((tool) => {
+		activeTools.add(tool.name)
+	})
 
 	return {
 		api: {
@@ -38,6 +45,11 @@ export function createExtensionApi(): {
 			sendMessage,
 			appendEntry,
 			setModel,
+			getActiveTools: () => [...activeTools],
+			setActiveTools: (names: string[]) => {
+				activeTools.clear()
+				for (const n of names) activeTools.add(n)
+			},
 			events: { emit: emitEvent },
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {

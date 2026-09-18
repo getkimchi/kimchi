@@ -101,8 +101,9 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 							id: "create-plan-mode-todo",
 							index: 0,
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "create",
 									todos: [{ content: "Create and verify plan-mode-ferment.txt", status: "in_progress" }],
 								}),
 							},
@@ -132,8 +133,9 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 							id: "finish-plan-mode-todo",
 							index: 1,
 							function: {
-								name: "mark_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "mark",
 									id: 1,
 									status: "completed",
 									note: "Evidence: wrote and read plan-mode-ferment.txt with exact content done",
@@ -171,8 +173,9 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			{
 				id: "create-ferment-v2-todos",
 				function: {
-					name: "create_todos",
+					name: "todos",
 					arguments: JSON.stringify({
+						action: "create",
 						todos: [{ content: "Implement feature A", status: "in_progress" }],
 					}),
 				},
@@ -199,8 +202,9 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			{
 				id: "finish-ferment-v2-todo",
 				function: {
-					name: "mark_todo",
+					name: "todos",
 					arguments: JSON.stringify({
+						action: "mark",
 						id: 1,
 						status: "completed",
 						note: "Evidence: scripted verification completed",
@@ -304,8 +308,9 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 						{
 							id: "create-manual-compaction-todo",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "create",
 									todos: [{ content: "Finish after manual compaction", status: "in_progress" }],
 								}),
 							},
@@ -325,8 +330,9 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 						{
 							id: "finish-manual-compaction-todo",
 							function: {
-								name: "mark_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "mark",
 									id: 1,
 									status: "completed",
 									note: "Evidence: resumed work completed after manual compaction",
@@ -401,8 +407,11 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 						{
 							id: "stale-revision-one-todos",
 							function: {
-								name: "update_todos",
-								arguments: JSON.stringify({ todos: [{ content: staleTodo, status: "in_progress" }] }),
+								name: "todos",
+								arguments: JSON.stringify({
+									action: "update",
+									todos: [{ content: staleTodo, status: "in_progress" }],
+								}),
 							},
 						},
 					],
@@ -555,8 +564,11 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 						{
 							id: "create-text-only-todo",
 							function: {
-								name: "create_todos",
-								arguments: JSON.stringify({ todos: [{ content: "Finish the task", status: "in_progress" }] }),
+								name: "todos",
+								arguments: JSON.stringify({
+									action: "create",
+									todos: [{ content: "Finish the task", status: "in_progress" }],
+								}),
 							},
 						},
 					],
@@ -567,8 +579,9 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 						{
 							id: "finish-text-only-todo",
 							function: {
-								name: "mark_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "mark",
 									id: 1,
 									status: "completed",
 									note: "Evidence: scripted verification completed",
@@ -667,8 +680,9 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 						{
 							id: "create-gated-completion-todo",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "create",
 									todos: [{ content: "Finish behind the evaluator gate", status: "in_progress" }],
 								}),
 							},
@@ -681,8 +695,9 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 						{
 							id: "finish-gated-completion-todo",
 							function: {
-								name: "mark_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "mark",
 									id: 1,
 									status: "completed",
 									note: "Evidence: scripted verification completed",
@@ -708,8 +723,9 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 						{
 							id: "add-remaining-gated-todo",
 							function: {
-								name: "add_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "add",
 									content: "Verify the remaining evaluator concern",
 									status: "in_progress",
 								}),
@@ -723,8 +739,9 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 						{
 							id: "finish-remaining-gated-todo",
 							function: {
-								name: "mark_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "mark",
 									id: 2,
 									status: "completed",
 									note: "Evidence: remaining evaluator concern verified",
@@ -857,8 +874,9 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 						{
 							id: "create-delivery-todo",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "create",
 									todos: [{ content: "Finish before delivery", status: "in_progress" }],
 								}),
 							},
@@ -871,8 +889,9 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 						{
 							id: "finish-delivery-todo",
 							function: {
-								name: "mark_todo",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "mark",
 									id: 1,
 									status: "completed",
 									note: "Evidence: scripted delivery verification completed",

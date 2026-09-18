@@ -1,9 +1,9 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import { TODO_TOOL_NAMES } from "./tool.js"
+import { LEGACY_TODO_TOOL_NAMES, TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 
-const TODO_TOOL_NAME_SET = new Set<string>(["write_todos", ...TODO_TOOL_NAMES])
+const TODO_TOOL_NAME_SET = new Set<string>(["write_todos", ...TODO_TOOL_NAMES, ...LEGACY_TODO_TOOL_NAMES])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"

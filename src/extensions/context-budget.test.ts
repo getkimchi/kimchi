@@ -239,11 +239,17 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 26-tool set above; in print
-		// mode the registration gates must remove exactly these two.
+		// The interactive surface is the canonical set above (26 tools before
+		// the cost-parity consolidation; the 5 todo tools collapsed into the
+		// single `todos` action tool → 22). In print mode the registration
+		// gates must remove exactly these two (22 − 2 = 20).
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(24)
+		expect(names.has("todos"), "the consolidated todos action tool is the only todo surface").toBe(true)
+		for (const legacy of ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]) {
+			expect(names.has(legacy), `${legacy} must not register — consolidated into todos`).toBe(false)
+		}
+		expect(tools.length).toBe(20)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

@@ -362,7 +362,7 @@ Do NOT call start_ferment_step again without user input.`,
 • Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command's precision.
 • If the artifact has behavior no script can decide (rendered output, interactive behavior), include an inspection sub-task: exercise the artifact in its native medium and record what you observed (S2 'inspected' class).
 • If the step compiles or builds artifacts, include a cleanup sub-task to remove intermediate files from output directories.
-• Batch all step-todo state changes into a single update_todos call per turn, paired with your next work tool call — never emit a turn whose only action is a todo update.
+• Batch all step-todo state changes into one todos call (action "update") per turn, paired with your next work tool call — never emit a turn whose only action is a todo update.
 • Embed the plan in the worker Agent's prompt at dispatch time.${priorContext}`
 
 	const isMultiModelEnabled = getMultiModelEnabled(ctx.sessionManager)

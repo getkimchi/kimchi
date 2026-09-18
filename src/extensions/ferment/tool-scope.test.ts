@@ -90,12 +90,10 @@ describe("planning profile", () => {
 		for (const name of planningTools) {
 			expect(lastCall).toContain(name)
 		}
-		// Todo lifecycle tools are shared core — always present
-		expect(lastCall).toContain("create_todos")
-		expect(lastCall).toContain("update_todos")
-		expect(lastCall).toContain("add_todo")
-		expect(lastCall).toContain("mark_todo")
-		expect(lastCall).toContain("clear_todos")
+		// The consolidated todo tool is shared core — always present
+		expect(lastCall).toContain("todos")
+		expect(lastCall).not.toContain("create_todos")
+		expect(lastCall).not.toContain("update_todos")
 	})
 
 	it("when allTools contains extra non-planning tools, they are excluded (intersection)", () => {

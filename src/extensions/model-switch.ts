@@ -13,9 +13,9 @@ import {
 } from "./model-guard.js"
 import { resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
-import { shouldSuppressInteractiveTools } from "./print-mode.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
+import { shouldSuppressInteractiveTools } from "./print-mode.js"
 import { resolveEffectiveModel } from "./router/state.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
@@ -67,155 +67,155 @@ export default function modelSwitchExtension(
 	// orchestrator may legitimately switch roles mid-run.
 	if (!(shouldSuppressInteractiveTools() && !resolveMultiModelEnabled(null).value)) {
 		pi.registerTool({
-		name: "set_model",
-		label: "Switch Model",
-		description:
-			'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
-		parameters: Type.Object({
-			model: Type.String({
-				description:
-					'Target model identifier in "provider/modelId" format (e.g. "kimchi-dev/kimi-k2.6", "anthropic/claude-sonnet-4-20250514").',
+			name: "set_model",
+			label: "Switch Model",
+			description:
+				'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
+			parameters: Type.Object({
+				model: Type.String({
+					description:
+						'Target model identifier in "provider/modelId" format (e.g. "kimchi-dev/kimi-k2.6", "anthropic/claude-sonnet-4-20250514").',
+				}),
 			}),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const sessionId = ctx.sessionManager.getSessionId()
-			const { model } = params
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const { model } = params
 
-			if (model === "multi-model") {
-				const {
-					model: orchestrator,
-					modelId: orchId,
-					modelRef: orchRef,
-				} = getOrchestratorModel(sessionId, ctx.modelRegistry)
-				if (!orchestrator) {
+				if (model === "multi-model") {
+					const {
+						model: orchestrator,
+						modelId: orchId,
+						modelRef: orchRef,
+					} = getOrchestratorModel(sessionId, ctx.modelRegistry)
+					if (!orchestrator) {
+						return {
+							content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
+							details: null,
+						}
+					}
+					setMultiModelEnabled(sessionId, true)
+					suppressModelSelectGuard = true
+					try {
+						await pi.setModel(orchestrator)
+					} finally {
+						suppressModelSelectGuard = false
+					}
 					return {
-						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
+						content: [
+							{
+								type: "text" as const,
+								text: `Switched to multi-model mode (orchestrator: ${orchId})`,
+							},
+						],
 						details: null,
 					}
 				}
-				setMultiModelEnabled(sessionId, true)
+
+				if (!splitModelRef(model)) {
+					const available = ctx.modelRegistry
+						.getAvailable()
+						.map((m) => refFromModel(m))
+						.sort()
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							},
+						],
+						details: null,
+					}
+				}
+
+				const target = findModelByRef(ctx.modelRegistry, model)
+				if (!target) {
+					const available = ctx.modelRegistry
+						.getAvailable()
+						.map((m) => refFromModel(m))
+						.sort()
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
+							},
+						],
+						details: null,
+					}
+				}
+
+				// When switching TO Auto, resolve the effective (routed) concrete model so
+				// the guards validate against the real window/modalities, not Auto's
+				// conservative catalog floor. Keep pi.setModel(target) so Auto stays selected.
+				const effectiveTarget = resolveEffectiveModel(target, sessionId) ?? target
+
+				const usage = ctx.getContextUsage()
+				// getLatestMessages() returns the most recent context from model-guard's
+				// "context" handler. It is updated on every LLM call, so data is fresh
+				// as long as the session has processed at least one context event.
+				const messages = getLatestMessages()
+				if (messages.length > 0 && getLatestMessagesTimestamp() === 0) {
+					// Defensive: messages array is non-empty but timestamp is unset
+					// (should never happen). Treat as stale and skip local estimate.
+					console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
+				}
+				const tokens = resolveContextTokens(usage, messages)
+				if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(effectiveTarget.contextWindow)} of ${effectiveTarget.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
+							},
+						],
+						details: null,
+					}
+				}
+
+				// Vision compatibility guard
+				if (sessionHasImages() && !effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images to replace images with text descriptions, then retry.`,
+							},
+						],
+						details: null,
+					}
+				}
+
+				setMultiModelEnabled(sessionId, false)
+				let ok: boolean
 				suppressModelSelectGuard = true
 				try {
-					await pi.setModel(orchestrator)
+					ok = await pi.setModel(target, { persist: true })
 				} finally {
 					suppressModelSelectGuard = false
 				}
+				if (!ok) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Failed to switch to ${refFromModel(target)} — no API key available for this model's provider.`,
+							},
+						],
+						details: null,
+					}
+				}
+
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Switched to multi-model mode (orchestrator: ${orchId})`,
+							text: `Switched to model ${refFromModel(target)} (${target.name})`,
 						},
 					],
 					details: null,
 				}
-			}
-
-			if (!splitModelRef(model)) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
-						},
-					],
-					details: null,
-				}
-			}
-
-			const target = findModelByRef(ctx.modelRegistry, model)
-			if (!target) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
-						},
-					],
-					details: null,
-				}
-			}
-
-			// When switching TO Auto, resolve the effective (routed) concrete model so
-			// the guards validate against the real window/modalities, not Auto's
-			// conservative catalog floor. Keep pi.setModel(target) so Auto stays selected.
-			const effectiveTarget = resolveEffectiveModel(target, sessionId) ?? target
-
-			const usage = ctx.getContextUsage()
-			// getLatestMessages() returns the most recent context from model-guard's
-			// "context" handler. It is updated on every LLM call, so data is fresh
-			// as long as the session has processed at least one context event.
-			const messages = getLatestMessages()
-			if (messages.length > 0 && getLatestMessagesTimestamp() === 0) {
-				// Defensive: messages array is non-empty but timestamp is unset
-				// (should never happen). Treat as stale and skip local estimate.
-				console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
-			}
-			const tokens = resolveContextTokens(usage, messages)
-			if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(effectiveTarget.contextWindow)} of ${effectiveTarget.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
-						},
-					],
-					details: null,
-				}
-			}
-
-			// Vision compatibility guard
-			if (sessionHasImages() && !effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images to replace images with text descriptions, then retry.`,
-						},
-					],
-					details: null,
-				}
-			}
-
-			setMultiModelEnabled(sessionId, false)
-			let ok: boolean
-			suppressModelSelectGuard = true
-			try {
-				ok = await pi.setModel(target, { persist: true })
-			} finally {
-				suppressModelSelectGuard = false
-			}
-			if (!ok) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Failed to switch to ${refFromModel(target)} — no API key available for this model's provider.`,
-						},
-					],
-					details: null,
-				}
-			}
-
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Switched to model ${refFromModel(target)} (${target.name})`,
-					},
-				],
-				details: null,
-			}
-		},
-	})
+			},
+		})
 	}
 
 	pi.on("model_select", async (event, ctx) => {

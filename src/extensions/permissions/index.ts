@@ -659,168 +659,168 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// keep it (submit_plan is part of their planning catalog).
 	if (!shouldSuppressFermentModeTools()) {
 		pi.registerTool({
-		name: "submit_plan",
-		label: "Submit Plan",
-		description:
-			"Submit your completed plan for user review. Call this only after the plan " +
-			"is fully written and all open questions are resolved. The plan will be " +
-			"saved to disk and the user will review it in a visual UI before execution. " +
-			"If the plan is denied with feedback, revise and call this again.",
-		parameters: Type.Object({
-			plan: Type.String({
-				description:
-					"The complete plan as markdown. Must follow the required structure: " +
-					"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
-					"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+			name: "submit_plan",
+			label: "Submit Plan",
+			description:
+				"Submit your completed plan for user review. Call this only after the plan " +
+				"is fully written and all open questions are resolved. The plan will be " +
+				"saved to disk and the user will review it in a visual UI before execution. " +
+				"If the plan is denied with feedback, revise and call this again.",
+			parameters: Type.Object({
+				plan: Type.String({
+					description:
+						"The complete plan as markdown. Must follow the required structure: " +
+						"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
+						"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+				}),
 			}),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const planText = (params as { plan?: string })?.plan
-			if (!planText?.trim()) {
-				return {
-					content: [{ type: "text", text: "Error: plan text is empty." }],
-					details: { submitted: false },
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				const planText = (params as { plan?: string })?.plan
+				if (!planText?.trim()) {
+					return {
+						content: [{ type: "text", text: "Error: plan text is empty." }],
+						details: { submitted: false },
+					}
 				}
-			}
 
-			// Allowed contexts:
-			// 1. Adhoc plan mode (mode === "plan") — full review flow.
-			// 2. Agent workers (e.g. Plan persona subagents) — saves + terminates
-			//    with no review emit; the parent orchestrator is the plan's
-			//    evaluator.
-			const mode = getRuntimePermissionMode().mode
-			if (mode !== "plan" && !isAgentWorker()) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Error: submit_plan is only available during plan mode or in a Plan agent worker.",
-						},
-					],
-					details: { submitted: false },
+				// Allowed contexts:
+				// 1. Adhoc plan mode (mode === "plan") — full review flow.
+				// 2. Agent workers (e.g. Plan persona subagents) — saves + terminates
+				//    with no review emit; the parent orchestrator is the plan's
+				//    evaluator.
+				const mode = getRuntimePermissionMode().mode
+				if (mode !== "plan" && !isAgentWorker()) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: "Error: submit_plan is only available during plan mode or in a Plan agent worker.",
+							},
+						],
+						details: { submitted: false },
+					}
 				}
-			}
 
-			// Save plan to disk
-			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-			let planPath: string | undefined
-			try {
-				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
-			} catch (err) {
-				const detail = err instanceof Error ? err.message : String(err)
-				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-				else console.error(`permissions: failed to save plan file: ${detail}`)
-			}
-
-			// Agent worker: silent submit. Saves the plan and terminates the turn
-			// with no review emit — workers have no review surface, the parent
-			// orchestrator evaluates the plan, and the plannotator adapter skips
-			// worker sessions. agent-runner surfaces planPath back to the parent
-			// from this tool result.
-			if (isAgentWorker()) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.",
-						},
-					],
-					details: { submitted: true, source: "worker", planPath },
-					terminate: true,
+				// Save plan to disk
+				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
+				let planPath: string | undefined
+				try {
+					planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
+				} catch (err) {
+					const detail = err instanceof Error ? err.message : String(err)
+					if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
+					else console.error(`permissions: failed to save plan file: ${detail}`)
 				}
-			}
 
-			// Emit plan-review request once — TUI popup, plannotator browser, and
-			// future integrations all listen on the same channel. Subscribers
-			// self-select: the plannotator adapter skips non-interactive sessions.
-			emitPlanReviewRequest(
-				pi,
-				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
-				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
-			)
+				// Agent worker: silent submit. Saves the plan and terminates the turn
+				// with no review emit — workers have no review surface, the parent
+				// orchestrator evaluates the plan, and the plannotator adapter skips
+				// worker sessions. agent-runner surfaces planPath back to the parent
+				// from this tool result.
+				if (isAgentWorker()) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.",
+							},
+						],
+						details: { submitted: true, source: "worker", planPath },
+						terminate: true,
+					}
+				}
 
-			// Non-TUI / oneshot: no popup to show — end the turn. The emit above
-			// is a no-op today (adapter skips subscribing), but future integrations
-			// (logging, CI reviewers, alternative UIs) can hook in without changes.
-			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
+				// Emit plan-review request once — TUI popup, plannotator browser, and
+				// future integrations all listen on the same channel. Subscribers
+				// self-select: the plannotator adapter skips non-interactive sessions.
+				emitPlanReviewRequest(
+					pi,
+					{ planContent: planText, planFilePath: planPath, source: "adhoc" },
+					{ ctx, planPath, planText, rawText: planText, activePlanSlug },
+				)
+
+				// Non-TUI / oneshot: no popup to show — end the turn. The emit above
+				// is a no-op today (adapter skips subscribing), but future integrations
+				// (logging, CI reviewers, alternative UIs) can hook in without changes.
+				if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
+					return {
+						content: [{ type: "text", text: "Plan submitted." }],
+						details: { submitted: true },
+						terminate: true,
+					}
+				}
+
+				// AbortSignal lets the decision handler dismiss the menu when
+				// plannotator decides first (select returns undefined on abort).
+				// The listener is unsubscribed when the menu resolves — it is
+				// per-review and must not accumulate on the shared event bus.
+				const planMenuAbort = new AbortController()
+				const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+					if (payload.planReviewSource !== "adhoc") return
+					if (payload.source !== "plannotator") return
+					planMenuAbort.abort()
+				})
+
+				const EXECUTE = "Execute the plan locally"
+				const DECLINE = "Rework the plan"
+				const START_AS_FERMENT = "Start as ferment"
+				const START_IN_CLOUD = "Execute the plan in a remote workspace"
+
+				const options = [EXECUTE]
+				if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
+				options.push(DECLINE, START_AS_FERMENT)
+
+				void withBlocked(pi.events, "Plan complete", () =>
+					withWorkingHidden(ctx, () =>
+						ctx.ui.select("Plan complete. How would you like to proceed?", options, {
+							signal: planMenuAbort.signal,
+						}),
+					),
+				)
+					.then((choice) => {
+						unsubscribeAbortListener()
+						// select returns undefined when aborted — plannotator already decided.
+						if (choice === undefined) return
+						if (choice === EXECUTE) {
+							emitPlanReviewDecision(pi, {
+								decision: "execute",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						} else if (choice === START_AS_FERMENT) {
+							emitPlanReviewDecision(pi, {
+								decision: "start_ferment",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						} else if (choice === START_IN_CLOUD) {
+							emitPlanReviewDecision(pi, {
+								decision: "start_cloud",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						} else {
+							emitPlanReviewDecision(pi, {
+								decision: "rework",
+								source: "kimchi-tui",
+								planReviewSource: "adhoc",
+							})
+						}
+					})
+					.catch(() => {
+						// select rejects when the AbortSignal fires (plannotator decided
+						// first) or on unexpected UI errors. Either way, ensure the
+						// abort-listener is cleaned up so it doesn't leak on the bus.
+						unsubscribeAbortListener()
+					})
+
 				return {
-					content: [{ type: "text", text: "Plan submitted." }],
+					content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
 					details: { submitted: true },
 					terminate: true,
 				}
-			}
-
-			// AbortSignal lets the decision handler dismiss the menu when
-			// plannotator decides first (select returns undefined on abort).
-			// The listener is unsubscribed when the menu resolves — it is
-			// per-review and must not accumulate on the shared event bus.
-			const planMenuAbort = new AbortController()
-			const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
-				if (payload.planReviewSource !== "adhoc") return
-				if (payload.source !== "plannotator") return
-				planMenuAbort.abort()
-			})
-
-			const EXECUTE = "Execute the plan locally"
-			const DECLINE = "Rework the plan"
-			const START_AS_FERMENT = "Start as ferment"
-			const START_IN_CLOUD = "Execute the plan in a remote workspace"
-
-			const options = [EXECUTE]
-			if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
-			options.push(DECLINE, START_AS_FERMENT)
-
-			void withBlocked(pi.events, "Plan complete", () =>
-				withWorkingHidden(ctx, () =>
-					ctx.ui.select("Plan complete. How would you like to proceed?", options, {
-						signal: planMenuAbort.signal,
-					}),
-				),
-			)
-				.then((choice) => {
-					unsubscribeAbortListener()
-					// select returns undefined when aborted — plannotator already decided.
-					if (choice === undefined) return
-					if (choice === EXECUTE) {
-						emitPlanReviewDecision(pi, {
-							decision: "execute",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					} else if (choice === START_AS_FERMENT) {
-						emitPlanReviewDecision(pi, {
-							decision: "start_ferment",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					} else if (choice === START_IN_CLOUD) {
-						emitPlanReviewDecision(pi, {
-							decision: "start_cloud",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					} else {
-						emitPlanReviewDecision(pi, {
-							decision: "rework",
-							source: "kimchi-tui",
-							planReviewSource: "adhoc",
-						})
-					}
-				})
-				.catch(() => {
-					// select rejects when the AbortSignal fires (plannotator decided
-					// first) or on unexpected UI errors. Either way, ensure the
-					// abort-listener is cleaned up so it doesn't leak on the bus.
-					unsubscribeAbortListener()
-				})
-
-			return {
-				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
-				details: { submitted: true },
-				terminate: true,
-			}
-		},
-	})
+			},
+		})
 	}
 
 	// Decision handler for adhoc plan reviews — handles decisions from both
@@ -849,8 +849,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Tools REMOVED (adhoc / planning-only, no longer visible):
 			//   - questionnaire          (adhoc-only; superseded by ask_user)
 			//
-			// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
-			// mark_todo, clear_todos) are shared core — they remain visible in
+			// Note: the consolidated todo tool is shared core — it remains visible in
 			// all modes including ferment.
 			//
 			// Tools ADDED (ferment-mode, newly visible):

@@ -15,13 +15,20 @@ const theme = {
 
 function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 	const handlers = new Map<string, ExtensionHandler[]>()
+	const active = new Set(activeTools)
 	const pi = {
-		registerTool: vi.fn(),
+		registerTool: vi.fn((tool: { name: string }) => {
+			active.add(tool.name)
+		}),
 		registerCommand: vi.fn(),
 		registerShortcut: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
-		getActiveTools: vi.fn(() => activeTools),
+		getActiveTools: vi.fn(() => [...active]),
+		setActiveTools: vi.fn((names: string[]) => {
+			active.clear()
+			for (const n of names) active.add(n)
+		}),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)

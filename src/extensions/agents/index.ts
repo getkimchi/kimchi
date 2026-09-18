@@ -30,13 +30,13 @@ import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import {
 	type DEFAULT_MODEL_ROLES,
 	getAllowedMultiModelRefs,
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"

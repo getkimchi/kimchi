@@ -20,8 +20,9 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: [
 										{ content: "implement widget rendering", status: "in_progress" },
 										{ content: "write e2e tests", status: "pending" },
@@ -59,8 +60,8 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 })
 
 /**
- * Regression: todo lifecycle tools (create_todos, update_todos, add_todo,
- * mark_todo, clear_todos) must be visible during ferment execution. They were
+ * Regression: the consolidated todo tool must be usable during ferment
+ * execution. They were
  * previously cataloged as `modes: ["adhoc"]`, which excluded them from both
  * planning-ferment and implementation-ferment profiles. Now cataloged as
  * `modes: ["shared"]` (SHARED_CORE_TOOLS), they should be available in every
@@ -133,8 +134,9 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: [
 										{ content: "write the code", status: "in_progress" },
 										{ content: "run tests", status: "pending" },
@@ -214,8 +216,9 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: [
 										{ content: "pending item", status: "pending" },
 										{ content: "active item", status: "in_progress" },
@@ -261,8 +264,9 @@ test("todo widget shows rolling markers around active work", async ({ terminal }
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: Array.from({ length: 19 }, (_, index) => ({
 										content: `task ${index + 1}`,
 										status: index < 9 ? "completed" : index === 9 ? "in_progress" : "pending",
@@ -304,8 +308,9 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
+									action: "update",
 									todos: Array.from({ length: 19 }, (_, index) => ({
 										content: `task ${index + 1}`,
 										status: "completed",

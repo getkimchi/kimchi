@@ -21,7 +21,7 @@ import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js
 import { getTodoScopeKey, normalizeTodoScope, validateExplicitTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
-import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+import { TODO_TOOL_NAMES, todoActionOf } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import {
@@ -166,7 +166,7 @@ function completesCurrentTodoList(
 		if (explicit.error) return false
 		return getTodoScopeKey(explicit.scope ?? resolveTodoScope()) === currentScopeKey
 	}
-	if (calls.every((call) => call.name === MARK_TODO_TOOL_NAME)) {
+	if (calls.every((call) => todoActionOf(call.name, call.arguments) === "mark")) {
 		const completedIds = new Set<number>()
 		const todoIds = new Set(todoState.todos.map((todo) => todo.id))
 		for (const call of calls) {
@@ -183,7 +183,9 @@ function completesCurrentTodoList(
 		}
 		return todoState.todos.every((todo) => todo.status === "completed" || completedIds.has(todo.id))
 	}
-	if (calls.length !== 1 || calls[0].name !== UPDATE_TODOS_TOOL_NAME) return false
+	if (calls.length !== 1) return false
+	const writeAction = todoActionOf(calls[0].name, calls[0].arguments)
+	if (writeAction !== "update" && writeAction !== "create") return false
 	const args = argumentsFor(calls[0])
 	return Boolean(
 		args &&
@@ -572,7 +574,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = [UPDATE_FERMENT_V2_TOOL_NAME]): boolean {
 		try {
 			const active = new Set(pi.getActiveTools())
-			return [...fermentV2ToolNames, ...TODO_TOOL_NAMES].every((name) => active.has(name))
+			if (!fermentV2ToolNames.every((name) => active.has(name))) return false
+			// Todo tools may be visibility-deferred (hidden but registered) in
+			// main sessions — registration, not active-list membership, is the
+			// availability contract.
+			const registered = new Set(pi.getAllTools().map((t) => t.name))
+			return TODO_TOOL_NAMES.every((name) => registered.has(name) || active.has(name))
 		} catch {
 			return false
 		}

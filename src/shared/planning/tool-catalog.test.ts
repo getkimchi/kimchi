@@ -11,7 +11,7 @@ import {
 
 const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 
-const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]
+const TODO_TOOL_NAMES = ["todos"]
 const WORKFLOW_OUTPUT_TOOL_NAMES = ["workflow_submit_result", "workflow_submit_questions"]
 const FERMENT_V2_TOOL_NAMES = ["get_ferment_v2", "update_ferment_v2"]
 
@@ -373,7 +373,7 @@ describe("routing metadata", () => {
 
 	it("non-interactive tools do not have routing set", () => {
 		const profiles: ToolProfile[] = ["idle", "planning-adhoc", "planning-ferment", "implementation-ferment"]
-		const nonInteractiveNames = ["read", "grep", "update_todos", "edit", "write"]
+		const nonInteractiveNames = ["read", "grep", "todos", "edit", "write"]
 		for (const profile of profiles) {
 			const result = getToolsForProfile(profile)
 			for (const name of nonInteractiveNames) {
