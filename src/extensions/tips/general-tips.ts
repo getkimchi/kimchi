@@ -57,6 +57,11 @@ export const GENERAL_TIPS = [
 		message: "Run `/bug` to create GitHub issue with a bug report.",
 	},
 	{
+		id: "multi-model-roles",
+		scope: "general",
+		message: "Run `/multi-model` to assign models to each role.",
+	},
+	{
 		id: "help-command",
 		scope: "general",
 		message: "Type `/help` to see all keyboard shortcuts and slash commands.",

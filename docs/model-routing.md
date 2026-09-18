@@ -6,7 +6,7 @@ Auto is useful when you want Kimchi to choose between the models available to yo
 
 ## Select model routing
 
-Auto is available to all customers. Fresh sessions start in Auto, including after restarting Kimchi or using `/new`, even if the previous session used another model. Resuming a session preserves its model. Explicit launch model/provider choices and model scopes take precedence for that launch.
+Auto is available to all customers, and is opt-in for now: multi-model remains the default, and Auto appears as the first entry in `/model` and the Ctrl+P cycle. Selecting Auto is a per-session choice — resuming a session preserves its model. Explicit launch model/provider choices and model scopes take precedence for that launch.
 
 For scripted runs and subprocesses, `KIMCHI_MODEL=provider/model` supplies an inherited launch selection. Explicit CLI selections take precedence. The benchmark adapter sets it to keep workflow subprocesses on the run's configured model.
 
