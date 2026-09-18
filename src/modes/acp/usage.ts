@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { TurnContext, TurnUsage } from "./types.ts"
+import type { TurnContext, TurnUsage } from "./types.js"
 
 export function emptyTurnUsage(): TurnUsage {
 	return {

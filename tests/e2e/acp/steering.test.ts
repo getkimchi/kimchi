@@ -87,8 +87,8 @@ describe("ACP integration — injected steer echo", () => {
 			sessionId,
 			(u) =>
 				u.sessionUpdate === "user_message_chunk" &&
-				(u as ContentChunk).content.type === "text" &&
-				((u as ContentChunk).content as { type: "text"; text: string }).text === "Actually, skip the rest and wrap up.",
+				u.content.type === "text" &&
+				u.content.text === "Actually, skip the rest and wrap up.",
 		)
 
 		const result = await Promise.race([

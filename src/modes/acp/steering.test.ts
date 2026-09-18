@@ -5,7 +5,7 @@ import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 
 function chunkText(u: SessionUpdate): string {
 	if (u.sessionUpdate !== "user_message_chunk") throw new Error(`not a user chunk: ${u.sessionUpdate}`)
-	const content = (u as ContentChunk).content
+	const content = u.content
 	if (content.type !== "text") throw new Error(`not a text chunk: ${content.type}`)
 	return content.text
 }
