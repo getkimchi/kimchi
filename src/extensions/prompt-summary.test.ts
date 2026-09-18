@@ -1,8 +1,9 @@
 import type { Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import promptSummaryExtension, { holdPromptSummary } from "./prompt-summary.js"
+import promptSummaryExtension, { holdPromptSummary, promptSummaryRenderer } from "./prompt-summary.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
@@ -417,5 +418,38 @@ describe("prompt summary stale-ctx crash prevention", () => {
 
 		expect(harness.sent).toHaveLength(1)
 		expect(harness.sent[0]).toMatchObject({ details: { total: { input: 120, output: 60 } } })
+	})
+})
+
+describe("prompt summary renderer", () => {
+	const theme = {
+		fg: (_color: string, s: string) => s,
+		bg: (_color: string, s: string) => s,
+		bold: (s: string) => s,
+		getFgAnsi: (_color: string) => "",
+	} as unknown as Theme
+
+	function render(details: Record<string, unknown>): string {
+		const component = promptSummaryRenderer(
+			{
+				customType: "prompt-summary",
+				details,
+			} as unknown as Parameters<typeof promptSummaryRenderer>[0],
+			{ expanded: false, outputPad: 0 },
+			theme,
+		)
+		return (component as Component | undefined)?.render(80).join("\n") ?? ""
+	}
+
+	it("renders the feedback invitation line", () => {
+		const text = render({
+			elapsed: "3.6s",
+			orchestrator: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+			subagents: null,
+			total: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+		})
+		expect(text).toContain("- Rate response: ⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)")
+		// The rating line must be fully left-aligned (no indent).
+		expect(text).not.toMatch(/^ {2}- Rate response:/m)
 	})
 })

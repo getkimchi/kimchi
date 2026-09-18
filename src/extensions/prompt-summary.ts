@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
-import { Container, Text } from "@earendil-works/pi-tui"
+import { Container, Spacer, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
@@ -120,7 +120,7 @@ function resolveAutoModelLabel(ctx: ExtensionContext): string | undefined {
 	return effective && effective.id !== AUTO_MODEL_ID ? formatAutoModelLabel(effective.id) : undefined
 }
 
-const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
+export const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
 	const data = message.details as PromptSummaryData
 	if (!data) return undefined
 
@@ -172,6 +172,9 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	for (const extra of data.extras ?? []) {
 		container.addChild(new Text(INDENT + theme.fg("dim", "note:".padEnd(LABEL_WIDTH)) + extra, 0, 0))
 	}
+
+	container.addChild(new Spacer(1))
+	container.addChild(new Text(theme.fg("dim", `- Rate response: ⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)`), 0, 0))
 
 	return container
 }

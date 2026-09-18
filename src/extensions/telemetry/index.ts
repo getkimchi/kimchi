@@ -159,6 +159,14 @@ function isEnabled(): boolean {
 	return !!(_telemetryCtx && _telemetryConfig.enabled && _telemetryConfig.endpoint)
 }
 
+/**
+ * @internal — exposed for sibling telemetry modules (e.g. trackFeedback).
+ * Mirrors the private `isEnabled()` guard used by the track* helpers in this file.
+ */
+export function _isTelemetryEnabled(): boolean {
+	return isEnabled()
+}
+
 // ---------------------------------------------------------------------------
 // Token snapshot helpers
 // ---------------------------------------------------------------------------
@@ -225,6 +233,8 @@ export function consumePhaseTokenDelta(
 // ---------------------------------------------------------------------------
 // Existing track* functions
 // ---------------------------------------------------------------------------
+
+export { trackFeedback, trackModelSwitchFeedback } from "./feedback.js"
 
 export async function trackSubagentSpawned(
 	args: { id: string; type: string; description: string },
