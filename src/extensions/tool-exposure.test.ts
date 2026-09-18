@@ -280,15 +280,14 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"mark_todo",
 	"add_todo",
 	"clear_todos",
-	// web-search / web-fetch / questionnaire
+	// web-search / questionnaire — web_fetch is hidden until the first
+	// web_search call (anchor-deferral, cost-parity consolidation)
 	"web_search",
-	"web_fetch",
 	"questionnaire",
-	// agents
+	// agents — `Agent` is the always-visible anchor; the three continuation
+	// tools below are deferred until the first subagent exists (Chunk: Agent
+	// anchor-deferral, cost-parity consolidation)
 	"Agent",
-	"resume_subagent",
-	"get_subagent_result",
-	"steer_subagent",
 	// tags / skills (the mcp gateway is config-gated — Chunk 5: it registers
 	// only when >=1 MCP server is configured; see the gate-on test below)
 	"set_phase",
@@ -307,11 +306,15 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
  *  when no language server is detected for the session cwd. They share the
  *  visibility-vote mechanics with the deferrals above, so they are asserted
  *  in the same drift-guard bucket. */
+const AGENT_CONTINUATION_TOOLS = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
+const WEB_FETCH_TOOLS = ["web_fetch"] as const
 const LSP_TOOL_NAMES = ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_rename"] as const
 const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
 	...DAP_SESSION_TOOL_NAMES,
 	...BASH_CONTROL_TOOLS,
 	...LSP_TOOL_NAMES,
+	...AGENT_CONTINUATION_TOOLS,
+	...WEB_FETCH_TOOLS,
 ])
 
 /** Extensions that register tools at session_start, mirroring the budget
@@ -375,13 +378,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 26-tool surface and hides the 17 deferred tools", async () => {
+	it("advertises exactly the documented 22-tool surface and hides the 21 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(26)
+		expect(visible.size).toBe(22)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -409,7 +412,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(24)
+			expect(visible.size).toBe(20)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -462,7 +465,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(17)
+		expect(votes.size).toBe(21)
 	})
 
 	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {
@@ -547,6 +550,67 @@ describe("tool exposure at session start", () => {
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 
+	it("Agent reveal round-trip exposes the 3 continuation tools exactly once after the first Agent result", async () => {
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		for (const name of AGENT_CONTINUATION_TOOLS) {
+			expect(harness.active.has(name), `${name} hidden before any subagent`).toBe(false)
+		}
+
+		await harness.fireEvent("tool_result", {
+			toolName: "Agent",
+			toolCallId: "a1",
+			input: { prompt: "do the thing", description: "test", subagent_type: "General-Purpose" },
+			content: [{ type: "text", text: "agent result" }],
+			isError: false,
+			details: { agentId: "agent-1", status: "completed" },
+		})
+
+		for (const name of AGENT_CONTINUATION_TOOLS) {
+			expect(harness.active.has(name), `${name} visible after the first Agent result`).toBe(true)
+		}
+		const transitionsAfterReveal = harness.activeTransitions.length
+
+		// Second Agent result: reveal is one-way, no further transition.
+		await harness.fireEvent("tool_result", {
+			toolName: "Agent",
+			toolCallId: "a2",
+			input: { prompt: "more", description: "test", subagent_type: "General-Purpose" },
+			content: [{ type: "text", text: "agent result" }],
+			isError: false,
+			details: { agentId: "agent-2", status: "completed" },
+		})
+		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+	})
+
+	it("web_fetch reveal round-trip exposes it exactly once after the first web_search result", async () => {
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		expect(harness.active.has("web_fetch"), "web_fetch hidden before any search").toBe(false)
+
+		await harness.fireEvent("tool_result", {
+			toolName: "web_search",
+			toolCallId: "w1",
+			input: { query: "test" },
+			content: [{ type: "text", text: "results" }],
+			isError: false,
+		})
+
+		expect(harness.active.has("web_fetch"), "web_fetch visible after the first web_search result").toBe(true)
+		const transitionsAfterReveal = harness.activeTransitions.length
+
+		await harness.fireEvent("tool_result", {
+			toolName: "web_search",
+			toolCallId: "w2",
+			input: { query: "test 2" },
+			content: [{ type: "text", text: "results" }],
+			isError: false,
+		})
+		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+	})
+
 	it("agent workers keep full DAP + bash_control visibility (carve-out)", async () => {
 		workerState.isWorker = true
 		const harness = createExposureHarness()
@@ -562,7 +626,7 @@ describe("tool exposure at session start", () => {
 		// deliberately applies to workers too. Assert the carve-outs precisely
 		// instead of a blanket zero-vote count.
 		const disabled = getDisabledToolNames(harness.pi)
-		for (const name of [...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS]) {
+		for (const name of [...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS, ...AGENT_CONTINUATION_TOOLS]) {
 			expect(disabled.has(name), `${name} must not be hidden in workers`).toBe(false)
 		}
 	})

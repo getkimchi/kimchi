@@ -9,7 +9,9 @@ import { StringEnum } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount } from "../format.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { clearSpinner, type SpinnerState, spinnerFrame, tickSpinner } from "../spinner.js"
 import { shutdownBrowserPool } from "./browser-pool.js"
 import { cacheClear } from "./cache.js"
@@ -31,6 +33,9 @@ function formatDuration(ms: number): string {
 }
 
 export default function webFetchExtension(pi: ExtensionAPI): void {
+	const visibility = createToolVisibility(pi)
+	let webFetchRevealed = isAgentWorker()
+
 	pi.registerTool({
 		name: "web_fetch",
 		label: "Web Fetch",
@@ -104,6 +109,20 @@ export default function webFetchExtension(pi: ExtensionAPI): void {
 
 			return component
 		},
+	})
+
+	pi.on("session_start", () => {
+		// web_fetch (~600 est tokens of schema + description) stays registered but
+		// hidden until the model actually starts researching: web_search is the
+		// always-visible anchor (its description names web_fetch for discovery).
+		// Reveal is one-way on the first web_search result — mirrors bash_control.
+		// Agent workers keep full visibility (profile-managed).
+		if (!webFetchRevealed) visibility.disable(["web_fetch"])
+	})
+	pi.on("tool_result", (event) => {
+		if (event.toolName !== "web_search" || webFetchRevealed) return
+		webFetchRevealed = true
+		visibility.enable(["web_fetch"])
 	})
 
 	pi.on("session_shutdown", () => {
