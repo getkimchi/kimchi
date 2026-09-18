@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { discoverClaudeCodeHookResources } from "../claude-code-hook-adapter/definition.js"
 
 let dir: string
@@ -13,6 +14,10 @@ describe("hook adapter discovery", () => {
 		mkdirSync(dir, { recursive: true })
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Project fixtures live under <dir>/project — trusted for the tests
+		// that exercise project .claude settings hooks.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(join(dir, "project"), true)
 	})
 
 	afterEach(() => {

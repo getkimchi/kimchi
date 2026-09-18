@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { writeJson } from "./config/json.js"
+import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -336,11 +337,20 @@ function readConfigExtras(configPath: string): {
  * the warning would be meaningless noise. Windows files under the user
  * profile are already protected by directory ACLs.
  */
+// Paths whose permission warning has already been emitted this process.
+// loadConfig() is uncached by design (post-trust config adoption depends on
+// fresh reads), and the lazy configuredSkillPaths getter re-invokes it on every
+// resources_discover event — without warn-once, a chmod-644 config would print
+// the same warning per event. This is process-lifetime log hygiene, not
+// per-session state.
+const configPermissionWarnedPaths = new Set<string>()
+
 export function checkConfigFilePermissions(configPath: string): string | undefined {
 	if (process.platform === "win32") return undefined
 	try {
 		const stat = statSync(configPath)
-		if ((stat.mode & 0o077) !== 0) {
+		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
+			configPermissionWarnedPaths.add(configPath)
 			const mode = (stat.mode & 0o777).toString(8)
 			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
 		}
@@ -462,12 +472,29 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 }
 
 /**
+ * Read the project .kimchi/config.json extras, surfacing its permission
+ * warning the same way the global read does. Only called when the project is
+ * trusted (see loadConfig).
+ */
+function readProjectConfigExtras(projectPath: string): ReturnType<typeof readConfigExtras> {
+	const projectPermWarning = checkConfigFilePermissions(projectPath)
+	if (projectPermWarning) console.warn(projectPermWarning)
+	return readConfigExtras(projectPath)
+}
+
+/**
  * Load the kimchi configuration.
  *
  * Config precedence (highest to lowest):
  *   1. KIMCHI_API_KEY environment variable (highest precedence)
- *   2. Project .kimchi/config.json (if cwd provided)
+ *   2. Project .kimchi/config.json (if cwd provided — gated on project trust,
+ *      see below)
  *   3. Global ~/.config/kimchi/config.json
+ *
+ * The project tier is gated on project trust (src/project-scope-trust.ts):
+ * while the session cwd is untrusted, .kimchi/config.json is not read at
+ * all, so a cloned repo cannot set the LLM endpoint, API key, skill paths,
+ * or search behavior until the folder is trusted.
  *
  * For mcpSearch, a shallow merge is performed: project config overrides
  * individual keys, but global fills in any missing keys.
@@ -482,11 +509,12 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	if (globalPermWarning) console.warn(globalPermWarning)
 	const globalExtras = readConfigExtras(globalConfigPath)
 
-	// Read project-level config
-	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
-	const projectPermWarning = checkConfigFilePermissions(projectPath)
-	if (projectPermWarning) console.warn(projectPermWarning)
-	const projectExtras = readConfigExtras(projectPath)
+	// Read project-level config — only when the project is trusted. An
+	// untrusted repo must not influence the endpoint, API key, skill paths, or
+	// anything else the harness acts on.
+	const projectCwd = options?.cwd ?? process.cwd()
+	const projectPath = resolve(projectCwd, ".kimchi", "config.json")
+	const projectExtras = isProjectScopeAllowed(projectCwd) ? readProjectConfigExtras(projectPath) : {}
 
 	// Merge: project wins for scalars; shallow merge for mcpSearch.
 	const extras = {
@@ -536,7 +564,9 @@ export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?
 
 /** Explain an environment override without exposing either credential. */
 export function getApiKeyMismatchWarning(
-	savedKey = readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json")) ?? readApiKeyFromConfigFile(),
+	savedKey = (isProjectScopeAllowed()
+		? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
+		: undefined) ?? readApiKeyFromConfigFile(),
 ): string | undefined {
 	const envKey = getEnvironmentApiKey()
 	if (!envKey || !savedKey || envKey === savedKey) return undefined

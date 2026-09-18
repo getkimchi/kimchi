@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./assertions.js"
@@ -51,6 +52,8 @@ export interface KimchiFixture {
 	seedResult?: unknown
 	/** Env vars returned by `seedHome`, merged into the launched process env. */
 	seedEnv: Record<string, string>
+	/** The test's trustWorkDir option — consulted by launchKimchi (see CreateKimchiFixtureOptions). */
+	trustWorkDir?: boolean
 	providerId: string
 	initialModel: string | false
 	stop(): Promise<void>
@@ -128,6 +131,18 @@ export interface CreateKimchiFixtureOptions {
 	ollama?: StartFakeOllamaServerOptions
 	/** Seed the isolated Kimchi home with a repository-owned MCP server. */
 	mcp?: McpFixtureOptions
+	/**
+	 * Pre-record a persisted trust decision for the session workDir.
+	 * Default (undefined): pretrust only when the workDir content is
+	 * trust-requiring — evaluated at fixture creation AND before every
+	 * launchKimchi relaunch, so sessions that write trust-requiring files
+	 * mid-test (e.g. .kimchi/plans via submit_plan) do not hit the trust
+	 * prompt on restart, while workDirs without them (e.g. .mcp.json-only
+	 * untrusted-MCP scenarios) keep their own trust flows. `true` forces the
+	 * pretrust even for an empty workDir; `false` never pretrusts (the
+	 * project-trust-gate scenarios answer the live prompt instead).
+	 */
+	trustWorkDir?: boolean
 }
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
@@ -202,6 +217,21 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		}
 		const seedResult = seedIsResult ? (rawSeed as SeedHomeResult).data : rawSeed
 
+		// Pre-record a persisted trust decision for the workDir when its seeded
+		// content is trust-requiring (so the gate does not block tests that
+		// expect their project resources to load), unless the test opts out —
+		// the project-trust-gate scenarios answer the live prompt instead, and
+		// workDirs without trust-requiring resources (e.g. .mcp.json-only)
+		// must stay untrusted so their own trust flows fire. Keyed by the
+		// realpath — pi's trust store canonicalizes.
+		if (options.trustWorkDir !== false && hasTrustRequiringProjectResources(workDir)) {
+			writeFileSync(
+				join(agentDir, "trust.json"),
+				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
+				"utf-8",
+			)
+		}
+
 		return {
 			homeDir,
 			workDir,
@@ -211,6 +241,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			mcp,
 			seedResult,
 			seedEnv,
+			trustWorkDir: options.trustWorkDir,
 			providerId,
 			initialModel,
 			async stop() {
@@ -251,6 +282,23 @@ export function launchKimchi(
 	extraEnv: Record<string, string> = {},
 	options: LaunchKimchiOptions = {},
 ): void {
+	// Refresh the persisted trust decision before every launch: the session
+	// may have written trust-requiring files since fixture creation (e.g.
+	// .kimchi/plans via submit_plan), and a relaunch into a now-trust-requiring
+	// workDir would otherwise block on the trust prompt no test answers.
+	// Mirrors the creation-time conditional: opt-in (true) forces, opt-out
+	// (false) never writes, default writes only when the workDir content is
+	// trust-requiring (so .mcp.json-only untrusted-MCP scenarios keep working).
+	if (
+		fixture.trustWorkDir !== false &&
+		(fixture.trustWorkDir === true || hasTrustRequiringProjectResources(fixture.workDir))
+	) {
+		writeFileSync(
+			join(fixture.agentDir, "trust.json"),
+			JSON.stringify({ [realpathSync(fixture.workDir)]: true }, null, "\t"),
+			"utf-8",
+		)
+	}
 	// KIMCHI_PERMISSIONS=yolo skips every permission check (rules, denylist,
 	// classifier, prompts) so tool calls execute without blocking on the TUI
 	// permission prompt — no test driver is wired to answer it. TUI E2E

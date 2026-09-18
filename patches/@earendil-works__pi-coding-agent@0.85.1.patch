@@ -1,8 +1,7 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.85.1
 #
-# Tracking: LLM-2564, https://github.com/getkimchi/kimchi/issues/863. No matching
-# upstream issue exists yet; report remaining generic changes to
-# https://github.com/earendil-works/pi before the next upgrade.
+# Tracking: No matching upstream issue exists yet; report remaining generic
+# changes to https://github.com/earendil-works/pi before the next upgrade.
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
@@ -26,14 +25,29 @@
 #   - Flag conflict crash: when an npm extension registers a flag that kimchi
 #     already provides (e.g. `--plan`), the conflict is downgraded from a hard
 #     error to a warning (kimchi built-in extensions load first and win).
+# Security (project trust): extends hasTrustRequiringProjectResources
+# (dist/core/trust-manager.js) with Kimchi's project-local .kimchi/ and .claude/
+# resources (config, permissions, hooks, skills, agents, memory, tags, plans,
+# ferments, MCP servers, pi-agent skills) so a cloned repo that ships them triggers the trust
+# prompt instead of being auto-trusted. The list is checked in cwd AND its
+# ancestors (matching the ancestor-walking skills/tags readers), stopping at
+# the user's home (a user resource) and the OS temp directory (not a project
+# tree — a stray .kimchi/.claude created there by any tool must not gate
+# unrelated temp-dir sessions). The trust prompt and the untrusted warning
+# (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
+# mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
 #   that routing. Do not re-add a dist hunk for it.
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
-# or Kimchi no longer needs the branded behavior.
+# or Kimchi no longer needs the branded behavior. For the trust hunks: remove
+# once Pi ships native trust-scan extensibility or Kimchi adopts the
+# Pi-standard configDir layout. NOTE: the entry list must stay in sync with
+# TRUST_REQUIRING_PROJECT_RESOURCES in src/project-scope-trust.ts — a unit
+# test cross-checks the two.
 # History: see patches/CHANGELOG.md.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index 763b93f..13e0767 100644
+index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e61d276ba 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -376,6 +376,7 @@ ${chalk.bold("Examples:")}
@@ -45,7 +59,7 @@ index 763b93f..13e0767 100644
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 66e874e..916a37e 100644
+index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d002ef6363c 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -1118,7 +1118,37 @@ export class AgentSession {
@@ -130,7 +144,7 @@ index 66e874e..916a37e 100644
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -2047,12 +2085,12 @@ export class AgentSession {
+@@ -2047,10 +2085,10 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -143,8 +157,6 @@ index 66e874e..916a37e 100644
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
-             setThinkingLevel: (level) => this.setThinkingLevel(level),
-         }, {
 @@ -2076,7 +2114,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
@@ -155,7 +167,7 @@ index 66e874e..916a37e 100644
                      }
                      catch (error) {
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
-index e8e8859..88b4ce1 100644
+index e8e8859ae1e64ef0cdc50b0d31e2927d1fa0082f..4a40f8a045287a5d3099b903fcd7dd13591282aa 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
 @@ -29,6 +29,20 @@ import { readPiManifest } from "../pi-manifest.js";
@@ -207,7 +219,7 @@ index e8e8859..88b4ce1 100644
      "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
      "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
      "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
-@@ -336,11 +358,11 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+@@ -336,9 +358,9 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
              assertActive();
              return runtime.getCommands();
          },
@@ -219,10 +231,8 @@ index e8e8859..88b4ce1 100644
          },
          getThinkingLevel() {
              assertActive();
-             return runtime.getThinkingLevel();
-         },
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
-index 94ca072..317f057 100644
+index 94ca0722daa6a65691587e52a6fb269417337152..540b2edbee74d896773f5e406792c4b585cb6003 100644
 --- a/dist/core/extensions/types.d.ts
 +++ b/dist/core/extensions/types.d.ts
 @@ -189,6 +189,16 @@ export interface ExtensionUIContext {
@@ -269,7 +279,7 @@ index 94ca072..317f057 100644
      /** Get current thinking level. */
      getThinkingLevel(): ThinkingLevel;
      /**
-@@ -1202,9 +1222,11 @@ export type GetAllToolsHandler = () => ToolInfo[];
+@@ -1202,7 +1219,9 @@ export type GetAllToolsHandler = () => ToolInfo[];
  export type GetCommandsHandler = () => SlashCommandInfo[];
  export type SetActiveToolsHandler = (toolNames: string[]) => void;
  export type RefreshToolsHandler = () => void;
@@ -280,10 +290,8 @@ index 94ca072..317f057 100644
  export type GetThinkingLevelHandler = () => ThinkingLevel;
  export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
  export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
- /**
-  * Shared state created by loader, used during registration and runtime.
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index d7940e1..3eb3702 100644
+index d7940e14deb53a3a18237c51c5afb5712686f0ba..3eb37029df2956903d681c7ded12d212a5aae463 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -39,6 +39,7 @@ export const defaultModelPerProvider = {
@@ -295,7 +303,7 @@ index d7940e1..3eb3702 100644
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      "qwen-token-plan": "qwen3.7-max",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index fbcc6cb..4f3a52b 100644
+index fbcc6cb95e08390559fd4b0a554b0c8ec37d5be5..4f3a52b8b5f9ec6fe8d9faf46f6336fb37fef19b 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -82,6 +82,7 @@ export class ModelRuntime {
@@ -306,8 +314,24 @@ index fbcc6cb..4f3a52b 100644
              .map((provider) => provider.id === "radius"
              ? provider
              : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
+diff --git a/dist/core/project-trust.js b/dist/core/project-trust.js
+index 2f85768ab02be1e733036a31d02fb75c2f417df2..708cee0fddf4e9a938c24f4264289dbc7e57c1b0 100644
+--- a/dist/core/project-trust.js
++++ b/dist/core/project-trust.js
+@@ -2,7 +2,10 @@ import { APP_NAME, CONFIG_DIR_NAME } from "../config.js";
+ import { emitProjectTrustEvent } from "./extensions/runner.js";
+ import { getProjectTrustOptions, hasTrustRequiringProjectResources, } from "./trust-manager.js";
+ function formatProjectTrustPrompt(cwd) {
+-    return `Trust project folder?\n${cwd}\n\nThis allows ${APP_NAME} to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
++    // Kimchi addition: mention .kimchi/ and .claude/ alongside the config-dir
++    // resources, since the Kimchi trust scan gates those too, and speak as
++    // Kimchi rather than the upstream app name.
++    return `Trust project folder?\n${cwd}\n\nThis allows Kimchi to load ${CONFIG_DIR_NAME} settings and resources, Kimchi's .kimchi/ and .claude/ project resources (config, permissions, hooks, skills), install missing project packages, and execute project extensions.`;
+ }
+ async function selectProjectTrustOption(cwd, ctx) {
+     const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index c5ed4d7..551ba46 100644
+index c5ed4d72cd596fe384af4c7b9526247e86e4d91b..551ba46e610f90a634ad07ed6b26ca6602d98540 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -459,9 +459,16 @@ export class DefaultResourceLoader {
@@ -357,7 +381,7 @@ index c5ed4d7..551ba46 100644
                  }
                  else {
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index b71057d..ac9ac12 100644
+index b71057ddcf98b8500371f7b91f8ca10f52e7a78d..ac9ac1230792947a4c92421606e12e6fffe20157 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -73,6 +73,12 @@ export function createLocalShellOperations(shellName, resolveShellConfig) {
@@ -374,7 +398,7 @@ index b71057d..ac9ac12 100644
                  }
                  // Stream stdout and stderr.
 diff --git a/dist/core/tools/renderers/edit.js b/dist/core/tools/renderers/edit.js
-index 4def3e2..a132e8d 100644
+index 4def3e242133187867d60178e3364e26f0dfca4d..a132e8d8196d37ff25adb545021e59838df2fdd4 100644
 --- a/dist/core/tools/renderers/edit.js
 +++ b/dist/core/tools/renderers/edit.js
 @@ -10,7 +10,7 @@ import { renderDiff } from "../../../modes/interactive/components/diff.js";
@@ -405,8 +429,103 @@ index 4def3e2..a132e8d 100644
  }
  function buildEditCallComponent(component, args, theme, cwd) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+diff --git a/dist/core/trust-manager.js b/dist/core/trust-manager.js
+index 0877ee7edaa522a496d98dd5fc9e9133849d070e..8fbc555ca6dae3555ced6f169ffff985af5590f3 100644
+--- a/dist/core/trust-manager.js
++++ b/dist/core/trust-manager.js
+@@ -1,5 +1,5 @@
+ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+-import { homedir } from "node:os";
++import { homedir, tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import lockfile from "proper-lockfile";
+ import { CONFIG_DIR_NAME } from "../config.js";
+@@ -14,6 +14,38 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
+     "SYSTEM.md",
+     "APPEND_SYSTEM.md",
+ ];
++// Kimchi addition: project-local Kimchi (.kimchi/) and Claude Code (.claude/)
++// resources that the Kimchi harness reads and acts on at startup (config,
++// permissions, hooks, skills, agents, memory, tags, plans, ferments, MCP
++// servers). Without this list a cloned repo that ships these folders is
++// auto-trusted and every one of them takes effect without the trust prompt.
++// Checked in cwd AND its ancestors (the skills/tags readers walk ancestors,
++// so detection must match enforcement scope); the user's home directory is
++// excluded — ~/.kimchi is a user resource, mirroring the .agents/skills home
++// exclusion below — and the walk stops at the OS temp directory (not a
++// project tree; a stray .kimchi/.claude created there by any tool must not
++// gate unrelated temp-dir sessions).
++const KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES = [
++    ".kimchi/config.json",
++    ".kimchi/permissions.json",
++    ".kimchi/permissions.local.json",
++    ".kimchi/hooks.json",
++    ".kimchi/hooks.local.json",
++    ".kimchi/hooks",
++    ".kimchi/skills",
++    ".kimchi/agents",
++    ".kimchi/agents.json",
++    ".kimchi/agent-memory",
++    ".kimchi/agent-memory-local",
++    ".kimchi/mcp.json",
++    ".kimchi/tags.json",
++    ".kimchi/plans",
++    ".kimchi/ferments",
++    ".pi/agent/skills",
++    ".claude/skills",
++    ".claude/settings.json",
++    ".claude/settings.local.json",
++];
+ function normalizeCwd(cwd) {
+     return canonicalizePath(resolvePath(cwd));
+ }
+@@ -142,19 +174,38 @@ function withTrustFileLock(path, fn) {
+ }
+ /**
+  * Returns true when cwd has project-local resources that must be gated by
+- * project trust: trust-requiring entries under cwd/.pi, or .agents/skills in
+- * cwd or one of its ancestors. Returns false when no such project resources
+- * exist. The user/global ~/.agents/skills directory is always treated as a
+- * trusted user resource and is ignored here, even when cwd is $HOME.
++ * project trust: trust-requiring entries under cwd/.pi, Kimchi/Claude
++ * project resources in cwd or one of its ancestors (Kimchi addition, see
++ * KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES), or .agents/skills in cwd or one
++ * of its ancestors. Returns false when no such project resources exist. The
++ * user/global ~/.agents/skills directory is always treated as a trusted user
++ * resource and is ignored here, even when cwd is $HOME.
+  */
+ export function hasTrustRequiringProjectResources(cwd) {
+     const homeDir = canonicalizePath(resolvePath(process.env.HOME || homedir()));
+     const userAgentsSkillsDir = join(homeDir, ".agents", "skills");
+-    let currentDir = canonicalizePath(resolvePath(cwd));
+-    const configDir = join(currentDir, CONFIG_DIR_NAME);
++    const startDir = canonicalizePath(resolvePath(cwd));
++    const configDir = join(startDir, CONFIG_DIR_NAME);
+     if (TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.some((entry) => existsSync(join(configDir, entry)))) {
+         return true;
+     }
++    let kimchiDir = startDir;
++    const tempRoot = canonicalizePath(resolvePath(tmpdir()));
++    while (true) {
++        if (kimchiDir === tempRoot) {
++            break;
++        }
++        if (kimchiDir !== homeDir &&
++            KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES.some((entry) => existsSync(join(kimchiDir, entry)))) {
++            return true;
++        }
++        const parentDir = dirname(kimchiDir);
++        if (parentDir === kimchiDir) {
++            break;
++        }
++        kimchiDir = parentDir;
++    }
++    let currentDir = startDir;
+     while (true) {
+         const agentsSkillsDir = join(currentDir, ".agents", "skills");
+         if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
-index e23ca6d..d0f6fd7 100644
+index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
 +++ b/dist/modes/interactive/components/branch-summary-message.js
 @@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
@@ -419,7 +538,7 @@ index e23ca6d..d0f6fd7 100644
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/dist/modes/interactive/components/compaction-summary-message.js
-index 48c2271..93b59de 100644
+index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
 --- a/dist/modes/interactive/components/compaction-summary-message.js
 +++ b/dist/modes/interactive/components/compaction-summary-message.js
 @@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
@@ -432,7 +551,7 @@ index 48c2271..93b59de 100644
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
-index 7c6fb37..918f102 100644
+index 7c6fb37daea606e59d1616d24fb18d689fed6023..918f1027fa6014595cf399c456da967ff5d7d1a1 100644
 --- a/dist/modes/interactive/components/custom-message.js
 +++ b/dist/modes/interactive/components/custom-message.js
 @@ -20,7 +20,7 @@ export class CustomMessageComponent extends Container {
@@ -445,7 +564,7 @@ index 7c6fb37..918f102 100644
      }
      setExpanded(expanded) {
 diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/modes/interactive/components/extension-selector.js
-index 8220e06..b213a26 100644
+index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4ce1379683 100644
 --- a/dist/modes/interactive/components/extension-selector.js
 +++ b/dist/modes/interactive/components/extension-selector.js
 @@ -2,7 +2,7 @@
@@ -475,7 +594,7 @@ index 8220e06..b213a26 100644
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd88940..9a21d51 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..a5666cf0b7063ec4852e6278160e33af21300434 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
@@ -571,7 +690,7 @@ index bd88940..9a21d51 100644
      }
      getSearchInput() {
 diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
-index 561f3d2..da4601b 100644
+index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
 +++ b/dist/modes/interactive/components/skill-invocation-message.js
 @@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
@@ -584,7 +703,7 @@ index 561f3d2..da4601b 100644
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
-index 811f0f0..a3fd28e 100644
+index 811f0f024e769551b9bc96d26089887554751712..a3fd28ec904f0dd9440423a14e2bfe4868bcdf0e 100644
 --- a/dist/modes/interactive/components/tool-execution.js
 +++ b/dist/modes/interactive/components/tool-execution.js
 @@ -44,8 +44,8 @@ export class ToolExecutionComponent extends Container {
@@ -613,7 +732,7 @@ index 811f0f0..a3fd28e 100644
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index 2e04903..0cb75bb 100644
+index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8e3eae896 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
 @@ -11,6 +11,7 @@ export class UserMessageComponent extends Container {
@@ -644,7 +763,7 @@ index 2e04903..0cb75bb 100644
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..304960d 100644
+index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f8d7bcb6e 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1900,6 +1900,7 @@ export class InteractiveMode {
@@ -672,6 +791,15 @@ index a1e7d98..304960d 100644
          };
      }
      /**
+@@ -3176,7 +3187,7 @@ export class InteractiveMode {
+         if (this.chatContainer.children.length > 0) {
+             this.chatContainer.addChild(new Spacer(1));
+         }
+-        this.chatContainer.addChild(new Text(theme.fg("warning", `This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart pi.`), 1, 0));
++        this.chatContainer.addChild(new Text(theme.fg("warning", `This project is not trusted. Project ${CONFIG_DIR_NAME}, .kimchi/ and .claude/ resources and packages are ignored. Use /trust to save a trust decision, then restart Kimchi.`), 1, 0));
+     }
+     async getUserInput() {
+         const queuedInput = this.pendingUserInputs.shift();
 @@ -4036,6 +4047,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;

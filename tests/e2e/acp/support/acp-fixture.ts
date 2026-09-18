@@ -4,7 +4,7 @@
 // ACP speaks JSON-RPC over stdio — no node-pty like the TUI fixture.
 
 import { type ChildProcess, spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
@@ -93,6 +93,15 @@ export interface AcpFixtureOptions {
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
 	artifactName: string
+	/**
+	 * Pre-record a persisted trust decision for the session workDir (default
+	 * false). The project-trust gate fail-closes headless sessions without a
+	 * decision, so tests that seed .kimchi/ resources into the workDir AFTER
+	 * fixture creation need this opt-in — the fixture cannot scan for them at
+	 * creation time. Tests that exercise untrusted behavior (e.g. the MCP
+	 * project-trust scenarios) rely on the default.
+	 */
+	pretrustWorkDir?: boolean
 }
 
 /** Bundle of every notification / request the client received, in arrival order. */
@@ -357,6 +366,20 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH
 		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
+
+		// ACP is headless (no trust prompt), and the project-trust gate
+		// fail-closes without a persisted decision. Pre-record one only when the
+		// test opts in — workDir content is usually seeded after fixture
+		// creation, so the fixture cannot detect it itself, and master's own
+		// untrusted-MCP scenarios rely on the default (no decision). Keyed by
+		// the realpath of the workDir (pi's trust store canonicalizes paths).
+		if (options.pretrustWorkDir === true) {
+			writeFileSync(
+				join(agentDir, "trust.json"),
+				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
+				"utf-8",
+			)
+		}
 
 		proc = spawn(BINARY_PATH, ["--mode", "acp", ...extraArgs], {
 			stdio: ["pipe", "pipe", "inherit"],

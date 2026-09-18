@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { findNearestAncestorPath } from "../../utils/find-nearest-ancestor.js"
 
 /**
@@ -67,10 +68,22 @@ export function resolveBundledSkillsDir(home: string = homedir(), execPath?: str
 	return null
 }
 
-function mapConfigPath(path: string, cwd: string, home: string): string {
-	if (isAbsolute(path)) return path
-	if (path.startsWith(".config/") || path.startsWith(".config\\")) return join(home, path)
-	return join(cwd, path)
+interface MappedConfigPath {
+	/** Resolved absolute directory. */
+	dir: string
+	/** True when the path resolved under the project cwd — project-scoped, so gated on trust. */
+	cwdResolved: boolean
+}
+
+/**
+ * Map a configured skill path: absolute → as-is, `.config/` → home, else →
+ * cwd. The cwdResolved classification is the single source of truth for the
+ * trust gate (a project-resolved config path is project scope).
+ */
+function mapConfigPath(path: string, cwd: string, home: string): MappedConfigPath {
+	if (isAbsolute(path)) return { dir: path, cwdResolved: false }
+	if (path.startsWith(".config/") || path.startsWith(".config\\")) return { dir: join(home, path), cwdResolved: false }
+	return { dir: join(cwd, path), cwdResolved: true }
 }
 
 /**
@@ -80,21 +93,31 @@ function mapConfigPath(path: string, cwd: string, home: string): string {
  * directories are skipped; the harness root is always included because it is
  * the default writable root even when it has not been created yet, and the
  * bundled root is included only when it resolves to an existing directory.
+ *
+ * Project-scope roots — the nearest ancestor `.kimchi/skills` and config paths
+ * that resolve under cwd — are gated on project trust (src/project-scope-trust.ts):
+ * while the cwd is untrusted they are skipped entirely, so a cloned repo's
+ * skills cannot reach the system prompt.
  */
 export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[] {
 	const home = options.homeDir ?? homedir()
 	const bundled =
 		options.bundledDir === undefined ? resolveBundledSkillsDir(home, options.execPath) : options.bundledDir
+	const projectScopeAllowed = isProjectScopeAllowed(options.cwd)
 	const roots: SkillRoot[] = []
 
 	if (bundled) roots.push({ dir: bundled, kind: "bundled" })
 	roots.push({ dir: resolveHarnessSkillsDir(home), kind: "harness" })
 	for (const p of options.configPaths ?? DEFAULT_CONFIG_PATHS) {
-		const dir = mapConfigPath(p, options.cwd, home)
-		if (existsSync(dir)) roots.push({ dir, kind: "config" })
+		const { dir, cwdResolved } = mapConfigPath(p, options.cwd, home)
+		if (!existsSync(dir)) continue
+		if (cwdResolved && !projectScopeAllowed) continue
+		roots.push({ dir, kind: "config" })
 	}
-	const projectDir = findNearestAncestorPath(options.cwd, join(".kimchi", "skills"))
-	if (projectDir) roots.push({ dir: projectDir, kind: "project" })
+	if (projectScopeAllowed) {
+		const projectDir = findNearestAncestorPath(options.cwd, join(".kimchi", "skills"))
+		if (projectDir) roots.push({ dir: projectDir, kind: "project" })
+	}
 
 	return roots
 }

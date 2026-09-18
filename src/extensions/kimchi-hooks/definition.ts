@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
@@ -24,6 +25,10 @@ export function discoverKimchiHookResources(cwd = process.cwd()) {
 function kimchiHookSources(cwd = process.cwd()): CommandHookSource[] {
 	const projectDir = resolve(cwd)
 	if (!existsSync(join(projectDir, ".kimchi"))) return []
+	// Project and local hooks.json are gated on project trust: an untrusted
+	// repo must not ship hooks that kimchi lists (or, being default-enabled,
+	// executes) — mirroring the claude-code-hook-adapter.
+	if (!isProjectScopeAllowed(cwd)) return []
 	const sources: CommandHookSource[] = []
 	const projectHooks = join(projectDir, ".kimchi", "hooks.json")
 	const localHooks = join(projectDir, ".kimchi", "hooks.local.json")

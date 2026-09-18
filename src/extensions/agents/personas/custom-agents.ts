@@ -10,6 +10,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent"
+import { isProjectScopeAllowed } from "../../../project-scope-trust.js"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js"
 import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js"
@@ -26,7 +27,11 @@ export function loadCustomAgents(cwd: string): Map<string, AgentConfig> {
 		loadFromDir(pkgDir, agentsMap, "package") // lowest priority
 	}
 	loadFromDir(globalDir, agentsMap, "global") // overrides package
-	loadFromDir(projectDir, agentsMap, "project") // overrides everything
+	// Project personas override everything, so they are gated on project
+	// trust: an untrusted repo must not inject agent system prompts.
+	if (isProjectScopeAllowed(cwd)) {
+		loadFromDir(projectDir, agentsMap, "project") // overrides everything
+	}
 	return agentsMap
 }
 

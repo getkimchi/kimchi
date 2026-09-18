@@ -12,6 +12,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
@@ -100,6 +101,7 @@ beforeEach(() => {
 	isResourceEnabledMock.mockReturnValue(false)
 })
 afterEach(cleanPermissionEnv)
+afterEach(resetProjectScopeTrustForTests)
 
 vi.mock("../ide-adapter/index.js", () => ({
 	isIdeConnected: vi.fn(() => false),
@@ -1157,6 +1159,9 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
+			// Project-local ferments are gated on project trust — these tests
+			// exercise the trusted persistence path.
+			setProjectScopeTrusted(tmpDir, true)
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -1367,9 +1372,11 @@ describe("plan mode assumption detection", () => {
 
 		const planText = SHARED_PLAN_TEXT
 		// Use a cwd that cannot be written to so resolveFermentsDir + storage.create
-		// throw and the catch block fires.
+		// throw and the catch block fires. Trusted so the (unwritable) project
+		// ferments path is used rather than the global fallback.
 		const ctx = createMockContext(["Start as ferment"])
 		ctx.cwd = "/dev/null/nonexistent-path-that-cannot-be-created"
+		setProjectScopeTrusted(ctx.cwd, true)
 
 		await submitPlan(harness, planText, ctx)
 
@@ -1436,6 +1443,7 @@ describe("plan mode assumption detection", () => {
 		try {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
+			setProjectScopeTrusted(tmpDir, true)
 			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).

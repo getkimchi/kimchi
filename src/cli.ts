@@ -2,6 +2,7 @@
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
@@ -23,6 +24,8 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { setProjectScopeTrusted } from "./project-scope-trust.js"
+import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -295,6 +298,24 @@ try {
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
+	// Prime the kimchi project-scope gate BEFORE any project-config read and
+	// before subcommand dispatch — dispatched commands (e.g. `kimchi resources
+	// list`) use the gated discovery functions and previously trusted folders
+	// must show their project hooks. Honors pi's run-scoped trust overrides
+	// (--no-approve forces untrusted, --approve forces trusted); otherwise the
+	// persisted decision (or defaultProjectTrust=always) decides. With no
+	// decision recorded this resolves untrusted (fail closed) and the prompt
+	// inside pi's main() decides; settingsTrustSyncExtension then syncs the
+	// outcome onto the gate at session_start.
+	const cliTrustOptions = getParsedCliArgs().options
+	const cliTrustOverride =
+		cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
+	const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+	setProjectScopeTrusted(
+		process.cwd(),
+		resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
+	)
+
 	const dispatch = await dispatchSubcommand(originalArgs)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
@@ -317,6 +338,10 @@ try {
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
+
+		// Pre-main trust was primed above, before subcommand dispatch; re-prime
+		// is unnecessary (idempotent) but loadConfig below depends on it.
+
 		let config = loadConfig()
 
 		const envKey = captureApiKeyFromEnvironment()
@@ -617,7 +642,14 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
-		const effectiveSkillPaths = [...new Set([...skillPaths])]
+		// Config-derived skill paths resolve lazily: the trust prompt is answered
+		// inside pi's main() (after this point), and resource discovery re-runs
+		// post-trust — a frozen array here would keep a newly trusted project's
+		// configured skills invisible until a restart even after trusting.
+		// Dedup preserves the pre-change behavior (the old effectiveSkillPaths
+		// was [...new Set([...skillPaths])]) so duplicate config entries don't
+		// multiply downstream expansion work per discovery.
+		const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
 		const mcpAdapterExtensions = enabledExtensionFactories([
 			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 		] satisfies ManagedExtensionFactory[])
@@ -680,9 +712,9 @@ try {
 			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
 			autoModelExtension,
 			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
+				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension(effectiveSkillPaths),
+			promptEnrichmentExtension(configuredSkillPaths),
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),

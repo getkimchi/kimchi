@@ -19,6 +19,7 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
@@ -109,11 +110,15 @@ describe("Ferment V2 extension", () => {
 		})
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
 		cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-edit-")))
+		// The harness writes and reads .kimchi/plans objective files in cwd —
+		// project-scoped, so trusted for these tests.
+		setProjectScopeTrusted(cwd, true)
 		harness = createHarness({ cwd })
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
 
 	afterEach(async () => {
+		resetProjectScopeTrustForTests()
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
 		clearPermissionModeEnv(TEST_SESSION_ID)
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)

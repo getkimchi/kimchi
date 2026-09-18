@@ -25,6 +25,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -2331,12 +2332,22 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 	// ---- /agents interactive menu ----
 
-	const projectAgentsDir = () => join(process.cwd(), ".kimchi", "agents")
+	const projectAgentsDir = (cwd = process.cwd()) => join(cwd, ".kimchi", "agents")
 	const personalAgentsDir = () => join(getAgentDir(), "agents")
 
-	function findAgentFile(name: string): { path: string; location: "project" | "personal" } | undefined {
-		const projectPath = join(projectAgentsDir(), `${name}.md`)
-		if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+	function findAgentFile(
+		name: string,
+		cwd = process.cwd(),
+	): { path: string; location: "project" | "personal" } | undefined {
+		// The project location is gated on project trust: an untrusted repo's
+		// shipped agent files are only reachable through explicit user action
+		// (naming the agent), but even that must not read untrusted content.
+		// The cwd parameter lets command handlers pass the session cwd instead
+		// of the server process cwd (ACP sessions can differ).
+		if (isProjectScopeAllowed(cwd)) {
+			const projectPath = join(projectAgentsDir(cwd), `${name}.md`)
+			if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+		}
 		const personalPath = join(personalAgentsDir(), `${name}.md`)
 		if (existsSync(personalPath)) return { path: personalPath, location: "personal" }
 		return undefined
@@ -2517,7 +2528,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 			return
 		}
 
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		const isDefault = cfg.isDefault === true
 		const disabled = cfg.enabled === false
 
@@ -2581,7 +2592,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 		mkdirSync(targetDir, { recursive: true })
 
 		const targetPath = join(targetDir, `${name}.md`)
@@ -2618,7 +2629,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 	}
 
 	async function disableAgent(ctx: ExtensionCommandContext, name: string) {
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		if (file) {
 			const content = readFileSync(file.path, "utf-8")
 			if (content.includes("\nenabled: false\n")) {
@@ -2639,7 +2650,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 		mkdirSync(targetDir, { recursive: true })
 
 		const targetPath = join(targetDir, `${name}.md`)
@@ -2650,7 +2661,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 	}
 
 	async function enableAgent(ctx: ExtensionCommandContext, name: string) {
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		if (!file) return
 
 		const content = readFileSync(file.path, "utf-8")
@@ -2675,7 +2686,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 
 		const method = await ctx.ui.select("Creation method", ["Generate with AI (recommended)", "Manual configuration"])
 		if (!method) return

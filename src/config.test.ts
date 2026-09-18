@@ -28,6 +28,7 @@ import {
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
 } from "./config.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
 
 describe("loadConfig", () => {
 	let tempDir: string
@@ -37,6 +38,7 @@ describe("loadConfig", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
 		configPath = join(tempDir, "config.json")
 		vi.stubEnv("KIMCHI_API_KEY", "")
+		resetProjectScopeTrustForTests()
 	})
 
 	afterEach(() => {
@@ -162,6 +164,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "project-key" }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.apiKey).toBe("project-key")
 
@@ -179,6 +182,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ mcpSearch: { strategy: "bm25" } }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.mcpSearch.strategy).toBe("bm25")
 		expect(config.mcpSearch.bm25K1).toBe(1.5) // inherited from global
@@ -239,6 +243,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://project.example.com" }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.llmEndpoint).toBe("https://project.example.com")
 
@@ -256,6 +261,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", skillPaths: ["/project/path"] }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.skillPaths).toEqual(["/project/path"])
 
@@ -273,6 +279,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, "{ not valid json }")
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.apiKey).toBe("global-key")
 
@@ -290,6 +297,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "", llmEndpoint: "" }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.apiKey).toBe("global-key")
 		expect(config.llmEndpoint).toBe("https://global.example.com")
@@ -310,7 +318,9 @@ describe("loadConfig", () => {
 		writeFileSync(rootProjectPath, JSON.stringify({ apiKey: "root-project-key" }))
 		mkdirSync(subDir, { recursive: true })
 
-		// cwd is a subfolder that does NOT have .kimchi/config.json
+		// Trusted at the subfolder itself — the point of this test is that the
+		// project FILE resolution is cwd-exact and does not walk to the root.
+		setProjectScopeTrusted(subDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: subDir })
 		// Should NOT pick up rootDir/.kimchi/config.json
 		// Falls back to global only
@@ -347,8 +357,93 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "project" } }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.onboarding.sessionModeWizardSeenAt).toBeUndefined()
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("ignores the project config entirely while the project is untrusted (fail closed)", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(
+			globalPath,
+			JSON.stringify({ apiKey: "global-key", llmEndpoint: "https://global.example.com", skillPaths: ["/global/path"] }),
+		)
+		mkdirSync(dirname(projectPath), { recursive: true })
+		// A cloned repo shipping .kimchi/config.json with an attacker-controlled
+		// endpoint and its own key must not influence the session before trust.
+		writeFileSync(
+			projectPath,
+			JSON.stringify({
+				apiKey: "project-key",
+				llmEndpoint: "https://project.example.com",
+				skillPaths: ["/project/path"],
+			}),
+		)
+
+		// No setProjectScopeTrusted call: the gate stays closed.
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("global-key")
+		expect(config.llmEndpoint).toBe("https://global.example.com")
+		expect(config.skillPaths).toEqual(["/global/path"])
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("applies the project config once the project is trusted", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(
+			globalPath,
+			JSON.stringify({ apiKey: "global-key", llmEndpoint: "https://global.example.com", skillPaths: ["/global/path"] }),
+		)
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(
+			projectPath,
+			JSON.stringify({
+				apiKey: "project-key",
+				llmEndpoint: "https://project.example.com",
+				skillPaths: ["/project/path"],
+			}),
+		)
+
+		setProjectScopeTrusted(projectDir, true)
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("project-key")
+		expect(config.llmEndpoint).toBe("https://project.example.com")
+		expect(config.skillPaths).toEqual(["/project/path"])
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("an ancestor trust decision covers a nested cwd", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const nestedDir = join(projectDir, "src", "feature")
+		const globalPath = join(globalDir, "config.json")
+		// The project file is cwd-exact (loadConfig never walks up); the trust
+		// DECISION, however, resolves ancestor-first — so a decision recorded
+		// for the project root opens the gate for a nested session cwd.
+		const projectPath = join(nestedDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "project-key" }))
+
+		setProjectScopeTrusted(projectDir, true)
+		const config = loadConfig({ configPath: globalPath, cwd: nestedDir })
+		expect(config.apiKey).toBe("project-key")
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })

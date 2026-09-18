@@ -93,6 +93,7 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
+import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
@@ -2071,9 +2072,13 @@ async function createSessionSettings(
 	// only so a project cannot grant itself trust. Trust is then resolved the
 	// way pi's own no-UI path does and applied in-memory.
 	const settingsManager = SettingsManager.create(cwd, options.agentDir, { projectTrusted: false })
-	settingsManager.setProjectTrusted(
-		resolveHeadlessProjectTrust(cwd, options.agentDir, settingsManager.getDefaultProjectTrust()),
-	)
+	const projectTrusted = resolveHeadlessProjectTrust(cwd, options.agentDir, settingsManager.getDefaultProjectTrust())
+	settingsManager.setProjectTrusted(projectTrusted)
+	// Sync the same decision onto the kimchi project-scope gate so this
+	// session's reads of project-local .kimchi/ and .claude/ resources
+	// (config, permissions, hooks, skills) honor it. Keyed by cwd so concurrent
+	// ACP sessions in one process stay isolated.
+	setProjectScopeTrusted(cwd, projectTrusted)
 	initializeHeadlessTheme(settingsManager)
 	// Getter form: re-read on every request so mid-session settings edits
 	// apply live. The override slot is process-global — with several ACP

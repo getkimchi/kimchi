@@ -26,6 +26,7 @@ import type {
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 
 // Mock the browser auth flow so authenticate() can be tested without
 // starting a real callback server or opening a browser.
@@ -6502,6 +6503,9 @@ describe("session mode controller lifecycle", () => {
 		const kimchiDir = join(tmpDir, ".kimchi")
 		mkdirSync(kimchiDir, { recursive: true })
 		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		// Project permissions are gated on project trust — trust the temp project.
+		setProjectScopeTrusted(tmpDir, true)
 
 		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
