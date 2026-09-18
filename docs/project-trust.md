@@ -37,7 +37,7 @@ any of:
 | any ancestor | `.agents/skills/`, plus the `.kimchi/`/`.claude/` entries above — detection walks cwd and its ancestors (the skills/tags readers walk ancestors, so detection must match), with the user's home directory excluded |
 
 The kimchi-specific entries come from a patch to the pinned
-`@earendil-works/pi-coding-agent` (`patches/@earendil-works__pi-coding-agent@0.84.1.patch`
+`@earendil-works/pi-coding-agent` (`patches/@earendil-works__pi-coding-agent@0.85.1.patch`
 — see the header there for removal criteria). The entry list lives canonically
 in `TRUST_REQUIRING_PROJECT_RESOURCES` (`src/project-scope-trust.ts`); a unit
 test cross-checks the patch's embedded copy against the constant, so gating a

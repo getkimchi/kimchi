@@ -635,17 +635,13 @@ try {
 		// inside pi's main() (after this point), and resource discovery re-runs
 		// post-trust — a frozen array here would keep a newly trusted project's
 		// configured skills invisible until a restart even after trusting.
-<<<<<<< HEAD
-		const configuredSkillPaths = (): string[] => loadConfig().skillPaths ?? []
-		const mcpAdapterExtensions = enabledExtensionFactories([
-			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
-		] satisfies ManagedExtensionFactory[])
-=======
 		// Dedup preserves the pre-change behavior (the old effectiveSkillPaths
 		// was [...new Set([...skillPaths])]) so duplicate config entries don't
 		// multiply downstream expansion work per discovery.
 		const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
->>>>>>> e91fce662 (Merge master; address review comments and CI failures)
+		const mcpAdapterExtensions = enabledExtensionFactories([
+			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+		] satisfies ManagedExtensionFactory[])
 		const extensionFactories = [
 			// First so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.

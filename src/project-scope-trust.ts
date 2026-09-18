@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path"
  * plans, and ferments.
  *
  * This is the single source of truth for kimchi-side detection. The pi patch
- * (patches/@earendil-works__pi-coding-agent@0.84.1.patch) embeds the same
+ * (patches/@earendil-works__pi-coding-agent@0.85.1.patch) embeds the same
  * list in KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES inside pi's
  * hasTrustRequiringProjectResources (checked in cwd and ancestors, with the
  * user's home excluded); a unit test in project-scope-trust.test.ts
@@ -39,7 +39,7 @@ export const TRUST_REQUIRING_PROJECT_RESOURCES: readonly string[] = [
  * (`.kimchi/`, `.claude/`).
  *
  * Detection lives upstream of this module: the trust-scan extension in
- * `patches/@earendil-works__pi-coding-agent@0.84.1.patch` makes pi's
+ * `patches/@earendil-works__pi-coding-agent@0.85.1.patch` makes pi's
  * `hasTrustRequiringProjectResources` treat those folders as trust-requiring,
  * so pi prompts (or fail-closes headlessly) before loading anything. This
  * gate is the enforcement side: every kimchi-side reader of project-local

@@ -63,7 +63,7 @@ describe("TRUST_REQUIRING_PROJECT_RESOURCES stays in sync with the pi patch", ()
 			dirname(fileURLToPath(import.meta.url)),
 			"..",
 			"patches",
-			"@earendil-works__pi-coding-agent@0.84.1.patch",
+			"@earendil-works__pi-coding-agent@0.85.1.patch",
 		)
 		const patch = readFileSync(patchPath, "utf-8")
 		const match = patch.match(/const KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES = \[([\s\S]*?)\]/)
