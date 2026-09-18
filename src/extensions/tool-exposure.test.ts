@@ -277,13 +277,17 @@ const UPSTREAM_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"
  *  hidden at session start, revealed on the first background bash handle. */
 const BASH_CONTROL_TOOLS = ["bash_control"] as const
 
+const TODO_TOOLS = ["todos"] as const
+
 /** Every tool that must be advertised at session start, from the canonical
  *  measurement (2026-08-28 post-Chunk-4: 32 tools / ~7,881 est). Kept as a literal spec —
  *  deriving it from the same factories would make this test circular. */
 const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	...UPSTREAM_BUILTINS,
-	// todos — consolidated action tool; deferred (hidden) at session start,
-	// discovered via the slimmed ## Todos prompt block
+	// todos — consolidated action tool (cost-parity consolidation). Visible:
+	// hidden tools cannot be called in this runtime and the consolidated
+	// tool has no visible anchor to reveal it, unlike the suites below.
+	TODO_TOOLS[0],
 	// web-search / questionnaire — web_fetch is hidden until the first
 	// web_search call (anchor-deferral, cost-parity consolidation)
 	"web_search",
@@ -312,7 +316,6 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
  *  in the same drift-guard bucket. */
 const AGENT_CONTINUATION_TOOLS = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
 const WEB_FETCH_TOOLS = ["web_fetch"] as const
-const TODO_TOOLS = ["todos"] as const
 const LSP_TOOL_NAMES = ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_rename"] as const
 const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
 	...DAP_SESSION_TOOL_NAMES,
@@ -320,7 +323,6 @@ const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
 	...LSP_TOOL_NAMES,
 	...AGENT_CONTINUATION_TOOLS,
 	...WEB_FETCH_TOOLS,
-	...TODO_TOOLS,
 ])
 
 /** Extensions that register tools at session_start, mirroring the budget
@@ -384,13 +386,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 17-tool surface and hides the 22 deferred tools", async () => {
+	it("advertises exactly the documented 18-tool surface and hides the 21 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(17)
+		expect(visible.size).toBe(18)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -418,7 +420,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(15)
+			expect(visible.size).toBe(16)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -471,7 +473,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(22)
+		expect(votes.size).toBe(21)
 	})
 
 	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {

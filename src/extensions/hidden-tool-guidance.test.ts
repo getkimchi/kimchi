@@ -19,14 +19,14 @@ function makeToolResult(toolName: string, text = `Tool ${toolName} not found`): 
 }
 
 function createHarness() {
-	const { api, getHandler } = createExtensionApi()
+	const { api, getHandler, getActiveToolNames } = createExtensionApi()
 	hiddenToolGuidanceExtension(api)
-	return getHandler<MessageEndEvent, unknown>("message_end")
+	return { api, messageEnd: getHandler<MessageEndEvent, unknown>("message_end"), getActiveToolNames }
 }
 
 describe("hidden tool guidance", () => {
 	it("replaces a tool-not-found rejection when the result is created", async () => {
-		const messageEnd = createHarness()
+		const { messageEnd } = createHarness()
 		const result = await messageEnd({ type: "message_end", message: makeToolResult("bash") }, {} as never)
 
 		expect(result).toMatchObject({
@@ -43,16 +43,33 @@ describe("hidden tool guidance", () => {
 	})
 
 	it("leaves non-exact tool-not-found text unchanged", async () => {
-		const messageEnd = createHarness()
+		const { messageEnd } = createHarness()
 		const message = makeToolResult("bash", "Tool bash not found: additional detail")
 
 		expect(await messageEnd({ type: "message_end", message }, {} as never)).toBeUndefined()
 	})
 
 	it("leaves unrelated tool errors unchanged", async () => {
-		const messageEnd = createHarness()
+		const { messageEnd } = createHarness()
 		const message = makeToolResult("bash", "Command timed out")
 
 		expect(await messageEnd({ type: "message_end", message }, {} as never)).toBeUndefined()
+	})
+
+	it("reveals a registered-but-hidden tool on not-found", async () => {
+		const { api, messageEnd, getActiveToolNames } = createHarness()
+		api.registerTool({ name: "web_fetch" } as never)
+		// pare the tool back out of the active set like a deferral vote would
+		api.setActiveTools(api.getActiveTools().filter((n) => n !== "web_fetch"))
+		expect(getActiveToolNames()).not.toContain("web_fetch")
+		const result = await messageEnd({ type: "message_end", message: makeToolResult("web_fetch") }, {} as never)
+		expect(result).toBeDefined()
+		expect(getActiveToolNames()).toContain("web_fetch")
+	})
+
+	it("does not reveal genuinely unknown tool names", async () => {
+		const { messageEnd, getActiveToolNames } = createHarness()
+		await messageEnd({ type: "message_end", message: makeToolResult("not_a_real_tool") }, {} as never)
+		expect(getActiveToolNames()).not.toContain("not_a_real_tool")
 	})
 })

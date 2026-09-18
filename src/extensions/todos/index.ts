@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -17,7 +16,7 @@ import {
 	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
-import { registerTodosTool, TODO_TOOL_NAMES } from "./tool.js"
+import { registerTodosTool } from "./tool.js"
 import {
 	disposeTodoWidget,
 	ensureTodoWidget,
@@ -74,19 +73,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	registerTodoStatePersistence(pi)
 
-	// Todo-suite deferral (cost-parity consolidation): the consolidated
-	// `todos` tool stays registered but hidden at session start — the slimmed
-	// ## Todos guidance block names it for discovery, and hidden-but-
-	// registered keeps it callable on intent without paying its schema in
-	// every round (todo tools were 13.6% of all tool calls in the reference
-	// run, mostly bookkeeping churn). Agent workers keep full visibility:
-	// their personas are profile-managed and filter against visibility votes.
-	if (!isAgentWorker()) {
-		const visibility = createToolVisibility(pi)
-		pi.on("session_start", () => {
-			visibility.disable(TODO_TOOL_NAMES)
-		})
-	}
+	// NOTE: `todos` must stay in the ACTIVE tool list. Hidden tools cannot be
+	// called in this runtime (upstream resolves tool calls against the active
+	// set — the deferred suites (DAP, bash_control, web_fetch, Agent
+	// continuations) all have a visible anchor that reveals them; todos has
+	// none). The consolidation itself (5 schemas -> 1) is the cost win.
 
 	// No `before_agent_start` fallback appending the guidance block is
 	// registered here, on purpose: prompt-enrichment (registered earlier in

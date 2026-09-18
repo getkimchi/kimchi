@@ -13,6 +13,7 @@ export function createExtensionApi(): {
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	emitEvent: ReturnType<typeof vi.fn>
 	getAppendedEntries<T = unknown>(type: string): T[]
+	getActiveToolNames(): string[]
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
 	const on = vi.fn((event: string, handler: RegisteredHandler) => {
@@ -29,12 +30,14 @@ export function createExtensionApi(): {
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
 	const emitEvent = vi.fn()
-	// Active-tool set, mirroring the real runtime (registerTool activates).
-	// Extensions using the tool-visibility layer (deferrals) call
-	// getActiveTools/setActiveTools through these.
+	// Active-tool set + registry, mirroring the real runtime (registerTool
+	// activates). Extensions using the tool-visibility layer (deferrals) call
+	// getActiveTools/setActiveTools/getAllTools through these.
 	const activeTools = new Set<string>()
+	const registeredTools: Array<{ name: string }> = []
 	registerTool.mockImplementation((tool) => {
 		activeTools.add(tool.name)
+		registeredTools.push(tool)
 	})
 
 	return {
@@ -50,6 +53,7 @@ export function createExtensionApi(): {
 				activeTools.clear()
 				for (const n of names) activeTools.add(n)
 			},
+			getAllTools: () => [...registeredTools],
 			events: { emit: emitEvent },
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
@@ -71,6 +75,9 @@ export function createExtensionApi(): {
 		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
 		getAppendedEntries<T = unknown>(type: string): T[] {
 			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)
+		},
+		getActiveToolNames(): string[] {
+			return [...activeTools]
 		},
 	}
 }
