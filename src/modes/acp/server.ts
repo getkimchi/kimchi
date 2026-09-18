@@ -122,11 +122,11 @@ import {
 	tryParseSkillCommand,
 } from "./skill-commands.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
-import { notifyDroppedQueue, reconcileQueue } from "./steering.ts"
+import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
-import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.ts"
-import { emptyTurnUsage, updateTurnUsage } from "./usage.ts"
+import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.js"
+import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
 import { asString, extractImages, truncate } from "./utils.js"
 
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
