@@ -1047,6 +1047,16 @@ export class KimchiAcpAgent implements Agent {
 		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
 	}
 
+	/**
+	 * Read-and-drain via clearQueue()'s return value. The previousQueue reset
+	 * MUST precede clearQueue(): pi-mono dispatches queue_update synchronously
+	 * (AgentSession._emit is a plain listener loop, and clearQueue/
+	 * message_start-splice emit inline — verified in the bundled source), so
+	 * the post-drain empty snapshot arrives before this method returns and
+	 * diffs against `undefined` → zero consumed. Any pre-drain snapshot this
+	 * drains reports is gone; there is no async buffer in which a stale
+	 * queue_update could resurrect dropped messages.
+	 */
 	private drainQueue(entry: SessionRecord): {
 		steering: string[]
 		followUp: string[]
