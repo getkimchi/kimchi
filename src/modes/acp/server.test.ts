@@ -5001,9 +5001,11 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
+		// Routing entries carry a description; the concrete models below do not.
 		expect(res.models?.availableModels[0]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
+			description: "Routes each task to the best model, with an orchestrator and workers.",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
