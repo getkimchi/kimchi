@@ -34,7 +34,14 @@ any of:
 | `.config/kimchi/harness/` | `settings.json`, `extensions/`, `skills/`, `prompts/`, `themes/`, `SYSTEM.md`, `APPEND_SYSTEM.md` (pi's own project scope) |
 | `.kimchi/` | `config.json`, `permissions.json`, `permissions.local.json`, `hooks.json`, `hooks.local.json`, `hooks/`, `skills/`, `agents/`, `agents.json`, `agent-memory/`, `agent-memory-local/`, `mcp.json`, `tags.json`, `plans/`, `ferments/` |
 | `.claude/` | `skills/`, `settings.json`, `settings.local.json` |
+| `.pi/agent/skills` | kimchi's default skill discovery also reads this pi-style project location (gated on trust like the others) |
 | any ancestor | `.agents/skills/`, plus the `.kimchi/`/`.claude/` entries above — detection walks cwd and its ancestors (the skills/tags readers walk ancestors, so detection must match), with the user's home directory excluded |
+
+Custom relative skill paths configured in the user's global config (beyond the
+ defaults above) resolve under the project cwd at runtime and are gated on
+ trust the same way — but a repo shipping only such a directory cannot be
+ detected by the fixed scan list, so it does not trigger the prompt by itself
+ (the user's own config opted into that location).
 
 The kimchi-specific entries come from a patch to the pinned
 `@earendil-works/pi-coding-agent` (`patches/@earendil-works__pi-coding-agent@0.85.1.patch`

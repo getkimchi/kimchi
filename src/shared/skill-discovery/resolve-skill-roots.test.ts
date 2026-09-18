@@ -106,16 +106,19 @@ describe("resolveSkillRoots", () => {
 
 	it("skips cwd-resolved config roots while the project is untrusted", () => {
 		mkdirSync(join(cwd, ".claude", "skills"), { recursive: true })
+		mkdirSync(join(cwd, ".pi", "agent", "skills"), { recursive: true })
 		mkdirSync(join(home, ".config", "kimchi", "harness", "skills"), { recursive: true })
 
-		// Untrusted: the cwd-resolved .claude/skills default config path is
+		// Untrusted: the cwd-resolved .claude/skills and .pi/agent/skills default config path is
 		// project-scoped and skipped; the home-resolved harness dir remains.
 		const untrusted = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
 		expect(untrusted.map((r) => r.kind)).toEqual(["harness"])
 
 		setProjectScopeTrusted(cwd, true)
 		const trusted = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
-		expect(trusted.map((r) => r.kind)).toEqual(["harness", "config"])
-		expect(trusted.find((r) => r.kind === "config")?.dir).toBe(join(cwd, ".claude", "skills"))
+		expect(trusted.map((r) => r.kind)).toEqual(["harness", "config", "config"])
+		expect(trusted.filter((r) => r.kind === "config").map((r) => r.dir)).toEqual(
+			expect.arrayContaining([join(cwd, ".claude", "skills"), join(cwd, ".pi", "agent", "skills")]),
+		)
 	})
 })

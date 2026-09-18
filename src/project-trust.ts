@@ -61,3 +61,19 @@ export function resolvePreMainProjectTrust(cwd: string, agentDir: string): boole
 		return false
 	}
 }
+
+/**
+ * Pre-main trust resolution honoring pi's run-scoped trust overrides:
+ * --no-approve forces untrusted (a persisted trust decision must not leak
+ * project config into this run), --approve forces trusted, and otherwise the
+ * persisted decision / defaultProjectTrust decides. Mirrors the explicitTrust
+ * precedence in the MCP facade (src/extensions/mcp/index.ts).
+ */
+export function resolvePreMainProjectTrustWithOverrides(
+	cwd: string,
+	agentDir: string,
+	trustOverride: boolean | undefined,
+): boolean {
+	if (trustOverride !== undefined) return trustOverride
+	return resolvePreMainProjectTrust(cwd, agentDir)
+}

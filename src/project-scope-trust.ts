@@ -29,6 +29,7 @@ export const TRUST_REQUIRING_PROJECT_RESOURCES: readonly string[] = [
 	".kimchi/tags.json",
 	".kimchi/plans",
 	".kimchi/ferments",
+	".pi/agent/skills",
 	".claude/skills",
 	".claude/settings.json",
 	".claude/settings.local.json",

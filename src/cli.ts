@@ -25,7 +25,7 @@ import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
-import { resolvePreMainProjectTrust } from "./project-trust.js"
+import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -298,6 +298,24 @@ try {
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
+	// Prime the kimchi project-scope gate BEFORE any project-config read and
+	// before subcommand dispatch — dispatched commands (e.g. `kimchi resources
+	// list`) use the gated discovery functions and previously trusted folders
+	// must show their project hooks. Honors pi's run-scoped trust overrides
+	// (--no-approve forces untrusted, --approve forces trusted); otherwise the
+	// persisted decision (or defaultProjectTrust=always) decides. With no
+	// decision recorded this resolves untrusted (fail closed) and the prompt
+	// inside pi's main() decides; settingsTrustSyncExtension then syncs the
+	// outcome onto the gate at session_start.
+	const cliTrustOptions = getParsedCliArgs().options
+	const cliTrustOverride =
+		cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
+	const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+	setProjectScopeTrusted(
+		process.cwd(),
+		resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
+	)
+
 	const dispatch = await dispatchSubcommand(originalArgs)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
@@ -321,15 +339,8 @@ try {
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
 
-		// Open the kimchi project-scope gate from any persisted (or
-		// defaultProjectTrust=always) decision before the first config read:
-		// pi resolves — and prompts for — project trust inside main(), which
-		// runs after these pre-main reads. With no decision recorded this
-		// resolves untrusted (fail closed) and the prompt inside main()
-		// decides; settingsTrustSyncExtension then syncs the outcome onto the
-		// gate at session_start.
-		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
-		setProjectScopeTrusted(process.cwd(), resolvePreMainProjectTrust(process.cwd(), preMainAgentDir))
+		// Pre-main trust was primed above, before subcommand dispatch; re-prime
+		// is unnecessary (idempotent) but loadConfig below depends on it.
 
 		let config = loadConfig()
 

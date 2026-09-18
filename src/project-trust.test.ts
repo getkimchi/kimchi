@@ -3,7 +3,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resolveHeadlessProjectTrust, resolvePreMainProjectTrust } from "./project-trust.js"
+import {
+	resolveHeadlessProjectTrust,
+	resolvePreMainProjectTrust,
+	resolvePreMainProjectTrustWithOverrides,
+} from "./project-trust.js"
 
 let root: string
 let cwd: string
@@ -88,5 +92,26 @@ describe("resolvePreMainProjectTrust", () => {
 
 	it("trusts a cwd with no trust-requiring project resources", () => {
 		expect(resolvePreMainProjectTrust(cwd, agentDir)).toBe(true)
+	})
+})
+
+describe("resolvePreMainProjectTrustWithOverrides", () => {
+	it("--no-approve forces untrusted even with a persisted trust decision", () => {
+		addProjectSettings()
+		new ProjectTrustStore(agentDir).set(cwd, true)
+		// A previously trusted project's config must not leak into a
+		// --no-approve run before pi processes the flag.
+		expect(resolvePreMainProjectTrustWithOverrides(cwd, agentDir, false)).toBe(false)
+	})
+
+	it("--approve forces trusted without a persisted decision", () => {
+		addProjectSettings()
+		expect(resolvePreMainProjectTrustWithOverrides(cwd, agentDir, true)).toBe(true)
+	})
+
+	it("without an override, the persisted decision decides", () => {
+		addProjectSettings()
+		new ProjectTrustStore(agentDir).set(cwd, true)
+		expect(resolvePreMainProjectTrustWithOverrides(cwd, agentDir, undefined)).toBe(true)
 	})
 })

@@ -28,7 +28,7 @@
 # Security (project trust): extends hasTrustRequiringProjectResources
 # (dist/core/trust-manager.js) with Kimchi's project-local .kimchi/ and .claude/
 # resources (config, permissions, hooks, skills, agents, memory, tags, plans,
-# ferments, MCP servers) so a cloned repo that ships them triggers the trust
+# ferments, MCP servers, pi-agent skills) so a cloned repo that ships them triggers the trust
 # prompt instead of being auto-trusted. The list is checked in cwd AND its
 # ancestors (matching the ancestor-walking skills/tags readers), stopping at
 # the user's home (a user resource) and the OS temp directory (not a project
@@ -430,7 +430,7 @@ index 4def3e242133187867d60178e3364e26f0dfca4d..a132e8d8196d37ff25adb545021e5983
  function buildEditCallComponent(component, args, theme, cwd) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 diff --git a/dist/core/trust-manager.js b/dist/core/trust-manager.js
-index 0877ee7edaa522a496d98dd5fc9e9133849d070e..df6221bdc5ab3aa2c80e138f1632d17062792d9a 100644
+index 0877ee7edaa522a496d98dd5fc9e9133849d070e..8fbc555ca6dae3555ced6f169ffff985af5590f3 100644
 --- a/dist/core/trust-manager.js
 +++ b/dist/core/trust-manager.js
 @@ -1,5 +1,5 @@
@@ -440,7 +440,7 @@ index 0877ee7edaa522a496d98dd5fc9e9133849d070e..df6221bdc5ab3aa2c80e138f1632d170
  import { dirname, join } from "node:path";
  import lockfile from "proper-lockfile";
  import { CONFIG_DIR_NAME } from "../config.js";
-@@ -14,6 +14,37 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
+@@ -14,6 +14,38 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
      "SYSTEM.md",
      "APPEND_SYSTEM.md",
  ];
@@ -471,6 +471,7 @@ index 0877ee7edaa522a496d98dd5fc9e9133849d070e..df6221bdc5ab3aa2c80e138f1632d170
 +    ".kimchi/tags.json",
 +    ".kimchi/plans",
 +    ".kimchi/ferments",
++    ".pi/agent/skills",
 +    ".claude/skills",
 +    ".claude/settings.json",
 +    ".claude/settings.local.json",
@@ -478,7 +479,7 @@ index 0877ee7edaa522a496d98dd5fc9e9133849d070e..df6221bdc5ab3aa2c80e138f1632d170
  function normalizeCwd(cwd) {
      return canonicalizePath(resolvePath(cwd));
  }
-@@ -142,19 +173,38 @@ function withTrustFileLock(path, fn) {
+@@ -142,19 +174,38 @@ function withTrustFileLock(path, fn) {
  }
  /**
   * Returns true when cwd has project-local resources that must be gated by
