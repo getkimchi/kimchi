@@ -89,6 +89,13 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import {
+	AUTO_MODEL_DESCRIPTION,
+	AUTO_MODEL_NAME,
+	AUTO_MODEL_REF,
+	isAutoModel,
+} from "../../extensions/router/constants.js"
+import { getAutoRoutingState } from "../../extensions/router/state.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
@@ -212,6 +219,12 @@ type SessionRecord = {
 	 * Seeded from the branch on loadSession so replay emits matching ids.
 	 */
 	nextBlockId: number
+	/**
+	 * Name last published for the model config option. Lets us push a
+	 * `config_option_update` only when the Auto router's resolved pick actually
+	 * changes the label, instead of on every assistant message.
+	 */
+	lastModelOptionName?: string
 	/**
 	 * Per-assistant-message map from pi-mono's contentIndex → assigned
 	 * messageId. Cleared on each agent_start/message_start so a new assistant message
@@ -1120,6 +1133,11 @@ export class KimchiAcpAgent implements Agent {
 				// message's assignment.
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
+				// The Auto router resolves during `before_agent_start`, so by the
+				// first assistant message its pick is known and the model option's
+				// name has become `Auto (<id>)`. Push it once per change so clients
+				// showing the selected model reflect what Auto actually chose.
+				this.publishModelOptionIfChanged(sessionId, entry)
 				return
 			}
 			case "message_update": {
@@ -1585,6 +1603,28 @@ export class KimchiAcpAgent implements Agent {
 		flushText()
 	}
 
+	/**
+	 * Re-publish the session's config options when the model option's name has
+	 * changed since the last push — which happens when the Auto router resolves
+	 * a concrete model and the label becomes `Auto (<id>)`.
+	 *
+	 * No-op for concrete and unresolved selections, so a session that never uses
+	 * Auto sends nothing extra.
+	 */
+	private publishModelOptionIfChanged(sessionId: string, entry: SessionRecord): void {
+		const configOptions = buildConfigOptions(entry.session, this.getInitialPermissionMode(entry.session).mode)
+		const modelOption = configOptions.find((opt) => opt.id === "model")
+		if (modelOption?.type !== "select") return
+		// Compare the Auto entry's own name — the option's `name` is the static
+		// section title ("Model") and never changes.
+		const autoName = (modelOption.options as SessionConfigSelectOption[]).find(
+			(opt) => opt.value === AUTO_MODEL_REF,
+		)?.name
+		if (!autoName || autoName === entry.lastModelOptionName) return
+		entry.lastModelOptionName = autoName
+		this.send({ sessionId, update: { sessionUpdate: "config_option_update", configOptions } })
+	}
+
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -1818,6 +1858,20 @@ function getSessionModelRegistry(
 	return session.modelRegistry ?? new ModelRegistry(session.modelRuntime)
 }
 
+/**
+ * The Auto router's select option.
+ *
+ * Auto is the one model whose row is not a plain name: it carries a
+ * description, and once the router has picked a concrete model for this
+ * session the name becomes `Auto (glm-5.3)` — mirroring the status bar, so a
+ * client showing only the selected model still says what Auto resolved to.
+ */
+function autoModelOption(sessionId: string): SessionConfigSelectOption {
+	const state = getAutoRoutingState(sessionId)
+	const name = state.status === "resolved" ? `${AUTO_MODEL_NAME} (${state.model.id})` : AUTO_MODEL_NAME
+	return { value: AUTO_MODEL_REF, name, description: AUTO_MODEL_DESCRIPTION }
+}
+
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
 	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
 	const modelRegistry = getSessionModelRegistry(session)
@@ -1827,17 +1881,18 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		modelId: orchId,
 	} = getOrchestratorModel(session.sessionId, modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
+	// `description` is the optional secondary line ACP clients render beneath an
+	// option's name. Only the two routing entries carry one — concrete models are
+	// self-describing — and a client that ignores the field still shows the name.
 	const options = [
 		{
 			value: "multi-model",
 			name: `Multi-model (${orchName})`,
+			description: "Routes each task to the best model, with an orchestrator and workers.",
 		},
 		...modelRegistry
 			.getAvailable()
-			.map((m) => ({
-				value: refFromModel(m),
-				name: m.name,
-			}))
+			.map((m) => (isAutoModel(m) ? autoModelOption(session.sessionId) : { value: refFromModel(m), name: m.name }))
 			.sort((a, b) => a.value.localeCompare(b.value)),
 	]
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
@@ -1867,6 +1922,9 @@ export function buildSessionModelState(configOptions: SessionConfigOption[]): Se
 		availableModels: options.map((m) => ({
 			modelId: m.value,
 			name: m.name,
+			// Carry the option's secondary line through, so clients reading
+			// `models` see the same labelling as those reading `configOptions`.
+			...(m.description ? { description: m.description } : {}),
 		})),
 	}
 }

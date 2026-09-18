@@ -1,3 +1,4 @@
+import type * as acp from "@agentclientprotocol/sdk"
 import { afterEach, describe, expect, it } from "vitest"
 import type { AcpFixture } from "./support/acp-fixture.js"
 import { startAcpFixture } from "./support/acp-fixture.js"
@@ -37,6 +38,13 @@ describe("ACP Auto model", () => {
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
 		expect(session.models?.currentModelId).toBe("kimchi-dev/auto")
 		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
+		// Auto advertises a short name plus a separate description, so clients
+		// that render a two-line row (name above, description below) do not end
+		// up showing the explanation as the row's title.
+		expect(session.models?.availableModels.find((model) => model.modelId === "kimchi-dev/auto")).toMatchObject({
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
 
 		const result = await prompt(fixture, session.sessionId, "Use the saved Auto model")
 		expect(result.stopReason).toBe("end_turn")
@@ -45,6 +53,21 @@ describe("ACP Auto model", () => {
 		const chat = fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
 		expect(chat).toHaveLength(1)
 		expect(chat[0]?.body).toMatchObject({ model: "routed" })
+
+		// Once the router resolves, the label carries the pick so a client showing
+		// only the selected model still reports what Auto chose.
+		const configUpdates = fixture.client.sessionUpdates.filter(
+			({ update }) => update.sessionUpdate === "config_option_update",
+		)
+		const autoNames = configUpdates.flatMap(({ update }) => {
+			const modelOption = (update as { configOptions: acp.SessionConfigOption[] }).configOptions.find(
+				(opt) => opt.id === "model",
+			)
+			if (modelOption?.type !== "select") return []
+			const auto = modelOption.options.find((opt) => "value" in opt && opt.value === "kimchi-dev/auto")
+			return auto && "name" in auto ? [auto.name] : []
+		})
+		expect(autoNames).toContain("Auto (routed)")
 	})
 
 	it("keeps a model chosen after the rollout instead of returning to Auto", async () => {

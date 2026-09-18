@@ -4,7 +4,12 @@ import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingL
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
-import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
+import {
+	AUTO_MODEL_API,
+	AUTO_MODEL_DESCRIPTION,
+	AUTO_MODEL_ID,
+	AUTO_MODEL_NAME,
+} from "./extensions/router/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
@@ -205,7 +210,10 @@ export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
 	return {
 		id: AUTO_MODEL_ID,
-		name: AUTO_MODEL_NAME,
+		// Pi's `Model` has no description field and `/model` shows the id as the
+		// row title, so the name is the only place the explanation fits. Surfaces
+		// with a real description slot (ACP) use the two constants separately.
+		name: `${AUTO_MODEL_NAME} — ${AUTO_MODEL_DESCRIPTION}`,
 		api: AUTO_MODEL_API,
 		provider: "ai-enabler",
 		// Auto is virtual, but Pi reads this capability to expose the session's
