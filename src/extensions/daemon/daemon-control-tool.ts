@@ -51,6 +51,14 @@ export interface DaemonControlToolOptions {
 	stateDir?: string
 }
 
+export type DaemonControlAction = "list" | "status" | "logs" | "stop"
+
+export interface DaemonControlParams {
+	action: DaemonControlAction
+	id?: string
+	max_bytes?: number
+}
+
 function formatUptime(startedAt: string): string {
 	const ms = Date.now() - new Date(startedAt).getTime()
 	if (!Number.isFinite(ms) || ms < 0) return "unknown"
@@ -60,6 +68,120 @@ function formatUptime(startedAt: string): string {
 	if (m < 60) return `${m}m${s % 60}s`
 	const h = Math.floor(m / 60)
 	return `${h}h${m % 60}m`
+}
+
+/** Shared control implementation — used by both the standalone
+ * `createDaemonControlToolDefinition` (kept for tests) and the consolidated
+ * `daemon` tool's non-start actions. */
+export async function executeDaemonControl(
+	params: DaemonControlParams,
+	stateDir: string,
+): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
+	const { action, id } = params
+
+	// ── list ────────────────────────────────────────────────────
+	if (action === "list") {
+		const live = listDaemons(stateDir)
+		if (live.length === 0) {
+			return {
+				content: [{ type: "text", text: "No live daemons." }],
+				details: { action, daemons: [] },
+			}
+		}
+		const lines = live.map(
+			({ record }) =>
+				`${record.id}  pid ${record.pid}  up ${formatUptime(record.startedAt)}\n  ${record.command}\n  log: ${record.logFile}`,
+		)
+		return {
+			content: [{ type: "text", text: `${live.length} live daemon(s):\n\n${lines.join("\n\n")}` }],
+			details: {
+				action,
+				daemons: live.map(({ record }) => ({ id: record.id, pid: record.pid, command: record.command })),
+			},
+		}
+	}
+
+	// status / logs / stop require an id
+	if (!id) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Error: action "${action}" requires an 'id' (from a daemon start, or daemon action "list").`,
+				},
+			],
+			details: { action, error: "missing-id" },
+		}
+	}
+	const record = readDaemon(stateDir, id)
+	if (!record) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Daemon '${id}' is not recorded (already stopped, or never started here). Run daemon action "list" to see live daemons.`,
+				},
+			],
+			details: { action, id, error: "unknown-id" },
+		}
+	}
+
+	// ── status ──────────────────────────────────────────────────
+	if (action === "status") {
+		// isPidAlive directly — listDaemons would prune dead records, a
+		// surprising side effect from a read-only status query.
+		const live = isPidAlive(record.pid)
+		return {
+			content: [
+				{
+					type: "text",
+					text:
+						`Daemon ${record.id}: ${live ? "RUNNING" : "not running"}\n` +
+						`  pid:      ${record.pid}\n  command:  ${record.command}\n  cwd:      ${record.cwd}\n` +
+						`  started:  ${record.startedAt} (up ${formatUptime(record.startedAt)})\n  log:      ${record.logFile}`,
+				},
+			],
+			details: { action, id, alive: live, pid: record.pid },
+		}
+	}
+
+	// ── logs ────────────────────────────────────────────────────
+	if (action === "logs") {
+		const tail = readLogTail(record.logFile, params.max_bytes ?? 8192)
+		return {
+			content: [
+				{
+					type: "text",
+					text: tail !== undefined ? tail : `(no log output yet — ${record.logFile} is missing or empty)`,
+				},
+			],
+			details: { action, id, logFile: record.logFile },
+		}
+	}
+
+	// ── stop ────────────────────────────────────────────────────
+	// Explicit branch, NOT a fallthrough — if a future action is added
+	// above but not handled, we must not silently STOP the daemon.
+	if (action === "stop") {
+		const { note } = await stopDaemon(record, stateDir)
+		return {
+			content: [{ type: "text", text: note }],
+			details: { action, id, pid: record.pid },
+		}
+	}
+
+	// Unreachable for the current schema (closed union) — but if a
+	// new action is ever added and its branch is missed, nag rather
+	// than fall into a destructive default.
+	return {
+		content: [
+			{
+				type: "text",
+				text: `Unknown daemon action "${action}". Valid actions: list, status, logs, stop.`,
+			},
+		],
+		details: { action, error: "unknown-action" },
+	}
 }
 
 export function createDaemonControlToolDefinition(
@@ -73,112 +195,6 @@ export function createDaemonControlToolDefinition(
 		description: DAEMON_CONTROL_TOOL_DESCRIPTION,
 		promptSnippet: "check or stop detached daemons",
 		parameters: daemonControlSchema,
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const { action, id } = params
-
-			// ── list ────────────────────────────────────────────────────
-			if (action === "list") {
-				const live = listDaemons(stateDir)
-				if (live.length === 0) {
-					return {
-						content: [{ type: "text", text: "No live daemons." }],
-						details: { action, daemons: [] },
-					}
-				}
-				const lines = live.map(
-					({ record }) =>
-						`${record.id}  pid ${record.pid}  up ${formatUptime(record.startedAt)}\n  ${record.command}\n  log: ${record.logFile}`,
-				)
-				return {
-					content: [{ type: "text", text: `${live.length} live daemon(s):\n\n${lines.join("\n\n")}` }],
-					details: {
-						action,
-						daemons: live.map(({ record }) => ({ id: record.id, pid: record.pid, command: record.command })),
-					},
-				}
-			}
-
-			// status / logs / stop require an id
-			if (!id) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Error: action "${action}" requires an 'id' (from the daemon tool or daemon_control list).`,
-						},
-					],
-					details: { action, error: "missing-id" },
-				}
-			}
-			const record = readDaemon(stateDir, id)
-			if (!record) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Daemon '${id}' is not recorded (already stopped, or never started here). Run daemon_control action "list" to see live daemons.`,
-						},
-					],
-					details: { action, id, error: "unknown-id" },
-				}
-			}
-
-			// ── status ──────────────────────────────────────────────────
-			if (action === "status") {
-				// isPidAlive directly — listDaemons would prune dead records, a
-				// surprising side effect from a read-only status query.
-				const live = isPidAlive(record.pid)
-				return {
-					content: [
-						{
-							type: "text",
-							text:
-								`Daemon ${record.id}: ${live ? "RUNNING" : "not running"}\n` +
-								`  pid:      ${record.pid}\n  command:  ${record.command}\n  cwd:      ${record.cwd}\n` +
-								`  started:  ${record.startedAt} (up ${formatUptime(record.startedAt)})\n  log:      ${record.logFile}`,
-						},
-					],
-					details: { action, id, alive: live, pid: record.pid },
-				}
-			}
-
-			// ── logs ────────────────────────────────────────────────────
-			if (action === "logs") {
-				const tail = readLogTail(record.logFile, params.max_bytes ?? 8192)
-				return {
-					content: [
-						{
-							type: "text",
-							text: tail !== undefined ? tail : `(no log output yet — ${record.logFile} is missing or empty)`,
-						},
-					],
-					details: { action, id, logFile: record.logFile },
-				}
-			}
-
-			// ── stop ────────────────────────────────────────────────────
-			// Explicit branch, NOT a fallthrough — if a future action is added
-			// above but not handled, we must not silently STOP the daemon.
-			if (action === "stop") {
-				const { note } = await stopDaemon(record, stateDir)
-				return {
-					content: [{ type: "text", text: note }],
-					details: { action, id, pid: record.pid },
-				}
-			}
-
-			// Unreachable for the current schema (closed union) — but if a
-			// new action is ever added and its branch is missed, nag rather
-			// than fall into a destructive default.
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Unknown daemon_control action "${action}". Valid actions: list, status, logs, stop.`,
-					},
-				],
-				details: { action, error: "unknown-action" },
-			}
-		},
+		execute: (_toolCallId, params, _signal, _onUpdate, _ctx) => executeDaemonControl(params, stateDir),
 	}
 }

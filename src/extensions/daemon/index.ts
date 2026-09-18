@@ -1,8 +1,8 @@
 /**
  * Daemon extension entry point.
  *
- * Registers the `daemon` and `daemon_control` tools (see
- * `./daemon-tool.ts` for the restrictive design goal). Unlike every other
+ * Registers the consolidated `daemon` tool (see `./daemon-tool.ts` for the
+ * restrictive design goal). Unlike every other
  * process-lifecycle extension in this repo, `session_shutdown` does NOT
  * kill anything here — outliving the session is the entire contract. The
  * only shutdown behavior is an interactive honesty notice: when the user
@@ -11,15 +11,14 @@
  */
 import type { ExtensionAPI, ExtensionContext, SessionShutdownEvent } from "@earendil-works/pi-coding-agent"
 import { isExperimentalFeaturesEnabled } from "../experimental.js"
-import { createDaemonControlToolDefinition } from "./daemon-control-tool.js"
 import { createDaemonToolDefinition } from "./daemon-tool.js"
 import { daemonStateDir, listDaemons } from "./state.js"
 
 /** One line per live daemon, for the shutdown notice. */
 function formatDaemonNotice(count: number, firstId: string): string {
 	return count === 1
-		? `1 detached daemon still running (${firstId}) — it will keep running after kimchi exits. Stop it later with: kimchi, then daemon_control stop ${firstId}`
-		: `${count} detached daemons still running (${firstId}, …) — they keep running after kimchi exits. Stop later with daemon_control.`
+		? `1 detached daemon still running (${firstId}) — it will keep running after kimchi exits. Stop it later with: kimchi, then daemon stop ${firstId}`
+		: `${count} detached daemons still running (${firstId}, …) — they keep running after kimchi exits. Stop later with the daemon tool.`
 }
 
 /** Headless steering: services that must outlive the session need `daemon`. */
@@ -46,7 +45,6 @@ export default function daemonExtension(pi: ExtensionAPI): void {
 		// bespoke entry points).
 		if (!isExperimentalFeaturesEnabled()) return
 		pi.registerTool(createDaemonToolDefinition())
-		pi.registerTool(createDaemonControlToolDefinition())
 	})
 
 	pi.on("session_shutdown", (_event: SessionShutdownEvent, ctx) => {
