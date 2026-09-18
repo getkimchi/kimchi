@@ -43,15 +43,22 @@ const TWO_MODELS = [
 	{ slug: "heavy", displayName: "Fake Heavy", contextWindow: 1_000_000, maxTokens: 4096 },
 ] as const
 
-test("legacy multi-model is hidden from the model picker and command suggestions", async ({ terminal }) => {
+test("multi-model is listed in the model picker and command suggestions", async ({ terminal }) => {
+	// Post-revert contract ("keep multi-model fully selectable alongside
+	// Auto"): the picker always leads with Auto, then the virtual
+	// multi-model row, and `/multi-model` is suggested by autocomplete.
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "multi-model-hidden",
+			artifactName: "multi-model-listed",
 			models: [...TWO_MODELS],
 			initialModel: "basic",
 			responses: [],
 			seedHome: (homeDir) => {
+				// The picker's virtual multi-model row is injected only when
+				// the orchestrator role's model exists in the picker list (the
+				// row borrows its model entry). The default orchestrator is not
+				// among the fake provider's models, so point it at one that is.
 				const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 				const settings = JSON.parse(readFileSync(path, "utf-8"))
 				settings.modelRoles = { ...settings.modelRoles, orchestrator: "fake/basic" }
@@ -64,15 +71,21 @@ test("legacy multi-model is hidden from the model picker and command suggestions
 				timeoutMs: INPUT_TIMEOUT_MS,
 				full: false,
 			})
-			expect(viewText(terminal)).not.toContain("multi-model")
-			trace.step("picker omits legacy model")
+			const picker = viewText(terminal)
+			expect(picker).toContain("auto")
+			expect(picker).toContain("multi-model")
+			expect(picker.indexOf("auto [kimchi-dev]")).toBeLessThan(picker.indexOf("multi-model"))
+			trace.step("picker lists Auto then multi-model")
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.write("/multi")
-			await waitForText(terminal, "/multi", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await new Promise((resolve) => setTimeout(resolve, 250))
-			expect(viewText(terminal)).not.toContain("/multi-model")
-			trace.step("autocomplete omits legacy command")
+			// The suggestion row renders without a leading slash:
+			// `multi-model  [t] Configure model roles (...)`. Waiting on the
+			// row text alone only proves the input echo, so assert the row's
+			// description too.
+			await waitForText(terminal, "Configure model roles", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).toContain("multi-model")
+			trace.step("autocomplete offers /multi-model")
 		},
 	)
 })
@@ -389,16 +402,20 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("toggle-select first open")
 
+			// The role pickers always include `kimchi-dev/auto` (see
+			// model-roles-command.ts — Auto is pushed into the available refs)
+			// and the list is sorted, so row 0 is "auto". Concrete models and
+			// saved default-role models follow in sorted order.
+			const row0Model = cursorModelRow(viewText(terminal))
+			expect(row0Model).toBe("auto")
+			trace.step("cursor starts on row 0 (auto)")
+
 			// Move cursor down to row 1 and confirm we're no longer on row 0.
-			// Saved default-role models also appear in this sorted list, so the
-			// exact model occupying row 1 is deliberately not part of this test.
+			// Assert "not auto" purely as proof the cursor moved; the exact
+			// model occupying row 1 is deliberately not part of this test.
 			terminal.keyDown()
 			await new Promise((resolve) => setTimeout(resolve, 100))
-			const firstOpenView = viewText(terminal)
-			const firstCursorModel = firstOpenView
-				.split("\n")
-				.find((line) => /^> \[/.test(line))
-				?.match(/kimchi-dev\/(\S+)/)?.[1]
+			const firstCursorModel = cursorModelRow(viewText(terminal))
 			expect(firstCursorModel).not.toBe("auto")
 			trace.step(`cursor on row 1 (${firstCursorModel}) after first open`)
 
@@ -413,11 +430,7 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("toggle-select re-opened")
 
-			const reOpenView = viewText(terminal)
-			const reOpenCursorModel = reOpenView
-				.split("\n")
-				.find((line) => /^> \[/.test(line))
-				?.match(/kimchi-dev\/(\S+)/)?.[1]
+			const reOpenCursorModel = cursorModelRow(viewText(terminal))
 			expect(reOpenCursorModel).toBe("auto")
 			trace.step(`cursor reset to row 0 (${reOpenCursorModel}) after re-open`)
 
@@ -501,9 +514,10 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			expect(beforeView).toMatch(/\(1 selected\)/)
 			trace.step("initial title and bottom row both show 1 selected")
 
-			// Space toggles the cursor row (row 0 — "basic") into the
-			// selection. Send Space without a trailing Enter so the picker
-			// stays open and we can observe the updated render.
+			// Space toggles the cursor row (row 0 — "auto", which always
+			// sorts first in the role pickers) into the selection. Send
+			// Space without a trailing Enter so the picker stays open and
+			// we can observe the updated render.
 			terminal.write(" ")
 			await new Promise((resolve) => setTimeout(resolve, 100))
 
@@ -701,6 +715,17 @@ test("/multi-model restores every role configured as Auto", async ({ terminal })
 		},
 	)
 })
+
+/**
+ * Extract the `kimchi-dev/<slug>` id of the model row the cursor sits on
+ * in a toggle-select picker (cursor rows start with `> [`).
+ */
+function cursorModelRow(view: string): string | undefined {
+	return view
+		.split("\n")
+		.find((line) => /^> \[/.test(line))
+		?.match(/kimchi-dev\/(\S+)/)?.[1]
+}
 
 /**
  * Navigate the open SelectList one step at a time until the cursor (`→ `
