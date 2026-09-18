@@ -92,14 +92,14 @@ const ROLE_KEYS: readonly (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrat
 
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
-	orchestrator: "kimchi-dev/kimi-k2.7",
-	planner: "kimchi-dev/kimi-k2.7",
-	builder: ["kimchi-dev/minimax-m3"],
-	reviewer: ["kimchi-dev/kimi-k2.7"],
-	explorer: "kimchi-dev/deepseek-v4-flash",
-	researcher: "kimchi-dev/minimax-m3",
-	judge: ["kimchi-dev/kimi-k2.7"],
-	compactor: "kimchi-dev/minimax-m3",
+	orchestrator: "kimchi-dev/kimi-k3",
+	planner: "kimchi-dev/glm-5.3",
+	builder: ["kimchi-dev/glm-5.3-flash"],
+	reviewer: ["kimchi-dev/kimi-k3"],
+	explorer: "kimchi-dev/deepseek-v4-flash-0731",
+	researcher: "kimchi-dev/deepseek-v4-flash-0731",
+	judge: ["kimchi-dev/glm-5.3"],
+	compactor: "kimchi-dev/deepseek-v4-flash-0731",
 }
 
 export interface ModelRolesWarning {
