@@ -65,6 +65,14 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
+# Memory spike workspace: the dataset is a documented external
+# prerequisite and the build output is disposable (see its README)
+benchmark/memory-spike/data/
+benchmark/memory-spike/dist/
+
+# Stray macOS-style bun cache from invocations with HOME at the repo root
+Library/
+
 # LLM tools
 .codegraph/
 

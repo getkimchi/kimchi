@@ -78,7 +78,6 @@ tools: <csv>                     # Comma-separated built-in tools, "none", or om
 disallowed_tools: <csv>          # Comma-separated tools to deny even if otherwise inherited
 extensions: <bool|csv>           # true (inherit MCP/extension tools) | false (disable) | comma-list
 skills: <bool|csv>               # true (inherit) | false | comma-list of skill names to preload
-memory: <scope>                  # user | project | local — enables persistent agent memory
 max_turns: <int>                 # Cap conversation turns; omit for unlimited (pi's 30-min hard cap still applies)
 inherit_context: <bool>          # If true, fork parent conversation into the subagent's history
 isolated: <bool>                 # If true, agent gets no extension/MCP tools — only built-ins
@@ -106,10 +105,6 @@ You are a senior X engineer who...
   preloads named skills from the project's skill paths into the system prompt
   (useful when the agent needs reference material). Project skills in the nearest
   `.kimchi/skills` directory are available automatically.
-- **`memory`** — Enables a persistent directory keyed by agent name and scope:
-  - `user` → `~/.config/kimchi/harness/agent-memory/<name>/`
-  - `project` → `<cwd>/.kimchi/agent-memory/<name>/`
-  - `local` → `<cwd>/.kimchi/agent-memory-local/<name>/`
 - **`prompt_mode: append`** — Treat body as an addendum to the parent's full
   system prompt. The default `replace` makes the persona fully self-contained.
 - **`disallowed_tools`** — Always-deny list. Wins over `extensions` and inherited
@@ -137,7 +132,7 @@ file:line citations.
 
 Use it: *"Use researcher to figure out how authentication flows through this app."*
 
-### Implementation worker with persistent memory
+### Implementation worker
 
 `.kimchi/agents/expert-coder.md`:
 
@@ -147,7 +142,6 @@ description: Implements features, refactors, and bug fixes following codebase co
 tools: read, write, edit, grep, find, bash
 models: ["kimchi-dev/minimax-m2.7"]
 thinking: medium
-memory: project
 skills: code-style
 ---
 
@@ -156,9 +150,6 @@ Read 3+ existing files in the area before writing new code, match
 naming/style/error-handling patterns, and never introduce a new
 abstraction without removing two duplications.
 ```
-
-Memory persists across sessions at `.kimchi/agent-memory/expert-coder/MEMORY.md`,
-so the agent can record corrections and preferences for the next run.
 
 ### Inherits parent context (planning second-opinion)
 
@@ -203,7 +194,6 @@ models: ["kimchi-dev/kimi-k2.6"]
 thinking: high
 max_turns: 30
 run_in_background: true
-memory: project
 ---
 
 You are a security auditor. Review the requested diff for:
@@ -276,20 +266,3 @@ before the interruption. No manual cleanup is needed.
 Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
-
-## Persistent memory
-
-Agents with `memory:` enabled get a private directory at session start. The
-runtime exposes the path via the `KIMCHI_AGENT_MEMORY_DIR` environment variable
-inside the agent's tool calls. Conventional layout:
-
-```
-.kimchi/agent-memory/<agent-name>/
-├── MEMORY.md      # Free-form notes the agent maintains across runs
-├── corrections/   # Optional: curated correction logs
-└── examples/      # Optional: known-good solution patterns
-```
-
-Memory is read-only for agents whose `tools` set lacks `write`/`edit` — the
-runtime detects this and skips memory injection rather than confusing the agent
-with directives it cannot act on.

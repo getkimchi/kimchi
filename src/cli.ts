@@ -18,6 +18,7 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -94,6 +95,7 @@ import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./extensions/mcp/index.js"
 import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
+import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
@@ -208,11 +210,32 @@ function getSubcommand(args: string[]): string {
 	// invocations report their own label instead of the generic "harness"; `mcp`
 	// appears here for the same telemetry-accuracy reason even though it is also
 	// a registered command.
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory"].includes(sub)) return sub
 	return "harness"
 }
 
 const originalArgs = process.argv.slice(2)
+
+// The memory capture worker runs as a detached child of an exiting session.
+// In compiled binaries process.execPath is the kimchi binary itself, so the
+// worker is routed as a subcommand here (capture.ts takes the bun-script
+// path under `bun run`). Routed before telemetry/session setup so worker
+// invocations are invisible to app_started instrumentation.
+if (originalArgs[0] === "memory-capture") {
+	const { runCaptureWorkerMain } = await import("./extensions/memory/capture-worker.js")
+	// Exit at the dispatch site: the worker returns an exit code, and
+	// falling through into the interactive bootstrap below (telemetry,
+	// session setup) must never happen for worker invocations.
+	process.exit(await runCaptureWorkerMain(originalArgs.slice(1)))
+}
+
+// Bulk fact import for the memory store (benchmark oracle-capture arm;
+// routes the same way as the capture worker — before telemetry/session
+// setup, exiting at the dispatch site).
+if (originalArgs[0] === "memory-import") {
+	const { runImportMain } = await import("./extensions/memory/import.js")
+	process.exit(await runImportMain(originalArgs.slice(1)))
+}
 
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
@@ -543,7 +566,7 @@ try {
 		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+		const rawArgsWithoutMultiModel = stripMemoryArgs(stripMultiModelArgs(rawArgs))
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -732,6 +755,7 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelGuardExtension,
+			memoryExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
 			piiRedactionExtension,
@@ -759,7 +783,7 @@ try {
 							mcpProbe: new UpstreamMcpProbe(),
 						}
 					: {}),
-				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
+				appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
 			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension

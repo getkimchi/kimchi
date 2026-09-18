@@ -6,7 +6,7 @@ export interface RouterConfig {
 	apiKey: string
 }
 
-const DEFAULT_ROUTER_ENDPOINT = "https://llm.kimchi.dev"
+export const DEFAULT_ROUTER_ENDPOINT = "https://llm.kimchi.dev"
 
 export async function getRouterConfig(
 	modelRegistry: Pick<ModelRegistry, "getApiKeyForProvider">,
