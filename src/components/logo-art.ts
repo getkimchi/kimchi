@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { RST_FG } from "../ansi.js"
+import { DEFAULT_VARIANT, resolvePromptVariant } from "../extensions/prompt-construction/variants/index.js"
 import { getFolder, getGitBranch, getVersion } from "../utils.js"
 
 let cachedVersion: string | undefined
@@ -45,7 +46,18 @@ const WORD_ROWS = [
 	"   ▀  ▀ ▀▀▀ ▀   ▀  ▀▀ ▀  ▀ ▀▀▀",
 ]
 
+const FIRE_COLORS = ["\x1b[38;5;196m", "\x1b[38;5;202m", "\x1b[38;5;208m", "\x1b[38;5;214m"]
+
+// The spicy variant burns the same rows in a fire gradient instead of the
+// theme colours, so all logo variants stay built from one set of glyphs.
+function buildBurningLogoLines(): string[] {
+	return PEPPER_ROWS.map((pepper, i) => `${FIRE_COLORS[i]}${pepper}${WORD_ROWS[i]}${RST_FG}`)
+}
+
 export function buildLogoLines(theme: Theme): string[] {
+	const variant = resolvePromptVariant()
+	if (variant.name !== DEFAULT_VARIANT.name) return buildBurningLogoLines()
+
 	const L = theme.getFgAnsi("accent")
 	const G = theme.getFgAnsi("bashMode")
 	return [
@@ -80,6 +92,10 @@ export function buildInfoLines(
 	const lines: string[] = [`${dim}v${cachedVersion}${RST_FG}${vdot}${dim}${folder}${RST_FG}`]
 	if (branch) {
 		lines.push(`${branchColor}${branch}${RST_FG}`)
+	}
+	const variant = resolvePromptVariant()
+	if (variant.name !== DEFAULT_VARIANT.name) {
+		lines.push(`${theme.getFgAnsi("accent")}variant ${variant.tagline ?? variant.name}${RST_FG}`)
 	}
 	return lines
 }

@@ -4,6 +4,14 @@ import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
+import { useDefaultPromptVariant } from "../prompt-construction/test-utils.js"
+import { PROMPT_VARIANT_ENV, resolvePromptVariant } from "../prompt-construction/variants/index.js"
+import { SPICY } from "../prompt-construction/variants/spicy.js"
+import {
+	fermentSteerFor,
+	SPICY_FERMENT_STEER,
+	SPICY_FERMENT_STEER_SINGLE_MODE_EXECUTION,
+} from "../prompt-construction/variants/spicy-prompts.js"
 
 // Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
 // without depending on real config state. Default to true (multi-model / strict)
@@ -620,5 +628,64 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("may take a brief thinking or assessment turn")
 			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Variant ferment steer tests
+// ---------------------------------------------------------------------------
+
+describe("buildFermentPromptBlock: variant ferment steer", () => {
+	// Each case picks its variant through the environment; this restores the
+	// developer's own value afterwards.
+	useDefaultPromptVariant()
+
+	afterEach(() => {
+		registerAgents(new Map())
+	})
+
+	it("the spicy descriptor supplies the steer text", () => {
+		expect(SPICY.fermentSteer).toBe(fermentSteerFor)
+	})
+
+	it("prepends the active variant's steer to the planner supplement", () => {
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).toContain(SPICY_FERMENT_STEER)
+	})
+
+	// Spicy's general stance is to delegate, but a single-model planner is told
+	// to run the steps itself. The steer states which one wins so the assembled
+	// prompt has one execution stance instead of two.
+	it("single-model planner: the steer defers to the planner's direct-execution stance", () => {
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		getMultiModelEnabledMock.mockReturnValue(false)
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).toContain(SPICY_FERMENT_STEER_SINGLE_MODE_EXECUTION)
+		expect(out).toContain("Execute steps directly with bash/edit/write")
+		expect(out).toContain("Delegation is for exceptions, not the default.")
+		expect(out).not.toContain("NEVER implement a step inline")
+	})
+
+	it("orchestrator planner: the steer leaves the delegate-every-step stance alone", () => {
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		getMultiModelEnabledMock.mockReturnValue(true)
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).not.toContain(SPICY_FERMENT_STEER_SINGLE_MODE_EXECUTION)
+		expect(out).toContain("NEVER implement a step inline")
+	})
+
+	it("omits the steer when the active variant declares none", () => {
+		expect(resolvePromptVariant().fermentSteer).toBeUndefined()
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).not.toContain(SPICY_FERMENT_STEER)
+	})
+
+	it("includes the steer for planned and running status", () => {
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		for (const status of ["planned", "running"] as const) {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status })) ?? ""
+			expect(out, `status=${status}`).toContain(SPICY_FERMENT_STEER)
+		}
 	})
 })

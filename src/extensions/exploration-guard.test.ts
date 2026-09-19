@@ -609,6 +609,39 @@ describe("Provider error suppression", () => {
 	})
 })
 
+describe("explorationGuardExtension - warn sendMessage delivery", () => {
+	it("delivers warn message with deliverAs: steer", async () => {
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+
+		type Handler = (event: unknown, ctx?: unknown) => unknown
+		const handlers = new Map<string, Handler[]>()
+		const sendMessage = vi.fn()
+		const pi = {
+			on: (event: string, handler: Handler) => {
+				const list = handlers.get(event) ?? []
+				list.push(handler)
+				handlers.set(event, list)
+			},
+			sendMessage,
+		}
+
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+
+		// Provide a ctx with a sessionManager so isEnabled() returns true (non-plan session)
+		const mockCtx = { sessionManager: { getSessionId: () => "test-session" } }
+		for (const h of handlers.get("session_start") ?? []) h({}, mockCtx)
+
+		// Drive 1 read-only turn to reach the hypothesis threshold
+		for (const h of handlers.get("turn_start") ?? []) h({})
+		for (const h of handlers.get("tool_call") ?? []) h({ toolName: "read" })
+		for (const h of handlers.get("turn_end") ?? []) h({ message: { role: "assistant", stopReason: "stop" } })
+
+		expect(sendMessage).toHaveBeenCalledOnce()
+		const [, options] = sendMessage.mock.calls[0]
+		expect(options).toEqual({ deliverAs: "steer" })
+	})
+})
+
 describe("Subagent terminate behavior", () => {
 	// When a subagent hits the no-tool mandatory threshold:
 	//   1. It receives a steer asking for a plain-text summary.

@@ -5,6 +5,9 @@ import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
+import { useDefaultPromptVariant } from "./prompt-construction/test-utils.js"
+
+useDefaultPromptVariant()
 
 vi.mock("node:os", async (importOriginal) => {
 	const { join } = await import("node:path")

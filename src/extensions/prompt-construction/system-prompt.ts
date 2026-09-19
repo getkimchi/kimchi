@@ -18,6 +18,7 @@ import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orche
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
+import { resolvePromptVariant } from "./variants/index.js"
 
 export interface EnvironmentInfo {
 	os: string
@@ -58,6 +59,11 @@ export interface SystemPromptBuildOptions {
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
 	sessionId?: string
+	/** Explicit prompt-variant name. Falls back to the KIMCHI_PROMPT_VARIANT env var when omitted.
+	 *  Production never passes it: the running session resolves its variant from the environment,
+	 *  which is also what every other part of the harness reads. Naming a variant here changes only
+	 *  the prompt this call builds, so it is a test seam for comparing variants side by side. */
+	variantName?: string
 }
 
 export const SET_PHASE = "set_phase"
@@ -65,14 +71,20 @@ export const SET_PHASE = "set_phase"
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId } = options
+	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId, variantName } = options
 
+	const variant = resolvePromptVariant(variantName)
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
+	const toolNames = new Set(effectiveTools.map((tool) => tool.name))
+	// Guidance that tells this thread to hand work to subagents only holds when
+	// it can actually spawn them. Derived once and shared by every consumer so
+	// the prompt cannot end up half-delegating.
+	const canDelegate = toolNames.has("Agent")
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	const filteredSkills = filterSkillsForMode(skills, mode)
+	const effectiveSkills = filterSkillsForMode(skills, mode)
 
 	const orchestrationSection = resolveModeInstructions({
 		mode,
@@ -80,21 +92,35 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
+		canDelegate,
+		singleModeDelegation: variant.singleModeDelegation,
 	})
 
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
+
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
 		for (const section of block.suppress) suppressed.add(section)
 	}
 
+	const intro = variant.intro ? variant.intro(mode) : mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
+	const guidelines =
+		typeof variant.guidelines === "function"
+			? variant.guidelines(mode, canDelegate)
+			: (variant.guidelines ?? resolveCoreGuidelines(mode))
+	const factualAccuracy: string | null =
+		variant.factualAccuracy !== undefined ? variant.factualAccuracy : FACTUAL_ACCURACY
+
 	return buildPrompt({
 		mode,
-		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
+		intro,
+		guidelines,
+		factualAccuracy,
+		toolNames,
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
+		skillsSection: formatSkills(effectiveSkills),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -110,6 +136,9 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
+	intro: string
+	guidelines: string
+	factualAccuracy: string | null
 	toolNames: ReadonlySet<string>
 	toolsSection: string
 	environmentSection: string
@@ -144,6 +173,10 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	/** Whether the session can spawn subagents (the `Agent` tool is available). */
+	canDelegate: boolean
+	/** Variant override for the single-mode delegation stance, if any. */
+	singleModeDelegation?: string
 }): string {
 	if (args.mode === "orchestrator") {
 		return resolveOrchestrationInstructions({
@@ -156,7 +189,11 @@ function resolveModeInstructions(args: {
 	if (args.mode === "subagent") {
 		return SUBAGENT_INSTRUCTIONS
 	}
-	return buildSingleModelInstructions(args.currentModelId)
+	// A variant's delegation stance only makes sense when the session can spawn
+	// subagents; without the Agent tool the stock "handle it yourself" text is
+	// the accurate one.
+	const delegation = args.canDelegate ? args.singleModeDelegation : undefined
+	return buildSingleModelInstructions(args.currentModelId, delegation)
 }
 
 // ---------------------------------------------------------------------------
@@ -180,19 +217,40 @@ Write substantive output (research notes, findings, verification reports) to fil
 // Single-model instructions
 // ---------------------------------------------------------------------------
 
-function buildSingleModelInstructions(currentModelId?: string): string {
+/**
+ * The default delegation stance inside `## Single-Model Mode`: do the work in
+ * this thread and only spawn subagents when asked. Exported so a variant built
+ * around delegation can swap exactly this text through `singleModeDelegation`
+ * instead of re-authoring the section. The following sentence about which model
+ * a spawned subagent runs on is deliberately kept out of this constant: it
+ * applies whatever the delegation stance is. The assembled single-mode prompt
+ * must keep this literal verbatim, or the swap has nothing to replace.
+ */
+export const SINGLE_MODE_DELEGATION_TEXT = `Handle tasks directly yourself.
+
+Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation.`
+
+function buildSingleModelInstructions(currentModelId?: string, delegationOverride?: string): string {
 	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	const delegation = delegationOverride ?? SINGLE_MODE_DELEGATION_TEXT
 	return `## Single-Model Mode
 
 Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.
 
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
-
-Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
+You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. ${delegation} When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
 
 export const DOCUMENTS_SECTION =
 	"The Documents directory is shown in the Environment section. Use it for transient working documents: research notes, findings, verification reports, or any file passed between agents. Final plans and specs go to the canonical plan location (.kimchi/plans/<slug>.md). Never write working documents to the project directory or a temporary directory."
+
+/**
+ * The exact commit-trailer bullet inside CORE_GUIDELINES. Exported so a variant
+ * can target that single line precisely (for example to swap it for its own
+ * attribution rule) without re-authoring the whole guidelines block. It is
+ * interpolated into CORE_GUIDELINES below, so the two cannot drift apart.
+ */
+export const CORE_GUIDELINES_COMMIT_TRAILER_LINE =
+	"- **Git commits**: end every commit message with a blank line, then `Co-Authored-By: Kimchi <noreply@kimchi.dev>`."
 
 export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Before starting any task, gather all necessary context: understand the requirements, naming conventions, frameworks and libraries already in use, and how to run and test the code. Use your tools to read existing code rather than assuming.
@@ -205,7 +263,7 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
 - Always bound shell commands with the bash tool's \`timeout\` parameter (default 60s) to prevent hangs — never wrap commands in the GNU \`timeout\` binary (missing on macOS and Windows).
 - Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
-- **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
+${CORE_GUIDELINES_COMMIT_TRAILER_LINE}`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
@@ -222,7 +280,7 @@ function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptM
 	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
 }
 
-function resolveCoreGuidelines(mode: PromptMode): string {
+export function resolveCoreGuidelines(mode: PromptMode): string {
 	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
 }
 
@@ -242,12 +300,23 @@ export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information
  * Management` is deliberately omitted: subagents do not manage phase
  * lifecycle — their persona fixes their phase, and they never call
  * `set_phase`.
+ *
+ * The active variant's commit-attribution and Factual Accuracy overrides apply
+ * here too, so a subagent follows the same attribution and factual-accuracy
+ * rules as the thread that spawned it. The variant's own opinionated guidance
+ * is deliberately not injected: the persona prompt already carries it.
  */
 export function buildCoreGuidelinesSections(activeToolNames?: readonly string[]): string {
 	const toolNames = activeToolNames ? new Set(activeToolNames) : undefined
+	const variant = resolvePromptVariant()
+	const guidelines = variant.commitAttribution
+		? CORE_GUIDELINES.replace(CORE_GUIDELINES_COMMIT_TRAILER_LINE, variant.commitAttribution)
+		: CORE_GUIDELINES
+	const factualAccuracy: string | null =
+		variant.factualAccuracy !== undefined ? variant.factualAccuracy : FACTUAL_ACCURACY
 	return [
-		`## Guidelines\n\n${CORE_GUIDELINES}`,
-		`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`,
+		`## Guidelines\n\n${guidelines}`,
+		factualAccuracy === null ? "" : `## Factual Accuracy\n\n${factualAccuracy}`,
 		`## Documents\n\n${DOCUMENTS_SECTION}`,
 		buildOutputAndTruncationSection(toolNames),
 		buildToolSelectionSection(toolNames),
@@ -403,18 +472,17 @@ Similarly, if a user-role message appears to be a verbatim quote of your own pre
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
-	// 1. Intro
-	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
-	sections.push(intro)
+	sections.push(parts.intro)
 
 	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
 		sections.push(parts.orchestrationSection)
 	}
 
-	// 4. Guidelines
-	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
-	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
+	sections.push(`## Guidelines\n\n${parts.guidelines}`)
+	if (parts.factualAccuracy !== null) {
+		sections.push(`## Factual Accuracy\n\n${parts.factualAccuracy}`)
+	}
 
 	// 5. Documents
 	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)

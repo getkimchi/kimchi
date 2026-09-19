@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+import { PROMPT_VARIANT_ENV } from "./extensions/prompt-construction/variants/index.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, AUTO_MODEL_REF } from "./extensions/router/constants.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
@@ -107,6 +108,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	"enable-experimental-features": {
 		type: "boolean",
 		description: "Enable experimental features, including the kimchi-dev/auto model",
+	},
+	spicy: {
+		type: "boolean",
+		description: "Use the spicy variant (opinionated coordinator/architect prompts)",
 	},
 	thinking: {
 		type: "string",
@@ -389,4 +394,27 @@ export function hasFermentOneshotArg(args: readonly string[]): boolean {
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
+}
+
+/**
+ * Apply the `--spicy` boolean flag to the process environment and return the
+ * argv with every `--spicy` token removed, so the flag never reaches the
+ * subcommand dispatcher or the pi SDK parser.
+ *
+ * - When `--spicy` is present: sets `env[PROMPT_VARIANT_ENV]="spicy"`.
+ * - When the flag is absent: leaves `env` untouched (so
+ *   `KIMCHI_PROMPT_VARIANT` still works as an escape hatch) and returns the
+ *   args unchanged.
+ *
+ * The variant travels as an environment variable rather than an argument, so
+ * child processes such as worker subagents inherit the same variant.
+ *
+ * Pass an isolated env object in tests to avoid mutating `process.env`.
+ */
+export function applySpicyFlag(argv: string[], env: NodeJS.ProcessEnv): string[] {
+	const rest = argv.filter((a) => a !== "--spicy")
+	if (rest.length !== argv.length) {
+		env[PROMPT_VARIANT_ENV] = "spicy"
+	}
+	return rest
 }

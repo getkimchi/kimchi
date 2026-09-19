@@ -171,7 +171,9 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		const thinkingOnly = makeAssistant([{ type: "thinking", thinking: "Let me reason..." }])
 		expect(guard.evaluateTurn(thinkingOnly)).toBe(false)
 	})
+})
 
+describe("ContinuationNudge.evaluateTurn stop reasons", () => {
 	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
@@ -702,14 +704,14 @@ describe("stripUiOnlyMessages", () => {
 })
 
 describe("ContinuationNudge question suppression", () => {
-	it("does not nudge when the assistant's text ends with a question", () => {
+	it("does not nudge a quirk model when the assistant's text ends with a question", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
 		const asking = makeAssistant([{ type: "text", text: "Go ahead and commit this small ADR update?" }])
 		expect(guard.evaluateTurn(asking)).toBe(false)
 	})
 
-	it("does not nudge when the question is followed by a quote mark", () => {
+	it("does not nudge a quirk model when the question is followed by a quote mark", () => {
 		const guard = new ContinuationNudge()
 		simulateSessionWithPriorToolCall(guard)
 		const asking = makeAssistant([{ type: "text", text: 'Are you sure you want to proceed?"' }])

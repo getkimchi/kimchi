@@ -50,6 +50,7 @@ import {
 	stripUiOnlyMessages,
 	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
+import { modelHasContinuationStallQuirk } from "../orchestration/model-quirks.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
 	DEFAULT_MODEL_ROLES,
@@ -64,6 +65,7 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { forgetPromptMode, setPromptMode } from "../prompt-mode-cache.js"
 import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
@@ -368,11 +370,12 @@ export default function (skillPathsFromConfig: string[]) {
 			}
 
 			pi.on("session_shutdown", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
-				const prefix = `${sessionId} `
+				const sessionId = ctx.sessionManager.getSessionId()
+				const prefix = `${sessionId ?? "unknown"} `
 				for (const key of deprecatedNotificationFired) {
 					if (key.startsWith(prefix)) deprecatedNotificationFired.delete(key)
 				}
+				forgetPromptMode(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
@@ -550,6 +553,10 @@ export default function (skillPathsFromConfig: string[]) {
 					return
 				}
 
+				// Only models with the narrate-then-stop quirk get this nudge: for any
+				// other model it reads as fresh user input and pushes it past a
+				// legitimate stop.
+				if (!modelHasContinuationStallQuirk(getEffectiveModel(ctx)?.id)) return
 				if (!continuationNudge.evaluateTurn(assistantMsg)) return
 				pi.sendMessage(
 					{
@@ -661,6 +668,7 @@ export default function (skillPathsFromConfig: string[]) {
 				: getMultiModelEnabled(ctx.sessionManager)
 					? "orchestrator"
 					: "single"
+			setPromptMode(ctx.sessionManager?.getSessionId(), mode)
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 

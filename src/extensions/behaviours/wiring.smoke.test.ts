@@ -9,12 +9,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import { useDefaultPromptVariant } from "../prompt-construction/test-utils.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import type { ResolverIO } from "./session-context.js"
 import { BEHAVIOUR_EVAL_TYPE, BEHAVIOUR_LOADED_TYPE, BEHAVIOUR_SESSION_SUMMARY_TYPE } from "./stats.js"
 import { cli, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "./wiring.js"
+
+useDefaultPromptVariant()
 
 type Handler = (event: unknown, ctx?: unknown) => unknown
 const TEST_SESSION_ID = "test-session"

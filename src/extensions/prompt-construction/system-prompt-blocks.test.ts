@@ -2,6 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
 import { createSystemPromptBlocks } from "./system-prompt-blocks.js"
+import { useDefaultPromptVariant } from "./test-utils.js"
+
+useDefaultPromptVariant()
 
 type ShutdownHandler = () => void
 type StartHandler = (event: unknown, ctx: { sessionManager: { getSessionId: () => string } }) => void

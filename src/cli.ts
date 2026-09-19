@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
+	applySpicyFlag,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
@@ -109,6 +110,7 @@ import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import promptVariantNoticeExtension from "./extensions/prompt-variant-notice.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
@@ -117,6 +119,7 @@ import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
 import autoModelExtension from "./extensions/router/index.js"
+import rulesReminderExtension from "./extensions/rules-reminder.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -271,6 +274,12 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 }
 const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
+// Apply the variant flag to the environment and strip it from the argv once,
+// before any branch that consumes arguments. Every path below works from
+// argsWithoutVariant so the flag never reaches the subcommand dispatcher, the
+// @file/resume normalization, or the pi SDK argument parser.
+const argsWithoutVariant = applySpicyFlag(originalArgs, process.env)
+
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
 class SetupCancelled extends Error {}
@@ -295,7 +304,7 @@ try {
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
-	const dispatch = await dispatchSubcommand(originalArgs)
+	const dispatch = await dispatchSubcommand(argsWithoutVariant)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
 		process.exit(dispatch.exitCode)
@@ -303,7 +312,7 @@ try {
 
 	if (helpOrVersion) {
 		const { main } = await import("@earendil-works/pi-coding-agent")
-		await main(originalArgs, { extensionFactories: [] })
+		await main(argsWithoutVariant, { extensionFactories: [] })
 	} else {
 		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
 		// Publish to the module-level flag so extensions (daemon tools,
@@ -526,7 +535,7 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		const atFileArgs = normalizeAtFileArgs(
-			normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+			normalizeResumeIdArgs(stripExperimentalFeaturesArg(argsWithoutVariant)),
 			process.cwd(),
 			isCliAtFileArg,
 		)
@@ -628,6 +637,7 @@ try {
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			packageInstallGuardExtension,
+			promptVariantNoticeExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
@@ -641,6 +651,7 @@ try {
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
+			rulesReminderExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,

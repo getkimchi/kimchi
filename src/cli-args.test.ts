@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+	applySpicyFlag,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -123,6 +124,10 @@ describe("isPreDispatchValueFlag", () => {
 	])("does not treat %s as a value flag", (arg) => {
 		expect(isPreDispatchValueFlag(arg)).toBe(false)
 	})
+
+	it("does not treat --spicy as a value flag (it is a boolean flag)", () => {
+		expect(isPreDispatchValueFlag("--spicy")).toBe(false)
+	})
 })
 
 describe("normalizeResumeIdArgs", () => {
@@ -242,6 +247,40 @@ describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
 
 	it("returns false when the suffix appears inside an unrelated flag", () => {
 		expect(hasFermentOneshotArg(["--foo-ferment-oneshot=true"])).toBe(false)
+	})
+})
+
+describe("applySpicyFlag", () => {
+	it("sets env to 'spicy' when --spicy is present", () => {
+		const env: NodeJS.ProcessEnv = {}
+		const stripped = applySpicyFlag(["--spicy", "--print"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
+		expect(stripped).toEqual(["--print"])
+	})
+
+	it("overrides a pre-existing KIMCHI_PROMPT_VARIANT when --spicy is present", () => {
+		const env: NodeJS.ProcessEnv = { KIMCHI_PROMPT_VARIANT: "old" }
+		const stripped = applySpicyFlag(["--spicy", "--print"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
+		expect(stripped).toEqual(["--print"])
+	})
+
+	it("leaves env untouched when --spicy is absent", () => {
+		const env: NodeJS.ProcessEnv = { KIMCHI_PROMPT_VARIANT: "spicy" }
+		const stripped = applySpicyFlag(["--model", "foo"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
+		expect(stripped).toEqual(["--model", "foo"])
+	})
+
+	it("does not set env when --spicy is absent and env was empty", () => {
+		const env: NodeJS.ProcessEnv = {}
+		applySpicyFlag(["--model", "foo"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBeUndefined()
+	})
+
+	it("returned args never contain --spicy", () => {
+		const stripped = applySpicyFlag(["--spicy", "--model", "foo", "--spicy"], {})
+		expect(stripped.some((a) => a === "--spicy")).toBe(false)
 	})
 })
 

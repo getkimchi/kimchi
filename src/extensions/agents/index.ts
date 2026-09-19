@@ -35,6 +35,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
@@ -795,7 +796,8 @@ export default function (pi: ExtensionAPI) {
 
 	const reloadCustomAgents = (cwd: string = process.cwd()) => {
 		const userAgents = loadCustomAgents(cwd)
-		registerAgents(userAgents)
+		const variant = resolvePromptVariant()
+		registerAgents(userAgents, variant.transformAgents)
 	}
 
 	reloadCustomAgents()

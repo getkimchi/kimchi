@@ -1,9 +1,11 @@
 /**
- * Two complementary nudges for Kimi K2.x tool-calling quirks that each
- * leave the agent loop in a stuck-looking state. Both target the same failure
- * class (model said one thing, didn't follow through in the next tool-use
- * step) and are delivered as `followUp` messages from the `turn_end` handler
- * so the agent loop restarts:
+ * Two complementary nudges for tool-calling quirks that each leave the agent
+ * loop in a stuck-looking state. Both target the same failure class (model said
+ * one thing, didn't follow through in the next tool-use step) and are delivered
+ * as `followUp` messages from the `turn_end` handler so the agent loop restarts.
+ * The continuation nudge only runs for models with the narrate-then-stop quirk.
+ * That set is owned by `modelHasContinuationStallQuirk` in `model-quirks.ts` and
+ * the caller checks it before asking for a verdict.
  *
  *   1. Continuation nudge — the orchestrator reasons in prose, announces it
  *      will delegate, and ends its turn without emitting the `Agent` tool

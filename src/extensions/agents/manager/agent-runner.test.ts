@@ -4,6 +4,9 @@ import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import dapExtension from "../../dap.js"
+import { useDefaultPromptVariant } from "../../prompt-construction/test-utils.js"
+
+useDefaultPromptVariant()
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {

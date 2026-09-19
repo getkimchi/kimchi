@@ -4,6 +4,8 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import type { PromptMode } from "../prompt-construction/system-prompt.js"
+import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -106,6 +108,12 @@ After \`propose_ferment_scoping\` returns "Plan ready for review", the host take
 After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation already happened and the implementation toolset is active. Do not call \`propose_ferment_scoping\` again, do not tell the user the draft is waiting in the TUI, and do not summarize the plan in chat. Continue with the next state-machine action (usually \`activate_ferment_phase\`).`
 
 	const agentsSection = buildAgentsSection()
+	// The planner runs on the main thread, so its prompt mode is the same
+	// multi-model setting that picks the delegation mode here.
+	const plannerMode: PromptMode = delegationMode === "strict" ? "orchestrator" : "single"
+	const fermentSteer = resolvePromptVariant().fermentSteer
+	const steerText = typeof fermentSteer === "function" ? fermentSteer(plannerMode) : fermentSteer
+	const steer = steerText ? `${steerText}\n\n` : ""
 
 	const delegationRules =
 		delegationMode === "strict"
@@ -117,9 +125,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 - Measured rationale: direct execution completed 28 steps in 109 min at A/B grades (run 019ff530); forced delegation was slower per step at bench scale — workers re-establish context (~14 reads each) and hit budget caps on real builds.
 - If a worker aborts mid-step, resume it with resume_subagent, or finish directly when you already hold the context — do not spawn a duplicate that re-discovers the same work.`
 
-	return `
-
-## Ferment Planner Role
+	return `${steer}## Ferment Planner Role
 
 You are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers. ${delegationCheckpoint}
 

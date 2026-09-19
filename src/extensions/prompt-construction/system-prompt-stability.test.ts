@@ -23,6 +23,9 @@ import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
 import { renderSystemPromptBlocks } from "./system-prompt-blocks.js"
+import { useDefaultPromptVariant } from "./test-utils.js"
+
+useDefaultPromptVariant()
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 
