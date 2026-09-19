@@ -22,8 +22,14 @@ export interface PromptVariant {
 	/** Replace the intro line. Receives the assembly mode. */
 	intro?: (mode: PromptMode) => string
 
-	/** Replace the Guidelines section body. */
-	guidelines?: string | ((mode: PromptMode) => string)
+	/**
+	 * Replace the Guidelines section body. The function form receives the
+	 * assembly mode and whether the session can delegate work to subagents (the
+	 * `Agent` tool is in its effective tool set), so a variant whose guidance is
+	 * built on delegation can leave that part out of a session that cannot spawn
+	 * anything. The string form is used as-is for every mode.
+	 */
+	guidelines?: string | ((mode: PromptMode, canDelegate: boolean) => string)
 
 	/** Replace the Factual Accuracy section body. `null` omits the section. */
 	factualAccuracy?: string | null

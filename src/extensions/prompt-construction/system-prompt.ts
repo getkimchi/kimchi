@@ -76,6 +76,10 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const variant = resolvePromptVariant(variantName)
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 	const toolNames = new Set(effectiveTools.map((tool) => tool.name))
+	// Guidance that tells this thread to hand work to subagents only holds when
+	// it can actually spawn them. Derived once and shared by every consumer so
+	// the prompt cannot end up half-delegating.
+	const canDelegate = toolNames.has("Agent")
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
@@ -88,7 +92,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
-		toolNames,
+		canDelegate,
 		singleModeDelegation: variant.singleModeDelegation,
 	})
 
@@ -102,7 +106,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const intro = variant.intro ? variant.intro(mode) : mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
 	const guidelines =
 		typeof variant.guidelines === "function"
-			? variant.guidelines(mode)
+			? variant.guidelines(mode, canDelegate)
 			: (variant.guidelines ?? resolveCoreGuidelines(mode))
 	const factualAccuracy: string | null =
 		variant.factualAccuracy !== undefined ? variant.factualAccuracy : FACTUAL_ACCURACY
@@ -169,8 +173,8 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
-	/** Tool names the session can actually call. */
-	toolNames: ReadonlySet<string>
+	/** Whether the session can spawn subagents (the `Agent` tool is available). */
+	canDelegate: boolean
 	/** Variant override for the single-mode delegation stance, if any. */
 	singleModeDelegation?: string
 }): string {
@@ -188,7 +192,7 @@ function resolveModeInstructions(args: {
 	// A variant's delegation stance only makes sense when the session can spawn
 	// subagents; without the Agent tool the stock "handle it yourself" text is
 	// the accurate one.
-	const delegation = args.toolNames.has("Agent") ? args.singleModeDelegation : undefined
+	const delegation = args.canDelegate ? args.singleModeDelegation : undefined
 	return buildSingleModelInstructions(args.currentModelId, delegation)
 }
 

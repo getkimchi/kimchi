@@ -305,15 +305,17 @@ function opinionatedBlockBeforeCoordinator(mode: PromptMode): string {
  * The half of the block that follows the coordinator section. An orchestrator
  * gets the testing, cleanup, and file-safety rules as the bar it holds delegated
  * work to, because it does not edit, test, or stage anything by hand.
+ * `canDelegate` says whether the thread can spawn subagents, which decides the
+ * fresh-subagent review step.
  */
-function opinionatedBlockAfterCoordinator(mode: PromptMode): string {
+function opinionatedBlockAfterCoordinator(mode: PromptMode, canDelegate: boolean): string {
 	const isWorker = mode === "subagent"
 	const implementsDirectly = mode !== "orchestrator"
 	return (
 		OPINIONATED_BLOCK_TODOS_AND_TESTING_HEADER +
 		(implementsDirectly ? TESTING_DISCIPLINE_DIRECT : TESTING_DISCIPLINE_DELEGATED) +
 		OPINIONATED_BLOCK_CODE_QUALITY_HEADER +
-		(isWorker ? "" : DELEGATED_REVIEW_BULLET) +
+		(canDelegate ? DELEGATED_REVIEW_BULLET : "") +
 		OPINIONATED_BLOCK_REVIEW_BULLET +
 		(implementsDirectly ? CLEANUP_BULLET_DIRECT : CLEANUP_BULLET_DELEGATED) +
 		OPINIONATED_BLOCK_STRUCTURE_BULLET +
@@ -328,12 +330,21 @@ function opinionatedBlockAfterCoordinator(mode: PromptMode): string {
 export const OPINIONATED_BLOCK =
 	opinionatedBlockBeforeCoordinator("single") +
 	COORDINATOR_DELEGATION_BLOCK +
-	opinionatedBlockAfterCoordinator("single")
+	opinionatedBlockAfterCoordinator("single", true)
+
+/**
+ * Single mode without the `Agent` tool. The session carries out the work on its
+ * own, so it gets the same block minus the two parts that need a subagent: the
+ * coordinator section and the fresh-subagent review step. Everything else,
+ * including the rules that belong to a thread talking to a requester, stays.
+ */
+export const OPINIONATED_BLOCK_SINGLE_NO_DELEGATION =
+	opinionatedBlockBeforeCoordinator("single") + opinionatedBlockAfterCoordinator("single", false)
 
 export const OPINIONATED_BLOCK_ORCHESTRATOR =
 	opinionatedBlockBeforeCoordinator("orchestrator") +
 	COORDINATION_LEVEL_BLOCK +
-	opinionatedBlockAfterCoordinator("orchestrator")
+	opinionatedBlockAfterCoordinator("orchestrator", true)
 
 /**
  * Subagent variant: no coordinator section and no fresh-subagent review step.
@@ -343,7 +354,7 @@ export const OPINIONATED_BLOCK_ORCHESTRATOR =
  * with a requester, pull-request hygiene, and keeping the project's docs.
  */
 export const OPINIONATED_BLOCK_SUBAGENT =
-	opinionatedBlockBeforeCoordinator("subagent") + opinionatedBlockAfterCoordinator("subagent")
+	opinionatedBlockBeforeCoordinator("subagent") + opinionatedBlockAfterCoordinator("subagent", false)
 
 /**
  * Spicy guidelines are additive over the base prompt: start from the mode's
@@ -352,15 +363,21 @@ export const OPINIONATED_BLOCK_SUBAGENT =
  * working-discipline block for that mode. The single/subagent base carries the
  * trailer line, so it is replaced in place; the orchestrator base has no
  * trailer bullet, so the attribution default is appended.
+ *
+ * `canDelegate` says whether the session can spawn subagents. It only affects
+ * single mode: without the `Agent` tool the delegation guidance is dropped, so
+ * the session is not told to hand work to agents it cannot spawn. An
+ * orchestrator delegates by definition and a subagent never does, so both keep
+ * their fixed blocks.
  */
-export function guidelinesFor(mode: PromptMode): string {
+export function guidelinesFor(mode: PromptMode, canDelegate: boolean): string {
 	const base = resolveCoreGuidelines(mode)
 	const withAttribution = base.includes(CORE_GUIDELINES_COMMIT_TRAILER_LINE)
 		? base.replace(CORE_GUIDELINES_COMMIT_TRAILER_LINE, SPICY_COMMIT_ATTRIBUTION)
 		: `${base}\n${SPICY_COMMIT_ATTRIBUTION}`
 	if (mode === "orchestrator") return withAttribution + OPINIONATED_BLOCK_ORCHESTRATOR
 	if (mode === "subagent") return withAttribution + OPINIONATED_BLOCK_SUBAGENT
-	return withAttribution + OPINIONATED_BLOCK
+	return withAttribution + (canDelegate ? OPINIONATED_BLOCK : OPINIONATED_BLOCK_SINGLE_NO_DELEGATION)
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import {
 	guidelinesFor,
 	OPINIONATED_BLOCK,
 	OPINIONATED_BLOCK_ORCHESTRATOR,
+	OPINIONATED_BLOCK_SINGLE_NO_DELEGATION,
 	OPINIONATED_BLOCK_SUBAGENT,
 	RULES_BLOCK_HEADER,
 	rulesBlockFor,
@@ -363,13 +364,13 @@ describe("buildSystemPrompt: spicy variant", () => {
 	})
 
 	it("SPICY.guidelines carries requirements-completion guidance", () => {
-		const combined = guidelinesFor("single")
+		const combined = guidelinesFor("single", true)
 		expect(combined).toMatch(/requirements/i)
 		expect(combined).toContain("check off each one before calling the task done")
 	})
 
 	it("SPICY.guidelines contains '### Working discipline'", () => {
-		expect(guidelinesFor("single")).toContain("### Working discipline")
+		expect(guidelinesFor("single", true)).toContain("### Working discipline")
 	})
 })
 
@@ -409,7 +410,8 @@ describe("spicy additive guidelines", () => {
 	})
 
 	it("appends the fresh-review-before-done bullet", () => {
-		expect(spicySingle()).toContain("run a review pass with a fresh subagent rather than only self-checking")
+		const result = buildSystemPrompt({ tools: fakeToolsWithAgent, env: testEnv, mode: "single", variantName: "spicy" })
+		expect(result).toContain("run a review pass with a fresh subagent rather than only self-checking")
 	})
 
 	it("appends the numbered-requirements bullet", () => {
@@ -516,24 +518,24 @@ describe("AGENT_DISCIPLINE_BLOCK content", () => {
 
 describe("guidelinesFor", () => {
 	it("single mode contains '**Coordinator and delegation**'", () => {
-		expect(guidelinesFor("single")).toContain("**Coordinator and delegation**")
+		expect(guidelinesFor("single", true)).toContain("**Coordinator and delegation**")
 	})
 
 	// A subagent has the delegation tools stripped, so it gets no coordinator
 	// section and no instruction to hand work to another agent.
 	it("subagent mode contains neither coordinator block", () => {
-		expect(guidelinesFor("subagent")).not.toContain("**Coordinator and delegation**")
-		expect(guidelinesFor("subagent")).not.toContain("**Coordination level**")
+		expect(guidelinesFor("subagent", false)).not.toContain("**Coordinator and delegation**")
+		expect(guidelinesFor("subagent", false)).not.toContain("**Coordination level**")
 	})
 
 	it("subagent mode does NOT ask for a review pass by a fresh subagent", () => {
-		expect(guidelinesFor("subagent")).not.toContain("run a review pass with a fresh subagent")
-		expect(guidelinesFor("single")).toContain("run a review pass with a fresh subagent")
-		expect(guidelinesFor("orchestrator")).toContain("run a review pass with a fresh subagent")
+		expect(guidelinesFor("subagent", false)).not.toContain("run a review pass with a fresh subagent")
+		expect(guidelinesFor("single", true)).toContain("run a review pass with a fresh subagent")
+		expect(guidelinesFor("orchestrator", true)).toContain("run a review pass with a fresh subagent")
 	})
 
 	it("subagent mode keeps the shared working-discipline sections", () => {
-		const subagent = guidelinesFor("subagent")
+		const subagent = guidelinesFor("subagent", false)
 		expect(subagent).toContain("### Working discipline")
 		expect(subagent).toContain("**Planning & architecture**")
 		expect(subagent).toContain("**Testing discipline**")
@@ -546,7 +548,7 @@ describe("guidelinesFor", () => {
 	// A subagent is handed its scope with the task, reports back to the thread
 	// that spawned it, and never opens the pull request or owns the project docs.
 	it("subagent mode drops the rules that belong to the spawning thread", () => {
-		const subagent = guidelinesFor("subagent")
+		const subagent = guidelinesFor("subagent", false)
 		expect(subagent).not.toContain("Confirm the scope and the design with the requester")
 		expect(subagent).not.toContain("**Pull/merge request hygiene**")
 		expect(subagent).not.toContain("**Docs & continuity**")
@@ -554,31 +556,31 @@ describe("guidelinesFor", () => {
 
 	it("single and orchestrator mode keep those rules", () => {
 		for (const mode of ["single", "orchestrator"] as const) {
-			expect(guidelinesFor(mode)).toContain("Confirm the scope and the design with the requester")
-			expect(guidelinesFor(mode)).toContain("**Pull/merge request hygiene**")
-			expect(guidelinesFor(mode)).toContain("**Docs & continuity**")
+			expect(guidelinesFor(mode, true)).toContain("Confirm the scope and the design with the requester")
+			expect(guidelinesFor(mode, true)).toContain("**Pull/merge request hygiene**")
+			expect(guidelinesFor(mode, true)).toContain("**Docs & continuity**")
 		}
 	})
 
 	it("orchestrator mode does NOT contain '**Coordinator and delegation**'", () => {
-		expect(guidelinesFor("orchestrator")).not.toContain("**Coordinator and delegation**")
+		expect(guidelinesFor("orchestrator", true)).not.toContain("**Coordinator and delegation**")
 	})
 
 	it("orchestrator mode DOES contain '**Coordination level**'", () => {
-		expect(guidelinesFor("orchestrator")).toContain("**Coordination level**")
+		expect(guidelinesFor("orchestrator", true)).toContain("**Coordination level**")
 	})
 
 	it("single mode does NOT contain '**Coordination level**'", () => {
-		expect(guidelinesFor("single")).not.toContain("**Coordination level**")
+		expect(guidelinesFor("single", true)).not.toContain("**Coordination level**")
 	})
 
 	it("both single and orchestrator keep a base safety rule", () => {
-		expect(guidelinesFor("single")).toContain("After every tool result, ALWAYS produce text")
-		expect(guidelinesFor("orchestrator")).toContain("After every tool result, ALWAYS produce text")
+		expect(guidelinesFor("single", true)).toContain("After every tool result, ALWAYS produce text")
+		expect(guidelinesFor("orchestrator", true)).toContain("After every tool result, ALWAYS produce text")
 	})
 
 	it("orchestrator mode states the hands-on rules as the bar for delegated work", () => {
-		const orchestrator = guidelinesFor("orchestrator")
+		const orchestrator = guidelinesFor("orchestrator", true)
 		expect(orchestrator).toContain("Require each chunk's tests to check the expected behaviour from its brief")
 		expect(orchestrator).toContain("Require untracked files to be backed up before they are edited")
 		expect(orchestrator).toContain("Require debug output, dead code, and leftover scaffolding to be removed")
@@ -588,15 +590,81 @@ describe("guidelinesFor", () => {
 	})
 
 	it("single mode keeps the hands-on rules in direct form", () => {
-		const single = guidelinesFor("single")
+		const single = guidelinesFor("single", true)
 		expect(single).toContain("Run tests after every change")
 		expect(single).toContain("Back up untracked files before editing them")
 		expect(single).toContain("Stage changes explicitly by path")
 	})
 
 	it("both single and orchestrator contain '### Working discipline'", () => {
-		expect(guidelinesFor("single")).toContain("### Working discipline")
-		expect(guidelinesFor("orchestrator")).toContain("### Working discipline")
+		expect(guidelinesFor("single", true)).toContain("### Working discipline")
+		expect(guidelinesFor("orchestrator", true)).toContain("### Working discipline")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Single mode without the Agent tool: no instruction to delegate
+// ---------------------------------------------------------------------------
+
+describe("single mode without the Agent tool", () => {
+	const spicySingle = (tools: typeof fakeTools) =>
+		buildSystemPrompt({ tools, env: testEnv, mode: "single", variantName: "spicy" })
+
+	it("keeps the coordinator block and the fresh-subagent review step when the Agent tool is there", () => {
+		const guidelines = guidelinesFor("single", true)
+		expect(guidelines).toContain("**Coordinator and delegation**")
+		expect(guidelines).toContain("run a review pass with a fresh subagent")
+	})
+
+	it("drops the coordinator block and the fresh-subagent review step without the Agent tool", () => {
+		const guidelines = guidelinesFor("single", false)
+		expect(guidelines).not.toContain("**Coordinator and delegation**")
+		expect(guidelines).not.toContain("Operate as the coordinator and architect")
+		expect(guidelines).not.toContain("run a review pass with a fresh subagent")
+	})
+
+	it("keeps the rest of the working-discipline block without the Agent tool", () => {
+		const guidelines = guidelinesFor("single", false)
+		expect(guidelines).toContain("### Working discipline")
+		expect(guidelines).toContain("**Planning & architecture**")
+		expect(guidelines).toContain("Confirm the scope and the design with the requester")
+		expect(guidelines).toContain("**Testing discipline**")
+		expect(guidelines).toContain("Run tests after every change")
+		expect(guidelines).toContain("**Code quality & review**")
+		expect(guidelines).toContain("**Pull/merge request hygiene**")
+		expect(guidelines).toContain("**Docs & continuity**")
+		expect(guidelines).toContain("**Version-control safety**")
+		expect(guidelines).toContain("**Research & getting unstuck**")
+		expect(guidelines).toContain("**Truthfulness, communication, and security**")
+	})
+
+	it("keeps the base guidelines without the Agent tool", () => {
+		const guidelines = guidelinesFor("single", false)
+		expect(guidelines).toContain("After every tool result, ALWAYS produce text")
+		expect(guidelines).toContain("Always bound shell commands")
+		expect(guidelines).toContain(SPICY_COMMIT_ATTRIBUTION)
+	})
+
+	// The whole prompt, not just the guidelines: the delegation sentence in the
+	// Single-Model Mode section and the working-discipline block are gated on the
+	// same signal, so a session without the Agent tool is never told to delegate.
+	it("builds a spicy prompt with no delegation instruction at all", () => {
+		const result = spicySingle(fakeTools)
+		expect(result).not.toContain("**Coordinator and delegation**")
+		expect(result).not.toContain("run a review pass with a fresh subagent")
+		expect(result).toContain(SINGLE_MODE_DELEGATION_TEXT)
+		expect(result).toContain("### Working discipline")
+	})
+
+	// The signal is threaded through the variant hook, which the default variant
+	// does not define, so the default prompt is the same either way.
+	it("leaves the default variant untouched with and without the Agent tool", () => {
+		for (const tools of [fakeTools, fakeToolsWithAgent]) {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+			expect(result).toContain(SINGLE_MODE_DELEGATION_TEXT)
+			expect(result).not.toContain("### Working discipline")
+			expect(result).not.toContain("**Coordinator and delegation**")
+		}
 	})
 })
 
@@ -609,6 +677,7 @@ describe("appended working-discipline block states each principle once", () => {
 
 	const blocks: [string, string][] = [
 		["single", OPINIONATED_BLOCK],
+		["single without the Agent tool", OPINIONATED_BLOCK_SINGLE_NO_DELEGATION],
 		["orchestrator", OPINIONATED_BLOCK_ORCHESTRATOR],
 		["subagent", OPINIONATED_BLOCK_SUBAGENT],
 	]
@@ -695,7 +764,7 @@ describe("default variant byte-identical guard", () => {
 	})
 
 	it("spicy single prompt contains '**Coordinator and delegation**' (full block for single)", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName: "spicy" })
+		const result = buildSystemPrompt({ tools: fakeToolsWithAgent, env: testEnv, mode: "single", variantName: "spicy" })
 		expect(result).toContain("**Coordinator and delegation**")
 	})
 
