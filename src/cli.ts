@@ -58,6 +58,7 @@ import bashControlExtension from "./extensions/bash-background/bash-control-exte
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
+import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
@@ -701,6 +702,7 @@ try {
 			// Powershell is Windows-only: hide it when a config activates it on
 			// another platform (dead schema weight otherwise).
 			powershellGateExtension,
+			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
 			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,

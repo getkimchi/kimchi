@@ -17,6 +17,8 @@ export function appendStatus(text: string, status: string): string {
  *
  * A clean exit (exit code 0) or a still-running snapshot does NOT throw.
  *
+ * The wording matters: `bash-timeout-guidance.ts` matches on
+ * /Command timed out after (\d+) seconds/ to append actionable guidance.
  */
 export function throwIfTerminal(snapshot: TailSnapshot, output: string, deadlineSeconds: number): void {
 	if (snapshot.reason === "aborted") {

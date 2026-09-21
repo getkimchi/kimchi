@@ -163,6 +163,8 @@ export function createBackgroundBashToolDefinition(
 			await registry.remove(handle).catch(() => {})
 
 			// Mirror upstream's error behavior: throw on non-zero exit or deadline.
+			// The wording matters — bash-timeout-guidance.ts matches on
+			// /Command timed out after (\d+) seconds/.
 			const fullOutput = final?.content ?? snapshot.text
 			throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
 
