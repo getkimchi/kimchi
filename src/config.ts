@@ -108,6 +108,24 @@ export interface SurveyConfig {
 	seenAt?: string
 }
 
+/**
+ * Record of a one-shot rollout having been applied to a user on this install.
+ *
+ * Keyed by rollout id and then by user id, so a rollout applies once per
+ * account rather than once per machine. The id names the *capability* (e.g.
+ * "auto-default"), not the wave: widening a rollout to a larger cohort reuses
+ * the same id, so users reached by an earlier wave are never rolled in twice.
+ *
+ * `appliedVersion` is recorded for analytics only — never compared, because a
+ * version-gated re-roll would re-override choices made after the first wave.
+ */
+export interface RolloutState {
+	appliedAt: string
+	appliedVersion?: string
+	/** The default model replaced by the rollout, for analytics. */
+	previousModel?: string
+}
+
 export interface PreferencesConfig {
 	hideTips?: boolean
 }
@@ -680,6 +698,36 @@ export function readSurveySeenAt(surveyId: string, configPath?: string): string 
 export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?: string): void {
 	updateSurveyConfig(configPath ?? KIMCHI_CONFIG_PATH, surveyId, (survey) => {
 		survey.seenAt = seenAt
+	})
+}
+
+export function readRolloutState(rolloutId: string, userId: string, configPath?: string): RolloutState | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(configPath ?? KIMCHI_CONFIG_PATH, "utf-8"))
+		const entry = parsed.rollouts?.[rolloutId]?.[userId]
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined
+		if (typeof entry.appliedAt !== "string") return undefined
+		return entry as RolloutState
+	} catch {
+		// Missing or unreadable config reads as "not yet applied": the caller
+		// re-applies the rollout rather than silently skipping it.
+		return undefined
+	}
+}
+
+export function writeRolloutState(rolloutId: string, userId: string, state: RolloutState, configPath?: string): void {
+	updateConfigFile(configPath ?? KIMCHI_CONFIG_PATH, (raw) => {
+		const rollouts =
+			raw.rollouts && typeof raw.rollouts === "object" && !Array.isArray(raw.rollouts)
+				? { ...(raw.rollouts as Record<string, unknown>) }
+				: {}
+		const byUser =
+			rollouts[rolloutId] && typeof rollouts[rolloutId] === "object" && !Array.isArray(rollouts[rolloutId])
+				? { ...(rollouts[rolloutId] as Record<string, unknown>) }
+				: {}
+		byUser[userId] = state
+		rollouts[rolloutId] = byUser
+		raw.rollouts = rollouts
 	})
 }
 

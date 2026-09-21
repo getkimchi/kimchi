@@ -19,6 +19,7 @@ import {
 	_setAutoDefaultGateCache,
 	isAutoEntitledUser,
 	isCastAiEmail,
+	resolveAutoEntitlement,
 	shouldDefaultToAuto,
 	warmAutoDefaultGate,
 } from "./auto-default-gate.js"
@@ -179,5 +180,21 @@ describe("shouldDefaultToAuto error handling", () => {
 		await expect(shouldDefaultToAuto()).resolves.toBe(false)
 
 		expect(getMeMock).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("resolveAutoEntitlement", () => {
+	it("returns the account id so the rollout marker can be keyed per user", async () => {
+		mockApiKey("key-1")
+		getMeMock.mockResolvedValue({ id: "usr_abc", email: "alice@cast.ai" })
+
+		await expect(resolveAutoEntitlement()).resolves.toEqual({ entitled: true, userId: "usr_abc" })
+	})
+
+	it("reports an empty id when the lookup fails so the rollout is skipped", async () => {
+		mockApiKey("key-1")
+		getMeMock.mockRejectedValue(new Error("network failure"))
+
+		await expect(resolveAutoEntitlement()).resolves.toEqual({ entitled: false, userId: "" })
 	})
 })

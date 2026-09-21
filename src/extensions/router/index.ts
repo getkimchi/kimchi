@@ -2,10 +2,12 @@ import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
+import { readRolloutState, writeRolloutState } from "../../config.js"
 import { getSettingsManager } from "../../settings-watcher.js"
+import { getVersion } from "../../utils.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
-import { shouldDefaultToAuto } from "./auto-default-gate.js"
+import { resolveAutoEntitlement } from "./auto-default-gate.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, isAutoModel } from "./constants.js"
 import { routeQuery } from "./router-client.js"
 import { getRouterConfig, type RouterConfig } from "./router-config.js"
@@ -68,21 +70,41 @@ async function syncAutoCapabilities<TApi extends Api>(
 }
 
 /**
- * Whether the user persisted a concrete model as their configured default.
- * Picker selections persist (0.84.1 semantics), so a defaultModel recorded in
- * pi's settings is an explicit user choice; only accounts that never picked
- * one are handed Auto by the @cast.ai default rollout. A persisted Auto
- * default does not count — it restores through the normal path.
+ * Whether pi has any saved default model, concrete or Auto.
+ *
+ * Used to keep a saved default from being wrapped in multi-model mode. It
+ * deliberately does not gate the Auto rollout: login and Ctrl+P cycling both
+ * persist a default too, so most accounts carry one without ever having chosen
+ * it.
  */
-function hasExplicitPersistedDefault(): boolean {
+function hasPersistedDefault(): boolean {
+	return !!getSettingsManager()?.getDefaultModel()
+}
+
+/** Rollout id. Names the capability, not the wave — see `RolloutState`. */
+const AUTO_ROLLOUT_ID = "auto-default"
+
+/**
+ * Whether this session should be switched to Auto by the one-shot rollout.
+ *
+ * Returns true at most once per account: the marker is written before the
+ * caller applies Auto, so a later switch away is never undone by a subsequent
+ * launch. Accounts outside the current cohort, and accounts whose identity
+ * could not be resolved, are left alone.
+ */
+async function applyAutoRollout(): Promise<boolean> {
+	const { entitled, userId } = await resolveAutoEntitlement()
+	// Without an id the marker cannot be keyed, and an unkeyed write would roll
+	// the account in again on the next launch — skip rather than loop.
+	if (!entitled || !userId) return false
+	if (readRolloutState(AUTO_ROLLOUT_ID, userId)) return false
+
 	const settings = getSettingsManager()
-	const modelId = settings
-		?.getDefaultModel()
-		?.toLowerCase()
-		.replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
-	if (!modelId) return false
-	const provider = settings?.getDefaultProvider()?.toLowerCase()
-	if (modelId === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)) return false
+	writeRolloutState(AUTO_ROLLOUT_ID, userId, {
+		appliedAt: new Date().toISOString(),
+		appliedVersion: getVersion(),
+		previousModel: settings?.getDefaultModel(),
+	})
 	return true
 }
 
@@ -132,28 +154,32 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const explicitLaunchChoice =
 				event.reason === "startup" &&
 				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
-			// A model the user picked and persisted as their default (picker Enter
-			// persists, 0.84.1 semantics) outranks the Auto default: only accounts
-			// that never made an explicit choice get Auto.
-			const persistedDefault = hasExplicitPersistedDefault()
-			// Auto-by-default is gated to @cast.ai accounts. The gate controls only
-			// the fresh-session default — Auto stays selectable and resumable for
-			// users entitled via --enable-experimental-features.
-			if (
+			// Auto-by-default rolls out once per account, tracked by a marker
+			// keyed on the *capability* rather than the wave: widening the cohort
+			// later reuses the same id, so users reached by an earlier wave keep
+			// whatever they have chosen since and are never rolled in twice.
+			const rolledIn =
 				options.handleCliModelSelection &&
 				freshSession &&
 				!explicitLaunchChoice &&
-				!persistedDefault &&
 				!isAutoModel(autoModel) &&
-				(await shouldDefaultToAuto())
-			) {
+				(await applyAutoRollout())
+			if (rolledIn) {
 				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
-				if (isAutoModel(autoModel)) setMultiModelEnabled(sessionId, false)
-			} else if (options.handleCliModelSelection && freshSession && !explicitLaunchChoice && persistedDefault) {
-				// A persisted concrete default is an explicit choice, so it also
-				// outranks the global multi-model default: without this the session
-				// would come up as multi-model wrapping the saved model rather than
-				// the saved model itself.
+				if (isAutoModel(autoModel)) {
+					setMultiModelEnabled(sessionId, false)
+					// The rollout replaces a model the user may have been using for
+					// a while. Say so: a silent switch reads as a bug, and a local
+					// marker can be lost (config reset, new machine), so the notice
+					// is what keeps a repeat roll-in merely mildly annoying.
+					ctx.ui.notify("Auto is now the default model.", "info")
+				}
+			} else if (options.handleCliModelSelection && freshSession && !explicitLaunchChoice && hasPersistedDefault()) {
+				// A saved default outranks the global multi-model default, whether it
+				// is concrete or Auto: without this the session comes up as
+				// multi-model wrapping the saved model rather than the model itself.
+				// This also covers the launch after a roll-in, where the rollout is
+				// spent but the Auto default it wrote must still be honoured.
 				setMultiModelEnabled(sessionId, false)
 			}
 			if (!isAutoModel(autoModel)) {

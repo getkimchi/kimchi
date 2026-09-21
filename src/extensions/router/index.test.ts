@@ -11,10 +11,23 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-// The Auto-by-default gate performs a network lookup; default it to "on" so the
-// existing Auto-default expectations below exercise the routing logic itself.
+// The Auto-by-default gate performs a network lookup; default it to an entitled
+// account so the existing Auto-default expectations below exercise the routing
+// logic itself.
 vi.mock("./auto-default-gate.js", () => ({
-	shouldDefaultToAuto: vi.fn(async () => true),
+	resolveAutoEntitlement: vi.fn(async () => ({ entitled: true, userId: "usr_test" })),
+}))
+
+// The rollout marker is persisted in kimchi's config; keep it in memory so each
+// test starts with "not yet rolled in" and can assert what was written.
+const rolloutStubs = vi.hoisted(() => ({
+	store: new Map<string, { appliedAt: string; previousModel?: string }>(),
+}))
+vi.mock(import("../../config.js"), async (importOriginal) => ({
+	...(await importOriginal()),
+	readRolloutState: (id: string, userId: string) => rolloutStubs.store.get(`${id}:${userId}`),
+	writeRolloutState: (id: string, userId: string, state: { appliedAt: string; previousModel?: string }) =>
+		void rolloutStubs.store.set(`${id}:${userId}`, state),
 }))
 
 // The fresh-session default gate reads pi's persisted default model through the
@@ -32,7 +45,7 @@ import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingAttempt, consumeAutoRoutingAttempt } from "./api-provider.js"
-import { shouldDefaultToAuto } from "./auto-default-gate.js"
+import { resolveAutoEntitlement } from "./auto-default-gate.js"
 import autoModelExtension, { createAutoModelExtension } from "./index.js"
 import { ROUTER_IMAGE_METADATA } from "./router-query.js"
 import {
@@ -106,18 +119,38 @@ function custom(data: unknown): SessionEntry {
 
 afterEach(() => {
 	populateCliArgs([])
+	// The rollout applies once per account, so a marker left behind would make
+	// every later test look like an already-rolled-in user.
+	rolloutStubs.store.clear()
 	clearAutoRoutingAttempt(SESSION_ID)
 	clearAutoRoutingState(SESSION_ID)
 	vi.unstubAllGlobals()
 	vi.restoreAllMocks()
 })
 
-describe("Auto-by-default gating", () => {
+describe("Auto-by-default rollout", () => {
 	beforeEach(() => {
-		vi.mocked(shouldDefaultToAuto).mockResolvedValue(true)
+		vi.mocked(resolveAutoEntitlement).mockResolvedValue({ entitled: true, userId: "usr_test" })
 	})
 
-	it("keeps a fresh session on the user's persisted concrete default without consulting the gate", async () => {
+	it("rolls an entitled account onto Auto and records the marker once", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const ctx = createContext({ model: model("kimi-k2.6"), modelRegistry: { find: () => auto } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto)
+		// The model they were on is recorded for analytics.
+		expect(rolloutStubs.store.get("auto-default:usr_test")).toMatchObject({ previousModel: "kimi-k2.6" })
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
+	})
+
+	it("leaves a switched-away account alone once the rollout has been applied", async () => {
+		rolloutStubs.store.set("auto-default:usr_test", { appliedAt: "2026-09-01T00:00:00.000Z" })
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		const extension = createExtensionApi()
@@ -127,10 +160,10 @@ describe("Auto-by-default gating", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(extension.setModel).not.toHaveBeenCalled()
-		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
-	it("treats a persisted Auto default as restorable, not an explicit concrete choice", async () => {
+	it("treats a persisted Auto default as restorable, not a rollout", async () => {
 		settingsStubs.getDefaultModel.mockReturnValue("auto")
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		const extension = createExtensionApi()
@@ -146,20 +179,19 @@ describe("Auto-by-default gating", () => {
 	it.each([
 		"startup",
 		"new",
-	] as const)("leaves a fresh %s session on its existing model for a non-cast.ai user", async (reason) => {
-		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
+	] as const)("leaves a fresh %s session on its existing model for a non-entitled user", async (reason) => {
+		vi.mocked(resolveAutoEntitlement).mockResolvedValue({ entitled: false, userId: "" })
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
-		const concrete = model("concrete")
-		const ctx = createContext({ model: concrete, modelRegistry: { find: () => model("auto") } })
+		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => model("auto") } })
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, ctx)
 
 		expect(extension.setModel).not.toHaveBeenCalled()
 	})
 
-	it("still restores a saved Auto session for a non-cast.ai user", async () => {
-		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
+	it("still restores a saved Auto session for a non-entitled user", async () => {
+		vi.mocked(resolveAutoEntitlement).mockResolvedValue({ entitled: false, userId: "" })
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const auto = model("auto")
@@ -178,7 +210,7 @@ describe("Auto-by-default gating", () => {
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
-		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
+		expect(resolveAutoEntitlement).not.toHaveBeenCalled()
 	})
 })
 
