@@ -85,27 +85,34 @@ function hasPersistedDefault(): boolean {
 const AUTO_ROLLOUT_ID = "auto-default"
 
 /**
- * Whether this session should be switched to Auto by the one-shot rollout.
+ * Whether this session is eligible for the one-shot Auto rollout, plus the
+ * `commit` that records it.
  *
- * Returns true at most once per account: the marker is written before the
- * caller applies Auto, so a later switch away is never undone by a subsequent
- * launch. Accounts outside the current cohort, and accounts whose identity
- * could not be resolved, are left alone.
+ * Eligibility is separate from commitment on purpose: the marker must only be
+ * written once Auto has actually been applied. Writing it up front would
+ * permanently skip an account whose Auto model could not be resolved (a failed
+ * registration or an unavailable catalogue), leaving it without the default and
+ * without any explanation. Accounts outside the cohort, accounts already rolled
+ * in, and accounts whose identity could not be resolved are not eligible.
  */
-async function applyAutoRollout(): Promise<boolean> {
+async function resolveAutoRollout(): Promise<{ eligible: boolean; commit: () => void }> {
+	const noop = { eligible: false, commit: () => {} }
 	const { entitled, userId } = await resolveAutoEntitlement()
 	// Without an id the marker cannot be keyed, and an unkeyed write would roll
 	// the account in again on the next launch — skip rather than loop.
-	if (!entitled || !userId) return false
-	if (readRolloutState(AUTO_ROLLOUT_ID, userId)) return false
+	if (!entitled || !userId) return noop
+	if (readRolloutState(AUTO_ROLLOUT_ID, userId)) return noop
 
-	const settings = getSettingsManager()
-	writeRolloutState(AUTO_ROLLOUT_ID, userId, {
-		appliedAt: new Date().toISOString(),
-		appliedVersion: getVersion(),
-		previousModel: settings?.getDefaultModel(),
-	})
-	return true
+	const previousModel = getSettingsManager()?.getDefaultModel()
+	return {
+		eligible: true,
+		commit: () =>
+			writeRolloutState(AUTO_ROLLOUT_ID, userId, {
+				appliedAt: new Date().toISOString(),
+				appliedVersion: getVersion(),
+				previousModel,
+			}),
+	}
 }
 
 export interface AutoModelExtensionOptions {
@@ -158,15 +165,16 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			// keyed on the *capability* rather than the wave: widening the cohort
 			// later reuses the same id, so users reached by an earlier wave keep
 			// whatever they have chosen since and are never rolled in twice.
-			const rolledIn =
-				options.handleCliModelSelection &&
-				freshSession &&
-				!explicitLaunchChoice &&
-				!isAutoModel(autoModel) &&
-				(await applyAutoRollout())
-			if (rolledIn) {
+			const rollout =
+				options.handleCliModelSelection && freshSession && !explicitLaunchChoice && !isAutoModel(autoModel)
+					? await resolveAutoRollout()
+					: undefined
+			if (rollout?.eligible) {
 				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
 				if (isAutoModel(autoModel)) {
+					// Only now is the account actually on Auto, so only now is the
+					// rollout spent.
+					rollout.commit()
 					setMultiModelEnabled(sessionId, false)
 					// The rollout replaces a model the user may have been using for
 					// a while. Say so: a silent switch reads as a bug, and a local

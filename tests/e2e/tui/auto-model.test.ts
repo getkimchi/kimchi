@@ -559,11 +559,12 @@ test("Ctrl+P cycles through concrete models and wraps back to Auto", async ({ te
 	)
 })
 
-// KNOWN GAP: after the rollout is spent, a restart comes up as
-// "multi-model (routed)" instead of restoring the saved Auto default. The
-// saved-default branch below calls setMultiModelEnabled(false), so something
-// on this path is still resolving multi-model ahead of it — not yet diagnosed.
-// Remove test.fail once the restart restores Auto.
+// KNOWN GAP: on a TUI restart after the rollout is spent, the footer reads
+// "multi-model (routed)" instead of the saved Auto default. The router's
+// saved-default branch does call setMultiModelEnabled(false), so the footer
+// appears to resolve multi-model before that session_start handler runs. The
+// equivalent ACP gap is fixed in newSession (isMultiModelOrchestrator); the TUI
+// startup path needs the same anchoring. Remove test.fail once it does.
 test.fail("a session-scoped /model choice survives resume but not /new or restart", async ({ terminal }) => {
 	const exitMarker = "__KIMCHI_AUTO_LIFECYCLE_EXITED__"
 	const fixture = await createKimchiFixture({

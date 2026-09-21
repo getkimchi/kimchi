@@ -47,7 +47,7 @@ describe("ACP Auto model", () => {
 		expect(chat[0]?.body).toMatchObject({ model: "routed" })
 	})
 
-	it("starts each new session in Auto after a concrete model selection", async () => {
+	it("keeps a model chosen after the rollout instead of returning to Auto", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-auto-default",
 			providerId: "kimchi-dev",
@@ -60,9 +60,12 @@ describe("ACP Auto model", () => {
 		expect(session.models?.currentModelId).toBe("kimchi-dev/auto")
 		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
 
+		// The rollout applies once per account: a model picked after it must not be
+		// undone by the next session, which is what makes widening the rollout to a
+		// larger cohort safe for accounts already reached by an earlier wave.
 		await fixture.conn.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
 		const nextSession = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(nextSession.models?.currentModelId).toBe("kimchi-dev/auto")
+		expect(nextSession.models?.currentModelId).toBe("kimchi-dev/routed")
 	})
 
 	it("leaves a new session off Auto for an external account and hides it from the model list", async () => {

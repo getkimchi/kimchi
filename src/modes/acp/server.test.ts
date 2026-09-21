@@ -5605,14 +5605,16 @@ describe("setSessionConfigOption", () => {
 			fake.setModel = async () => {
 				throw new Error("auth failed")
 			}
-			// Start in multi-model mode so we can verify the flag is restored on failure.
-			setMultiModelEnabled(sessionId, true)
 			const agent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: "/tmp/fake-agent-dir",
 				sessionFactory: async () => asSession(fake),
 			})
 			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			// Start in multi-model mode so we can verify the flag is restored on
+			// failure. Set after newSession, which anchors the flag to the session's
+			// resolved model.
+			setMultiModelEnabled(sessionId, true)
 
 			await expect(
 				agent.setSessionConfigOption({

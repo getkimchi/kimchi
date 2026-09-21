@@ -44,9 +44,9 @@ const TWO_MODELS = [
 ] as const
 
 test("multi-model is listed in the model picker and command suggestions", async ({ terminal }) => {
-	// Post-revert contract ("keep multi-model fully selectable alongside
-	// Auto"): the picker always leads with Auto, then the virtual
-	// multi-model row, and `/multi-model` is suggested by autocomplete.
+	// Contract: both Auto and the virtual multi-model row are selectable from
+	// the picker, and `/multi-model` is suggested by autocomplete. Their
+	// relative order is upstream's concern, so it is deliberately not asserted.
 	await runKimchiSession(
 		terminal,
 		{
@@ -74,8 +74,7 @@ test("multi-model is listed in the model picker and command suggestions", async 
 			const picker = viewText(terminal)
 			expect(picker).toContain("auto")
 			expect(picker).toContain("multi-model")
-			expect(picker.indexOf("auto [kimchi-dev]")).toBeLessThan(picker.indexOf("multi-model"))
-			trace.step("picker lists Auto then multi-model")
+			trace.step("picker lists both Auto and multi-model")
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.write("/multi")

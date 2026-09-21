@@ -484,6 +484,12 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
+			// A fresh ACP session has neither a process entry nor a session log, so
+			// multi-model would otherwise resolve to the global default (true) and
+			// report "multi-model" no matter which model the session actually
+			// resolved to. Anchor the flag to that resolved model instead, the same
+			// way setSessionModel does for an explicit client change.
+			setMultiModelEnabled(sessionId, isMultiModelOrchestrator(session))
 			const uiContext = this.createUiContext(session)
 			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
@@ -1791,6 +1797,19 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
  */
 type AgentSessionModelConfig = Pick<AgentSession, "model" | "modelRuntime" | "sessionId" | "sessionManager"> & {
 	modelRegistry?: ModelRegistry
+}
+
+/**
+ * Whether a session's resolved model is the multi-model orchestrator.
+ *
+ * Compares the session's model against the configured orchestrator rather than
+ * reading the multi-model flag, which is exactly what is unset for a fresh
+ * session.
+ */
+function isMultiModelOrchestrator(session: AgentSessionModelConfig): boolean {
+	if (!session.model) return false
+	const { model: orchestrator } = getOrchestratorModel(session.sessionId, getSessionModelRegistry(session))
+	return !!orchestrator && refFromModel(session.model) === refFromModel(orchestrator)
 }
 
 function getSessionModelRegistry(
