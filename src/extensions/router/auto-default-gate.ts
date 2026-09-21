@@ -17,27 +17,18 @@ const CAST_AI_EMAIL_DOMAIN = "cast.ai"
 /** Budget for the identity lookup; startup must not hang on a slow API. */
 const LOOKUP_TIMEOUT_MS = 3000
 
-/** Resolved identity: whether the account is entitled, and who it is. */
-export interface AutoEntitlement {
-	entitled: boolean
-	/** Account id from /v1/me; empty when the lookup failed. */
-	userId: string
-}
-
-const NOT_ENTITLED: AutoEntitlement = { entitled: false, userId: "" }
-
-let cachedEntitlement: AutoEntitlement | undefined
-let lookupPromise: Promise<AutoEntitlement> | undefined
+let cachedIsCastAiUser: boolean | undefined
+let lookupPromise: Promise<boolean> | undefined
 
 /** @internal — exposed for testing only */
 export function _resetAutoDefaultGateCache(): void {
-	cachedEntitlement = undefined
+	cachedIsCastAiUser = undefined
 	lookupPromise = undefined
 }
 
 /** @internal — exposed for testing only: seed the cached entitlement without a network lookup. */
-export function _setAutoDefaultGateCache(value: boolean | undefined, userId = "test-user"): void {
-	cachedEntitlement = value === undefined ? undefined : { entitled: value, userId }
+export function _setAutoDefaultGateCache(value: boolean | undefined): void {
+	cachedIsCastAiUser = value
 }
 
 /**
@@ -47,16 +38,7 @@ export function _setAutoDefaultGateCache(value: boolean | undefined, userId = "t
  * open those surfaces, and cli.ts kicks the lookup off pre-main.
  */
 export function isAutoEntitledUser(): boolean {
-	return cachedEntitlement?.entitled ?? false
-}
-
-/**
- * Sync read of the resolved identity, for the rollout marker (which is keyed by
- * account id so a shared machine rolls in each user separately). Empty userId
- * until the startup lookup resolves.
- */
-export function getAutoEntitlement(): AutoEntitlement {
-	return cachedEntitlement ?? NOT_ENTITLED
+	return cachedIsCastAiUser ?? false
 }
 
 /** Start the identity lookup without blocking the caller; result is cached for later reads. */
@@ -83,23 +65,23 @@ export function isCastAiEmail(email: string | undefined): boolean {
  * Resolved once per process and cached, including negative results, so repeated
  * session starts never re-hit the network.
  */
-export async function resolveAutoEntitlement(): Promise<AutoEntitlement> {
-	if (cachedEntitlement !== undefined) return cachedEntitlement
+export async function shouldDefaultToAuto(): Promise<boolean> {
+	if (cachedIsCastAiUser !== undefined) return cachedIsCastAiUser
 	if (lookupPromise) return lookupPromise
 
-	lookupPromise = (async (): Promise<AutoEntitlement> => {
+	lookupPromise = (async () => {
 		const { apiKey } = loadConfig()
-		if (!apiKey) return NOT_ENTITLED
+		if (!apiKey) return false
 		try {
 			const me = await getMe(apiKey, { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) })
-			return { entitled: isCastAiEmail(me.email), userId: me.id ?? "" }
+			return isCastAiEmail(me.email)
 		} catch {
 			// Best effort — fall back to the legacy multi-model default.
-			return NOT_ENTITLED
+			return false
 		}
 	})()
 		.then((result) => {
-			cachedEntitlement = result
+			cachedIsCastAiUser = result
 			return result
 		})
 		.finally(() => {
@@ -107,8 +89,4 @@ export async function resolveAutoEntitlement(): Promise<AutoEntitlement> {
 		})
 
 	return lookupPromise
-}
-
-export async function shouldDefaultToAuto(): Promise<boolean> {
-	return (await resolveAutoEntitlement()).entitled
 }

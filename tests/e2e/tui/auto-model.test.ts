@@ -383,11 +383,11 @@ test("a new session defaults to Auto without experimental features", async ({ te
 	)
 })
 
-test("an already-applied rollout leaves a switched-away account on its own model", async ({ terminal }) => {
+test("an already-applied default leaves a switched-away install on its own model", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "auto-model-rollout-already-applied",
+			artifactName: "auto-model-default-already-applied",
 			providerId: "kimchi-dev",
 			initialModel: false,
 			models: MODELS,
@@ -404,21 +404,10 @@ test("an already-applied rollout leaves a switched-away account on its own model
 							defaultProvider: "kimchi-dev",
 							defaultModel: "routed",
 							enabledModels: ["kimchi-dev/auto", "kimchi-dev/routed"],
-						},
-						null,
-						"\t",
-					),
-				)
-				// The rollout already ran for this account, so the concrete model is
-				// a deliberate switch away from Auto and must survive restarts.
-				const configPath = join(homeDir, ".config", "kimchi", "config.json")
-				const config = JSON.parse(readFileSync(configPath, "utf-8"))
-				writeFileSync(
-					configPath,
-					JSON.stringify(
-						{
-							...config,
-							rollouts: { "auto-default": { "fake-user": { appliedAt: "2026-09-01T00:00:00.000Z" } } },
+							// Auto was already installed as the default here, so the
+							// concrete model is a deliberate switch away from it and
+							// must survive restarts.
+							autoDefaultApplied: true,
 						},
 						null,
 						"\t",
@@ -428,7 +417,7 @@ test("an already-applied rollout leaves a switched-away account on its own model
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			trace.step("new session kept the model chosen after the rollout")
+			trace.step("new session kept the model chosen after the switch")
 			terminal.submit("Use my saved model")
 			await waitForText(terminal, "Saved concrete default reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
@@ -440,11 +429,11 @@ test("an already-applied rollout leaves a switched-away account on its own model
 	)
 })
 
-test("the rollout moves an entitled account onto Auto and announces it once", async ({ terminal }) => {
+test("an entitled account gets Auto as the default and is told once", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "auto-model-rollout-applies",
+			artifactName: "auto-model-default-applies",
 			providerId: "kimchi-dev",
 			initialModel: false,
 			models: MODELS,
@@ -452,7 +441,7 @@ test("the rollout moves an entitled account onto Auto and announces it once", as
 			responses: [{ stream: ["Rolled into Auto."] }],
 			seedHome: (homeDir) => {
 				// A concrete default that the account never deliberately chose (login
-				// and Ctrl+P both persist one), and no rollout marker yet.
+				// and Ctrl+P both persist one), and the default not yet installed.
 				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
 				writeFileSync(
@@ -473,12 +462,12 @@ test("the rollout moves an entitled account onto Auto and announces it once", as
 		async (fixture, trace) => {
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "Auto is now the default model.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			trace.step("rollout switched the account to Auto and said so")
+			trace.step("the session switched to Auto and said so")
 			terminal.submit("Route this one")
 			await waitForText(terminal, "Rolled into Auto.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
-			trace.step("the rolled-in session routes through Auto")
+			trace.step("the session routes through Auto")
 		},
 	)
 })
@@ -559,7 +548,7 @@ test("Ctrl+P cycles through concrete models and wraps back to Auto", async ({ te
 	)
 })
 
-// KNOWN GAP: on a TUI restart after the rollout is spent, the footer reads
+// KNOWN GAP: on a TUI restart after Auto has been installed as the default, the footer reads
 // "multi-model (routed)" instead of the saved Auto default. The router's
 // saved-default branch does call setMultiModelEnabled(false), so the footer
 // appears to resolve multi-model before that session_start handler runs. The
@@ -575,7 +564,7 @@ test.fail("a session-scoped /model choice survives resume but not /new or restar
 	})
 
 	try {
-		// First launch: the rollout applies, so the session starts on Auto.
+		// First launch installs Auto as the default, so the session starts on Auto.
 		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
@@ -593,8 +582,8 @@ test.fail("a session-scoped /model choice survives resume but not /new or restar
 
 		// `/model <id>` is session-scoped upstream (persist: false), so it leaves
 		// the saved default alone: the restart comes back on the rolled-in Auto.
-		// The rollout itself is spent — Auto is restored from the saved default,
-		// not applied a second time, so the notice does not appear again.
+		// The default is already installed — Auto is restored from it rather than
+		// applied a second time, so the notice does not appear again.
 		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })

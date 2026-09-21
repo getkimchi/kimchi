@@ -14,18 +14,18 @@ import {
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
+	readAutoDefaultApplied,
 	readGitToken,
 	readHideTips,
-	readRolloutState,
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
+	writeAutoDefaultApplied,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
-	writeRolloutState,
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
@@ -1139,91 +1139,72 @@ describe("ensureQuietStartupDefault", () => {
 	})
 })
 
-describe("readRolloutState / writeRolloutState", () => {
+describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
 	let tempDir: string
-	let configPath: string
+	let settingsPath: string
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		configPath = join(tempDir, "config.json")
+		settingsPath = join(tempDir, "settings.json")
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("round-trips a rollout marker keyed by rollout and user", () => {
-		expect(readRolloutState("auto-default", "usr_a", configPath)).toBeUndefined()
+	it("round-trips the marker", () => {
+		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
 
-		writeRolloutState("auto-default", "usr_a", { appliedAt: "2026-09-21T10:00:00.000Z" }, configPath)
-		expect(readRolloutState("auto-default", "usr_a", configPath)).toEqual({ appliedAt: "2026-09-21T10:00:00.000Z" })
+		writeAutoDefaultApplied(settingsPath)
+		expect(readAutoDefaultApplied(settingsPath)).toBe(true)
 	})
 
-	it("keeps each account separate so a shared machine rolls in every user", () => {
-		writeRolloutState("auto-default", "usr_a", { appliedAt: "2026-09-21T10:00:00.000Z" }, configPath)
+	it("preserves the settings pi owns", () => {
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "auto", theme: "x" }))
 
-		expect(readRolloutState("auto-default", "usr_b", configPath)).toBeUndefined()
-	})
+		writeAutoDefaultApplied(settingsPath)
 
-	it("preserves unrelated fields and other rollouts", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				apiKey: "key",
-				rollouts: { "other-rollout": { usr_a: { appliedAt: "2026-01-01T00:00:00.000Z" } } },
-			}),
-		)
-
-		writeRolloutState("auto-default", "usr_a", { appliedAt: "2026-09-21T10:00:00.000Z" }, configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-
-		expect(raw).toEqual({
-			apiKey: "key",
-			rollouts: {
-				"other-rollout": { usr_a: { appliedAt: "2026-01-01T00:00:00.000Z" } },
-				"auto-default": { usr_a: { appliedAt: "2026-09-21T10:00:00.000Z" } },
-			},
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+			defaultProvider: "kimchi-dev",
+			defaultModel: "auto",
+			theme: "x",
+			autoDefaultApplied: true,
 		})
 	})
 
-	it("records the replaced model for analytics", () => {
-		writeRolloutState(
-			"auto-default",
-			"usr_a",
-			{ appliedAt: "2026-09-21T10:00:00.000Z", previousModel: "kimchi-dev/gpt-5" },
-			configPath,
-		)
+	it("writes a fresh file when settings do not exist yet", () => {
+		writeAutoDefaultApplied(settingsPath)
 
-		expect(readRolloutState("auto-default", "usr_a", configPath)).toMatchObject({ previousModel: "kimchi-dev/gpt-5" })
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({ autoDefaultApplied: true })
 	})
 })
 
-describe("readRolloutState error handling", () => {
+describe("readAutoDefaultApplied error handling", () => {
 	let tempDir: string
-	let configPath: string
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		configPath = join(tempDir, "config.json")
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("reads a missing config as not-yet-applied", () => {
-		expect(readRolloutState("auto-default", "usr_a", join(tempDir, "absent.json"))).toBeUndefined()
+	it("reads a missing file as not applied", () => {
+		expect(readAutoDefaultApplied(join(tempDir, "absent.json"))).toBe(false)
 	})
 
-	it("reads malformed JSON as not-yet-applied", () => {
-		writeFileSync(configPath, "{ not json")
+	it("reads malformed JSON as not applied", () => {
+		const path = join(tempDir, "settings.json")
+		writeFileSync(path, "{ not json")
 
-		expect(readRolloutState("auto-default", "usr_a", configPath)).toBeUndefined()
+		expect(readAutoDefaultApplied(path)).toBe(false)
 	})
 
-	it("ignores an entry without a timestamp", () => {
-		writeFileSync(configPath, JSON.stringify({ rollouts: { "auto-default": { usr_a: { previousModel: "x" } } } }))
+	it("ignores a non-boolean marker", () => {
+		const path = join(tempDir, "settings.json")
+		writeFileSync(path, JSON.stringify({ autoDefaultApplied: "yes" }))
 
-		expect(readRolloutState("auto-default", "usr_a", configPath)).toBeUndefined()
+		expect(readAutoDefaultApplied(path)).toBe(false)
 	})
 })

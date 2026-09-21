@@ -15,19 +15,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // account so the existing Auto-default expectations below exercise the routing
 // logic itself.
 vi.mock("./auto-default-gate.js", () => ({
-	resolveAutoEntitlement: vi.fn(async () => ({ entitled: true, userId: "usr_test" })),
+	shouldDefaultToAuto: vi.fn(async () => true),
 }))
 
-// The rollout marker is persisted in kimchi's config; keep it in memory so each
-// test starts with "not yet rolled in" and can assert what was written.
-const rolloutStubs = vi.hoisted(() => ({
-	store: new Map<string, { appliedAt: string; previousModel?: string }>(),
-}))
+// The marker lives in pi's settings.json; keep it in memory so each test starts
+// with "not yet applied" and can assert whether it was written.
+const autoDefaultStubs = vi.hoisted(() => ({ applied: false }))
 vi.mock(import("../../config.js"), async (importOriginal) => ({
 	...(await importOriginal()),
-	readRolloutState: (id: string, userId: string) => rolloutStubs.store.get(`${id}:${userId}`),
-	writeRolloutState: (id: string, userId: string, state: { appliedAt: string; previousModel?: string }) =>
-		void rolloutStubs.store.set(`${id}:${userId}`, state),
+	readAutoDefaultApplied: () => autoDefaultStubs.applied,
+	writeAutoDefaultApplied: () => {
+		autoDefaultStubs.applied = true
+	},
 }))
 
 // The fresh-session default gate reads pi's persisted default model through the
@@ -45,7 +44,7 @@ import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingAttempt, consumeAutoRoutingAttempt } from "./api-provider.js"
-import { resolveAutoEntitlement } from "./auto-default-gate.js"
+import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import autoModelExtension, { createAutoModelExtension } from "./index.js"
 import { ROUTER_IMAGE_METADATA } from "./router-query.js"
 import {
@@ -119,21 +118,21 @@ function custom(data: unknown): SessionEntry {
 
 afterEach(() => {
 	populateCliArgs([])
-	// The rollout applies once per account, so a marker left behind would make
-	// every later test look like an already-rolled-in user.
-	rolloutStubs.store.clear()
+	// The default is installed once per install, so a marker left behind would
+	// make every later test look like an install that already has it.
+	autoDefaultStubs.applied = false
 	clearAutoRoutingAttempt(SESSION_ID)
 	clearAutoRoutingState(SESSION_ID)
 	vi.unstubAllGlobals()
 	vi.restoreAllMocks()
 })
 
-describe("Auto-by-default rollout", () => {
+describe("Auto-by-default", () => {
 	beforeEach(() => {
-		vi.mocked(resolveAutoEntitlement).mockResolvedValue({ entitled: true, userId: "usr_test" })
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(true)
 	})
 
-	it("rolls an entitled account onto Auto and records the marker once", async () => {
+	it("installs Auto as the default for an entitled account and records it", async () => {
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		const extension = createExtensionApi()
@@ -144,13 +143,12 @@ describe("Auto-by-default rollout", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(extension.setModel).toHaveBeenCalledWith(auto)
-		// The model they were on is recorded for analytics.
-		expect(rolloutStubs.store.get("auto-default:usr_test")).toMatchObject({ previousModel: "kimi-k2.6" })
+		expect(autoDefaultStubs.applied).toBe(true)
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
 	})
 
-	it("leaves a switched-away account alone once the rollout has been applied", async () => {
-		rolloutStubs.store.set("auto-default:usr_test", { appliedAt: "2026-09-01T00:00:00.000Z" })
+	it("leaves a switched-away install alone once the default has been applied", async () => {
+		autoDefaultStubs.applied = true
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		const extension = createExtensionApi()
@@ -163,7 +161,7 @@ describe("Auto-by-default rollout", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
-	it("treats a persisted Auto default as restorable, not a rollout", async () => {
+	it("treats a persisted Auto default as restorable, not a fresh install", async () => {
 		settingsStubs.getDefaultModel.mockReturnValue("auto")
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		const extension = createExtensionApi()
@@ -180,7 +178,7 @@ describe("Auto-by-default rollout", () => {
 		"startup",
 		"new",
 	] as const)("leaves a fresh %s session on its existing model for a non-entitled user", async (reason) => {
-		vi.mocked(resolveAutoEntitlement).mockResolvedValue({ entitled: false, userId: "" })
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => model("auto") } })
@@ -191,7 +189,7 @@ describe("Auto-by-default rollout", () => {
 	})
 
 	it("still restores a saved Auto session for a non-entitled user", async () => {
-		vi.mocked(resolveAutoEntitlement).mockResolvedValue({ entitled: false, userId: "" })
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const auto = model("auto")
@@ -210,7 +208,7 @@ describe("Auto-by-default rollout", () => {
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
-		expect(resolveAutoEntitlement).not.toHaveBeenCalled()
+		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
 	})
 })
 

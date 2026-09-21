@@ -108,24 +108,6 @@ export interface SurveyConfig {
 	seenAt?: string
 }
 
-/**
- * Record of a one-shot rollout having been applied to a user on this install.
- *
- * Keyed by rollout id and then by user id, so a rollout applies once per
- * account rather than once per machine. The id names the *capability* (e.g.
- * "auto-default"), not the wave: widening a rollout to a larger cohort reuses
- * the same id, so users reached by an earlier wave are never rolled in twice.
- *
- * `appliedVersion` is recorded for analytics only — never compared, because a
- * version-gated re-roll would re-override choices made after the first wave.
- */
-export interface RolloutState {
-	appliedAt: string
-	appliedVersion?: string
-	/** The default model replaced by the rollout, for analytics. */
-	previousModel?: string
-}
-
 export interface PreferencesConfig {
 	hideTips?: boolean
 }
@@ -701,34 +683,39 @@ export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?:
 	})
 }
 
-export function readRolloutState(rolloutId: string, userId: string, configPath?: string): RolloutState | undefined {
+/**
+ * Whether Auto has already been installed as the default model on this install.
+ *
+ * Lives in pi's settings.json next to `defaultModel`, because that is what it
+ * records having changed: one global settings file, one machine-level default,
+ * one marker. Once set, the default is the user's to change — a switch away is
+ * honoured and never undone.
+ *
+ * Pi merges onto the existing file contents when it persists settings, so this
+ * kimchi-owned key survives pi's own writes.
+ */
+export function readAutoDefaultApplied(settingsPath?: string): boolean {
 	try {
-		const parsed = JSON.parse(readFileSync(configPath ?? KIMCHI_CONFIG_PATH, "utf-8"))
-		const entry = parsed.rollouts?.[rolloutId]?.[userId]
-		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined
-		if (typeof entry.appliedAt !== "string") return undefined
-		return entry as RolloutState
+		const parsed = JSON.parse(readFileSync(settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json"), "utf-8"))
+		return parsed.autoDefaultApplied === true
 	} catch {
-		// Missing or unreadable config reads as "not yet applied": the caller
-		// re-applies the rollout rather than silently skipping it.
-		return undefined
+		// A missing or unreadable file reads as "not yet applied": the caller
+		// installs the default rather than silently skipping it.
+		return false
 	}
 }
 
-export function writeRolloutState(rolloutId: string, userId: string, state: RolloutState, configPath?: string): void {
-	updateConfigFile(configPath ?? KIMCHI_CONFIG_PATH, (raw) => {
-		const rollouts =
-			raw.rollouts && typeof raw.rollouts === "object" && !Array.isArray(raw.rollouts)
-				? { ...(raw.rollouts as Record<string, unknown>) }
-				: {}
-		const byUser =
-			rollouts[rolloutId] && typeof rollouts[rolloutId] === "object" && !Array.isArray(rollouts[rolloutId])
-				? { ...(rollouts[rolloutId] as Record<string, unknown>) }
-				: {}
-		byUser[userId] = state
-		rollouts[rolloutId] = byUser
-		raw.rollouts = rollouts
-	})
+/** Install Auto as the saved default and record that it was done. */
+export function writeAutoDefaultApplied(settingsPath?: string): void {
+	const path = settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json")
+	let settings: Record<string, unknown> = {}
+	try {
+		settings = JSON.parse(readFileSync(path, "utf-8"))
+	} catch {
+		// Fall through with an empty object: a first run writes a fresh file.
+	}
+	settings.autoDefaultApplied = true
+	writeJson(path, settings)
 }
 
 export function readHideSessionModeDialog(configPath?: string): boolean {

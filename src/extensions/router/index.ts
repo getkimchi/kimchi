@@ -2,12 +2,11 @@ import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
-import { readRolloutState, writeRolloutState } from "../../config.js"
+import { readAutoDefaultApplied, writeAutoDefaultApplied } from "../../config.js"
 import { getSettingsManager } from "../../settings-watcher.js"
-import { getVersion } from "../../utils.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
-import { resolveAutoEntitlement } from "./auto-default-gate.js"
+import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, isAutoModel } from "./constants.js"
 import { routeQuery } from "./router-client.js"
 import { getRouterConfig, type RouterConfig } from "./router-config.js"
@@ -73,7 +72,7 @@ async function syncAutoCapabilities<TApi extends Api>(
  * Whether pi has any saved default model, concrete or Auto.
  *
  * Used to keep a saved default from being wrapped in multi-model mode. It
- * deliberately does not gate the Auto rollout: login and Ctrl+P cycling both
+ * deliberately does not gate the Auto default: login and Ctrl+P cycling both
  * persist a default too, so most accounts carry one without ever having chosen
  * it.
  */
@@ -81,38 +80,20 @@ function hasPersistedDefault(): boolean {
 	return !!getSettingsManager()?.getDefaultModel()
 }
 
-/** Rollout id. Names the capability, not the wave — see `RolloutState`. */
-const AUTO_ROLLOUT_ID = "auto-default"
-
 /**
- * Whether this session is eligible for the one-shot Auto rollout, plus the
- * `commit` that records it.
+ * Whether this session should have Auto installed as the default model.
  *
- * Eligibility is separate from commitment on purpose: the marker must only be
- * written once Auto has actually been applied. Writing it up front would
- * permanently skip an account whose Auto model could not be resolved (a failed
- * registration or an unavailable catalogue), leaving it without the default and
- * without any explanation. Accounts outside the cohort, accounts already rolled
- * in, and accounts whose identity could not be resolved are not eligible.
+ * True at most once per install: `commit` records the change in settings.json
+ * next to `defaultModel`, so a later switch away is never undone. Commitment is
+ * separate from eligibility on purpose — recording it up front would
+ * permanently skip an install whose Auto model could not be resolved (a failed
+ * registration, an unavailable catalogue), leaving it without the default and
+ * without any explanation.
  */
-async function resolveAutoRollout(): Promise<{ eligible: boolean; commit: () => void }> {
-	const noop = { eligible: false, commit: () => {} }
-	const { entitled, userId } = await resolveAutoEntitlement()
-	// Without an id the marker cannot be keyed, and an unkeyed write would roll
-	// the account in again on the next launch — skip rather than loop.
-	if (!entitled || !userId) return noop
-	if (readRolloutState(AUTO_ROLLOUT_ID, userId)) return noop
-
-	const previousModel = getSettingsManager()?.getDefaultModel()
-	return {
-		eligible: true,
-		commit: () =>
-			writeRolloutState(AUTO_ROLLOUT_ID, userId, {
-				appliedAt: new Date().toISOString(),
-				appliedVersion: getVersion(),
-				previousModel,
-			}),
-	}
+async function resolveAutoDefault(): Promise<{ eligible: boolean; commit: () => void }> {
+	if (!(await shouldDefaultToAuto())) return { eligible: false, commit: () => {} }
+	if (readAutoDefaultApplied()) return { eligible: false, commit: () => {} }
+	return { eligible: true, commit: writeAutoDefaultApplied }
 }
 
 export interface AutoModelExtensionOptions {
@@ -165,18 +146,18 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			// keyed on the *capability* rather than the wave: widening the cohort
 			// later reuses the same id, so users reached by an earlier wave keep
 			// whatever they have chosen since and are never rolled in twice.
-			const rollout =
+			const autoDefault =
 				options.handleCliModelSelection && freshSession && !explicitLaunchChoice && !isAutoModel(autoModel)
-					? await resolveAutoRollout()
+					? await resolveAutoDefault()
 					: undefined
-			if (rollout?.eligible) {
+			if (autoDefault?.eligible) {
 				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
 				if (isAutoModel(autoModel)) {
-					// Only now is the account actually on Auto, so only now is the
-					// rollout spent.
-					rollout.commit()
+					// Only now is the session actually on Auto, so only now is the
+					// change recorded.
+					autoDefault.commit()
 					setMultiModelEnabled(sessionId, false)
-					// The rollout replaces a model the user may have been using for
+					// This replaces a model the user may have been using for
 					// a while. Say so: a silent switch reads as a bug, and a local
 					// marker can be lost (config reset, new machine), so the notice
 					// is what keeps a repeat roll-in merely mildly annoying.
@@ -186,8 +167,8 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				// A saved default outranks the global multi-model default, whether it
 				// is concrete or Auto: without this the session comes up as
 				// multi-model wrapping the saved model rather than the model itself.
-				// This also covers the launch after a roll-in, where the rollout is
-				// spent but the Auto default it wrote must still be honoured.
+				// This also covers the launch after Auto was installed as the
+				// default, where the saved Auto default must still be honoured.
 				setMultiModelEnabled(sessionId, false)
 			}
 			if (!isAutoModel(autoModel)) {
