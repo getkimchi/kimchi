@@ -337,17 +337,6 @@ describe("compact-form builders", () => {
 			expect(seg.text).toBe("claude-opus-4-7 → ctrl+p")
 			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
 		})
-
-		it("keeps the routed model next to auto in the compact form", () => {
-			const seg = buildModelAbbrev(compactCtx, false, "auto", "kimi-k2.6")
-			expect(seg.text).toBe("auto (kimi-k2.6) → ctrl+p")
-			expect(seg.raw).toEqual({
-				kind: "model",
-				multiModel: false,
-				modelId: "auto",
-				routedModelId: "kimi-k2.6",
-			})
-		})
 	})
 
 	describe("buildPhaseCompact", () => {
@@ -896,28 +885,13 @@ describe("status line pinning", () => {
 		expect(visible).toContain("auto → ctrl+p")
 	})
 
-	it("shows the routed model next to Auto when routing resolved", () => {
+	it("keeps the plain Auto label even after routing resolves", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
 
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
-		expect(visible).toContain("auto (kimi-k2.6) → ctrl+p")
-	})
-
-	it("reverts to plain Auto after routing state is cleared (e.g. /new)", () => {
-		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
-
-		// Before /new — routed model is shown
-		const beforeClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
-		expect(beforeClear).toContain("auto (kimi-k2.6) → ctrl+p")
-
-		// /new clears the routing state for the session
-		clearAutoRoutingState("test-session")
-
-		// After /new — label reverts to plain Auto
-		const afterClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
-		expect(afterClear).toContain("auto → ctrl+p")
-		expect(afterClear).not.toContain("kimi-k2.6")
+		expect(visible).toContain("auto → ctrl+p")
+		expect(visible).not.toContain("kimi-k2.6")
 	})
 
 	it("keeps the multi-model label unchanged when the active model is Auto", () => {
@@ -927,14 +901,6 @@ describe("status line pinning", () => {
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
 		expect(visible).toContain("multi-model (auto) → ctrl+p")
-	})
-
-	it("keeps the routed suffix through compaction at narrow width", () => {
-		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
-
-		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(40)[0])
-
-		expect(visible).toContain("auto (kimi-k2.6)")
 	})
 
 	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {

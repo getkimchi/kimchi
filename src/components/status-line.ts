@@ -16,8 +16,6 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
-import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
-import { formatAutoModelLabel, getEffectiveModel } from "../extensions/router/state.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -46,7 +44,7 @@ export type SegmentId =
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "model"; multiModel: boolean; modelId: string; routedModelId?: string }
+	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
@@ -210,19 +208,14 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 }
 
 /** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(
-	ctx: CompactionContext,
-	multiModel: boolean,
-	modelId: string,
-	routedModelId?: string,
-): Segment {
-	const label = multiModel ? `m-m (${modelId})` : routedModelId ? formatAutoModelLabel(routedModelId) : modelId
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
 	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
 	return {
 		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
+		raw: { kind: "model", multiModel, modelId },
 	}
 }
 
@@ -302,9 +295,7 @@ const STEPS: CompactionStep[] = [
 	{
 		name: "abbrev-model-label",
 		apply: (segs, ctx) =>
-			recompactSegment(segs, "model", "model", (raw) =>
-				buildModelAbbrev(ctx, raw.multiModel, raw.modelId, raw.routedModelId),
-			),
+			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
 	},
 	{
 		name: "drop-shortcut-hints",
@@ -450,24 +441,14 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const multiModel = getMultiModelEnabled(ctx.sessionManager)
 	const selectedModelId = ctx.model?.id ?? "n/a"
 	const modelId = selectedModelId
-	const routedModelId = resolveRoutedModelId(ctx)
-	const label = multiModel ? `multi-model (${modelId})` : routedModelId ? formatAutoModelLabel(routedModelId) : modelId
+	const label = multiModel ? `multi-model (${modelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
 	return {
 		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
+		raw: { kind: "model", multiModel, modelId },
 	}
-}
-
-/** Concrete model id chosen by the Auto router, shown next to the `auto` label
- *  in single-model mode. `undefined` before routing resolves (or when the
- *  model isn't Auto / multi-model mode), keeping the plain `auto` label. */
-function resolveRoutedModelId(ctx: ExtensionContext): string | undefined {
-	if (!isAutoModel(ctx.model)) return undefined
-	const effective = getEffectiveModel(ctx)
-	return effective && effective.id !== AUTO_MODEL_ID ? effective.id : undefined
 }
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
