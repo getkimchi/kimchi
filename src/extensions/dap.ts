@@ -26,7 +26,13 @@ import {
 } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
-import { createLayer1Tools, createLayer2Tools, DAP_SESSION_TOOL_NAMES, type LaunchSessionOptions } from "./dap/tools.js"
+import {
+	createLayer1Tools,
+	createLayer2Tools,
+	DAP_ENTRY_TOOL_NAMES,
+	DAP_SESSION_TOOL_NAMES,
+	type LaunchSessionOptions,
+} from "./dap/tools.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 
@@ -299,12 +305,34 @@ export default function (pi: ExtensionAPI) {
 	// carve them out of worker profiles by side effect.
 	const visibility = createToolVisibility(pi)
 	let sessionToolsRevealed = false
+	// Entry-tool deferral: launch + the four one-shots (~1.5k est tokens) are
+	// hidden until the agent loads the dap-debugging skill (the documented
+	// discovery path) or guesses a debug tool name directly (the generic
+	// not-found reveal in hidden-tool-guidance.ts is the backstop).
+	let entryToolsRevealed = false
 
 	function revealSessionToolsOnce(): void {
 		if (sessionToolsRevealed || isAgentWorker()) return
 		sessionToolsRevealed = true
 		visibility.enable(DAP_SESSION_TOOL_NAMES)
 	}
+
+	function revealEntryToolsOnce(): void {
+		if (entryToolsRevealed || isAgentWorker()) return
+		entryToolsRevealed = true
+		visibility.enable(DAP_ENTRY_TOOL_NAMES)
+	}
+
+	// Skill-load anchor: reading the dap-debugging SKILL.md is the harness's
+	// documented way into debugging, so it reveals the entry tools. Watch
+	// tool_call (pre-execution) — the path is in the call arguments.
+	pi.on("tool_call", (event) => {
+		if (entryToolsRevealed || event.toolName !== "read") return
+		const path = (event as { args?: { path?: string } }).args?.path
+		if (typeof path === "string" && path.includes("dap-debugging/SKILL.md")) {
+			revealEntryToolsOnce()
+		}
+	})
 
 	// On-demand skill injection: language skills are NOT injected until the
 	// agent calls a debug tool for the first time. This saves ~1K tokens per
@@ -382,6 +410,7 @@ export default function (pi: ExtensionAPI) {
 			...deps,
 			launchSession: async (opts: LaunchSessionOptions) => {
 				const session = await launchSession(opts)
+				revealEntryToolsOnce()
 				revealSessionToolsOnce()
 				return session
 			},
@@ -396,11 +425,13 @@ export default function (pi: ExtensionAPI) {
 			pi.registerTool(tool)
 		}
 
-		// Defer session-scoped tools until they're useful (see above). Agents
-		// keep full visibility — they are profile-managed.
+		// Defer session-scoped tools until they're useful, and entry tools
+		// until the skill is loaded (see above). Agents keep full visibility —
+		// they are profile-managed.
 		sessionToolsRevealed = false
+		entryToolsRevealed = false
 		if (!isAgentWorker()) {
-			visibility.disable(DAP_SESSION_TOOL_NAMES)
+			visibility.disable([...DAP_SESSION_TOOL_NAMES, ...DAP_ENTRY_TOOL_NAMES])
 		}
 	})
 

@@ -31,7 +31,7 @@ import {
 import "./bash-default-timeout.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
 import { BASH_CONTROL_TOOL_NAME } from "./bash-background/bash-control-tool.js"
-import { createLayer1Tools, createLayer2Tools, DAP_ALWAYS_VISIBLE_TOOL_NAMES, type DapToolDeps } from "./dap/tools.js"
+import { createLayer1Tools, createLayer2Tools, type DapToolDeps } from "./dap/tools.js"
 import { LSP_TOOL_NAMES } from "./lsp.js"
 
 export const CHARS_PER_TOKEN = 4
@@ -256,15 +256,12 @@ export async function measureCanonicalToolSurface(): Promise<ToolSurfaceResult> 
 	const exclusions = [...EXPECTED_UNRENDERABLE]
 	await measureBuiltinTools(tools)
 	await measureExtensionTools(tools, exclusions)
-	// DAP tools are measured at their session-start surface: with the Phase 1
-	// DAP tools are measured at their session-start surface: only the always-visible
-	// set (debug_launch + one-shots) is advertised until a debug session becomes
-	// active. The 11 session tools are registered but hidden, so they are not part
-	// of the canonical surface.
+	// DAP tools are measured at their session-start surface: all of them are
+	// deferred now (entry set reveals on the dap-debugging skill read; session
+	// set on debug_launch), so none are part of the canonical session-start
+	// surface.
 	for (const tool of [...createLayer1Tools(dapDeps()), ...createLayer2Tools(dapDeps())]) {
-		if ((DAP_ALWAYS_VISIBLE_TOOL_NAMES as readonly string[]).includes(tool.name)) {
-			tools.set(tool.name, entry("extension:dap", tool))
-		}
+		tools.delete(tool.name)
 	}
 	// The five lsp_* tools are registered but hidden at session_start when no
 	// language server matches the session cwd. The canonical surface assumes the

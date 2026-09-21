@@ -37,7 +37,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { EXTENSION_SOURCES } from "./context-budget-tools.js"
-import { DAP_ALWAYS_VISIBLE_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
+import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { withPrintGate } from "./print-mode.js"
@@ -292,8 +292,8 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	// only when >=1 MCP server is configured; see the gate-on test below)
 	"set_phase",
 	"Skill",
-	// dap — always-visible set (deferred session tools below)
-	...DAP_ALWAYS_VISIBLE_TOOL_NAMES,
+	// dap — all 16 DAP tools are deferred now (entry set reveals on the
+	// dap-debugging skill read; session set on debug_launch)
 ])
 
 /** Deferral spec: tools REGISTERED but hidden at session start. A future
@@ -310,6 +310,7 @@ const AGENT_CONTINUATION_TOOLS = ["resume_subagent", "steer_subagent", "get_suba
 const WEB_FETCH_TOOLS = ["web_fetch"] as const
 const LSP_TOOL_NAMES = ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_rename"] as const
 const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
+	...DAP_ENTRY_TOOL_NAMES,
 	...DAP_SESSION_TOOL_NAMES,
 	...BASH_CONTROL_TOOLS,
 	...LSP_TOOL_NAMES,
@@ -378,13 +379,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 18-tool surface and hides the 21 deferred tools", async () => {
+	it("advertises exactly the documented 13-tool surface and hides the 26 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(18)
+		expect(visible.size).toBe(13)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -412,7 +413,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(16)
+			expect(visible.size).toBe(11)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -465,7 +466,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(21)
+		expect(votes.size).toBe(26)
 	})
 
 	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {
@@ -616,7 +617,7 @@ describe("tool exposure at session start", () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		for (const name of [...DAP_ALWAYS_VISIBLE_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
+		for (const name of [...DAP_ENTRY_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
 			expect(harness.active.has(name), `${name} must stay visible in workers`).toBe(true)
 		}
 		// The tactical deferrals (DAP session tools + bash_control) are carved

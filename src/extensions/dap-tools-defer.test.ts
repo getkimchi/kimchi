@@ -1,12 +1,14 @@
 // extensions/dap-tools-defer.test.ts
 //
-// Phase 1 Chunk 3: session-scoped DAP tools are hidden at session start and
-// revealed one-way when an interactive debug session (debug_launch) becomes
-// active. Covers:
-//   - default-hidden after session_start (always-visible set intact)
-//   - reveal on debug_launch success; exactly one visibility transition
-//   - one-shot auto-launch (debug_state_at) does NOT reveal session tools
-//   - agent-worker carve-out: isAgentWorker() skips the deferral entirely
+// Phase 1 Chunk 3+: all session-scoped DAP tools AND the five entry tools
+// (debug_launch + one-shots) are hidden at session start. Entry tools are
+// revealed one-way when the agent loads the dap-debugging skill (tool_call
+// anchor on read of dap-debugging/SKILL.md); session tools reveal when an
+// interactive debug session (debug_launch) becomes active. Covers:
+//   - default-hidden after session_start (both sets)
+//   - entry reveal on dap-debugging skill read; exactly one transition
+//   - session reveal on debug_launch success; one-shot auto-launch does NOT
+//   - agent-worker carve-out: isAgentWorker() skips both deferrals
 //
 // Harness mirrors dap/dap-entry.test.ts: mocks adapters/client/session
 // registries so no adapter subprocess is spawned, and exercises the real
@@ -15,7 +17,7 @@
 
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { DAP_ALWAYS_VISIBLE_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
+import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
 
 // =============================================================================
@@ -90,6 +92,7 @@ const dapExtension = (await import("./dap.js")).default
 interface CapturedHandlers {
 	session_start: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | null
 	session_shutdown: (() => Promise<void>) | null
+	tool_call: ((event: unknown, ctx: ExtensionContext) => void)[]
 }
 
 function createMockPi(): {
@@ -99,13 +102,14 @@ function createMockPi(): {
 	setActiveToolsCalls: string[][]
 } {
 	const activeTools = new Set<string>(["bash", "read", "edit"])
-	const handlers: CapturedHandlers = { session_start: null, session_shutdown: null }
+	const handlers: CapturedHandlers = { session_start: null, session_shutdown: null, tool_call: [] }
 	const setActiveToolsCalls: string[][] = []
 
 	const pi = {
 		on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
 			if (event === "session_start") handlers.session_start = handler as never
 			if (event === "session_shutdown") handlers.session_shutdown = handler as never
+			if (event === "tool_call") handlers.tool_call.push(handler as never)
 		}),
 		registerTool: vi.fn(
 			(tool: { name: string; description?: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
@@ -174,21 +178,55 @@ describe("DAP session-tool deferral", () => {
 		await mock.handlers.session_start?.(undefined, createCtx())
 	}
 
-	it("hides the 11 session tools at session start but keeps launch + one-shots visible", async () => {
+	it("hides all 16 DAP tools at session start (entry + session sets)", async () => {
 		await fireSessionStart()
 
-		for (const name of DAP_ALWAYS_VISIBLE_TOOL_NAMES) {
-			expect(mock.activeTools.has(name), `${name} should be visible`).toBe(true)
+		for (const name of DAP_ENTRY_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should be hidden`).toBe(false)
 		}
 		for (const name of DAP_SESSION_TOOL_NAMES) {
 			expect(mock.activeTools.has(name), `${name} should be hidden`).toBe(false)
 		}
 		// The hidden tools were still registered (availability preserved) —
 		// deferral is a visibility vote, not an unregister.
-		for (const name of DAP_SESSION_TOOL_NAMES) {
+		for (const name of [...DAP_ENTRY_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
 			expect(clientState.registeredTools).toContain(name)
 		}
 		expect(mock.setActiveToolsCalls).toHaveLength(1) // exactly one hide transition
+	})
+
+	it("reveals the entry tools when the dap-debugging skill is read", async () => {
+		await fireSessionStart()
+
+		for (const h of mock.handlers.tool_call) {
+			h({ toolName: "read", toolCallId: "c1", args: { path: "/x/skills/dap-debugging/SKILL.md" } }, createCtx())
+		}
+
+		for (const name of DAP_ENTRY_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should be visible after skill read`).toBe(true)
+		}
+		for (const name of DAP_SESSION_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should stay hidden until a session exists`).toBe(false)
+		}
+		expect(mock.setActiveToolsCalls).toHaveLength(2) // 1 hide + 1 reveal
+
+		// Second matching read: guard prevents a second visibility transition.
+		for (const h of mock.handlers.tool_call) {
+			h({ toolName: "read", toolCallId: "c2", args: { path: "/x/skills/dap-debugging/SKILL.md" } }, createCtx())
+		}
+		expect(mock.setActiveToolsCalls).toHaveLength(2)
+	})
+
+	it("does not reveal entry tools on unrelated reads", async () => {
+		await fireSessionStart()
+		for (const h of mock.handlers.tool_call) {
+			h({ toolName: "read", toolCallId: "c1", args: { path: "/x/src/main.ts" } }, createCtx())
+			h({ toolName: "edit", toolCallId: "c2", args: { path: "/x/dap-debugging/SKILL.md" } }, createCtx())
+		}
+		for (const name of DAP_ENTRY_TOOL_NAMES) {
+			expect(mock.activeTools.has(name), `${name} should stay hidden`).toBe(false)
+		}
+		expect(mock.setActiveToolsCalls).toHaveLength(1)
 	})
 
 	it("reveals session tools once when debug_launch succeeds, and never again", async () => {
@@ -203,7 +241,7 @@ describe("DAP session-tool deferral", () => {
 			expect(mock.activeTools.has(name), `${name} should be visible after launch`).toBe(true)
 		}
 		const callsAfterLaunch = mock.setActiveToolsCalls.length
-		expect(callsAfterLaunch).toBe(2) // 1 hide + 1 reveal
+		expect(callsAfterLaunch).toBe(3) // 1 hide + 1 entry reveal + 1 session reveal
 
 		// Second launch: guard prevents a second visibility transition.
 		await launchTool.execute("call-2", { program: "app.ts" }, undefined, undefined, createCtx())
@@ -242,7 +280,7 @@ describe("DAP session-tool deferral", () => {
 		workerState.isWorker = true
 		await fireSessionStart()
 
-		for (const name of [...DAP_ALWAYS_VISIBLE_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
+		for (const name of [...DAP_ENTRY_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
 			expect(mock.activeTools.has(name), `${name} should stay visible in workers`).toBe(true)
 		}
 		expect(mock.setActiveToolsCalls).toHaveLength(0)

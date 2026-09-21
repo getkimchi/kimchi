@@ -116,6 +116,9 @@ interface CapturedHandlers {
 	session_shutdown: (() => Promise<void>) | null
 	before_agent_start: (() => Promise<void>) | null
 	tool_call: ((event: { toolName: string }, ctx: ExtensionContext) => unknown) | null
+	/** All registered tool_call handlers (the extension registers several); kept
+	 *  separately so tests can fan an event out to every listener. */
+	tool_call_all: ((event: { toolName: string; args?: unknown }, ctx: ExtensionContext) => unknown)[]
 }
 
 function createMockPi(): { pi: ExtensionAPI; handlers: CapturedHandlers; activeTools: Set<string> } {
@@ -125,6 +128,7 @@ function createMockPi(): { pi: ExtensionAPI; handlers: CapturedHandlers; activeT
 		session_shutdown: null,
 		before_agent_start: null,
 		tool_call: null,
+		tool_call_all: [],
 	}
 
 	const pi = {
@@ -133,6 +137,7 @@ function createMockPi(): { pi: ExtensionAPI; handlers: CapturedHandlers; activeT
 			if (event === "session_shutdown") handlers.session_shutdown = handler as never
 			if (event === "before_agent_start") handlers.before_agent_start = handler as never
 			if (event === "tool_call") handlers.tool_call = handler as never
+			if (event === "tool_call") handlers.tool_call_all.push(handler as never)
 		}),
 		registerTool: vi.fn((tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
 			clientState.registeredTools.push(tool.name)
@@ -450,22 +455,25 @@ describe("DAP extension entry point", () => {
 		})
 	})
 
-	describe("always-available visibility", () => {
-		it("DAP tools are always visible regardless of phase", async () => {
+	describe("entry-tool visibility (deferred)", () => {
+		it("entry tools are hidden at session start and revealed by the dap-debugging skill read", async () => {
 			adapterState.active = [JS_DEBUG]
 			const ctx = createCtx()
 			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
 
-			// Tools should be registered and visible in ALL phases — DAP tools
-			// are never filtered by phase or mode.
-			for (const phase of [undefined, "explore", "plan", "build", "review"]) {
-				phaseState.current = phase
-				await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-				const tools = [...mock.activeTools]
-				expect(tools).toContain("debug_launch")
-				expect(tools).toContain("debug_state_at")
-				expect(tools).toContain("debug_last_error")
+			// Hidden at session start: the entry set reveals only once the agent
+			// loads the dap-debugging skill (the documented discovery path).
+			expect([...mock.activeTools]).not.toContain("debug_launch")
+			expect([...mock.activeTools]).not.toContain("debug_state_at")
+
+			for (const h of mock.handlers.tool_call_all) {
+				h({ toolName: "read", args: { path: "/x/dap-debugging/SKILL.md" } }, ctx)
 			}
+			expect([...mock.activeTools]).toContain("debug_launch")
+			expect([...mock.activeTools]).toContain("debug_state_at")
+			expect([...mock.activeTools]).toContain("debug_last_error")
+			// Session-scoped tools stay hidden until an interactive session exists.
+			expect([...mock.activeTools]).not.toContain("debug_set_breakpoint")
 		})
 	})
 })
