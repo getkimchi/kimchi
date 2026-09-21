@@ -93,7 +93,18 @@ All in `src/extensions/memory/config.ts`.
 
 ## Embedding model
 
-The embedder is pinned in code, not configuration: `bge-m3` at 1024 dims — the phase-1 embedding study's choice (best open-weight, within 0.8pp of the closed baseline). The model and its dimensions must move together — the vector store schema is built from the dims — so they are constants in `backend.ts`. The A/B testing surface from the study (`MEMORY_EMBEDDING_*`, `OPENROUTER_API_KEY`) has been removed; stores created with the old 1536-dim default must be reset.
+The embedder defaults to `bge-m3` at 1024 dims — the phase-1 embedding study's choice (best open-weight, within 0.8pp of the closed baseline). The model and dimensions are configurable in `~/.config/kimchi/config.json`:
+
+```json
+{
+	"memoryEmbedding": {
+		"model": "text-embedding-3-large",
+		"dims": 3072
+	}
+}
+```
+
+Both fields are optional and validated (model: non-empty string; dims: positive integer — invalid values fall back to the defaults). The pair must move together — the vector store schema is built from the dims — so stores created with one dimension cannot be searched with another; reset them (`kimchi memory reset`) when switching. The A/B testing surface from the study (`MEMORY_EMBEDDING_*`, `OPENROUTER_API_KEY`) has been removed and is ignored if set; stores created with the old 1536-dim default must be reset.
 
 The usage-tracking tag (`memory:embedding`) is gateway-only — requests are matched by origin, so a request to any other host never receives it. The extraction LLM is likewise not configurable; it always resolves against the gateway (`deepseek-v4-flash`).
 

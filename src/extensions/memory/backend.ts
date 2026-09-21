@@ -202,21 +202,29 @@ export interface EmbeddingEndpointConfig extends MemoryEndpointConfig {
 }
 
 /**
- * Embedding endpoint: the kimchi gateway with the pinned open-weight model
- * (bge-m3 at 1024 dims — the phase-1 embedding study's choice). The model
- * and dims are constants, not configuration: the vector store schema is
- * built from the dims, so the pair must move together in code. Programmatic
- * overrides (tests, check scripts) win per-field.
+ * Embedding endpoint: the kimchi gateway with the open-weight model
+ * (bge-m3 at 1024 dims — the phase-1 embedding study's choice) as the
+ * default. The model and dimensions are user-configurable via the config
+ * file (memoryEmbedding.model / memoryEmbedding.dims in
+ * ~/.config/kimchi/config.json); env-var configuration was deliberately
+ * removed after the phase-1 A/B runs. The pair must move together — the
+ * vector store schema is built from the dims. Programmatic overrides
+ * (tests, check scripts) win per-field.
  */
 export function resolveEmbeddingEndpoint(
 	override: Partial<MemoryEndpointConfig> | undefined,
 	gateway: { baseURL: string; apiKey: string },
+	config?: { memoryEmbedding?: { model?: string; dims?: number } },
 ): EmbeddingEndpointConfig {
+	const configModel =
+		typeof config?.memoryEmbedding?.model === "string" && config.memoryEmbedding.model.length > 0
+			? config.memoryEmbedding.model
+			: undefined
 	return {
 		baseURL: override?.baseURL ?? gateway.baseURL,
 		apiKey: override?.apiKey ?? gateway.apiKey,
-		model: override?.model ?? MEMORY_EMBEDDING_MODEL,
-		dims: MEMORY_EMBEDDING_DIMS,
+		model: override?.model ?? configModel ?? MEMORY_EMBEDDING_MODEL,
+		dims: config?.memoryEmbedding?.dims ?? MEMORY_EMBEDDING_DIMS,
 	}
 }
 
@@ -247,7 +255,7 @@ function resolveEndpoint(
  */
 export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
-	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway)
+	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
 	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL)
 	return {
 		embedder: {
@@ -306,7 +314,7 @@ export async function createMemoryBackend(
 	config: KimchiConfig = loadConfig(),
 ): Promise<Mem0Memory> {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
-	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway)
+	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
 	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL)
 	for (const [name, ep] of [
 		["embedder", embedder],

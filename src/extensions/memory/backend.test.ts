@@ -90,7 +90,8 @@ describe("buildMemoryConfig", () => {
 
 describe("embedding endpoint configuration", () => {
 	// The env knobs from the phase-1 A/B runs (MEMORY_EMBEDDING_*,
-	// OPENROUTER_API_KEY) were removed — model and dims are pinned constants.
+	// OPENROUTER_API_KEY) were removed — the model and dims come from the
+	// kimchi config file (memoryEmbedding.model / .dims) or stay pinned.
 	// This guards that leftover env from old setups neither redirects nor
 	// breaks anything.
 	it("ignores leftover MEMORY_EMBEDDING_* / OPENROUTER env from the A/B runs", () => {
@@ -113,6 +114,36 @@ describe("embedding endpoint configuration", () => {
 			delete process.env.MEMORY_EMBEDDING_DIMS
 			delete process.env.OPENROUTER_API_KEY
 		}
+	})
+
+	it("applies memoryEmbedding.model and .dims from the config file", () => {
+		const config = buildMemoryConfig(
+			{ dbPath: "/tmp/mem.db" },
+			testConfig({ memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 } }),
+		)
+		expect(config.embedder.config.model).toBe("text-embedding-3-large")
+		expect(config.embedder.config.embeddingDims).toBe(3072)
+		expect(config.vectorStore.config.dimension).toBe(3072)
+		// The gateway base URL and key are unchanged.
+		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
+		expect(config.embedder.config.apiKey).toBe("test-key")
+	})
+
+	it("falls back to the pinned defaults without the config section", () => {
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
+		expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
+		expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
+	})
+
+	it("programmatic overrides win over the config file per-field", () => {
+		const config = buildMemoryConfig(
+			{ dbPath: "/tmp/mem.db", embedder: { model: "stub-model" } },
+			testConfig({ memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 } }),
+		)
+		expect(config.embedder.config.model).toBe("stub-model")
+		// Dims have no programmatic seam — the config file still supplies them.
+		expect(config.embedder.config.embeddingDims).toBe(3072)
 	})
 })
 

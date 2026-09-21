@@ -199,6 +199,8 @@ export interface KimchiConfig {
 	onboarding: OnboardingConfig
 	deviceId: string
 	redaction?: { enabled?: boolean }
+	/** Memory embedding overrides — model and vector dimensions (see docs/memory-extension.md). */
+	memoryEmbedding?: { model?: string; dims?: number }
 }
 
 /**
@@ -235,6 +237,7 @@ function readConfigExtras(configPath: string): {
 	preferences?: PreferencesConfig
 	deviceId?: string
 	redaction?: { enabled?: boolean }
+	memoryEmbedding?: { model?: string; dims?: number }
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -307,6 +310,23 @@ function readConfigExtras(configPath: string): {
 			redaction = { enabled: rd.enabled }
 		}
 
+		// Read memory embedding overrides — model + vector dimensions.
+		// Invalid parts are ignored (fall back to defaults), matching the
+		// redaction/mcpSearch parse conventions.
+		let memoryEmbedding: { model?: string; dims?: number } | undefined
+		const me = parsed.memoryEmbedding
+		if (me && typeof me === "object") {
+			const model = typeof me.model === "string" && me.model.length > 0 ? me.model : undefined
+			const dims =
+				typeof me.dims === "number" && Number.isInteger(me.dims) && me.dims > 0 ? me.dims : undefined
+			if (model !== undefined || dims !== undefined) {
+				memoryEmbedding = {
+					...(model !== undefined ? { model } : {}),
+					...(dims !== undefined ? { dims } : {}),
+				}
+			}
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -319,6 +339,7 @@ function readConfigExtras(configPath: string): {
 			deviceId,
 			preferences,
 			redaction,
+			memoryEmbedding,
 		}
 	} catch {
 		return {}
