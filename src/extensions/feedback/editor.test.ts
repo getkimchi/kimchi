@@ -1,6 +1,6 @@
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import { beforeAll, describe, expect, it } from "vitest"
-import { contentLineRange, isBorderLine, isScrollBorderLine, replaceCursorMarker } from "./editor.js"
+import { contentLineRange, isBorderLine, isScrollBorderLine, stripCursorMarker } from "./editor.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -9,36 +9,39 @@ beforeAll(() => {
 const ACCENT = "\x1b[38;5;214m"
 const RST = "\x1b[0m"
 
-describe("replaceCursorMarker", () => {
+describe("stripCursorMarker", () => {
 	it("removes the \\x1b_pi:c marker with BEL terminator", () => {
-		const out = replaceCursorMarker("hello\x1b_pi:c\x07", ACCENT, RST)
-		expect(out).not.toContain("pi:c")
-		expect(out).toContain("▏")
+		const out = stripCursorMarker("hello\x1b_pi:c\x07")
+		expect(out).toBe("hello")
 	})
 
 	it("removes the \\x1b_pi:c marker without BEL terminator", () => {
-		const out = replaceCursorMarker("x\x1b_pi:c", ACCENT, RST)
-		expect(out).not.toContain("pi:c")
-		expect(out).toContain("▏")
+		const out = stripCursorMarker("x\x1b_pi:c")
+		expect(out).toBe("x")
 	})
 
 	it("preserves surrounding text", () => {
-		const out = replaceCursorMarker("abc\x1b_pi:c\x07def", ACCENT, RST)
-		expect(out).toContain("abc")
-		expect(out).toContain("def")
-		expect(out).toContain("▏")
+		const out = stripCursorMarker("abc\x1b_pi:c\x07def")
+		expect(out).toBe("abcdef")
 	})
 
 	it("is a no-op on lines without the marker", () => {
-		const out = replaceCursorMarker("plain text", ACCENT, RST)
+		const out = stripCursorMarker("plain text")
 		expect(out).toBe("plain text")
 	})
 
-	it("replaces every occurrence when multiple are present", () => {
-		const out = replaceCursorMarker("\x1b_pi:c\x07a\x1b_pi:c\x07", ACCENT, RST)
-		expect(out).not.toContain("pi:c")
-		const matches = out.match(/▏/g)
-		expect(matches?.length).toBe(2)
+	it("removes every occurrence when multiple are present", () => {
+		const out = stripCursorMarker("\x1b_pi:c\x07a\x1b_pi:c\x07")
+		expect(out).toBe("a")
+	})
+
+	it("paints no caret of its own, leaving upstream's the only one", () => {
+		// Regression: substituting a `▏` here rendered a second caret beside
+		// upstream's reverse-video block.
+		const upstreamCaret = "\x1b[7mx\x1b[0m"
+		const out = stripCursorMarker(`ab\x1b_pi:c\x07${upstreamCaret}`)
+		expect(out).not.toContain("▏")
+		expect(out).toContain(upstreamCaret)
 	})
 })
 

@@ -11,15 +11,21 @@ const PLACEHOLDER_TEXT = "start typing to enter details"
 const ANSI_RE = /\x1b\[[^m]*m/g
 
 /**
- * Replace the upstream hardware-cursor marker (`\x1b_pi:c`, optionally
- * terminated by BEL `\x07`) with a visible single-column cursor glyph
- * styled with the given accent ANSI prefix and reset suffix. Exported so
- * tests can verify the replacement in isolation from the upstream editor.
+ * Strip the upstream hardware-cursor marker (`\x1b_pi:c`, optionally
+ * terminated by BEL `\x07`) from a line.
+ *
+ * The marker is a zero-width APC sequence that the TUI normally consumes to
+ * place the *hardware* cursor. Upstream draws its own visible caret next to it
+ * (a reverse-video `\x1b[7m` grapheme), so the marker must not be turned into a
+ * glyph of its own: doing that renders two carets side by side, the painted one
+ * and upstream's block. Removing it leaves exactly upstream's caret.
+ *
+ * Exported so tests can verify the strip in isolation from the upstream editor.
  */
-export function replaceCursorMarker(line: string, accentFg: string, rstFg: string): string {
+export function stripCursorMarker(line: string): string {
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: marker is by definition a control-char sequence
 	const cursorMarkerRe = /\x1b_pi:c\x07?/g
-	return line.replace(cursorMarkerRe, `${accentFg}▏${rstFg}`)
+	return line.replace(cursorMarkerRe, "")
 }
 
 /**
@@ -93,10 +99,10 @@ export class FeedbackEditor extends CustomEditor {
 		// Empty state: render a single chevron + placeholder row and skip
 		// the upstream render entirely so the dialog stays compact.
 		if (this.getText().length === 0) {
-			// Render a visible single-column cursor (`▏`). The upstream
-			// `\x1b_pi:c\x07` marker is hardware-cursor-only and would leak
-			// visibly as `pi:c` if emitted here, so we avoid it.
-			const cursor = "▏"
+			// This branch never reaches upstream's renderer, so nothing else
+			// draws a caret here — paint one, but only while focused, so an
+			// unfocused editor doesn't show a caret that cannot be typed into.
+			const cursor = this.focused ? "▏" : ""
 			const budget = contentWidth - visibleWidth(cursor)
 			const placeholder = budget >= visibleWidth(PLACEHOLDER_TEXT) ? PLACEHOLDER_TEXT : ""
 			const used = visibleWidth(cursor) + visibleWidth(placeholder)
@@ -115,14 +121,12 @@ export class FeedbackEditor extends CustomEditor {
 		const contentLines = lines.slice(start, end)
 		const cursorIdx = contentLines.findIndex((l) => l.includes("\x1b_pi:c"))
 		const safeCursorIdx = cursorIdx === -1 ? 0 : cursorIdx
-		// Upstream emits `\x1b_pi:c\x07` as a hardware-cursor-only marker.
-		// It has no visible rendering of its own, so when the upstream frame is
-		// copied into our composite render the marker leaks into visible output
-		// as the literal string `pi:c`. Replace it with a single-column cursor
-		// glyph (`▏`) styled with the accent color before splicing it back in.
+		// Drop the zero-width hardware-cursor marker. Upstream already drew a
+		// visible reverse-video caret next to it, so anything rendered in the
+		// marker's place would show up as a second cursor.
 		const result: string[] = contentLines.map((line, i) => {
 			const prefix = i === safeCursorIdx ? `${chevronColor}❯${RST_FG} ` : "  "
-			const cleaned = i === safeCursorIdx ? replaceCursorMarker(line, chevronColor, RST_FG) : line
+			const cleaned = stripCursorMarker(line)
 			const visLen = visibleWidth(cleaned)
 			const pad = " ".repeat(Math.max(0, contentWidth - visLen))
 			return `${prefix}${cleaned}${pad}`
