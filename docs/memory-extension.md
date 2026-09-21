@@ -15,7 +15,7 @@ Facts are stored locally; extraction and embedding run through the kimchi gatewa
 └── capture.lock                       # drain serialization lock
 ```
 
-Each store directory also holds `memory-history.db` (mem0's history manager). Stores use Mem0 OSS with its SQLite `MemoryVectorStore` — hybrid BM25 + entity + semantic retrieval — and remote embeddings (`text-embedding-3-small`) via the gateway. The langchain adapter is semantic-only, which is why the SQLite store is load-bearing; this was settled in the phase-0 spike.
+Each store directory also holds `memory-history.db` (mem0's history manager). Stores use Mem0 OSS with its SQLite `MemoryVectorStore` — hybrid BM25 + entity + semantic retrieval — and remote embeddings (`bge-m3`, 1024 dims) via the gateway. The langchain adapter is semantic-only, which is why the SQLite store is load-bearing; this was settled in the phase-0 spike.
 
 The project scope derives from the git remote (`owner/name`; GitLab subgroups kept whole). A fact captured inside a repository routes to that repository's store or the personal store — never both, because a project fact in the global store is recalled into every other project.
 
@@ -91,18 +91,11 @@ All in `src/extensions/memory/config.ts`.
 | `CAPTURE_LOCK_STALE_MS` / `CAPTURE_LOCK_UPDATE_MS` | 15 min / 30 s | staleness must exceed the worst-case legitimate drain |
 | `PENDING_JOB_MAX_AGE_MS` | 7 days | the reaper |
 
-## Embedding endpoint configuration
+## Embedding model
 
-The embedder is env-configurable for testing other embedding providers (e.g. OpenRouter); unset, everything stays on the gateway.
+The embedder is pinned in code, not configuration: `bge-m3` at 1024 dims — the phase-1 embedding study's choice (best open-weight, within 0.8pp of the closed baseline). The model and its dimensions must move together — the vector store schema is built from the dims — so they are constants in `backend.ts`. The A/B testing surface from the study (`MEMORY_EMBEDDING_*`, `OPENROUTER_API_KEY`) has been removed; stores created with the old 1536-dim default must be reset.
 
-| Env var | Meaning |
-| --- | --- |
-| `MEMORY_EMBEDDING_BASE_URL` | custom embedding base URL; switches the key resolution below |
-| `MEMORY_EMBEDDING_API_KEY` | embedding API key (only honored with a custom base URL) |
-| `MEMORY_EMBEDDING_MODEL` | embedding model (applies in both modes; default `text-embedding-3-small`) |
-| `MEMORY_EMBEDDING_DIMS` | vector dimensions — must match the model's output; feeds both the embedder config and the store schema (default 1536) |
-
-The key fallback is **coupled to the base URL**: when `MEMORY_EMBEDDING_BASE_URL` is set, the key comes from `MEMORY_EMBEDDING_API_KEY` → `OPENROUTER_API_KEY` — never the gateway key; without it, everything stays on the gateway and `MEMORY_EMBEDDING_API_KEY` is ignored. That prevents accidentally sending a gateway request with an OpenRouter key, or vice versa. The usage-tracking tag (`memory:embedding`) is likewise gateway-only — custom embedding endpoints never receive it. The extraction LLM is not env-configurable; it always resolves against the gateway.
+The usage-tracking tag (`memory:embedding`) is gateway-only — requests are matched by origin, so a request to any other host never receives it. The extraction LLM is likewise not configurable; it always resolves against the gateway (`deepseek-v4-flash`).
 
 ## Management
 

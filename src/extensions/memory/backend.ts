@@ -20,8 +20,8 @@ import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
 import { type KimchiConfig, loadConfig } from "../../config.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
-export const MEMORY_EMBEDDING_MODEL = "text-embedding-3-small"
-export const MEMORY_EMBEDDING_DIMS = 1536
+export const MEMORY_EMBEDDING_MODEL = "bge-m3"
+export const MEMORY_EMBEDDING_DIMS = 1024
 
 /** One mem0 search hit, narrowed to the fields memory consumers read. */
 export interface Mem0SearchHit {
@@ -53,8 +53,7 @@ export function normalizeMem0SearchResults(raw: unknown): Mem0SearchHit[] {
  * Extraction model — resolved against the gateway's live model list at
  * capture-worker start (models deprecate; per-user gateway access varies).
  * deepseek-v4-flash: benchmarks showed it is the only suitable model for
- * extraction, and the flash tier keeps capture latency low. Override:
- * KIMCHI_MEMORY_EXTRACTION_MODEL.
+ * extraction, and the flash tier keeps capture latency low.
  */
 export const EXTRACTION_MODEL = "deepseek-v4-flash-0731"
 
@@ -65,10 +64,9 @@ export interface ExtractionModelOptions {
 }
 
 /**
- * Resolve the extraction model: the KIMCHI_MEMORY_EXTRACTION_MODEL override
- * wins; otherwise deepseek-v4-flash when it's on the gateway's model list
- * (one cheap call). If the list itself is unreachable, use it anyway — a
- * likely-right model beats failing capture entirely. Throws when the list
+ * Resolve the extraction model: deepseek-v4-flash when it's on the gateway's
+ * model list (one cheap call). If the list itself is unreachable, use it anyway —
+ * a likely-right model beats failing capture entirely. Throws when the list
  * is reachable and deepseek-v4-flash is not on it.
  *
  * Deliberately NOT routed through the auto router: benchmarking showed the
@@ -79,8 +77,6 @@ export async function resolveExtractionModel(
 	gateway: { baseURL: string; apiKey: string },
 	options: ExtractionModelOptions = {},
 ): Promise<string> {
-	const override = process.env.KIMCHI_MEMORY_EXTRACTION_MODEL
-	if (override) return override
 	const fetchImpl = options.fetchImpl ?? fetch
 	const available = await fetchAvailableModelIds(gateway, fetchImpl)
 	if (available === undefined) {
@@ -88,7 +84,7 @@ export async function resolveExtractionModel(
 	}
 	if (available.has(EXTRACTION_MODEL)) return EXTRACTION_MODEL
 	throw new Error(
-		`no extraction model available on the gateway (${EXTRACTION_MODEL}); set KIMCHI_MEMORY_EXTRACTION_MODEL`,
+		`extraction model ${EXTRACTION_MODEL} is not on the gateway's model list — the gateway must serve it for memory capture`,
 	)
 }
 
@@ -120,11 +116,11 @@ export const MEMORY_EMBEDDING_TAG = "memory:embedding"
  * by wrapping globalThis.fetch — narrowly: only /embeddings requests to
  * the kimchi gateway get the tag added to their JSON body, in the same
  * payload field the /tags extension sets on session LLM requests, so
- * billing attributes memory traffic through one mechanism. A custom
- * embedding endpoint (MEMORY_EMBEDDING_BASE_URL, e.g. OpenRouter) must
- * not receive our usage-tracking tag, so requests are matched by origin.
- * Idempotent (won't double-wrap). Applied at every backend creation since
- * the OpenAI SDK may capture the fetch reference at client construction.
+ * billing attributes memory traffic through one mechanism. Requests are
+ * matched by origin so a request to any other host never receives our
+ * usage-tracking tag. Idempotent (won't double-wrap). Applied at every
+ * backend creation since the OpenAI SDK may capture the fetch reference at
+ * client construction.
  */
 export function tagEmbeddingRequests(gatewayBaseUrl: string): void {
 	const current = globalThis.fetch as typeof fetch & { _memoryEmbeddingTagged?: boolean }
@@ -205,57 +201,22 @@ export interface EmbeddingEndpointConfig extends MemoryEndpointConfig {
 	dims: number
 }
 
-function parseEmbeddingDims(raw: string | undefined): number {
-	if (raw === undefined) return MEMORY_EMBEDDING_DIMS
-	const parsed = Number.parseInt(raw, 10)
-	if (!Number.isInteger(parsed) || parsed <= 0) {
-		throw new Error(`MEMORY_EMBEDDING_DIMS must be a positive integer, got ${JSON.stringify(raw)}`)
-	}
-	return parsed
-}
-
 /**
- * Env-configurable embedding endpoint — for testing other embedding
- * providers (e.g. OpenRouter). The API-key fallback is coupled to the base
- * URL: when MEMORY_EMBEDDING_BASE_URL is set, the key comes from
- * MEMORY_EMBEDDING_API_KEY → OPENROUTER_API_KEY — never the gateway key;
- * without it, everything stays on the gateway and MEMORY_EMBEDDING_API_KEY
- * is ignored. That prevents accidentally sending a gateway request with
- * an OpenRouter key, or vice versa. MEMORY_EMBEDDING_MODEL and
- * MEMORY_EMBEDDING_DIMS apply in both modes (dims must match the model's
- * output). Programmatic overrides (tests, check scripts) win per-field over
- * the env layer.
+ * Embedding endpoint: the kimchi gateway with the pinned open-weight model
+ * (bge-m3 at 1024 dims — the phase-1 embedding study's choice). The model
+ * and dims are constants, not configuration: the vector store schema is
+ * built from the dims, so the pair must move together in code. Programmatic
+ * overrides (tests, check scripts) win per-field.
  */
 export function resolveEmbeddingEndpoint(
 	override: Partial<MemoryEndpointConfig> | undefined,
 	gateway: { baseURL: string; apiKey: string },
-	env: NodeJS.ProcessEnv = process.env,
 ): EmbeddingEndpointConfig {
-	const envBase = env.MEMORY_EMBEDDING_BASE_URL?.trim() || undefined
-	const envModel = env.MEMORY_EMBEDDING_MODEL?.trim() || undefined
-	const envKey = env.MEMORY_EMBEDDING_API_KEY?.trim() || undefined
-	const dims = parseEmbeddingDims(env.MEMORY_EMBEDDING_DIMS?.trim() || undefined)
-	if (envBase !== undefined) {
-		const apiKey = override?.apiKey ?? envKey ?? env.OPENROUTER_API_KEY
-		if (!apiKey) {
-			throw new Error(
-				"MEMORY_EMBEDDING_BASE_URL is set but no embedding API key is available — set MEMORY_EMBEDDING_API_KEY or OPENROUTER_API_KEY",
-			)
-		}
-		return {
-			baseURL: override?.baseURL ?? envBase,
-			apiKey,
-			model: override?.model ?? envModel ?? MEMORY_EMBEDDING_MODEL,
-			dims,
-		}
-	}
-	// Gateway mode: everything stays on the gateway; MEMORY_EMBEDDING_API_KEY
-	// is ignored so a custom key can't ride the gateway base URL.
 	return {
 		baseURL: override?.baseURL ?? gateway.baseURL,
 		apiKey: override?.apiKey ?? gateway.apiKey,
-		model: override?.model ?? envModel ?? MEMORY_EMBEDDING_MODEL,
-		dims,
+		model: override?.model ?? MEMORY_EMBEDDING_MODEL,
+		dims: MEMORY_EMBEDDING_DIMS,
 	}
 }
 

@@ -8,7 +8,7 @@
  *         spike's sqlite-shim-test.ts (see docs/memory-extension.md). No
  *         network.
  * PART B: full backend round-trip with real remote embeddings via the
- *         kimchi gateway (text-embedding-3-small) and add(infer: false),
+ *         kimchi gateway (bge-m3) and add(infer: false),
  *         which exercises the store, the history manager, and the
  *         better-sqlite3 shim end to end.
  *

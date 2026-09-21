@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { KimchiConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
@@ -88,87 +88,31 @@ describe("buildMemoryConfig", () => {
 	})
 })
 
-describe("embedding endpoint env configuration", () => {
-	const EMBEDDING_ENV_VARS = [
-		"MEMORY_EMBEDDING_MODEL",
-		"MEMORY_EMBEDDING_BASE_URL",
-		"MEMORY_EMBEDDING_API_KEY",
-		"MEMORY_EMBEDDING_DIMS",
-		"OPENROUTER_API_KEY",
-	] as const
-
-	// Ambient env (e.g. a developer with OPENROUTER_API_KEY exported) must
-	// not leak into these tests — each one starts from a clean slate.
-	beforeEach(() => {
-		for (const name of EMBEDDING_ENV_VARS) delete process.env[name]
-	})
-	afterEach(() => {
-		for (const name of EMBEDDING_ENV_VARS) delete process.env[name]
-	})
-
-	it("custom base URL with explicit key uses both; the LLM stays on the gateway", () => {
-		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
-		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
-		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-		expect(config.embedder.config.baseURL).toBe("https://openrouter.ai/api/v1")
-		expect(config.embedder.config.apiKey).toBe("or-key")
-		expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
-		expect(config.llm.config.baseURL).toBe("https://gateway.test/openai/v1")
-		expect(config.llm.config.apiKey).toBe("test-key")
-	})
-
-	it("custom base URL falls back to OPENROUTER_API_KEY", () => {
-		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
-		process.env.OPENROUTER_API_KEY = "or-key"
-		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-		expect(config.embedder.config.apiKey).toBe("or-key")
-	})
-
-	it("custom base URL with no key anywhere throws", () => {
-		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
-		expect(() => buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())).toThrow(
-			/MEMORY_EMBEDDING_BASE_URL is set but no embedding API key/,
-		)
-	})
-
-	it("a custom key without a custom base URL is ignored — gateway stays on gateway credentials", () => {
-		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
-		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
-		expect(config.embedder.config.apiKey).toBe("test-key")
-	})
-
-	it("model override applies in gateway mode", () => {
+describe("embedding endpoint configuration", () => {
+	// The env knobs from the phase-1 A/B runs (MEMORY_EMBEDDING_*,
+	// OPENROUTER_API_KEY) were removed — model and dims are pinned constants.
+	// This guards that leftover env from old setups neither redirects nor
+	// breaks anything.
+	it("ignores leftover MEMORY_EMBEDDING_* / OPENROUTER env from the A/B runs", () => {
 		process.env.MEMORY_EMBEDDING_MODEL = "text-embedding-3-large"
-		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-		expect(config.embedder.config.model).toBe("text-embedding-3-large")
-		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
-		expect(config.embedder.config.apiKey).toBe("test-key")
-	})
-
-	it("dims override reaches the embedder and the vector store together", () => {
-		process.env.MEMORY_EMBEDDING_DIMS = "3072"
-		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-		expect(config.embedder.config.embeddingDims).toBe(3072)
-		expect(config.vectorStore.config.dimension).toBe(3072)
-	})
-
-	it("invalid dims throw a clear error", () => {
-		process.env.MEMORY_EMBEDDING_DIMS = "not-a-number"
-		expect(() => buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())).toThrow(
-			/MEMORY_EMBEDDING_DIMS must be a positive integer/,
-		)
-	})
-
-	it("programmatic overrides win over the env layer", () => {
 		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
 		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
-		const config = buildMemoryConfig(
-			{ dbPath: "/tmp/mem.db", embedder: { baseURL: "http://127.0.0.1:9/v1", apiKey: "stub-key" } },
-			testConfig(),
-		)
-		expect(config.embedder.config.baseURL).toBe("http://127.0.0.1:9/v1")
-		expect(config.embedder.config.apiKey).toBe("stub-key")
+		process.env.MEMORY_EMBEDDING_DIMS = "3072"
+		process.env.OPENROUTER_API_KEY = "or-key"
+		try {
+			const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+			expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
+			expect(config.embedder.config.apiKey).toBe("test-key")
+			expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
+			expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
+			expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
+		} finally {
+			delete process.env.MEMORY_EMBEDDING_MODEL
+			delete process.env.MEMORY_EMBEDDING_BASE_URL
+			delete process.env.MEMORY_EMBEDDING_API_KEY
+			delete process.env.MEMORY_EMBEDDING_DIMS
+			delete process.env.OPENROUTER_API_KEY
+		}
 	})
 })
 
@@ -265,7 +209,7 @@ describe("createMemoryBackend", () => {
 				await globalThis.fetch("https://gw.test/v1/embeddings", {
 					method: "POST",
 					headers: { authorization: "Bearer k" },
-					body: JSON.stringify({ input: ["text"], model: "text-embedding-3-small" }),
+					body: JSON.stringify({ input: ["text"], model: "bge-m3" }),
 				})
 				await globalThis.fetch("https://openrouter.ai/api/v1/embeddings", {
 					method: "POST",
@@ -276,7 +220,7 @@ describe("createMemoryBackend", () => {
 				expect(seen).toHaveLength(3)
 				// The gateway embeddings request got the tag
 				expect(seen[0]?.body.tags).toEqual(["memory:embedding"])
-				// A custom embedding endpoint must not receive the usage-tracking tag
+				// A non-gateway origin never receives the usage-tracking tag
 				expect(seen[1]?.body.tags).toBeUndefined()
 				// The models request is untouched
 				expect(seen[2]?.body.tags).toBeUndefined()
@@ -290,17 +234,6 @@ describe("createMemoryBackend", () => {
 describe("resolveExtractionModel", () => {
 	const gateway = { baseURL: "https://gw.test/v1", apiKey: "k" }
 	const okModels = (ids: string[]) => new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 })
-
-	it("env override wins without querying the gateway", async () => {
-		process.env.KIMCHI_MEMORY_EXTRACTION_MODEL = "custom-model"
-		try {
-			const fetchImpl = vi.fn()
-			expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("custom-model")
-			expect(fetchImpl).not.toHaveBeenCalled()
-		} finally {
-			delete process.env.KIMCHI_MEMORY_EXTRACTION_MODEL
-		}
-	})
 
 	it("resolves deepseek flash when it is on the gateway list", async () => {
 		const fetchImpl = vi
@@ -316,7 +249,7 @@ describe("resolveExtractionModel", () => {
 
 	it("throws a clear error when deepseek flash is unavailable", async () => {
 		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["glm-5.3-flash", "kimi-k3"])))
-		await expect(resolveExtractionModel(gateway, { fetchImpl })).rejects.toThrow(/no extraction model available/)
+		await expect(resolveExtractionModel(gateway, { fetchImpl })).rejects.toThrow(/is not on the gateway's model list/)
 	})
 })
 
