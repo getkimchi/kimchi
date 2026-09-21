@@ -140,6 +140,25 @@ describe("apply", () => {
 		expect(pi.setActiveTools).toHaveBeenCalledWith([])
 	})
 
+	it("idle profile filters tools hidden by a cooperative-visibility vote (the powershell-gate regression)", () => {
+		// Regression: the powershell gate used to vote only when the tool was
+		// already active (it never is), so the idle profile's full-registered-
+		// toolset base resurrected it mid-session after the first
+		// before_agent_start. With a vote cast (as the fixed gate does at
+		// session_start on non-Windows), the idle snapshot must exclude it.
+		const pi = makeMockPi({
+			allTools: [{ name: "read" }, { name: "bash" }, { name: "powershell" }],
+		})
+		createToolVisibility(pi).disable(["powershell"])
+		// Clear the disable's own setActiveTools call so the assertion observes
+		// the apply() snapshot only.
+		vi.mocked(pi.setActiveTools).mockClear()
+
+		apply("idle", "ferment", pi)
+
+		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash"])
+	})
+
 	// Regression: implementation-ferment previously used a fixed catalog snapshot,
 	// causing MCP/custom/third-party tools registered by other extensions to
 	// silently disappear when a ferment phase activated.
