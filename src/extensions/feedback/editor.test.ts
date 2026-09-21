@@ -1,6 +1,6 @@
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import { beforeAll, describe, expect, it } from "vitest"
-import { isBorderLine, replaceCursorMarker } from "./editor.js"
+import { contentLineRange, isBorderLine, isScrollBorderLine, replaceCursorMarker } from "./editor.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -59,5 +59,74 @@ describe("isBorderLine", () => {
 	it("does not match ordinary content", () => {
 		expect(isBorderLine("took 3 attempts")).toBe(false)
 		expect(isBorderLine("")).toBe(false)
+	})
+})
+
+describe("isScrollBorderLine", () => {
+	it("matches the upstream scroll indicators in both directions", () => {
+		expect(isScrollBorderLine("─── ↑ 3 more ───────")).toBe(true)
+		expect(isScrollBorderLine("─── ↓ 12 more ──────")).toBe(true)
+		expect(isScrollBorderLine(`${ACCENT}─── ↑ 1 more ───${RST}`)).toBe(true)
+	})
+
+	it("does not match plain rules or user text", () => {
+		expect(isScrollBorderLine("────────")).toBe(false)
+		expect(isScrollBorderLine("3 more attempts")).toBe(false)
+	})
+})
+
+describe("contentLineRange", () => {
+	it("strips a plain top and bottom border", () => {
+		const lines = ["──────", "hello", "world", "──────"]
+		const { start, end } = contentLineRange(lines)
+		expect(lines.slice(start, end)).toEqual(["hello", "world"])
+	})
+
+	it("keeps content when the top border is a scroll indicator", () => {
+		// Regression: searching for the first line matching the *plain* border
+		// pattern skipped this indicator and landed on the bottom border, so
+		// every content line was sliced away and the editor rendered empty
+		// while the user was still typing.
+		const lines = ["─── ↑ 3 more ───", "visible line", "──────────────"]
+		const { start, end } = contentLineRange(lines)
+		expect(lines.slice(start, end)).toEqual(["visible line"])
+	})
+
+	it("keeps content when the bottom border is a scroll indicator", () => {
+		const lines = ["──────────────", "visible line", "─── ↓ 2 more ───"]
+		const { start, end } = contentLineRange(lines)
+		expect(lines.slice(start, end)).toEqual(["visible line"])
+	})
+
+	it("keeps content when both borders are scroll indicators", () => {
+		const lines = ["─── ↑ 1 more ───", "middle", "─── ↓ 4 more ───"]
+		const { start, end } = contentLineRange(lines)
+		expect(lines.slice(start, end)).toEqual(["middle"])
+	})
+
+	it("does not strip user text that merely sits at the edges", () => {
+		const lines = ["first line", "second line"]
+		const { start, end } = contentLineRange(lines)
+		expect(lines.slice(start, end)).toEqual(["first line", "second line"])
+	})
+})
+
+describe("contentLineRange on degenerate input", () => {
+	it("returns an empty range for no lines", () => {
+		expect(contentLineRange([])).toEqual({ start: 0, end: 0 })
+	})
+
+	it("keeps a single border-only line rather than slicing past it", () => {
+		// A lone border must not produce start > end.
+		const { start, end } = contentLineRange(["──────"])
+		expect(end).toBeGreaterThanOrEqual(start)
+		expect(["──────"].slice(start, end)).toEqual([])
+	})
+
+	it("handles a border pair with no content between them", () => {
+		const lines = ["──────", "──────"]
+		const { start, end } = contentLineRange(lines)
+		expect(end).toBeGreaterThanOrEqual(start)
+		expect(lines.slice(start, end)).toEqual([])
 	})
 })

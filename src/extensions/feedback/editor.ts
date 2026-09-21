@@ -35,6 +35,40 @@ export function isBorderLine(line: string): boolean {
 }
 
 /**
+ * Whether a rendered line is one of the upstream editor's *scroll* borders.
+ *
+ * When the text is taller than the visible window, upstream replaces the plain
+ * rule with `─── ↑ N more ───` (see `createScrollBorder`). Those lines carry
+ * digits and arrows, so `isBorderLine` rejects them. Exported for testing.
+ */
+export function isScrollBorderLine(line: string): boolean {
+	return /^─+\s*[↑↓]\s*\d+\s*more\s*─*$/.test(line.replace(ANSI_RE, "").trim())
+}
+
+/**
+ * The half-open range of `lines` holding the editor's actual content, i.e. the
+ * upstream render minus its top and bottom border rows.
+ *
+ * Borders are identified *positionally* rather than by first/last match. A
+ * scrolled editor's top border is `─── ↑ N more ───`, which is a border but
+ * does not match `isBorderLine`; searching for the first plain rule would then
+ * find the *bottom* border instead and slice away every content line, leaving
+ * the editor looking empty while the user is still typing.
+ *
+ * Exported for testing.
+ */
+export function contentLineRange(lines: string[]): { start: number; end: number } {
+	const isBorderAt = (i: number) => {
+		const line = lines[i]
+		return line !== undefined && (isBorderLine(line) || isScrollBorderLine(line))
+	}
+	const start = lines.length > 0 && isBorderAt(0) ? 1 : 0
+	const lastIdx = lines.length - 1
+	const end = lastIdx >= start && isBorderAt(lastIdx) ? lastIdx : lines.length
+	return { start, end: Math.max(start, end) }
+}
+
+/**
  * Minimal inline editor used by the feedback dialog. Differs from the main
  * `PromptEditor` in that it draws no top/bottom borders and shows a quiet
  * placeholder when empty.
@@ -77,24 +111,7 @@ export class FeedbackEditor extends CustomEditor {
 		// with the chevron (cursor row) or two spaces (other rows).
 		const lines = super.render(contentWidth)
 
-		let topIdx = -1
-		for (let i = 0; i < lines.length; i++) {
-			if (isBorderLine(lines[i])) {
-				topIdx = i
-				break
-			}
-		}
-		let bottomIdx = -1
-		for (let i = lines.length - 1; i >= 0; i--) {
-			if (isBorderLine(lines[i])) {
-				bottomIdx = i
-				break
-			}
-		}
-
-		const start = topIdx === -1 ? 0 : topIdx + 1
-		const end = bottomIdx === -1 || bottomIdx <= start ? lines.length : bottomIdx
-
+		const { start, end } = contentLineRange(lines)
 		const contentLines = lines.slice(start, end)
 		const cursorIdx = contentLines.findIndex((l) => l.includes("\x1b_pi:c"))
 		const safeCursorIdx = cursorIdx === -1 ? 0 : cursorIdx
