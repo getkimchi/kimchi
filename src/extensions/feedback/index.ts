@@ -65,7 +65,11 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		unsubscribeCtrlR = ctx.ui.onTerminalInput((data: string) => {
 			// Returning undefined passes the key through untouched.
 			if (!matchesKey(data, Key.ctrl("r"))) return undefined
-			void handleShortcut(ctx)
+			// Nothing awaits this handler, so a rejection would otherwise be
+			// unhandled — surface it in the UI instead of crashing the process.
+			void handleShortcut(ctx).catch((err: unknown) => {
+				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
+			})
 			return { consume: true }
 		})
 	}
@@ -141,16 +145,39 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`[feedback] Failed to collect model-switch reason: ${err}`, "error")
 				return
 			}
-			const reason = result?.reason.trim() ?? ""
+			// Esc (undefined) leaves the rendered `... (Ctrl+R)` invitation on
+			// screen, so the key has to keep working or the transcript shows a
+			// call-to-action that does nothing. This mirrors the rating flow,
+			// which keeps its invitation alive on Esc via `keepInviting`.
+			//
+			// An empty submit is a deliberate "no reason": the user answered,
+			// so the invitation is consumed and Ctrl+R goes quiet.
+			if (result === undefined) {
+				setModelSwitchInvitation({ modelName, modelId })
+				listenForCtrlR(ctx)
+				return
+			}
+
+			const reason = result.reason.trim()
 			if (reason.length > 0) {
 				// Append a NEW summary entry carrying the reason. We don't
 				// mutate the existing invitation entry because the transcript
 				// is already rendered — only a fresh entry causes the renderer
 				// to re-render with the reason.
-				pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, { model: modelName, reason })
-				trackModelSwitchFeedback({ reason, modelName, modelId })
+				//
+				// Guarded because this runs from the raw `onTerminalInput`
+				// handler via `void handleShortcut(...)`: an unguarded throw
+				// there surfaces as an unhandled rejection rather than a
+				// notification, and the invitation is already cleared.
+				try {
+					pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, { model: modelName, reason })
+					trackModelSwitchFeedback({ reason, modelName, modelId })
+				} catch (err) {
+					setModelSwitchInvitation({ modelName, modelId })
+					listenForCtrlR(ctx)
+					ctx.ui.notify(`[feedback] Failed to record model-switch reason: ${err}`, "error")
+				}
 			}
-			// Esc or empty submit: leave the original invitation entry as-is.
 			return
 		}
 
@@ -206,12 +233,20 @@ async function handleRating(
 	if (result === undefined) return false
 	const reason = result.reason
 	const payload: FeedbackSummaryDetails = { sentiment, reason }
-	pi.appendEntry(FEEDBACK_SUMMARY_CUSTOM_TYPE, payload)
-	trackFeedback({
-		sentiment,
-		reason,
-		reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
-		autoModelUsed,
-	})
+	// Guarded for the same reason as the model-switch branch: report the
+	// failure instead of rejecting, and report the rating as un-submitted so
+	// the caller keeps the invitation alive for a retry.
+	try {
+		pi.appendEntry(FEEDBACK_SUMMARY_CUSTOM_TYPE, payload)
+		trackFeedback({
+			sentiment,
+			reason,
+			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
+			autoModelUsed,
+		})
+	} catch (err) {
+		ctx.ui.notify(`[feedback] Failed to record rating: ${err}`, "error")
+		return false
+	}
 	return true
 }

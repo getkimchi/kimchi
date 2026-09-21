@@ -329,7 +329,7 @@ describe("feedbackExtension state machine", () => {
 		})
 	})
 
-	it("Ctrl+R Esc/empty submit does not send a follow-up message", async () => {
+	it("Ctrl+R empty submit consumes the invitation without a follow-up message", async () => {
 		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
 		feedbackExtension(api)
 
@@ -342,28 +342,49 @@ describe("feedbackExtension state machine", () => {
 		)
 		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 
-		// Empty submit.
 		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "" })
 		await pressCtrlR(ctx)
 
 		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 		expect(trackModelSwitchFeedbackMock).not.toHaveBeenCalled()
+		// An empty submit is a deliberate "no reason" — the invitation is spent.
 		const invitationState = await import("./invitation-state.js")
 		expect(invitationState.getModelSwitchInvitation()).toBeNull()
+	})
 
-		// Re-trigger model switch, then Esc.
+	it("Ctrl+R Esc keeps the invitation usable so the rendered hint stays live", async () => {
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+
 		await getHandler("model_select")(
 			{
 				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
-				model: { provider: "kimchi-dev", id: "concrete-model-2", name: "Concrete2" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
 			},
 			ctx,
 		)
+
 		modelSwitchDialogMock.show.mockResolvedValueOnce(undefined)
 		await pressCtrlR(ctx)
 
-		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(2)
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 		expect(trackModelSwitchFeedbackMock).not.toHaveBeenCalled()
+		// The transcript still renders `... (Ctrl+R)`, so the key must still work.
+		const invitationState = await import("./invitation-state.js")
+		expect(invitationState.getModelSwitchInvitation()).toMatchObject({
+			modelName: "Concrete",
+			modelId: "concrete-model",
+		})
+
+		// Pressing Ctrl+R again reopens the dialog and can still submit.
+		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "second try" })
+		await pressCtrlR(ctx)
+
+		expect(trackModelSwitchFeedbackMock).toHaveBeenCalledWith({
+			reason: "second try",
+			modelName: "Concrete",
+			modelId: "concrete-model",
+		})
 	})
 
 	it("model_select from non-auto model does not set the invitation", async () => {
@@ -463,5 +484,97 @@ describe("feedbackExtension state machine", () => {
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 		expect(dialogMock.show).not.toHaveBeenCalled()
+	})
+})
+
+describe("feedbackExtension failure handling", () => {
+	beforeEach(async () => {
+		feedbackMock.trackFeedback.mockReset()
+		trackModelSwitchFeedbackMock.mockReset()
+		dialogMock.show.mockReset()
+		modelSwitchDialogMock.show.mockReset()
+		const invitationState = await import("./invitation-state.js")
+		invitationState.clearModelSwitchInvitation()
+	})
+
+	afterEach(async () => {
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		const invitationState = await import("./invitation-state.js")
+		invitationState.clearModelSwitchInvitation()
+	})
+
+	it("reports a failed rating write instead of rejecting", async () => {
+		const { api, ctx, getHandler, getShortcutHandler, appendEntry } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
+		appendEntry.mockImplementationOnce(() => {
+			throw new Error("disk full")
+		})
+
+		await expect(getShortcutHandler(Key.ctrl("2"))?.(ctx)).resolves.toBeUndefined()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "error")
+	})
+
+	it("keeps the rating invitation alive when the write fails so the user can retry", async () => {
+		const { api, ctx, getHandler, getShortcutHandler, appendEntry } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
+		appendEntry.mockImplementationOnce(() => {
+			throw new Error("disk full")
+		})
+		await getShortcutHandler(Key.ctrl("2"))?.(ctx)
+
+		// A second press must still reach the dialog.
+		dialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
+		await getShortcutHandler(Key.ctrl("2"))?.(ctx)
+		expect(dialogMock.show).toHaveBeenCalledTimes(2)
+		expect(feedbackMock.trackFeedback).toHaveBeenCalledTimes(1)
+	})
+
+	it("re-arms the model-switch invitation when recording the reason fails", async () => {
+		const { api, ctx, getHandler, appendEntry } = makeApi()
+		feedbackExtension(api)
+
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+
+		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "faster" })
+		appendEntry.mockImplementationOnce(() => {
+			throw new Error("append failed")
+		})
+		await pressCtrlR(ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("append failed"), "error")
+		const invitationState = await import("./invitation-state.js")
+		expect(invitationState.getModelSwitchInvitation()).toMatchObject({ modelId: "concrete-model" })
+	})
+
+	it("surfaces a rejected Ctrl+R handler rather than leaving it unhandled", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+
+		// The dialog itself throws: handleShortcut catches and notifies, so the
+		// raw-input handler's `.catch` is the last line of defence.
+		modelSwitchDialogMock.show.mockRejectedValueOnce(new Error("overlay crashed"))
+		await pressCtrlR(ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("overlay crashed"), "error")
 	})
 })
