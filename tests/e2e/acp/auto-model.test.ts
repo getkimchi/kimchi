@@ -70,6 +70,33 @@ describe("ACP Auto model", () => {
 		expect(autoNames).toContain("Auto (routed)")
 	})
 
+	it("sends no model config update for a session that never resolves Auto", async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-auto-no-redundant-update",
+			providerId: "kimchi-dev",
+			defaultProvider: "kimchi-dev",
+			defaultModel: "routed",
+			models: MODELS,
+			responses: [{ stream: ["Concrete model works."] }],
+		})
+
+		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		await fixture.conn.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
+
+		// Count only what the turn itself pushes: selecting the model above
+		// legitimately emits its own update.
+		const before = fixture.client.sessionUpdates.length
+		const result = await prompt(fixture, session.sessionId, "Use the concrete model")
+		expect(result.stopReason).toBe("end_turn")
+
+		// Auto's label never changed, so the turn must not re-push the full
+		// option list — the client already has it.
+		const configUpdates = fixture.client.sessionUpdates
+			.slice(before)
+			.filter(({ update }) => update.sessionUpdate === "config_option_update")
+		expect(configUpdates).toHaveLength(0)
+	})
+
 	it("starts each new session in Auto after a concrete model selection", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-auto-default",

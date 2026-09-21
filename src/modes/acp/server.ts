@@ -535,6 +535,10 @@ export class KimchiAcpAgent implements Agent {
 			this.scheduleAvailableCommandsUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(session, initialMode.mode)
+			// Seed the tracker with what the client is about to receive, so the
+			// first message_start only re-publishes when the router's pick has
+			// actually changed the label.
+			record.lastModelOptionName = autoOptionName(configOptions)
 			return {
 				sessionId,
 				configOptions,
@@ -819,6 +823,9 @@ export class KimchiAcpAgent implements Agent {
 			this.scheduleAvailableCommandsUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(session, initialMode.mode)
+			// Same seeding as newSession (see there) — a resumed Auto session
+			// hydrates its pick before this point, so the label is already final.
+			record.lastModelOptionName = autoOptionName(configOptions)
 			return {
 				configOptions,
 				models: buildSessionModelState(configOptions),
@@ -1603,17 +1610,12 @@ export class KimchiAcpAgent implements Agent {
 	 * a concrete model and the label becomes `Auto (<id>)`.
 	 *
 	 * No-op for concrete and unresolved selections, so a session that never uses
-	 * Auto sends nothing extra.
+	 * Auto sends nothing extra — which relies on session creation/load seeding
+	 * `lastModelOptionName` with the label the client already received.
 	 */
 	private publishModelOptionIfChanged(sessionId: string, entry: SessionRecord): void {
 		const configOptions = buildConfigOptions(entry.session, this.getInitialPermissionMode(entry.session).mode)
-		const modelOption = configOptions.find((opt) => opt.id === "model")
-		if (modelOption?.type !== "select") return
-		// Compare the Auto entry's own name — the option's `name` is the static
-		// section title ("Model") and never changes.
-		const autoName = (modelOption.options as SessionConfigSelectOption[]).find(
-			(opt) => opt.value === AUTO_MODEL_REF,
-		)?.name
+		const autoName = autoOptionName(configOptions)
 		if (!autoName || autoName === entry.lastModelOptionName) return
 		entry.lastModelOptionName = autoName
 		this.send({ sessionId, update: { sessionUpdate: "config_option_update", configOptions } })
@@ -1887,6 +1889,18 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		currentValue,
 		options,
 	}
+}
+
+/**
+ * The Auto entry's own name within a built option list, or undefined when the
+ * session has no Auto model. The `model` option's `name` is the static section
+ * title ("Model") and never changes, so the Auto row is what we track to decide
+ * whether a re-publish is worth sending.
+ */
+function autoOptionName(configOptions: SessionConfigOption[]): string | undefined {
+	const modelOption = configOptions.find((opt) => opt.id === "model")
+	if (modelOption?.type !== "select") return undefined
+	return (modelOption.options as SessionConfigSelectOption[]).find((opt) => opt.value === AUTO_MODEL_REF)?.name
 }
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
