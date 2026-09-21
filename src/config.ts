@@ -317,8 +317,7 @@ function readConfigExtras(configPath: string): {
 		const me = parsed.memoryEmbedding
 		if (me && typeof me === "object") {
 			const model = typeof me.model === "string" && me.model.length > 0 ? me.model : undefined
-			const dims =
-				typeof me.dims === "number" && Number.isInteger(me.dims) && me.dims > 0 ? me.dims : undefined
+			const dims = typeof me.dims === "number" && Number.isInteger(me.dims) && me.dims > 0 ? me.dims : undefined
 			if (model !== undefined || dims !== undefined) {
 				memoryEmbedding = {
 					...(model !== undefined ? { model } : {}),
