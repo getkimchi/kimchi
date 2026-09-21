@@ -1155,14 +1155,29 @@ describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
 	it("round-trips the marker", () => {
 		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
 
-		writeAutoDefaultApplied(settingsPath)
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
 		expect(readAutoDefaultApplied(settingsPath)).toBe(true)
 	})
 
-	it("preserves the settings pi owns", () => {
-		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "auto", theme: "x" }))
+	// Regression: writing only the marker left the previous defaultModel in
+	// place, so the session came up on Auto once and fell back on the next
+	// launch — with the marker now blocking a retry.
+	it("installs the default alongside the marker", () => {
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3" }))
 
-		writeAutoDefaultApplied(settingsPath)
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
+
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toMatchObject({
+			defaultProvider: "kimchi-dev",
+			defaultModel: "auto",
+			autoDefaultApplied: true,
+		})
+	})
+
+	it("preserves the settings pi owns", () => {
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3", theme: "x" }))
+
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
 
 		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
 			defaultProvider: "kimchi-dev",
@@ -1173,9 +1188,13 @@ describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
 	})
 
 	it("writes a fresh file when settings do not exist yet", () => {
-		writeAutoDefaultApplied(settingsPath)
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
 
-		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({ autoDefaultApplied: true })
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+			defaultProvider: "kimchi-dev",
+			defaultModel: "auto",
+			autoDefaultApplied: true,
+		})
 	})
 })
 

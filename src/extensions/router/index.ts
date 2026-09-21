@@ -93,7 +93,7 @@ function hasPersistedDefault(): boolean {
 async function resolveAutoDefault(): Promise<{ eligible: boolean; commit: () => void }> {
 	if (!(await shouldDefaultToAuto())) return { eligible: false, commit: () => {} }
 	if (readAutoDefaultApplied()) return { eligible: false, commit: () => {} }
-	return { eligible: true, commit: writeAutoDefaultApplied }
+	return { eligible: true, commit: () => writeAutoDefaultApplied(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) }
 }
 
 export interface AutoModelExtensionOptions {

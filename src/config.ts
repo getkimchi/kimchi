@@ -705,8 +705,15 @@ export function readAutoDefaultApplied(settingsPath?: string): boolean {
 	}
 }
 
-/** Install Auto as the saved default and record that it was done. */
-export function writeAutoDefaultApplied(settingsPath?: string): void {
+/**
+ * Install Auto as the saved default and record that it was done.
+ *
+ * The default and the marker are written together on purpose: setting only the
+ * marker would leave the previous `defaultModel` in place, so the session would
+ * come up on Auto once and fall back on the next launch — with the marker now
+ * blocking a retry.
+ */
+export function writeAutoDefaultApplied(provider: string, modelId: string, settingsPath?: string): void {
 	const path = settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json")
 	let settings: Record<string, unknown> = {}
 	try {
@@ -714,6 +721,8 @@ export function writeAutoDefaultApplied(settingsPath?: string): void {
 	} catch {
 		// Fall through with an empty object: a first run writes a fresh file.
 	}
+	settings.defaultProvider = provider
+	settings.defaultModel = modelId
 	settings.autoDefaultApplied = true
 	writeJson(path, settings)
 }
