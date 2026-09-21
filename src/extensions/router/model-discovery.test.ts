@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withExperimentalFeatures } from "../experimental.js"
+import { _setAutoDefaultGateCache } from "./auto-default-gate.js"
 import { installAutoModelDiscoveryAdapter } from "./model-discovery.js"
 
 describe("Auto model discovery adapter", () => {
@@ -35,23 +36,49 @@ describe("Auto model discovery adapter", () => {
 
 	afterAll(() => rmSync(tempDir, { recursive: true, force: true }))
 
-	it("keeps Auto restorable but hides it from discovery without the flag", async () => {
+	it("keeps Auto restorable but hides it from discovery without the flag or entitlement", async () => {
 		await withExperimentalFeatures(false, async () => {
-			expect(runtime.getModel("kimchi-dev", "auto")?.id).toBe("auto")
-			const snapshotRefs = runtime.getAvailableSnapshot().map((model) => `${model.provider}/${model.id}`)
-			expect(snapshotRefs).toContain("kimchi-dev/concrete")
-			expect(snapshotRefs).not.toContain("kimchi-dev/auto")
-			const providerRefs = (await runtime.getAvailable("kimchi-dev")).map((model) => `${model.provider}/${model.id}`)
-			expect(providerRefs).toContain("kimchi-dev/concrete")
-			expect(providerRefs).not.toContain("kimchi-dev/auto")
+			_setAutoDefaultGateCache(false)
+			try {
+				expect(runtime.getModel("kimchi-dev", "auto")?.id).toBe("auto")
+				const snapshotRefs = runtime.getAvailableSnapshot().map((model) => `${model.provider}/${model.id}`)
+				expect(snapshotRefs).toContain("kimchi-dev/concrete")
+				expect(snapshotRefs).not.toContain("kimchi-dev/auto")
+				const providerRefs = (await runtime.getAvailable("kimchi-dev")).map((model) => `${model.provider}/${model.id}`)
+				expect(providerRefs).toContain("kimchi-dev/concrete")
+				expect(providerRefs).not.toContain("kimchi-dev/auto")
+			} finally {
+				_setAutoDefaultGateCache(undefined)
+			}
 		})
 	})
 
-	it("exposes exactly kimchi-dev/auto when experimental features are enabled", async () => {
+	it("exposes kimchi-dev/auto when experimental features are enabled", async () => {
 		await withExperimentalFeatures(true, async () => {
-			expect(runtime.getAvailableSnapshot().map((model) => `${model.provider}/${model.id}`)).toContain(
-				"kimchi-dev/auto",
-			)
+			_setAutoDefaultGateCache(false)
+			try {
+				expect(runtime.getAvailableSnapshot().map((model) => `${model.provider}/${model.id}`)).toContain(
+					"kimchi-dev/auto",
+				)
+			} finally {
+				_setAutoDefaultGateCache(undefined)
+			}
+		})
+	})
+
+	it("exposes kimchi-dev/auto for gate-entitled (cast.ai) accounts without the flag", async () => {
+		await withExperimentalFeatures(false, async () => {
+			_setAutoDefaultGateCache(true)
+			try {
+				expect(runtime.getAvailableSnapshot().map((model) => `${model.provider}/${model.id}`)).toContain(
+					"kimchi-dev/auto",
+				)
+				expect((await runtime.getAvailable("kimchi-dev")).map((model) => `${model.provider}/${model.id}`)).toContain(
+					"kimchi-dev/auto",
+				)
+			} finally {
+				_setAutoDefaultGateCache(undefined)
+			}
 		})
 	})
 })

@@ -8,7 +8,6 @@ import {
 	hasFermentOneshotArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
@@ -19,6 +18,26 @@ import {
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+
+describe("value-flag parsing", () => {
+	// Short aliases must consume their value too, or the token after them is
+	// parsed as a model selection and silently suppresses the Auto default.
+	it.each([
+		["-t", "--model"],
+		["-e", "--model"],
+	])("leaves the model unset when %s consumes a flag-shaped value", (...args) => {
+		populateCliArgs(args)
+		expect(getParsedCliArgs().options.model).toBeUndefined()
+		populateCliArgs([])
+	})
+
+	it("caches only an explicitly supplied model scope", () => {
+		populateCliArgs(["--models", "kimchi-dev/auto,kimchi-dev/glm-5.3"])
+		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
+		populateCliArgs([])
+		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -350,20 +369,5 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
-	})
-
-	it.each([
-		["canonical", ["--model", "kimchi-dev/auto"]],
-		["provider and id", ["--provider", "kimchi-dev", "--model", "auto"]],
-		["bare id", ["--model", "auto"]],
-		["thinking suffix", ["--model", "kimchi-dev/auto:high"]],
-	] as const)("recognizes an explicit Auto selection in %s form", (_label, args) => {
-		populateCliArgs([...args])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(true)
-	})
-
-	it("does not mistake another provider's auto model for kimchi-dev/auto", () => {
-		populateCliArgs(["--provider", "custom", "--model", "auto"])
-		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
 	})
 })
