@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { trackFeedback, trackModelSwitchFeedback } from "./feedback.js"
+import { clampReason, MAX_REASON_LENGTH, trackFeedback, trackModelSwitchFeedback } from "./feedback.js"
 import * as telemetryIndex from "./index.js"
 import { _getTelemetryCtx, _isTelemetryEnabled } from "./index.js"
 
@@ -169,5 +169,70 @@ describe("post-turn feedback telemetry", () => {
 				model_id: "claude-sonnet-4-6",
 			})
 		})
+	})
+})
+
+describe("clampReason", () => {
+	it("passes through a reason at or under the cap unchanged", () => {
+		const exact = "x".repeat(MAX_REASON_LENGTH)
+		expect(clampReason(exact)).toEqual({ value: exact, truncated: false })
+		expect(clampReason("short")).toEqual({ value: "short", truncated: false })
+		expect(clampReason("")).toEqual({ value: "", truncated: false })
+	})
+
+	it("cuts an oversized reason to the cap and reports it", () => {
+		const result = clampReason("y".repeat(MAX_REASON_LENGTH + 1))
+		expect(result.value).toHaveLength(MAX_REASON_LENGTH)
+		expect(result.truncated).toBe(true)
+	})
+
+	it("bounds a pasted payload far larger than the cap", () => {
+		// The editor accepts bracketed paste, so this is the realistic abuse
+		// case: a whole log or file pasted into the reason field.
+		const result = clampReason("z".repeat(500_000))
+		expect(result.value).toHaveLength(MAX_REASON_LENGTH)
+		expect(result.truncated).toBe(true)
+	})
+})
+
+describe("free-form reason size limits on emitted events", () => {
+	afterEach(() => {
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		vi.restoreAllMocks()
+	})
+
+	it("caps an oversized rating reason and flags it on the event", () => {
+		const ctx = enableTelemetry()
+
+		trackFeedback({
+			sentiment: "negative",
+			reason: "p".repeat(100_000),
+			reasonType: "freeform",
+			autoModelUsed: false,
+		})
+
+		const attrs = ctx.emit.mock.calls[0]?.[1] as Record<string, unknown>
+		expect(String(attrs.answer_value_2)).toHaveLength(MAX_REASON_LENGTH)
+		expect(attrs.reason_truncated).toBe(true)
+	})
+
+	it("caps an oversized model-switch reason and flags it on the event", () => {
+		const ctx = enableTelemetry()
+
+		trackModelSwitchFeedback({ reason: "q".repeat(100_000), modelName: "M", modelId: "m" })
+
+		const attrs = ctx.emit.mock.calls[0]?.[1] as Record<string, unknown>
+		expect(String(attrs.answer_value)).toHaveLength(MAX_REASON_LENGTH)
+		expect(attrs.reason_truncated).toBe(true)
+	})
+
+	it("leaves a normal reason unflagged", () => {
+		const ctx = enableTelemetry()
+
+		trackFeedback({ sentiment: "positive", reason: "worked well", reasonType: "freeform", autoModelUsed: false })
+
+		const attrs = ctx.emit.mock.calls[0]?.[1] as Record<string, unknown>
+		expect(attrs.answer_value_2).toBe("worked well")
+		expect(attrs).not.toHaveProperty("reason_truncated")
 	})
 })

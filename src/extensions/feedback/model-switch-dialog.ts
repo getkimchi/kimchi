@@ -1,6 +1,7 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
 import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
+import { MAX_REASON_LENGTH } from "./dialog.js"
 import { createDialogChrome } from "./dialog-chrome.js"
 import { FeedbackEditor } from "./editor.js"
 
@@ -55,7 +56,10 @@ export class ModelSwitchComponent extends Container {
 	}
 
 	private submit(): void {
-		const text = this.editor.getText().trim()
+		// Clamped for the same reason as the rating dialog: the editor accepts
+		// bracketed paste, so an unbounded reason would otherwise reach the
+		// transcript and telemetry verbatim.
+		const text = this.editor.getText().trim().slice(0, MAX_REASON_LENGTH)
 		this.done({ reason: text })
 	}
 

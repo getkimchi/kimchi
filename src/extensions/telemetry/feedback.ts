@@ -37,6 +37,29 @@ const MODEL_SWITCH_SURVEY: SurveyTelemetryDefinition = {
 const autoModelUsedAttr = "auto_model_used"
 const reasonTypeAttr = "reason_type"
 const modelIDAttr = "model_id"
+const reasonTruncatedAttr = "reason_truncated"
+
+/**
+ * Cap on free-form reason text, matching the `.slice(0, 300)` convention used
+ * for every other user-controlled string this pipeline emits (error messages,
+ * transport errors, tool output).
+ *
+ * The reason field accepts bracketed paste, so without a cap a single
+ * submission can carry an unbounded payload — an accidental paste of a log or
+ * a whole file, or a deliberate attempt to inflate the telemetry pipeline.
+ * 300 characters is far more than a usable sentence of feedback and keeps one
+ * event within a sane size.
+ */
+export const MAX_REASON_LENGTH = 300
+
+/**
+ * Clamp a user-supplied reason to `MAX_REASON_LENGTH`, reporting whether it was
+ * cut so a truncated sample is never read as the user's whole answer.
+ */
+export function clampReason(reason: string): { value: string; truncated: boolean } {
+	if (reason.length <= MAX_REASON_LENGTH) return { value: reason, truncated: false }
+	return { value: reason.slice(0, MAX_REASON_LENGTH), truncated: true }
+}
 
 /**
  * Emit a `survey_answered` event for the post-turn thumbs up/down rating.
@@ -57,17 +80,19 @@ export function trackFeedback(args: {
 	if (!_isTelemetryEnabled()) return
 	const ctx = _getTelemetryCtx()
 	if (!ctx) return
+	const reason = clampReason(args.reason)
 	emitSurveyAnswered(ctx, {
 		survey: POST_TURN_RATING_SURVEY,
 		submissionId: randomUUID(),
 		answerId: args.sentiment,
-		...(args.reason.length > 0 && {
-			secondResponse: { questionId: RATING_REASON_QUESTION_ID, answerValue: args.reason },
+		...(reason.value.length > 0 && {
+			secondResponse: { questionId: RATING_REASON_QUESTION_ID, answerValue: reason.value },
 		}),
 		extraAttrs: {
 			...ctx.getTraceAttributes(),
 			[autoModelUsedAttr]: args.autoModelUsed,
 			[reasonTypeAttr]: args.reasonType,
+			...(reason.truncated && { [reasonTruncatedAttr]: true }),
 		},
 	})
 }
@@ -84,13 +109,15 @@ export function trackModelSwitchFeedback(args: { reason: string; modelName: stri
 	if (!_isTelemetryEnabled()) return
 	const ctx = _getTelemetryCtx()
 	if (!ctx) return
+	const reason = clampReason(args.reason)
 	emitSurveyAnswered(ctx, {
 		survey: MODEL_SWITCH_SURVEY,
 		submissionId: randomUUID(),
-		answerValue: args.reason,
+		answerValue: reason.value,
 		extraAttrs: {
 			...ctx.getTraceAttributes(),
 			[modelIDAttr]: args.modelId,
+			...(reason.truncated && { [reasonTruncatedAttr]: true }),
 		},
 	})
 }

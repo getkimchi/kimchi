@@ -2,7 +2,7 @@ import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-work
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
-import { FeedbackDetailsComponent, showFeedbackDetailsDialog } from "./dialog.js"
+import { FeedbackDetailsComponent, MAX_REASON_LENGTH, showFeedbackDetailsDialog } from "./dialog.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -527,5 +527,43 @@ describe("FeedbackDetailsComponent multi-line caret navigation", () => {
 		component.handleInput(ARROW_DOWN)
 
 		expect(handleInput).not.toHaveBeenCalled()
+	})
+})
+
+describe("FeedbackDetailsComponent free-form length cap", () => {
+	function typeInto(component: FeedbackDetailsComponent, text: string) {
+		const editor = (component as unknown as { editor: { getText(): string } }).editor
+		vi.spyOn(editor, "getText").mockReturnValue(text)
+		// Move focus to the input field so submit() reads the editor.
+		for (let i = 0; i < 10; i++) component.handleInput(ARROW_DOWN)
+	}
+
+	it("caps a pasted reason at MAX_REASON_LENGTH on submit", () => {
+		const { component, done } = makeComponent()
+		typeInto(component, "a".repeat(100_000))
+
+		component.handleInput(ENTER)
+
+		const reason = done.mock.calls[0]?.[0]?.reason as string
+		expect(reason).toHaveLength(MAX_REASON_LENGTH)
+	})
+
+	it("leaves a normal-length reason untouched", () => {
+		const { component, done } = makeComponent()
+		typeInto(component, "it was too slow")
+
+		component.handleInput(ENTER)
+
+		expect(done).toHaveBeenCalledWith({ reason: "it was too slow" })
+	})
+
+	it("keeps a reason of exactly the cap intact", () => {
+		const { component, done } = makeComponent()
+		const exact = "b".repeat(MAX_REASON_LENGTH)
+		typeInto(component, exact)
+
+		component.handleInput(ENTER)
+
+		expect(done).toHaveBeenCalledWith({ reason: exact })
 	})
 })

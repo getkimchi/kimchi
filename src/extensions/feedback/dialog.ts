@@ -13,6 +13,24 @@ export interface FeedbackDetailsResult {
 const TYPE_OWN_ANSWER_LABEL = "Type your own answer"
 
 /**
+ * Cap on a typed reason, applied when the dialog submits.
+ *
+ * The editor accepts bracketed paste, so without a cap a stray paste of a log
+ * or a whole file would be stored verbatim in the session transcript and sent
+ * on to telemetry. Telemetry clamps again at its own boundary — this is the
+ * UI-side half of that, so the transcript and the emitted event agree.
+ *
+ * 300 characters matches the convention used for every other user-controlled
+ * string in the telemetry pipeline, and is far longer than a usable sentence
+ * of feedback.
+ */
+export const MAX_REASON_LENGTH = 300
+
+function clampReason(reason: string): string {
+	return reason.length <= MAX_REASON_LENGTH ? reason : reason.slice(0, MAX_REASON_LENGTH)
+}
+
+/**
  * Reasons that only make sense when the turn actually ran on the auto-model.
  * Tagged explicitly rather than by position so reordering the lists below
  * cannot silently drop the wrong option from the dialog.
@@ -162,7 +180,11 @@ export class FeedbackDetailsComponent extends Container {
 
 		// "Type your own answer" focused, the input field focused, or
 		// nothing selected: submit the editor text (possibly empty).
-		const editorText = this.editor.getText().trim()
+		//
+		// Clamped here as well as at the telemetry boundary: the editor accepts
+		// bracketed paste, so an accidental paste of a log or a file would
+		// otherwise be stored verbatim in the session transcript.
+		const editorText = clampReason(this.editor.getText().trim())
 		this.done({ reason: editorText })
 	}
 
