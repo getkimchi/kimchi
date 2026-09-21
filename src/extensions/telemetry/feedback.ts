@@ -28,7 +28,12 @@ const MODEL_SWITCH_SURVEY: SurveyTelemetryDefinition = {
 // Flow-context attribute names — the wire contract with kubecast's
 // posthog_mapping.go ("survey sent" mapping). Missing values must be omitted
 // from extraAttrs, never sent as empty strings.
-const turnIndexAttr = "turn_index"
+//
+// Correlation to the rated run uses the standard request trace attrs
+// ("request.trace_id" / "request.span_id", same as api_request/error events)
+// stamped from the most recent provider request. Upstream's turn_index counts
+// LLM round-trips per agent run and resets on every prompt, so it cannot
+// identify the rated prompt — it is deliberately not sent here.
 const autoModelUsedAttr = "auto_model_used"
 const reasonTypeAttr = "reason_type"
 const modelIDAttr = "model_id"
@@ -60,7 +65,7 @@ export function trackFeedback(args: {
 			secondResponse: { questionId: RATING_REASON_QUESTION_ID, answerValue: args.reason },
 		}),
 		extraAttrs: {
-			[turnIndexAttr]: ctx.turnIndex,
+			...ctx.getTraceAttributes(),
 			[autoModelUsedAttr]: args.autoModelUsed,
 			[reasonTypeAttr]: args.reasonType,
 		},
@@ -84,7 +89,7 @@ export function trackModelSwitchFeedback(args: { reason: string; modelName: stri
 		submissionId: randomUUID(),
 		answerValue: args.reason,
 		extraAttrs: {
-			[turnIndexAttr]: ctx.turnIndex,
+			...ctx.getTraceAttributes(),
 			[modelIDAttr]: args.modelId,
 		},
 	})

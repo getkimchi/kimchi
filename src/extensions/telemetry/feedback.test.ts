@@ -13,13 +13,15 @@ const RATING_Q2_ID = "be146fb0-9838-45f8-998b-8be74067234f"
 const MODEL_SWITCH_SURVEY_ID = "01a0c528-75ba-0000-1ec3-bc9506dd1698"
 const MODEL_SWITCH_Q_ID = "4dedb581-91f4-4d68-8cd5-e4a9f6eb726e"
 
+const TEST_TRACE = { "request.trace_id": "aaaabbbbccccddddeeeeffff00001111", "request.span_id": "1122334455667788" }
+
 interface FakeCtx {
 	emit: ReturnType<typeof vi.fn>
-	turnIndex: number
+	getTraceAttributes: () => Record<string, string>
 }
 
-function enableTelemetry(turnIndex = 0): FakeCtx {
-	const ctx: FakeCtx = { emit: vi.fn(), turnIndex }
+function enableTelemetry(traceAttrs: Record<string, string> | null = TEST_TRACE): FakeCtx {
+	const ctx: FakeCtx = { emit: vi.fn(), getTraceAttributes: () => traceAttrs ?? {} }
 	vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
 	vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(ctx as never)
 	return ctx
@@ -64,7 +66,7 @@ describe("post-turn feedback telemetry", () => {
 
 	describe("trackFeedback", () => {
 		it("emits one survey_answered with both questions when a reason is provided", () => {
-			const ctx = enableTelemetry(3)
+			const ctx = enableTelemetry()
 
 			trackFeedback({ sentiment: "negative", reason: "Too slow", reasonType: "predefined", autoModelUsed: true })
 
@@ -78,7 +80,7 @@ describe("post-turn feedback telemetry", () => {
 				question_id_2: RATING_Q2_ID,
 				answer_value_2: "Too slow",
 				survey_completed: true,
-				turn_index: 3,
+				...TEST_TRACE,
 				auto_model_used: true,
 				reason_type: "predefined",
 			})
@@ -93,7 +95,7 @@ describe("post-turn feedback telemetry", () => {
 		})
 
 		it("omits the second question entirely when the reason is empty", () => {
-			const ctx = enableTelemetry(1)
+			const ctx = enableTelemetry()
 
 			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
 
@@ -102,12 +104,15 @@ describe("post-turn feedback telemetry", () => {
 			expect(attrs).not.toHaveProperty("answer_value_2")
 		})
 
-		it("sends turn_index 0 as a valid value (never omitted)", () => {
-			const ctx = enableTelemetry(0)
+		it("omits the request trace attrs when no provider request has happened yet", () => {
+			const ctx = enableTelemetry(null)
 
 			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
 
-			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", expect.objectContaining({ turn_index: 0 }))
+			const attrs = ctx.emit.mock.calls[0][1] as Record<string, unknown>
+			expect(attrs).not.toHaveProperty("request.trace_id")
+			expect(attrs).not.toHaveProperty("request.span_id")
+			expect(attrs).not.toHaveProperty("turn_index")
 		})
 
 		it("carries the reason verbatim and marks typed answers as freeform", () => {
@@ -144,8 +149,8 @@ describe("post-turn feedback telemetry", () => {
 	})
 
 	describe("trackModelSwitchFeedback", () => {
-		it("emits one survey_answered with the raw reason, turn_index and model_id", () => {
-			const ctx = enableTelemetry(7)
+		it("emits one survey_answered with the raw reason, request trace and model_id", () => {
+			const ctx = enableTelemetry()
 
 			trackModelSwitchFeedback({
 				reason: "too expensive for this repo",
@@ -160,7 +165,7 @@ describe("post-turn feedback telemetry", () => {
 				question_id: MODEL_SWITCH_Q_ID,
 				answer_value: "too expensive for this repo",
 				survey_completed: true,
-				turn_index: 7,
+				...TEST_TRACE,
 				model_id: "claude-sonnet-4-6",
 			})
 		})
