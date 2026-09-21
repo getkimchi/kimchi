@@ -1,6 +1,6 @@
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import { beforeAll, describe, expect, it } from "vitest"
-import { replaceCursorMarker } from "./editor.js"
+import { isBorderLine, replaceCursorMarker } from "./editor.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -39,5 +39,25 @@ describe("replaceCursorMarker", () => {
 		expect(out).not.toContain("pi:c")
 		const matches = out.match(/▏/g)
 		expect(matches?.length).toBe(2)
+	})
+})
+
+describe("isBorderLine", () => {
+	it("matches the upstream editor's horizontal borders", () => {
+		expect(isBorderLine("────────")).toBe(true)
+		expect(isBorderLine("  ────  ")).toBe(true)
+		expect(isBorderLine(`${ACCENT}────${RST}`)).toBe(true)
+	})
+
+	it("does not match user text that merely starts with a box-drawing char", () => {
+		// Regression: a prefix test would treat these as borders and silently
+		// drop the line from the render while still submitting the text.
+		expect(isBorderLine("──── my heading")).toBe(false)
+		expect(isBorderLine("─ separator note")).toBe(false)
+	})
+
+	it("does not match ordinary content", () => {
+		expect(isBorderLine("took 3 attempts")).toBe(false)
+		expect(isBorderLine("")).toBe(false)
 	})
 })

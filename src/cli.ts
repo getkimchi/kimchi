@@ -735,7 +735,9 @@ try {
 			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
-			feedbackExtension,
+			// Named so startup diagnostics read `<inline:feedback>` rather than a
+			// positional `<inline:N>` that shifts whenever the list above changes.
+			{ name: "feedback", factory: feedbackExtension },
 			...enabledExtensionFactories([
 				{ id: "extensions.todos", factory: todosExtension },
 			] satisfies ManagedExtensionFactory[]),

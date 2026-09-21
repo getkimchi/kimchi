@@ -6,6 +6,7 @@ import type {
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionManager,
+	TerminalInputHandler,
 } from "@earendil-works/pi-coding-agent"
 import { type Mocked, vi } from "vitest"
 
@@ -19,6 +20,14 @@ export function createCommandContext(): ExtensionCommandContext {
 		navigateTree: vi.fn(async () => ({ cancelled: false })),
 		switchSession: vi.fn(async () => ({ cancelled: false })),
 		reload: vi.fn(async () => {}),
+	}
+}
+
+/** Dispatch raw terminal data to every handler an extension has subscribed. */
+export function sendTerminalInput(ctx: ExtensionContext, data: string): void {
+	const handlers = (ctx as unknown as { __terminalInputHandlers?: Set<TerminalInputHandler> }).__terminalInputHandlers
+	for (const handler of handlers ?? []) {
+		handler(data)
 	}
 }
 
@@ -36,7 +45,9 @@ export function createContext(
 		}
 	>,
 ): ExtensionContext {
+	const terminalInputHandlers = new Set<TerminalInputHandler>()
 	return {
+		__terminalInputHandlers: terminalInputHandlers,
 		hasUI: true,
 		mode: "tui",
 		cwd: "/tmp",
@@ -60,6 +71,13 @@ export function createContext(
 			setStatus: vi.fn(),
 			setWidget: vi.fn(),
 			setWorkingVisible: vi.fn(),
+			// Real contract: returns an unsubscribe function. Handlers are kept
+			// on `__terminalInputHandlers` so tests can dispatch raw key data
+			// via `sendTerminalInput()`.
+			onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
+				terminalInputHandlers.add(handler)
+				return () => terminalInputHandlers.delete(handler)
+			}),
 			...overrides?.ui,
 		} as unknown as ExtensionUIContext,
 		sessionManager: {

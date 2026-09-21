@@ -1,52 +1,27 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext, sendTerminalInput } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import feedbackExtension from "./index.js"
 
-type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown
-type ShortcutHandler = (ctx: ExtensionContext) => Promise<unknown> | unknown
-
-function makeApi() {
-	const handlers = new Map<string, EventHandler[]>()
-	const shortcuts = new Map<string, { description?: string; handler: ShortcutHandler }>()
-	const on = vi.fn((event: string, handler: EventHandler) => {
-		if (!handlers.has(event)) handlers.set(event, [])
-		handlers.get(event)?.push(handler)
-	})
-	const registerShortcut = vi.fn((shortcut: string, options: { description?: string; handler: ShortcutHandler }) => {
-		shortcuts.set(shortcut, options)
-	})
-	const renderers = new Map<string, unknown>()
-	const registerMessageRenderer = vi.fn((type: string, renderer: unknown) => {
-		renderers.set(type, renderer)
-	})
-	const sendMessage = vi.fn()
-	const api = {
-		on,
-		registerShortcut,
-		registerMessageRenderer,
-		sendMessage,
-	} as unknown as ExtensionAPI
-	const ctx = {
-		hasUI: true,
-		mode: "tui",
-		sessionManager: { getSessionId: () => "test-session" },
-	} as unknown as ExtensionContext
-	return {
-		api,
-		ctx,
-		handlers,
-		shortcuts,
-		renderers,
-		sendMessage,
-		getShortcutHandler: (key: string = Key.ctrl("r")) => shortcuts.get(key)?.handler,
-	}
+/**
+ * Ctrl+R is delivered through `ctx.ui.onTerminalInput` (not a registered
+ * shortcut) so the key stays unclaimed outside the invitation window. The
+ * handler kicks off async work without awaiting, so flush the microtask queue.
+ */
+async function pressCtrlR(ctx: ExtensionContext): Promise<void> {
+	sendTerminalInput(ctx, CTRL_R)
+	await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-function getEventHandler(handlers: Map<string, EventHandler[]>, event: string): EventHandler {
-	const list = handlers.get(event)
-	if (!list || list.length === 0) throw new Error(`No handler for ${event}`)
-	return list[0]
+const CTRL_R = "\x12"
+
+// Shared mocks (see AGENTS.md: do not hand-roll ctx/pi mocks in test files).
+function makeApi() {
+	const harness = createExtensionApi()
+	const ctx = createContext({ hasUI: true, mode: "tui" })
+	return { ...harness, ctx }
 }
 
 const feedbackMock = vi.hoisted(() => ({ trackFeedback: vi.fn() }))
@@ -61,6 +36,7 @@ vi.mock("../telemetry/index.js", () => ({
 
 vi.mock("./dialog.js", () => ({
 	showFeedbackDetailsDialog: dialogMock.show,
+	isPredefinedReason: (reason: string) => reason === "Too slow" || reason === "Solved my task",
 }))
 
 vi.mock("./model-switch-dialog.js", () => ({
@@ -83,31 +59,26 @@ describe("feedbackExtension state machine", () => {
 		invitationState.clearModelSwitchInvitation()
 	})
 
-	it("registers Ctrl+1, Ctrl+2, and Ctrl+R shortcuts on init", () => {
-		const { api } = makeApi()
+	it("registers only the rating shortcuts, leaving ctrl+r unclaimed", () => {
+		const { api, getRegisteredShortcutKeys, getShortcutDescription } = makeApi()
 		feedbackExtension(api)
-		expect(api.registerShortcut).toHaveBeenCalledTimes(3)
+		expect(api.registerShortcut).toHaveBeenCalledTimes(2)
 
-		const calls = (api.registerShortcut as ReturnType<typeof vi.fn>).mock.calls
-		const keys = calls.map((call) => call[0])
-		expect(keys).toContain(Key.ctrl("r"))
+		const keys = getRegisteredShortcutKeys()
+		// ctrl+r is a built-in (app.session.rename); claiming it statically would
+		// emit a startup conflict diagnostic for the whole session.
+		expect(keys).not.toContain(Key.ctrl("r"))
 		expect(keys).toContain(Key.ctrl("1"))
 		expect(keys).toContain(Key.ctrl("2"))
 		expect(keys).not.toContain(Key.ctrl("t"))
 		expect(keys).not.toContain(Key.ctrlShift("up"))
 		expect(keys).not.toContain(Key.ctrlShift("down"))
 
-		const ctrlRCall = calls.find((call) => call[0] === Key.ctrl("r"))
-		expect(ctrlRCall?.[1].description).toBe("Tell us why you switched")
-
-		const ctrl1Call = calls.find((call) => call[0] === Key.ctrl("1"))
-		expect(ctrl1Call?.[1].description).toBe("Rate response as Good")
-
-		const ctrl2Call = calls.find((call) => call[0] === Key.ctrl("2"))
-		expect(ctrl2Call?.[1].description).toBe("Rate response as Bad")
+		expect(getShortcutDescription(Key.ctrl("1"))).toBe("Rate response as Good")
+		expect(getShortcutDescription(Key.ctrl("2"))).toBe("Rate response as Bad")
 	})
 
-	it("does nothing when a rating shortcut is pressed before agent_end has fired", async () => {
+	it("does nothing when a rating shortcut is pressed before agent_settled has fired", async () => {
 		const { api, ctx, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
 
@@ -116,10 +87,10 @@ describe("feedbackExtension state machine", () => {
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("Ctrl+1 opens the details dialog with positive sentiment after agent_end", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+	it("Ctrl+1 opens the details dialog with positive sentiment after agent_settled", async () => {
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		dialogMock.show.mockResolvedValueOnce(undefined)
 
@@ -130,10 +101,10 @@ describe("feedbackExtension state machine", () => {
 		expect(feedbackMock.trackFeedback).not.toHaveBeenCalled()
 	})
 
-	it("Ctrl+2 opens the details dialog with negative sentiment after agent_end", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+	it("Ctrl+2 opens the details dialog with negative sentiment after agent_settled", async () => {
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		dialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
 
@@ -144,14 +115,15 @@ describe("feedbackExtension state machine", () => {
 		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith({
 			sentiment: "negative",
 			reason: "Too slow",
+			reasonType: "predefined",
 			autoModelUsed: false,
 		})
 	})
 
 	it("Ctrl+1 with a positive reason submits feedback and tracks it", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
 
@@ -162,26 +134,27 @@ describe("feedbackExtension state machine", () => {
 		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith({
 			sentiment: "positive",
 			reason: "Solved my task",
+			reasonType: "predefined",
 			autoModelUsed: false,
 		})
 	})
 
-	it("Escape in the details dialog cancels and does not call sendMessage or trackFeedback", async () => {
-		const { api, ctx, handlers, sendMessage, getShortcutHandler } = makeApi()
+	it("Escape in the details dialog cancels and appends no entry or telemetry", async () => {
+		const { api, ctx, getHandler, getAppendedEntries, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		dialogMock.show.mockResolvedValueOnce(undefined)
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 
 		expect(dialogMock.show).toHaveBeenCalledTimes(1)
-		expect(sendMessage).not.toHaveBeenCalled()
+		expect(getAppendedEntries("feedback-summary")).toHaveLength(0)
 		expect(feedbackMock.trackFeedback).not.toHaveBeenCalled()
 
 		// A subsequent Ctrl+2 after the dialog was cancelled should still work —
 		// the extension must be back in the "inviting" state.
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 		dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
 		await getShortcutHandler(Key.ctrl("2"))?.(ctx)
 
@@ -189,10 +162,10 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("detects auto-model and passes autoModelUsed=true to the details dialog", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto", name: "Auto" }
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		dialogMock.show.mockResolvedValueOnce({ reason: "Auto-model picked the right model" })
 
@@ -203,15 +176,15 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("returns to idle after the rating flow resolves, accepting new ratings", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 
 		// Re-trigger invitation.
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 		dialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
 		await getShortcutHandler(Key.ctrl("2"))?.(ctx)
 
@@ -220,43 +193,73 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("resets the invitation on turn_start", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
-		getEventHandler(handlers, "turn_start")({ turnIndex: 1 }, ctx)
+		getHandler("agent_settled")({}, ctx)
+		getHandler("turn_start")({ turnIndex: 1 }, ctx)
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("resets the invitation on message_start", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+	it("resets the invitation on session_start so it cannot leak across sessions", async () => {
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
-		getEventHandler(handlers, "message_start")(
+		getHandler("agent_settled")({}, ctx)
+		await getHandler("session_start")({ reason: "resume" }, ctx)
+
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+		expect(dialogMock.show).not.toHaveBeenCalled()
+	})
+
+	it("does not listen for ctrl+r until a model switch invitation is active", async () => {
+		const { api, ctx } = makeApi()
+		feedbackExtension(api)
+
+		// No invitation yet: nothing has subscribed, so the key is free for the
+		// built-in app.session.rename binding.
+		expect(ctx.ui.onTerminalInput).not.toHaveBeenCalled()
+		await pressCtrlR(ctx)
+		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
+	})
+
+	it("stops listening for ctrl+r once the invitation is consumed", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+
+		await getHandler("model_select")(
 			{
-				message: { role: "user", content: "hi", timestamp: Date.now() },
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
 			},
 			ctx,
 		)
+		expect(ctx.ui.onTerminalInput).toHaveBeenCalledTimes(1)
 
-		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
-		expect(dialogMock.show).not.toHaveBeenCalled()
+		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "faster" })
+		await pressCtrlR(ctx)
+		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
+
+		// A second press after the invitation is gone must not reopen the dialog.
+		await pressCtrlR(ctx)
+		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
 	})
 
-	it("registers a renderer for feedback-summary", () => {
-		const { api, renderers } = makeApi()
+	it("registers entry renderers so feedback never enters LLM context", () => {
+		const { api, getEntryRenderer } = makeApi()
 		feedbackExtension(api)
-		expect(api.registerMessageRenderer).toHaveBeenCalled()
-		const types = [...renderers.keys()]
-		expect(types).toContain("feedback-summary")
+		// Entry renderers, not message renderers: custom entries are excluded
+		// from LLM context, which is what keeps free-form reason text out.
+		expect(getEntryRenderer("feedback-summary")).toBeDefined()
+		expect(getEntryRenderer("model-switch-feedback")).toBeDefined()
+		expect(api.registerMessageRenderer).not.toHaveBeenCalled()
 	})
 
 	it("model_select from auto sets the invitation instead of opening dialog immediately", async () => {
-		const { api, ctx, handlers, sendMessage, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
 		feedbackExtension(api)
 
-		const handler = getEventHandler(handlers, "model_select")
+		const handler = getHandler("model_select")
 		await handler(
 			{
 				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
@@ -265,19 +268,10 @@ describe("feedbackExtension state machine", () => {
 			ctx,
 		)
 
-		// The summary message is sent, but the dialog is NOT opened.
-		expect(sendMessage).toHaveBeenCalledTimes(1)
-		const invitationCall = sendMessage.mock.calls[0]?.[0] as {
-			customType?: string
-			content?: Array<{ type: string; text?: string }>
-			details?: { model?: string; reason?: string }
-		}
-		expect(invitationCall).toMatchObject({
-			customType: "model-switch-feedback",
-			display: true,
-			details: { model: "Concrete", reason: "" },
-		})
-		expect(invitationCall?.content?.[0]?.text).toBe("Tell us why you switched to Concrete (Ctrl+R)")
+		// The summary entry is appended, but the dialog is NOT opened.
+		const entries = getAppendedEntries<{ model: string; reason: string }>("model-switch-feedback")
+		expect(entries).toHaveLength(1)
+		expect(entries[0]).toMatchObject({ model: "Concrete", reason: "" })
 		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
 
 		// The invitation is now active.
@@ -289,7 +283,7 @@ describe("feedbackExtension state machine", () => {
 
 		// Ctrl+R takes precedence over the rating shortcuts.
 		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
-		await getShortcutHandler(Key.ctrl("r"))?.(ctx)
+		await pressCtrlR(ctx)
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledWith(ctx, { modelName: "Concrete" })
 		// Invitation is cleared after the dialog resolves.
@@ -297,45 +291,37 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("Ctrl+R does nothing when no model-switch invitation is active", async () => {
-		const { api, ctx, getShortcutHandler } = makeApi()
+		const { api, ctx } = makeApi()
 		feedbackExtension(api)
 
-		await getShortcutHandler(Key.ctrl("r"))?.(ctx)
+		await pressCtrlR(ctx)
 		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
 	it("Ctrl+R submit with a reason sends a follow-up message with reason details and tracks feedback", async () => {
-		const { api, ctx, handlers, sendMessage, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
 		feedbackExtension(api)
 
 		// Trigger the model switch.
-		await getEventHandler(handlers, "model_select")(
+		await getHandler("model_select")(
 			{
 				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
 				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
 			},
 			ctx,
 		)
-		expect(sendMessage).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 
 		// User opens dialog via Ctrl+R and submits a reason.
 		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "Better at code" })
-		await getShortcutHandler(Key.ctrl("r"))?.(ctx)
+		await pressCtrlR(ctx)
 
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
-		// A SECOND message is sent carrying the reason — we don't mutate the first.
-		expect(sendMessage).toHaveBeenCalledTimes(2)
-		const followUpCall = sendMessage.mock.calls[1]?.[0] as {
-			content?: Array<{ type: string; text?: string }>
-			details?: { model?: string; reason?: string }
-		}
-		expect(followUpCall).toMatchObject({
-			customType: "model-switch-feedback",
-			display: true,
-			details: { model: "Concrete", reason: "Better at code" },
-		})
-		expect(followUpCall?.content?.[0]?.text).toBe("Reason: Better at code")
+		// A SECOND entry is appended carrying the reason — we don't mutate the first.
+		const entries = getAppendedEntries<{ model: string; reason: string }>("model-switch-feedback")
+		expect(entries).toHaveLength(2)
+		expect(entries[1]).toMatchObject({ model: "Concrete", reason: "Better at code" })
 		expect(trackModelSwitchFeedbackMock).toHaveBeenCalledWith({
 			reason: "Better at code",
 			modelName: "Concrete",
@@ -344,29 +330,29 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("Ctrl+R Esc/empty submit does not send a follow-up message", async () => {
-		const { api, ctx, handlers, sendMessage, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
 		feedbackExtension(api)
 
-		await getEventHandler(handlers, "model_select")(
+		await getHandler("model_select")(
 			{
 				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
 				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
 			},
 			ctx,
 		)
-		expect(sendMessage).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 
 		// Empty submit.
 		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "" })
-		await getShortcutHandler(Key.ctrl("r"))?.(ctx)
+		await pressCtrlR(ctx)
 
-		expect(sendMessage).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 		expect(trackModelSwitchFeedbackMock).not.toHaveBeenCalled()
 		const invitationState = await import("./invitation-state.js")
 		expect(invitationState.getModelSwitchInvitation()).toBeNull()
 
 		// Re-trigger model switch, then Esc.
-		await getEventHandler(handlers, "model_select")(
+		await getHandler("model_select")(
 			{
 				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
 				model: { provider: "kimchi-dev", id: "concrete-model-2", name: "Concrete2" },
@@ -374,16 +360,16 @@ describe("feedbackExtension state machine", () => {
 			ctx,
 		)
 		modelSwitchDialogMock.show.mockResolvedValueOnce(undefined)
-		await getShortcutHandler(Key.ctrl("r"))?.(ctx)
+		await pressCtrlR(ctx)
 
-		expect(sendMessage).toHaveBeenCalledTimes(2)
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(2)
 		expect(trackModelSwitchFeedbackMock).not.toHaveBeenCalled()
 	})
 
 	it("model_select from non-auto model does not set the invitation", async () => {
-		const { api, ctx, handlers } = makeApi()
+		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
-		const handler = getEventHandler(handlers, "model_select")
+		const handler = getHandler("model_select")
 		await handler(
 			{
 				previousModel: { provider: "kimchi-dev", id: "concrete-a", name: "A" },
@@ -397,9 +383,9 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("model_select from auto to multi-model does not set the invitation", async () => {
-		const { api, ctx, handlers } = makeApi()
+		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
-		const handler = getEventHandler(handlers, "model_select")
+		const handler = getHandler("model_select")
 		await handler(
 			{
 				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
@@ -413,7 +399,7 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("turn_start clears the model-switch invitation", async () => {
-		const { api, ctx, handlers } = makeApi()
+		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
 		const invitationState = await import("./invitation-state.js")
 		invitationState.setModelSwitchInvitation({
@@ -421,12 +407,12 @@ describe("feedbackExtension state machine", () => {
 			modelId: "concrete-model",
 		})
 
-		await getEventHandler(handlers, "turn_start")({ turnIndex: 1 }, ctx)
+		await getHandler("turn_start")({ turnIndex: 1 }, ctx)
 		expect(invitationState.getModelSwitchInvitation()).toBeNull()
 	})
 
 	it("session_shutdown clears the model-switch invitation", async () => {
-		const { api, ctx, handlers } = makeApi()
+		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
 		const invitationState = await import("./invitation-state.js")
 		invitationState.setModelSwitchInvitation({
@@ -434,46 +420,46 @@ describe("feedbackExtension state machine", () => {
 			modelId: "concrete-model",
 		})
 
-		await getEventHandler(handlers, "session_shutdown")({ reason: "user_exit" }, ctx)
+		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
 		expect(invitationState.getModelSwitchInvitation()).toBeNull()
 	})
 
 	it("subagent mode: extension is a no-op", () => {
 		process.env.KIMCHI_SUBAGENT = "1"
-		const { api, handlers, getShortcutHandler } = makeApi()
+		const { api, getHandlers, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		expect(handlers.has("session_start")).toBe(false)
+		expect(getHandlers("session_start")).toHaveLength(0)
 		expect(api.registerMessageRenderer).not.toHaveBeenCalled()
 		expect(api.registerShortcut).not.toHaveBeenCalled()
-		expect(getShortcutHandler()).toBeUndefined()
+		expect(getShortcutHandler(Key.ctrl("1"))).toBeUndefined()
 	})
 
 	it("non-TUI mode: shortcut handlers are no-ops", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		ctx.mode = "rpc"
 		ctx.hasUI = true
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
 	it("headless mode (no UI): shortcut handlers are no-ops", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		ctx.hasUI = false
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
+		getHandler("agent_settled")({}, ctx)
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
 	it("session_shutdown resets state so subsequent shortcut presses are no-ops", async () => {
-		const { api, ctx, handlers, getShortcutHandler } = makeApi()
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
-		getEventHandler(handlers, "agent_end")({}, ctx)
-		await getEventHandler(handlers, "session_shutdown")({ reason: "user_exit" }, ctx)
+		getHandler("agent_settled")({}, ctx)
+		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 		expect(dialogMock.show).not.toHaveBeenCalled()

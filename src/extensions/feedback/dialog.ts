@@ -11,6 +11,16 @@ export interface FeedbackDetailsResult {
 
 const TYPE_OWN_ANSWER_LABEL = "Type your own answer"
 
+/**
+ * Reasons that only make sense when the turn actually ran on the auto-model.
+ * Tagged explicitly rather than by position so reordering the lists below
+ * cannot silently drop the wrong option from the dialog.
+ */
+const AUTO_MODEL_REASONS: ReadonlySet<string> = new Set([
+	"Auto-model picked the right model",
+	"Auto-model picked the wrong model",
+])
+
 const POSITIVE_REASONS: string[] = [
 	"Solved my task",
 	"Followed my instructions",
@@ -34,6 +44,15 @@ export interface ShowFeedbackDetailsDialogOptions {
 	autoModelUsed: boolean
 }
 
+/**
+ * Whether a submitted reason is one of the predefined labels rather than text
+ * the user typed. Telemetry reports this so free-form text (which may contain
+ * paths, hostnames or pasted code) can be filtered downstream.
+ */
+export function isPredefinedReason(reason: string): boolean {
+	return POSITIVE_REASONS.includes(reason) || NEGATIVE_REASONS.includes(reason)
+}
+
 export async function showFeedbackDetailsDialog(
 	ctx: ExtensionContext,
 	options: ShowFeedbackDetailsDialogOptions,
@@ -47,10 +66,7 @@ export async function showFeedbackDetailsDialog(
 function buildReasons(sentiment: FeedbackSentiment, autoModelUsed: boolean): string[] {
 	const all = sentiment === "positive" ? POSITIVE_REASONS : NEGATIVE_REASONS
 	if (autoModelUsed) return all
-	// Remove the auto-model option (always the entry just before "Type your own answer").
-	const ownIdx = all.indexOf(TYPE_OWN_ANSWER_LABEL)
-	if (ownIdx <= 1) return all
-	return [...all.slice(0, ownIdx - 1), ...all.slice(ownIdx)]
+	return all.filter((reason) => !AUTO_MODEL_REASONS.has(reason))
 }
 
 export class FeedbackDetailsComponent extends Container {
@@ -246,11 +262,14 @@ export class FeedbackDetailsComponent extends Container {
 			return
 		}
 
-		// Digit jump keys: jump focus to the corresponding reason (1-based),
-		// regardless of current focus. Digits never type into the editor.
-		// Only `1`..`N` are honored where N is the number of available reasons,
-		// so out-of-range digits fall through and never reach the editor.
-		if (/^[1-9]$/.test(data)) {
+		// Digit jump keys: jump focus to the corresponding reason (1-based).
+		// Only `1`..`N` are honored where N is the number of available reasons.
+		//
+		// These are jump keys ONLY while the editor is unfocused. Once the user
+		// is typing a custom answer, digits are ordinary text — intercepting
+		// them there silently corrupts the free-form reason (e.g. "took 3
+		// attempts" would lose the "3" and yank focus away mid-word).
+		if (!this.isInputFocused() && /^[1-9]$/.test(data)) {
 			const idx = Number(data) - 1
 			if (idx >= 0 && idx < this.reasons.length) {
 				this.setFocusIndex(idx)

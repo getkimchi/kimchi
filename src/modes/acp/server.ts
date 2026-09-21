@@ -52,6 +52,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	type InlineExtension,
 	initTheme,
 	ModelRegistry,
 	ModelRuntime,
@@ -178,7 +179,7 @@ export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessio
 export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSession>
 
 export interface RunAcpOptions {
-	extensionFactories: ExtensionFactory[]
+	extensionFactories: InlineExtension[]
 	agentDir: string
 	/** Add the session-scoped MCP adapter after caller servers are known. */
 	mcpExtensionFactory?: (options: KimchiMcpAdapterExtensionOptions) => ExtensionFactory

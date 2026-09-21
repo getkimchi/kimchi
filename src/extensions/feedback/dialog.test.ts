@@ -132,6 +132,18 @@ describe("FeedbackDetailsComponent", () => {
 		expect(done).toHaveBeenCalledWith({ reason: "Solved my task" })
 	})
 
+	it("digits typed into the custom answer are kept verbatim", () => {
+		const { component, done } = makeComponent("negative", false)
+		// Start typing a free-form answer: the first printable char moves focus
+		// into the editor. Digits after that are ordinary text, not jump keys —
+		// intercepting them would silently corrupt the submitted reason.
+		for (const ch of "took 3 attempts") {
+			component.handleInput(ch)
+		}
+		component.handleInput(ENTER)
+		expect(done).toHaveBeenCalledWith({ reason: "took 3 attempts" })
+	})
+
 	it("renders the editor when focus moves into the input field (via Down arrow)", () => {
 		const { component } = makeComponent("positive", false)
 		component.handleInput("5")

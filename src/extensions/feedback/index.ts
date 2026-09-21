@@ -1,10 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { Key } from "@earendil-works/pi-tui"
+import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isAutoModel } from "../router/constants.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
-import { type FeedbackSentiment, showFeedbackDetailsDialog } from "./dialog.js"
+import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
 import { type FeedbackSummaryDetails, feedbackSummaryRenderer } from "./renderer.js"
@@ -18,8 +18,12 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// Subagents don't get a feedback prompt — they're already a feedback signal.
 	if (isSubagent()) return
 
-	pi.registerMessageRenderer(FEEDBACK_SUMMARY_CUSTOM_TYPE, feedbackSummaryRenderer)
-	pi.registerMessageRenderer(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, feedbackSummaryRenderer)
+	// Feedback is rendered from custom *entries*, not custom messages. Entries do
+	// not participate in LLM context, which matters here because the reason field
+	// carries free-form user text: routing it through `pi.sendMessage()` would
+	// feed it back to the model on the next turn.
+	pi.registerEntryRenderer(FEEDBACK_SUMMARY_CUSTOM_TYPE, feedbackSummaryRenderer)
+	pi.registerEntryRenderer(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, feedbackSummaryRenderer)
 
 	let state: FeedbackState = "idle"
 	let autoModelUsed = false
@@ -28,25 +32,13 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		state = "idle"
 		autoModelUsed = false
 		clearModelSwitchInvitation()
+		stopListeningForCtrlR()
 	}
 
-	// Register global shortcuts so the rating and model-switch flows can be
-	// triggered even when the main editor has focus. `pi.registerShortcut`
-	// takes priority over editor input — unlike `ctx.ui.onTerminalInput`,
-	// which the editor consumes first when focused.
-	//
-	// Three shortcuts are registered:
-	//   - Ctrl+R  → model-switch feedback dialog (set on `model_select`
-	//               from auto → concrete). Description reflects that flow
-	//               only; the rating flow has its own keys.
-	//   - Ctrl+1  → rate the last response as Good (positive sentiment).
-	//   - Ctrl+2  → rate the last response as Bad (negative sentiment).
-	// When a model-switch invitation is active it takes precedence over the
-	// rating shortcuts in `handleShortcut`.
-	pi.registerShortcut(Key.ctrl("r"), {
-		description: "Tell us why you switched",
-		handler: (ctx: ExtensionContext) => handleShortcut(ctx),
-	})
+	// Rating shortcuts are registered statically: they are always available once
+	// a turn settles, and neither key is a built-in binding.
+	//   - Ctrl+1 → rate the last response as Good (positive sentiment).
+	//   - Ctrl+2 → rate the last response as Bad (negative sentiment).
 	pi.registerShortcut(Key.ctrl("1"), {
 		description: "Rate response as Good",
 		handler: (ctx: ExtensionContext) => handleShortcut(ctx, "positive"),
@@ -56,14 +48,40 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		handler: (ctx: ExtensionContext) => handleShortcut(ctx, "negative"),
 	})
 
-	pi.on("session_shutdown", () => {
-		reset()
-	})
+	// Ctrl+R is NOT registered statically. `app.session.rename` is a built-in on
+	// the same key, and `getShortcuts()` builds its table once at startup — so a
+	// static registration emits an "Extension shortcut conflict" diagnostic for
+	// the whole session even though the handler only does anything while a
+	// model-switch invitation is up. Subscribing to raw input for the lifetime
+	// of the invitation keeps the key unclaimed the rest of the time, which
+	// leaves the built-in rename (reachable from the /resume selector) alone.
+	let unsubscribeCtrlR: (() => void) | undefined
+	const stopListeningForCtrlR = () => {
+		unsubscribeCtrlR?.()
+		unsubscribeCtrlR = undefined
+	}
+	const listenForCtrlR = (ctx: ExtensionContext) => {
+		stopListeningForCtrlR()
+		unsubscribeCtrlR = ctx.ui.onTerminalInput((data: string) => {
+			// Returning undefined passes the key through untouched.
+			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			void handleShortcut(ctx)
+			return { consume: true }
+		})
+	}
+
+	// Session replacement (/resume, /fork, /clone) fires session_shutdown then
+	// session_start. Reset on both so a stale invitation from the previous
+	// session can never leak into the new one.
+	pi.on("session_shutdown", reset)
+	pi.on("session_start", reset)
 
 	pi.on("turn_start", reset)
-	pi.on("message_start", reset)
 
-	pi.on("agent_end", (_event, ctx: ExtensionContext) => {
+	// `agent_settled`, not `agent_end`: after `agent_end` Pi may still auto-retry,
+	// auto-compact and retry, or run queued follow-up messages, so rating there
+	// can prompt on a response that is about to be superseded.
+	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
 		state = "inviting"
 		autoModelUsed = isAutoModel(ctx.model)
 	})
@@ -82,27 +100,20 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		const modelId = newModel.id
 		const modelName = newModel.name ?? newModel.id
 
-		// Send the initial invitation message. We pass a fresh `details`
-		// object inline (not stored anywhere mutable) so the renderer can
-		// recognise it as a model-switch summary. We deliberately do NOT
-		// keep a reference to mutate later — the message list is already
-		// rendered, and a mutation would not trigger a re-render. When the
-		// user submits a reason via Ctrl+R we send a brand-new message
-		// instead (see handleShortcut).
-		pi.sendMessage(
-			{
-				customType: MODEL_SWITCH_SUMMARY_CUSTOM_TYPE,
-				content: [{ type: "text", text: `Tell us why you switched to ${modelName} (Ctrl+R)` }],
-				display: true,
-				details: { model: modelName, reason: "" },
-			},
-			{ triggerTurn: false },
-		)
+		// Append the initial invitation entry. We pass a fresh data object
+		// inline (not stored anywhere mutable) so the renderer can recognise
+		// it as a model-switch summary. We deliberately do NOT keep a
+		// reference to mutate later — the transcript is already rendered, and
+		// a mutation would not trigger a re-render. When the user submits a
+		// reason via Ctrl+R we append a brand-new entry instead (see
+		// handleShortcut).
+		pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, { model: modelName, reason: "" })
 
 		// Don't pop the dialog immediately. Set an invitation so the prompt
 		// summary knows a model-switch invitation is active. The user opens
 		// the dialog explicitly with Ctrl+R.
 		setModelSwitchInvitation({ modelName, modelId })
+		listenForCtrlR(_ctx)
 	})
 
 	async function handleShortcut(ctx: ExtensionContext, sentiment?: FeedbackSentiment): Promise<void> {
@@ -117,26 +128,29 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// Clear the invitation immediately so a second Ctrl+R press while
 			// the dialog is open doesn't stack a second dialog.
 			clearModelSwitchInvitation()
+			stopListeningForCtrlR()
 
-			const result = await showModelSwitchDialog(ctx, { modelName })
+			let result: { reason: string } | undefined
+			try {
+				result = await showModelSwitchDialog(ctx, { modelName })
+			} catch (err) {
+				// Restore the invitation so the user can retry with Ctrl+R —
+				// we cleared it above to guard against stacked dialogs.
+				setModelSwitchInvitation({ modelName, modelId })
+				listenForCtrlR(ctx)
+				ctx.ui.notify(`[feedback] Failed to collect model-switch reason: ${err}`, "error")
+				return
+			}
 			const reason = result?.reason.trim() ?? ""
 			if (reason.length > 0) {
-				// Send a NEW summary message carrying the reason details.
-				// We don't mutate the existing invitation message because the
-				// message list is already rendered — only a fresh message
-				// causes the renderer to re-render with the reason.
-				pi.sendMessage(
-					{
-						customType: MODEL_SWITCH_SUMMARY_CUSTOM_TYPE,
-						content: [{ type: "text", text: `Reason: ${reason}` }],
-						display: true,
-						details: { model: modelName, reason },
-					},
-					{ triggerTurn: false },
-				)
+				// Append a NEW summary entry carrying the reason. We don't
+				// mutate the existing invitation entry because the transcript
+				// is already rendered — only a fresh entry causes the renderer
+				// to re-render with the reason.
+				pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, { model: modelName, reason })
 				trackModelSwitchFeedback({ reason, modelName, modelId })
 			}
-			// Esc or empty submit: leave the original invitation message as-is.
+			// Esc or empty submit: leave the original invitation entry as-is.
 			return
 		}
 
@@ -160,7 +174,10 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// user can rate the same turn again.
 			if (!submitted) keepInviting = true
 		} finally {
-			if (keepInviting) {
+			// Only resurrect the invitation if no lifecycle event reset us while
+			// the dialog was open — otherwise we'd re-arm the rating shortcuts
+			// for a turn that has already moved on.
+			if (keepInviting && state === "collecting") {
 				state = "inviting"
 			} else if (state === "collecting") {
 				state = "idle"
@@ -180,26 +197,20 @@ async function handleRating(
 	try {
 		result = await showFeedbackDetailsDialog(ctx, { sentiment, autoModelUsed })
 	} catch (err) {
-		console.error("[feedback] Failed to collect details:", err)
+		// `console.error` would corrupt the TUI frame — route through the UI.
+		ctx.ui.notify(`[feedback] Failed to collect details: ${err}`, "error")
 		return false
 	}
-	// Esc cancels: no summary message and no telemetry. Caller keeps the
+	// Esc cancels: no summary entry and no telemetry. Caller keeps the
 	// invitation alive so the user can try again.
 	if (result === undefined) return false
 	const reason = result.reason
 	const payload: FeedbackSummaryDetails = { sentiment, reason }
-	pi.sendMessage(
-		{
-			customType: FEEDBACK_SUMMARY_CUSTOM_TYPE,
-			content: [{ type: "text", text: "<system-annotation>Feedback received</system-annotation>" }],
-			display: true,
-			details: payload,
-		},
-		{ triggerTurn: false },
-	)
+	pi.appendEntry(FEEDBACK_SUMMARY_CUSTOM_TYPE, payload)
 	trackFeedback({
 		sentiment,
 		reason,
+		reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
 		autoModelUsed,
 	})
 	return true

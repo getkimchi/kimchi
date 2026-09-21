@@ -23,6 +23,18 @@ export function replaceCursorMarker(line: string, accentFg: string, rstFg: strin
 }
 
 /**
+ * Whether a rendered line is one of the upstream editor's horizontal borders.
+ *
+ * Matches only lines that are *entirely* box-drawing characters or whitespace.
+ * A prefix test (`/^─/`) would also match user text that happens to start with
+ * `─`, slicing a real content line out of the render — the text would still be
+ * submitted but stay invisible while typing. Exported for testing.
+ */
+export function isBorderLine(line: string): boolean {
+	return /^[─\s]+$/.test(line.replace(ANSI_RE, ""))
+}
+
+/**
  * Minimal inline editor used by the feedback dialog. Differs from the main
  * `PromptEditor` in that it draws no top/bottom borders and shows a quiet
  * placeholder when empty.
@@ -67,14 +79,14 @@ export class FeedbackEditor extends CustomEditor {
 
 		let topIdx = -1
 		for (let i = 0; i < lines.length; i++) {
-			if (/^─/.test(lines[i].replace(ANSI_RE, ""))) {
+			if (isBorderLine(lines[i])) {
 				topIdx = i
 				break
 			}
 		}
 		let bottomIdx = -1
 		for (let i = lines.length - 1; i >= 0; i--) {
-			if (/^─/.test(lines[i].replace(ANSI_RE, ""))) {
+			if (isBorderLine(lines[i])) {
 				bottomIdx = i
 				break
 			}

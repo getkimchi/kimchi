@@ -16,7 +16,6 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
 	{ kind: "entry", key: "Ctrl+1", desc: "Rate response as Good" },
 	{ kind: "entry", key: "Ctrl+2", desc: "Rate response as Bad" },
-	{ kind: "entry", key: "Ctrl+R", desc: "Tell us why you switched" },
 
 	{ kind: "spacer" },
 	{ kind: "heading", text: "Slash Commands" },

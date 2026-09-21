@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionHandler, ToolDefinition } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ExtensionHandler, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
 import { createMiniEventBus } from "./mini-event-bus.js"
 
@@ -20,6 +20,10 @@ export function createExtensionApi(): {
 	getRegisteredTools(): ToolDefinition[]
 	getActiveToolNames(): string[]
 	getAppendedEntries<T = unknown>(type: string): T[]
+	registerShortcut: ReturnType<typeof vi.fn<ExtensionAPI["registerShortcut"]>>
+	getShortcutHandler(key: string): ((ctx: ExtensionContext) => Promise<void> | void) | undefined
+	getRegisteredShortcutKeys(): string[]
+	getShortcutDescription(key: string): string | undefined
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
 	const on = vi.fn((event: string, handler: RegisteredHandler) => {
@@ -49,6 +53,16 @@ export function createExtensionApi(): {
 	const getActiveTools = vi.fn(() => [...activeToolNames])
 	const getAllTools = vi.fn(() => [...registeredTools.values()])
 	const { events, emit } = createMiniEventBus()
+	const shortcuts = new Map<
+		string,
+		{ description?: string; handler: (ctx: ExtensionContext) => Promise<void> | void }
+	>()
+	const registerShortcut = vi.fn(
+		(key: string, options: { description?: string; handler: (ctx: ExtensionContext) => Promise<void> | void }) => {
+			shortcuts.set(key, options)
+		},
+	)
+	const registerMessageRenderer = vi.fn()
 
 	return {
 		api: {
@@ -63,6 +77,8 @@ export function createExtensionApi(): {
 			appendEntry,
 			setModel,
 			registerEntryRenderer,
+			registerShortcut,
+			registerMessageRenderer,
 			events,
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
@@ -94,6 +110,16 @@ export function createExtensionApi(): {
 		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
 		getAppendedEntries<T = unknown>(type: string): T[] {
 			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)
+		},
+		registerShortcut: registerShortcut as unknown as ReturnType<typeof vi.fn<ExtensionAPI["registerShortcut"]>>,
+		getShortcutHandler(key: string) {
+			return shortcuts.get(key)?.handler
+		},
+		getRegisteredShortcutKeys(): string[] {
+			return [...shortcuts.keys()]
+		},
+		getShortcutDescription(key: string): string | undefined {
+			return shortcuts.get(key)?.description
 		},
 	}
 }

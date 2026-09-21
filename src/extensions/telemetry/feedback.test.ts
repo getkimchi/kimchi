@@ -24,6 +24,7 @@ describe("trackFeedback", () => {
 			trackFeedback({
 				sentiment: "positive",
 				reason: "Solved my task",
+				reasonType: "predefined",
 				autoModelUsed: false,
 			}),
 		).not.toThrow()
@@ -39,13 +40,36 @@ describe("trackFeedback", () => {
 		trackFeedback({
 			sentiment: "negative",
 			reason: "Too slow",
+			reasonType: "predefined",
 			autoModelUsed: true,
 		})
 
 		expect(emit).toHaveBeenCalledWith("feedback.rating", {
 			sentiment: "negative",
 			reason: "Too slow",
+			reason_type: "predefined",
 			auto_model_used: true,
+		})
+	})
+
+	it("marks typed answers as freeform so they can be filtered downstream", () => {
+		const emit = vi.fn()
+		const fakeCtx = { emit } as unknown as { emit: ReturnType<typeof vi.fn> }
+		vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
+		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(fakeCtx as never)
+
+		trackFeedback({
+			sentiment: "negative",
+			reason: "broke on /Users/me/secret-project",
+			reasonType: "freeform",
+			autoModelUsed: false,
+		})
+
+		expect(emit).toHaveBeenCalledWith("feedback.rating", {
+			sentiment: "negative",
+			reason: "broke on /Users/me/secret-project",
+			reason_type: "freeform",
+			auto_model_used: false,
 		})
 	})
 })
