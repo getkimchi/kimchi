@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { trackFeedback } from "./feedback.js"
+import { trackFeedback, trackModelSwitchFeedback } from "./feedback.js"
 import * as telemetryIndex from "./index.js"
 import { _getTelemetryCtx, _isTelemetryEnabled } from "./index.js"
 
@@ -7,19 +7,37 @@ vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
 }))
 
-describe("trackFeedback", () => {
+const RATING_SURVEY_ID = "01a0c519-1b63-0000-0806-99c16c6d6c18"
+const RATING_Q1_ID = "79c36d2a-4367-4340-b16f-8e9fb5386dca"
+const RATING_Q2_ID = "be146fb0-9838-45f8-998b-8be74067234f"
+const MODEL_SWITCH_SURVEY_ID = "01a0c528-75ba-0000-1ec3-bc9506dd1698"
+const MODEL_SWITCH_Q_ID = "4dedb581-91f4-4d68-8cd5-e4a9f6eb726e"
+
+interface FakeCtx {
+	emit: ReturnType<typeof vi.fn>
+	turnIndex: number
+}
+
+function enableTelemetry(turnIndex = 0): FakeCtx {
+	const ctx: FakeCtx = { emit: vi.fn(), turnIndex }
+	vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
+	vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(ctx as never)
+	return ctx
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const isUUID = expect.stringMatching(UUID_RE)
+
+describe("post-turn feedback telemetry", () => {
 	afterEach(() => {
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		vi.restoreAllMocks()
 	})
 
-	it("re-exports from the telemetry index and exposes the enabled guard", () => {
+	it("exposes the enabled guard and is a no-op when telemetry is disabled", () => {
 		expect(typeof trackFeedback).toBe("function")
 		expect(_isTelemetryEnabled()).toBe(false)
 		expect(_getTelemetryCtx()).toBeUndefined()
-	})
-
-	it("is a no-op when telemetry is disabled", () => {
 		expect(() =>
 			trackFeedback({
 				sentiment: "positive",
@@ -28,48 +46,123 @@ describe("trackFeedback", () => {
 				autoModelUsed: false,
 			}),
 		).not.toThrow()
-		expect(_getTelemetryCtx()).toBeUndefined()
+		expect(() =>
+			trackModelSwitchFeedback({ reason: "too slow", modelName: "Claude", modelId: "claude-sonnet" }),
+		).not.toThrow()
 	})
 
-	it("emits feedback.rating with structured attributes when telemetry is enabled", () => {
+	it("emits no survey event when telemetry is disabled even if a ctx exists", () => {
 		const emit = vi.fn()
-		const fakeCtx = { emit } as unknown as { emit: ReturnType<typeof vi.fn> }
-		vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
-		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(fakeCtx as never)
+		vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(false)
+		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue({ emit } as never)
 
-		trackFeedback({
-			sentiment: "negative",
-			reason: "Too slow",
-			reasonType: "predefined",
-			autoModelUsed: true,
+		trackFeedback({ sentiment: "positive", reason: "x", reasonType: "predefined", autoModelUsed: false })
+		trackModelSwitchFeedback({ reason: "x", modelName: "Claude", modelId: "claude-sonnet" })
+
+		expect(emit).not.toHaveBeenCalled()
+	})
+
+	describe("trackFeedback", () => {
+		it("emits one survey_answered with both questions when a reason is provided", () => {
+			const ctx = enableTelemetry(3)
+
+			trackFeedback({ sentiment: "negative", reason: "Too slow", reasonType: "predefined", autoModelUsed: true })
+
+			expect(_isTelemetryEnabled()).toBe(true)
+			expect(ctx.emit).toHaveBeenCalledTimes(1)
+			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", {
+				survey_id: RATING_SURVEY_ID,
+				survey_submission_id: isUUID,
+				question_id: RATING_Q1_ID,
+				answer_value: "Bad",
+				question_id_2: RATING_Q2_ID,
+				answer_value_2: "Too slow",
+				survey_completed: true,
+				turn_index: 3,
+				auto_model_used: true,
+				reason_type: "predefined",
+			})
 		})
 
-		expect(emit).toHaveBeenCalledWith("feedback.rating", {
-			sentiment: "negative",
-			reason: "Too slow",
-			reason_type: "predefined",
-			auto_model_used: true,
+		it("maps positive sentiment to the exact PostHog choice label 'Good'", () => {
+			const ctx = enableTelemetry()
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+
+			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", expect.objectContaining({ answer_value: "Good" }))
+		})
+
+		it("omits the second question entirely when the reason is empty", () => {
+			const ctx = enableTelemetry(1)
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+
+			const attrs = ctx.emit.mock.calls[0][1] as Record<string, unknown>
+			expect(attrs).not.toHaveProperty("question_id_2")
+			expect(attrs).not.toHaveProperty("answer_value_2")
+		})
+
+		it("sends turn_index 0 as a valid value (never omitted)", () => {
+			const ctx = enableTelemetry(0)
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+
+			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", expect.objectContaining({ turn_index: 0 }))
+		})
+
+		it("carries the reason verbatim and marks typed answers as freeform", () => {
+			const ctx = enableTelemetry()
+
+			trackFeedback({
+				sentiment: "negative",
+				reason: "broke on /Users/me/secret-project",
+				reasonType: "freeform",
+				autoModelUsed: false,
+			})
+
+			expect(ctx.emit).toHaveBeenCalledWith(
+				"survey_answered",
+				expect.objectContaining({
+					question_id_2: RATING_Q2_ID,
+					answer_value_2: "broke on /Users/me/secret-project",
+					reason_type: "freeform",
+				}),
+			)
+		})
+
+		it("mints a unique survey_submission_id per call", () => {
+			const ctx = enableTelemetry()
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+
+			const ids = ctx.emit.mock.calls.map((c) => (c[1] as Record<string, unknown>).survey_submission_id)
+			expect(ids[0]).toMatch(UUID_RE)
+			expect(ids[1]).toMatch(UUID_RE)
+			expect(ids[0]).not.toBe(ids[1])
 		})
 	})
 
-	it("marks typed answers as freeform so they can be filtered downstream", () => {
-		const emit = vi.fn()
-		const fakeCtx = { emit } as unknown as { emit: ReturnType<typeof vi.fn> }
-		vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
-		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(fakeCtx as never)
+	describe("trackModelSwitchFeedback", () => {
+		it("emits one survey_answered with the raw reason, turn_index and model_id", () => {
+			const ctx = enableTelemetry(7)
 
-		trackFeedback({
-			sentiment: "negative",
-			reason: "broke on /Users/me/secret-project",
-			reasonType: "freeform",
-			autoModelUsed: false,
-		})
+			trackModelSwitchFeedback({
+				reason: "too expensive for this repo",
+				modelName: "Claude Sonnet",
+				modelId: "claude-sonnet-4-6",
+			})
 
-		expect(emit).toHaveBeenCalledWith("feedback.rating", {
-			sentiment: "negative",
-			reason: "broke on /Users/me/secret-project",
-			reason_type: "freeform",
-			auto_model_used: false,
+			expect(ctx.emit).toHaveBeenCalledTimes(1)
+			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", {
+				survey_id: MODEL_SWITCH_SURVEY_ID,
+				survey_submission_id: isUUID,
+				question_id: MODEL_SWITCH_Q_ID,
+				answer_value: "too expensive for this repo",
+				survey_completed: true,
+				turn_index: 7,
+				model_id: "claude-sonnet-4-6",
+			})
 		})
 	})
 })
