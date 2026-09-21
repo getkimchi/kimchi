@@ -17,6 +17,17 @@ vi.mock("./auto-default-gate.js", () => ({
 	shouldDefaultToAuto: vi.fn(async () => true),
 }))
 
+// The fresh-session default gate reads pi's persisted default model through the
+// shared settings-watcher; stub it per test (undefined = the user never picked
+// a default, so entitled accounts get Auto).
+const settingsStubs = vi.hoisted(() => ({
+	getDefaultModel: vi.fn<() => string | undefined>(() => undefined),
+	getDefaultProvider: vi.fn<() => string | undefined>(() => undefined),
+}))
+vi.mock("../../settings-watcher.js", () => ({
+	getSettingsManager: () => settingsStubs,
+}))
+
 import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -106,6 +117,32 @@ describe("Auto-by-default gating", () => {
 		vi.mocked(shouldDefaultToAuto).mockResolvedValue(true)
 	})
 
+	it("keeps a fresh session on the user's persisted concrete default without consulting the gate", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({ model: model("kimi-k2.6"), modelRegistry: { find: () => model("auto") } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
+	})
+
+	it("treats a persisted Auto default as restorable, not an explicit concrete choice", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const auto = model("auto")
+		const ctx = createContext({ model: model("concrete"), modelRegistry: { find: () => auto } })
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledWith(auto)
+	})
+
 	it.each([
 		"startup",
 		"new",
@@ -149,7 +186,7 @@ describe("Auto model extension", () => {
 	it.each([
 		"startup",
 		"new",
-	] as const)("starts a fresh %s session in Auto despite a saved concrete choice", async (reason) => {
+	] as const)("starts a fresh %s session in Auto when no concrete default is persisted", async (reason) => {
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const auto = model("auto")

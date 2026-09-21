@@ -12,9 +12,9 @@ export const GENERAL_TIPS = [
 		message: "Run `/settings > Themes` to change colors.",
 	},
 	{
-		id: "auto-model-switch",
+		id: "multi-model-switch",
 		scope: "general",
-		message: "Use `ctrl+p` or `/model` to select Auto for routing.",
+		message: "Use `ctrl+p` or `/model` to select multi-model for auto routing.",
 	},
 	{
 		id: "single-model-mode",

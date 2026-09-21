@@ -109,7 +109,9 @@ function agentCall(id: string, model?: string, runInBackground = false) {
 	}
 }
 
-test("/model autocomplete shows and selects Auto without experimental features", async ({ terminal }) => {
+test("/model autocomplete shows and selects Auto for an entitled account without experimental features", async ({
+	terminal,
+}) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -381,16 +383,16 @@ test("a new session defaults to Auto without experimental features", async ({ te
 	)
 })
 
-test("a saved model cycle list and concrete choice still start a new session in Auto", async ({ terminal }) => {
+test("a saved concrete model default wins over Auto for an entitled account", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "auto-model-resets-concrete-default",
+			artifactName: "auto-model-respects-saved-concrete-default",
 			providerId: "kimchi-dev",
 			initialModel: false,
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE],
-			responses: [{ stream: ["Auto replaced the saved concrete default."] }],
+			responses: [{ stream: ["Saved concrete default reply."] }],
 			seedHome: (homeDir) => {
 				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
@@ -410,14 +412,70 @@ test("a saved model cycle list and concrete choice still start a new session in 
 			},
 		},
 		async (fixture, trace) => {
+			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("new session kept the saved concrete default")
 			terminal.submit("Use my saved model")
-			await waitForText(terminal, "Auto replaced the saved concrete default.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Saved concrete default reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
+			// A persisted concrete default is an explicit choice: no router call.
+			expect(requestsTo(fixture, "/v1/route")).toHaveLength(0)
 			expect(requestModel(requestsTo(fixture, "/openai/v1/chat/completions")[0]?.body)).toBe("routed")
-			trace.step("new session routed despite saved concrete default")
+			trace.step("saved concrete default answered directly")
 		},
 	)
+})
+
+test("Auto stays hidden from the model picker for accounts without the flag or entitlement", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-picker-hidden-external",
+			providerId: "kimchi-dev",
+			initialModel: "routed",
+			models: MODELS,
+			responses: [],
+			userEmail: "someone@example.com",
+		},
+		async (_fixture, trace) => {
+			terminal.write("/model")
+			await waitForText(terminal, "/model", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.submit("")
+			await waitForText(terminal, "Only showing models from configured providers", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
+			trace.step("model picker open")
+
+			terminal.write("auto")
+			await waitForText(terminal, "auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			const picker = viewText(terminal)
+			expect(picker).not.toContain("Auto (Kimchi Router)")
+			expect(picker).not.toContain("auto [kimchi-dev]")
+			trace.step("Auto row absent for a non-entitled account")
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		},
+	)
+})
+
+test("--model auto without the flag fails fast for accounts without the entitlement", async ({ terminal }) => {
+	const exitMarker = "__KIMCHI_AUTO_GATE_EXITED__"
+	const fixture = await createKimchiFixture({
+		providerId: "kimchi-dev",
+		initialModel: false,
+		models: MODELS,
+		responses: [],
+		userEmail: "someone@example.com",
+	})
+
+	try {
+		launchKimchi(terminal, fixture, ["--model", "auto"], fixture.seedEnv, { exitMarker })
+		await waitForText(terminal, "kimchi-dev/auto is experimental", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+	} finally {
+		await stopKimchi(terminal)
+		await fixture.stop()
+	}
 })
 
 test("Ctrl+P cycles through concrete models and wraps back to Auto", async ({ terminal }) => {

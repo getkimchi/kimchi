@@ -2,6 +2,7 @@ import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
+import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
 import { shouldDefaultToAuto } from "./auto-default-gate.js"
@@ -66,6 +67,25 @@ async function syncAutoCapabilities<TApi extends Api>(
 	return pi.setModel(autoModelForTarget(autoModel, target))
 }
 
+/**
+ * Whether the user persisted a concrete model as their configured default.
+ * Picker selections persist (0.84.1 semantics), so a defaultModel recorded in
+ * pi's settings is an explicit user choice; only accounts that never picked
+ * one are handed Auto by the @cast.ai default rollout. A persisted Auto
+ * default does not count — it restores through the normal path.
+ */
+function hasExplicitPersistedDefault(): boolean {
+	const settings = getSettingsManager()
+	const modelId = settings
+		?.getDefaultModel()
+		?.toLowerCase()
+		.replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
+	if (!modelId) return false
+	const provider = settings?.getDefaultProvider()?.toLowerCase()
+	if (modelId === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)) return false
+	return true
+}
+
 export interface AutoModelExtensionOptions {
 	/** Require a vision-capable recommendation for context forwarded as image paths. */
 	requiresVision?: boolean
@@ -112,13 +132,18 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const explicitLaunchChoice =
 				event.reason === "startup" &&
 				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
+			// A model the user picked and persisted as their default (picker Enter
+			// persists, 0.84.1 semantics) outranks the Auto default: only accounts
+			// that never made an explicit choice get Auto.
+			const persistedDefault = hasExplicitPersistedDefault()
 			// Auto-by-default is gated to @cast.ai accounts. The gate controls only
 			// the fresh-session default — Auto stays selectable and resumable for
-			// everyone.
+			// users entitled via --enable-experimental-features.
 			if (
 				options.handleCliModelSelection &&
 				freshSession &&
 				!explicitLaunchChoice &&
+				!persistedDefault &&
 				!isAutoModel(autoModel) &&
 				(await shouldDefaultToAuto())
 			) {

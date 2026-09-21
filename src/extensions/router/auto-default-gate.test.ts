@@ -14,7 +14,14 @@ vi.mock("../../config.js", () => ({
 
 import { getMe } from "../../api/me.js"
 import { loadConfig } from "../../config.js"
-import { _resetAutoDefaultGateCache, isCastAiEmail, shouldDefaultToAuto } from "./auto-default-gate.js"
+import {
+	_resetAutoDefaultGateCache,
+	_setAutoDefaultGateCache,
+	isAutoEntitledUser,
+	isCastAiEmail,
+	shouldDefaultToAuto,
+	warmAutoDefaultGate,
+} from "./auto-default-gate.js"
 
 const getMeMock = vi.mocked(getMe)
 const loadConfigMock = vi.mocked(loadConfig)
@@ -41,6 +48,49 @@ describe("isCastAiEmail", () => {
 describe("isCastAiEmail malformed input", () => {
 	it.each([["cast.ai"], [""], ["@"], ["alice@"], [undefined]])("rejects %s", (email) => {
 		expect(isCastAiEmail(email as string | undefined)).toBe(false)
+	})
+})
+
+describe("isAutoEntitledUser", () => {
+	it("is false before the lookup resolves", () => {
+		expect(isAutoEntitledUser()).toBe(false)
+	})
+
+	it("reflects the cached lookup result for sync render paths", async () => {
+		mockApiKey("key-1")
+		getMeMock.mockResolvedValue({ id: "user-1", email: "alice@cast.ai" })
+
+		await shouldDefaultToAuto()
+
+		expect(isAutoEntitledUser()).toBe(true)
+	})
+
+	it("stays false for a non-cast.ai account", async () => {
+		mockApiKey("key-1")
+		getMeMock.mockResolvedValue({ id: "user-1", email: "bob@example.com" })
+
+		await shouldDefaultToAuto()
+
+		expect(isAutoEntitledUser()).toBe(false)
+	})
+
+	it("can be seeded directly for discovery-filter tests", () => {
+		_setAutoDefaultGateCache(true)
+		expect(isAutoEntitledUser()).toBe(true)
+		_setAutoDefaultGateCache(false)
+		expect(isAutoEntitledUser()).toBe(false)
+	})
+})
+
+describe("warmAutoDefaultGate", () => {
+	it("starts the lookup without blocking so sync readers see the cached result", async () => {
+		mockApiKey("key-1")
+		getMeMock.mockResolvedValue({ id: "user-1", email: "alice@cast.ai" })
+
+		warmAutoDefaultGate()
+		await vi.waitFor(() => expect(isAutoEntitledUser()).toBe(true))
+
+		expect(getMeMock).toHaveBeenCalledTimes(1)
 	})
 })
 

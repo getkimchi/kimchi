@@ -11,10 +11,12 @@ import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
+import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { isAutoEntitledUser } from "../router/auto-default-gate.js"
 import { AUTO_MODEL_REF } from "../router/constants.js"
 import {
 	deleteModelMetadata,
@@ -345,7 +347,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 
 			const apiModels = getAvailableModels()
 			const availableModelRefs = [...new Set(apiModels.map((m) => `kimchi-dev/${m.slug}`))]
-			if (!availableModelRefs.includes(AUTO_MODEL_REF)) {
+			if ((isExperimentalFeaturesEnabled() || isAutoEntitledUser()) && !availableModelRefs.includes(AUTO_MODEL_REF)) {
 				availableModelRefs.push(AUTO_MODEL_REF)
 			}
 

@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, AUTO_MODEL_REF } from "./extensions/router/constants.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -346,6 +347,15 @@ export function getParsedCliArgs(): SessionCliArgs {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}
 	return cachedCliArgs
+}
+
+/** True when launch arguments explicitly request the gated Auto model. */
+export function isExplicitAutoModelSelection(args: SessionCliArgs): boolean {
+	const provider = args.options.provider?.toLowerCase()
+	const model = args.options.model?.toLowerCase().replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
+	if (!model) return false
+	if (model === AUTO_MODEL_REF) return true
+	return model === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)
 }
 
 export function normalizeResumeIdArgs(args: string[]): string[] {

@@ -1,10 +1,12 @@
 /**
- * Gates the Auto-by-default rollout to @cast.ai accounts (internal dogfooding).
+ * Gates Auto to @cast.ai accounts (internal dogfooding) and the
+ * `--enable-experimental-features` launch flag.
  *
  * `getMe` is awaited at startup (<=3s); on timeout or failure the gate reports
- * false, leaving the account on the existing multi-model default. The gate
- * controls only the fresh-session default — Auto stays selectable and
- * resumable for everyone.
+ * false. For entitled accounts Auto becomes the fresh-session default (unless
+ * the user explicitly selected another model); for everyone else the model
+ * stays in the catalogue for session restoration but is hidden from discovery
+ * surfaces (see model-discovery.ts) unless experimental features are enabled.
  */
 
 import { getMe } from "../../api/me.js"
@@ -22,6 +24,26 @@ let lookupPromise: Promise<boolean> | undefined
 export function _resetAutoDefaultGateCache(): void {
 	cachedIsCastAiUser = undefined
 	lookupPromise = undefined
+}
+
+/** @internal — exposed for testing only: seed the cached entitlement without a network lookup. */
+export function _setAutoDefaultGateCache(value: boolean | undefined): void {
+	cachedIsCastAiUser = value
+}
+
+/**
+ * Sync read of the cached entitlement, for call sites that cannot await
+ * (model-picker discovery filter, role lists). False until the startup lookup
+ * resolves — session_start awaits `shouldDefaultToAuto()` before the UI can
+ * open those surfaces, and cli.ts kicks the lookup off pre-main.
+ */
+export function isAutoEntitledUser(): boolean {
+	return cachedIsCastAiUser ?? false
+}
+
+/** Start the identity lookup without blocking the caller; result is cached for later reads. */
+export function warmAutoDefaultGate(): void {
+	void shouldDefaultToAuto()
 }
 
 /**
