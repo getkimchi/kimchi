@@ -3,10 +3,15 @@
  * `--enable-experimental-features` launch flag.
  *
  * `getMe` is awaited at startup (<=3s); on timeout or failure the gate reports
- * false. For entitled accounts Auto becomes the fresh-session default (unless
- * the user explicitly selected another model); for everyone else the model
- * stays in the catalogue for session restoration but is hidden from discovery
- * surfaces (see model-discovery.ts) unless experimental features are enabled.
+ * false, leaving the install on whatever default it already had.
+ *
+ * Entitlement only says the account is in the audience. Whether Auto is
+ * actually installed as the saved default is decided once per install by the
+ * `autoDefaultApplied` marker in settings.json (see router/index.ts), so a
+ * model chosen afterwards is never overwritten. Entitlement also makes Auto
+ * visible: for everyone else it stays in the catalogue for session restoration
+ * but is hidden from discovery surfaces (see model-discovery.ts) unless
+ * experimental features are enabled.
  */
 
 import { getMe } from "../../api/me.js"
@@ -33,9 +38,15 @@ export function _setAutoDefaultGateCache(value: boolean | undefined): void {
 
 /**
  * Sync read of the cached entitlement, for call sites that cannot await
- * (model-picker discovery filter, role lists). False until the startup lookup
- * resolves — session_start awaits `shouldDefaultToAuto()` before the UI can
- * open those surfaces, and cli.ts kicks the lookup off pre-main.
+ * (model-picker discovery filter, role lists).
+ *
+ * Reports false until the lookup resolves, deliberately collapsing "not
+ * entitled" and "not known yet": these call sites render, so the alternative is
+ * blocking them on the network. `cli.ts` starts the lookup pre-main to shrink
+ * that window, but it is not closed — `session_start` only awaits
+ * `shouldDefaultToAuto()` when it is about to install the default, so a resumed
+ * session can reach a picker while the lookup is still in flight and briefly
+ * omit Auto. It appears on reopen, once the cache is warm.
  */
 export function isAutoEntitledUser(): boolean {
 	return cachedIsCastAiUser ?? false
@@ -69,7 +80,7 @@ export async function shouldDefaultToAuto(): Promise<boolean> {
 	if (cachedIsCastAiUser !== undefined) return cachedIsCastAiUser
 	if (lookupPromise) return lookupPromise
 
-	lookupPromise = (async () => {
+	lookupPromise = (async (): Promise<boolean> => {
 		const { apiKey } = loadConfig()
 		if (!apiKey) return false
 		try {

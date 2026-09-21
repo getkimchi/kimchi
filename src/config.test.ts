@@ -1174,7 +1174,7 @@ describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
 		})
 	})
 
-	it("preserves the settings pi owns", () => {
+	it("preserves the surrounding settings", () => {
 		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3", theme: "x" }))
 
 		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)

@@ -69,7 +69,7 @@ async function syncAutoCapabilities<TApi extends Api>(
 }
 
 /**
- * Whether pi has any saved default model, concrete or Auto.
+ * Whether a default model is saved in settings.json, concrete or Auto.
  *
  * Used to keep a saved default from being wrapped in multi-model mode. It
  * deliberately does not gate the Auto default: login and Ctrl+P cycling both

@@ -18,7 +18,7 @@ vi.mock("./auto-default-gate.js", () => ({
 	shouldDefaultToAuto: vi.fn(async () => true),
 }))
 
-// The marker lives in pi's settings.json; keep it in memory so each test starts
+// The marker lives in settings.json; keep it in memory so each test starts
 // with "not yet applied" and can assert whether it was written.
 const autoDefaultStubs = vi.hoisted(() => ({ applied: false }))
 vi.mock(import("../../config.js"), async (importOriginal) => ({
@@ -29,7 +29,7 @@ vi.mock(import("../../config.js"), async (importOriginal) => ({
 	},
 }))
 
-// The fresh-session default gate reads pi's persisted default model through the
+// The fresh-session default gate reads the persisted default model through the
 // shared settings-watcher; stub it per test (undefined = the user never picked
 // a default, so entitled accounts get Auto).
 const settingsStubs = vi.hoisted(() => ({

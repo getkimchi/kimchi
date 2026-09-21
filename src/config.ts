@@ -686,13 +686,13 @@ export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?:
 /**
  * Whether Auto has already been installed as the default model on this install.
  *
- * Lives in pi's settings.json next to `defaultModel`, because that is what it
+ * Lives in settings.json next to `defaultModel`, because that is what it
  * records having changed: one global settings file, one machine-level default,
  * one marker. Once set, the default is the user's to change — a switch away is
  * honoured and never undone.
  *
- * Pi merges onto the existing file contents when it persists settings, so this
- * kimchi-owned key survives pi's own writes.
+ * Settings writes merge onto the existing file contents, so this key survives
+ * the harness rewriting the file.
  */
 export function readAutoDefaultApplied(settingsPath?: string): boolean {
 	try {
