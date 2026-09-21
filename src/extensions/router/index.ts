@@ -1,8 +1,11 @@
+import { existsSync } from "node:fs"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
+import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
+import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, isAutoModel } from "./constants.js"
 import { routeQuery } from "./router-client.js"
 import { getRouterConfig, type RouterConfig } from "./router-config.js"
@@ -64,10 +67,29 @@ async function syncAutoCapabilities<TApi extends Api>(
 	return pi.setModel(autoModelForTarget(autoModel, target))
 }
 
+/**
+ * Whether the user persisted a concrete model as their configured default.
+ * Picker selections persist (0.84.1 semantics), so a defaultModel recorded in
+ * pi's settings is an explicit user choice; only accounts that never picked
+ * one are handed Auto by the @cast.ai default rollout. A persisted Auto
+ * default does not count — it restores through the normal path.
+ */
+function hasExplicitPersistedDefault(): boolean {
+	const settings = getSettingsManager()
+	const modelId = settings
+		?.getDefaultModel()
+		?.toLowerCase()
+		.replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "")
+	if (!modelId) return false
+	const provider = settings?.getDefaultProvider()?.toLowerCase()
+	if (modelId === AUTO_MODEL_ID && (!provider || provider === AUTO_MODEL_PROVIDER)) return false
+	return true
+}
+
 export interface AutoModelExtensionOptions {
 	/** Require a vision-capable recommendation for context forwarded as image paths. */
 	requiresVision?: boolean
-	/** Record main-process CLI model choices before restoring saved Auto state. */
+	/** Apply main-session defaults and CLI choices; leave child model selection to the caller. */
 	handleCliModelSelection?: boolean
 }
 
@@ -80,8 +102,10 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const sessionId = ctx.sessionManager.getSessionId()
 			clearAutoRoutingAttempt(sessionId)
 			const entries = ctx.sessionManager.getEntries()
-			const requestedModel =
-				event.reason === "startup" && options.handleCliModelSelection ? getParsedCliArgs().options.model : undefined
+			const sessionFile = ctx.sessionManager.getSessionFile()
+			const hasPersistedSession = sessionFile !== undefined && existsSync(sessionFile)
+			const cliOptions = options.handleCliModelSelection ? getParsedCliArgs().options : undefined
+			const requestedModel = event.reason === "startup" ? cliOptions?.model : undefined
 			if (
 				requestedModel &&
 				requestedModel !== MULTI_MODEL_ID &&
@@ -99,6 +123,33 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				}
 			}
 			let autoModel = ctx.model
+			const freshSession =
+				event.reason === "new" ||
+				(event.reason === "startup" &&
+					!event.previousSessionFile &&
+					!hasPersistedSession &&
+					!entries.some((entry) => entry.type === "message"))
+			const explicitLaunchChoice =
+				event.reason === "startup" &&
+				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
+			// A model the user picked and persisted as their default (picker Enter
+			// persists, 0.84.1 semantics) outranks the Auto default: only accounts
+			// that never made an explicit choice get Auto.
+			const persistedDefault = hasExplicitPersistedDefault()
+			// Auto-by-default is gated to @cast.ai accounts. The gate controls only
+			// the fresh-session default — Auto stays selectable and resumable for
+			// users entitled via --enable-experimental-features.
+			if (
+				options.handleCliModelSelection &&
+				freshSession &&
+				!explicitLaunchChoice &&
+				!persistedDefault &&
+				!isAutoModel(autoModel) &&
+				(await shouldDefaultToAuto())
+			) {
+				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
+				if (isAutoModel(autoModel)) setMultiModelEnabled(sessionId, false)
+			}
 			if (!isAutoModel(autoModel)) {
 				if (!sessionSelectsAuto(entries)) {
 					clearAutoRoutingState(sessionId)

@@ -20,6 +20,10 @@ The experimental flag controls whether Auto is offered as a new choice. It does 
 - a session saved with Auto can be resumed without the flag;
 - explicitly selecting Auto for a new session still requires the flag.
 
+### Internal accounts
+
+Accounts signed in with an @cast.ai address do not need the flag: Auto is listed in the picker and is the default for new sessions. An explicit model choice (a CLI `--model` flag or a saved default selected via `/model`) still wins — Auto only applies when no concrete default is configured.
+
 The router uses your existing Kimchi API key. There is no separate router authentication to configure.
 
 ## How Auto chooses a model

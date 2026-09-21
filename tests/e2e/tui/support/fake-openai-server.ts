@@ -113,6 +113,13 @@ interface StartFakeOpenAiServerOptions {
 	stallRouterRequestNumber?: number
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
+	/**
+	 * Email returned by `/v1/me`. Drives the Auto-by-default gate: an @cast.ai
+	 * address opts fresh sessions into Auto. Defaults to an internal address so
+	 * Auto-default scenarios work without opting in; pass an external address to
+	 * exercise the gated-off path, or null to serve 404 (identity unresolvable).
+	 */
+	userEmail?: string | null
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -217,6 +224,16 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 						...model.metadata,
 					})),
 				})
+				return
+			}
+
+			if (req.method === "GET" && req.url?.startsWith("/v1/me")) {
+				const email = options.userEmail === undefined ? "fixture@cast.ai" : options.userEmail
+				if (email === null) {
+					writeJson(res, 404, { error: "Identity endpoint is not supported by this fake proxy" })
+					return
+				}
+				writeJson(res, 200, { id: "fake-user", email, name: "Fake User" })
 				return
 			}
 

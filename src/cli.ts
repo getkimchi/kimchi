@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
+	applyModelEnvArgs,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
@@ -119,6 +120,7 @@ import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
+import { shouldDefaultToAuto, warmAutoDefaultGate } from "./extensions/router/auto-default-gate.js"
 import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
@@ -332,6 +334,10 @@ try {
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
+		// Kick off the /v1/me identity lookup now (result cached process-wide) so
+		// the Auto-discovery filter and the fresh-session default gate never wait
+		// on the network in render paths.
+		warmAutoDefaultGate()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
 		// (set_phase, list_ferments, ferment suite) tools stay out of headless
@@ -559,13 +565,13 @@ try {
 			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 			process.exit(1)
 		}
-		const rawArgs = atFileArgs.args
+		const rawArgs = applyModelEnvArgs(atFileArgs.args, process.env.KIMCHI_MODEL)
 
 		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
-		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
+		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs()) && !(await shouldDefaultToAuto())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
