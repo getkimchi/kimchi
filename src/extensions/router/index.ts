@@ -142,33 +142,36 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const explicitLaunchChoice =
 				event.reason === "startup" &&
 				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
-			// Auto-by-default rolls out once per account, tracked by a marker
-			// keyed on the *capability* rather than the wave: widening the cohort
-			// later reuses the same id, so users reached by an earlier wave keep
-			// whatever they have chosen since and are never rolled in twice.
-			const autoDefault =
-				options.handleCliModelSelection && freshSession && !explicitLaunchChoice && !isAutoModel(autoModel)
-					? await resolveAutoDefault()
-					: undefined
+			// The main session opening a new conversation with no model named on the
+			// command line: the only moment a saved default may be installed or
+			// applied. Subagents are excluded so a child never rewrites the global
+			// default, and a resumed conversation keeps the model it was using.
+			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
+			// Auto is installed as the default once per install, tracked by the
+			// `autoDefaultApplied` marker in settings.json. Resolving it is a
+			// network lookup, so it is reached only when the launch could actually
+			// use the answer.
+			const autoDefault = mainFreshLaunch && !isAutoModel(autoModel) ? await resolveAutoDefault() : undefined
 			if (autoDefault?.eligible) {
 				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID) ?? autoModel
+				// `find` can come back empty (Auto unregistered, catalogue
+				// unavailable), leaving the concrete model in place. Commit only
+				// once Auto is genuinely in hand, or the install would be marked
+				// done while still on its old model, with no retry.
 				if (isAutoModel(autoModel)) {
-					// Only now is the session actually on Auto, so only now is the
-					// change recorded.
 					autoDefault.commit()
 					setMultiModelEnabled(sessionId, false)
-					// This replaces a model the user may have been using for
-					// a while. Say so: a silent switch reads as a bug, and a local
-					// marker can be lost (config reset, new machine), so the notice
-					// is what keeps a repeat roll-in merely mildly annoying.
+					// This replaces a model the user may have been using for a
+					// while. Say so: a silent switch reads as a bug, and the marker
+					// can be lost (settings reset, new machine), so the notice is
+					// what keeps a repeat install merely mildly annoying.
 					ctx.ui.notify("Auto is now the default model.", "info")
 				}
-			} else if (options.handleCliModelSelection && freshSession && !explicitLaunchChoice && hasPersistedDefault()) {
-				// A saved default outranks the global multi-model default, whether it
-				// is concrete or Auto: without this the session comes up as
-				// multi-model wrapping the saved model rather than the model itself.
-				// This also covers the launch after Auto was installed as the
-				// default, where the saved Auto default must still be honoured.
+			} else if (mainFreshLaunch && hasPersistedDefault()) {
+				// Every launch after the first. A saved default outranks the global
+				// multi-model default, whether it is concrete or Auto: without this
+				// the session comes up as multi-model wrapping the saved model
+				// rather than the model itself.
 				setMultiModelEnabled(sessionId, false)
 			}
 			if (!isAutoModel(autoModel)) {
