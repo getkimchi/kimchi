@@ -18,6 +18,13 @@ export const AUTO_MODEL_NAME = "Auto"
  */
 export const AUTO_MODEL_DESCRIPTION = "Picks the best model for your tasks automatically."
 
+/**
+ * The Pi-registered model name: the two constants joined, for surfaces without
+ * a description slot. Use this wherever Auto's registered `Model.name` is
+ * produced or asserted, so tests cannot drift from what production builds.
+ */
+export const AUTO_MODEL_PI_NAME = `${AUTO_MODEL_NAME} — ${AUTO_MODEL_DESCRIPTION}`
+
 export function isAutoModel<T extends Pick<Model<string>, "provider" | "id">>(
 	model: T | undefined,
 ): model is T & { provider: typeof AUTO_MODEL_PROVIDER; id: typeof AUTO_MODEL_ID } {
