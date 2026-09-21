@@ -117,6 +117,16 @@ export class FeedbackDetailsComponent extends Container {
 		return this.focusIndex !== null && this.focusIndex >= this.reasons.length
 	}
 
+	/**
+	 * Whether the custom answer spans more than one line, i.e. whether caret
+	 * navigation inside the editor is meaningful. Based on the text rather than
+	 * the editor's visual line count because upstream keeps its
+	 * `isOnFirstVisualLine`/`isOnLastVisualLine` helpers private.
+	 */
+	private editorIsMultiLine(): boolean {
+		return this.editor.getText().includes("\n")
+	}
+
 	private focusedReason(): string | null {
 		if (this.focusIndex === null || this.focusIndex >= this.reasons.length) return null
 		return this.reasons[this.focusIndex] ?? null
@@ -204,6 +214,19 @@ export class FeedbackDetailsComponent extends Container {
 		// Shift+Enter always inserts a newline in the editor regardless of focus.
 		if (matchesKey(data, Key.shift("enter"))) {
 			this.setFocusIndex(this.reasons.length)
+			this.editor.handleInput(data)
+			return
+		}
+
+		// Arrows normally move focus between the reasons and the input field.
+		// Once the user has written a multi-line custom answer, though, they
+		// belong to the editor: upstream binds `up`/`down` to cursorUp/cursorDown,
+		// and stealing them would leave a multi-line answer with no way to move
+		// the caret off the line it was typed on.
+		//
+		// Single-line answers keep the focus-movement behavior, so arrowing out
+		// of the editor back to the reason list still works in the common case.
+		if (this.isInputFocused() && this.editorIsMultiLine() && (matchesKey(data, Key.up) || matchesKey(data, Key.down))) {
 			this.editor.handleInput(data)
 			return
 		}

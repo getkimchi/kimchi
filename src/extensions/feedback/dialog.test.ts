@@ -454,3 +454,78 @@ describe("showFeedbackDetailsDialog", () => {
 		})
 	})
 })
+
+describe("FeedbackDetailsComponent multi-line caret navigation", () => {
+	/**
+	 * Drives the component's private editor directly: the test keybindings mock
+	 * matches nothing, so the real upstream editor would not turn an arrow into
+	 * a caret move. What matters here is the routing decision — whether the
+	 * dialog forwards the key or steals it to move focus.
+	 */
+	function withEditor(component: FeedbackDetailsComponent) {
+		const editor = (
+			component as unknown as { editor: { getText(): string; handleInput(d: string): void; focused: boolean } }
+		).editor
+		const handleInput = vi.spyOn(editor, "handleInput")
+		return { editor, handleInput }
+	}
+
+	function focusEditor(component: FeedbackDetailsComponent) {
+		// Walk focus to the input field past every reason.
+		for (let i = 0; i < 10; i++) component.handleInput(ARROW_DOWN)
+	}
+
+	it("forwards arrows to the editor once the answer spans multiple lines", () => {
+		const { component } = makeComponent()
+		const { editor, handleInput } = withEditor(component)
+		vi.spyOn(editor, "getText").mockReturnValue("first line\nsecond line")
+		focusEditor(component)
+		handleInput.mockClear()
+
+		component.handleInput(ARROW_UP)
+		component.handleInput(ARROW_DOWN)
+
+		expect(handleInput).toHaveBeenCalledWith(ARROW_UP)
+		expect(handleInput).toHaveBeenCalledWith(ARROW_DOWN)
+	})
+
+	it("keeps the answer focused while arrowing through a multi-line answer", () => {
+		const { component } = makeComponent()
+		const { editor } = withEditor(component)
+		vi.spyOn(editor, "getText").mockReturnValue("first line\nsecond line")
+		focusEditor(component)
+
+		component.handleInput(ARROW_UP)
+
+		// Focus must not jump back to the reason list mid-answer. `render`
+		// syncs the editor's focus flag, so it reflects the routing decision.
+		component.render(100)
+		expect(editor.focused).toBe(true)
+	})
+
+	it("still moves focus out of a single-line answer", () => {
+		const { component } = makeComponent()
+		const { editor, handleInput } = withEditor(component)
+		vi.spyOn(editor, "getText").mockReturnValue("just one line")
+		focusEditor(component)
+		handleInput.mockClear()
+
+		component.handleInput(ARROW_UP)
+
+		// Not forwarded — the dialog keeps arrows for focus movement.
+		expect(handleInput).not.toHaveBeenCalled()
+	})
+
+	it("does not forward arrows while a predefined reason is focused", () => {
+		const { component } = makeComponent()
+		const { editor, handleInput } = withEditor(component)
+		vi.spyOn(editor, "getText").mockReturnValue("first line\nsecond line")
+		// Focus the first reason only.
+		component.handleInput(ARROW_DOWN)
+		handleInput.mockClear()
+
+		component.handleInput(ARROW_DOWN)
+
+		expect(handleInput).not.toHaveBeenCalled()
+	})
+})
