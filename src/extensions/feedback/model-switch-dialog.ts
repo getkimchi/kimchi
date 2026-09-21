@@ -1,6 +1,7 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { Container, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
+import { createDialogChrome } from "./dialog-chrome.js"
 import { FeedbackEditor } from "./editor.js"
 
 export interface ModelSwitchResult {
@@ -59,52 +60,28 @@ export class ModelSwitchComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const innerW = Math.max(1, width - 2)
-		const contentW = Math.max(1, innerW - 4)
-
-		const b = (s: string) => this.theme.fg("border", s)
-		const emptyRow = `${b("│")}${" ".repeat(innerW)}${b("│")}`
-		const contentRow = (styledText: string, rawLen: number) =>
-			`${b("│")}  ${styledText}${" ".repeat(Math.max(0, contentW - rawLen))}  ${b("│")}`
-		const wrapEditorLine = (line: string) => {
-			const visLen = visibleWidth(line)
-			return `${b("│")}  ${line}${" ".repeat(Math.max(0, contentW - visLen))}  ${b("│")}`
-		}
-
-		const lines: string[] = []
-
-		const titleText = " Model switch "
-		const borderLen = Math.max(0, innerW - titleText.length)
-		const leftB = Math.floor(borderLen / 2)
-		const rightB = borderLen - leftB
-		const titleStyled = this.theme.bold(this.theme.fg("accent", titleText))
-		lines.push(`${b(`╭${"─".repeat(leftB)}`)}${titleStyled}${b(`${"─".repeat(rightB)}╮`)}`)
-
-		lines.push(emptyRow)
+		const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder, contentWidth } = createDialogChrome(
+			this.theme,
+			width,
+		)
 
 		const switchedPlain = `Switched to ${this.modelName}`
-		lines.push(contentRow(this.theme.fg("text", switchedPlain), switchedPlain.length))
-
-		lines.push(emptyRow)
-
 		const promptPlain = `Tell us why you switched to ${this.modelName}`
-		lines.push(contentRow(this.theme.fg("muted", promptPlain), promptPlain.length))
-
-		lines.push(emptyRow)
-
-		const editorLines = this.editor.render(contentW)
-		for (const line of editorLines) {
-			lines.push(wrapEditorLine(line))
-		}
-
-		lines.push(emptyRow)
-
 		const hintPlain = `[Enter] Submit  [Esc] Cancel`
-		lines.push(contentRow(this.theme.fg("dim", hintPlain), hintPlain.length))
-		lines.push(emptyRow)
-		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return lines
+		return [
+			topBorder("Model switch"),
+			emptyRow,
+			contentRow(this.theme.fg("text", switchedPlain), switchedPlain),
+			emptyRow,
+			contentRow(this.theme.fg("muted", promptPlain), promptPlain),
+			emptyRow,
+			...this.editor.render(contentWidth).map(measuredRow),
+			emptyRow,
+			contentRow(this.theme.fg("dim", hintPlain), hintPlain),
+			emptyRow,
+			bottomBorder,
+		]
 	}
 
 	handleInput(data: string): void {

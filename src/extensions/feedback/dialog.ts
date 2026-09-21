@@ -1,6 +1,7 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { Container, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
+import { createDialogChrome } from "./dialog-chrome.js"
 import { FeedbackEditor } from "./editor.js"
 
 export type FeedbackSentiment = "positive" | "negative"
@@ -156,53 +157,28 @@ export class FeedbackDetailsComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const innerW = Math.max(1, width - 2)
-		const contentW = Math.max(1, innerW - 4)
-
-		const b = (s: string) => this.theme.fg("border", s)
-		const emptyRow = `${b("│")}${" ".repeat(innerW)}${b("│")}`
-		const contentRow = (styledText: string, rawLen: number) =>
-			`${b("│")}  ${styledText}${" ".repeat(Math.max(0, contentW - rawLen))}  ${b("│")}`
-		const wrapEditorLine = (line: string) => {
-			const visLen = visibleWidth(line)
-			return `${b("│")}  ${line}${" ".repeat(Math.max(0, contentW - visLen))}  ${b("│")}`
-		}
+		const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder, contentWidth } = createDialogChrome(
+			this.theme,
+			width,
+		)
 
 		// Update focus on inner widgets so the editor renders its cursor.
 		this.editor.focused = this.isInputFocused()
 
-		const lines: string[] = []
-
-		// Top border with the title centered inside it.
-		const titleText = " Rate response "
-		const borderLen = Math.max(0, innerW - titleText.length)
-		const leftB = Math.floor(borderLen / 2)
-		const rightB = borderLen - leftB
-		const titleStyled = this.theme.bold(this.theme.fg("accent", titleText))
-		lines.push(`${b(`╭${"─".repeat(leftB)}`)}${titleStyled}${b(`${"─".repeat(rightB)}╮`)}`)
-
-		// Breathing room between the title and the first body row.
-		lines.push(emptyRow)
-
-		// Subtitle row in muted text.
 		const sentimentLabel = this.sentiment === "positive" ? "Good" : "Bad"
 		const subtitlePlain = `Your rating: ${sentimentLabel}`
-		lines.push(contentRow(this.theme.fg("muted", subtitlePlain), subtitlePlain.length))
-
-		// Empty row for spacing.
-		lines.push(emptyRow)
-
-		// Prompt in text color.
 		const promptPlain = "Why? (optional)"
-		lines.push(contentRow(this.theme.fg("text", promptPlain), promptPlain.length))
+		const hintPlain = `[Enter] Submit  [↑↓] Select  [Esc] Cancel`
 
-		// Predefined options.
-		for (let i = 0; i < this.reasons.length; i++) {
-			const reason = this.reasons[i]
-			if (reason === undefined) continue
-			const line = this.renderReasonLine(reason, i, contentW)
-			lines.push(wrapEditorLine(line))
-		}
+		const lines: string[] = [
+			topBorder("Rate response"),
+			// Breathing room between the title and the first body row.
+			emptyRow,
+			contentRow(this.theme.fg("muted", subtitlePlain), subtitlePlain),
+			emptyRow,
+			contentRow(this.theme.fg("text", promptPlain), promptPlain),
+			...this.reasons.map((reason, i) => measuredRow(this.renderReasonLine(reason, i, contentWidth))),
+		]
 
 		// The editor is only visible when focus is on the last reason
 		// ("Type your own answer") or on the input field itself. When focus is
@@ -211,19 +187,10 @@ export class FeedbackDetailsComponent extends Container {
 		// lines themselves.
 		const editorVisible = this.focusIndex !== null && this.focusIndex >= this.reasons.length - 1
 		if (editorVisible) {
-			lines.push(emptyRow)
-			const editorLines = this.editor.render(contentW)
-			for (const line of editorLines) {
-				lines.push(wrapEditorLine(line))
-			}
+			lines.push(emptyRow, ...this.editor.render(contentWidth).map(measuredRow))
 		}
-		lines.push(emptyRow)
 
-		// Hint row, then bottom border.
-		const hintPlain = `[Enter] Submit  [↑↓] Select  [Esc] Cancel`
-		lines.push(contentRow(this.theme.fg("dim", hintPlain), hintPlain.length))
-		lines.push(emptyRow)
-		lines.push(b(`╰${"─".repeat(innerW)}╯`))
+		lines.push(emptyRow, contentRow(this.theme.fg("dim", hintPlain), hintPlain), emptyRow, bottomBorder)
 
 		return lines
 	}
