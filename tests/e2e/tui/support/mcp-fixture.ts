@@ -20,7 +20,7 @@ interface McpFixtureEventBase {
 }
 
 interface McpFixtureEventDetails {
-	initialized: Record<string, never>
+	initialized: { clientName?: string; extensionCapabilities: string[] }
 	tools_listed: Record<string, never>
 	resources_listed: Record<string, never>
 	resource_read: { uri: string }

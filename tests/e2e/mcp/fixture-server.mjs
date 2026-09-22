@@ -52,7 +52,11 @@ function createFixtureServer() {
 		{ capabilities: { tools: {}, resources: {} } },
 	)
 
-	server.oninitialized = () => record("initialized")
+	server.oninitialized = () =>
+		record("initialized", {
+			clientName: server.getClientVersion()?.name,
+			extensionCapabilities: Object.keys(server.getClientCapabilities()?.extensions ?? {}),
+		})
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
 		record("tools_listed")

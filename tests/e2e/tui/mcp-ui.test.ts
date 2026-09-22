@@ -48,6 +48,15 @@ test("runs an MCP App tool inline without opening a UI host", async ({ terminal 
 			await fixture.mcp.waitForEvent("tool_called", { where: { name: "open_ui" } })
 			trace.step("the UI-decorated tool call completed")
 
+			// The handshake is the first disable surface: the adapter must not
+			// advertise the MCP UI extension capability. The client name is the
+			// positive control proving the handshake was actually observed, so the
+			// capability assertion cannot pass vacuously.
+			const initialized = fixture.mcp.readEvents().find((event) => event.type === "initialized")
+			expect(initialized).toBeDefined()
+			expect(initialized?.clientName).toBe("pi-mcp-fixture")
+			expect(initialized?.extensionCapabilities).not.toContain("io.modelcontextprotocol/ui")
+
 			// Any UI session would start before the tool result reaches the model,
 			// so by the time the reply renders, absence is settled. The fake browser
 			// driver stays wired via the ui-app scenario, so a regression that

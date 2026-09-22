@@ -52,6 +52,9 @@ describe("MCP UI disable: discovery and cache", () => {
 	})
 
 	it("reconstructs pre-disable cached tools without reviving UI resources", () => {
+		// `CachedTool` must keep the optional uiResourceUri/uiStreamMode/uiVisibility
+		// fields so pre-disable caches still deserialize; removing them from the
+		// adapter's types fails this test at compile time, by design.
 		const entry: ServerCacheEntry = {
 			configHash: "fixture-hash",
 			tools: [
