@@ -5,10 +5,10 @@ import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isAutoModel } from "../router/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../router/state.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
-import { getKittyKeyboardSupport } from "../terminal-compat/keyboard-capability.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
+import { usesLegacyRatingKeys } from "./rating-keys.js"
 import { type FeedbackSummaryDetails, feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
 const FEEDBACK_SUMMARY_CUSTOM_TYPE = "feedback-summary"
@@ -85,13 +85,17 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 
 	// Terminals without the Kitty keyboard protocol (e.g. macOS Terminal.app)
 	// have no encoding for Ctrl+<digit>: Terminal.app sends no bytes at all for
-	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to keys that do
-	// have a legacy control code:
+	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to
+	// keys that do have a legacy control code:
 	//   - Ctrl+G → Good
 	//   - Ctrl+B → Bad
 	// Both are built-ins (app.editor.external, tui.editor.cursorLeft), so they
 	// are claimed through raw input only while a rating can actually happen and
 	// the prompt editor is empty; otherwise the key passes through untouched.
+	//
+	// Known tradeoff: raw input runs before whatever has focus, and extensions
+	// can't tell whether a selector or overlay (e.g. /model, /help) is up. Opened
+	// right after a response, such UI loses Ctrl+G/Ctrl+B to the rating dialog.
 	let unsubscribeLegacyRatingKeys: (() => void) | undefined
 	const stopListeningForLegacyRatingKeys = () => {
 		unsubscribeLegacyRatingKeys?.()
@@ -99,7 +103,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	}
 	const listenForLegacyRatingKeys = (ctx: ExtensionContext) => {
 		stopListeningForLegacyRatingKeys()
-		if (getKittyKeyboardSupport() !== false) return
+		if (!usesLegacyRatingKeys()) return
 		unsubscribeLegacyRatingKeys = ctx.ui.onTerminalInput((data: string) => {
 			if (state !== "inviting" || ctx.ui.getEditorText().length > 0) return undefined
 			let sentiment: FeedbackSentiment

@@ -746,6 +746,18 @@ describe("feedbackExtension legacy-terminal rating keys", () => {
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
+	it("stops listening for Ctrl+G/Ctrl+B on session replacement", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+		await press(ctx, CTRL_G)
+		await press(ctx, CTRL_B)
+
+		expect(dialogMock.show).not.toHaveBeenCalled()
+	})
+
 	it("passes Ctrl+G/Ctrl+B through while the prompt editor has text", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		vi.mocked(ctx.ui.getEditorText).mockReturnValue("draft prompt")
