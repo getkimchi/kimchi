@@ -35,17 +35,14 @@ function clampReason(reason: string): string {
  * Tagged explicitly rather than by position so reordering the lists below
  * cannot silently drop the wrong option from the dialog.
  */
-const AUTO_MODEL_REASONS: ReadonlySet<string> = new Set([
-	"Auto-model picked the right model",
-	"Auto-model picked the wrong model",
-])
+const AUTO_MODEL_REASONS: ReadonlySet<string> = new Set(["Auto picked the right model", "Auto picked the wrong model"])
 
 const POSITIVE_REASONS: string[] = [
 	"Solved my task",
 	"Followed my instructions",
 	"Good code/output quality",
 	"Fast response",
-	"Auto-model picked the right model",
+	"Auto picked the right model",
 	TYPE_OWN_ANSWER_LABEL,
 ]
 
@@ -54,7 +51,7 @@ const NEGATIVE_REASONS: string[] = [
 	"Ignored my instructions",
 	"Gave incorrect code/output",
 	"Too slow",
-	"Auto-model picked the wrong model",
+	"Auto picked the wrong model",
 	TYPE_OWN_ANSWER_LABEL,
 ]
 

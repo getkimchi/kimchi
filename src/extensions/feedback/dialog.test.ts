@@ -187,7 +187,7 @@ describe("FeedbackDetailsComponent", () => {
 			"Followed my instructions",
 			"Good code/output quality",
 			"Fast response",
-			"Auto-model picked the right model",
+			"Auto picked the right model",
 			"Type your own answer",
 		])
 		expect(renderedReasons("positive", false)).toEqual([
@@ -205,7 +205,7 @@ describe("FeedbackDetailsComponent", () => {
 			"Ignored my instructions",
 			"Gave incorrect code/output",
 			"Too slow",
-			"Auto-model picked the wrong model",
+			"Auto picked the wrong model",
 			"Type your own answer",
 		])
 		expect(renderedReasons("negative", false)).toEqual([

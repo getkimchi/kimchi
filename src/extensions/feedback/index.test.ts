@@ -15,6 +15,15 @@ async function pressCtrlR(ctx: ExtensionContext): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
+/**
+ * The model-switch invitation entry is appended via a fire-and-forget timer
+ * so the upstream "Default model: ..." status prints before it in the
+ * transcript. Flush that timer before asserting on appended entries.
+ */
+async function flushInvitationEntry(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 const CTRL_R = "\x12"
 
 // Shared mocks (see AGENTS.md: do not hand-roll ctx/pi mocks in test files).
@@ -167,7 +176,7 @@ describe("feedbackExtension state machine", () => {
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
-		dialogMock.show.mockResolvedValueOnce({ reason: "Auto-model picked the right model" })
+		dialogMock.show.mockResolvedValueOnce({ reason: "Auto picked the right model" })
 
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 
@@ -268,7 +277,9 @@ describe("feedbackExtension state machine", () => {
 			ctx,
 		)
 
-		// The summary entry is appended, but the dialog is NOT opened.
+		// The summary entry is appended (deferred past the upstream status),
+		// but the dialog is NOT opened.
+		await flushInvitationEntry()
 		const entries = getAppendedEntries<{ model: string; reason: string }>("model-switch-feedback")
 		expect(entries).toHaveLength(1)
 		expect(entries[0]).toMatchObject({ model: "Concrete", reason: "" })
@@ -288,6 +299,43 @@ describe("feedbackExtension state machine", () => {
 		expect(modelSwitchDialogMock.show).toHaveBeenCalledWith(ctx, { modelName: "Concrete" })
 		// Invitation is cleared after the dialog resolves.
 		expect(invitationState.getModelSwitchInvitation()).toBeNull()
+	})
+
+	it("defers the invitation entry so the upstream Default model status prints first", async () => {
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+
+		// Interactive mode prints "Default model: provider/id" after awaiting
+		// setModel() — i.e. after this handler resolves — so the invitation
+		// entry must not be appended synchronously inside the handler.
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(0)
+
+		await flushInvitationEntry()
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
+	})
+
+	it("drops the deferred invitation entry when a lifecycle reset cancels the invitation first", async () => {
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+
+		await flushInvitationEntry()
+		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(0)
 	})
 
 	it("Ctrl+R does nothing when no model-switch invitation is active", async () => {
@@ -311,6 +359,7 @@ describe("feedbackExtension state machine", () => {
 			},
 			ctx,
 		)
+		await flushInvitationEntry()
 		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 
 		// User opens dialog via Ctrl+R and submits a reason.
@@ -340,6 +389,7 @@ describe("feedbackExtension state machine", () => {
 			},
 			ctx,
 		)
+		await flushInvitationEntry()
 		expect(getAppendedEntries("model-switch-feedback")).toHaveLength(1)
 
 		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "" })
@@ -546,6 +596,9 @@ describe("feedbackExtension failure handling", () => {
 			},
 			ctx,
 		)
+		// Let the deferred invitation entry land before making appendEntry throw,
+		// so the failure below hits the reason append, not the invitation.
+		await flushInvitationEntry()
 
 		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "faster" })
 		appendEntry.mockImplementationOnce(() => {

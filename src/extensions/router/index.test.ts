@@ -558,7 +558,7 @@ describe("Auto model extension", () => {
 			{ expanded: false },
 			theme,
 		)
-		expect(rendered?.render(120).join("\n").trimEnd()).toBe("Auto-model picked kimi-k2.5.")
+		expect(rendered?.render(120).join("\n").trimEnd()).toBe("Auto picked kimi-k2.5.")
 
 		// Unrecognized payloads (older versions, failures) render nothing.
 		expect(
