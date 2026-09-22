@@ -201,6 +201,7 @@ export interface KimchiConfig {
 	redaction?: { enabled?: boolean }
 	/** Memory embedding overrides — model and vector dimensions (see docs/memory-extension.md). */
 	memoryEmbedding?: { model?: string; dims?: number }
+	memoryExtraction?: { model?: string }
 }
 
 /**
@@ -238,6 +239,7 @@ function readConfigExtras(configPath: string): {
 	deviceId?: string
 	redaction?: { enabled?: boolean }
 	memoryEmbedding?: { model?: string; dims?: number }
+	memoryExtraction?: { model?: string }
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -326,6 +328,13 @@ function readConfigExtras(configPath: string): {
 			}
 		}
 
+		// Read memory extraction model override — same parse conventions.
+		let memoryExtraction: { model?: string } | undefined
+		const mx = parsed.memoryExtraction
+		if (mx && typeof mx === "object" && typeof mx.model === "string" && mx.model.length > 0) {
+			memoryExtraction = { model: mx.model }
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -339,6 +348,7 @@ function readConfigExtras(configPath: string): {
 			preferences,
 			redaction,
 			memoryEmbedding,
+			memoryExtraction,
 		}
 	} catch {
 		return {}
@@ -549,6 +559,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 		redaction: projectExtras.redaction ?? globalExtras.redaction,
 		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
+		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 	}
 
 	return {
@@ -565,6 +576,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		deviceId: extras.deviceId ?? "",
 		redaction: extras.redaction,
 		memoryEmbedding: extras.memoryEmbedding,
+		memoryExtraction: extras.memoryExtraction,
 	}
 }
 

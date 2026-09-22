@@ -1265,10 +1265,7 @@ describe("readAutoDefaultApplied error handling", () => {
 
 	it("rejects non-positive-integer dims but keeps a valid model", () => {
 		for (const dims of [0, -3, 1024.5, "1024"]) {
-			writeFileSync(
-				configPath,
-				JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "bge-m3", dims } }),
-			)
+			writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "bge-m3", dims } }))
 			expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ model: "bge-m3" })
 		}
 	})
@@ -1282,5 +1279,37 @@ describe("readAutoDefaultApplied error handling", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
 		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
 >>>>>>> f345511c3 (fix(config): loadConfig never propagated memoryEmbedding — plus parse tests)
+	})
+})
+
+describe("memoryExtraction config parsing", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("parses a valid model", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: { model: "glm-5.3-flash" } }))
+		expect(loadConfig({ configPath }).memoryExtraction).toEqual({ model: "glm-5.3-flash" })
+	})
+
+	it("drops an empty model", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: { model: "" } }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+	})
+
+	it("ignores a non-object section and absence", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: "glm-5.3-flash" }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
 	})
 })

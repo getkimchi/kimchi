@@ -723,7 +723,7 @@ async function resolveWorkerLlm(options: RunCaptureWorkerOptions): Promise<Gatew
 		apiKey: config.apiKey,
 		model: await resolveExtractionModel(
 			{ baseURL: config.llmEndpoint, apiKey: config.apiKey },
-			{ fetchImpl: options.fetchImpl },
+			{ fetchImpl: options.fetchImpl, configuredModel: config.memoryExtraction?.model },
 		),
 		fetchImpl: options.fetchImpl,
 	}

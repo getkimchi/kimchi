@@ -61,12 +61,18 @@ export const EXTRACTION_MODEL = "deepseek-v4-flash-0731"
 export interface ExtractionModelOptions {
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
+	/** The config-file override (memoryExtraction.model). When set it is
+	 * authoritative: returned without querying the gateway's model list —
+	 * the user explicitly chose it. */
+	configuredModel?: string
 }
 
 /**
- * Resolve the extraction model: deepseek-v4-flash when it's on the gateway's
- * model list (one cheap call). If the list itself is unreachable, use it anyway —
- * a likely-right model beats failing capture entirely. Throws when the list
+ * Resolve the extraction model: the config-file override
+ * (memoryExtraction.model in ~/.config/kimchi/config.json) wins;
+ * otherwise deepseek-v4-flash when it's on the gateway's model list (one
+ * cheap call). If the list itself is unreachable, use it anyway — a
+ * likely-right model beats failing capture entirely. Throws when the list
  * is reachable and deepseek-v4-flash is not on it.
  *
  * Deliberately NOT routed through the auto router: benchmarking showed the
@@ -77,6 +83,7 @@ export async function resolveExtractionModel(
 	gateway: { baseURL: string; apiKey: string },
 	options: ExtractionModelOptions = {},
 ): Promise<string> {
+	if (options.configuredModel) return options.configuredModel
 	const fetchImpl = options.fetchImpl ?? fetch
 	const available = await fetchAvailableModelIds(gateway, fetchImpl)
 	if (available === undefined) {
@@ -84,7 +91,7 @@ export async function resolveExtractionModel(
 	}
 	if (available.has(EXTRACTION_MODEL)) return EXTRACTION_MODEL
 	throw new Error(
-		`extraction model ${EXTRACTION_MODEL} is not on the gateway's model list — the gateway must serve it for memory capture`,
+		`extraction model ${EXTRACTION_MODEL} is not on the gateway's model list — the gateway must serve it for memory capture, or set memoryExtraction.model in the kimchi config`,
 	)
 }
 
@@ -256,7 +263,7 @@ function resolveEndpoint(
 export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
-	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL)
+	const llm = resolveEndpoint(options.llm, gateway, config.memoryExtraction?.model ?? EXTRACTION_MODEL)
 	return {
 		embedder: {
 			provider: "openai",
@@ -315,7 +322,7 @@ export async function createMemoryBackend(
 ): Promise<Mem0Memory> {
 	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
-	const llm = resolveEndpoint(options.llm, gateway, EXTRACTION_MODEL)
+	const llm = resolveEndpoint(options.llm, gateway, config.memoryExtraction?.model ?? EXTRACTION_MODEL)
 	for (const [name, ep] of [
 		["embedder", embedder],
 		["llm", llm],

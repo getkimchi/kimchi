@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
-import { loadConfig, type KimchiConfig } from "../../config.js"
+import { type KimchiConfig, loadConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
 	createMemoryBackend,
@@ -130,6 +130,16 @@ describe("embedding endpoint configuration", () => {
 		expect(config.embedder.config.apiKey).toBe("test-key")
 	})
 
+	it("applies memoryExtraction.model to the mem0 llm config", () => {
+		const config = buildMemoryConfig(
+			{ dbPath: "/tmp/mem.db" },
+			testConfig({ memoryExtraction: { model: "glm-5.3-flash" } }),
+		)
+		expect(config.llm.config.model).toBe("glm-5.3-flash")
+		// The embedder is untouched by the extraction setting.
+		expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
+	})
+
 	it("falls back to the pinned defaults without the config section", () => {
 		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
 		expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
@@ -158,6 +168,7 @@ describe("config-file values reach the memory backend", () => {
 				JSON.stringify({
 					apiKey: "file-key",
 					memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 },
+					memoryExtraction: { model: "glm-5.3-flash" },
 				}),
 			)
 			// The full chain a real session runs: the config file is loaded,
@@ -167,6 +178,7 @@ describe("config-file values reach the memory backend", () => {
 			expect(memConfig.embedder.config.model).toBe("text-embedding-3-large")
 			expect(memConfig.embedder.config.embeddingDims).toBe(3072)
 			expect(memConfig.vectorStore.config.dimension).toBe(3072)
+			expect(memConfig.llm.config.model).toBe("glm-5.3-flash")
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}
@@ -297,6 +309,12 @@ describe("resolveExtractionModel", () => {
 			.fn()
 			.mockImplementation(() => Promise.resolve(okModels(["deepseek-v4-flash-0731", "glm-5.3-flash", "kimi-k3"])))
 		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe(EXTRACTION_MODEL)
+	})
+
+	it("the config-file model is authoritative — no gateway query", async () => {
+		const fetchImpl = vi.fn()
+		expect(await resolveExtractionModel(gateway, { fetchImpl, configuredModel: "glm-5.3-flash" })).toBe("glm-5.3-flash")
+		expect(fetchImpl).not.toHaveBeenCalled()
 	})
 
 	it("uses deepseek flash when the model list is unreachable", async () => {
