@@ -215,11 +215,10 @@ describe("context budget", () => {
 				"grep",
 				"find",
 				"ls",
-				"create_todos",
-				"update_todos",
-				"mark_todo",
-				"add_todo",
-				"clear_todos",
+				// 5 todo tools are consolidated into one action-enum tool
+				// (703085584); the DAP entry tools moved to the deferred set
+				// (daef342c) — neither appears in the canonical active surface.
+				"todos",
 				"web_search",
 				"web_fetch",
 				"questionnaire",
@@ -229,11 +228,6 @@ describe("context budget", () => {
 				"steer_subagent",
 				"set_phase",
 				"Skill",
-				"debug_launch",
-				"debug_state_at",
-				"debug_last_error",
-				"debug_trace_calls",
-				"debug_watch_change",
 			].sort(),
 		)
 
