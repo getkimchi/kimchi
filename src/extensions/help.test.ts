@@ -1,7 +1,12 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, visibleWidth } from "@earendil-works/pi-tui"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, onTestFinished, vi } from "vitest"
 import helpExtension from "./help.js"
+
+const keyboardCapabilityMock = vi.hoisted(() => ({ kittySupport: undefined as boolean | undefined }))
+vi.mock("./terminal-compat/keyboard-capability.js", () => ({
+	getKittyKeyboardSupport: () => keyboardCapabilityMock.kittySupport,
+}))
 
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>
 type OverlayFactory = (
@@ -63,4 +68,32 @@ describe("help overlay — narrow terminals", () => {
 			}
 		})
 	}
+})
+
+describe("help — rating shortcuts", () => {
+	async function renderHelp(): Promise<string> {
+		const component = await mountHelpOverlay()
+		return component.render(80).join("\n")
+	}
+
+	it("lists Ctrl+1/Ctrl+2 when the terminal supports the Kitty keyboard protocol", async () => {
+		keyboardCapabilityMock.kittySupport = true
+		onTestFinished(() => {
+			keyboardCapabilityMock.kittySupport = undefined
+		})
+		const text = await renderHelp()
+		expect(text).toMatch(/Ctrl\+1\s+Rate response as Good/)
+		expect(text).toMatch(/Ctrl\+2\s+Rate response as Bad/)
+	})
+
+	it("lists Ctrl+G/Ctrl+B when the terminal lacks the Kitty keyboard protocol", async () => {
+		keyboardCapabilityMock.kittySupport = false
+		onTestFinished(() => {
+			keyboardCapabilityMock.kittySupport = undefined
+		})
+		const text = await renderHelp()
+		expect(text).toMatch(/Ctrl\+G\s+Rate response as Good/)
+		expect(text).toMatch(/Ctrl\+B\s+Rate response as Bad/)
+		expect(text).not.toContain("Ctrl+1")
+	})
 })
