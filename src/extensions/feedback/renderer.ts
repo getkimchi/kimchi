@@ -57,7 +57,7 @@ export const feedbackSummaryRenderer: EntryRenderer<FeedbackSummaryDetails | Mod
 		if (data.reason.length > 0) {
 			container.addChild(new Text(INDENT + theme.fg("muted", `Reason: ${data.reason}`), 0, 0))
 		} else {
-			container.addChild(new Text(INDENT + theme.fg("dim", `Tell us why you switched to ${data.model} (Ctrl+R)`), 0, 0))
+			container.addChild(new Text(theme.fg("dim", ` Tell us why you switched to ${data.model} (Ctrl+R)`), 0, 0))
 		}
 		return container
 	}
