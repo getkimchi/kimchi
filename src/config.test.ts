@@ -1139,7 +1139,6 @@ describe("ensureQuietStartupDefault", () => {
 	})
 })
 
-<<<<<<< HEAD
 describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
 	let tempDir: string
 	let settingsPath: string
@@ -1147,22 +1146,12 @@ describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
 		settingsPath = join(tempDir, "settings.json")
-=======
-describe("memoryEmbedding config parsing", () => {
-	let tempDir: string
-	let configPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		configPath = join(tempDir, "config.json")
->>>>>>> f345511c3 (fix(config): loadConfig never propagated memoryEmbedding — plus parse tests)
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-<<<<<<< HEAD
 	it("round-trips the marker", () => {
 		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
 
@@ -1236,7 +1225,22 @@ describe("readAutoDefaultApplied error handling", () => {
 		writeFileSync(path, JSON.stringify({ autoDefaultApplied: "yes" }))
 
 		expect(readAutoDefaultApplied(path)).toBe(false)
-=======
+	})
+})
+
+describe("memoryEmbedding config parsing", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
 	it("parses a valid model and dims", () => {
 		writeFileSync(
 			configPath,
@@ -1278,7 +1282,6 @@ describe("readAutoDefaultApplied error handling", () => {
 	it("is absent without the section", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
 		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
->>>>>>> f345511c3 (fix(config): loadConfig never propagated memoryEmbedding — plus parse tests)
 	})
 })
 

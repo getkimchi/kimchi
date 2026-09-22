@@ -109,6 +109,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
 		placeholder: "<pattern>",
 	},
+	models: {
+		type: "string",
+		description: "Comma-separated model ids the auto model picks from",
+		placeholder: "<a,b>",
+	},
 	"multi-model": {
 		type: "boolean",
 		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
