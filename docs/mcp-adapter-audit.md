@@ -132,10 +132,7 @@ last; the kimchi-owned entry is the migration marker, so the legacy service is
 never read again once it exists. A private, file-backed implementation is
 available only to isolated E2E processes. The
 `mcp keyring-check --json` command always exercises native credential-store
-CRUD and is run by release and canary workflows on each target OS. On macOS,
-the real-keychain rename and migration can be exercised manually with
-`pnpm run test:local:keyring-migration` (seeds a legacy-service item, probes,
-verifies the copy and its idempotency, and cleans up).
+CRUD and is run by release and canary workflows on each target OS.
 
 On Linux, revoked session keyrings are recovered through `keyctl session -`.
 Compiled builds configure the adapter's existing runtime/helper overrides to
