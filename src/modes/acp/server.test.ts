@@ -143,6 +143,7 @@ import {
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
+import { waitFor as sharedWaitFor } from "./test-utils.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -461,16 +462,8 @@ function makeRecordingConn(): {
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-
-// Poll until cond() holds (2s default budget). Used instead of fixed delays
-// against the commands-refresh debounce so tests don't flake on slow CI.
-const waitFor = async (cond: () => boolean, timeoutMs = 2000): Promise<void> => {
-	const deadline = Date.now() + timeoutMs
-	while (!cond()) {
-		if (Date.now() > deadline) throw new Error("waitFor: condition not met within timeout")
-		await delay(25)
-	}
-}
+// Poll until cond() holds with the shared helper; slow tests pass a bigger budget.
+const waitFor = (cond: () => boolean, timeoutMs = 2000) => sharedWaitFor(cond, { timeoutMs })
 
 // newSession/loadSession schedule available_commands_update via setImmediate so
 // it lands after the session/new|load response; flush it before asserting on it.
@@ -5333,6 +5326,9 @@ describe("newSession skill commands", () => {
 			// settings UI) — the agent notices on its own and re-advertises.
 			skills.push(skill)
 			updates.length = 0
+			// The watcher ignores chokidar's initial scan: writes must land
+			// after the watch registration settled (see ignoreInitial comment).
+			await new Promise((r) => setTimeout(r, 200))
 			mkdirSync(join(agentDir, "skills", skillName), { recursive: true })
 			writeFileSync(join(agentDir, "skills", skillName, "SKILL.md"), `---\nname: ${skillName}\n---\nbody`, "utf-8")
 			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
@@ -5351,6 +5347,7 @@ describe("newSession skill commands", () => {
 		const { dir, skillName, skill } = makeSkillDir()
 		// .claude/skills is one of the resolver's default config paths; it is
 		// picked up only while the project is trusted.
+		setProjectScopeTrusted(dir, true)
 		mkdirSync(join(dir, ".claude", "skills"), { recursive: true })
 		const agentDir = mkdtempSync(join(tmpdir(), "acp-server-agdir-"))
 		const skills: Skill[] = []
@@ -5371,6 +5368,7 @@ describe("newSession skill commands", () => {
 				...skill,
 				filePath: join(dir, ".claude", "skills", skillName, "SKILL.md"),
 			})
+			await new Promise((r) => setTimeout(r, 200))
 			mkdirSync(join(dir, ".claude", "skills", skillName), { recursive: true })
 			writeFileSync(
 				join(dir, ".claude", "skills", skillName, "SKILL.md"),

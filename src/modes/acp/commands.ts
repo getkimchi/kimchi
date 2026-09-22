@@ -33,8 +33,11 @@ export function discoverSkillCommandsMap(session: AgentSession): Map<string, Acp
 /**
  * Rescan the session's skills. The loader's own reload() drops extension-
  * contributed resources (bundled/project/configured/Claude skills), so the
- * private extendResourcesFromExtensions re-derives them afterwards; the
- * check below fails loudly if upstream renames it.
+ * private extendResourcesFromExtensions re-derives them afterwards — the
+ * same step bindExtensions() runs after session_start (upstream:
+ * packages/coding-agent/src/core/agent-session.ts). The check below fails
+ * loudly if upstream renames it; drop the cast once a public refresh API
+ * exists.
  */
 export async function reloadSkillCommandsMap(session: AgentSession): Promise<Map<string, AcpSkillInfo>> {
 	await session.resourceLoader.reload()
@@ -61,7 +64,9 @@ export interface CommandsRefresher {
 
 // Debounce window for the sweep: a skills change can fire in bursts (e.g.
 // multi-skill uploads), and each sweep reloads every session's loader.
-const REFRESH_DEBOUNCE_MS = 250
+// Shared with the skill watcher so event coalescing and the sweep land in
+// the same window.
+export const REFRESH_DEBOUNCE_MS = 250
 
 /**
  * Re-advertise every session's palette after the skills set changes. Each
@@ -101,11 +106,19 @@ export function createCommandsRefresher(opts: {
 	// to assign record.skillCommands.
 	const run = async (): Promise<void> => {
 		sweeping = true
-		do {
-			pending = false
-			await sweep()
-		} while (pending && !cancelled)
-		sweeping = false
+		try {
+			do {
+				pending = false
+				await sweep()
+			} while (pending && !cancelled)
+		} catch (err) {
+			// A sweep escape (e.g. broadcast or sessions() throwing) must not
+			// wedge the refresher: without the finally, sweeping would stay true
+			// for the connection's lifetime and palettes would silently stop.
+			process.stderr.write(`acp refresh_available_commands: sweep failed: ${String(err)}\n`)
+		} finally {
+			sweeping = false
+		}
 	}
 
 	return {

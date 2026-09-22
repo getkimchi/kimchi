@@ -2,6 +2,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
+import { asSession, BaseFakeAgentSession } from "./__mocks__/fake-agent-session.js"
 import { makeResourceLoader } from "./__mocks__/resource-loader.js"
 import {
 	AVAILABLE_COMMANDS,
@@ -10,6 +11,7 @@ import {
 	discoverSkillCommandsMap,
 	reloadSkillCommandsMap,
 } from "./commands.js"
+import { waitFor as sharedWaitFor } from "./test-utils.js"
 
 describe("AVAILABLE_COMMANDS — ACP advertisement", () => {
 	it("exposes at least one command", () => {
@@ -40,13 +42,14 @@ function makeSession(opts: {
 	skills: Array<{ name: string; description?: string; filePath: string }>
 	reloads?: { n: number }
 }): AgentSession {
-	const resourceLoader = makeResourceLoader({
+	const fake = new BaseFakeAgentSession("acp-test-session")
+	fake.resourceLoader = makeResourceLoader({
 		skills: opts.skills,
 		onReload: () => {
 			if (opts.reloads) opts.reloads.n++
 		},
 	})
-	return { resourceLoader, extendResourcesFromExtensions: async () => {} } as unknown as AgentSession
+	return asSession(fake)
 }
 
 describe("composeAvailableCommands", () => {
@@ -104,29 +107,22 @@ describe("reloadSkillCommandsMap", () => {
 
 describe("createCommandsRefresher", () => {
 	const tick = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-	const waitForCount = async (get: () => number, want: number): Promise<void> => {
-		const deadline = Date.now() + 2000
-		while (get() < want) {
-			if (Date.now() > deadline) throw new Error(`waitForCount: got ${get()}, wanted ${want}`)
-			await tick(10)
-		}
-	}
+	const waitForCount = async (get: () => number, want: number): Promise<void> =>
+		sharedWaitFor(() => get() >= want, { message: () => `waitForCount: got ${get()}, wanted ${want}` })
 
 	function makeRecordHolder() {
 		const reloads = { n: 0 }
 		let gate: (() => void) | undefined
-		const session = {
-			resourceLoader: makeResourceLoader({
-				onReload: () => {
-					reloads.n++
-					return new Promise<void>((r) => {
-						gate = r
-					})
-				},
-			}),
-			extendResourcesFromExtensions: async () => {},
-		} as unknown as AgentSession
-		return { reloads, record: { session, skillCommands: new Map() }, releaseGate: () => gate?.() }
+		const session = new BaseFakeAgentSession("acp-test-session")
+		session.resourceLoader = makeResourceLoader({
+			onReload: () => {
+				reloads.n++
+				return new Promise<void>((r) => {
+					gate = r
+				})
+			},
+		})
+		return { reloads, record: { session: asSession(session), skillCommands: new Map() }, releaseGate: () => gate?.() }
 	}
 
 	it("serializes a kick that arrives while a sweep is in flight", async () => {
@@ -169,21 +165,18 @@ describe("createCommandsRefresher", () => {
 	})
 
 	it("a failed reload keeps that session's palette but does not stop the sweep", async () => {
+		const failingSession = new BaseFakeAgentSession("s-bad")
+		failingSession.resourceLoader = makeResourceLoader({
+			onReload: () => {
+				throw new Error("boom")
+			},
+		})
 		const failing = {
-			session: {
-				resourceLoader: makeResourceLoader({
-					onReload: () => {
-						throw new Error("boom")
-					},
-				}),
-			} as unknown as AgentSession,
+			session: asSession(failingSession),
 			skillCommands: new Map([["old", { name: "old", description: "", filePath: "/s/old/SKILL.md" }]]),
 		}
 		const healthy = {
-			session: {
-				resourceLoader: makeResourceLoader({}),
-				extendResourcesFromExtensions: async () => {},
-			} as unknown as AgentSession,
+			session: asSession(new BaseFakeAgentSession("s-good")),
 			skillCommands: new Map<string, { name: string; description: string; filePath: string }>(),
 		}
 		const broadcasts: string[] = []
@@ -212,6 +205,43 @@ describe("createCommandsRefresher", () => {
 		expect(broadcasts).toEqual(["good"])
 		expect(failing.skillCommands.has("old")).toBe(true)
 		expect(stderrWrites.some((w) => w.includes("reload failed for session bad"))).toBe(true)
+	})
+
+	it("a sweep escape (e.g. broadcast throwing) is logged and does not wedge the refresher", async () => {
+		const reloads = { n: 0 }
+		const session = new BaseFakeAgentSession("acp-test-session")
+		session.resourceLoader = makeResourceLoader({
+			onReload: () => {
+				reloads.n++
+			},
+		})
+		const record = { session: asSession(session), skillCommands: new Map() }
+		const origWrite = process.stderr.write.bind(process.stderr)
+		const stderrWrites: string[] = []
+		// biome-ignore lint/suspicious/noExplicitAny: test-only stderr capture
+		;(process.stderr.write as any) = (chunk: string | Uint8Array) => {
+			stderrWrites.push(String(chunk))
+			return true
+		}
+		try {
+			let calls = 0
+			const refresher = createCommandsRefresher({
+				sessions: () => [["s1", record] as [string, typeof record]],
+				broadcast: () => {
+					if (calls++ === 0) throw new Error("broadcast boom")
+				},
+				debounceMs: 0,
+			})
+			refresher.request()
+			await waitForCount(() => stderrWrites.filter((w) => w.includes("sweep failed")).length, 1)
+
+			// Not wedged: the next kick sweeps and broadcasts normally again.
+			refresher.request()
+			await waitForCount(() => reloads.n, 2)
+			expect(calls).toBe(2)
+		} finally {
+			process.stderr.write = origWrite
+		}
 	})
 
 	it("cancelling before the debounce fires drops the sweep", async () => {

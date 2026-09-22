@@ -115,11 +115,9 @@ describe("resolveSkillRoots", () => {
 		const defaulted = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
 		expect(defaulted.some((r) => r.kind === "agent")).toBe(false)
 
-		// null disables the root entirely.
+		// null disables the root entirely (the always-present harness root
+		// stays).
 		const disabled = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null, agentDir: null })
-		expect(disabled.some((r) => r.kind === "agent" || r.kind === "harness")).toBe(
-			true, // harness is always present; we only assert no separate agent root
-		)
 		expect(disabled.some((r) => r.kind === "agent")).toBe(false)
 	})
 

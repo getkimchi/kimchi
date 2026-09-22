@@ -64,7 +64,7 @@ const HARNESS_SKILLS_REL = join(".config", "kimchi", "harness", "skills")
 /** The default pi-native agent dir (harness home). Callers with a custom
  * KIMCHI_CODING_AGENT_DIR resolution (cli.ts) pass it explicitly. */
 function resolveDefaultAgentDir(home: string): string {
-	return join(home, ".config", "kimchi", "harness")
+	return join(home, dirname(HARNESS_SKILLS_REL))
 }
 
 /** The harness skills dir — the writable root that skills-manager manages. */

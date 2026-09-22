@@ -1,6 +1,8 @@
 import { type FSWatcher, watch } from "chokidar"
 
 import { resolveSkillRoots } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { createDebounce } from "../../utils/debounce.js"
+import { REFRESH_DEBOUNCE_MS } from "./commands.js"
 
 /** Minimal session surface the watcher needs (satisfied by SessionRecord). */
 export interface SkillWatchSession {
@@ -32,9 +34,10 @@ function sessionSkillRoots(cwd: string, opts: { agentDir: string; extraPaths: re
 /**
  * Watches skill roots on disk and requests a palette re-advertisement when
  * they change (skill upload/edit/delete). chokidar tolerates roots that do
- * not exist yet and reports cross-platform; the refresher's own debounce
- * absorbs burst events. One pass per change refreshes every session — each
- * reloads its own loader, so project-local shadowing stays correct.
+ * not exist yet and reports cross-platform. Events are coalesced per burst
+ * (debounced): the burst then re-derives roots once and kicks the refresher
+ * (which debounces again before reloading). One pass refreshes every session
+ * — each reloads its own loader, so project-local shadowing stays correct.
  *
  * Watched roots are re-derived on every change event, so roots that appear
  * later (a skills dir created, trust granted) converge without bookkeeping.
@@ -49,9 +52,17 @@ export function createSkillWatcher(opts: {
 	requestRefresh: () => void
 }): SkillWatcher {
 	let watcher: FSWatcher | undefined
+	let closed = false
 	const watched = new Set<string>()
 	const sessions = new Map<string, number>()
 	const extraPaths = (): readonly string[] => opts.getExtraSkillPaths?.() ?? []
+
+	// Whole burst → one pass: sync root resolution (existsSync chains,
+	// ancestor walks, config read) once per quiet window instead of per event.
+	const onChange = createDebounce(() => {
+		refreshRoots()
+		opts.requestRefresh()
+	}, REFRESH_DEBOUNCE_MS)
 
 	const add = (roots: string[]): void => {
 		const fresh = roots.filter((r) => !watched.has(r))
@@ -61,26 +72,23 @@ export function createSkillWatcher(opts: {
 	}
 
 	const refreshRoots = (): void => {
-		for (const cwd of sessions.keys())
-			add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
+		const extras = extraPaths()
+		for (const cwd of sessions.keys()) add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extras }))
 	}
 
 	const ensure = (): FSWatcher => {
 		if (!watcher) {
-			// ignoreInitial: false on purpose — with true, a skills dir created
-			// during chokidar's initial scan is swallowed as "initial" and the
-			// very first upload on a fresh tree would never be seen. Initial
-			// add events are absorbed by the refresher's debounce (a startup
-			// sweep with no sessions is a no-op anyway).
+			// ignoreInitial: true — only real changes report events; entries
+			// found by the initial scan fire no kicks, so session creation does
+			// not induce a redundant sweep on top of the eager palette. Accepted
+			// trade: a skills dir created *during* the initial scan window can
+			// be swallowed as initial state; the next change self-heals.
 			watcher = watch([], {
-				ignoreInitial: false,
+				ignoreInitial: true,
 				// <root>/<name>/SKILL.md is two levels below a watched root.
 				depth: 2,
 			})
-			watcher.on("all", () => {
-				refreshRoots()
-				opts.requestRefresh()
-			})
+			watcher.on("all", () => onChange.schedule())
 			watcher.on("error", (err) => process.stderr.write(`acp skill watcher: ${String(err)}\n`))
 		}
 		return watcher
@@ -88,6 +96,10 @@ export function createSkillWatcher(opts: {
 
 	return {
 		addSession(session: SkillWatchSession): void {
+			// Post-close registrations are ignored (like the refresher's
+			// post-cancel kicks): without this, ensure() would silently
+			// recreate a watcher that is never closed.
+			if (closed) return
 			const refs = sessions.get(session.cwd) ?? 0
 			sessions.set(session.cwd, refs + 1)
 			if (refs === 0) {
@@ -100,6 +112,8 @@ export function createSkillWatcher(opts: {
 			else sessions.set(session.cwd, refs - 1)
 		},
 		close(): void {
+			closed = true
+			onChange.cancel()
 			void watcher?.close()
 			watcher = undefined
 			watched.clear()
