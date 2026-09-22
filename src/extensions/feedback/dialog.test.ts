@@ -49,6 +49,20 @@ function stripAnsi(s: string): string {
 	return s.replace(ANSI_RE, "")
 }
 
+// The ordered reason labels as the dialog actually renders them. Reason rows
+// are numbered (`1. Solved my task`), optionally prefixed with the focus
+// marker, which makes them easy to pick out of the surrounding chrome.
+function renderedReasons(sentiment: "positive" | "negative", autoModelUsed: boolean): string[] {
+	const { component } = makeComponent(sentiment, autoModelUsed)
+	return component
+		.render(100)
+		.map((line) => stripAnsi(line).replaceAll("│", "").trim())
+		.flatMap((line) => {
+			const match = /^(?:→ )?\d+\. (.+?)$/.exec(line)
+			return match?.[1] ? [match[1].trimEnd()] : []
+		})
+}
+
 // Arrow up / down keystrokes the terminal typically emits.
 const ARROW_DOWN = "\x1b[B"
 const ARROW_UP = "\x1b[A"
@@ -164,88 +178,43 @@ describe("FeedbackDetailsComponent", () => {
 		expect(text).not.toContain("[Shift+Enter] New line")
 	})
 
-	it("lists positive predefined options without the removed entries", () => {
-		const { component } = makeComponent("positive", false)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).toContain("Solved my task")
-		expect(text).toContain("Followed my instructions")
-		expect(text).toContain("Good code/output quality")
-		expect(text).toContain("Fast response")
-		expect(text).toContain("Type your own answer")
-	})
-
-	it("positive reasons list does not contain 'Easy to understand' or 'Saved me time'", () => {
-		const { component } = makeComponent("positive", true)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).not.toContain("Easy to understand")
-		expect(text).not.toContain("Saved me time")
-	})
-
-	it("lists negative predefined options", () => {
-		const { component } = makeComponent("negative", false)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).toContain("Didn't solve the task")
-		expect(text).toContain("Ignored my instructions")
-		expect(text).toContain("Gave incorrect code/output")
-		expect(text).toContain("Too slow")
-	})
-
-	it("shows 'Type your own answer' as the last option for positive sentiment", () => {
-		const { component } = makeComponent("positive", true)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		const ownIdx = text.lastIndexOf("Type your own answer")
-		expect(ownIdx).toBeGreaterThan(-1)
-		for (const label of [
+	it("lists the positive reasons in order, gated on auto-model", () => {
+		// Asserting the exact rendered list covers membership, ordering
+		// ("Type your own answer" last), the auto-model gate and the absence
+		// of retired entries in one go.
+		expect(renderedReasons("positive", true)).toEqual([
 			"Solved my task",
 			"Followed my instructions",
 			"Good code/output quality",
 			"Fast response",
 			"Auto-model picked the right model",
-		]) {
-			expect(text.indexOf(label)).toBeGreaterThan(-1)
-			expect(text.indexOf(label)).toBeLessThan(ownIdx)
-		}
+			"Type your own answer",
+		])
+		expect(renderedReasons("positive", false)).toEqual([
+			"Solved my task",
+			"Followed my instructions",
+			"Good code/output quality",
+			"Fast response",
+			"Type your own answer",
+		])
 	})
 
-	it("shows 'Type your own answer' as the last option for negative sentiment", () => {
-		const { component } = makeComponent("negative", true)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		const ownIdx = text.lastIndexOf("Type your own answer")
-		expect(ownIdx).toBeGreaterThan(-1)
-		for (const label of [
+	it("lists the negative reasons in order, gated on auto-model", () => {
+		expect(renderedReasons("negative", true)).toEqual([
 			"Didn't solve the task",
 			"Ignored my instructions",
 			"Gave incorrect code/output",
 			"Too slow",
 			"Auto-model picked the wrong model",
-		]) {
-			expect(text.indexOf(label)).toBeGreaterThan(-1)
-			expect(text.indexOf(label)).toBeLessThan(ownIdx)
-		}
-	})
-
-	it("omits the auto-model option when auto-model was not used (positive)", () => {
-		const { component } = makeComponent("positive", false)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).not.toContain("Auto-model picked the right model")
-	})
-
-	it("includes the auto-model option when auto-model was used (positive)", () => {
-		const { component } = makeComponent("positive", true)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).toContain("Auto-model picked the right model")
-	})
-
-	it("omits the auto-model option when auto-model was not used (negative)", () => {
-		const { component } = makeComponent("negative", false)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).not.toContain("Auto-model picked the wrong model")
-	})
-
-	it("includes the auto-model option when auto-model was used (negative)", () => {
-		const { component } = makeComponent("negative", true)
-		const text = component.render(100).map(stripAnsi).join("\n")
-		expect(text).toContain("Auto-model picked the wrong model")
+			"Type your own answer",
+		])
+		expect(renderedReasons("negative", false)).toEqual([
+			"Didn't solve the task",
+			"Ignored my instructions",
+			"Gave incorrect code/output",
+			"Too slow",
+			"Type your own answer",
+		])
 	})
 
 	it("Enter with no selection submits { reason: '' }", () => {
@@ -253,19 +222,6 @@ describe("FeedbackDetailsComponent", () => {
 		// No reason selected: pressing Enter submits an empty reason.
 		component.handleInput(ENTER)
 		expect(done).toHaveBeenCalledWith({ reason: "" })
-	})
-
-	it("Enter with no selection on a negative dialog submits { reason: '' }", () => {
-		const { component, done } = makeComponent("negative", false)
-		component.handleInput(ENTER)
-		expect(done).toHaveBeenCalledWith({ reason: "" })
-	})
-
-	it("Selecting a predefined reason and pressing Enter submits { reason: selectedLabel }", () => {
-		const { component, done } = makeComponent("positive", false)
-		component.handleInput("3")
-		component.handleInput(ENTER)
-		expect(done).toHaveBeenCalledWith({ reason: "Good code/output quality" })
 	})
 
 	it("Selecting 'Type your own answer' and pressing Enter submits { reason: '' }", () => {
@@ -291,28 +247,6 @@ describe("FeedbackDetailsComponent", () => {
 		component.handleInput("m")
 		component.handleInput(ENTER)
 		expect(done).toHaveBeenCalledWith({ reason: "custom" })
-	})
-
-	it("Enter on 'Type your own answer' with text typed in the editor submits the editor text", () => {
-		const { component, done } = makeComponent("positive", true)
-		// 6 reasons with auto-model: 'Type your own answer' is index 5 (digit 6).
-		// Typing a character while the last reason is focused jumps focus to
-		// the input field and forwards the character.
-		component.handleInput("6")
-		component.handleInput("h")
-		component.handleInput("i")
-		// Single Enter submits the editor text directly without a second press.
-		component.handleInput(ENTER)
-		expect(done).toHaveBeenCalledWith({ reason: "hi" })
-	})
-
-	it("Pressing Enter in empty input submits { reason: '' }", () => {
-		const { component, done } = makeComponent("positive", false)
-		// Move focus to the input field via Down arrow past the last reason.
-		component.handleInput("5")
-		component.handleInput(ARROW_DOWN)
-		component.handleInput(ENTER) // empty editor → submits ""
-		expect(done).toHaveBeenCalledWith({ reason: "" })
 	})
 
 	it("Digit key 1-9 jumps focus to that reason and Enter submits it", () => {
@@ -376,19 +310,15 @@ describe("FeedbackDetailsComponent", () => {
 
 	it("Up arrow from the input field moves focus to the last reason", () => {
 		const { component, done } = makeComponent("positive", false)
-		// Navigate from reason 0 → input (5 down arrows for 5 reasons), then up
-		// once. Without auto-model there are 5 reasons, so the last is index 4
-		// ("Type your own answer"). After focusing the input, pressing Up once
-		// should land on the last reason. Pressing Enter there would submit an
-		// empty reason immediately; typing instead jumps focus back to the
-		// input field and forwards the character.
-		component.handleInput(ARROW_DOWN) // → reason 1
-		component.handleInput(ARROW_DOWN) // → reason 2
-		component.handleInput(ARROW_DOWN) // → reason 3
-		component.handleInput(ARROW_DOWN) // → reason 4 (last = Type your own answer)
+		// 5 reasons without auto-model: digit 5 is the last one ("Type your own
+		// answer"), Down moves into the input, Up comes back to it. Pressing
+		// Enter there would submit an empty reason either way, so type instead:
+		// that jumps focus back to the input and forwards the character, which
+		// only happens if Up really landed on a reason.
+		component.handleInput("5")
 		component.handleInput(ARROW_DOWN) // → input
-		component.handleInput(ARROW_UP) // → back to last reason (Type your own answer)
-		component.handleInput("z") // jumps focus to input and types "z"
+		component.handleInput(ARROW_UP) // → back to the last reason
+		component.handleInput("z")
 		component.handleInput(ENTER)
 		expect(done).toHaveBeenCalledWith({ reason: "z" })
 	})
@@ -413,17 +343,6 @@ describe("FeedbackDetailsComponent", () => {
 		// Editor now contains "hello". Enter from the input submits custom text.
 		component.handleInput(ENTER)
 		expect(done).toHaveBeenCalledWith({ reason: "hello" })
-	})
-
-	it("When focus is already on the input, typed letters are forwarded normally", () => {
-		const { component, done } = makeComponent("positive", false)
-		// Move focus to the input via Down arrow past the last reason.
-		component.handleInput("5")
-		component.handleInput(ARROW_DOWN)
-		component.handleInput("a")
-		component.handleInput("b")
-		component.handleInput(ENTER)
-		expect(done).toHaveBeenCalledWith({ reason: "ab" })
 	})
 
 	it("Escape cancels and resolves with undefined", () => {
