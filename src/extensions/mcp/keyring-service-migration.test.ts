@@ -25,6 +25,11 @@ function entryPath(keyringDir: string, service: string, account: string): string
 	return join(keyringDir, createHash("sha256").update(`${service}\0${account}`, "utf8").digest("hex"))
 }
 
+function migratedState(agentDir: string): string[] {
+	const statePath = join(agentDir, "mcp-keyring-migration.json")
+	return existsSync(statePath) ? (JSON.parse(readFileSync(statePath, "utf8")) as { migrated: string[] }).migrated : []
+}
+
 describe("migrateMcpKeyringServiceCredentials", () => {
 	const tempDirs: string[] = []
 
@@ -35,33 +40,35 @@ describe("migrateMcpKeyringServiceCredentials", () => {
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 	})
 
-	function setupKeyringDir(): string {
+	function setupDirs(): { keyringDir: string; agentDir: string } {
 		const keyringDir = mkdtempSync(join(tmpdir(), "kimchi-keyring-migration-"))
-		tempDirs.push(keyringDir)
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-keyring-migration-agent-"))
+		tempDirs.push(keyringDir, agentDir)
 		vi.stubEnv("KIMCHI_MCP_E2E_KEYRING_DIR", keyringDir)
-		return keyringDir
+		return { keyringDir, agentDir }
 	}
 
-	it("copies a plain credential to the kimchi-owned service and leaves the legacy entry in place", () => {
-		const keyringDir = setupKeyringDir()
+	it("copies a plain credential to the kimchi-owned service, leaves the legacy entry in place, and records the tombstone", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "fixture"
 		const account = mcpCredentialAccountId(serverName)
 		const payload = JSON.stringify({ serverUrl: "https://example.test/mcp", tokens: { accessToken: "secret" } })
 		writeFileSync(entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, account), payload)
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const result = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(result).toEqual({ migratedServerNames: [serverName], warnings: [] })
-		const migratedPath = entryPath(keyringDir, MCP_OAUTH_SERVICE, account)
-		expect(readFileSync(migratedPath, "utf8")).toBe(payload)
+		expect(readFileSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account), "utf8")).toBe(payload)
 		// The legacy entry is never deleted — it may be co-owned by other tools.
 		expect(existsSync(entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, account))).toBe(true)
+		expect(migratedState(agentDir)).toEqual([serverName])
 	})
 
 	it("copies a chunked credential with all of its chunks", () => {
-		const keyringDir = setupKeyringDir()
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "chunked"
 		const account = mcpCredentialAccountId(serverName)
 		const digest = "0123456789abcdef"
@@ -81,21 +88,20 @@ describe("migrateMcpKeyringServiceCredentials", () => {
 			payload.slice(midpoint),
 		)
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://chunked.example.test/mcp" } },
-		})
+		const result = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://chunked.example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(result).toEqual({ migratedServerNames: [serverName], warnings: [] })
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(true)
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, `${account}.chunk.${digest}.0`))).toBe(true)
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, `${account}.chunk.${digest}.1`))).toBe(true)
-		for (const service of [LEGACY_MCP_OAUTH_SERVICE, MCP_OAUTH_SERVICE]) {
-			expect(existsSync(entryPath(keyringDir, service, `${account}.chunk.${digest}.0`))).toBe(true)
-		}
+		expect(existsSync(entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, `${account}.chunk.${digest}.0`))).toBe(true)
 	})
 
-	it("leaves no target entries when a chunk is missing", () => {
-		const keyringDir = setupKeyringDir()
+	it("leaves no target entries or tombstone when a chunk is missing, so the server retries next run", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "missing-chunk"
 		const account = mcpCredentialAccountId(serverName)
 		const digest = "0123456789abcdef"
@@ -105,37 +111,41 @@ describe("migrateMcpKeyringServiceCredentials", () => {
 		)
 		writeFileSync(entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, `${account}.chunk.${digest}.0`), "partial")
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const result = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(result.migratedServerNames).toEqual([])
 		expect(result.warnings[0]).toContain(`credentials for "${serverName}" were left on the legacy keychain service`)
 		expect(result.warnings[0]).toContain("chunk 1 is missing")
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(false)
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, `${account}.chunk.${digest}.0`))).toBe(false)
+		expect(migratedState(agentDir)).toEqual([])
 	})
 
-	it("leaves a server with an invalid chunk manifest unmigrated with a warning", () => {
-		const keyringDir = setupKeyringDir()
+	it("leaves a server with a malformed chunk manifest unmigrated with a warning and no tombstone", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "invalid-manifest"
 		const account = mcpCredentialAccountId(serverName)
 		writeFileSync(
 			entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, account),
-			JSON.stringify({ __piMcpAdapterOAuthChunked: 1, chunkCount: 65, chunkDigest: "0123456789abcdef" }),
+			JSON.stringify({ __piMcpAdapterOAuthChunked: 1, chunkCount: 2, chunkDigest: "not-a-hex-digest" }),
 		)
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const result = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(result.migratedServerNames).toEqual([])
 		expect(result.warnings[0]).toContain("chunk manifest is invalid")
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(false)
+		expect(migratedState(agentDir)).toEqual([])
 	})
 
-	it("skips a server whose credentials already exist on the kimchi-owned service", () => {
-		const keyringDir = setupKeyringDir()
+	it("skips and tombstones a server whose credentials already exist on the kimchi-owned service", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "already-migrated"
 		const account = mcpCredentialAccountId(serverName)
 		const existing = JSON.stringify({ serverUrl: "https://example.test/mcp", tokens: { accessToken: "existing" } })
@@ -145,28 +155,45 @@ describe("migrateMcpKeyringServiceCredentials", () => {
 			JSON.stringify({ serverUrl: "https://example.test/mcp", tokens: { accessToken: "legacy" } }),
 		)
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const result = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(result).toEqual({ migratedServerNames: [], warnings: [] })
 		expect(readFileSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account), "utf8")).toBe(existing)
+		expect(migratedState(agentDir)).toEqual([serverName])
 	})
 
-	it("skips servers with no legacy credentials", () => {
-		const keyringDir = setupKeyringDir()
+	it("tombstones servers with no legacy credentials and ignores legacy credentials that appear afterwards", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "fresh"
+		const account = mcpCredentialAccountId(serverName)
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const first = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
+		expect(first).toEqual({ migratedServerNames: [], warnings: [] })
+		expect(migratedState(agentDir)).toEqual([serverName])
 
-		expect(result).toEqual({ migratedServerNames: [], warnings: [] })
-		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, mcpCredentialAccountId(serverName)))).toBe(false)
+		// A credential written under the legacy service after kimchi has moved
+		// on belongs to another pi-mcp-adapter consumer and is never imported.
+		writeFileSync(
+			entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, account),
+			JSON.stringify({ serverUrl: "https://example.test/mcp" }),
+		)
+		const second = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
+
+		expect(second).toEqual({ migratedServerNames: [], warnings: [] })
+		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(false)
 	})
 
-	it("migrates only the servers present in the passed config", () => {
-		const keyringDir = setupKeyringDir()
+	it("migrates and tombstones only the servers present in the passed config", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const configured = "configured"
 		const unconfigured = "unconfigured"
 		for (const serverName of [configured, unconfigured]) {
@@ -176,39 +203,74 @@ describe("migrateMcpKeyringServiceCredentials", () => {
 			)
 		}
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [configured]: { url: "https://example.test/mcp" } },
-		})
+		const result = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [configured]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(result.migratedServerNames).toEqual([configured])
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, mcpCredentialAccountId(unconfigured)))).toBe(false)
+		expect(migratedState(agentDir)).toEqual([configured])
 	})
 
 	it("never reads the legacy service again once the kimchi-owned entry exists", () => {
-		const keyringDir = setupKeyringDir()
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "migrated-once"
 		const account = mcpCredentialAccountId(serverName)
 		const payload = JSON.stringify({ serverUrl: "https://example.test/mcp" })
 		writeFileSync(entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, account), payload)
 
-		const first = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const first = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 		expect(first).toEqual({ migratedServerNames: [serverName], warnings: [] })
 
 		// A failing legacy read would throw if it were attempted; its absence
 		// proves the second run never touches the legacy service.
 		readFailure.service = LEGACY_MCP_OAUTH_SERVICE
 		readFailure.account = account
-		const second = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
+		const second = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
 
 		expect(second).toEqual({ migratedServerNames: [], warnings: [] })
 	})
 
-	it("reports a warning instead of throwing when the credential store read fails", () => {
-		const keyringDir = setupKeyringDir()
+	it("does not resurrect a credential the user deleted after migration", () => {
+		const { keyringDir, agentDir } = setupDirs()
+		const serverName = "logged-out"
+		const account = mcpCredentialAccountId(serverName)
+		const payload = JSON.stringify({ serverUrl: "https://example.test/mcp", tokens: { accessToken: "secret" } })
+		writeFileSync(entryPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, account), payload)
+
+		const first = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
+		expect(first).toEqual({ migratedServerNames: [serverName], warnings: [] })
+
+		// Simulate an MCP logout: the adapter's deleteCredential removes the
+		// kimchi-owned entry (the file double deletes the same file).
+		rmSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))
+
+		// A failing legacy read would throw if it were attempted; its absence
+		// proves the stale legacy copy is never consulted for resurrection.
+		readFailure.service = LEGACY_MCP_OAUTH_SERVICE
+		readFailure.account = account
+		const second = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
+
+		expect(second).toEqual({ migratedServerNames: [], warnings: [] })
+		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(false)
+		expect(migratedState(agentDir)).toEqual([serverName])
+	})
+
+	it("reports a warning instead of throwing when the credential store read fails, and retries next run", () => {
+		const { keyringDir, agentDir } = setupDirs()
 		const serverName = "denied"
 		const account = mcpCredentialAccountId(serverName)
 		writeFileSync(
@@ -218,13 +280,24 @@ describe("migrateMcpKeyringServiceCredentials", () => {
 		readFailure.service = LEGACY_MCP_OAUTH_SERVICE
 		readFailure.account = account
 
-		const result = migrateMcpKeyringServiceCredentials({
-			mcpServers: { [serverName]: { url: "https://example.test/mcp" } },
-		})
-
-		expect(result.migratedServerNames).toEqual([])
-		expect(result.warnings[0]).toContain(`failed to migrate credentials for "${serverName}"`)
-		expect(result.warnings[0]).toContain("simulated credential-store failure")
+		const failed = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
+		expect(failed.migratedServerNames).toEqual([])
+		expect(failed.warnings[0]).toContain(`failed to migrate credentials for "${serverName}"`)
+		expect(failed.warnings[0]).toContain("simulated credential-store failure")
 		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(false)
+		expect(migratedState(agentDir)).toEqual([])
+
+		// No tombstone was written on failure, so the next run retries.
+		readFailure.service = null
+		readFailure.account = null
+		const retried = migrateMcpKeyringServiceCredentials(
+			{ mcpServers: { [serverName]: { url: "https://example.test/mcp" } } },
+			{ agentDir },
+		)
+		expect(retried).toEqual({ migratedServerNames: [serverName], warnings: [] })
+		expect(existsSync(entryPath(keyringDir, MCP_OAUTH_SERVICE, account))).toBe(true)
 	})
 })

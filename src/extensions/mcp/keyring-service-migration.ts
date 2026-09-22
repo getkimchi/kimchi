@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import type { McpConfig } from "pi-mcp-adapter/types"
 import {
 	isCredentialRecord,
@@ -14,12 +17,10 @@ export interface McpKeyringServiceMigrationResult {
 	warnings: string[]
 }
 
-/**
- * Guard against corrupt manifests making the migration loop over absurd
- * chunk counts. Real MCP OAuth payloads are a few KB; 64 chunks already
- * covers far more than any plausible credential.
- */
-const MAX_MIGRATABLE_CHUNKS = 64
+export interface McpKeyringServiceMigrationOptions {
+	/** Directory holding the migration state file (defaults to the kimchi agent dir). */
+	agentDir?: string
+}
 
 type CredentialPayload =
 	| { kind: "plain"; payload: string }
@@ -28,10 +29,12 @@ type CredentialPayload =
 
 /**
  * Classify a legacy credential payload. A payload that claims to be a chunk
- * manifest but cannot be resolved (bad digest, absurd chunk count) is
- * "invalid": copying it as-is would strand the target entry pointing at
- * chunks that do not exist, so the server is left on the legacy service with
- * a warning instead.
+ * manifest but is malformed (bad digest or chunk-count shape) is "invalid":
+ * copying it as-is would strand the target entry pointing at chunks that do
+ * not exist, so the server is left on the legacy service with a warning
+ * instead. There is deliberately no chunk-count ceiling: the adapter's own
+ * manifest rules impose none, and the copy loop is bounded by the chunks
+ * that actually exist (the first missing chunk aborts the server).
  */
 function classifyCredentialPayload(payload: string): CredentialPayload {
 	let parsed: unknown
@@ -46,8 +49,46 @@ function classifyCredentialPayload(payload: string): CredentialPayload {
 	if (parsed.__piMcpAdapterOAuthChunked !== 1) return { kind: "plain", payload }
 
 	const manifest = parseOAuthChunkManifestRecord(parsed)
-	if (manifest === null || manifest.chunkCount > MAX_MIGRATABLE_CHUNKS) return { kind: "invalid" }
+	if (manifest === null) return { kind: "invalid" }
 	return { kind: "chunked", manifest }
+}
+
+interface MigrationState {
+	migrated: string[]
+}
+
+const MIGRATION_STATE_FILE = "mcp-keyring-migration.json"
+
+function migrationStatePath(agentDir: string): string {
+	return join(agentDir, MIGRATION_STATE_FILE)
+}
+
+function readMigrationState(statePath: string): MigrationState {
+	try {
+		if (!existsSync(statePath)) return { migrated: [] }
+		const parsed: unknown = JSON.parse(readFileSync(statePath, "utf8"))
+		if (
+			!isCredentialRecord(parsed) ||
+			!Array.isArray(parsed.migrated) ||
+			!parsed.migrated.every((name): name is string => typeof name === "string")
+		) {
+			return { migrated: [] }
+		}
+		return { migrated: [...new Set(parsed.migrated)] }
+	} catch {
+		// An unreadable state file must not block migration: treating it as
+		// empty only re-checks the kimchi-owned keyring marker.
+		return { migrated: [] }
+	}
+}
+
+function recordMigratedServer(statePath: string, serverName: string): void {
+	const state = readMigrationState(statePath)
+	if (state.migrated.includes(serverName)) return
+	state.migrated.push(serverName)
+	state.migrated.sort()
+	mkdirSync(dirname(statePath), { recursive: true })
+	writeFileSync(statePath, JSON.stringify(state, null, "\t") + "\n", { encoding: "utf8", mode: 0o600 })
 }
 
 /**
@@ -59,32 +100,52 @@ function classifyCredentialPayload(payload: string): CredentialPayload {
  * The copy is exclusive and non-destructive: legacy entries are never deleted
  * (they may be co-owned by other pi-mcp-adapter consumers such as upstream pi,
  * and deleting them would re-trigger the macOS keychain access prompt this
- * rename exists to avoid). The kimchi-owned entry doubles as the migration
- * marker: it is checked before the legacy service, so once it exists the
- * legacy service is never read again for that server — a migrated credential
- * (or a fresh post-rename login) ends all legacy access, including any macOS
- * keychain prompt the legacy item might still cause. Chunked payloads copy all
- * chunks first and write the manifest entry last, so its presence under the
- * new service is the commit point; a partial migration leaves no target
- * manifest and is retried on the next run. Failures are per-server warnings —
- * a credential-store read failure (e.g. a dismissed macOS keychain prompt)
- * must never block adapter startup.
+ * rename exists to avoid). Chunked payloads copy all chunks first and write
+ * the manifest entry last, so its presence under the new service is the
+ * commit point; a partial migration leaves no target manifest and is retried
+ * on the next run. Failures are per-server warnings — a credential-store read
+ * failure (e.g. a dismissed macOS keychain prompt) must never block adapter
+ * startup.
+ *
+ * Once a server has been consulted, its name is recorded in a state file
+ * (`mcp-keyring-migration.json` under the kimchi agent dir) and the legacy
+ * service is never read for it again — even if the kimchi-owned credential is
+ * later deleted (an MCP logout, or the adapter discarding an unrefreshable
+ * token). Without that tombstone, the deleted credential's stale legacy copy
+ * would be silently resurrected on the next session start. The tombstone is
+ * deliberately a file rather than a keychain entry so it cannot be lost the
+ * same way the credential can; losing it only re-enables the (idempotent)
+ * kimchi-owned-marker check.
  */
 export function migrateMcpKeyringServiceCredentials(
 	config: Pick<McpConfig, "mcpServers">,
+	options: McpKeyringServiceMigrationOptions = {},
 ): McpKeyringServiceMigrationResult {
+	const statePath = migrationStatePath(options.agentDir ?? getAgentDir())
 	const migratedServerNames: string[] = []
 	const warnings: string[] = []
 
 	for (const serverName of Object.keys(config.mcpServers)) {
 		const account = mcpCredentialAccountId(serverName)
 		try {
-			// The kimchi-owned entry is the migration marker: check it first, so the
-			// legacy service is never read again once migration has happened (or the
-			// user re-authenticated on the new service).
-			if (readMcpOAuthEntry(MCP_OAUTH_SERVICE, account) !== null) continue
+			// Tombstoned servers never consult the legacy service again: a
+			// deleted kimchi-owned credential must stay deleted.
+			if (readMigrationState(statePath).migrated.includes(serverName)) continue
+			// The kimchi-owned entry is checked next, so a server that was
+			// migrated before the state file existed (or whose state file was
+			// lost) still never re-reads legacy while the credential lives.
+			if (readMcpOAuthEntry(MCP_OAUTH_SERVICE, account) !== null) {
+				recordMigratedServer(statePath, serverName)
+				continue
+			}
 			const legacyPayload = readMcpOAuthEntry(LEGACY_MCP_OAUTH_SERVICE, account)
-			if (legacyPayload === null) continue
+			if (legacyPayload === null) {
+				// Nothing to migrate, and the legacy era is over for this
+				// server: credentials created under the legacy service after
+				// this point belong to other pi-mcp-adapter consumers.
+				recordMigratedServer(statePath, serverName)
+				continue
+			}
 
 			const classified = classifyCredentialPayload(legacyPayload)
 			if (classified.kind === "invalid") {
@@ -118,6 +179,7 @@ export function migrateMcpKeyringServiceCredentials(
 			// The manifest/main entry is written last: its presence under the new
 			// service is what marks the server as migrated on the next run.
 			writeMcpOAuthEntry(MCP_OAUTH_SERVICE, account, legacyPayload)
+			recordMigratedServer(statePath, serverName)
 			migratedServerNames.push(serverName)
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error)

@@ -67,6 +67,14 @@ class FileBackedTestEntry {
 	}
 }
 
+/**
+ * The exact Entry surface pi-mcp-adapter consumes — its `KeyringEntry`
+ * interface in `mcp-auth.ts` calls only these three members. Keep this in
+ * sync on adapter upgrades: `verifyMcpKeyringRuntime` asserts each member on
+ * the bridged Entry (run by release/canary keyring-check on every target),
+ * so a drift that narrows or renames the surface fails loudly before
+ * release instead of at runtime for users.
+ */
 interface KeyringEntryLike {
 	getPassword(): string | null
 	setPassword(password: string): void
@@ -235,6 +243,18 @@ export function verifyMcpKeyringRuntime(): McpKeyringRuntimeCheck {
 	const password = randomUUID()
 	const entry = new requiredKeyring.Entry("dev.kimchi.mcp-adapter.runtime-check", account)
 	let stored = false
+
+	// Assert the bridged Entry exposes every member pi-mcp-adapter's
+	// KeyringEntry interface calls (see KeyringEntryLike) — the wrapper fronts
+	// the native module for all adapter keyring access, so a drift here must
+	// fail the check rather than surface as a production-only failure.
+	for (const member of ["getPassword", "setPassword", "deleteCredential"] as const) {
+		if (typeof entry[member] !== "function") {
+			throw new Error(
+				`Bridged keyring Entry is missing ${member}() — pi-mcp-adapter's KeyringEntry surface changed; update KeyringEntryLike in keyring-require-bridge.ts`,
+			)
+		}
+	}
 
 	try {
 		entry.setPassword(password)
