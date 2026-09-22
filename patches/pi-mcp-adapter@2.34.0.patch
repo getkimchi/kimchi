@@ -111,17 +111,71 @@ index 20b6adba1a0b861838f9dd59084e7af57d914ff8..fce831379e644ee680ca607d77956220
  export function getSharedConfigPath(target, cwd = process.cwd()) {
      return target === "project" ? getProjectConfigPath(cwd) : getGenericGlobalConfigPath();
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
-index d9e5f56365e917600bd9dd52f16efd0f418e04f0..387fe166a6439a8da6f4f4de7bf6fc3f6a8427d0 100644
+index d9e5f56365e917600bd9dd52f16efd0f418e04f0..a94a3a1cc7922b94588d9955dbb67fc7cc8cbb90 100644
 --- a/dist/metadata-cache.js
 +++ b/dist/metadata-cache.js
-@@ -246,6 +246,7 @@ export function serializeTools(tools) {
+@@ -4,10 +4,9 @@ import { dirname } from "node:path";
+ import { getAgentPath } from "./agent-dir.js";
+ import { createHash } from "node:crypto";
+ import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.js";
+-import { getToolUiResourceUri } from "./ui-app-bridge-helpers.js";
+ import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix } from "./types.js";
+ import { resourceNameToToolName } from "./resource-tools.js";
+-import { extractToolUiStreamMode, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
++import { interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
+ import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.js";
+ const CACHE_VERSION = 1;
+ const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+@@ -183,9 +182,9 @@ export function reconstructToolMetadata(serverName, entry, prefix, definition, c
+             description: tool.description ?? "",
+             ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+             ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+-            ...(tool.uiResourceUri !== undefined ? { uiResourceUri: tool.uiResourceUri } : {}),
++            // Host MCP UI disable: cached UI metadata never reconstructs into
++            // tool metadata. Remove when the harness supports MCP Apps.
+             ...(tool.uiVisibility !== undefined ? { uiVisibility: tool.uiVisibility } : {}),
+-            ...(tool.uiStreamMode !== undefined ? { uiStreamMode: tool.uiStreamMode } : {}),
+         });
+     }
+     if (definition.exposeResources !== false) {
+@@ -235,20 +234,19 @@ export function createCachedToolSelectorCandidateIndex(configuredServers, cache,
+     return createToolSelectorCandidateIndex(candidates);
+ }
+ export function serializeTools(tools) {
++    // Host MCP UI disable: UI resource metadata is never persisted. Remove
++    // when the harness supports MCP Apps.
+     return tools
+         .filter(t => t?.name)
+         .map(t => {
+-        const uiResourceUri = tryGetToolUiResourceUri(t);
+         const uiVisibility = extractUiToolVisibility(t._meta);
+-        const uiStreamMode = extractToolUiStreamMode(t._meta);
+         return {
+             name: t.name,
              ...(t.description !== undefined ? { description: t.description } : {}),
              ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
              ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
+-            ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
 +            ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
-             ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
              ...(uiVisibility !== undefined ? { uiVisibility } : {}),
-             ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+-            ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+         };
+     });
+ }
+@@ -299,12 +297,4 @@ export function reconstructPromptMetadata(serverName, prompts, prefix, definitio
+         };
+     });
+ }
+-function tryGetToolUiResourceUri(tool) {
+-    try {
+-        return getToolUiResourceUri({ _meta: tool._meta });
+-    }
+-    catch {
+-        return undefined;
+-    }
+-}
+ //# sourceMappingURL=metadata-cache.js.map
+\ No newline at end of file
 diff --git a/dist/types.d.ts b/dist/types.d.ts
 index c0adc21f5eeb733062f3bceea41dbf256f88c55a..3404384567d0f575b6720e94bc0e760ece1b9b02 100644
 --- a/dist/types.d.ts
@@ -265,17 +319,142 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/metadata-cache.ts b/metadata-cache.ts
-index 0b449fe35389429912739bcfe10ce906ecb1ab33..a47d0ce9f3725b17b1f20c8071d67826c6bcd1a6 100644
+index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef31282e511d4f 100644
 --- a/metadata-cache.ts
 +++ b/metadata-cache.ts
-@@ -302,6 +302,7 @@ export function serializeTools(tools: McpTool[]): CachedTool[] {
+@@ -4,7 +4,6 @@ import { dirname } from "node:path";
+ import { getAgentPath } from "./agent-dir.ts";
+ import { createHash } from "node:crypto";
+ import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.ts";
+-import { getToolUiResourceUri } from "./ui-app-bridge-helpers.ts";
+ import type {
+   CachedPrompt,
+   CachedResource,
+@@ -23,7 +22,6 @@ import type {
+ import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix, type ToolPrefix, type ToolSelectorCandidateIndex } from "./types.ts";
+ import { resourceNameToToolName } from "./resource-tools.ts";
+ import {
+-  extractToolUiStreamMode,
+   interpolateEnvRecord,
+   interpolateEnvVars,
+   resolveBearerToken,
+@@ -234,9 +232,9 @@ export function reconstructToolMetadata(
+       description: tool.description ?? "",
+       ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+       ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+-      ...(tool.uiResourceUri !== undefined ? { uiResourceUri: tool.uiResourceUri } : {}),
++      // Host MCP UI disable: cached UI metadata never reconstructs into tool
++      // metadata. Remove when the harness supports MCP Apps.
+       ...(tool.uiVisibility !== undefined ? { uiVisibility: tool.uiVisibility } : {}),
+-      ...(tool.uiStreamMode !== undefined ? { uiStreamMode: tool.uiStreamMode } : {}),
+     });
+   }
+ 
+@@ -291,20 +289,19 @@ export function createCachedToolSelectorCandidateIndex(
+ }
+ 
+ export function serializeTools(tools: McpTool[]): CachedTool[] {
++  // Host MCP UI disable: UI resource metadata is never persisted. Remove when
++  // the harness supports MCP Apps.
+   return tools
+     .filter(t => t?.name)
+     .map(t => {
+-      const uiResourceUri = tryGetToolUiResourceUri(t);
+       const uiVisibility = extractUiToolVisibility(t._meta);
+-      const uiStreamMode = extractToolUiStreamMode(t._meta);
+       return {
+         name: t.name,
          ...(t.description !== undefined ? { description: t.description } : {}),
          ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
          ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
+-        ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
 +        ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
-         ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
          ...(uiVisibility !== undefined ? { uiVisibility } : {}),
-         ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+-        ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+       };
+     });
+ }
+@@ -363,11 +360,3 @@ export function reconstructPromptMetadata(
+     };
+   });
+ }
+-
+-function tryGetToolUiResourceUri(tool: McpTool): string | undefined {
+-  try {
+-    return getToolUiResourceUri({ _meta: tool._meta });
+-  } catch {
+-    return undefined;
+-  }
+-}
+diff --git a/server-manager.ts b/server-manager.ts
+index 3213c908a86c4baf483af3470bb6d5ea0c32028d..c1af597f0cd0c1d0c1d99f7620e63b5003c04954 100644
+--- a/server-manager.ts
++++ b/server-manager.ts
+@@ -40,7 +40,6 @@ import {
+ import { resolveNpxBinary } from "./npx-resolver.ts";
+ import { createJsonSchemaValidator } from "./json-schema-validator.ts";
+ import { logger } from "./logger.ts";
+-import { RESOURCE_MIME_TYPE } from "./ui-app-bridge-helpers.ts";
+ import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.ts";
+ import { McpOAuthProvider } from "./mcp-oauth-provider.ts";
+ import { extractOAuthConfig, supportsOAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
+@@ -1126,12 +1125,11 @@ export class McpServerManager {
+   }
+ 
+   private buildClientCapabilities() {
++    // Host MCP UI disable: Kimchi does not yet properly support the MCP UI
++    // standard, so the client must not advertise the ui extension capability.
++    // Remove when the harness supports MCP Apps (or adopts an upstream
++    // disable option).
+     return {
+-      extensions: {
+-        "io.modelcontextprotocol/ui": {
+-          mimeTypes: [RESOURCE_MIME_TYPE],
+-        },
+-      },
+       ...(this.samplingConfig ? { sampling: {} } : {}),
+       ...(this.elicitationConfig
+         ? {
+diff --git a/tool-metadata.ts b/tool-metadata.ts
+index 47525f34a6c7a8f25a007eee7e91abd0c452b014..7d810820003f4d624224b41548cfafc9d4ce2223 100644
+--- a/tool-metadata.ts
++++ b/tool-metadata.ts
+@@ -1,9 +1,7 @@
+-import { getToolUiResourceUri } from "./ui-app-bridge-helpers.ts";
+ import type { McpExtensionState } from "./state.ts";
+ import type { ToolMetadata, McpTool, McpResource, ServerEntry, ToolPrefix } from "./types.ts";
+ import { createToolSelectorCandidateIndex, formatToolName, getToolNameCandidates, isToolAllowed, resolveToolPrefix } from "./types.ts";
+ import { resourceNameToToolName } from "./resource-tools.ts";
+-import { extractToolUiStreamMode } from "./utils.ts";
+ import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.ts";
+ 
+ export function buildToolMetadata(
+@@ -96,22 +94,16 @@ export function buildToolMetadata(
+     }
+     seenNames.add(name);
+ 
+-    let uiResourceUri: string | undefined;
+-    try {
+-      uiResourceUri = getToolUiResourceUri({ _meta: tool._meta });
+-    } catch {
+-      failedTools.push(tool.name);
+-    }
+-    const uiStreamMode = extractToolUiStreamMode(tool._meta);
++    // Host MCP UI disable: Kimchi does not yet properly support the MCP UI
++    // standard, so tools never acquire interactive UI resources here. Remove
++    // when the harness supports MCP Apps (or adopts an upstream disable option).
+     metadata.push({
+       name,
+       originalName: tool.name,
+       description: tool.description ?? "",
+       ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+       ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+-      ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+       ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+-      ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+     });
+   }
+ 
 diff --git a/types.ts b/types.ts
 index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632aa729e057 100644
 --- a/types.ts

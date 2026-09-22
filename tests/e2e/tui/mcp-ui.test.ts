@@ -2,106 +2,27 @@ import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
-import { gatewayMcpCall, mcpUiMessages, modelReply, toolResultText } from "./support/mcp-model-script.js"
+import { gatewayMcpCall, modelReply } from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("bridges an MCP App tool call and prompt back into the agent", async ({ terminal }) => {
+// Kimchi does not yet properly support the MCP UI standard, so the feature is
+// disabled via the dependency patch (see docs/mcp-adapter-audit.md): MCP App
+// tools degrade to plain tools whose results return inline, the client never
+// advertises the ui extension capability, and no UI host, browser window, or
+// ui:// resource read ever happens.
+test("runs an MCP App tool inline without opening a UI host", async ({ terminal }) => {
 	const openUi = gatewayMcpCall("open_ui")
-	const uiMessages = mcpUiMessages()
 	await runMcpKimchiSession(
 		terminal,
 		{
-			artifactName: "mcp-ui-app-bridge",
+			artifactName: "mcp-ui-disabled",
 			mcp: {
 				scenario: "ui-app",
 				behavior: {
 					tools: [
 						mcpToolResult("open_ui", {
-							content: [{ type: "text", text: "fixture MCP App opened" }],
-						}),
-						mcpToolResult(
-							"echo",
-							{ content: [{ type: "text", text: "fixture echo: from-ui" }] },
-							{ message: "from-ui" },
-						),
-					],
-					resources: [
-						mcpResourceResult("ui://fixture/app", {
-							contents: [
-								{
-									uri: "ui://fixture/app",
-									mimeType: "text/html;profile=mcp-app",
-									text: '<!doctype html><html><body><main id="kimchi-mcp-app">Kimchi MCP App fixture</main></body></html>',
-								},
-							],
-						}),
-					],
-				},
-			},
-			responses: [
-				openUi.response,
-				modelReply("The MCP App opened."),
-				modelReply("The MCP App prompt triggered an agent turn."),
-				uiMessages.response,
-				modelReply("The completed MCP App messages reached the model."),
-			],
-		},
-		async (fixture, trace) => {
-			terminal.submit("Open the fixture MCP App")
-			await waitForText(terminal, "The MCP App opened.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await fixture.mcp.waitForEvent("resource_read", { where: { uri: "ui://fixture/app" } })
-			const hostPage = await fixture.mcp.waitForEvent("ui_host_loaded", { where: { status: 200 } })
-			expect(hostPage.hasKimchiCompletionCopy).toBe(true)
-			expect(hostPage.hasPiCompletionCopy).toBe(false)
-			const ui = fixture.mcp.ui
-			expect(ui).toBeDefined()
-			if (!ui) throw new Error("MCP UI fixture was not configured")
-			trace.step("MCP App resource loaded in the local browser host")
-
-			await ui.post("/proxy/ui/consent", { approved: true })
-			const proxied = await ui.post("/proxy/tools/call", {
-				name: "echo",
-				arguments: { message: "from-ui" },
-			})
-			expect(proxied?.ok).toBe(true)
-			await fixture.mcp.waitForEvent("tool_called", {
-				where: { name: "echo", arguments: { message: "from-ui" } },
-			})
-			trace.step("MCP App called a server tool through the consent-gated bridge")
-
-			await ui.post("/proxy/ui/message", {
-				type: "prompt",
-				prompt: "continue from the fixture app",
-			})
-			await waitForText(terminal, "The MCP App prompt triggered an agent turn.", {
-				timeoutMs: STREAM_TIMEOUT_MS,
-			})
-			await ui.post("/proxy/ui/complete", { reason: "done" })
-			trace.step("UI prompt triggered a deterministic follow-up turn and the app completed")
-
-			terminal.submit("Retrieve the completed MCP App messages")
-			await waitForText(terminal, "The completed MCP App messages reached the model.", {
-				timeoutMs: STREAM_TIMEOUT_MS,
-			})
-			expect(toolResultText(fixture.fake.requests, uiMessages)).toContain("continue from the fixture app")
-			trace.step("completed UI messages crossed the MCP gateway and model boundary")
-		},
-	)
-})
-
-test("denies MCP App tool access without consent and tears down on completion", async ({ terminal }) => {
-	const openUi = gatewayMcpCall("open_ui")
-	await runMcpKimchiSession(
-		terminal,
-		{
-			artifactName: "mcp-ui-consent-denial",
-			mcp: {
-				scenario: "ui-app",
-				behavior: {
-					tools: [
-						mcpToolResult("open_ui", {
-							content: [{ type: "text", text: "fixture MCP App opened" }],
+							content: [{ type: "text", text: "fixture MCP App tool ran without a UI host" }],
 						}),
 					],
 					resources: [
@@ -117,38 +38,25 @@ test("denies MCP App tool access without consent and tears down on completion", 
 					],
 				},
 			},
-			responses: [openUi.response, modelReply("The consent-gated MCP App opened.")],
+			responses: [openUi.response, modelReply("The MCP App tool returned its result inline.")],
 		},
 		async (fixture, trace) => {
-			terminal.submit("Open the consent-gated fixture MCP App")
-			await waitForText(terminal, "The consent-gated MCP App opened.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await fixture.mcp.waitForEvent("ui_host_loaded", { where: { status: 200 } })
-			const ui = fixture.mcp.ui
-			expect(ui).toBeDefined()
-			if (!ui) throw new Error("MCP UI fixture was not configured")
-			const beforeDeniedCall = fixture.mcp.checkpoint()
-
-			await ui.post("/proxy/ui/consent", { approved: false })
-			const denied = await ui.request("/proxy/tools/call", {
-				name: "echo",
-				arguments: { message: "must-not-run" },
+			terminal.submit("Open the fixture MCP App tool")
+			await waitForText(terminal, "The MCP App tool returned its result inline.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
 			})
-			expect(denied.status).toBe(403)
-			expect(denied.body).toEqual(expect.objectContaining({ error: expect.stringMatching(/denied/i) }))
-			expect(
-				fixture.mcp
-					.readEvents()
-					.slice(beforeDeniedCall)
-					.some(
-						(event) =>
-							event.type === "tool_called" && event.name === "echo" && event.arguments.message === "must-not-run",
-					),
-			).toBe(false)
-			trace.step("denied consent blocked the UI tool call before MCP dispatch")
+			await fixture.mcp.waitForEvent("tool_called", { where: { name: "open_ui" } })
+			trace.step("the UI-decorated tool call completed")
 
-			await ui.post("/proxy/ui/complete", { reason: "denied" })
-			await ui.waitForClosed()
-			trace.step("completing the denied app closed its local UI host")
+			// Any UI session would start before the tool result reaches the model,
+			// so by the time the reply renders, absence is settled. The fake browser
+			// driver stays wired via the ui-app scenario, so a regression that
+			// re-enables the UI would record these events and fail the assertions.
+			const events = fixture.mcp.readEvents()
+			expect(events.some((event) => event.type === "ui_browser_opened")).toBe(false)
+			expect(events.some((event) => event.type === "ui_host_loaded")).toBe(false)
+			expect(events.some((event) => event.type === "resource_read" && event.uri === "ui://fixture/app")).toBe(false)
+			trace.step("no browser window, UI host, or ui:// resource read ever happened")
 		},
 	)
 })

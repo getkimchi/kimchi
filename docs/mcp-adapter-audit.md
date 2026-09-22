@@ -300,6 +300,15 @@ regressions:
 - Saving the package MCP panel closes it and refreshes direct tools.
 - Dynamic OAuth client registrations use the host package name `kimchi` rather
   than the old `Pi Coding Agent` name.
+- The MCP UI standard (MCP Apps) is disabled: the client does not advertise
+  the `io.modelcontextprotocol/ui` extension capability, tools that declare
+  `_meta.ui.resourceUri` degrade to plain tools with inline results, and UI
+  metadata is neither persisted to nor reconstructed from the metadata cache
+  (app-only `_meta.ui.visibility` tools stay hidden). Carried by the
+  dependency patch — remove those hunks when the harness properly supports
+  MCP Apps or an upstream disable option is adopted.
+  `src/extensions/mcp/ui-disabled.test.ts` pins the behavior so an adapter
+  upgrade that drops it fails loudly.
 
 ## Highest-risk failure scenarios and required tests
 

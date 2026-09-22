@@ -15,7 +15,7 @@ patchedDependencies:
     hash: 1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12
     path: patches/@earendil-works__pi-tui@0.85.1.patch
   pi-mcp-adapter@2.34.0:
-    hash: c014fa45805a4e8dff273efbcbfa5d4a52d077f12f491a7a6650468e9ace0926
+    hash: ed8e2f11a2b7bfda18f9e8651acb512c41d4abd45c603642a3428c811d3d3b5a
     path: patches/pi-mcp-adapter@2.34.0.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
@@ -81,7 +81,7 @@ importers:
         version: 10.2.0
       pi-mcp-adapter:
         specifier: 2.34.0
-        version: 2.34.0(patch_hash=c014fa45805a4e8dff273efbcbfa5d4a52d077f12f491a7a6650468e9ace0926)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
+        version: 2.34.0(patch_hash=ed8e2f11a2b7bfda18f9e8651acb512c41d4abd45c603642a3428c811d3d3b5a)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3)
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -5361,7 +5361,7 @@ snapshots:
 
   pathval@2.0.1: {}
 
-  pi-mcp-adapter@2.34.0(patch_hash=c014fa45805a4e8dff273efbcbfa5d4a52d077f12f491a7a6650468e9ace0926)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
+  pi-mcp-adapter@2.34.0(patch_hash=ed8e2f11a2b7bfda18f9e8651acb512c41d4abd45c603642a3428c811d3d3b5a)(@earendil-works/pi-ai@0.85.1(patch_hash=99288f84b8edd20e74893fb83ca49de935fc0c93de9a0643de705feaaffac550)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.85.1(patch_hash=1bc60a0766129acb8da6087526636e59a9ed127bf278e6adb2247b42b6e38c12))(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(typebox@1.3.7)(zod@4.4.3):
     dependencies:
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/core': 2.0.0
