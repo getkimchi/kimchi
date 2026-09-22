@@ -16,7 +16,7 @@ import { findNearestAncestorPath } from "../../utils/find-nearest-ancestor.js"
  * deploy).
  */
 
-export type SkillRootKind = "bundled" | "harness" | "config" | "project"
+export type SkillRootKind = "bundled" | "harness" | "agent" | "config" | "project"
 
 export interface SkillRoot {
 	readonly dir: string
@@ -42,14 +42,33 @@ export interface ResolveSkillRootsOptions {
 	 * `skills/` dir under resolveAuxiliaryFilesDir() in the compiled binary.
 	 */
 	readonly bundledDir?: string | null
+	/**
+	 * Override for the pi-native agent dir whose `skills/` subdir is scanned
+	 * (kind "agent"). Defaults to the harness home (`~/.config/kimchi/harness`),
+	 * which coincides with the harness root and is deduped; `null` disables
+	 * the root. Pass the cli-resolved KIMCHI_CODING_AGENT_DIR when it differs.
+	 */
+	readonly agentDir?: string | null
+	/**
+	 * Kimchi-config-style extra skill paths, mapped by the same rule as
+	 * configPaths (absolute → as-is, `.config/` → home, else cwd + trust
+	 * gate), kind "config".
+	 */
+	readonly extraPaths?: readonly string[]
 }
 
 const DEFAULT_CONFIG_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
 const HARNESS_SKILLS_REL = join(".config", "kimchi", "harness", "skills")
 
+/** The default pi-native agent dir (harness home). Callers with a custom
+ * KIMCHI_CODING_AGENT_DIR resolution (cli.ts) pass it explicitly. */
+function resolveDefaultAgentDir(home: string): string {
+	return join(home, ".config", "kimchi", "harness")
+}
+
 /** The harness skills dir — the writable root that skills-manager manages. */
-export function resolveHarnessSkillsDir(home: string = homedir()): string {
+export function resolveHarnessSkillsDir(home: string): string {
 	return join(home, HARNESS_SKILLS_REL)
 }
 
@@ -100,23 +119,39 @@ function mapConfigPath(path: string, cwd: string, home: string): MappedConfigPat
  * skills cannot reach the system prompt.
  */
 export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[] {
+	const roots: SkillRoot[] = []
+	// Conventions overlap (e.g. the default agent dir coincides with the
+	// harness dir): each dir is reported once, under the kind of whoever
+	// reached it first in precedence order.
+	const seenDirs = new Set<string>()
+	const pushRoot = (dir: string, kind: SkillRootKind): void => {
+		const resolved = resolve(dir)
+		if (seenDirs.has(resolved)) return
+		seenDirs.add(resolved)
+		roots.push({ dir, kind })
+	}
+
 	const home = options.homeDir ?? homedir()
+	const projectScopeAllowed = isProjectScopeAllowed(options.cwd)
+
 	const bundled =
 		options.bundledDir === undefined ? resolveBundledSkillsDir(home, options.execPath) : options.bundledDir
-	const projectScopeAllowed = isProjectScopeAllowed(options.cwd)
-	const roots: SkillRoot[] = []
+	if (bundled) pushRoot(bundled, "bundled")
 
-	if (bundled) roots.push({ dir: bundled, kind: "bundled" })
-	roots.push({ dir: resolveHarnessSkillsDir(home), kind: "harness" })
-	for (const p of options.configPaths ?? DEFAULT_CONFIG_PATHS) {
+	pushRoot(resolveHarnessSkillsDir(home), "harness")
+
+	const agentDir = options.agentDir === undefined ? resolveDefaultAgentDir(home) : options.agentDir
+	if (agentDir) pushRoot(join(resolve(agentDir), "skills"), "agent")
+
+	for (const p of [...(options.configPaths ?? DEFAULT_CONFIG_PATHS), ...(options.extraPaths ?? [])]) {
 		const { dir, cwdResolved } = mapConfigPath(p, options.cwd, home)
 		if (!existsSync(dir)) continue
 		if (cwdResolved && !projectScopeAllowed) continue
-		roots.push({ dir, kind: "config" })
+		pushRoot(dir, "config")
 	}
 	if (projectScopeAllowed) {
 		const projectDir = findNearestAncestorPath(options.cwd, join(".kimchi", "skills"))
-		if (projectDir) roots.push({ dir: projectDir, kind: "project" })
+		if (projectDir) pushRoot(projectDir, "project")
 	}
 
 	return roots

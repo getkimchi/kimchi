@@ -104,6 +104,34 @@ describe("resolveSkillRoots", () => {
 		expect(roots.some((r) => r.kind === "project")).toBe(false)
 	})
 
+	it("includes an overridden agent dir as its own root and dedupes the default", () => {
+		const customAgent = join(home, "custom-agent")
+		mkdirSync(join(customAgent, "skills"), { recursive: true })
+
+		const roots = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null, agentDir: customAgent })
+		expect(roots.find((r) => r.kind === "agent")?.dir).toBe(join(customAgent, "skills"))
+
+		// Default agentDir coincides with the harness root: no "agent" root.
+		const defaulted = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
+		expect(defaulted.some((r) => r.kind === "agent")).toBe(false)
+
+		// null disables the root entirely.
+		const disabled = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null, agentDir: null })
+		expect(disabled.some((r) => r.kind === "agent" || r.kind === "harness")).toBe(
+			true, // harness is always present; we only assert no separate agent root
+		)
+		expect(disabled.some((r) => r.kind === "agent")).toBe(false)
+	})
+
+	it("maps extraPaths like config paths (cwd-relative roots need trust)", () => {
+		mkdirSync(join(cwd, ".local", "extra-skills"), { recursive: true })
+		setProjectScopeTrusted(cwd, true)
+
+		const roots = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null, extraPaths: [".local/extra-skills"] })
+		const configDirs = roots.filter((r) => r.kind === "config").map((r) => r.dir)
+		expect(configDirs).toContain(join(cwd, ".local", "extra-skills"))
+	})
+
 	it("skips cwd-resolved config roots while the project is untrusted", () => {
 		mkdirSync(join(cwd, ".claude", "skills"), { recursive: true })
 		mkdirSync(join(cwd, ".pi", "agent", "skills"), { recursive: true })
