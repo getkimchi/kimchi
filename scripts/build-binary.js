@@ -141,6 +141,7 @@ const externals = [
 	"fastembed",
 	"groq-sdk",
 	"iovalkey",
+	"mongodb",
 	"mysql2",
 	"mysql2/promise",
 	"natural",
