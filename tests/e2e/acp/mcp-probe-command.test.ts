@@ -14,7 +14,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
-import { LEGACY_MCP_OAUTH_SERVICE, MCP_OAUTH_SERVICE } from "../../../src/extensions/mcp/keyring-require-bridge.js"
+import { MCP_OAUTH_SERVICE } from "../../../src/extensions/mcp/keyring-require-bridge.js"
 import {
 	createMcpFixture,
 	MCP_FIXTURE_OAUTH_ACCESS_TOKEN,
@@ -27,18 +27,10 @@ const BINARY_NAME = process.platform === "win32" ? "kimchi.exe" : "kimchi"
 const BINARY_PATH = resolve(REPO_ROOT, "dist/bin", BINARY_NAME)
 const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
 
-function serviceKeyringCredentialPath(keyringDir: string, service: string, serverName: string): string {
-	const account = `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
-	const key = createHash("sha256").update(`${service}\0${account}`, "utf8").digest("hex")
-	return join(keyringDir, key)
-}
-
 function keyringCredentialPath(keyringDir: string, serverName: string): string {
-	return serviceKeyringCredentialPath(keyringDir, MCP_OAUTH_SERVICE, serverName)
-}
-
-function legacyKeyringCredentialPath(keyringDir: string, serverName: string): string {
-	return serviceKeyringCredentialPath(keyringDir, LEGACY_MCP_OAUTH_SERVICE, serverName)
+	const account = `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
+	const key = createHash("sha256").update(`${MCP_OAUTH_SERVICE}\0${account}`, "utf8").digest("hex")
+	return join(keyringDir, key)
 }
 
 describe("compiled kimchi mcp probe command", () => {
@@ -316,49 +308,5 @@ describe("compiled kimchi mcp probe command", () => {
 		expect(result.status, result.stderr).toBe(0)
 		expect(readFileSync(credentialPath, "utf8")).toBe(originalCredential)
 		expect(readdirSync(keyringDir)).toHaveLength(1)
-	})
-
-	it("migrates legacy keychain-service OAuth credentials to the kimchi-owned service", async () => {
-		const homeDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-home-"))
-		const workDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-work-"))
-		tempDirs.push(homeDir, workDir)
-		const agentDir = join(homeDir, ".config", "kimchi", "harness")
-		mkdirSync(agentDir, { recursive: true })
-		const fixture = await createMcpFixture(agentDir, { transport: "oauth", oauthPreauthorized: true })
-		fixtures.push(fixture)
-		const serverName = "legacy-service"
-		const keyringDir = join(agentDir, "mcp-keyring")
-		const credential = JSON.stringify({
-			tokens: { accessToken: MCP_FIXTURE_OAUTH_ACCESS_TOKEN, expiresAt: 2_000_000_000 },
-			serverUrl: fixture.url,
-		})
-		mkdirSync(keyringDir, { recursive: true })
-		writeFileSync(legacyKeyringCredentialPath(keyringDir, serverName), credential, { encoding: "utf8", mode: 0o600 })
-		const isolatedEnv = Object.fromEntries(
-			Object.entries(process.env).filter(([name]) => name !== "NODE_CHANNEL_FD" && name !== "NODE_UNIQUE_ID"),
-		)
-		const result = spawnSync(BINARY_PATH, ["mcp", "probe", "--json"], {
-			cwd: workDir,
-			input: JSON.stringify({ name: serverName, server: fixture.serverDefinition }),
-			encoding: "utf8",
-			env: {
-				...isolatedEnv,
-				...fixture.env,
-				HOME: homeDir,
-				PI_PACKAGE_DIR: PACKAGE_DIR,
-				KIMCHI_NO_UPDATE_CHECK: "1",
-			},
-			timeout: 90_000,
-		})
-
-		expect(result.error).toBeUndefined()
-		expect(result.status, result.stderr).toBe(0)
-		expect(JSON.parse(result.stdout)).toMatchObject({ needsAuth: false, error: null })
-		expect(fixture.hasEvent("tools_listed")).toBe(true)
-		expect(fixture.hasEvent("oauth_browser_opened")).toBe(false)
-		expect(fixture.hasEvent("oauth_token_issued")).toBe(false)
-		// The legacy entry is copied to the kimchi-owned service, never moved.
-		expect(readFileSync(legacyKeyringCredentialPath(keyringDir, serverName), "utf8")).toBe(credential)
-		expect(readFileSync(keyringCredentialPath(keyringDir, serverName), "utf8")).toBe(credential)
 	})
 })

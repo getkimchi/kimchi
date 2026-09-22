@@ -127,16 +127,11 @@ export function readMcpOAuthEntry(service: string, account: string): string | nu
 	return createUnderlyingKeyringEntry(service, account).getPassword()
 }
 
-/** Write an MCP OAuth credential entry under an explicit service (no remapping). */
-export function writeMcpOAuthEntry(service: string, account: string, payload: string): void {
-	createUnderlyingKeyringEntry(service, account).setPassword(payload)
-}
-
 function readSecureCredential(account: string): string | null {
 	return readMcpOAuthEntry(MCP_OAUTH_SERVICE, account)
 }
 
-export function isCredentialRecord(value: unknown): value is Record<string, unknown> {
+function isCredentialRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
