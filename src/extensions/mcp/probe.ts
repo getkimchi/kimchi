@@ -13,6 +13,7 @@ import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import { inspectMcpCredentialAccount, installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import { migrateMcpKeyringServiceCredentials } from "./keyring-service-migration.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 
 type SdkTool = ListToolsResult["tools"][number]
@@ -265,6 +266,10 @@ export class UpstreamMcpProbe implements McpProbe {
 		if (definition.url) {
 			const { warnings } = migrateLegacyOAuthCredentials({ mcpServers: { [name]: definition } }, { cwd })
 			for (const warning of warnings) console.warn(warning)
+			const { warnings: keyringServiceWarnings } = migrateMcpKeyringServiceCredentials({
+				mcpServers: { [name]: definition },
+			})
+			for (const warning of keyringServiceWarnings) console.warn(warning)
 		}
 		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name

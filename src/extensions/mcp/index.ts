@@ -19,6 +19,7 @@ import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import { migrateMcpKeyringServiceCredentials } from "./keyring-service-migration.js"
 import {
 	brandMcpAdapterOwnedToolResult,
 	brandMcpAdapterText,
@@ -275,10 +276,12 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					}
 				: selectedResult.config
 			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
+			const { warnings: keyringServiceWarnings } = migrateMcpKeyringServiceCredentials(config)
 			const legacyConfigWarning = legacyMcpConfigWarning(cwd)
 			warnings = [
 				...selectedResult.warnings,
 				...oauthWarnings,
+				...keyringServiceWarnings,
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]

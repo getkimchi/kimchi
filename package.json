@@ -29,6 +29,7 @@
 		"test:e2e:tui:debug": "pnpm run build:binary && node scripts/run-tui-e2e.js --debug",
 		"test:e2e:tui:trace": "pnpm run build:binary && node scripts/run-tui-e2e.js --trace",
 		"test:e2e:tui:trace:replay": "node scripts/run-tui-e2e.js replay",
+		"test:local:keyring-migration": "./scripts/local-keyring-migration-test.sh",
 		"test:e2e:acp": "pnpm run build:binary && vitest run --config tests/e2e/acp/vitest.config.ts",
 		"test:e2e:mcp": "pnpm run build:binary && pnpm run test:e2e:mcp:tui && pnpm run test:e2e:mcp:acp && pnpm run test:e2e:mcp:conformance",
 		"test:e2e:mcp:tui": "node scripts/run-tui-e2e.js mcp-config && node scripts/run-tui-e2e.js mcp-project-trust && node scripts/run-tui-e2e.js mcp-stdio && node scripts/run-tui-e2e.js mcp-failures && node scripts/run-tui-e2e.js mcp-http && node scripts/run-tui-e2e.js mcp-browser-branding && node scripts/run-tui-e2e.js mcp-oauth && node scripts/run-tui-e2e.js mcp-restart && node scripts/run-tui-e2e.js mcp-panel && node scripts/run-tui-e2e.js mcp-lifecycle && node scripts/run-tui-e2e.js mcp-ui",

@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto"
 import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import type { McpConfig } from "pi-mcp-adapter/types"
+import { mcpCredentialAccountId } from "./keyring-require-bridge.js"
 
 interface LegacyOAuthMigrationOptions {
 	agentDir?: string
@@ -80,10 +80,6 @@ function resolveOAuthBaseDirs(
 		: { sourceBaseDir, unsafeConfiguredTarget: targetBaseDir }
 }
 
-function hashedServerDirectory(serverName: string): string {
-	return `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
-}
-
 /**
  * Relocate Kimchi's complete plaintext OAuth entries into the hashed legacy
  * layout that pi-mcp-adapter imports into the operating-system credential
@@ -122,7 +118,7 @@ export function migrateLegacyOAuthCredentials(
 			continue
 		}
 
-		const targetPath = join(targetBaseDir, hashedServerDirectory(serverName), "tokens.json")
+		const targetPath = join(targetBaseDir, mcpCredentialAccountId(serverName), "tokens.json")
 		const conflictMarkerPath = join(dirname(sourcePath), CONFLICT_MARKER)
 		if (existsSync(conflictMarkerPath)) {
 			warnings.push(

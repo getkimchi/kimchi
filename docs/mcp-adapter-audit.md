@@ -119,10 +119,23 @@ automatic migration targets.
 
 The published adapter dynamically requires `@napi-rs/keyring`. Kimchi's Bun
 binary cannot resolve that native module from its compiled virtual filesystem,
-so a narrow local bridge supplies the statically bundled module. A private,
-file-backed implementation is available only to isolated E2E processes. The
+so a narrow local bridge supplies the statically bundled module. The bridged
+`Entry` also renames the adapter's OAuth service (`pi-mcp-adapter.oauth`) to
+the kimchi-owned `dev.kimchi.mcp.oauth` service: macOS partitions keychain
+item access control by code-signing identity, and the adapter's shared service
+name means items created by other binaries embedding the adapter (upstream pi,
+ad-hoc builds) trigger keychain unlock prompts under Kimchi. Existing
+credentials for the effective active server set are copied to the kimchi-owned
+service once per server (never deleted — legacy items may be co-owned by other
+adapter consumers), with chunked payloads committing via a manifest written
+last; the kimchi-owned entry is the migration marker, so the legacy service is
+never read again once it exists. A private, file-backed implementation is
+available only to isolated E2E processes. The
 `mcp keyring-check --json` command always exercises native credential-store
-CRUD and is run by release and canary workflows on each target OS.
+CRUD and is run by release and canary workflows on each target OS. On macOS,
+the real-keychain rename and migration can be exercised manually with
+`pnpm run test:local:keyring-migration` (seeds a legacy-service item, probes,
+verifies the copy and its idempotency, and cleans up).
 
 On Linux, revoked session keyrings are recovered through `keyctl session -`.
 Compiled builds configure the adapter's existing runtime/helper overrides to
@@ -143,6 +156,7 @@ Relevant code:
 
 - [`src/extensions/mcp/oauth-migration.ts`](../src/extensions/mcp/oauth-migration.ts)
 - [`src/extensions/mcp/keyring-require-bridge.ts`](../src/extensions/mcp/keyring-require-bridge.ts)
+- [`src/extensions/mcp/keyring-service-migration.ts`](../src/extensions/mcp/keyring-service-migration.ts)
 - [`src/extensions/mcp/keyring-recovery.ts`](../src/extensions/mcp/keyring-recovery.ts)
 - [`src/binary-entry.ts`](../src/binary-entry.ts)
 - [`src/commands/mcp.ts`](../src/commands/mcp.ts)

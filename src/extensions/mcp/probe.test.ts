@@ -65,6 +65,13 @@ vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
 }))
 
+const keyringServiceMigration = vi.hoisted(() => vi.fn(() => ({ migratedServerNames: [], warnings: [] })))
+
+vi.mock("./keyring-service-migration.js", () => ({
+	migrateMcpKeyringServiceCredentials: keyringServiceMigration,
+}))
+
+import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl, updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import { UpstreamMcpProbe } from "./probe.js"
 
@@ -165,6 +172,24 @@ describe("UpstreamMcpProbe", () => {
 		expect(installKeyringRequireBridge).toHaveBeenCalledOnce()
 		expect(upstream.sessionStart).toHaveBeenCalledOnce()
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+	})
+
+	it("migrates keychain service credentials before the adapter starts for a URL server", async () => {
+		await new UpstreamMcpProbe().probeTools("remote", { url: "https://example.test/mcp" })
+
+		expect(keyringServiceMigration).toHaveBeenCalledTimes(1)
+		expect(keyringServiceMigration).toHaveBeenCalledWith({
+			mcpServers: { remote: { url: "https://example.test/mcp" } },
+		})
+		expect(keyringServiceMigration.mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(createMcpAdapter).mock.invocationCallOrder[0],
+		)
+	})
+
+	it("does not migrate keychain service credentials for stdio-only servers", async () => {
+		await new UpstreamMcpProbe().probeTools("local", { command: "node", args: ["server.js"] })
+
+		expect(keyringServiceMigration).not.toHaveBeenCalled()
 	})
 
 	it.each([

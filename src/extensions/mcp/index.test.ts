@@ -36,6 +36,7 @@ const permissionState = vi.hoisted(() => ({
 	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
 }))
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
+const keyringServiceMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
@@ -100,6 +101,13 @@ vi.mock("./oauth-migration.js", () => ({
 	})),
 }))
 
+vi.mock("./keyring-service-migration.js", () => ({
+	migrateMcpKeyringServiceCredentials: vi.fn(() => ({
+		migratedServerNames: [],
+		warnings: keyringServiceMigration.warnings,
+	})),
+}))
+
 vi.mock("./oauth-callback-branding.js", () => ({
 	brandMcpAdapterOwnedToolResult: (result: unknown) => result,
 	brandMcpAdapterText: (text: string) => text.replaceAll("Pi", "Kimchi"),
@@ -113,6 +121,7 @@ vi.mock("./project-trust.js", () => ({
 }))
 
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
+import { migrateMcpKeyringServiceCredentials } from "./keyring-service-migration.js"
 
 function tool(name: string, label: string): ToolDefinition {
 	return {
@@ -145,6 +154,8 @@ describe("upstream MCP adapter facade", () => {
 		configState.warnings = []
 		configState.legacyKeys = []
 		oauthMigration.warnings = []
+		keyringServiceMigration.warnings = []
+		vi.mocked(migrateMcpKeyringServiceCredentials).mockClear()
 		oauthBranding.install.mockClear()
 		cliState.mcpConfig = undefined
 		cliState.approve = undefined
@@ -570,10 +581,46 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
 	})
 
+	it("migrates keychain service credentials for the effective server set once per process", async () => {
+		configState.config = { mcpServers: { project: { command: "project-server" } } }
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({
+			cwd: "/workspace",
+			callerServers: { ide: { command: "ide-server" } },
+		})(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => true }))
+		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, createContext())
+
+		expect(migrateMcpKeyringServiceCredentials).toHaveBeenCalledTimes(1)
+		expect(migrateMcpKeyringServiceCredentials).toHaveBeenCalledWith({
+			mcpServers: { project: { command: "project-server" }, ide: { command: "ide-server" } },
+		})
+	})
+
+	it("migrates only user-level and caller servers when the project is untrusted", async () => {
+		projectTrust.trusted = false
+		configState.config = { mcpServers: { project: { command: "project-server" } } }
+		configState.userConfig = { mcpServers: { personal: { command: "personal-server" } } }
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({
+			cwd: "/workspace",
+			callerServers: { ide: { command: "ide-server" } },
+		})(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => false }))
+
+		expect(migrateMcpKeyringServiceCredentials).toHaveBeenCalledTimes(1)
+		expect(migrateMcpKeyringServiceCredentials).toHaveBeenCalledWith({
+			mcpServers: { personal: { command: "personal-server" }, ide: { command: "ide-server" } },
+		})
+	})
+
 	it("surfaces compatibility warnings when the session starts", async () => {
 		configState.warnings = ["legacy config is malformed"]
 		configState.legacyKeys = ["mcpSearch"]
 		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
+		keyringServiceMigration.warnings = ['MCP OAuth: failed to migrate credentials for "docs": denied']
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		const ctx = createContext()
@@ -582,6 +629,7 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy config is malformed", "warning")
 		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy OAuth entry conflicts with the upstream layout", "warning")
+		expect(ctx.ui.notify).toHaveBeenCalledWith('MCP OAuth: failed to migrate credentials for "docs": denied', "warning")
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("mcpSearch no longer controls"), "warning")
 	})
 })
