@@ -24,7 +24,7 @@ test("/memory delete removes a fact by id; reset wipes the store after confirmat
 		{
 			artifactName: "memory-delete-reset",
 			responses: [],
-			extraArgs: ["--memory"],
+			env: { KIMCHI_ENABLE_RESOURCES: "extensions.memory" },
 			seedHome: (homeDir) => {
 				seedMemoryHome(homeDir, FACTS)
 			},

@@ -1,8 +1,10 @@
-"""build_cli_flags must carry --memory to the memory-on arm of A/B runs.
+"""The memory-on A/B arm enables the extension via KIMCHI_ENABLE_RESOURCES.
 
-A silent regression here (flag dropped, base-class rename) would run the
-memory-on arm with memory off and corrupt the benchmark comparison that
-motivated the kimchi memory extension.
+A silent regression here (env prefix dropped, command restructured) would
+run the memory-on arm with memory off and corrupt the benchmark comparison
+that motivated the kimchi memory extension. The mechanism is a per-resource
+env enable on the invocation — not a CLI flag, and not the global
+experimental switch.
 """
 
 from __future__ import annotations
@@ -11,24 +13,24 @@ from kimchi_agent.agent import Kimchi
 
 
 def _agent(memory: bool) -> Kimchi:
-    """A Kimchi instance with just the state build_cli_flags reads.
+    """A Kimchi instance with just the state _kimchi_command reads.
 
     object.__new__ skips __init__ (which needs a full harbor job config);
-    the override only touches _memory_enabled, _resolved_flags, and the
-    CLI_FLAGS class attribute.
+    _kimchi_command touches _memory_enabled, _multi_model_enabled,
+    model_name, and _extension_paths() (which needs no state).
     """
     agent = object.__new__(Kimchi)
     agent._memory_enabled = memory
-    agent._resolved_flags = {"thinking": "high"}
+    agent._multi_model_enabled = False
+    agent.model_name = "test-model"
     return agent
 
 
-def test_memory_flag_appended_when_enabled() -> None:
-    flags = _agent(memory=True).build_cli_flags()
-    assert "--memory" in flags.split()
-    # Base flags survive the override.
-    assert flags.startswith("--thinking high")
+def test_memory_env_prefix_when_enabled() -> None:
+    command = _agent(memory=True)._kimchi_command("")
+    assert command.startswith("KIMCHI_ENABLE_RESOURCES=extensions.memory ")
 
 
-def test_flags_unchanged_when_memory_disabled() -> None:
-    assert _agent(memory=False).build_cli_flags() == "--thinking high"
+def test_no_memory_env_when_disabled() -> None:
+    command = _agent(memory=False)._kimchi_command("")
+    assert "KIMCHI_ENABLE_RESOURCES" not in command

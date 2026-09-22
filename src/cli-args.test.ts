@@ -17,7 +17,6 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
-	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
@@ -332,32 +331,6 @@ describe("stripMultiModelArgs", () => {
 	})
 })
 
-describe("stripMemoryArgs (the prompt-eating guard)", () => {
-	// pi-mono's parser treats unknown --flags as greedy: without stripping,
-	// `--memory "prompt"` would eat the prompt as the flag's value.
-	it("removes the bare --memory flag while preserving the prompt", () => {
-		expect(stripMemoryArgs(["--memory", "fix tests"])).toEqual(["fix tests"])
-		expect(stripMemoryArgs(["--memory"])).toEqual([])
-	})
-
-	it("removes the =-form", () => {
-		expect(stripMemoryArgs(["--memory=true", "fix tests"])).toEqual(["fix tests"])
-		expect(stripMemoryArgs(["--memory=false"])).toEqual([])
-	})
-
-	it("preserves positionals, prompts, and other flags", () => {
-		expect(stripMemoryArgs(["--yolo", "--memory", "fix the failing test", "--print"])).toEqual([
-			"--yolo",
-			"fix the failing test",
-			"--print",
-		])
-	})
-
-	it("does not touch other flags that merely contain 'memory'", () => {
-		expect(stripMemoryArgs(["--memory-dir", "/tmp"])).toEqual(["--memory-dir", "/tmp"])
-	})
-})
-
 describe("populateCliArgs / getParsedCliArgs", () => {
 	it("parses --model multi-model", () => {
 		populateCliArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])
@@ -402,16 +375,16 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 })
 
 describe("boolean =-form normalization", () => {
-	it('enables --memory=true (previously the string "true" — silently ignored)', () => {
-		populateCliArgs(["--memory=true", "fix tests"])
-		expect(getParsedCliArgs().options.memory).toBe(true)
+	it('enables --yolo=true (previously the string "true" — silently ignored)', () => {
+		populateCliArgs(["--yolo=true", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
 	})
 
-	it("disables on --memory=false and keeps the bare flag true", () => {
-		populateCliArgs(["--memory=false", "fix tests"])
-		expect(getParsedCliArgs().options.memory).toBe(false)
-		populateCliArgs(["--memory", "fix tests"])
-		expect(getParsedCliArgs().options.memory).toBe(true)
+	it("disables on --yolo=false and keeps the bare flag true", () => {
+		populateCliArgs(["--yolo=false", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(false)
+		populateCliArgs(["--yolo", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
 	})
 
 	it("normalizes every boolean flag's =-form", () => {
@@ -421,8 +394,8 @@ describe("boolean =-form normalization", () => {
 	})
 
 	it("rejects non-boolean =-values for boolean flags", () => {
-		expect(() => populateCliArgs(["--memory=1", "fix tests"])).toThrow(
-			/--memory expects a boolean \(=true or =false\); got --memory="1"/,
+		expect(() => populateCliArgs(["--yolo=1", "fix tests"])).toThrow(
+			/--yolo expects a boolean \(=true or =false\); got --yolo="1"/,
 		)
 	})
 })

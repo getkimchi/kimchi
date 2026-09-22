@@ -32,10 +32,10 @@
  * Failures degrade to no-memory: store/search errors log once and leave
  * the session untouched. Memory must never break a session.
  *
- * Opt-in via the `--memory` CLI flag (see cli-args.ts CLI_OPTIONS).
+ * Opt-in via the extensions.memory resource: `kimchi resources enable
+ * extensions.memory` (persistent) or KIMCHI_ENABLE_RESOURCES (transient).
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { getParsedCliArgs } from "../../cli-args.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import {
 	type AdminCommand,
@@ -155,7 +155,7 @@ async function openMemoryPanel(
 }
 
 export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: ExtensionAPI) => void {
-	const isEnabled = deps.isEnabled ?? (() => getParsedCliArgs().options.memory === true)
+	const isEnabled = deps.isEnabled ?? (() => true)
 
 	return function memoryExtension(pi: ExtensionAPI): void {
 		// Registered unconditionally — pi rejects unknown extension flags at

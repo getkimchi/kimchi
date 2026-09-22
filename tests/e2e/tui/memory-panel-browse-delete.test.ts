@@ -25,7 +25,7 @@ test("/memory list opens the interactive browser; paging and deleting by selecti
 		{
 			artifactName: "memory-panel-browse-delete",
 			responses: [],
-			extraArgs: ["--memory"],
+			env: { KIMCHI_ENABLE_RESOURCES: "extensions.memory" },
 			seedHome: (homeDir) => {
 				seedMemoryHome(homeDir, FACTS)
 			},

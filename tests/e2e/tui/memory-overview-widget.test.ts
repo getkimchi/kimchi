@@ -19,7 +19,7 @@ test("/memory overview renders store stats as a widget that clears when the agen
 		{
 			artifactName: "memory-overview-widget",
 			responses: [{ stream: ["The overview widget cleared — the agent resumed."] }],
-			extraArgs: ["--memory"],
+			env: { KIMCHI_ENABLE_RESOURCES: "extensions.memory" },
 			seedHome: (homeDir) => {
 				seedMemoryHome(homeDir, [
 					{ id: "e2e-fred", text: "the user's dog is named Fred" },

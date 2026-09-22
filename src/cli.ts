@@ -19,7 +19,6 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
-	stripMemoryArgs,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -100,6 +99,7 @@ import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./extensions/mcp/index.js"
 import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
+import { MEMORY_RESOURCE_ID } from "./extensions/memory/config.js"
 import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
@@ -598,7 +598,7 @@ try {
 		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs()) && !(await shouldDefaultToAuto())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
-		const rawArgsWithoutMultiModel = stripMemoryArgs(stripMultiModelArgs(rawArgs))
+		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -794,10 +794,10 @@ try {
 			...enabledExtensionFactories([
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },
+				{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelGuardExtension,
-			memoryExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
 			piiRedactionExtension,

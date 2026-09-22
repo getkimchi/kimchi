@@ -1,6 +1,6 @@
 # Memory extension
 
-Opt-in persistent memory for kimchi sessions (`--memory`, off by default). Facts about the user and their projects are captured from session transcripts in the background, stored locally in Mem0 OSS SQLite stores, and recalled into later sessions through a value-gated digest, a `memory_search` tool, and drift-triggered recall.
+Opt-in persistent memory for kimchi sessions (the `extensions.memory` resource, off by default: `kimchi resources enable extensions.memory`, or `KIMCHI_ENABLE_RESOURCES=extensions.memory` for a transient enable). Facts about the user and their projects are captured from session transcripts in the background, stored locally in Mem0 OSS SQLite stores, and recalled into later sessions through a value-gated digest, a `memory_search` tool, and drift-triggered recall.
 
 Facts are stored locally; extraction and embedding run through the kimchi gateway — the same endpoint as the chat model (`llm.kimchi.dev/openai/v1`).
 

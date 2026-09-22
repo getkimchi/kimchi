@@ -10,6 +10,9 @@ export const MEMORY_SCOPE_ID = "personal"
 /** The user_id mem0 filters on within a scope's store. */
 export const MEMORY_USER_ID = "personal"
 
+/** The /resources id for the memory extension — the gate for its registration. */
+export const MEMORY_RESOURCE_ID = "extensions.memory"
+
 /**
  * Relevance bar for auto-injection: facts below this search score never
  * enter the digest. 0.2 (was 0.3): the benchmark investigation confirmed a

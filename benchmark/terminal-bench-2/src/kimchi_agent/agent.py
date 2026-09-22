@@ -926,12 +926,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         )
 
     def build_cli_flags(self) -> str:
-        # Memory is off by default in kimchi; --memory enables the extension
-        # for the memory-on arm of A/B runs.
-        flags = super().build_cli_flags()
-        if self._memory_enabled:
-            flags = f"{flags} --memory".strip()
-        return flags
+        # Memory is off by default in kimchi; the memory-on arm of A/B runs
+        # enables it via the KIMCHI_ENABLE_RESOURCES env var (see
+        # _kimchi_command), not a CLI flag.
+        return super().build_cli_flags()
 
     def _kimchi_command(self, cli_flags: str) -> str:
         model_flag = ""
@@ -943,8 +941,13 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         # (e.g. the workflow-agent launch command in the design doc).
         extension_flags = "".join(f"-e {shlex.quote(path)} " for path in self._extension_paths())
 
+        # The memory-on arm of A/B runs enables the extension via the
+        # KIMCHI_ENABLE_RESOURCES env var — a per-resource transient enable,
+        # not a CLI flag and not the global experimental switch.
+        memory_env = "KIMCHI_ENABLE_RESOURCES=extensions.memory " if self._memory_enabled else ""
+
         return (
-            f"{shlex.quote(BINARY_PATH)} "
+            f"{memory_env}{shlex.quote(BINARY_PATH)} "
             f"{extension_flags}"
             # Experimental features (e.g. the daemon tools for services that
             # must outlive the agent session, which graders then connect to)
