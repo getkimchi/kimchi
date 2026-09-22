@@ -7,6 +7,7 @@ import {
 	buildCoreGuidelinesSections,
 	buildOutputAndTruncationSection,
 	buildToolSelectionSection,
+	COMMUNICATION,
 } from "../../prompt-construction/system-prompt.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
@@ -79,7 +80,7 @@ Platform: ${env.platform}`
 
 	if (config.promptMode === "append") {
 		const activeToolNames = extras?.activeToolNames
-		const parentPrompt = parentSystemPrompt || genericBase
+		const parentPrompt = (parentSystemPrompt || genericBase).replace(COMMUNICATION, "")
 		const identity = activeToolNames
 			? stripInheritedContextSections(parentPrompt)
 			: stripAvailableToolsSection(parentPrompt)

@@ -85,6 +85,96 @@ function createSkill(overrides: Partial<Skill> & { name: string; description: st
 }
 
 describe("buildSystemPrompt", () => {
+	it.each(["single", "orchestrator"] as const)("provides default communication guidance in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result.match(/^## Communication$/gm)).toHaveLength(1)
+		expect(result).toContain("Explicit output formats, including code-only or structured data, take precedence")
+		expect(result).toContain("When asked for JSON only, emit the JSON value directly without Markdown fences")
+		expect(result).toContain("Distinguish verified outcomes from expectations, and partial success from completion")
+		expect(result).toContain("Carry authorized work through to completion")
+		expect(result).toContain("Do not announce an upcoming tool call in text")
+		expect(result).toContain("one bounded action per step")
+		expect(result).toContain("On each turn of multi-step work, make the current step and progress visible")
+		expect(result).toContain("one action the user can start in under two minutes")
+		expect(result).toContain("After three unsuccessful fixes, stop editing")
+		expect(result).toContain("Use literal language")
+		expect(result).toContain("Honor requests to change or stop this style for the rest of the session")
+		expect(result).toContain('For "normal mode" or "stop adhd mode", confirm briefly')
+		expect(result).not.toContain("Before substantial work, briefly state the approach")
+		expect(result).not.toContain("proceed quietly")
+		expect(result).not.toContain("Do not repeat what you just did or summarize completed steps")
+		expect(result).not.toContain("After every tool result, ALWAYS produce text")
+	})
+
+	it.each([
+		"single",
+		"orchestrator",
+	] as const)("guides readable answers without arbitrary length quotas in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result).toContain("Default reply: answer first")
+		expect(result).toContain("do not squeeze the answer into a word count")
+		expect(result).not.toContain("under 60 words")
+		expect(result).not.toContain("sets of roughly five")
+		expect(result.indexOf("Default reply:")).toBeGreaterThan(result.indexOf("Apply this style across turns"))
+		expect(result).toContain("any explanation needed to use it correctly")
+		expect(result).toContain("Introduce a necessary technical term with its meaning")
+		expect(result).toContain("Use separate short paragraphs or bullets for distinct points")
+		expect(result).toContain("Put a blank line between paragraphs and before lists")
+		expect(result).toContain("use a brief bold label for each item")
+		expect(result).toContain("an unmentioned check or state is unknown")
+		expect(result).toContain("Examples of complete replies (nothing else needs to follow)")
+		expect(result).not.toContain("one short paragraph of two to four short sentences")
+		expect(result).toContain("Expand when the user explicitly requests depth or a walkthrough, lists points to cover")
+		expect(result).toContain("Use a table when it makes a comparison easier to read")
+		expect(result).toContain("one point per sentence")
+		expect(result).not.toContain("Explain fully when asked")
+	})
+
+	it.each(["single", "orchestrator"] as const)("separates reporting status from planning work in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result).toContain("A status or summary request asks what is known, not what to do next")
+		expect(result).toContain("Do not repeat those facts in an opening or closing recap")
+		expect(result).toContain("A check not run is a status fact, not an instruction for the user")
+		expect(result).toContain("Include next steps when the user asks for them or must act to unblock authorized work")
+		expect(result).toContain("an unmentioned check or state is unknown")
+	})
+
+	it.each([
+		"single",
+		"orchestrator",
+	] as const)("bounds clarification without limiting complete answers in %s mode", (mode) => {
+		const result = buildSystemPrompt({
+			tools: [],
+			env: testEnv,
+			mode,
+			contextFiles: [{ path: "AGENTS.md", content: "Project instruction marker." }],
+		})
+		expect(result.indexOf("## Communication")).toBeGreaterThan(result.indexOf("Project instruction marker."))
+		expect(result).toContain("A clarification-only reply is at most two short sentences")
+		expect(result).toContain("Lead with the input request; add a reason only when useful")
+		expect(result).not.toContain("the essential limitation, if needed, then one question or request")
+		expect(result).not.toContain("When evidence is unavailable, state the limit briefly")
+		expect(result).toContain("Do not bundle several fields into that request")
+		expect(result).toContain(
+			"Ask for one diagnostic artifact and stop; listing common causes does not answer that question",
+		)
+		expect(result).toContain(
+			"Give a full checklist or general explanation only when the user explicitly asks for that broader content",
+		)
+		expect(result).toContain(
+			"Find missing facts with available tools before asking the user, respecting tool restrictions",
+		)
+		expect(result).toContain("bound that search to one or two checks of the obvious places")
+		expect(result).toContain("This is not a limit on investigating an identified task")
+		expect(result).not.toContain("state that clearly and ask the user to provide them")
+	})
+
+	it("keeps human communication guidance out of the subagent output protocol", () => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode: "subagent" })
+		expect(result).not.toContain("## Communication")
+		expect(result).toContain("Do NOT add any text before or after the JSON")
+	})
+
 	const tools = [
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },
