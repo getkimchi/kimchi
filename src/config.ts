@@ -548,6 +548,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 		redaction: projectExtras.redaction ?? globalExtras.redaction,
+		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
 	}
 
 	return {
@@ -563,6 +564,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
 		redaction: extras.redaction,
+		memoryEmbedding: extras.memoryEmbedding,
 	}
 }
 
