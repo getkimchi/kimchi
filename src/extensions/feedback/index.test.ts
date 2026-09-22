@@ -54,6 +54,11 @@ vi.mock("./model-switch-dialog.js", () => ({
 	showModelSwitchDialog: modelSwitchDialogMock.show,
 }))
 
+const keyboardCapabilityMock = vi.hoisted(() => ({ kittySupport: undefined as boolean | undefined }))
+vi.mock("../terminal-compat/keyboard-capability.js", () => ({
+	getKittyKeyboardSupport: () => keyboardCapabilityMock.kittySupport,
+}))
+
 describe("feedbackExtension state machine", () => {
 	beforeEach(async () => {
 		feedbackMock.trackFeedback.mockReset()
@@ -682,5 +687,74 @@ describe("feedbackExtension failure handling", () => {
 		await pressCtrlR(ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("overlay crashed"), "error")
+	})
+})
+
+describe("feedbackExtension legacy-terminal rating keys", () => {
+	const CTRL_G = "\x07"
+	const CTRL_B = "\x02"
+
+	async function press(ctx: ExtensionContext, data: string): Promise<void> {
+		sendTerminalInput(ctx, data)
+		await new Promise((resolve) => setTimeout(resolve, 0))
+	}
+
+	beforeEach(() => {
+		feedbackMock.trackFeedback.mockReset()
+		dialogMock.show.mockReset()
+		keyboardCapabilityMock.kittySupport = false
+	})
+
+	afterEach(() => {
+		keyboardCapabilityMock.kittySupport = undefined
+	})
+
+	it("Ctrl+G rates Good and Ctrl+B rates Bad when the terminal lacks the Kitty keyboard protocol", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValueOnce(undefined)
+		await press(ctx, CTRL_G)
+		expect(dialogMock.show).toHaveBeenLastCalledWith(ctx, { sentiment: "positive", autoModelUsed: false })
+
+		dialogMock.show.mockResolvedValueOnce(undefined)
+		await press(ctx, CTRL_B)
+		expect(dialogMock.show).toHaveBeenLastCalledWith(ctx, { sentiment: "negative", autoModelUsed: false })
+	})
+
+	it("does not claim Ctrl+G/Ctrl+B when the terminal supports the Kitty keyboard protocol", async () => {
+		keyboardCapabilityMock.kittySupport = true
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		expect(ctx.ui.onTerminalInput).not.toHaveBeenCalled()
+		await press(ctx, CTRL_G)
+		expect(dialogMock.show).not.toHaveBeenCalled()
+	})
+
+	it("passes Ctrl+G/Ctrl+B through before agent_settled and after the next turn starts", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+
+		await press(ctx, CTRL_G)
+		getHandler("agent_settled")({}, ctx)
+		getHandler("turn_start")({}, ctx)
+		await press(ctx, CTRL_B)
+
+		expect(dialogMock.show).not.toHaveBeenCalled()
+	})
+
+	it("passes Ctrl+G/Ctrl+B through while the prompt editor has text", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		vi.mocked(ctx.ui.getEditorText).mockReturnValue("draft prompt")
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		await press(ctx, CTRL_B)
+		await press(ctx, CTRL_G)
+
+		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 })

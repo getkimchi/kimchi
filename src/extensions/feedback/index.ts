@@ -5,6 +5,7 @@ import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isAutoModel } from "../router/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../router/state.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
+import { getKittyKeyboardSupport } from "../terminal-compat/keyboard-capability.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
@@ -40,6 +41,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		routedUsedId = undefined
 		clearModelSwitchInvitation()
 		stopListeningForCtrlR()
+		stopListeningForLegacyRatingKeys()
 	}
 
 	// Rating shortcuts are registered statically: they are always available once
@@ -81,6 +83,36 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		})
 	}
 
+	// Terminals without the Kitty keyboard protocol (e.g. macOS Terminal.app)
+	// have no encoding for Ctrl+<digit>: Ctrl+1 arrives as a plain "1", so the
+	// rating shortcuts above can never fire there. Fall back to keys that do
+	// have a legacy control code:
+	//   - Ctrl+G → Good
+	//   - Ctrl+B → Bad
+	// Both are built-ins (app.editor.external, tui.editor.cursorLeft), so they
+	// are claimed through raw input only while a rating can actually happen and
+	// the prompt editor is empty; otherwise the key passes through untouched.
+	let unsubscribeLegacyRatingKeys: (() => void) | undefined
+	const stopListeningForLegacyRatingKeys = () => {
+		unsubscribeLegacyRatingKeys?.()
+		unsubscribeLegacyRatingKeys = undefined
+	}
+	const listenForLegacyRatingKeys = (ctx: ExtensionContext) => {
+		stopListeningForLegacyRatingKeys()
+		if (getKittyKeyboardSupport() !== false) return
+		unsubscribeLegacyRatingKeys = ctx.ui.onTerminalInput((data: string) => {
+			if (state !== "inviting" || ctx.ui.getEditorText().length > 0) return undefined
+			let sentiment: FeedbackSentiment
+			if (matchesKey(data, Key.ctrl("g"))) sentiment = "positive"
+			else if (matchesKey(data, Key.ctrl("b"))) sentiment = "negative"
+			else return undefined
+			void handleShortcut(ctx, sentiment).catch((err: unknown) => {
+				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
+			})
+			return { consume: true }
+		})
+	}
+
 	// Session replacement (/resume, /fork, /clone) fires session_shutdown then
 	// session_start. Reset on both so a stale invitation from the previous
 	// session can never leak into the new one.
@@ -101,6 +133,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
 		const routingState = getAutoRoutingState(sessionId)
 		routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
+		listenForLegacyRatingKeys(ctx)
 	})
 
 	pi.on("model_select", (event, ctx: ExtensionContext) => {
