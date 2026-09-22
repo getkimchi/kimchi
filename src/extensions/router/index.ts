@@ -28,7 +28,7 @@ import {
 
 /** Rendered when the Auto router picks a concrete model — mimics upstream status lines like "TUI mode: fullscreen". */
 function formatAutoPickNotice(modelId: string): string {
-	return `Auto-model picked ${modelId}.`
+	return `Auto picked ${modelId}.`
 }
 
 function branchHasImages(entries: readonly SessionEntry[]): boolean {

@@ -7,7 +7,7 @@ import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
-import { type FeedbackSummaryDetails, feedbackSummaryRenderer } from "./renderer.js"
+import { type FeedbackSummaryDetails, feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
 const FEEDBACK_SUMMARY_CUSTOM_TYPE = "feedback-summary"
 const MODEL_SWITCH_SUMMARY_CUSTOM_TYPE = "model-switch-feedback"
@@ -90,34 +90,36 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		autoModelUsed = isAutoModel(ctx.model)
 	})
 
-	pi.on("model_select", (event, _ctx: ExtensionContext) => {
+	pi.on("model_select", (event, ctx: ExtensionContext) => {
 		// Only react in TUI mode — headless modes can't show a dialog.
-		if (_ctx.mode !== "tui" || !_ctx.hasUI) return
+		if (ctx.mode !== "tui" || !ctx.hasUI) return
 		// Only react when the previous model was auto.
 		if (!event.previousModel || !isAutoModel(event.previousModel)) return
 		// Only react when the new model is a concrete model — skip auto/multi-model.
 		const newModel = event.model
-		if (!newModel) return
 		if (isAutoModel(newModel)) return
 		if (newModel.id === MULTI_MODEL_ID) return
 
 		const modelId = newModel.id
 		const modelName = newModel.name ?? newModel.id
 
-		// Append the initial invitation entry. We pass a fresh data object
-		// inline (not stored anywhere mutable) so the renderer can recognise
-		// it as a model-switch summary. We deliberately do NOT keep a
-		// reference to mutate later — the transcript is already rendered, and
-		// a mutation would not trigger a re-render. When the user submits a
-		// reason via Ctrl+R we append a brand-new entry instead (see
-		// handleShortcut).
-		pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, { model: modelName, reason: "" })
-
 		// Don't pop the dialog immediately. Set an invitation so the prompt
 		// summary knows a model-switch invitation is active. The user opens
 		// the dialog explicitly with Ctrl+R.
 		setModelSwitchInvitation({ modelName, modelId })
-		listenForCtrlR(_ctx)
+		listenForCtrlR(ctx)
+
+		// Deferred, not synchronous: upstream awaits this handler from inside
+		// `setModel()`, which prints its `Model:` status only after that
+		// resolves — appending now would render above it. Must stay fire and
+		// forget; awaiting would re-serialise the emit back into `setModel()`.
+		setTimeout(() => {
+			// A lifecycle reset may have cancelled the invitation while this
+			// timer was queued — don't render a stale hint for it.
+			if (getModelSwitchInvitation()?.modelId !== modelId) return
+			const payload: ModelSwitchSummaryDetails = { model: modelName, reason: "" }
+			pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
+		}, 0)
 	})
 
 	async function handleShortcut(ctx: ExtensionContext, sentiment?: FeedbackSentiment): Promise<void> {
@@ -170,7 +172,8 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				// there surfaces as an unhandled rejection rather than a
 				// notification, and the invitation is already cleared.
 				try {
-					pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, { model: modelName, reason })
+					const payload: ModelSwitchSummaryDetails = { model: modelName, reason }
+					pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
 					trackModelSwitchFeedback({ reason, modelName, modelId })
 				} catch (err) {
 					setModelSwitchInvitation({ modelName, modelId })
