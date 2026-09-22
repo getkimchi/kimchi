@@ -69,7 +69,6 @@ import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
-import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import feedbackExtension from "./extensions/feedback/index.js"
@@ -691,11 +690,6 @@ try {
 			// continue/stop decision, other tool calls are hard-blocked with a
 			// steering reason; natural process exit releases the gate.
 			bashControlExtension,
-			// Session-surviving daemons: the consolidated daemon tool.
-			// Deliberate last resort for services that must outlive the session —
-			// session_shutdown intentionally kills nothing here.
-			// EXPERIMENTAL: gated behind --enable-experimental-features.
-			...(experimentalFeatures ? [daemonExtension] : []),
 			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
 			// and `user_bash` events.
 			bashHooksAdapterExtension,
