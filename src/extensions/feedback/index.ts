@@ -84,8 +84,8 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	}
 
 	// Terminals without the Kitty keyboard protocol (e.g. macOS Terminal.app)
-	// have no encoding for Ctrl+<digit>: Ctrl+1 arrives as a plain "1", so the
-	// rating shortcuts above can never fire there. Fall back to keys that do
+	// have no encoding for Ctrl+<digit>: Terminal.app sends no bytes at all for
+	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to keys that do
 	// have a legacy control code:
 	//   - Ctrl+G → Good
 	//   - Ctrl+B → Bad
