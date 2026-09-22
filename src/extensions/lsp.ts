@@ -77,7 +77,6 @@ export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
 	let degradedServers: ReturnType<typeof detectMissingCandidates> = []
-	let warned = false
 	let ui: ExtensionUIContext | undefined
 	// The five lsp_* tools (~670 est of
 	// description+schema) are dead weight when no language server exists for the
@@ -215,7 +214,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
 		ui = ctx.hasUI ? ctx.ui : undefined
-		warned = false
 		degradedServers = []
 		failedClients = new Map()
 		reportedFailures = new Set()
@@ -264,22 +262,10 @@ export default function (pi: ExtensionAPI) {
 			ui.setStatus("lsp", undefined)
 			ui = undefined
 		}
-		warned = false
 		degradedServers = []
 		failedClients = new Map()
 		reportedFailures = new Set()
 		shutdownAll()
-	})
-
-	// ── Degraded-state warning: notify once on the first agent turn ─────────────
-
-	pi.on("before_agent_start", async () => {
-		// One-time warning when in a project that would use LSP but has no
-		// server binary on PATH. No-op on subsequent turns and when not degraded.
-		if (warned || degradedServers.length === 0 || !ui?.notify) return
-		const lines = degradedServers.map((s) => `${s.name} — install with: ${s.installHint ?? s.command}`)
-		ui.notify(`LSP unavailable: language server(s) not installed for this project.\n${lines.join("\n")}`, "warning")
-		warned = true
 	})
 
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────

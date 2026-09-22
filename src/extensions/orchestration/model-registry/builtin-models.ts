@@ -59,10 +59,43 @@ within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after
 minimax has already failed on the same chunk.`
 
 const KIMI_K27_DESCRIPTION = `\
-Flagship Kimi model with vision support — the default for orchestration, deep research, \
+Previous-generation Kimi flagship with vision support — strong at deep research, \
 complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
-Best for: orchestration, architectural planning, plan verification involving concurrency or \
+Best for: deep research, architectural planning, plan verification involving concurrency or \
 algorithmic design, multi-step coding tasks, and any work requiring image understanding.`
+
+const KIMI_K3_DESCRIPTION = `\
+Flagship Kimi model with vision support — the default for orchestration, deep research, \
+complex planning, and correctness-critical review. Native multimodality (text, images, \
+screenshots) with a 1M-token context window and frontier-level long-horizon coding and \
+agentic performance. Best for: orchestration, architectural planning, plan verification \
+involving concurrency or algorithmic design, multi-step coding tasks, correctness-critical \
+review, and any work requiring image understanding.`
+
+const GLM_53_DESCRIPTION = `\
+Text-only flagship coding model from Z.ai with always-on reasoning and a 1M-token \
+context window. Strong long-horizon agentic coding, and the leading open-weights model \
+for vulnerability discovery and security review. Best for: architectural planning, plan \
+and spec verification, judge and grading calls, security-critical code review, and \
+long-document or whole-codebase analysis. Not suitable for: tasks requiring image or \
+visual input (no vision support).`
+
+const GLM_53_FLASH_DESCRIPTION = `\
+Multimodal value-tier coding model from Z.ai — the first natively multimodal GLM-5 \
+model (text, image, and video input) with a 1M-token context window. Near-flagship \
+agentic coding performance at roughly one-tenth of flagship price. Best for: multi-file \
+implementation, tool-driven build work, frontend and UI tasks involving screenshots or \
+visual input, and volume work where cost per token matters. Prefer a heavy-tier model \
+for concurrency-heavy, architectural, or security-critical work.`
+
+const DEEPSEEK_V4_FLASH_0731_DESCRIPTION = `\
+Fast and cost-effective model for codebase exploration and lightweight tasks — the \
+official release of DeepSeek-V4-Flash with substantially enhanced agentic capabilities \
+over the preview. High throughput with sub-second time to first token and a 1M-token \
+context window — can ingest entire large codebases in a single pass. Best for: codebase \
+exploration, reading code, tracing architecture, research, trivial re-verification \
+(confirming tests pass after a fix), and context summarization. Note: very verbose at \
+maximum reasoning effort — prefer lower effort levels for routine work.`
 
 const MINIMAX_M3_DESCRIPTION = `\
 Primary MiniMax model with vision support — heavy-tier builder and researcher. \
@@ -162,6 +195,22 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
 		},
 	],
+	[
+		"kimi-k3",
+		{
+			vision: true,
+			reasoning: true,
+			tier: "heavy",
+			description: KIMI_K3_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
+		},
+	],
 	["kimi-k2.5", "ignored"],
 	[
 		"minimax-m3",
@@ -198,6 +247,42 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		},
 	],
 	[
+		"glm-5.3",
+		{
+			vision: false,
+			reasoning: true,
+			tier: "heavy",
+			description: GLM_53_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES],
+				plan: [DEFAULT_PLAN_GUIDELINES],
+				build: [DEFAULT_BUILD_GUIDELINES],
+				review: [DEFAULT_REVIEW_GUIDELINES],
+			}),
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				"When orchestrating (glm-5.3): no model-specific delegation overrides. Its vulnerability-discovery strength makes it a strong pick for delegated security-critical review; match its always-on reasoning effort to task complexity.",
+			),
+		},
+	],
+	[
+		"glm-5.3-flash",
+		{
+			vision: true,
+			reasoning: true,
+			tier: "standard",
+			description: GLM_53_FLASH_DESCRIPTION,
+			guidelines: guidelinesMap({
+				build: [DEFAULT_BUILD_GUIDELINES],
+				review: [DEFAULT_REVIEW_GUIDELINES],
+				explore: [DEFAULT_EXPLORE_GUIDELINES],
+				research: [DEFAULT_RESEARCH_GUIDELINES],
+			}),
+			orchestrationGuidelines:
+				"When orchestrating (glm-5.3-flash): no model-specific orchestration overrides — follow the default delegation rules.",
+		},
+	],
+	[
 		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
@@ -229,6 +314,21 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			}),
 			orchestrationGuidelines:
 				"When orchestrating (deepseek-v4-flash): No model-specific orchestration overrides — follow the default delegation rules.",
+		},
+	],
+	[
+		"deepseek-v4-flash-0731",
+		{
+			vision: false,
+			reasoning: true,
+			tier: "light",
+			description: DEEPSEEK_V4_FLASH_0731_DESCRIPTION,
+			guidelines: guidelinesMap({
+				explore: [DEFAULT_EXPLORE_GUIDELINES],
+				research: [DEFAULT_RESEARCH_GUIDELINES],
+			}),
+			orchestrationGuidelines:
+				"When orchestrating (deepseek-v4-flash-0731): no model-specific orchestration overrides — follow the default delegation rules. Prefer lower reasoning-effort levels for routine exploration; max effort is very verbose.",
 		},
 	],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.

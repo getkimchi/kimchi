@@ -19,6 +19,7 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
@@ -44,7 +45,7 @@ import fermentV2Extension from "./index.js"
 import { objectiveFilePath, saveObjectiveFile } from "./objective-file.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "./plan-executor.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
-import type { FermentV2JournalEntry, SessionFermentV2 } from "./types.js"
+import { FERMENT_V2_STATUS, type FermentV2JournalEntry, type SessionFermentV2 } from "./types.js"
 
 vi.mock("./evaluator.js", () => ({ evaluateFermentV2: vi.fn() }))
 vi.mock("./settings.js", async (importOriginal) => {
@@ -109,11 +110,15 @@ describe("Ferment V2 extension", () => {
 		})
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
 		cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-edit-")))
+		// The harness writes and reads .kimchi/plans objective files in cwd —
+		// project-scoped, so trusted for these tests.
+		setProjectScopeTrusted(cwd, true)
 		harness = createHarness({ cwd })
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
 
 	afterEach(async () => {
+		resetProjectScopeTrustForTests()
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
 		clearPermissionModeEnv(TEST_SESSION_ID)
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
@@ -2643,6 +2648,39 @@ describe("Ferment V2 extension", () => {
 		expect(JSON.stringify(fermentV2Messages[0])).not.toContain("timeUsedMs")
 		expect(result.messages[0]).toBe(fermentV2Messages[0])
 		expect(result.messages).toContain(other)
+	})
+
+	it.each([false, true])("stops injecting completed objectives into later requests (replay: %s)", async (replay) => {
+		await harness.command("finish this objective")
+		const activeContext = (await harness.fire("context", { type: "context", messages: [] })) as ContextEvent
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await completeVisibleTodo(harness)
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()?.status).toBe(FERMENT_V2_STATUS.COMPLETE)
+		if (replay) await harness.fire("session_start", { type: "session_start", reason: "resume" })
+
+		const user = { role: "user" as const, content: "Now work on something else", timestamp: Date.now() }
+		const assistant = assistantTextMessage("Finished the requested task.")
+		const history = [assistant, user]
+		const result = (await harness.fire("context", {
+			type: "context",
+			messages: [...activeContext.messages, ...history],
+		})) as ContextEvent
+		expect(result.messages).toEqual(history)
+		expect(result.messages[0]).toBe(assistant)
+		expect(result.messages[1]).toBe(user)
+		expect(await harness.fire("context", { type: "context", messages: history })).toBeUndefined()
+		expect(
+			await harness.fire("before_agent_start", {
+				type: "before_agent_start",
+				prompt: user.content,
+				systemPrompt: "base",
+			}),
+		).toBeUndefined()
+		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toMatchObject({
+			status: FERMENT_V2_STATUS.COMPLETE,
+			objective: "finish this objective",
+		})
 	})
 
 	it("keeps the Ferment V2 context stable while only accounting changes", async () => {

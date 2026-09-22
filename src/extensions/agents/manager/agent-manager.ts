@@ -489,8 +489,7 @@ export class AgentManager {
 					if (activity.status === "in_progress") {
 						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
-						const isError = activity.status === "failed"
-						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
+						remoteSession.recordToolCallEndFromActivity(activity)
 						record.toolUses++
 					}
 					options.onToolActivity?.(activity)
@@ -505,6 +504,7 @@ export class AgentManager {
 					addUsage(record.lifetimeUsage, usage)
 					options.onAssistantUsage?.(usage)
 				},
+				onContextUsage: (used, size) => remoteSession.setContextUsage(used, size),
 				onRawNotification: (params) => {
 					options.onRawNotification?.(params)
 				},
@@ -1036,7 +1036,7 @@ export class AgentManager {
 					if (activity.status === "in_progress") {
 						adapter.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
-						adapter.recordToolCallEnd(activity.toolName, activity.toolCallId, activity.status === "failed")
+						adapter.recordToolCallEndFromActivity(activity)
 						record.toolUses++
 					}
 					options?.callbacks?.onToolActivity?.(activity)
@@ -1051,6 +1051,7 @@ export class AgentManager {
 					addUsage(record.lifetimeUsage, usage)
 					options?.callbacks?.onAssistantUsage?.(usage)
 				},
+				onContextUsage: (used, size) => adapter.setContextUsage(used, size),
 			},
 		}).then((result) => {
 			record.recoveryNote = result.recoveryNote

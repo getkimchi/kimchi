@@ -268,7 +268,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.7",
+				currentModelId: "kimi-k3",
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
@@ -276,7 +276,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Phase Tagging for Analytics")
 			expect(result).not.toContain("Call `set_phase`")
 			expect(result).toContain("### Phase-specific behaviour")
-			expect(result).toContain("During **plan** phase")
+			expect(result).toContain("During **review** phase")
 		})
 
 		it("handles empty tools list", () => {
@@ -424,13 +424,13 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.7",
+				currentModelId: "kimi-k3",
 				registry,
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
 			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **plan** phase")
+			expect(result).not.toContain("During **plan** phase")
 			expect(result).not.toContain("During **explore** phase")
 			expect(result).not.toContain("During **research** phase")
 			expect(result).not.toContain("During **build** phase")
@@ -721,7 +721,7 @@ describe("buildSystemPrompt", () => {
 			// The tool-independent safety rules that used to ride the phase payload
 			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
 			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
-			expect(result).toContain("Always wrap shell commands with a timeout")
+			expect(result).toContain("the bash tool's `timeout` parameter")
 			expect(result).toContain("Never run interactive commands")
 		})
 

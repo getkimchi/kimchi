@@ -4,7 +4,7 @@
 // ACP speaks JSON-RPC over stdio — no node-pty like the TUI fixture.
 
 import { type ChildProcess, spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
@@ -63,9 +63,12 @@ export interface AcpFixtureOptions {
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
 	routerResponses?: unknown[]
+	/** Email served by the fake `/v1/me`; an @cast.ai address opts into Auto-by-default. Null serves 404. */
+	userEmail?: string | null
 	providerId?: string
 	defaultProvider?: string
-	defaultModel?: string
+	/** Pin the fake model by default; false exercises unconfigured startup. */
+	defaultModel?: string | false
 	extraArgs?: string[]
 	/** Input modalities advertised by the default deterministic fake model. Ignored when `models` is provided. */
 	modelInput?: ("text" | "image")[]
@@ -93,6 +96,15 @@ export interface AcpFixtureOptions {
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
 	artifactName: string
+	/**
+	 * Pre-record a persisted trust decision for the session workDir (default
+	 * false). The project-trust gate fail-closes headless sessions without a
+	 * decision, so tests that seed .kimchi/ resources into the workDir AFTER
+	 * fixture creation need this opt-in — the fixture cannot scan for them at
+	 * creation time. Tests that exercise untrusted behavior (e.g. the MCP
+	 * project-trust scenarios) rely on the default.
+	 */
+	pretrustWorkDir?: boolean
 }
 
 /** Bundle of every notification / request the client received, in arrival order. */
@@ -225,6 +237,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		models,
 		modelInput,
 		routerResponses,
+		userEmail,
 		providerId = "fake",
 		defaultProvider,
 		defaultModel,
@@ -236,7 +249,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const configuredModels = models
 		? resolveModels(models)
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
-	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, routerResponses })
+	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, routerResponses, userEmail })
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
 
@@ -344,10 +357,14 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
-		if (defaultProvider && defaultModel) {
+		if (defaultModel !== false) {
 			writeFileSync(
 				join(agentDir, "settings.json"),
-				JSON.stringify({ defaultProvider, defaultModel }, null, "\t"),
+				JSON.stringify(
+					{ defaultProvider: defaultProvider ?? providerId, defaultModel: defaultModel ?? configuredModels[0]?.slug },
+					null,
+					"\t",
+				),
 				"utf-8",
 			)
 		}
@@ -358,7 +375,22 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
 
-		proc = spawn(BINARY_PATH, ["--mode", "acp", ...extraArgs], {
+		// ACP is headless (no trust prompt), and the project-trust gate
+		// fail-closes without a persisted decision. Pre-record one only when the
+		// test opts in — workDir content is usually seeded after fixture
+		// creation, so the fixture cannot detect it itself, and master's own
+		// untrusted-MCP scenarios rely on the default (no decision). Keyed by
+		// the realpath of the workDir (pi's trust store canonicalizes paths).
+		if (options.pretrustWorkDir === true) {
+			writeFileSync(
+				join(agentDir, "trust.json"),
+				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
+				"utf-8",
+			)
+		}
+
+		const modelArgs = defaultModel === undefined ? ["--model", configuredModels[0].slug] : []
+		proc = spawn(BINARY_PATH, ["--mode", "acp", ...modelArgs, ...extraArgs], {
 			stdio: ["pipe", "pipe", "inherit"],
 			env: {
 				...process.env,
@@ -371,6 +403,9 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
 				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
+				// Keep the Auto-by-default gate's /v1/me lookup on the fake
+				// server; otherwise it would reach the real app API.
+				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
 				...(mcp?.env ?? {}),
 			},
 			cwd: workDir,

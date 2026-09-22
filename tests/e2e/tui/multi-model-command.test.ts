@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
@@ -42,6 +42,52 @@ const TWO_MODELS = [
 	{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 },
 	{ slug: "heavy", displayName: "Fake Heavy", contextWindow: 1_000_000, maxTokens: 4096 },
 ] as const
+
+test("multi-model is listed in the model picker and command suggestions", async ({ terminal }) => {
+	// Contract: both Auto and the virtual multi-model row are selectable from
+	// the picker, and `/multi-model` is suggested by autocomplete. Their
+	// relative order is upstream's concern, so it is deliberately not asserted.
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-listed",
+			models: [...TWO_MODELS],
+			initialModel: "basic",
+			responses: [],
+			seedHome: (homeDir) => {
+				// The picker's virtual multi-model row is injected only when
+				// the orchestrator role's model exists in the picker list (the
+				// row borrows its model entry). The default orchestrator is not
+				// among the fake provider's models, so point it at one that is.
+				const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(path, "utf-8"))
+				settings.modelRoles = { ...settings.modelRoles, orchestrator: "fake/basic" }
+				writeFileSync(path, JSON.stringify(settings))
+			},
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/model")
+			await waitForText(terminal, "Only showing models from configured providers", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
+			const picker = viewText(terminal)
+			expect(picker).toContain("auto")
+			expect(picker).toContain("multi-model")
+			trace.step("picker lists both Auto and multi-model")
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.write("/multi")
+			// The suggestion row renders without a leading slash:
+			// `multi-model  [t] Configure model roles (...)`. Waiting on the
+			// row text alone only proves the input echo, so assert the row's
+			// description too.
+			await waitForText(terminal, "Configure model roles", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).toContain("multi-model")
+			trace.step("autocomplete offers /multi-model")
+		},
+	)
+})
 
 test("/multi-model opens the main menu with the role summary and bottom-row entries", async ({ terminal }) => {
 	await runKimchiSession(
@@ -138,19 +184,19 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			trace.step("metadata picker open")
 
 			// Pick the first model in the picker (cursor starts on it). The
-			// default orchestrator is "kimchi-dev/kimi-k2.7" and it has
-			// builtin metadata, so the wizard will offer "keep current (X)"
-			// options alongside the explicit choices.
-			await waitForText(terminal, "kimchi-dev/kimi-k2.7", { timeoutMs: INPUT_TIMEOUT_MS })
+			// default orchestrator is "kimchi-dev/kimi-k3" and it has builtin
+			// metadata, so the wizard will offer "keep current (X)" options
+			// alongside the explicit choices.
+			await waitForText(terminal, "kimchi-dev/kimi-k3", { timeoutMs: INPUT_TIMEOUT_MS })
 			// Explicit assertion: if the default orchestrator ref ever
 			// changes, this surfaces the failure here at the picker rather
 			// than as a confusing downstream timeout waiting for the submenu.
-			expect(viewText(terminal)).toContain("kimchi-dev/kimi-k2.7")
+			expect(viewText(terminal)).toContain("kimchi-dev/kimi-k3")
 			terminal.submit("")
 			// The submenu title is `${ref} — metadata`. Matching the full
-			// `kimchi-dev/kimi-k2.7 — metadata` string avoids matching the
+			// `kimchi-dev/kimi-k3 — metadata` string avoids matching the
 			// picker's own "Choose a model to edit metadata" header.
-			await waitForText(terminal, "kimchi-dev/kimi-k2.7 — metadata", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "kimchi-dev/kimi-k3 — metadata", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("model selected, submenu open")
 
 			// Submenu offers "Edit" (cursor starts on it) / "Cancel".
@@ -198,7 +244,7 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 
 			// After the last step the wizard closes and surfaces a
 			// "Metadata saved for X." notification.
-			await waitForText(terminal, /Metadata saved for kimchi-dev\/kimi-k2\.7\./, { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, /Metadata saved for kimchi-dev\/kimi-k3\./, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("metadata saved notification")
 
 			// Verify on-disk state. Assert against the parsed JSON object
@@ -206,7 +252,7 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			// can't silently shift the failure mode.
 			const settingsPath = `${fixture.homeDir}/.config/kimchi/harness/settings.json`
 			const settings = await readSettingsJson(settingsPath)
-			const meta = settings.modelMetadata?.["kimchi-dev/kimi-k2.7"]
+			const meta = settings.modelMetadata?.["kimchi-dev/kimi-k3"]
 			expect(meta).toBeDefined()
 			expect(meta).toMatchObject({ tier: "heavy", vision: true })
 			expect(meta?.description).toContain("heavy model for complex work")
@@ -355,17 +401,21 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("toggle-select first open")
 
+			// The role pickers always include `kimchi-dev/auto` (see
+			// model-roles-command.ts — Auto is pushed into the available refs)
+			// and the list is sorted, so row 0 is "auto". Concrete models and
+			// saved default-role models follow in sorted order.
+			const row0Model = cursorModelRow(viewText(terminal))
+			expect(row0Model).toBe("auto")
+			trace.step("cursor starts on row 0 (auto)")
+
 			// Move cursor down to row 1 and confirm we're no longer on row 0.
-			// Saved default-role models also appear in this sorted list, so the
-			// exact model occupying row 1 is deliberately not part of this test.
+			// Assert "not auto" purely as proof the cursor moved; the exact
+			// model occupying row 1 is deliberately not part of this test.
 			terminal.keyDown()
 			await new Promise((resolve) => setTimeout(resolve, 100))
-			const firstOpenView = viewText(terminal)
-			const firstCursorModel = firstOpenView
-				.split("\n")
-				.find((line) => /^> \[/.test(line))
-				?.match(/kimchi-dev\/(\S+)/)?.[1]
-			expect(firstCursorModel).not.toBe("basic")
+			const firstCursorModel = cursorModelRow(viewText(terminal))
+			expect(firstCursorModel).not.toBe("auto")
 			trace.step(`cursor on row 1 (${firstCursorModel}) after first open`)
 
 			// Escape cancels back to main menu.
@@ -374,17 +424,13 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			trace.step("back at main menu")
 
 			// Re-open Builder picker. The cursor MUST be back on row 0
-			// ("basic"), not on the previous row 1 ("heavy").
+			// ("auto"), not on the previous row 1 ("basic").
 			await navigateMenuTo(terminal, trace, "Builder")
 			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("toggle-select re-opened")
 
-			const reOpenView = viewText(terminal)
-			const reOpenCursorModel = reOpenView
-				.split("\n")
-				.find((line) => /^> \[/.test(line))
-				?.match(/kimchi-dev\/(\S+)/)?.[1]
-			expect(reOpenCursorModel).toBe("basic")
+			const reOpenCursorModel = cursorModelRow(viewText(terminal))
+			expect(reOpenCursorModel).toBe("auto")
 			trace.step(`cursor reset to row 0 (${reOpenCursorModel}) after re-open`)
 
 			terminal.keyEscape()
@@ -459,7 +505,7 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			trace.step("toggle-select open for Builder")
 
 			// Initial state: the Builder role's current assignment is the
-			// single-model default "kimchi-dev/kimi-k2.6" (not in TWO_MODELS
+			// single-model default "kimchi-dev/glm-5.3-flash" (not in TWO_MODELS
 			// but it still counts toward selected.size), so the title and
 			// bottom row both read "(1 selected)".
 			const beforeView = viewText(terminal)
@@ -467,9 +513,10 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			expect(beforeView).toMatch(/\(1 selected\)/)
 			trace.step("initial title and bottom row both show 1 selected")
 
-			// Space toggles the cursor row (row 0 — "basic") into the
-			// selection. Send Space without a trailing Enter so the picker
-			// stays open and we can observe the updated render.
+			// Space toggles the cursor row (row 0 — "auto", which always
+			// sorts first in the role pickers) into the selection. Send
+			// Space without a trailing Enter so the picker stays open and
+			// we can observe the updated render.
 			terminal.write(" ")
 			await new Promise((resolve) => setTimeout(resolve, 100))
 
@@ -557,7 +604,7 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 			trace.step("main menu open")
 
 			// Orchestrator is the first role row, so its summary block
-			// ("Orchestrator:\n    kimchi-dev/minimax-m3") is the cursor's
+			// ("Orchestrator:\n    kimchi-dev/kimi-k3") is the cursor's
 			// starting position. Press Enter directly to open the picker.
 			terminal.submit("")
 			await waitForText(terminal, "Orchestrator", { timeoutMs: INPUT_TIMEOUT_MS })
@@ -568,7 +615,7 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 
 			const view = viewText(terminal)
 			expect(view).not.toContain("Enter custom model")
-			expect(view).not.toContain("kimchi-dev/auto")
+			expect(view).toContain("kimchi-dev/auto")
 			trace.step("no Enter custom model... option visible")
 
 			terminal.keyEscape()
@@ -577,12 +624,11 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 	)
 })
 
-test("/multi-model offers Auto when experimental features are enabled", async ({ terminal }) => {
+test("/multi-model offers Auto without experimental features", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "multi-model-experimental-auto",
-			extraArgs: ["--enable-experimental-features"],
+			artifactName: "multi-model-auto",
 			// Deliberately reverse the API order so this scenario also verifies sorting.
 			models: [TWO_MODELS[1], TWO_MODELS[0]],
 			responses: [],
@@ -668,6 +714,17 @@ test("/multi-model restores every role configured as Auto", async ({ terminal })
 		},
 	)
 })
+
+/**
+ * Extract the `kimchi-dev/<slug>` id of the model row the cursor sits on
+ * in a toggle-select picker (cursor rows start with `> [`).
+ */
+function cursorModelRow(view: string): string | undefined {
+	return view
+		.split("\n")
+		.find((line) => /^> \[/.test(line))
+		?.match(/kimchi-dev\/(\S+)/)?.[1]
+}
 
 /**
  * Navigate the open SelectList one step at a time until the cursor (`→ `

@@ -80,6 +80,7 @@ describe("buildConfigSnapshot", () => {
 				} as unknown as AgentDiscovery["mcpServers"][string],
 			},
 			skillCount: 0,
+			skills: [],
 			commandsCount: 0,
 		}
 		vi.spyOn(agentDiscovery, "discoverAgent").mockReturnValue(fakeDiscovery)
@@ -106,7 +107,7 @@ describe("buildConfigSnapshot", () => {
 
 		it("reflects config + mocked accessors with telemetry enabled", () => {
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
-			expect(snapshot["config.search_provider"]).toBe("bm25")
+			expect(snapshot["config.search_provider"]).toBe("weighted")
 			expect(snapshot["config.telemetry_enabled"]).toBe(true)
 			expect(snapshot["config.permission_mode"]).toBe("plan")
 			expect(snapshot["config.agents_enabled"]).toBe(true)
@@ -122,7 +123,7 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.telemetry_enabled"]).toBe(false)
 			expect(snapshot["config.permission_mode"]).toBe("yolo")
 			expect(snapshot["config.agents_enabled"]).toBe(false)
-			expect(snapshot["config.search_provider"]).toBe("regex")
+			expect(snapshot["config.search_provider"]).toBe("weighted")
 		})
 
 		it("mcp_server_count equals total mocked server count across agent definitions", () => {

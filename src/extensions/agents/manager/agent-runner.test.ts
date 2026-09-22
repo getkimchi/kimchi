@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import dapExtension from "../../dap.js"
+import { AUTO_MODEL_ID, AUTO_MODEL_PI_NAME, AUTO_MODEL_PROVIDER } from "../../router/constants.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
@@ -161,10 +162,10 @@ function runInlineExtension(extension: InlineExtension | undefined, pi: Extensio
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
 const AUTO_MODEL: Model<Api> = {
-	id: "auto",
-	name: "Auto (Kimchi Router)",
+	id: AUTO_MODEL_ID,
+	name: AUTO_MODEL_PI_NAME,
 	api: "kimchi-auto",
-	provider: "kimchi-dev",
+	provider: AUTO_MODEL_PROVIDER,
 	baseUrl: "https://llm.kimchi.dev/openai/v1",
 	reasoning: true,
 	input: ["text", "image"],

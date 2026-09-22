@@ -1,0 +1,222 @@
+# Patch: Kimchi stroke rendering, scrollback behavior, and narrow-terminal
+# hardening for pi-tui 0.85.1
+#
+# Tracking: https://github.com/getkimchi/kimchi/issues/863
+# Changes:
+#   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine),
+#     including Box.handleMouse() so mouse hit-testing matches render().
+#   - Make scrollback clearing opt-in (PI_TUI_NO_CLEAR_SCROLLBACK) to avoid
+#     viewport jumps in long iTerm2 sessions.
+#   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
+#     so that no component can emit a line wider than the terminal (prevents
+#     crashes at widths 1-2 where paddingX margins alone exceed width).
+# Careful: text.js layers on upstream's own paddingX clamp - keep the clamp and
+#   thread the clamped local paddingX through the stroke sites when rebasing.
+# Removal: delete when the pinned Pi TUI release provides all three behaviors.
+# History: see patches/CHANGELOG.md.
+#
+diff --git a/dist/components/box.js b/dist/components/box.js
+index 2b31b95..bf46805 100644
+--- a/dist/components/box.js
++++ b/dist/components/box.js
+@@ -1,5 +1,5 @@
+ import { dispatchMouseEvent } from "../tui.js";
+-import { applyBackgroundToLine, visibleWidth } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, truncateToWidth, visibleWidth } from "../utils.js";
+ /**
+  * Box component - a container that applies padding and background to all children
+  */
+@@ -53,7 +53,10 @@ export class Box {
+         }
+     }
+     handleMouse(event) {
+-        const contentWidth = Math.max(1, event.width - this.paddingX * 2);
++        // Kimchi: match render()'s stroke-width accounting so hit-testing and
++        // child-height measurement use the same content width (stroke eats 2 cells).
++        const strokeWidth = this.bgFn ? STROKE_WIDTH : 0;
++        const contentWidth = Math.max(1, event.width - this.paddingX * 2 - strokeWidth);
+         const contentY = event.y - this.paddingY;
+         const contentX = event.x - this.paddingX;
+         if (contentY < 0 || contentX < 0 || contentX >= contentWidth)
+@@ -80,7 +83,8 @@ export class Box {
+         if (this.children.length === 0) {
+             return [];
+         }
+-        const contentWidth = Math.max(1, width - this.paddingX * 2);
++        const strokeWidth = this.bgFn ? STROKE_WIDTH : 0;
++        const contentWidth = Math.max(1, width - this.paddingX * 2 - strokeWidth);
+         const leftPad = " ".repeat(this.paddingX);
+         // Render all children
+         const childLines = [];
+@@ -121,13 +125,14 @@ export class Box {
+         return result;
+     }
+     applyBg(line, width) {
++        const strokeWidth = this.bgFn ? STROKE_WIDTH : 0;
+         const visLen = visibleWidth(line);
+-        const padNeeded = Math.max(0, width - visLen);
++        const padNeeded = Math.max(0, width - visLen - strokeWidth);
+         const padded = line + " ".repeat(padNeeded);
+         if (this.bgFn) {
+-            return applyBackgroundToLine(padded, width, this.bgFn);
++            return applyStrokeToLine(padded, width, this.paddingX, this.bgFn);
+         }
+-        return padded;
++        return truncateToWidth(padded, width);
+     }
+ }
+ //# sourceMappingURL=box.js.map
+\ No newline at end of file
+diff --git a/dist/components/markdown.js b/dist/components/markdown.js
+index 5788d75..6630c2c 100644
+--- a/dist/components/markdown.js
++++ b/dist/components/markdown.js
+@@ -1,7 +1,7 @@
+ import { Marked, Tokenizer } from "marked";
+ import { renderLatex } from "../latex.js";
+ import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
+-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
+ const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
+ class StrictStrikethroughTokenizer extends Tokenizer {
+     del(src) {
+@@ -182,7 +182,8 @@ export class Markdown {
+             return this.cachedLines;
+         }
+         // Calculate available width for content (subtract horizontal padding)
+-        const contentWidth = Math.max(1, width - this.paddingX * 2);
++        const strokeWidth = this.defaultTextStyle?.bgColor ? STROKE_WIDTH : 0;
++        const contentWidth = Math.max(1, width - this.paddingX * 2 - strokeWidth);
+         const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
+         // Don't render anything if there's no actual text
+         if (!text || text.trim() === "") {
+@@ -231,21 +232,22 @@ export class Markdown {
+                 continue;
+             }
+             const lineWithMargins = leftMargin + line + rightMargin;
++            const visibleLen = visibleWidth(lineWithMargins);
++            const paddingNeeded = Math.max(0, width - visibleLen - strokeWidth);
++            const padded = lineWithMargins + " ".repeat(paddingNeeded);
+             if (bgFn) {
+-                contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
++                contentLines.push(applyStrokeToLine(padded, width, this.paddingX, bgFn));
+             }
+             else {
+-                // No background - just pad to width
+-                const visibleLen = visibleWidth(lineWithMargins);
+-                const paddingNeeded = Math.max(0, width - visibleLen);
+-                contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
++                contentLines.push(truncateToWidth(padded, width));
+             }
+         }
+         // Add top/bottom padding (empty lines)
+         const emptyLine = " ".repeat(width);
+         const emptyLines = [];
+         for (let i = 0; i < this.paddingY; i++) {
+-            const line = bgFn ? applyBackgroundToLine(emptyLine, width, bgFn) : emptyLine;
++            const emptyPadded = leftMargin + " ".repeat(Math.max(0, width - this.paddingX - STROKE_WIDTH));
++            const line = bgFn ? applyStrokeToLine(emptyPadded, width, this.paddingX, bgFn) : emptyLine;
+             emptyLines.push(line);
+         }
+         // Combine top padding, content, and bottom padding
+diff --git a/dist/components/text.js b/dist/components/text.js
+index 9afcf79..2e43728 100644
+--- a/dist/components/text.js
++++ b/dist/components/text.js
+@@ -1,4 +1,4 @@
+-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
+ /**
+  * Text component - displays multi-line text with word wrapping
+  */
+@@ -51,7 +51,8 @@ export class Text {
+         const normalizedText = this.text.replace(/\t/g, "   ");
+         // Reduce margins when necessary so content and padding fit within the available width.
+         const paddingX = Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)));
+-        const contentWidth = Math.max(1, width - paddingX * 2);
++        const strokeWidth = this.customBgFn ? STROKE_WIDTH : 0;
++        const contentWidth = Math.max(1, width - paddingX * 2 - strokeWidth);
+         // Wrap text (this preserves ANSI codes but does NOT pad)
+         const wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
+         // Add margins and background to each line
+@@ -61,22 +62,22 @@ export class Text {
+         for (const line of wrappedLines) {
+             // Add margins
+             const lineWithMargins = leftMargin + line + rightMargin;
+-            // Apply background if specified (this also pads to full width)
++            const visibleLen = visibleWidth(lineWithMargins);
++            const paddingNeeded = Math.max(0, width - visibleLen - strokeWidth);
++            const padded = lineWithMargins + " ".repeat(paddingNeeded);
+             if (this.customBgFn) {
+-                contentLines.push(applyBackgroundToLine(lineWithMargins, width, this.customBgFn));
++                contentLines.push(applyStrokeToLine(padded, width, paddingX, this.customBgFn));
+             }
+             else {
+-                // No background - just pad to width with spaces
+-                const visibleLen = visibleWidth(lineWithMargins);
+-                const paddingNeeded = Math.max(0, width - visibleLen);
+-                contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
++                contentLines.push(truncateToWidth(padded, width));
+             }
+         }
+         // Add top/bottom padding (empty lines)
+         const emptyLine = " ".repeat(width);
+         const emptyLines = [];
+         for (let i = 0; i < this.paddingY; i++) {
+-            const line = this.customBgFn ? applyBackgroundToLine(emptyLine, width, this.customBgFn) : emptyLine;
++            const emptyPadded = leftMargin + " ".repeat(Math.max(0, width - paddingX - STROKE_WIDTH));
++            const line = this.customBgFn ? applyStrokeToLine(emptyPadded, width, paddingX, this.customBgFn) : emptyLine;
+             emptyLines.push(line);
+         }
+         const result = [...emptyLines, ...contentLines, ...emptyLines];
+diff --git a/dist/tui-main-screen.js b/dist/tui-main-screen.js
+index 896bb50..4e96e27 100644
+--- a/dist/tui-main-screen.js
++++ b/dist/tui-main-screen.js
+@@ -241,7 +241,10 @@ export class TuiMainScreen extends TuiBase {
+             output.append("\x1b[?2026h"); // Begin synchronized output
+             if (clear) {
+                 output.append(this.deleteKittyImages(this.previousKittyImageIds));
+-                output.append("\x1b[2J\x1b[H\x1b[3J"); // Clear screen, home, then clear scrollback
++                output.append("\x1b[2J\x1b[H"); // Clear screen and home
++                if (process.env.PI_TUI_NO_CLEAR_SCROLLBACK !== "1") {
++                    output.append("\x1b[3J"); // Clear scrollback unless disabled to avoid iTerm2 viewport jumps
++                }
+             }
+             for (let i = 0; i < newLines.length; i++) {
+                 if (i > 0)
+diff --git a/dist/utils.js b/dist/utils.js
+index 7b148e9..542f510 100644
+--- a/dist/utils.js
++++ b/dist/utils.js
+@@ -947,6 +947,30 @@ export function applyBackgroundToLine(line, width, bgFn) {
+     const withPadding = line + padding;
+     return bgFn(withPadding);
+ }
++/** Stroke character used for edge indicator */
++export const STROKE_PREFIX = "▍ ";
++/** Width of the stroke in character cells */
++export const STROKE_WIDTH = 2;
++/**
++ * Apply a left-edge stroke to a pre-padded line.
++ * If the line is too narrow for the stroke to fit without overflow,
++ * returns spaces of the full width instead.
++ *
++ * @param padded - Line already padded to full visible width (may contain ANSI codes)
++ * @param width - Total target width
++ * @param paddingX - Left padding to preserve before the stroke
++ * @param colorFn - Color function to apply to the stroke
++ * @returns Line with left-edge stroke applied
++ */
++export function applyStrokeToLine(padded, width, paddingX, colorFn) {
++    // Guard: if too narrow, skip coloring to avoid overflow
++    if (width <= paddingX + STROKE_WIDTH) {
++        return " ".repeat(width);
++    }
++    const prefix = padded.slice(0, paddingX);
++    const rest = padded.slice(paddingX);
++    return prefix + colorFn(STROKE_PREFIX) + rest;
++}
+ /**
+  * Truncate text to fit within a maximum visible width, adding ellipsis if needed.
+  * Optionally pad with spaces to reach exactly maxWidth.

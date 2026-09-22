@@ -372,3 +372,44 @@ describe("formatWait", () => {
 		expect(formatWait(ms)).toBe(expected)
 	})
 })
+
+describe("model_retired", () => {
+	it("classifies a 410 model_not_found body (Scenario A, unannounced removal)", () => {
+		const error = classifyLLMGatewayError(
+			'{"error": {"code": 410, "type": "model_not_found", "message": "The requested model is not available"}}',
+		)
+		expect(error?.reason).toBe("model_retired")
+		expect(error?.httpStatusCode).toBe(410)
+		expect(error?.retryable).toBe(false)
+		expect(error?.isInfrastructure).toBe(false)
+		expect(error?.exitCode()).toBe(1)
+	})
+
+	it("classifies a model_gone body and parses replacement hints (Scenario B)", () => {
+		const error = classifyLLMGatewayError(
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"], "docs": "https://wiki.cast.ai/deprecations/kimi-k2.5"}}',
+		)
+		expect(error?.reason).toBe("model_retired")
+		expect(error?.modelRetiredInfo).toEqual({
+			replacement: "kimi-k3",
+			alternatives: ["kimi-k2.7", "glm-5.3"],
+			docs: "https://wiki.cast.ai/deprecations/kimi-k2.5",
+		})
+	})
+
+	it("classifies prose retirement without structured fields", () => {
+		const error = classifyLLMGatewayError("Model deepseek-v3 has been removed from the gateway")
+		expect(error?.reason).toBe("model_retired")
+		expect(error?.modelRetiredInfo).toBeUndefined()
+	})
+
+	it("classifies a bare 410 status as retired", () => {
+		const error = classifyLLMGatewayError("410 Gone")
+		expect(error?.reason).toBe("model_retired")
+		expect(error?.httpStatusCode).toBe(410)
+	})
+
+	it("does not classify plain 'model not found' prose without retirement markers", () => {
+		expect(classifyLLMGatewayError("The model was not found, please check the model name")).toBeUndefined()
+	})
+})

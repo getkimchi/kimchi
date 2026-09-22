@@ -1,4 +1,11 @@
-export const FERMENT_V2_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
+export const FERMENT_V2_STATUS = {
+	ACTIVE: "active",
+	PAUSED: "paused",
+	BLOCKED: "blocked",
+	BUDGET_LIMITED: "budget_limited",
+	COMPLETE: "complete",
+} as const
+export const FERMENT_V2_STATUSES = Object.values(FERMENT_V2_STATUS)
 export const FERMENT_V2_COMPLETION_CONFIDENCES = ["guess", "partial", "tested", "proven"] as const
 export const FERMENT_V2_EVALUATION_VERDICTS = ["continue", "met", "impossible", "unavailable"] as const
 

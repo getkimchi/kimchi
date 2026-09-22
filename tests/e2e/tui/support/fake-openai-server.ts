@@ -10,6 +10,9 @@ export interface FakeModel {
 	input?: ("text" | "image")[]
 	contextWindow?: number
 	maxTokens?: number
+	/** Extra fields merged verbatim into this model's /v1/models/metadata entry
+	 * (e.g. deprecation protocol fields: deprecated_at, replacement_model). */
+	metadata?: Record<string, unknown>
 }
 
 export interface FakeToolCall {
@@ -80,6 +83,14 @@ export interface FakeResponseScript {
 	 * Without this, the session has no usage data and compaction gates
 	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
 	usage?: { prompt_tokens: number; completion_tokens: number }
+	/** Hold this response open — no headers, no body — until the promise
+	 * resolves. Test-controlled gate for asserting mid-request process state
+	 * (e.g. a CLI must stay alive and unfinished while a compaction
+	 * summarization call is in flight). The request is recorded before the
+	 * hold, so tests can wait on its arrival and then assert liveness.
+	 * This is a deterministic hold, not a stall simulation — see
+	 * `stallAfterThinking` for that. */
+	holdUntil?: Promise<unknown>
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -93,6 +104,7 @@ export interface FakeOpenAiServer {
 }
 
 interface StartFakeOpenAiServerOptions {
+	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	/** JSON bodies returned by successive `/v1/route` calls. An empty queue returns 503. */
@@ -101,6 +113,13 @@ interface StartFakeOpenAiServerOptions {
 	stallRouterRequestNumber?: number
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
+	/**
+	 * Email returned by `/v1/me`. Drives the Auto-by-default gate: an @cast.ai
+	 * address opts fresh sessions into Auto. Defaults to an internal address so
+	 * Auto-default scenarios work without opting in; pass an external address to
+	 * exercise the gated-off path, or null to serve 404 (identity unresolvable).
+	 */
+	userEmail?: string | null
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -111,6 +130,7 @@ export const DEFAULT_MODEL: Required<FakeModel> = {
 	input: ["text"],
 	contextWindow: 8192,
 	maxTokens: 1024,
+	metadata: {},
 }
 
 /** Fill every optional field of a partial model spec from DEFAULT_MODEL. */
@@ -123,6 +143,7 @@ export function withModelDefaults(model: FakeModel): Required<FakeModel> {
 		input: model.input ?? DEFAULT_MODEL.input,
 		contextWindow: model.contextWindow ?? DEFAULT_MODEL.contextWindow,
 		maxTokens: model.maxTokens ?? DEFAULT_MODEL.maxTokens,
+		metadata: model.metadata ?? {},
 	}
 }
 
@@ -172,6 +193,10 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		requests.push(recorded)
 
 		try {
+			if (options.rejectedApiKeys?.some((key) => req.headers.authorization === `Bearer ${key}`)) {
+				writeJson(res, 401, { error: "Invalid API key" })
+				return
+			}
 			if (req.method === "POST" && req.url?.startsWith("/v1/route")) {
 				routerRequestCount += 1
 				const response = routerQueue.shift()
@@ -196,9 +221,19 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 							context_window: model.contextWindow,
 							max_output_tokens: model.maxTokens,
 						},
-						status: "active",
+						...model.metadata,
 					})),
 				})
+				return
+			}
+
+			if (req.method === "GET" && req.url?.startsWith("/v1/me")) {
+				const email = options.userEmail === undefined ? "fixture@cast.ai" : options.userEmail
+				if (email === null) {
+					writeJson(res, 404, { error: "Identity endpoint is not supported by this fake proxy" })
+					return
+				}
+				writeJson(res, 200, { id: "fake-user", email, name: "Fake User" })
 				return
 			}
 
@@ -222,6 +257,12 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
 				const script = pickResponseScript(request, mainQueue, subagentQueue)
+				if (script.holdUntil) {
+					await script.holdUntil
+					// The client may disconnect while held (cancellation, process exit).
+					// Writing afterwards would throw; there is nobody left to answer.
+					if (res.destroyed || res.writableEnded) return
+				}
 				await writeChatCompletion(res, script, body)
 				return
 			}

@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./assertions.js"
@@ -51,6 +52,8 @@ export interface KimchiFixture {
 	seedResult?: unknown
 	/** Env vars returned by `seedHome`, merged into the launched process env. */
 	seedEnv: Record<string, string>
+	/** The test's trustWorkDir option — consulted by launchKimchi (see CreateKimchiFixtureOptions). */
+	trustWorkDir?: boolean
 	providerId: string
 	initialModel: string | false
 	stop(): Promise<void>
@@ -84,9 +87,12 @@ export interface SeedHomeResult {
 }
 
 export interface CreateKimchiFixtureOptions {
+	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	routerResponses?: unknown[]
+	/** Email served by the fake `/v1/me`; an @cast.ai address opts into Auto-by-default. Null serves 404. */
+	userEmail?: string | null
 	/** Keep this one-based router request open until cancellation closes the connection. */
 	stallRouterRequestNumber?: number
 	/** Provider id written to models.json and used for the initial CLI selection. */
@@ -127,10 +133,26 @@ export interface CreateKimchiFixtureOptions {
 	ollama?: StartFakeOllamaServerOptions
 	/** Seed the isolated Kimchi home with a repository-owned MCP server. */
 	mcp?: McpFixtureOptions
+	/**
+	 * Pre-record a persisted trust decision for the session workDir.
+	 * Default (undefined): pretrust only when the workDir content is
+	 * trust-requiring — evaluated at fixture creation AND before every
+	 * launchKimchi relaunch, so sessions that write trust-requiring files
+	 * mid-test (e.g. .kimchi/plans via submit_plan) do not hit the trust
+	 * prompt on restart, while workDirs without them (e.g. .mcp.json-only
+	 * untrusted-MCP scenarios) keep their own trust flows. `true` forces the
+	 * pretrust even for an empty workDir; `false` never pretrusts (the
+	 * project-trust-gate scenarios answer the live prompt instead).
+	 */
+	trustWorkDir?: boolean
 }
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
 	artifactName: string
+	/** Marker printed after exit for scenarios that relaunch Kimchi in the same terminal. */
+	exitMarker?: string
+	/** Expected startup text; override for scenarios that exit before showing the editor. */
+	startupText?: string
 	/**
 	 * Optional hook that runs AFTER launch but BEFORE the PROMPT_READY wait.
 	 * Use to dismiss startup dialogs (e.g. a ferment resume dialog triggered
@@ -192,10 +214,28 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
 		const seedEnv = {
 			KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
+			// Keep the Auto-by-default gate's /v1/me lookup on the fake server;
+			// otherwise it would reach the real app API.
+			KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
 			...(mcp?.env ?? {}),
 			...(seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}),
 		}
 		const seedResult = seedIsResult ? (rawSeed as SeedHomeResult).data : rawSeed
+
+		// Pre-record a persisted trust decision for the workDir when its seeded
+		// content is trust-requiring (so the gate does not block tests that
+		// expect their project resources to load), unless the test opts out —
+		// the project-trust-gate scenarios answer the live prompt instead, and
+		// workDirs without trust-requiring resources (e.g. .mcp.json-only)
+		// must stay untrusted so their own trust flows fire. Keyed by the
+		// realpath — pi's trust store canonicalizes.
+		if (options.trustWorkDir !== false && hasTrustRequiringProjectResources(workDir)) {
+			writeFileSync(
+				join(agentDir, "trust.json"),
+				JSON.stringify({ [realpathSync(workDir)]: true }, null, "\t"),
+				"utf-8",
+			)
+		}
 
 		return {
 			homeDir,
@@ -206,6 +246,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			mcp,
 			seedResult,
 			seedEnv,
+			trustWorkDir: options.trustWorkDir,
 			providerId,
 			initialModel,
 			async stop() {
@@ -246,6 +287,23 @@ export function launchKimchi(
 	extraEnv: Record<string, string> = {},
 	options: LaunchKimchiOptions = {},
 ): void {
+	// Refresh the persisted trust decision before every launch: the session
+	// may have written trust-requiring files since fixture creation (e.g.
+	// .kimchi/plans via submit_plan), and a relaunch into a now-trust-requiring
+	// workDir would otherwise block on the trust prompt no test answers.
+	// Mirrors the creation-time conditional: opt-in (true) forces, opt-out
+	// (false) never writes, default writes only when the workDir content is
+	// trust-requiring (so .mcp.json-only untrusted-MCP scenarios keep working).
+	if (
+		fixture.trustWorkDir !== false &&
+		(fixture.trustWorkDir === true || hasTrustRequiringProjectResources(fixture.workDir))
+	) {
+		writeFileSync(
+			join(fixture.agentDir, "trust.json"),
+			JSON.stringify({ [realpathSync(fixture.workDir)]: true }, null, "\t"),
+			"utf-8",
+		)
+	}
 	// KIMCHI_PERMISSIONS=yolo skips every permission check (rules, denylist,
 	// classifier, prompts) so tool calls execute without blocking on the TUI
 	// permission prompt — no test driver is wired to answer it. TUI E2E
@@ -263,6 +321,13 @@ export function launchKimchi(
 		// session boots without background HTTP or synchronous tar/exec
 		// work. Keeps the TUI e2e hermetic and its timing deterministic.
 		"KIMCHI_NO_UPDATE_CHECK=1",
+		// Remote run is enabled by default in the app, but TUI E2E must stay
+		// hermetic: CI has no remote-run credentials, and the extra
+		// "Execute the plan in a remote workspace" menu option shifts the
+		// keyDown indices existing plan-menu tests navigate by. Tests that
+		// deliberately cover the remote-run menu opt in via
+		// `env: { KIMCHI_REMOTE_RUN: "1" }`.
+		"KIMCHI_REMOTE_RUN=0",
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",
@@ -341,7 +406,7 @@ export async function runKimchiSession(
 	options: RunKimchiSessionOptions,
 	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
-	const { artifactName, beforeReady, ...fixtureOptions } = options
+	const { artifactName, beforeReady, exitMarker, startupText = PROMPT_READY, ...fixtureOptions } = options
 	const fixture = await createKimchiFixture(fixtureOptions)
 	let artifactWritten = false
 	const steps: TuiStepSnapshot[] = []
@@ -352,10 +417,16 @@ export async function runKimchiSession(
 	}
 
 	try {
-		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [], { ...fixtureOptions.env, ...fixture.seedEnv })
+		launchKimchi(
+			terminal,
+			fixture,
+			fixtureOptions.extraArgs ?? [],
+			{ ...fixtureOptions.env, ...fixture.seedEnv },
+			{ exitMarker },
+		)
 		if (beforeReady) await beforeReady(terminal)
-		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
-		trace.step("ready prompt visible")
+		await waitForText(terminal, startupText, { timeoutMs: STARTUP_TIMEOUT_MS })
+		trace.step(startupText === PROMPT_READY ? "ready prompt visible" : "expected startup text visible")
 		await body(fixture, trace)
 		trace.step("scenario body completed")
 	} catch (error) {

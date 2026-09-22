@@ -3,7 +3,10 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
 	AgentSideConnection,
+	ContentChunk,
 	ListSessionsRequest,
+	LoadSessionRequest,
+	NewSessionRequest,
 	RequestPermissionRequest,
 	SessionNotification,
 	TextContent,
@@ -23,6 +26,7 @@ import type {
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 
 // Mock the browser auth flow so authenticate() can be tested without
 // starting a real callback server or opening a browser.
@@ -37,6 +41,11 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// The set_onboarding_flag ext-method writes the shared config's
+		// onboarding namespace; mock it so server-level tests don't touch the
+		// real config file. Write semantics are covered by the handler's own
+		// unit tests against a temp config path.
+		writeStudioOnboardingSeenAt: vi.fn(),
 		// Real implementation by default; individual tests use
 		// mockReturnValueOnce to simulate credential-store transitions
 		// (writeApiKey/clearApiKey are mocked, so they never touch disk).
@@ -57,18 +66,55 @@ vi.mock("../../utils.js", async (importOriginal) => {
 		getVersion: () => getVersionMock(),
 	}
 })
+// Hermetic stub for import_discover: real discovery would read the
+// developer's actual home directory (~/.claude.json, ~/.cursor/mcp.json, …)
+// during a unit test. Only the extMethod dispatch path consumes this module.
+vi.mock("./ext-methods/import-discover.js", () => ({
+	importDiscover: vi.fn(() => ({
+		apps: [
+			{
+				id: "stub-app",
+				displayName: "Stub App",
+				skills: [
+					{
+						name: "stub-skill",
+						description: "d",
+						path: "/tmp/s",
+						sourceAppId: "stub-app",
+						sourceAppName: "Stub App",
+					},
+				],
+				mcpServers: [{ name: "stub-mcp", command: "mcp", sourceAppId: "stub-app", sourceAppName: "Stub App" }],
+			},
+		],
+	})),
+}))
+// Hermetic stub for import_apply: the real handler would write skills, MCP
+// config and the migration marker into the developer's actual home directory.
+vi.mock("./ext-methods/import-apply.js", () => ({
+	handleImportApply: vi.fn(() => ({
+		results: [
+			{
+				kind: "skill",
+				sourceAppId: "stub-app",
+				name: "stub-skill",
+				path: "/tmp/s",
+				outcome: "imported",
+			},
+		],
+	})),
+}))
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
+import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
-import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -78,7 +124,7 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { updateModelsConfig } from "../../models.js"
-import { ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -109,7 +155,6 @@ function cleanPermissionEnv(): void {
 	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
 	// set by one test don't leak into another via the module-level cache.
 	populateCliArgs([])
-	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
@@ -317,11 +362,18 @@ class FakeAgentSession {
 		this.pendingSteers.push(text)
 	}
 
+	getSteeringMessages(): readonly string[] {
+		return [...this.pendingSteers]
+	}
+
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		this.clearQueueCalls++
 		this.order.push("clearQueue")
+		// Mirror the real pi-mono contract: clearQueue() RETURNS the drained
+		// contents, so tests that queue steers see them in the return value.
+		const steering = [...this.pendingSteers, ...this.clearQueueReturn.steering]
 		this.pendingSteers = []
-		return this.clearQueueReturn
+		return { steering, followUp: this.clearQueueReturn.followUp }
 	}
 
 	async bindExtensions(bindings: unknown): Promise<void> {
@@ -364,6 +416,7 @@ function asSession(fake: FakeAgentSession): AgentSession {
 function makeConn(): AgentSideConnection {
 	const stub = {
 		sessionUpdate: async (_p: SessionNotification) => {},
+		extNotification: async (_method: string, _params: unknown) => {},
 	}
 	return stub as unknown as AgentSideConnection
 }
@@ -374,18 +427,27 @@ function makeConn(): AgentSideConnection {
 function makeRecordingConn(): {
 	conn: AgentSideConnection
 	updates: SessionNotification[]
+	extNotifications: Array<{ method: string; params: unknown }>
 } {
 	const updates: SessionNotification[] = []
+	const extNotifications: Array<{ method: string; params: unknown }> = []
 	const stub = {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
 		},
+		extNotification: async (method: string, params: unknown) => {
+			extNotifications.push({ method, params })
+		},
 		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
-	return { conn: stub as unknown as AgentSideConnection, updates }
+	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications }
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+// newSession/loadSession schedule available_commands_update via setImmediate so
+// it lands after the session/new|load response; flush it before asserting on it.
+const flushDeferredCommands = () => new Promise<void>((r) => setImmediate(r))
 
 function agentEnd(): AgentSessionEvent {
 	return { type: "agent_end", messages: [], willRetry: false }
@@ -870,7 +932,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({ auth_status: true })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				auth_status: true,
+			})
 		})
 
 		it("reports unauthenticated when the credential store has no API key", async () => {
@@ -1015,6 +1079,51 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
 				authenticated: true,
 			})
+		})
+	})
+
+	describe("extMethod set_onboarding_flag", () => {
+		// The shared-config write is mocked (see the config.js mock above) —
+		// handler write semantics (persistence, sibling-key preservation) are
+		// covered by ext-methods/set-onboarding-flag.test.ts against a temp path.
+
+		function makeTestAgent(): KimchiAcpAgent {
+			return new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/kimchi-acp-test-agent-dir-set-onboarding-flag",
+				sessionFactory: async () => asSession(fake),
+			})
+		}
+
+		it("advertises set_onboarding_flag in the initialize capabilities _meta", async () => {
+			const response = await makeTestAgent().initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				set_onboarding_flag: true,
+			})
+		})
+
+		// Sessionless by design (kimchi-studio ADR-0043): onboarding completion is global
+		// per-machine state, so the call carries no sessionId.
+		it("writes the onboarding flag without requiring a session", async () => {
+			vi.mocked(writeStudioOnboardingSeenAt).mockClear()
+
+			await expect(
+				makeTestAgent().extMethod(AVAILABLE_EXT_METHODS.set_onboarding_flag, {
+					seenAt: "2026-09-11T10:00:00.000Z",
+				}),
+			).resolves.toEqual({})
+
+			expect(writeStudioOnboardingSeenAt).toHaveBeenCalledWith("2026-09-11T10:00:00.000Z", undefined)
+		})
+
+		it("rejects an invalid seenAt as invalidParams", async () => {
+			vi.mocked(writeStudioOnboardingSeenAt).mockClear()
+			await expect(
+				makeTestAgent().extMethod(AVAILABLE_EXT_METHODS.set_onboarding_flag, {
+					seenAt: "not-a-date",
+				}),
+			).rejects.toThrow(/seenAt must be an ISO-8601/)
+			expect(writeStudioOnboardingSeenAt).not.toHaveBeenCalled()
 		})
 	})
 
@@ -1280,6 +1389,103 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.clearQueueCalls).toBe(1)
 	})
 
+	// cancel() must report still-queued steers to the client as dropped — they
+	// were never injected into the turn, so they must not surface as
+	// user_message_chunk updates; instead a queue_dropped ext
+	// notification carries them for clients that opt into rendering.
+	it("notifies the client about dropped steers and emits no phantom user messages on cancel", async () => {
+		const { conn: recordingConn, updates, extNotifications } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+
+		// Two steers queued but not yet injected into the turn (the fake's live
+		// queue mirrors what pi-mono's session.getSteeringMessages() returns).
+		await fake.steer("steer one")
+		await fake.steer("steer two")
+
+		await localAgent.cancel({ sessionId: localSessionId })
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+
+		// No phantom user_message_chunk updates for the drained queue.
+		expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+
+		// The dropped steers are reported via the extension notification.
+		expect(extNotifications).toContainEqual({
+			method: "_kimchi.dev/queue_dropped",
+			params: {
+				sessionId: localSessionId,
+				reason: "cancelled",
+				steering: ["steer one", "steer two"],
+				followUp: [],
+			},
+		})
+	})
+
+	// followUp messages reconcile the same as steering: enqueueing one emits
+	// nothing, and when pi consumes it (delivered after the turn settles, when
+	// it enters session history) the consumed text echoes to the client as a
+	// user_message_chunk.
+	it("echoes consumed followUp messages as user_message_chunk but not while queued", async () => {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+
+		// Enqueued followUp: nothing echoed yet.
+		fake.emit({
+			type: "queue_update",
+			steering: [],
+			followUp: ["after this, also do X"],
+		} as AgentSessionEvent)
+		expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+
+		// pi delivers the followUp (queue drains) → echo enters the transcript.
+		fake.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent)
+
+		const userChunks = updates.filter((u) => u.update.sessionUpdate === "user_message_chunk")
+		expect(userChunks).toHaveLength(1)
+		expect(((userChunks[0].update as ContentChunk).content as TextContent).text).toBe("after this, also do X")
+
+		const result = await promptP
+		expect(result.stopReason).toBe("end_turn")
+	})
+
 	// Arms a turn that hangs until abort() runs — emulating a still-running
 	// turn when session/cancel arrives. onAbort runs inside abortImpl after
 	// the hang flag flips, while prompt() is still parked.
@@ -1326,37 +1532,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.emulatedHistory).toEqual([])
 		expect(fake.order).toEqual(["clearQueue", "abort"])
-	})
-
-	// clearQueue() throwing must not skip the abort — the turn is already
-	// marked cancelled, and leaving the agent running would burn tokens
-	// until the LLM responds. try/finally guarantees abort runs regardless.
-	it("still aborts when clearQueue throws", async () => {
-		armHangingTurn()
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
-			throw new Error("clearQueue boom")
-		}
-
-		const promptP = agent.prompt({
-			sessionId,
-			prompt: [{ type: "text", text: "t1" }],
-		})
-		await delay(10)
-
-		// cancel() must resolve — clearQueue's error is caught so abort still runs.
-		await agent.cancel({ sessionId })
-
-		const result = await promptP
-		expect(result.stopReason).toBe("cancelled")
-		expect(fake.aborted).toBe(true)
-		// The drain failure is logged, not silently swallowed — a recurring
-		// clearQueue failure must be observable, not re-leak steers quietly.
-		expect(errorSpy).toHaveBeenCalledWith(
-			"kimchi acp: clearQueue() failed during cancel; aborting anyway",
-			expect.any(Error),
-		)
-		errorSpy.mockRestore()
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
@@ -1433,6 +1608,76 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		// Cleanup the dangling promptImpl.
 		resumePrompt()
 		expect(fake.disposed).toBe(true)
+	})
+
+	// Agent shutdown (conn closed / signal) drops queued steers too — report
+	// them with reason "shutdown" alongside disposing the session records.
+	it("notifies the client about dropped steers when shutdown() runs", async () => {
+		const { conn: recordingConn, extNotifications } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		await fake.steer("steer before shutdown")
+		await localAgent.shutdown()
+
+		expect(extNotifications).toContainEqual({
+			method: "_kimchi.dev/queue_dropped",
+			params: {
+				sessionId: res.sessionId,
+				reason: "shutdown",
+				steering: ["steer before shutdown"],
+				followUp: [],
+			},
+		})
+	})
+
+	// session/close with a live turn drops queued steers as well — same
+	// dropped-steer notification, reason "shutdown".
+	it("notifies the client about dropped steers when closing a session with a live turn", async () => {
+		const { conn: recordingConn, updates, extNotifications } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		let closeSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!closeSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			closeSeen = true
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+
+		await fake.steer("steer before close")
+		await localAgent.unstable_closeSession({ sessionId: localSessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+		expect(extNotifications).toContainEqual({
+			method: "_kimchi.dev/queue_dropped",
+			params: {
+				sessionId: localSessionId,
+				reason: "shutdown",
+				steering: ["steer before close"],
+				followUp: [],
+			},
+		})
 	})
 
 	// Misbehaving client sends a block type our capabilities declared as
@@ -1612,7 +1857,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("emits a usage_update notification with used/size after a turn resolves", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage")
-		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 200_000 }
+		localFake.model = {
+			provider: "test",
+			id: "m",
+			name: "M",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
 		localFake.contextUsage = { tokens: 50_000, contextWindow: 200_000, percent: 25 }
 		localFake.sessionStats = {
 			tokens: { input: 10_000, output: 5_000, cacheRead: 0, cacheWrite: 0, total: 15_000 },
@@ -1647,7 +1898,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("does not emit usage_update when getContextUsage tokens is null (post-compaction)", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage-fallback")
-		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
+		localFake.model = {
+			provider: "test",
+			id: "m",
+			name: "M",
+			input: ["text"],
+			contextWindow: 128_000,
+		}
 		localFake.contextUsage = { tokens: null, contextWindow: 128_000, percent: null }
 		localFake.sessionStats = {
 			tokens: { input: 8_000, output: 2_000, cacheRead: 0, cacheWrite: 0, total: 10_000 },
@@ -1962,14 +2219,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
-	// servers are pushed onto the caller-servers registry and consumed by
-	// initializeMcp during session_start. This test verifies the session is
-	// created successfully (factory called) and the servers land in the registry.
-	it("accepts newSession with non-empty mcpServers and registers them", async () => {
+	it("passes newSession MCP servers to the session factory", async () => {
 		const factoryCalled = { count: 0 }
-		const factory: AcpSessionFactory = async () => {
+		let receivedServers: NewSessionRequest["mcpServers"] | undefined
+		const factory: AcpSessionFactory = async (params) => {
 			factoryCalled.count++
+			receivedServers = params.mcpServers
 			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
@@ -1977,19 +2232,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		// Clear any stale entries from beforeEach's newSession call so peek
-		// returns only this test's entry.
-		clearCallerMcpServers()
+		const mcpServers: NewSessionRequest["mcpServers"] = [{ name: "x", command: "x", args: [], env: [] }]
 		const res = await localAgent.newSession({
 			cwd: "/tmp",
-			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+			mcpServers,
 		})
 		expect(res.sessionId).toBe("with-mcp")
 		expect(factoryCalled.count).toBe(1)
-		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
-		// so the caller-servers entry stays in the registry — verify it was set.
-		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
+		expect(receivedServers).toEqual(mcpServers)
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -2204,6 +2454,68 @@ describe("KimchiAcpAgent usage reporting", () => {
 		// turn-end emission — the indicator follows the turn live instead of
 		// updating only once at the end.
 		expect(usageUpdates()).toHaveLength(3)
+	})
+
+	it("attaches cumulative lifetime usage totals to usage_update _meta", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3 }))
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		// One per assistant message_end (2), plus the final turn-end emission.
+		expect(usage).toHaveLength(3)
+		// Each snapshot carries the cumulative lifetime totals so far — clients
+		// derive per-notification deltas from consecutive snapshots.
+		expect(usage[0]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toEqual({
+			input: 100,
+			output: 20,
+			cacheRead: 5,
+			cacheWrite: 3,
+		})
+		expect(usage[1]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toEqual({
+			input: 150,
+			output: 30,
+			cacheRead: 7,
+			cacheWrite: 4,
+		})
+		// The turn-end emission carries the same final totals.
+		expect(usage[2]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toEqual({
+			input: 150,
+			output: 30,
+			cacheRead: 7,
+			cacheWrite: 4,
+		})
+		// PromptResponse.usage equals the last cumulative snapshot — a client
+		// tracking _meta deltas owes nothing extra when the prompt resolves.
+		expect(result.usage).toEqual({
+			inputTokens: 150,
+			outputTokens: 30,
+			cachedReadTokens: 7,
+			cachedWriteTokens: 4,
+			totalTokens: 191,
+		})
+	})
+
+	it("omits the _meta usage totals when no usage was collected", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		// Only the turn-end emission fires (contextUsage is set) — without any
+		// usage-bearing message it must not advertise a _meta totals object.
+		expect(usage).toHaveLength(1)
+		expect(usage[0]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toBeUndefined()
 	})
 
 	it("skips usage_update when getContextUsage returns undefined", async () => {
@@ -4202,7 +4514,14 @@ describe("fileChangeToDiffContent", () => {
 	})
 
 	it("maps modify to a diff carrying both texts", () => {
-		expect(fileChangeToDiffContent({ operation: "modify", path: "/a.txt", oldText: "old", newText: "new" })).toEqual({
+		expect(
+			fileChangeToDiffContent({
+				operation: "modify",
+				path: "/a.txt",
+				oldText: "old",
+				newText: "new",
+			}),
+		).toEqual({
 			type: "diff",
 			path: "/a.txt",
 			oldText: "old",
@@ -4308,7 +4627,11 @@ describe("no-auth failures surface as authRequired (-32000)", () => {
 		fake.authConfigured = false
 
 		const err = await agent
-			.setSessionConfigOption({ sessionId: "session-noauth-multimodel", configId: "model", value: "multi-model" })
+			.setSessionConfigOption({
+				sessionId: "session-noauth-multimodel",
+				configId: "model",
+				value: "multi-model",
+			})
 			.catch((e) => e)
 		expect(err).toMatchObject({ code: -32000 })
 		expect((err as Error).message).toMatch(
@@ -4678,9 +5001,11 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
+		// Routing entries carry a description; the concrete models below do not.
 		expect(res.models?.availableModels[0]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
+			description: "Routes each task to the best model, with an orchestrator and workers.",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
@@ -4701,7 +5026,9 @@ describe("newSession model state", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
+		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
+			code: -32000,
+		})
 		expect(fake.disposed).toBe(true)
 	})
 
@@ -4738,6 +5065,11 @@ describe("newSession available commands", () => {
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
+		// The palette broadcast is deferred past the response: it must NOT be on
+		// the wire when the newSession handler returns.
+		expect(updates.find((u) => u.update.sessionUpdate === "available_commands_update")).toBeUndefined()
+		await flushDeferredCommands()
+
 		// Find the available_commands_update notification
 		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 		expect(update).toBeDefined()
@@ -4754,6 +5086,27 @@ describe("newSession available commands", () => {
 			description: expect.any(String),
 			input: { hint: expect.any(String) },
 		})
+	})
+
+	it("does not send available_commands_update when the session is torn down before the flush", async () => {
+		const fake = new FakeAgentSession("session-torn-down")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Tear the session down before the deferred broadcast fires — the
+		// dead-session guard must suppress the send.
+		const sessions = (agent as unknown as { sessions: Map<string, unknown> }).sessions
+		sessions.delete("session-torn-down")
+
+		await flushDeferredCommands()
+
+		expect(updates.find((u) => u.update.sessionUpdate === "available_commands_update")).toBeUndefined()
 	})
 })
 
@@ -4775,6 +5128,10 @@ describe("loadSession available commands", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
+
+		// Deferred past the response, like newSession.
+		expect(updates.find((u) => u.update.sessionUpdate === "available_commands_update")).toBeUndefined()
+		await flushDeferredCommands()
 
 		// loadSessionFresh re-broadcasts the command palette on resume.
 		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
@@ -4833,6 +5190,7 @@ describe("newSession skill commands", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: dir, mcpServers: [] })
+		await flushDeferredCommands()
 
 		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 		expect(update).toBeDefined()
@@ -4844,6 +5202,63 @@ describe("newSession skill commands", () => {
 			description: "ACP test skill",
 			input: { hint: expect.any(String) },
 		})
+	})
+
+	it("re-discovers cwd-local skills contributed during extension binding", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-binding", dir)
+		// Real sessions only learn about .claude/skills, ancestor .kimchi/skills,
+		// harness, and bundled skills when extensions answer pi's
+		// resources_discover event during bindExtensions — the loader is still
+		// empty when the session record is created.
+		const skills: Skill[] = []
+		fake.resourceLoader = makeSkillLoader(skills)
+		fake.bindExtensionsImpl = async () => {
+			skills.push(skill)
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+		await flushDeferredCommands()
+
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		const availableCommands =
+			(update?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+		expect(availableCommands.map((c) => c.name)).toContain(`skill:${skillName}`)
+	})
+
+	it("re-discovers cwd-local skills contributed during extension binding on session load", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-load-binding", dir)
+		const skills: Skill[] = []
+		fake.resourceLoader = makeSkillLoader(skills)
+		fake.bindExtensionsImpl = async () => {
+			skills.push(skill)
+		}
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+		await agent.loadSession({
+			sessionId: "session-skill-load-binding",
+			cwd: dir,
+			mcpServers: [],
+		})
+		await flushDeferredCommands()
+
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		const availableCommands =
+			(update?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+		expect(availableCommands.map((c) => c.name)).toContain(`skill:${skillName}`)
 	})
 
 	it("rewrites a skill command prompt to inject skill content", async () => {
@@ -5192,14 +5607,16 @@ describe("setSessionConfigOption", () => {
 			fake.setModel = async () => {
 				throw new Error("auth failed")
 			}
-			// Start in multi-model mode so we can verify the flag is restored on failure.
-			setMultiModelEnabled(sessionId, true)
 			const agent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: "/tmp/fake-agent-dir",
 				sessionFactory: async () => asSession(fake),
 			})
 			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			// Start in multi-model mode so we can verify the flag is restored on
+			// failure. Set after newSession, which anchors the flag to the session's
+			// resolved model.
+			setMultiModelEnabled(sessionId, true)
 
 			await expect(
 				agent.setSessionConfigOption({
@@ -5540,7 +5957,11 @@ describe("setSessionConfigOption", () => {
 		// Verify the session controller is registered
 		const controller = getSessionPermissionFlagController(sessionId)
 		expect(controller).toBeDefined()
-		expect(controller?.getMode()).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
+		expect(controller?.getMode()).toEqual({
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		})
 
 		// Change to plan mode via ACP
 		await agent.setSessionConfigOption({
@@ -6086,6 +6507,9 @@ describe("session mode controller lifecycle", () => {
 		const kimchiDir = join(tmpDir, ".kimchi")
 		mkdirSync(kimchiDir, { recursive: true })
 		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		// Project permissions are gated on project trust — trust the temp project.
+		setProjectScopeTrusted(tmpDir, true)
 
 		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
@@ -6648,21 +7072,21 @@ describe("KimchiAcpAgent loadSession", () => {
 
 	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
-		const loader: AcpSessionLoader = async () => {
+		let receivedServers: LoadSessionRequest["mcpServers"] | undefined
+		const loader: AcpSessionLoader = async (params) => {
 			loaderCalls.count++
+			receivedServers = params.mcpServers
 			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
+		const mcpServers: LoadSessionRequest["mcpServers"] = [{ name: "x", command: "x", args: [], env: [] }]
 		await agent.loadSession({
 			sessionId: "s1",
 			cwd: "/tmp",
-			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+			mcpServers,
 		})
 		expect(loaderCalls.count).toBe(1)
-		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
-		// so the caller-servers entry stays in the registry — verify it was set.
-		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
+		expect(receivedServers).toEqual(mcpServers)
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
@@ -7555,6 +7979,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
+		await flushDeferredCommands()
 
 		// The only update expected here is a no-op surface commands update
 		expect(updates).toHaveLength(1)
@@ -7607,6 +8032,10 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
+		// Flush the deferred palette broadcast: post-response, it lands after
+		// the replayed transcript.
+		await flushDeferredCommands()
+
 		// Order is significant: tool_call must precede tool_call_update, and
 		// the post-skipped-entries assistant text must land last.
 		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
@@ -7730,7 +8159,11 @@ describe("KimchiAcpAgent permission mode session-log persistence", () => {
 		fake.branch = [makePermissionModeEntry("plan")]
 
 		const agent = makeAgent(async () => asSession(fake))
-		const res = await agent.loadSession({ sessionId: "loaded-plan-mode", cwd: "/tmp", mcpServers: [] })
+		const res = await agent.loadSession({
+			sessionId: "loaded-plan-mode",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		expect(res.configOptions?.[0].currentValue).toBe("plan")
 		expect(getSessionPermissionFlagController("loaded-plan-mode")?.getMode()).toEqual({
@@ -7747,7 +8180,11 @@ describe("KimchiAcpAgent permission mode session-log persistence", () => {
 		fake.branch = [makePermissionModeEntry("auto")]
 
 		const agent = makeAgent(async () => asSession(fake))
-		const res = await agent.loadSession({ sessionId: "loaded-auto-mode", cwd: "/tmp", mcpServers: [] })
+		const res = await agent.loadSession({
+			sessionId: "loaded-auto-mode",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		expect(res.configOptions?.[0].currentValue).toBe("yolo")
 	})
@@ -8151,7 +8588,8 @@ describe("KimchiAcpAgent session event handlers", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
-		updates.length = 0 // clear the available_commands_update from newSession
+		await flushDeferredCommands()
+		updates.length = 0 // clear the deferred available_commands_update from newSession
 	})
 
 	describe("session_info_changed event", () => {
@@ -8232,12 +8670,16 @@ describe("resolveAcpAppendSystemPrompt", () => {
 	})
 
 	it("threads _meta['kimchi.dev'].appendSystemPrompt through for newSession", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } } }
+		const params = {
+			_meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } },
+		}
 		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["You are a worker under AO supervision."])
 	})
 
 	it("threads _meta['kimchi.dev'].appendSystemPrompt through identically for loadSession", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } } }
+		const params = {
+			_meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } },
+		}
 		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["Loaded sessions get the same prompt."])
 	})
 
@@ -8278,5 +8720,72 @@ describe("resolveAcpAppendSystemPrompt", () => {
 		expect(resolveAcpAppendSystemPrompt({ _meta: "nope" }, noOptions)).toBeUndefined()
 		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": "nope" } }, noOptions)).toBeUndefined()
 		expect(resolveAcpAppendSystemPrompt({ _meta: null }, noOptions)).toBeUndefined()
+	})
+})
+
+describe("extMethod dispatch", () => {
+	it("dispatches the sessionless import_discover method and returns its payload", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.import_discover, {})) as {
+			apps: Array<{
+				id: string
+				displayName: string
+				skills: Array<{ name: string }>
+				mcpServers: unknown[]
+			}>
+		}
+
+		expect(result.apps).toEqual([
+			{
+				id: "stub-app",
+				displayName: "Stub App",
+				skills: [
+					{
+						name: "stub-skill",
+						description: "d",
+						path: "/tmp/s",
+						sourceAppId: "stub-app",
+						sourceAppName: "Stub App",
+					},
+				],
+				mcpServers: [{ name: "stub-mcp", command: "mcp", sourceAppId: "stub-app", sourceAppName: "Stub App" }],
+			},
+		])
+	})
+
+	it("dispatches the sessionless import_apply method and returns its per-item results", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.import_apply, {
+			skills: [{ sourceAppId: "stub-app", path: "/tmp/s" }],
+		})) as {
+			results: Array<{ kind: string; name: string; outcome: string }>
+		}
+
+		expect(result.results).toEqual([
+			{
+				kind: "skill",
+				sourceAppId: "stub-app",
+				name: "stub-skill",
+				path: "/tmp/s",
+				outcome: "imported",
+			},
+		])
+	})
+
+	it("rejects unknown extension methods as method-not-found", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		await expect(agent.extMethod("_kimchi.dev/no_such_method", {})).rejects.toThrow(/Method not found/)
 	})
 })

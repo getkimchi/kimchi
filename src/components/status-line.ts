@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -6,6 +5,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
+import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { parseTag } from "../config/tags.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
@@ -16,9 +16,7 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
-import { AUTO_MODEL_ID, isAutoModel } from "../extensions/router/constants.js"
-import { getEffectiveModel } from "../extensions/router/state.js"
-import { getActiveTags, getCurrentPhase } from "../extensions/tags.js"
+import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -46,7 +44,7 @@ export type SegmentId =
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "model"; multiModel: boolean; modelId: string; routedModelId?: string }
+	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
@@ -87,9 +85,12 @@ const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "s
 
 export function readStatusLineCommand(): string | null {
 	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		const cmd = parsed?.statusLine?.command
+		// Stat-gated read: the footer factory consults this on rebuild, so it
+		// must not re-read and re-parse the settings file every time.
+		const settings = readJsonCached(HARNESS_SETTINGS_PATH)
+		const statusLine = settings.statusLine
+		const cmd =
+			statusLine && typeof statusLine === "object" ? (statusLine as Record<string, unknown>).command : undefined
 		if (typeof cmd !== "string" || cmd.length === 0) return null
 		if (cmd.startsWith("~/")) return resolve(homedir(), cmd.slice(2))
 		return cmd
@@ -207,19 +208,14 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 }
 
 /** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(
-	ctx: CompactionContext,
-	multiModel: boolean,
-	modelId: string,
-	routedModelId?: string,
-): Segment {
-	const label = multiModel ? `m-m (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
 	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
 	return {
 		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
+		raw: { kind: "model", multiModel, modelId },
 	}
 }
 
@@ -299,9 +295,7 @@ const STEPS: CompactionStep[] = [
 	{
 		name: "abbrev-model-label",
 		apply: (segs, ctx) =>
-			recompactSegment(segs, "model", "model", (raw) =>
-				buildModelAbbrev(ctx, raw.multiModel, raw.modelId, raw.routedModelId),
-			),
+			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
 	},
 	{
 		name: "drop-shortcut-hints",
@@ -447,24 +441,14 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const multiModel = getMultiModelEnabled(ctx.sessionManager)
 	const selectedModelId = ctx.model?.id ?? "n/a"
 	const modelId = selectedModelId
-	const routedModelId = resolveRoutedModelId(ctx)
-	const label = multiModel ? `multi-model (${modelId})` : routedModelId ? `auto (${routedModelId})` : modelId
+	const label = multiModel ? `multi-model (${modelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
 	return {
 		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId, ...(routedModelId ? { routedModelId } : {}) },
+		raw: { kind: "model", multiModel, modelId },
 	}
-}
-
-/** Concrete model id chosen by the Auto router, shown next to the `auto` label
- *  in single-model mode. `undefined` before routing resolves (or when the
- *  model isn't Auto / multi-model mode), keeping the plain `auto` label. */
-function resolveRoutedModelId(ctx: ExtensionContext): string | undefined {
-	if (!isAutoModel(ctx.model)) return undefined
-	const effective = getEffectiveModel(ctx)
-	return effective && effective.id !== AUTO_MODEL_ID ? effective.id : undefined
 }
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
@@ -684,7 +668,7 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 ): Segment[] {
-	const tags = getActiveTags(ctx.sessionManager)
+	const tags = peekActiveTags(ctx.sessionManager)
 		.map(parseTag)
 		.filter((t): t is ParsedTag => t !== null)
 

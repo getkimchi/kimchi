@@ -193,3 +193,44 @@ describe("formatSanitizedErrorMessage", () => {
 		})
 	})
 })
+
+describe("model retired surfacing", () => {
+	it("labels the error as model retired with the replacement hint", () => {
+		const raw =
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3", "docs": "https://wiki.cast.ai/deprecations/kimi-k2.5"}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). Switch to "kimi-k3" via /model. Details: https://wiki.cast.ai/deprecations/kimi-k2.5.',
+		)
+	})
+
+	it("falls back to alternatives when no replacement is named", () => {
+		const raw =
+			'{"error": {"type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"]}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). Alternatives: "kimi-k2.7", "glm-5.3". Switch via /model.',
+		)
+	})
+
+	it("omits the hint when the body carries no replacement fields", () => {
+		const raw = '{"error": {"code": 410, "type": "model_not_found", "message": "gone"}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			"The request could not be completed (model retired).",
+		)
+	})
+
+	it("points subagent failures at /multi-model", () => {
+		const raw =
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model deepseek-v4-flash has been retired.", "replacement": "deepseek-v4-flash-0731"}}'
+		expect(formatSanitizedErrorMessage(raw, "subagent", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). Switch the role model to "deepseek-v4-flash-0731" via /multi-model.',
+		)
+	})
+
+	it("names the replacement without an affordance in one-shot mode", () => {
+		const raw =
+			'{"error": {"code": 410, "type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "replacement": "kimi-k3"}}'
+		expect(formatSanitizedErrorMessage(raw, "oneshot", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). Switch to "kimi-k3".',
+		)
+	})
+})

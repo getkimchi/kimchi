@@ -1,13 +1,21 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { Model } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import promptSummaryExtension, { holdPromptSummary } from "./prompt-summary.js"
+import promptSummaryExtension, { holdPromptSummary, promptSummaryRenderer } from "./prompt-summary.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
 
 function createPiHarness() {
 	const handlers = new Map<string, Handler[]>()
 	const sent: unknown[] = []
+	const renderers: Record<
+		string,
+		| ((message: unknown, options: unknown, theme: unknown) => { render(width: number): string[] } | undefined)
+		| undefined
+	> = {}
 	return {
 		pi: {
 			on(event: string, handler: Handler) {
@@ -15,7 +23,9 @@ function createPiHarness() {
 				list.push(handler)
 				handlers.set(event, list)
 			},
-			registerMessageRenderer() {},
+			registerMessageRenderer(type: string, renderer: never) {
+				renderers[type] = renderer
+			},
 			sendMessage(message: unknown) {
 				sent.push(message)
 			},
@@ -27,6 +37,7 @@ function createPiHarness() {
 			}
 		},
 		sent,
+		renderers,
 	}
 }
 
@@ -111,6 +122,100 @@ describe("prompt summary Agent token accounting", () => {
 
 		expect(staleCtx.isIdle).toHaveBeenCalledOnce()
 		expect(harness.sent).toEqual([])
+	})
+})
+
+describe("prompt summary auto-model row", () => {
+	afterEach(() => {
+		clearAutoRoutingState("test-session")
+	})
+
+	it("reports the auto-routed model like the status bar does", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { id: "glm-5.3", provider: "kimchi-dev", name: "GLM 5.3" } as Model<string>,
+		})
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { model: { id: "auto", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const message = harness.sent[0] as { details: { model?: string } }
+		expect(message.details.model).toBe("auto (glm-5.3)")
+	})
+
+	it("omits the model row when Auto has not resolved a target yet", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		setAutoRoutingState("test-session", { status: "unresolved" })
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { model: { id: "auto", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const message = harness.sent[0] as { details: { model?: string } }
+		expect(message.details.model).toBeUndefined()
+	})
+
+	it("omits the model row for concrete model selections", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { model: { id: "glm-5.3", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const message = harness.sent[0] as { details: { model?: string } }
+		expect(message.details.model).toBeUndefined()
+	})
+
+	it("renders the model row after the per-model breakdown rows in multi-row summaries", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" } as Model<string>,
+		})
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("tool_result", {
+			toolName: "get_subagent_result",
+			details: {
+				agentId: "agent-1",
+				tokenUsage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+				modelName: "glm-5.3",
+			},
+		})
+		await harness.emit("agent_end", {}, { model: { id: "auto", provider: "kimchi-dev" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const renderer = harness.renderers["prompt-summary"]
+		expect(renderer).toBeDefined()
+		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text }
+		const lines = renderer?.(harness.sent[0], {}, theme)?.render(120) ?? []
+
+		const subagentRowIndex = lines.findIndex((line) => line.includes("↳ glm-5.3"))
+		const modelRowIndex = lines.findIndex((line) => line.includes("auto (kimi-k2.6)"))
+		expect(subagentRowIndex).toBeGreaterThanOrEqual(0)
+		expect(modelRowIndex).toBeGreaterThan(subagentRowIndex)
+		expect(lines[modelRowIndex]).toContain("model")
 	})
 })
 
@@ -313,5 +418,38 @@ describe("prompt summary stale-ctx crash prevention", () => {
 
 		expect(harness.sent).toHaveLength(1)
 		expect(harness.sent[0]).toMatchObject({ details: { total: { input: 120, output: 60 } } })
+	})
+})
+
+describe("prompt summary renderer", () => {
+	const theme = {
+		fg: (_color: string, s: string) => s,
+		bg: (_color: string, s: string) => s,
+		bold: (s: string) => s,
+		getFgAnsi: (_color: string) => "",
+	} as unknown as Theme
+
+	function render(details: Record<string, unknown>): string {
+		const component = promptSummaryRenderer(
+			{
+				customType: "prompt-summary",
+				details,
+			} as unknown as Parameters<typeof promptSummaryRenderer>[0],
+			{ expanded: false, outputPad: 0 },
+			theme,
+		)
+		return (component as Component | undefined)?.render(80).join("\n") ?? ""
+	}
+
+	it("renders the feedback invitation line", () => {
+		const text = render({
+			elapsed: "3.6s",
+			orchestrator: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+			subagents: null,
+			total: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+		})
+		expect(text).toContain("- Rate response: ⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)")
+		// The rating line must be fully left-aligned (no indent).
+		expect(text).not.toMatch(/^ {2}- Rate response:/m)
 	})
 })

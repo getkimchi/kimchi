@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import { resolveDefaultTags } from "./tags.js"
 
 let root: string
@@ -16,6 +17,9 @@ beforeEach(() => {
 	repo = join(root, "work", "repo")
 	cwd = join(repo, "packages", "app")
 	mkdirSync(cwd, { recursive: true })
+	// Most tests exercise the project tier — trusted by default. The fail-
+	// closed case is covered by its own test below.
+	setProjectScopeTrusted(cwd, true)
 	vi.stubEnv("KIMCHI_TAGS", "")
 })
 
@@ -23,6 +27,7 @@ afterEach(() => {
 	rmSync(root, { recursive: true, force: true })
 	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
+	resetProjectScopeTrustForTests()
 })
 
 function writeGlobalConfig(tags: string[]): void {
@@ -56,6 +61,16 @@ describe("resolveDefaultTags", () => {
 		const { tags, tierByTag } = resolveDefaultTags({ cwd, homeDir: home })
 		expect(tags).toEqual(["repo:api"])
 		expect(tierByTag.get("repo:api")).toBe("project")
+	})
+
+	it("ignores the project tier while the project is untrusted (fail closed)", () => {
+		resetProjectScopeTrustForTests()
+		writeGlobalConfig(["team:backend"])
+		writeProjectConfig(["spoofed:attacker"])
+		const { tags, tierByTag } = resolveDefaultTags({ cwd, homeDir: home })
+		expect(tags).toEqual(["team:backend"])
+		expect(tierByTag.get("team:backend")).toBe("global")
+		expect(tags).not.toContain("spoofed:attacker")
 	})
 
 	it("unions global and project tags without collisions", () => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -98,6 +98,59 @@ describe("resource store", () => {
 
 		expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({})
 		expect(isResourceEnabled("plugins.mcp-apps", path)).toBe(true)
+	})
+
+	describe("stat-gated read cache", () => {
+		it("consecutive reads are served from cache — a same-signature rewrite is not re-read", () => {
+			const path = tempSettingsPath()
+			// v1 and v2 are byte-identical in length (true/false swapped in two
+			// places), so only the mtime can distinguish them after a pin-back.
+			const v1 = '{"resources":{"hooks.bash":false,"tools.web_search":true}}'
+			const v2 = '{"resources":{"hooks.bash":true,"tools.web_search":false}}'
+			writeFileSync(path, v1, "utf-8")
+			// Baseline mtime to a whole second so a later pin-back round-trips
+			// exactly (Date keeps only ms; APFS mtimes carry ns).
+			const baseline = new Date(Math.floor(Date.now() / 1000) * 1000)
+			utimesSync(path, baseline, baseline)
+
+			expect(isResourceEnabled("hooks.bash", path)).toBe(false)
+			expect(isResourceEnabled("tools.web_search", path)).toBe(true)
+
+			// Rewrite with different content of IDENTICAL size, then pin mtime
+			// back so the signature is unchanged. A cache hit must keep serving
+			// the old values — proof the file was not re-read.
+			writeFileSync(path, v2, "utf-8")
+			utimesSync(path, baseline, baseline)
+			expect(isResourceEnabled("hooks.bash", path)).toBe(false)
+			expect(isResourceEnabled("tools.web_search", path)).toBe(true)
+
+			// Touch the mtime — the stat gate now re-reads the new content.
+			const touched = new Date(baseline.getTime() + 10_000)
+			utimesSync(path, touched, touched)
+			expect(isResourceEnabled("hooks.bash", path)).toBe(true)
+			expect(isResourceEnabled("tools.web_search", path)).toBe(false)
+		})
+
+		it("setResourceOverride invalidates — the next read reflects it immediately", () => {
+			const path = tempSettingsPath()
+			writeFileSync(path, '{"resources":{"hooks.bash":true}}', "utf-8")
+			expect(isResourceEnabled("hooks.bash", path)).toBe(true)
+
+			setResourceOverride("hooks.bash", false, path)
+			expect(isResourceEnabled("hooks.bash", path)).toBe(false)
+
+			resetResourceOverride("hooks.bash", path)
+			expect(isResourceEnabled("hooks.bash", path)).toBe(true) // definition default
+		})
+
+		it("picks up an external write without write-through (stat gate)", () => {
+			const path = tempSettingsPath()
+			writeFileSync(path, '{"resources":{"hooks.bash":true}}', "utf-8")
+			expect(isResourceEnabled("hooks.bash", path)).toBe(true)
+			// External process write: plain writeFileSync changes mtime+size.
+			writeFileSync(path, '{"resources":{"hooks.bash":false}}\n', "utf-8")
+			expect(isResourceEnabled("hooks.bash", path)).toBe(false)
+		})
 	})
 
 	it("rejects invalid resource ids", () => {

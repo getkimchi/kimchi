@@ -1,7 +1,9 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, relative, resolve } from "node:path"
+import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
+import { writeJson } from "./config/json.js"
+import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -9,6 +11,27 @@ const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
+
+let startupApiKey: string | undefined
+
+/**
+ * Retain the launch-time override privately, then strip it from process.env.
+ * Bash tools and MCP servers inherit that environment; leaving the key there
+ * can expose it through tool output. Do not persist it over the saved login.
+ */
+export function captureApiKeyFromEnvironment(): string | undefined {
+	startupApiKey = process.env.KIMCHI_API_KEY || startupApiKey
+	delete process.env.KIMCHI_API_KEY
+	return startupApiKey
+}
+
+function getEnvironmentApiKey(): string | undefined {
+	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
+}
+
+export function getApiKeySource(): "environment" | "config" {
+	return getEnvironmentApiKey() ? "environment" : "config"
+}
 
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
@@ -78,6 +101,7 @@ export interface OnboardingConfig {
 	sessionModeWizardSeenAt?: string
 	hideSessionModeDialog?: boolean
 	teleportHelpSeenAt?: string
+	studioOnboardingSeenAt?: string
 }
 
 export interface SurveyConfig {
@@ -164,8 +188,11 @@ export interface KimchiConfig {
 	llmEndpoint: string
 	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
 	customLlmEndpoint: string | undefined
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	maxToolResultChars: number
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	mcpSearchLimit: number
+	/** @deprecated Parsed only so upgrades can identify obsolete MCP configuration. */
 	mcpSearch: SearchStrategyConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
@@ -304,11 +331,26 @@ function readConfigExtras(configPath: string): {
  * group or world access), or undefined if the file doesn't exist or is
  * owner-only (0600 or stricter). Used by loadConfig and
  * readApiKeyFromConfigFile to warn users when their API key is exposed.
+ *
+ * Skipped on Windows: Node reports POSIX mode bits (typically 0666) that
+ * don't reflect the actual ACLs, and `chmod` isn't a native command, so
+ * the warning would be meaningless noise. Windows files under the user
+ * profile are already protected by directory ACLs.
  */
+// Paths whose permission warning has already been emitted this process.
+// loadConfig() is uncached by design (post-trust config adoption depends on
+// fresh reads), and the lazy configuredSkillPaths getter re-invokes it on every
+// resources_discover event — without warn-once, a chmod-644 config would print
+// the same warning per event. This is process-lifetime log hygiene, not
+// per-session state.
+const configPermissionWarnedPaths = new Set<string>()
+
 export function checkConfigFilePermissions(configPath: string): string | undefined {
+	if (process.platform === "win32") return undefined
 	try {
 		const stat = statSync(configPath)
-		if ((stat.mode & 0o077) !== 0) {
+		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
+			configPermissionWarnedPaths.add(configPath)
 			const mode = (stat.mode & 0o777).toString(8)
 			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
 		}
@@ -340,11 +382,16 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
 	const teleportHelpSeenAt =
 		typeof raw.teleportHelpSeenAt === "string" && raw.teleportHelpSeenAt.length > 0 ? raw.teleportHelpSeenAt : undefined
+	const studioOnboardingSeenAt =
+		typeof raw.studioOnboardingSeenAt === "string" && raw.studioOnboardingSeenAt.length > 0
+			? raw.studioOnboardingSeenAt
+			: undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
+		...(studioOnboardingSeenAt ? { studioOnboardingSeenAt } : {}),
 	}
 }
 
@@ -397,10 +444,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	// Resolve auth headers: explicit config override takes priority, then API key
 	let headers: Record<string, string>
-	const apiKey =
-		(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
-			? process.env.KIMCHI_API_KEY
-			: undefined) ?? readApiKeyFromConfigFile(path)
+	const apiKey = getEnvironmentApiKey() ?? readApiKeyFromConfigFile(path)
 	if (fileHeaders) {
 		headers = fileHeaders
 	} else {
@@ -428,18 +472,35 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 }
 
 /**
+ * Read the project .kimchi/config.json extras, surfacing its permission
+ * warning the same way the global read does. Only called when the project is
+ * trusted (see loadConfig).
+ */
+function readProjectConfigExtras(projectPath: string): ReturnType<typeof readConfigExtras> {
+	const projectPermWarning = checkConfigFilePermissions(projectPath)
+	if (projectPermWarning) console.warn(projectPermWarning)
+	return readConfigExtras(projectPath)
+}
+
+/**
  * Load the kimchi configuration.
  *
  * Config precedence (highest to lowest):
  *   1. KIMCHI_API_KEY environment variable (highest precedence)
- *   2. Project .kimchi/config.json (if cwd provided)
+ *   2. Project .kimchi/config.json (if cwd provided — gated on project trust,
+ *      see below)
  *   3. Global ~/.config/kimchi/config.json
+ *
+ * The project tier is gated on project trust (src/project-scope-trust.ts):
+ * while the session cwd is untrusted, .kimchi/config.json is not read at
+ * all, so a cloned repo cannot set the LLM endpoint, API key, skill paths,
+ * or search behavior until the folder is trusted.
  *
  * For mcpSearch, a shallow merge is performed: project config overrides
  * individual keys, but global fills in any missing keys.
  * For all other fields, project config completely replaces global.
  *
- * Returns `apiKey: ""` when no API key is present in either config file.
+ * Returns `apiKey: ""` when no API key is present in the environment or config.
  */
 export function loadConfig(options?: { configPath?: string; cwd?: string }): KimchiConfig {
 	// Read global config
@@ -448,11 +509,12 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	if (globalPermWarning) console.warn(globalPermWarning)
 	const globalExtras = readConfigExtras(globalConfigPath)
 
-	// Read project-level config
-	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
-	const projectPermWarning = checkConfigFilePermissions(projectPath)
-	if (projectPermWarning) console.warn(projectPermWarning)
-	const projectExtras = readConfigExtras(projectPath)
+	// Read project-level config — only when the project is trusted. An
+	// untrusted repo must not influence the endpoint, API key, skill paths, or
+	// anything else the harness acts on.
+	const projectCwd = options?.cwd ?? process.cwd()
+	const projectPath = resolve(projectCwd, ".kimchi", "config.json")
+	const projectExtras = isProjectScopeAllowed(projectCwd) ? readProjectConfigExtras(projectPath) : {}
 
 	// Merge: project wins for scalars; shallow merge for mcpSearch.
 	const extras = {
@@ -469,7 +531,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	}
 
 	return {
-		apiKey: extras.apiKey ?? "",
+		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
 		customLlmEndpoint: extras.llmEndpoint,
@@ -484,19 +546,35 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	}
 }
 
-export function getAgentConfigDir(): string {
-	return AGENT_CONFIG_DIR
+export type LegacyMcpConfigKey = "maxToolResultChars" | "mcpSearchLimit" | "mcpSearch"
+
+/** Return only legacy MCP keys the user actually persisted, excluding defaults. */
+export function getConfiguredLegacyMcpKeys(options?: { configPath?: string; cwd?: string }): LegacyMcpConfigKey[] {
+	const globalConfigPath = options?.configPath ?? KIMCHI_CONFIG_PATH
+	const projectConfigPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
+	const sources = [readConfigExtras(globalConfigPath), readConfigExtras(projectConfigPath)]
+	const configured = new Set<LegacyMcpConfigKey>()
+	for (const source of sources) {
+		if (source.maxToolResultChars !== undefined) configured.add("maxToolResultChars")
+		if (source.mcpSearchLimit !== undefined) configured.add("mcpSearchLimit")
+		if (source.mcpSearch !== undefined && Object.keys(source.mcpSearch).length > 0) configured.add("mcpSearch")
+	}
+	return [...configured]
 }
 
-function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
-	mkdirSync(dirname(configPath), { recursive: true })
-	const tmp = `${configPath}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, configPath)
-	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
-	// git tokens in plaintext. The atomic rename may inherit the tmp file's
-	// default umask perms, so chmod explicitly after the rename lands.
-	chmodSync(configPath, 0o600)
+/** Explain an environment override without exposing either credential. */
+export function getApiKeyMismatchWarning(
+	savedKey = (isProjectScopeAllowed()
+		? readApiKeyFromConfigFile(resolve(process.cwd(), ".kimchi", "config.json"))
+		: undefined) ?? readApiKeyFromConfigFile(),
+): string | undefined {
+	const envKey = getEnvironmentApiKey()
+	if (!envKey || !savedKey || envKey === savedKey) return undefined
+	return "KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key."
+}
+
+export function getAgentConfigDir(): string {
+	return AGENT_CONFIG_DIR
 }
 
 function updateConfigFile(
@@ -508,7 +586,7 @@ function updateConfigFile(
 	if (!raw && options?.createIfMissing === false) return
 	const next = raw ?? {}
 	update(next)
-	writeConfigObject(configPath, next)
+	writeJson(configPath, next)
 }
 
 function writeConfigField(key: string, value: unknown, configPath: string): void {
@@ -573,6 +651,17 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 	})
 }
 
+export function readStudioOnboardingSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.studioOnboardingSeenAt
+}
+
+export function writeStudioOnboardingSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.studioOnboardingSeenAt = seenAt
+	})
+}
+
 export function readTeleportHelpSeenAt(configPath?: string): string | undefined {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.teleportHelpSeenAt
 }
@@ -592,6 +681,50 @@ export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?:
 	updateSurveyConfig(configPath ?? KIMCHI_CONFIG_PATH, surveyId, (survey) => {
 		survey.seenAt = seenAt
 	})
+}
+
+/**
+ * Whether Auto has already been installed as the default model on this install.
+ *
+ * Lives in settings.json next to `defaultModel`, because that is what it
+ * records having changed: one global settings file, one machine-level default,
+ * one marker. Once set, the default is the user's to change — a switch away is
+ * honoured and never undone.
+ *
+ * Settings writes merge onto the existing file contents, so this key survives
+ * the harness rewriting the file.
+ */
+export function readAutoDefaultApplied(settingsPath?: string): boolean {
+	try {
+		const parsed = JSON.parse(readFileSync(settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json"), "utf-8"))
+		return parsed.autoDefaultApplied === true
+	} catch {
+		// A missing or unreadable file reads as "not yet applied": the caller
+		// installs the default rather than silently skipping it.
+		return false
+	}
+}
+
+/**
+ * Install Auto as the saved default and record that it was done.
+ *
+ * The default and the marker are written together on purpose: setting only the
+ * marker would leave the previous `defaultModel` in place, so the session would
+ * come up on Auto once and fall back on the next launch — with the marker now
+ * blocking a retry.
+ */
+export function writeAutoDefaultApplied(provider: string, modelId: string, settingsPath?: string): void {
+	const path = settingsPath ?? resolve(AGENT_CONFIG_DIR, "settings.json")
+	let settings: Record<string, unknown> = {}
+	try {
+		settings = JSON.parse(readFileSync(path, "utf-8"))
+	} catch {
+		// Fall through with an empty object: a first run writes a fresh file.
+	}
+	settings.defaultProvider = provider
+	settings.defaultModel = modelId
+	settings.autoDefaultApplied = true
+	writeJson(path, settings)
 }
 
 export function readHideSessionModeDialog(configPath?: string): boolean {

@@ -2,6 +2,7 @@
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
@@ -22,6 +23,9 @@ import {
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
+import { isKnownCommand } from "./commands/registry.js"
+import { setProjectScopeTrusted } from "./project-scope-trust.js"
+import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -30,9 +34,11 @@ import "./login-command-patch.js"
 import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import {
+	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	getApiKeyMismatchWarning,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
@@ -42,8 +48,10 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
+import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
@@ -66,6 +74,7 @@ import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
+import feedbackExtension from "./extensions/feedback/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
 import fermentV2Extension from "./extensions/ferment-v2/index.js"
@@ -87,7 +96,8 @@ import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
-import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./extensions/mcp/index.js"
+import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
@@ -110,11 +120,13 @@ import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import { installAutoModelAdapters } from "./extensions/router/adapters.js"
+import { shouldDefaultToAuto, warmAutoDefaultGate } from "./extensions/router/auto-default-gate.js"
 import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
+import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -269,10 +281,43 @@ const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 class SetupCancelled extends Error {}
 
 try {
+	const apiKeyWarning = helpOrVersion ? undefined : getApiKeyMismatchWarning()
+	const terminalIo = {
+		stdinIsTTY: process.stdin.isTTY === true,
+		stdoutIsTTY: process.stdout.isTTY === true,
+	}
+	// Only chat TUI sessions load the warning extension after startup dialogs.
+	// Setup commands render their own Clack warning; other subcommands exit before extensions load.
+	if (
+		apiKeyWarning &&
+		originalArgs[0] !== "setup-tools" &&
+		originalArgs[0] !== "setup" &&
+		(isKnownCommand(originalArgs[0]) || !isTerminalUiMode(originalArgs, terminalIo))
+	) {
+		console.warn(`Warning: ${apiKeyWarning}`)
+	}
 	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
+	// Prime the kimchi project-scope gate BEFORE any project-config read and
+	// before subcommand dispatch — dispatched commands (e.g. `kimchi resources
+	// list`) use the gated discovery functions and previously trusted folders
+	// must show their project hooks. Honors pi's run-scoped trust overrides
+	// (--no-approve forces untrusted, --approve forces trusted); otherwise the
+	// persisted decision (or defaultProjectTrust=always) decides. With no
+	// decision recorded this resolves untrusted (fail closed) and the prompt
+	// inside pi's main() decides; settingsTrustSyncExtension then syncs the
+	// outcome onto the gate at session_start.
+	const cliTrustOptions = getParsedCliArgs().options
+	const cliTrustOverride =
+		cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
+	const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+	setProjectScopeTrusted(
+		process.cwd(),
+		resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
+	)
+
 	const dispatch = await dispatchSubcommand(originalArgs)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
@@ -289,20 +334,23 @@ try {
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
+		// Kick off the /v1/me identity lookup now (result cached process-wide) so
+		// the Auto-discovery filter and the fresh-session default gate never wait
+		// on the network in render paths.
+		warmAutoDefaultGate()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
 		// (set_phase, list_ferments, ferment suite) tools stay out of headless
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
+
+		// Pre-main trust was primed above, before subcommand dispatch; re-prime
+		// is unnecessary (idempotent) but loadConfig below depends on it.
+
 		let config = loadConfig()
 
-		const envKey = process.env.KIMCHI_API_KEY || undefined
-		delete process.env.KIMCHI_API_KEY
-		if (envKey && !config.apiKey) {
-			writeApiKey(envKey)
-			config = loadConfig()
-		}
+		const envKey = captureApiKeyFromEnvironment()
 
 		// Capture the frozen launch-time metadata (OS + config snapshot incl.
 		// multimodel) for injection into JSONL/HTML exports. Decoupled from the
@@ -311,7 +359,7 @@ try {
 		captureSessionStart(config, telemetryConfig.enabled)
 
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
-		// Sent after loadConfig() + env-key reload so the config snapshot reflects
+		// Sent after loadConfig() so the config snapshot reflects
 		// real values rather than defaults.
 		if (telemetryConfig.enabled) {
 			sendPreSessionEvent(telemetryConfig, "harness_launched", {
@@ -357,20 +405,40 @@ try {
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
 		let currentApiKey = apiKey
+		const rejectedEnvironmentKeyMessage =
+			"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+		let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
 		try {
-			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.customLlmEndpoint }))
-			if (experimentalFeatures) {
-				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
-				models = [...models, ...readExperimentalModels(modelsJsonPath)]
+			if (envKey) {
+				const discover = () =>
+					discoverEnvironmentModels(modelsJsonPath, envKey, {
+						endpoint: config.customLlmEndpoint,
+						experimental: experimentalFeatures,
+					})
+				const discovered = await discover()
+				models = discovered.models
+				environmentOllamaModels = discovered.ollamaModels
+				installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
+			} else {
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+					endpoint: config.customLlmEndpoint,
+				}))
+				if (experimentalFeatures) {
+					injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
+					models = [...models, ...readExperimentalModels(modelsJsonPath)]
+				}
+				injectAutoModel(modelsJsonPath)
+				// Auto-discover a local Ollama server and merge its models into the
+				// registry. Probe is silent on failure — startup is never blocked.
+				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			}
-			injectAutoModel(modelsJsonPath)
-			// Auto-discover a local Ollama server and merge its models into the
-			// registry. Probe is silent on failure — startup is never blocked.
-			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
-			models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
+			if (is401 && envKey) {
+				throw new Error(rejectedEnvironmentKeyMessage)
+			}
 			if (is401 && process.stdin.isTTY) {
 				console.warn("API key is invalid or expired. Redirecting to setup...")
 				writeApiKey("")
@@ -384,7 +452,9 @@ try {
 				currentApiKey = wizardResult.apiKey ?? ""
 				writeApiKey(currentApiKey)
 				config = loadConfig()
-				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.customLlmEndpoint }))
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+					endpoint: config.customLlmEndpoint,
+				}))
 				if (experimentalFeatures) {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
@@ -404,7 +474,9 @@ try {
 				throw err
 			}
 		}
-		await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+		// Keep saved Kimchi credentials aligned with config.json, including after
+		// cached-model fallback. Environment keys remain session-only.
+		if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -417,7 +489,7 @@ try {
 		// Wire Ollama-discovered models into the explorer / reviewer / builder
 		// role pools. Runs after setAvailableModels so the resolved roles
 		// singleton reflects the same model list the picker exposes.
-		const ollamaModelsForRoles = readOllamaModelsFromConfig(modelsJsonPath)
+		const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
 		if (ollamaModelsForRoles.length > 0) {
 			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
 		}
@@ -499,15 +571,11 @@ try {
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
-		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
+		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs()) && !(await shouldDefaultToAuto())) {
 			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
 		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
-		const terminalIo = {
-			stdinIsTTY: process.stdin.isTTY === true,
-			stdoutIsTTY: process.stdout.isTTY === true,
-		}
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
@@ -580,7 +648,17 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
-		const effectiveSkillPaths = [...new Set([...skillPaths])]
+		// Config-derived skill paths resolve lazily: the trust prompt is answered
+		// inside pi's main() (after this point), and resource discovery re-runs
+		// post-trust — a frozen array here would keep a newly trusted project's
+		// configured skills invisible until a restart even after trusting.
+		// Dedup preserves the pre-change behavior (the old effectiveSkillPaths
+		// was [...new Set([...skillPaths])]) so duplicate config entries don't
+		// multiply downstream expansion work per discovery.
+		const configuredSkillPaths = (): string[] => [...new Set(loadConfig().skillPaths ?? [])]
+		const mcpAdapterExtensions = enabledExtensionFactories([
+			{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+		] satisfies ManagedExtensionFactory[])
 		const extensionFactories = [
 			// First so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.
@@ -596,6 +674,9 @@ try {
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,
+			shellProfileMigrationExtension,
+			// session_start handlers are awaited in order; warn after the migration dialog closes.
+			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
@@ -627,9 +708,7 @@ try {
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
-			...enabledExtensionFactories([
-				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
-			] satisfies ManagedExtensionFactory[]),
+			...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 			ideAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			...enabledExtensionFactories([
@@ -639,9 +718,9 @@ try {
 			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
 			autoModelExtension,
 			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
+				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension(effectiveSkillPaths),
+			promptEnrichmentExtension(configuredSkillPaths),
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),
@@ -656,6 +735,9 @@ try {
 			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
+			// Named so startup diagnostics read `<inline:feedback>` rather than a
+			// positional `<inline:N>` that shifts whenever the list above changes.
+			{ name: "feedback", factory: feedbackExtension },
 			...enabledExtensionFactories([
 				{ id: "extensions.todos", factory: todosExtension },
 			] satisfies ManagedExtensionFactory[]),
@@ -709,11 +791,15 @@ try {
 
 		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
-			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
 			await runAcpMode({
 				extensionFactories,
 				agentDir,
-				mcpServerManager: new McpServerManager(),
+				...(mcpAdapterExtensions.length > 0
+					? {
+							mcpExtensionFactory: createKimchiMcpAdapterExtension,
+							mcpProbe: new UpstreamMcpProbe(),
+						}
+					: {}),
 				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
 			})
 		} else {

@@ -9,6 +9,7 @@ export type LLMGatewayErrorReason =
 	| "content_filter"
 	| "context_window_exceeded"
 	| "invalid_request_payload"
+	| "model_retired"
 
 export const LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE = 74
 const LLM_GATEWAY_REQUEST_EXIT_CODE = 1
@@ -27,6 +28,14 @@ const LLM_GATEWAY_REASON_POLICIES: Record<
 	content_filter: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 	context_window_exceeded: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 	invalid_request_payload: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
+	model_retired: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
+}
+
+/** Replacement hints extracted from a model_retired gateway verdict (Scenario B). */
+export interface ModelRetiredInfo {
+	readonly replacement?: string
+	readonly alternatives: string[]
+	readonly docs?: string
 }
 
 export class LLMGatewayError {
@@ -34,11 +43,18 @@ export class LLMGatewayError {
 	readonly reason: LLMGatewayErrorReason
 	readonly rawMessage: string
 	readonly httpStatusCode?: number
+	readonly modelRetiredInfo?: ModelRetiredInfo
 
-	constructor(params: { reason: LLMGatewayErrorReason; rawMessage: string; httpStatusCode?: number }) {
+	constructor(params: {
+		reason: LLMGatewayErrorReason
+		rawMessage: string
+		httpStatusCode?: number
+		modelRetiredInfo?: ModelRetiredInfo
+	}) {
 		this.reason = params.reason
 		this.rawMessage = params.rawMessage
 		this.httpStatusCode = params.httpStatusCode
+		this.modelRetiredInfo = params.modelRetiredInfo
 	}
 
 	get retryable(): boolean {
@@ -98,6 +114,35 @@ const TRANSPORT_TERMINATION_RE =
 	/\b(?:connection|request|stream|response|socket|http2 request)\b.{0,40}\b(?:terminated unexpectedly|unexpectedly (?:ended|closed|terminated)|ended unexpectedly|closed unexpectedly)\b/i
 const BAD_REQUEST_TEXT_RE = /bad request|BadRequest/i
 
+// Retired-model verdicts from the Kimchi gateway (deprecation protocol):
+// Scenario A — HTTP 410 with {"error": {"type": "model_not_found"}} for
+// unannounced removal; Scenario B — HTTP 410 with type "model_gone" plus
+// replacement / suggested_alternatives / docs hints for announced retirement.
+const MODEL_RETIRED_TYPE_RE = /"type"\s*:\s*"model_(?:gone|not_found)"|\bmodel_gone\b/i
+const MODEL_RETIRED_TEXT_RE = /\bmodel\b.{0,60}\bhas been (?:retired|removed)\b/i
+const GONE_STATUS_RES = [
+	/"code"\s*:\s*410\b/i,
+	/\b(?:http(?:\s+status)?|status(?:\s+code)?|code)\s*(?:=|:)?\s*410\b/i,
+	/\b410\s+(?:gone|status\s+code)\b/i,
+]
+
+function parseGoneStatusCode(rawMessage: string): number | undefined {
+	for (const pattern of GONE_STATUS_RES) {
+		if (pattern.test(rawMessage)) return 410
+	}
+	return undefined
+}
+
+/** Extract replacement hints from a model_retired error body, when present. */
+export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | undefined {
+	const replacement = /"replacement"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
+	const docs = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
+	const alternativesRaw = /"suggested_alternatives"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)?.[1]
+	const alternatives = alternativesRaw ? Array.from(alternativesRaw.matchAll(/"([^"]+)"/g), (m) => m[1]) : []
+	if (!replacement && !docs && alternatives.length === 0) return undefined
+	return { replacement, alternatives, docs }
+}
+
 // "kimi-k2.7 model is rate limited until 2026-08-05T16:27:33Z" — the gateway states an absolute
 // reopening time, so every attempt before it fails by construction. Anchored on a digit or Z so
 // sentence punctuation backtracks out of the capture instead of reaching Date.parse.
@@ -142,8 +187,9 @@ function createError(
 	reason: LLMGatewayErrorReason,
 	rawMessage: string,
 	httpStatusCode: number | undefined,
+	modelRetiredInfo?: ModelRetiredInfo,
 ): LLMGatewayError {
-	return new LLMGatewayError({ reason, rawMessage, httpStatusCode })
+	return new LLMGatewayError({ reason, rawMessage, httpStatusCode, modelRetiredInfo })
 }
 
 export function classifyLLMGatewayError(rawMessage: string): LLMGatewayError | undefined {
@@ -158,6 +204,20 @@ export function classifyLLMGatewayError(rawMessage: string): LLMGatewayError | u
 	if (INVALID_REQUEST_PAYLOAD_RE.test(rawMessage)) return createError("invalid_request_payload", rawMessage, status)
 	if (CONTENT_FILTER_RE.test(rawMessage)) return createError("content_filter", rawMessage, status)
 	if (CONTEXT_WINDOW_RE.test(rawMessage)) return createError("context_window_exceeded", rawMessage, status)
+	// A retired-model verdict is terminal and user-actionable (switch models);
+	// it must win over the generic 4xx and text matching below.
+	if (
+		MODEL_RETIRED_TYPE_RE.test(rawMessage) ||
+		MODEL_RETIRED_TEXT_RE.test(rawMessage) ||
+		parseGoneStatusCode(rawMessage) !== undefined
+	) {
+		return createError(
+			"model_retired",
+			rawMessage,
+			status ?? parseGoneStatusCode(rawMessage),
+			parseModelRetiredInfo(rawMessage),
+		)
+	}
 	// Budget exhaustion is a terminal Kimchi verdict even when the gateway
 	// describes it using provider-verdict words such as "billing".
 	if (BUDGET_EXHAUSTED_RE.test(rawMessage)) return createError("budget_exhausted", rawMessage, status)

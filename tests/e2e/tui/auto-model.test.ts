@@ -89,21 +89,6 @@ async function waitForAbortedRequest(
 	throw new Error(`Timed out waiting for the request to ${path} to be aborted`)
 }
 
-async function navigateToSetting(terminal: import("@microsoft/tui-test").Terminal, label: string): Promise<void> {
-	for (let index = 0; index < 30; index += 1) {
-		const cursorLine = viewText(terminal)
-			.split("\n")
-			.find((line) => line.includes("→"))
-		if (cursorLine?.includes(label)) {
-			terminal.submit("")
-			return
-		}
-		terminal.keyDown()
-		await new Promise((resolve) => setTimeout(resolve, 50))
-	}
-	throw new Error(`Could not navigate to setting "${label}"`)
-}
-
 function requestModel(body: unknown): string | undefined {
 	return body && typeof body === "object" && "model" in body && typeof body.model === "string" ? body.model : undefined
 }
@@ -124,14 +109,15 @@ function agentCall(id: string, model?: string, runInBackground = false) {
 	}
 }
 
-test("/model autocomplete shows and selects Auto when experimental features are enabled", async ({ terminal }) => {
+test("/model autocomplete shows and selects Auto for an entitled account without experimental features", async ({
+	terminal,
+}) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "auto-model-autocomplete-selection",
 			providerId: "kimchi-dev",
 			initialModel: "routed",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			responses: [],
 		},
@@ -146,12 +132,17 @@ test("/model autocomplete shows and selects Auto when experimental features are 
 			trace.step("model autocomplete open")
 
 			terminal.write("auto")
-			await waitForText(terminal, "Auto (Kimchi Router)", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			expect(viewText(terminal)).toMatch(/→ auto \[kimchi-dev\]/)
+			await waitForText(terminal, "Picks the best model for your tasks automatically.", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
+			// Upstream 0.85.1 added a "✓ current model" marker column: the row renders
+			// as "→   auto [kimchi-dev]" (cursor, marker column, then the label).
+			expect(viewText(terminal)).toMatch(/→\s+auto \[kimchi-dev\]/)
 			trace.step("Auto highlighted")
 
 			terminal.submit("")
-			await waitForText(terminal, "Model: auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Default model: kimchi-dev/auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("Auto selected")
 		},
@@ -165,7 +156,6 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			artifactName: "auto-model-routes-once",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE],
 			responses: [{ stream: ["First routed reply."] }, { stream: ["Second routed reply."] }],
@@ -173,7 +163,7 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 		async (fixture, trace) => {
 			terminal.submit("Choose a model for this session")
 			await waitForText(terminal, "First routed reply.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("first prompt routed")
 
@@ -189,7 +179,16 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			expect(routerRequests[0]?.headers["x-session-id"]).toBe(chatRequests[0]?.headers["x-session-id"])
 			expect(routerRequests[0]?.headers["x-conversation-id"]).toBe(chatRequests[0]?.headers["x-conversation-id"])
 			expect(routerRequests[0]?.headers["x-turn-index"]).toBe(chatRequests[0]?.headers["x-turn-index"])
+			// traceparent is per provider-request header assembly: the router
+			// call inherits the correlation headers of the chat request it
+			// routes (same trace), while the second chat request is a separate
+			// assembly and therefore a fresh trace.
+			const traceparentShape = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/
+			expect(routerRequests[0]?.headers.traceparent).toMatch(traceparentShape)
+			expect(chatRequests[0]?.headers.traceparent).toMatch(traceparentShape)
+			expect(chatRequests[1]?.headers.traceparent).toMatch(traceparentShape)
 			expect(routerRequests[0]?.headers.traceparent).toBe(chatRequests[0]?.headers.traceparent)
+			expect(chatRequests[1]?.headers.traceparent).not.toBe(chatRequests[0]?.headers.traceparent)
 			expect(routerRequests[0]?.headers["x-parent-session-id"]).toBeUndefined()
 
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))
@@ -206,7 +205,6 @@ test("Auto exposes only off after routing to a model without reasoning", async (
 			artifactName: "auto-model-non-reasoning-controls",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE],
 			responses: [{ stream: ["Non-reasoning reply."] }],
@@ -216,20 +214,19 @@ test("Auto exposes only off after routing to a model without reasoning", async (
 			await waitForText(terminal, "Non-reasoning reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
-			terminal.write("/settings")
-			await waitForText(terminal, "/settings", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// Upstream 0.85.1 removed the global "Thinking level" /settings row in
+			// favor of /thinking + per-model defaults, so drive the /thinking selector.
+			terminal.write("/thinking")
+			await waitForText(terminal, "/thinking", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
-			await waitForText(terminal, "Auto-compact", { timeoutMs: INPUT_TIMEOUT_MS })
-			await navigateToSetting(terminal, "Thinking level")
-			await waitForText(terminal, "Enter to select · Esc to go back", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Thinking Level", { timeoutMs: INPUT_TIMEOUT_MS })
 
-			terminal.keyDown()
-			terminal.submit("")
-			await waitForText(terminal, "Enter/Space to change · Esc to cancel", { timeoutMs: INPUT_TIMEOUT_MS })
-			const thinkingLine = viewText(terminal)
-				.split("\n")
-				.find((line) => line.includes("Thinking level"))
-			expect(thinkingLine).toMatch(/Thinking level\s+off/)
+			const thinkingList = viewText(terminal)
+			// The Auto model synced to a non-reasoning routed model exposes "off" only.
+			expect(thinkingList).toMatch(/✓ +off +No reasoning/)
+			expect(thinkingList).not.toMatch(
+				/Very brief reasoning|Light reasoning|Moderate reasoning|Deep reasoning|Maximum reasoning/,
+			)
 
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
@@ -246,7 +243,7 @@ test("Auto uses the highest-ranked eligible model when the best model is outside
 			artifactName: "auto-model-ranked-scoped-fallback",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features", "--models", "kimchi-dev/fallback"],
+			extraArgs: ["--models", "kimchi-dev/fallback"],
 			models: MODELS_WITH_RANKED_FALLBACK,
 			routerResponses: [{ best_model: "routed", probabilities: { routed: 0.9, fallback: 0.7 } }],
 			responses: [{ stream: ["Ranked fallback reply."] }],
@@ -254,7 +251,7 @@ test("Auto uses the highest-ranked eligible model when the best model is outside
 		async (fixture) => {
 			terminal.submit("Use the first eligible router-ranked model")
 			await waitForText(terminal, "Ranked fallback reply.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto (fallback) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
@@ -272,7 +269,6 @@ test("Auto stops an unavailable-router prompt and retries when the user submits 
 			artifactName: "auto-model-router-unavailable",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [undefined, ROUTED_ROUTER_RESPONSE],
 			responses: [{ stream: ["Router retry succeeded."] }],
@@ -287,7 +283,7 @@ test("Auto stops an unavailable-router prompt and retries when the user submits 
 
 			terminal.submit("Try the router again")
 			await waitForText(terminal, "Router retry succeeded.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(2)
@@ -305,7 +301,6 @@ test("Escape cancels an in-flight router request and the corrected prompt can ro
 			artifactName: "auto-model-router-cancellation",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			responses: [{ stream: ["Corrected prompt succeeded."] }],
 			routerResponses: [ROUTED_ROUTER_RESPONSE, ROUTED_ROUTER_RESPONSE],
@@ -326,7 +321,7 @@ test("Escape cancels an in-flight router request and the corrected prompt can ro
 
 			terminal.submit("Use this corrected prompt instead")
 			await waitForText(terminal, "Corrected prompt succeeded.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
 			expect(requestsTo(fixture, "/v1/route")).toHaveLength(2)
@@ -344,7 +339,6 @@ test("Escape cancels an inherited Auto child while it is routing", async ({ term
 			artifactName: "auto-model-child-router-cancellation",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE, ROUTED_ROUTER_RESPONSE],
 			stallRouterRequestNumber: 2,
@@ -364,6 +358,248 @@ test("Escape cancels an inherited Auto child while it is routing", async ({ term
 			expect(requestsTo(fixture, "/openai/v1/chat/completions")).toHaveLength(1)
 		},
 	)
+})
+
+test("a new session defaults to Auto without experimental features", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-new-session-default",
+			providerId: "kimchi-dev",
+			initialModel: false,
+			models: MODELS,
+			routerResponses: [ROUTED_ROUTER_RESPONSE],
+			responses: [{ stream: ["Default Auto reply."] }],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("new session selected Auto")
+			terminal.submit("Route my first prompt")
+			await waitForText(terminal, "Default Auto reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
+			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
+			expect(chatRequests).toHaveLength(1)
+			expect(requestModel(chatRequests[0]?.body)).toBe("routed")
+			trace.step("default Auto routed the first prompt")
+		},
+	)
+})
+
+test("an already-applied default leaves a switched-away install on its own model", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-default-already-applied",
+			providerId: "kimchi-dev",
+			initialModel: false,
+			models: MODELS,
+			routerResponses: [ROUTED_ROUTER_RESPONSE],
+			responses: [{ stream: ["Saved concrete default reply."] }],
+			seedHome: (homeDir) => {
+				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
+				writeFileSync(
+					settingsPath,
+					JSON.stringify(
+						{
+							...settings,
+							defaultProvider: "kimchi-dev",
+							defaultModel: "routed",
+							enabledModels: ["kimchi-dev/auto", "kimchi-dev/routed"],
+							// Auto was already installed as the default here, so the
+							// concrete model is a deliberate switch away from it and
+							// must survive restarts.
+							autoDefaultApplied: true,
+						},
+						null,
+						"\t",
+					),
+				)
+			},
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("new session kept the model chosen after the switch")
+			terminal.submit("Use my saved model")
+			await waitForText(terminal, "Saved concrete default reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			// Already rolled in and switched away: no re-roll, so no routing.
+			expect(requestsTo(fixture, "/v1/route")).toHaveLength(0)
+			expect(requestModel(requestsTo(fixture, "/openai/v1/chat/completions")[0]?.body)).toBe("routed")
+			trace.step("saved concrete default answered directly")
+		},
+	)
+})
+
+test("an entitled account gets Auto as the default and is told once", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-default-applies",
+			providerId: "kimchi-dev",
+			initialModel: false,
+			models: MODELS,
+			routerResponses: [ROUTED_ROUTER_RESPONSE],
+			responses: [{ stream: ["Rolled into Auto."] }],
+			seedHome: (homeDir) => {
+				// A concrete default that the account never deliberately chose (login
+				// and Ctrl+P both persist one), and the default not yet installed.
+				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
+				writeFileSync(
+					settingsPath,
+					JSON.stringify(
+						{
+							...settings,
+							defaultProvider: "kimchi-dev",
+							defaultModel: "routed",
+							enabledModels: ["kimchi-dev/auto", "kimchi-dev/routed"],
+						},
+						null,
+						"\t",
+					),
+				)
+			},
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Auto is now the default model.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("the session switched to Auto and said so")
+			terminal.submit("Route this one")
+			await waitForText(terminal, "Rolled into Auto.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
+			trace.step("the session routes through Auto")
+		},
+	)
+})
+
+test("Auto stays hidden from the model picker for accounts without the flag or entitlement", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-picker-hidden-external",
+			providerId: "kimchi-dev",
+			initialModel: "routed",
+			models: MODELS,
+			responses: [],
+			userEmail: "someone@example.com",
+		},
+		async (_fixture, trace) => {
+			terminal.write("/model")
+			await waitForText(terminal, "/model", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.submit("")
+			await waitForText(terminal, "Only showing models from configured providers", {
+				timeoutMs: INPUT_TIMEOUT_MS,
+				full: false,
+			})
+			trace.step("model picker open")
+
+			terminal.write("auto")
+			await waitForText(terminal, "auto", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			const picker = viewText(terminal)
+			expect(picker).not.toContain("Auto (Kimchi Router)")
+			expect(picker).not.toContain("auto [kimchi-dev]")
+			trace.step("Auto row absent for a non-entitled account")
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		},
+	)
+})
+
+test("--model auto without the flag fails fast for accounts without the entitlement", async ({ terminal }) => {
+	const fixture = await createKimchiFixture({
+		providerId: "kimchi-dev",
+		initialModel: false,
+		models: MODELS,
+		responses: [],
+		userEmail: "someone@example.com",
+	})
+
+	try {
+		// No exitMarker: its `printf '\033c'` is a terminal full-reset that would
+		// wipe the refusal off screen before it can be asserted. The refusal text
+		// itself is the signal that the launch was rejected pre-main.
+		launchKimchi(terminal, fixture, ["--model", "auto"], fixture.seedEnv)
+		await waitForText(terminal, "kimchi-dev/auto is experimental", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+	} finally {
+		await stopKimchi(terminal)
+		await fixture.stop()
+	}
+})
+
+test("Ctrl+P cycles through concrete models and wraps back to Auto", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-cycle-wrap",
+			providerId: "kimchi-dev",
+			initialModel: false,
+			models: MODELS,
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.keyPress("p", { ctrl: true })
+			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("cycled to concrete model")
+			terminal.keyPress("p", { ctrl: true })
+			await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("wrapped to Auto")
+		},
+	)
+})
+
+test("a session-scoped /model choice survives resume but not /new or restart", async ({ terminal }) => {
+	const exitMarker = "__KIMCHI_AUTO_LIFECYCLE_EXITED__"
+	const fixture = await createKimchiFixture({
+		providerId: "kimchi-dev",
+		initialModel: false,
+		models: MODELS_WITH_OVERRIDE,
+		responses: [{ stream: ["Concrete session reply."] }],
+	})
+
+	try {
+		// First launch installs Auto as the default, so the session starts on Auto.
+		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
+		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		terminal.submit("/model kimchi-dev/override")
+		await waitForText(terminal, "Model: override", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		terminal.submit("Use my concrete model")
+		await waitForText(terminal, "Concrete session reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+		await waitForTurnToSettle(fixture.fake.requests)
+		terminal.submit("/session")
+		await waitForText(terminal, /ID:\s*[0-9a-f-]{36}/, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		const sessionId = fullText(terminal).match(/ID:\s*([0-9a-f-]{36})/)?.[1]
+		expect(sessionId).toBeDefined()
+		terminal.submit("/quit")
+		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+
+		// `/model <id>` is session-scoped upstream (persist: false), so it leaves
+		// the saved default alone: the restart comes back on the rolled-in Auto.
+		// The default is already installed — Auto is restored from it rather than
+		// applied a second time, so the notice does not appear again.
+		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
+		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		expect(viewText(terminal)).not.toContain("Auto is now the default model.")
+		terminal.submit("/quit")
+		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+
+		// The session-scoped choice still survives resuming that session.
+		launchKimchi(terminal, fixture, ["-r", sessionId ?? ""], fixture.seedEnv)
+		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		terminal.submit("/new")
+		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+		expect(requestsTo(fixture, "/v1/route")).toHaveLength(0)
+		expect(requestModel(requestsTo(fixture, "/openai/v1/chat/completions")[0]?.body)).toBe("override")
+	} finally {
+		await stopKimchi(terminal)
+		await fixture.stop()
+	}
 })
 
 test("a saved Auto default keeps working without the experimental flag", async ({ terminal }) => {
@@ -408,7 +644,7 @@ test("resuming an Auto session reuses its concrete resolution without the flag",
 	})
 
 	try {
-		launchKimchi(terminal, fixture, ["--enable-experimental-features"], fixture.seedEnv, { exitMarker })
+		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 
 		terminal.submit("Resolve Auto now")
@@ -424,7 +660,7 @@ test("resuming an Auto session reuses its concrete resolution without the flag",
 		fixture.initialModel = false
 		launchKimchi(terminal, fixture, ["-r", sessionId ?? ""], fixture.seedEnv)
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
-		await waitForText(terminal, "auto (routed) → ctrl+p", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "auto → ctrl+p", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		terminal.submit("Continue the same session")
 		await waitForText(terminal, "Resumed Auto reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 		await waitForTurnToSettle(fixture.fake.requests)
@@ -450,7 +686,7 @@ test("an explicit concrete CLI model overrides a resumed Auto session", async ({
 	})
 
 	try {
-		launchKimchi(terminal, fixture, ["--enable-experimental-features"], fixture.seedEnv, { exitMarker })
+		launchKimchi(terminal, fixture, [], fixture.seedEnv, { exitMarker })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 
 		terminal.submit("Resolve Auto before the resume")
@@ -494,7 +730,6 @@ test("a child that inherits Auto makes one independent routing decision", async 
 			artifactName: "auto-model-child-routes-independently",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE, ROUTED_ROUTER_RESPONSE],
 			responses: [
@@ -535,7 +770,6 @@ test("a background child follows the same independent Auto routing path", async 
 			artifactName: "auto-model-background-child-routes-independently",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE, ROUTED_ROUTER_RESPONSE],
 			responses: [
@@ -565,7 +799,6 @@ test("an explicitly selected concrete child model bypasses Auto routing", async 
 			artifactName: "auto-model-explicit-child-bypasses-router",
 			providerId: "kimchi-dev",
 			initialModel: "auto",
-			extraArgs: ["--enable-experimental-features"],
 			models: MODELS,
 			routerResponses: [ROUTED_ROUTER_RESPONSE],
 			responses: [

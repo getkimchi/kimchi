@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import { clearFermentCache, detectProjectRoot, FermentError, FermentStorage, resolveFermentsDir } from "./store.js"
 import type { FermentV3, Phase, Step } from "./types.js"
 
@@ -486,7 +487,19 @@ describe("FermentStorage v4", () => {
 			Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
 			const root = createTempDir()
 			mkdirSync(join(root, ".git"))
+			setProjectScopeTrusted(root, true)
 			expect(resolveFermentsDir(root)).toBe(join(root, ".kimchi", "ferments"))
+		})
+
+		it("falls back to the global store while the project is untrusted (fail closed)", () => {
+			Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
+			const root = createTempDir()
+			mkdirSync(join(root, ".git"))
+			mkdirSync(join(root, ".kimchi", "ferments"), { recursive: true })
+			// No setProjectScopeTrusted call: a cloned repo's shipped .kimchi/
+			// ferments must not load (or be mutated by crash recovery).
+			resetProjectScopeTrustForTests()
+			expect(resolveFermentsDir(root)).toBe(join(homedir(), ".config", "kimchi", "ferments"))
 		})
 	})
 

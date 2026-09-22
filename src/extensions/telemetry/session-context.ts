@@ -77,6 +77,15 @@ export class TelemetryContext {
 	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
 	 */
 	turnIndex = 0
+	/**
+	 * W3C trace context of the most recent provider request, stored by the
+	 * before_provider_headers handler (generated per request, or parsed from an
+	 * externally supplied traceparent). Requested events (api_request, error)
+	 * stamp this so they join to the exact request trace. Provider requests
+	 * within one TelemetryContext are sequential (agent loop; in-process
+	 * subagents have their own context), so a single slot is sufficient.
+	 */
+	lastTraceContext: { traceId: string; spanId: string } | undefined
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
@@ -124,6 +133,7 @@ export class TelemetryContext {
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
+		this.lastTraceContext = undefined
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
@@ -141,6 +151,16 @@ export class TelemetryContext {
 		if (this.shuttingDown) return
 		this.inFlight.add(p)
 		p.finally(() => this.inFlight.delete(p))
+	}
+
+	/**
+	 * Trace-context attributes stamped on request-scoped events (api_request,
+	 * error) so they join to the exact provider request's trace. Empty when no
+	 * provider request has happened yet (or the traceparent was malformed).
+	 */
+	getTraceAttributes(): TelemetryAttributes {
+		if (!this.lastTraceContext) return {}
+		return { "request.trace_id": this.lastTraceContext.traceId, "request.span_id": this.lastTraceContext.spanId }
 	}
 
 	/**

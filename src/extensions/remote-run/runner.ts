@@ -1,5 +1,5 @@
 /**
- * Shared lifecycle wrapper for spawning remote cloud agents.
+ * Shared lifecycle wrapper for spawning remote agents.
  *
  * Named `runCloudAgent` (not `runRemoteAgent`) to avoid collision
  * with the low-level `runRemoteAgent()` in `agents/manager/remote-agent-runner.ts`,
@@ -7,6 +7,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isWindows } from "../../utils/os-metadata.js"
+import { isInSandboxCluster } from "../../utils/sandbox.js"
 import {
 	buildRemoteExecutionStats,
 	getActiveManager,
@@ -18,13 +20,27 @@ import { trackRemoteExecution } from "../telemetry/index.js"
 /** Max characters for the result preview in the completion notification. */
 const PREVIEW_MAX = 500
 
-/** Returns true when KIMCHI_REMOTE_RUN env var is set. */
+/** Values that explicitly disable remote run when set in KIMCHI_REMOTE_RUN. */
+const DISABLE_VALUES = new Set(["0", "false"])
+
+/**
+ * Remote run is enabled by default. It is disabled when:
+ * - running inside a sandbox cluster or on Windows — the same environments
+ *   where the teleport extension is disabled, since spawning remote sandbox
+ *   workers from there is not meaningful, or
+ * - KIMCHI_REMOTE_RUN is set to an explicit falsy value ("0", "false" —
+ *   case-insensitive). Unset, empty, "1", "true", or any other value keeps
+ *   it enabled (legacy opt-in values are harmless no-ops).
+ */
 export function isRemoteRunEnabled(): boolean {
-	return !!process.env.KIMCHI_REMOTE_RUN
+	if (isInSandboxCluster() || isWindows()) return false
+	const value = process.env.KIMCHI_REMOTE_RUN?.trim().toLowerCase()
+	if (value === undefined || value === "") return true
+	return !DISABLE_VALUES.has(value)
 }
 
 /**
- * Spawns a remote cloud agent as a background agent.
+ * Spawns a remote agent as a background agent.
  *
  * The agent runs on a remote sandbox via ACP. The function returns immediately
  * with the agent ID. `handleRemoteCompletion` fires automatically when the agent
@@ -45,19 +61,21 @@ export async function runCloudAgent(
 	trackRemoteExecution("started", opts?.origin ?? "plan")
 
 	if (backgrounded) {
-		ctx.ui.notify("Cloud agent started in background. You'll be notified when it completes.", "info")
+		const transcriptPath = getActiveManager()?.getRecord(id)?.outputFile
+		const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
+		ctx.ui.notify(`Remote agent started in background. You'll be notified when it completes.${transcriptNote}`, "info")
 		if (opts?.fermentId) {
 			ctx.ui.notify(
-				"Ferment paused while the cloud agent executes the plan. It will resume or complete when the cloud agent finishes.",
+				"Ferment paused while the remote agent executes the plan. It will resume or complete when the remote agent finishes.",
 				"info",
 			)
 		}
 		pi.sendMessage(
 			{
 				customType: "cloud_agent_started",
-				content: `A cloud agent has been started in the background to execute the plan. It is running on a remote sandbox. You will be notified when it completes —${
+				content: `A remote agent has been started in the background to execute the plan. It is running on a remote sandbox. You will be notified when it completes —${
 					opts?.fermentId
-						? " do not re-plan, re-execute, create todos, or call activate_ferment_phase. The ferment is paused while the cloud agent works."
+						? " do not re-plan, re-execute, create todos, or call activate_ferment_phase. The ferment is paused while the remote agent works."
 						: " do not re-plan or re-execute."
 				} Wait for the completion notification. The agent ID is ${id}.`,
 				display: false,

@@ -49,6 +49,9 @@ const target = TARGETS[targetKey]
 if (!target) {
 	throw new Error(`Unsupported build target: ${targetKey}`)
 }
+if (target.os === "darwin" && platform() !== "darwin") {
+	throw new Error("macOS binaries must be built on macOS so they can be signed and verified.")
+}
 
 const crossTarget = targetArg ? target.bun : undefined
 const isCrossCompile = !!crossTarget
@@ -97,18 +100,45 @@ const externalFlags = externals.map((name) => `--external ${name}`).join(" ")
 // Trust the OS certificate store in addition to Bun's bundled roots so users behind
 // TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
-// `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig` disable loading `.env` and `bunfig.toml` files.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --no-compile-autoload-dotenv --no-compile-autoload-bunfig --compile-exec-argv="--use-system-ca" --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
+	`bun scripts/compile-binary.js src/binary-entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
-// Bun --compile produces binaries with an invalid code signature on macOS.
-// The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
-// Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (!isCrossCompile && platform() === "darwin") {
-	run("codesign (strip)", `codesign --remove-signature dist/bin/${target.binaryName}`)
-	run("codesign (ad-hoc)", `codesign -s - dist/bin/${target.binaryName}`)
+// Bun --compile produces binaries with an invalid code signature on macOS: the
+// app payload is grafted onto a pre-signed runtime ("code or signature have been
+// modified"), and the kernel kills badly-signed arm64 binaries outright
+// (SIGKILL, exit 137). Every darwin binary must therefore be re-signed:
+//   - CSC_NAME set (release/canary CI, prepared by scripts/setup-codesign.sh):
+//     hardened-runtime Developer ID + timestamp + entitlements. The designated
+//     requirement becomes certificate-anchored, so the macOS keychain treats
+//     every version as one identity — an ad-hoc identity is just the cdhash and
+//     re-prompts users on each upgrade.
+//   - CSC_NAME unset (local dev, forks): ad-hoc, enough for the OS to launch it.
+// Key off target.os (CI always passes --target, so isCrossCompile is always
+// true there); all darwin matrix jobs run on macOS runners, where codesign
+// exists. See: https://github.com/oven-sh/bun/issues/7208
+if (target.os === "darwin" && platform() === "darwin") {
+	const signingIdentity = process.env.CSC_NAME?.trim()
+	const binaryPath = `dist/bin/${target.binaryName}`
+	run("codesign (strip)", `codesign --remove-signature ${binaryPath}`)
+	if (signingIdentity) {
+		run(
+			"codesign (developer id)",
+			`codesign --sign "${signingIdentity}" --options runtime --timestamp --entitlements build/entitlements.mac.plist ${binaryPath}`,
+		)
+		run("codesign (verify)", `codesign --verify --strict --verbose=2 ${binaryPath}`)
+		// The keychain credential partition only stays put across versions when
+		// the designated requirement anchors on the Developer ID certificate.
+		// Fail loudly if we ever slip back to a cdhash-only requirement.
+		run(
+			"codesign (certificate-anchored requirement)",
+			`codesign -d -r- ${binaryPath} 2>&1 | grep -q "anchor apple generic"`,
+		)
+	} else {
+		run("codesign (ad-hoc)", `codesign -s - ${binaryPath}`)
+		run("codesign (verify)", `codesign --verify -v ${binaryPath}`)
+	}
 }
 
 run("copy resources", "node scripts/copy-resources.js")

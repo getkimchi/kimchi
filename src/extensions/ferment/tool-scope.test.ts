@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import type { PendingPlanReview } from "./plan-review.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
@@ -20,6 +21,7 @@ function createPi(initialActive: string[], allTools: string[]) {
 			active = names
 		}),
 		on: vi.fn(),
+		events: createMiniEventBus().events,
 	} as unknown as ExtensionAPI
 	return pi
 }

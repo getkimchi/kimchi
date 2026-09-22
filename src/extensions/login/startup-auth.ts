@@ -4,7 +4,7 @@ import type {
 	ExtensionFactory,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../../config.js"
+import { getApiKeySource, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import {
 	createLoginChoiceSelector,
@@ -60,7 +60,11 @@ export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 	let kimchiAuthSynchronized = configKey.length === 0
 	try {
 		if (configKey) {
-			await syncKimchiAuth(ctx.modelRegistry, configKey)
+			if (getApiKeySource() === "environment") {
+				await ctx.modelRegistry.refresh()
+			} else {
+				await syncKimchiAuth(ctx.modelRegistry, configKey)
+			}
 			kimchiAuthSynchronized = true
 		} else {
 			await ctx.modelRegistry.refresh()
@@ -154,13 +158,13 @@ async function runStartupAuthGate(
 		const result =
 			choice === "kimchi"
 				? await performKimchiBrowserLoginWithDialog(ctx, (model) =>
-						pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+						pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
 					)
 				: choice === "api-key"
 					? await performKimchiApiKeyLoginViaExtensionUI(ctx, (model) =>
-							pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+							pi.setModel(model as Parameters<typeof pi.setModel>[0], { persist: true }),
 						)
-					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model)))
+					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model, { persist: true })))
 						? "success"
 						: "failed"
 

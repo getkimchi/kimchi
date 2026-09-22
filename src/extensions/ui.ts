@@ -569,7 +569,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 										// Force a re-render via a no-op status update.
 										ctx.ui.setStatus("__model_cycle", undefined)
 									} else {
-										pi.setModel(firstReal).catch((err) => {
+										pi.setModel(firstReal, { persist: true }).catch((err) => {
 											ctx.ui.notify(
 												`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
 												"warning",
@@ -602,7 +602,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 									// so the status line won't re-render.  Force it.
 									ctx.ui.setStatus("__model_cycle", undefined)
 								} else {
-									pi.setModel(orchestratorModel).catch((err) => {
+									pi.setModel(orchestratorModel, { persist: true }).catch((err) => {
 										ctx.ui.notify(
 											`Failed to switch to multi-model: ${err instanceof Error ? err.message : String(err)}`,
 											"warning",
@@ -617,7 +617,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 										"info",
 									)
 								}
-								pi.setModel(next).catch((err) => {
+								pi.setModel(next, { persist: true }).catch((err) => {
 									ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
 								})
 							}

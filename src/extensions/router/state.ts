@@ -84,6 +84,15 @@ export function getEffectiveModel<TApi extends string>(ctx: EffectiveModelContex
 	return resolveEffectiveModel(ctx.model, ctx.sessionManager.getSessionId())
 }
 
+/**
+ * Shared `auto (<model id>)` label for the resolved Auto router pick, used by
+ * the status bar's model segment and the prompt summary's model row so both
+ * surfaces stay in sync.
+ */
+export function formatAutoModelLabel(modelId: string): string {
+	return `auto (${modelId})`
+}
+
 /** Low-level Auto resolver for integration boundaries without an extension context. */
 export function resolveEffectiveModel<TApi extends string>(
 	model: Model<TApi> | undefined,
@@ -94,7 +103,7 @@ export function resolveEffectiveModel<TApi extends string>(
 	return state.status === "resolved" ? (state.model as Model<TApi>) : model
 }
 
-function isPersistedAutoResolution(data: unknown): data is PersistedAutoResolution {
+export function isPersistedAutoResolution(data: unknown): data is PersistedAutoResolution {
 	return (
 		data !== null &&
 		typeof data === "object" &&

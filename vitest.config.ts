@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath, URL } from "node:url"
 import { defineConfig } from "vitest/config"
 
@@ -15,6 +18,14 @@ export default defineConfig({
 			"**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*",
 			"**/.tui-test/**",
 			".worktrees/**",
+			// TUI E2E suites run through the dedicated tui-test CLI (one file per
+			// process, via `pnpm run test:e2e:tui` / scripts/run-tui-e2e.js) —
+			// their test framework communicates over the worker IPC channel and
+			// collides with vitest's fork-pool protocol (the deterministic
+			// "Unexpected call to process.send()" crash). Never run them inside
+			// plain vitest; skip them here so a bare `vitest run` from the root
+			// cannot trip over them.
+			"tests/e2e/**",
 		],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
@@ -24,6 +35,15 @@ export default defineConfig({
 			// resolution uses its own package detection inside tests rather than
 			// following a stale install prefix.
 			PI_PACKAGE_DIR: "",
+			// Unit tests instantiate the MCP extension, and pi-mcp-adapter reaches
+			// the OS credential store through @napi-rs/keyring. Point the keyring
+			// bridge (src/extensions/mcp/keyring-require-bridge.ts) at a throwaway
+			// file-backed store so no unit test touches the developer's real login
+			// keychain — accessing items created by the installed kimchi binary from
+			// an unsigned test process pops a blocking macOS keychain ACL dialog and
+			// stalls the first test in a fresh worker by ~10s. Tests that need a
+			// known store still override per-test via vi.stubEnv.
+			KIMCHI_MCP_E2E_KEYRING_DIR: mkdtempSync(join(tmpdir(), "kimchi-test-keyring-")),
 		},
 		alias: {
 			// The deep-import path used in clipboard-read.ts is not in the package's
@@ -33,5 +53,12 @@ export default defineConfig({
 		},
 		// Isolate test files to prevent mock leakage between tests
 		pool: "forks",
+		// Cap the fork pool. The default (one fork per CPU core) spawns a dozen-plus full Node
+		// processes on a modern laptop — each holding the transformed suite in memory, and (as
+		// observed) lingering after the run finishes until the system runs out of RAM. Four
+		// workers match a standard CI runner, keep local memory bounded, and still leave the
+		// 500+ test files comfortably parallel. Per-invocation overrides (e.g. the pre-pr
+		// workflow's --maxWorkers=1) take priority over this.
+		maxWorkers: 4,
 	},
 })

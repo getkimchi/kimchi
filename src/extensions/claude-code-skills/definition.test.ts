@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import {
 	discoverClaudeCodeSkillDirs,
 	getClaudeCodeSkillResourcePaths,
@@ -17,6 +18,10 @@ describe("Claude Code skill discovery", () => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skills-"))
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Project fixtures live under <dir>/project — trusted for the tests that
+		// exercise project .claude/skills; the fail-closed case has its own test.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(join(dir, "project"), true)
 	})
 
 	afterEach(() => {
@@ -208,6 +213,23 @@ describe("Claude Code skill discovery", () => {
 		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
 			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\nUse generated types.\n',
 		)
+	})
+
+	it("does not expand configured skill paths under the project cwd while untrusted (fail closed)", () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "evil-claude", "SKILL.md"), "Evil claude skill instructions.\n")
+		const configured = [".claude/skills/evil-claude/SKILL.md"]
+
+		// Untrusted: the project expansion of the relative configured path is
+		// skipped, so nothing materializes (no home copy exists in this
+		// fixture — the user's global config holds the relative path, as the
+		// default first-run setup writes).
+		resetProjectScopeTrustForTests()
+		expect(getConfiguredSkillResourcePaths(cwd, configured)).toHaveLength(0)
+
+		// Trusted: the same configured path materializes the project skill.
+		setProjectScopeTrusted(cwd, true)
+		expect(getConfiguredSkillResourcePaths(cwd, configured)).toHaveLength(1)
 	})
 
 	it("keeps a configured native skill file ahead of a matching Claude Code skill", () => {

@@ -10,6 +10,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { isProjectScopeAllowed } from "../../../project-scope-trust.js"
 import type { MemoryScope } from "../personas/types.js"
 
 /** Maximum lines to read from MEMORY.md */
@@ -89,8 +90,14 @@ export function ensureMemoryDir(memoryDir: string): void {
 /**
  * Read the first N lines of MEMORY.md from the memory directory, if it exists.
  * Returns undefined if no MEMORY.md exists or if the path is a symlink.
+ *
+ * Project and local scopes are gated on project trust: an untrusted repo's
+ * shipped MEMORY.md must not be injected into an agent's system prompt.
+ * The scope and cwd parameters are required so the compiler enforces the
+ * gate at every call site.
  */
-export function readMemoryIndex(memoryDir: string): string | undefined {
+export function readMemoryIndex(memoryDir: string, scope: MemoryScope, cwd: string): string | undefined {
+	if (scope !== "user" && !isProjectScopeAllowed(cwd)) return undefined
 	if (isSymlink(memoryDir)) return undefined
 
 	const memoryFile = join(memoryDir, "MEMORY.md")
@@ -106,13 +113,19 @@ export function readMemoryIndex(memoryDir: string): string | undefined {
 
 /**
  * Build the memory block to inject into the agent's system prompt.
- * Also ensures the memory directory exists (creates it if needed).
+ * Also ensures the memory directory exists (creates it if needed) — except
+ * for project/local scopes in an untrusted project, where creating the
+ * directory would both write into a repo the user declined to trust and arm
+ * the trust prompt on the next launch via the .kimchi/agent-memory scan
+ * entry (the read side is gated by readMemoryIndex).
  */
 export function buildMemoryBlock(agentName: string, scope: MemoryScope, cwd: string): string {
 	const memoryDir = resolveMemoryDir(agentName, scope, cwd)
-	ensureMemoryDir(memoryDir)
+	if (scope === "user" || isProjectScopeAllowed(cwd)) {
+		ensureMemoryDir(memoryDir)
+	}
 
-	const existingMemory = readMemoryIndex(memoryDir)
+	const existingMemory = readMemoryIndex(memoryDir, scope, cwd)
 
 	const header = `# Agent Memory
 
@@ -151,7 +164,7 @@ This memory persists across sessions. Use it to build up knowledge over time.`
  */
 export function buildReadOnlyMemoryBlock(agentName: string, scope: MemoryScope, cwd: string): string {
 	const memoryDir = resolveMemoryDir(agentName, scope, cwd)
-	const existingMemory = readMemoryIndex(memoryDir)
+	const existingMemory = readMemoryIndex(memoryDir, scope, cwd)
 
 	const header = `# Agent Memory (read-only)
 

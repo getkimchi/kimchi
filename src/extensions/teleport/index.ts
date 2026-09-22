@@ -1,6 +1,6 @@
-import os from "node:os"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { isWindows } from "../../utils/os-metadata.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { getTeleportArgumentCompletions } from "./commands/args.js"
 import { TeleportRefusal } from "./commands/errors.js"
@@ -12,10 +12,6 @@ import { runTerminal } from "./commands/terminal.js"
 import type { TeleportContext } from "./types.js"
 
 type CommandFn = (args: string, ctx: TeleportContext) => Promise<void>
-
-function isWindows(): boolean {
-	return os.type() === "Windows_NT"
-}
 
 function makeHandler(run: CommandFn) {
 	return async (args: string, ctx: ExtensionCommandContext): Promise<void> => {

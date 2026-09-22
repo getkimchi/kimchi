@@ -26,7 +26,13 @@ curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.
 irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
 ```
 
-Then configure your API key and launch:
+The one-liner runs the installer in memory, so the PowerShell execution policy does not apply to it. If you instead downloaded `install.ps1` and want to run it as a file (blocked by the default `Restricted` policy), use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The bypass applies only to this invocation and does not change your system-wide execution policy. Then configure your API key and launch:
 
 ```bash
 kimchi setup   # one-time interactive setup

@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
+import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
-import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
+import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_PI_NAME } from "./extensions/router/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -59,7 +61,7 @@ export class ModelsFetchError extends Error {
 }
 
 /** True when `error` is a transient (retryable) model-refresh failure. */
-export function isTransientModelsError(error: unknown): boolean {
+export function isTransientModelsError(error: unknown): error is ModelsFetchError {
 	return error instanceof ModelsFetchError && error.transient
 }
 
@@ -98,8 +100,11 @@ export interface ModelMetadata {
 		context_window: number
 		max_output_tokens: number
 	}
-	status?: "active" | "sunset" | "deprecated"
-	replacement?: string
+	deprecated_at?: string
+	sunset_at?: string
+	replacement_model?: string
+	alternatives?: ModelAlternative[]
+	deprecation_note?: string
 }
 
 interface ModelsMetadataResponse {
@@ -194,13 +199,15 @@ export interface PiModelConfig {
 	headers?: Record<string, string>
 }
 
-function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
+export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
 	const rootModels = models.filter((model) => model.provider === "ai-enabler")
 	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
 	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
 	return {
 		id: AUTO_MODEL_ID,
-		name: AUTO_MODEL_NAME,
+		// Name carries the description because Pi's `Model` has no field for it;
+		// surfaces with a real description slot (ACP) use the constants separately.
+		name: AUTO_MODEL_PI_NAME,
 		api: AUTO_MODEL_API,
 		provider: "ai-enabler",
 		// Auto is virtual, but Pi reads this capability to expose the session's
@@ -249,7 +256,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	}
 }
 
-function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
+export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
 	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
 
@@ -266,13 +273,13 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 		"X-Provider-Type": upstreamProvider,
 	})
 
-	const providers: Record<string, unknown> = {
+	const providers: Record<string, ProviderConfig> = {
 		"kimchi-dev": {
 			baseUrl: chatCompletionsApi(endpoint),
 			apiKey: "$KIMCHI_API_KEY",
 			api: "openai-completions",
 			authHeader: true,
-			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			headers: providerHeaders("ai-enabler"),
 			models: aiEnablerModels.map(metadataToModel),
 		},
 	}
@@ -295,6 +302,11 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 
 export interface ModelsConfigResult {
 	models: ModelMetadata[]
+}
+
+export interface DiscoveredModelsConfig extends ModelsConfigResult {
+	/** Managed provider definitions for this discovery, without writing the shared cache. */
+	providers: Record<string, ProviderConfig>
 }
 
 function modelToMetadata(m: PiModelConfig): ModelMetadata {
@@ -439,10 +451,9 @@ export function readExperimentalModels(modelsJsonPath: string): ModelMetadata[] 
 /**
  * Fetch available models from the kimchi metadata API and write the
  * configuration to modelsJsonPath. If no API key is configured, returns
- * cached models (if available) or an empty list without making a network call.
- * If the fetch fails and the previous models.json is still on disk, returns
- * the cached models with a warning. Throws only when a key is present but
- * there is no cache to fall back on.
+ * cached and custom models (if available) without making a network call.
+ * Failed refreshes fall back to existing models with a warning, unless
+ * fallback is disabled or no models exist.
  *
  * User-added providers (anything other than "kimchi-dev") are preserved across
  * updates so custom model configurations are not lost on startup.
@@ -452,14 +463,32 @@ export async function updateModelsConfig(
 	apiKey: string,
 	options: FetchModelsOptions = {},
 ): Promise<ModelsConfigResult> {
-	const dir = dirname(modelsJsonPath)
-	mkdirSync(dir, { recursive: true })
+	const result = await discoverModelsConfig(modelsJsonPath, apiKey, options)
+	if (result.refreshed) {
+		mkdirSync(dirname(modelsJsonPath), { recursive: true })
+		const merged = { providers: { ...readExistingProviders(modelsJsonPath), ...result.providers } }
+		writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
+	}
+	return {
+		models: result.models,
+	}
+}
 
+export async function discoverModelsConfig(
+	modelsJsonPath: string,
+	apiKey: string,
+	options: FetchModelsOptions = {},
+): Promise<DiscoveredModelsConfig & { refreshed: boolean }> {
 	const otherProviders = readExistingProviders(modelsJsonPath)
 	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
 
 	if (!apiKey) {
-		return { models: sortModels([...(readCachedMetadata(modelsJsonPath) ?? []), ...otherModels]) }
+		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		return {
+			models: sortModels([...cached, ...otherModels]),
+			providers: buildModelsConfig(cached, options.endpoint).providers,
+			refreshed: false,
+		}
 	}
 
 	let fetched: ModelMetadata[]
@@ -476,20 +505,39 @@ export async function updateModelsConfig(
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
-		return { models: sortModels([...cached, ...otherModels]) }
+		return {
+			models: sortModels([...cached, ...otherModels]),
+			providers: buildModelsConfig(cached, options.endpoint).providers,
+			refreshed: false,
+		}
 	}
 	// Authenticated success clears marks from earlier 401s.
 	clearCredentialStale(KIMCHI_PROVIDER_ID)
 
-	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)
+	// Persist deprecation state (replacement_model, alternatives, notes) before
+	// filtering: entries for models excluded below still inform role remapping
+	// and retirement warnings on later runs. Best-effort — the sidecar is
+	// auxiliary, and a stale one is better than a failed metadata refresh.
+	try {
+		writeModelDeprecations(modelsJsonPath, fetched)
+	} catch (err) {
+		console.warn("[model-deprecation] failed to persist sidecar:", err)
+	}
+
+	const activeModels = fetched.filter((m) => {
+		const state = deriveDeprecationState(m)
+		return (state === "none" || state === "announced") && m.limits.max_output_tokens > 0
+	})
 	if (activeModels.length === 0 && fetched.length > 0) {
 		if (options.requireActiveModels) {
 			throw new ModelsFetchError("No active Kimchi models are available for this API key", { transient: false })
 		}
-		console.warn("All models from the API are sunset. No active models available.")
+		console.warn("All models from the API are deprecated or sunset. No active models available.")
 	}
 	const models = sortModels(activeModels)
-	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models, options.endpoint).providers } }
-	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	return { models: sortModels([...activeModels, ...otherModels]) }
+	return {
+		models: sortModels([...activeModels, ...otherModels]),
+		providers: buildModelsConfig(models, options.endpoint).providers,
+		refreshed: true,
+	}
 }

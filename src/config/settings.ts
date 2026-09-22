@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { readJson, writeJson } from "./json.js"
+import { readJson, readJsonCached, writeJson } from "./json.js"
 
 type Satisfies<T> = (value: unknown) => value is T
 
@@ -24,7 +24,9 @@ export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>): T | 
 export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>, fallback: T): T
 export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>, fallback?: T): T | undefined {
 	try {
-		const parsed = readJson(HARNESS_SETTINGS_PATH)
+		// Stat-gated cache: hot callers (model roles per prompt build, resource
+		// toggles per tool_call) hit a statSync instead of a read+parse.
+		const parsed = readJsonCached(HARNESS_SETTINGS_PATH)
 		return getConfigSetting(parsed, key, satisfies, fallback)
 	} catch {
 		// thrown if the file is malformed: fall through

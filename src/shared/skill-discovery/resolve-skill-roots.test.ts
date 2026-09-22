@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveBundledSkillsDir, resolveHarnessSkillsDir, resolveSkillRoots } from "./resolve-skill-roots.js"
 
 describe("resolveHarnessSkillsDir", () => {
@@ -25,6 +26,7 @@ describe("resolveSkillRoots", () => {
 	beforeEach(() => {
 		home = mkdtempSync(join(tmpdir(), "skill-home-"))
 		cwd = mkdtempSync(join(tmpdir(), "skill-cwd-"))
+		resetProjectScopeTrustForTests()
 	})
 
 	afterEach(() => {
@@ -37,6 +39,7 @@ describe("resolveSkillRoots", () => {
 		mkdirSync(join(cwd, ".pi", "agent", "skills"), { recursive: true })
 		mkdirSync(join(cwd, ".kimchi", "skills"), { recursive: true })
 
+		setProjectScopeTrusted(cwd, true)
 		const kinds = resolveSkillRoots({ cwd, homeDir: home, bundledDir: join(home, "bundled") }).map((r) => r.kind)
 		expect(kinds).toEqual(["bundled", "harness", "config", "project"])
 	})
@@ -45,6 +48,7 @@ describe("resolveSkillRoots", () => {
 		mkdirSync(join(home, ".config", "some", "skills"), { recursive: true })
 		mkdirSync(join(cwd, ".local", "skills"), { recursive: true })
 
+		setProjectScopeTrusted(cwd, true)
 		const roots = resolveSkillRoots({
 			cwd,
 			homeDir: home,
@@ -73,6 +77,7 @@ describe("resolveSkillRoots", () => {
 		const nested = join(cwd, "src", "deep")
 		mkdirSync(nested, { recursive: true })
 
+		setProjectScopeTrusted(cwd, true)
 		const project = resolveSkillRoots({ cwd: nested, homeDir: home, bundledDir: null }).find(
 			(r) => r.kind === "project",
 		)
@@ -88,5 +93,32 @@ describe("resolveSkillRoots", () => {
 		const override = join(home, "custom-bundled")
 		const roots = resolveSkillRoots({ cwd, homeDir: home, bundledDir: override })
 		expect(roots.find((r) => r.kind === "bundled")?.dir).toBe(override)
+	})
+
+	it("skips the project root while the project is untrusted (fail closed)", () => {
+		mkdirSync(join(cwd, ".kimchi", "skills"), { recursive: true })
+
+		// No setProjectScopeTrusted call: a cloned repo's .kimchi/skills must
+		// not reach the system prompt.
+		const roots = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
+		expect(roots.some((r) => r.kind === "project")).toBe(false)
+	})
+
+	it("skips cwd-resolved config roots while the project is untrusted", () => {
+		mkdirSync(join(cwd, ".claude", "skills"), { recursive: true })
+		mkdirSync(join(cwd, ".pi", "agent", "skills"), { recursive: true })
+		mkdirSync(join(home, ".config", "kimchi", "harness", "skills"), { recursive: true })
+
+		// Untrusted: the cwd-resolved .claude/skills and .pi/agent/skills default config path is
+		// project-scoped and skipped; the home-resolved harness dir remains.
+		const untrusted = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
+		expect(untrusted.map((r) => r.kind)).toEqual(["harness"])
+
+		setProjectScopeTrusted(cwd, true)
+		const trusted = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null })
+		expect(trusted.map((r) => r.kind)).toEqual(["harness", "config", "config"])
+		expect(trusted.filter((r) => r.kind === "config").map((r) => r.dir)).toEqual(
+			expect.arrayContaining([join(cwd, ".claude", "skills"), join(cwd, ".pi", "agent", "skills")]),
+		)
 	})
 })

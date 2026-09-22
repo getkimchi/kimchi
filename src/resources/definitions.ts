@@ -4,6 +4,7 @@ import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
+import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
@@ -137,6 +138,7 @@ function getDynamicResourceDefinitions(): ResourceDefinition[] {
 		dynamicResourceDefinitionsCache = [
 			...discoverBashHookResources(),
 			...discoverClaudeCodeHookResourceDefinitions(),
+			...discoverKimchiHookResourceDefinitions(),
 			...discoverPackageResources(),
 		]
 	}
