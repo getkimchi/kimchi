@@ -56,12 +56,14 @@ const CHARS_PER_TOKEN = 4
 const BUDGET = {
 	/** buildSystemPrompt with the canonical single-mode options below
 	 *  (tool descriptions live in the API payload, the phase payload is gated
-	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
-	systemPrompt: 2050,
+	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom).
+	 *  Raised 2050 → 2150 with the search-scaffolding guideline line
+	 *  (combinatorial search/verification toward code; measured 2105 est). */
+	systemPrompt: 2150,
 	/** Sum of name + description chars across resources/skills frontmatter. */
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
-	total: 2150,
+	total: 2250,
 	/** Total canonical tool surface (26 tools after the DAP session-tool +
 	 *  bash_control deferrals, the mcp zero-server registration gate, and the
 	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH

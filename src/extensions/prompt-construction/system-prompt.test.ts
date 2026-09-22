@@ -132,6 +132,31 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("wait for the user's go-ahead before writing or modifying code")
 	})
 
+	it("steers combinatorial search and verification toward code, not in-head reasoning", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain(
+			"When a problem calls for combinatorial search, simulation, or step-by-step verification, " +
+				"write and run code to do the search or verification instead of working it out in your head; " +
+				"if an analysis would take more than a few hundred words, check whether a script can answer it faster.",
+		)
+	})
+
+	it("keeps the search-scaffolding guideline out of orchestrator prompts, which use their own guidelines", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "orchestrator",
+		})
+
+		expect(result).not.toContain("combinatorial search")
+		expect(result).not.toContain("working it out in your head")
+	})
+
 	it("includes the harness notes and approval section", () => {
 		const result = buildSystemPrompt({
 			tools,
