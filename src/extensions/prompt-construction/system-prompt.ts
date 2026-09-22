@@ -7,13 +7,12 @@
  * subagent and single-model content lives in this file.
  */
 
-import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
-import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
@@ -43,6 +42,11 @@ export interface SystemPromptBuildOptions {
 	tools: readonly ToolInfo[]
 	env: EnvironmentInfo
 	contextFiles?: readonly ContextFile[]
+	/** Skills inventory resolved by the caller. Only a flat name enumeration is
+	 *  rendered into the prompt (a single line) — the old <available_skills> XML
+	 *  catalog cost ~1.2k chars/request with no measured pass benefit, but
+	 *  removing it entirely made skills model-undiscoverable and broke the
+	 *  dap-debugging reveal anchor. Descriptions/locations are not rendered. */
 	skills?: readonly Skill[]
 	currentModelId?: string
 	registry?: ModelRegistry
@@ -71,7 +75,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	const filteredSkills = filterSkillsForMode(skills, mode)
 
 	const hasUserLoop = options.hasUserLoop ?? true
 	const orchestrationSection = resolveModeInstructions({
@@ -94,7 +97,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
+		skillsLine: formatSkillsLine(skills),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -114,7 +117,7 @@ interface PromptParts {
 	toolNames: ReadonlySet<string>
 	environmentSection: string
 	projectContext: string
-	skillsSection: string
+	skillsLine: string
 	orchestrationSection: string
 	systemPromptBlocks: string
 	suppressed: ReadonlySet<SuppressibleSection>
@@ -203,9 +206,7 @@ export const CORE_GUIDELINES = `- Be concise; act and move on without restating 
 - Use only libraries present in the codebase; never add dependencies without explicit instruction.
 - Deliver complete, working code — no placeholders or TODOs; verify with tests or a run.
 - Use absolute file paths.
-- Put transient AI working files (research notes, verification reports, inter-agent handoffs) in the Documents directory; final plans and specs go to .kimchi/plans/<slug>.md — never the project or temp directories.
 - Do NOT introduce security vulnerabilities.
-- After every tool result, ALWAYS produce text — the next call with reasoning, or a final summary. Never repeat a call after a successful result.
 - If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
 - Bound shell commands with the bash tool's \`timeout\` parameter (default 60s); avoid interactive CLI flags — use \`--yes\`, \`GIT_EDITOR=true\`, or \`< /dev/null\`.
 - **Git commits**: end the message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
@@ -216,14 +217,8 @@ const ORCHESTRATOR_GUIDELINES = `- Be concise. Do not restate completed steps �
 - Follow existing conventions; use only libraries/frameworks present in the codebase; never add dependencies without explicit instruction.
 - Use absolute file paths.
 - Do NOT introduce security vulnerabilities.
-- After every tool result, ALWAYS produce text — the next tool call with explicit reasoning, or a final summary. Never re-issue the same call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
 - Summarize from delegated artifacts (spec, review, verification files); do not re-verify implementation yourself unless Orchestration assigns it to you.`
-
-function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
-	if (!skills || mode !== "orchestrator") return skills
-	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
-}
 
 function resolveCoreGuidelines(mode: PromptMode): string {
 	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
@@ -272,7 +267,6 @@ export function buildOutputAndTruncationSection(toolNames?: ReadonlySet<string>)
 	if (hasTool(toolNames, "bash")) {
 		lines.push(
 			"- Bash: cap output with `head`/`tail`/`-n` — e.g. `git log -n 20 --oneline`, `git diff --stat`, `2>&1 | tail -100` for builds, `--log-failed` for CI logs, `tree -L 2`. Never `git status -uall` on large repos.",
-			"- GitHub/GitLab CLI: `--log-failed`, `--jq`, `| tail -N` — `gh run view --log` and `--paginate` calls are huge. `glab ci view` is a TUI — use `glab ci trace` headless. Big PR/MR diffs: list changed paths first, then targeted reads.",
 		)
 	}
 	if (hasTool(toolNames, "grep")) {
@@ -374,16 +368,16 @@ function buildPrompt(parts: PromptParts): string {
 		sections.push(AUTONOMOUS_SESSION_NOTE)
 	}
 
-	// 7. Rest: system prompt blocks, skills, environment, project context.
-	// Note: no "Available Tools" name list — the API tools payload already
-	// advertises names + schemas; a duplicated list paid ~1.6k chars/round
-	// while adding zero information (cost-parity trim).
+	// 7. Rest: system prompt blocks, skills enumeration, environment, project context.
+	// Skills render as a one-line name enumeration only (not the XML catalog —
+	// ~1.2k chars/request, no measured pass benefit) so the model keeps its
+	// discovery surface, including the dap-debugging reveal anchor.
 	if (parts.systemPromptBlocks) {
 		sections.push(parts.systemPromptBlocks)
 	}
 
-	if (!parts.suppressed.has("skills") && parts.skillsSection) {
-		sections.push(parts.skillsSection)
+	if (parts.skillsLine) {
+		sections.push(parts.skillsLine)
 	}
 
 	sections.push(parts.environmentSection)
@@ -430,7 +424,14 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 	return `## Project Guidelines\n\n${combined}`
 }
 
-function formatSkills(skills?: readonly Skill[]): string {
+/**
+ * Flat skills enumeration — names only. The DAP deferral (daef342c) anchors
+ * tool reveal on reading dap-debugging/SKILL.md, so names must stay
+ * discoverable; anything richer is cost without measured benefit.
+ */
+function formatSkillsLine(skills?: readonly Skill[]): string {
 	if (!skills || skills.length === 0) return ""
-	return formatSkillsForPrompt(skills as Skill[])
+	const names = skills.filter((s) => !s.disableModelInvocation).map((s) => s.name)
+	if (names.length === 0) return ""
+	return `## Skills\nAvailable skills on this machine: ${names.join(", ")}. Load one with the Skill tool or /skill:<name> before relying on it.`
 }

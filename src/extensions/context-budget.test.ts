@@ -10,7 +10,9 @@
  *    tool list, fixed project-context fixture, no session-scoped blocks. This trips
  *    when orchestration text, sections, or upstream-bump-driven assembly grows.
  * 2. Kimchi's shipped skills catalog (frontmatter name+description of every skill in
- *    resources/skills — the only part of a skill that lands in the prompt).
+ *    resources/skills). Note: the catalog no longer appears in the system prompt
+ *    (available_skills removed); this slice now guards the Skill-tool discovery
+ *    payload baked into shipping skills, not a per-request cost.
  * 3. The canonical tool surface: every builtin + kimchi-extension tool definition a
  *    default session advertises, measured without a running harness via
  *    context-budget-tools.ts (deliberate exclusions are named there and drift into
@@ -120,7 +122,6 @@ function canonicalSurfaces() {
 		tools: CANONICAL_TOOLS,
 		env: FIXED_ENV,
 		contextFiles: CANONICAL_CONTEXT_FILES,
-		skills: [],
 		mode: "single",
 	})
 	const skillsRoot = join(repoRoot(), "resources", "skills")

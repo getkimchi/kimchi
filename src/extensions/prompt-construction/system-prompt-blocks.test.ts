@@ -173,28 +173,18 @@ describe("system prompt blocks", () => {
 		a.register({
 			id: "hide-core",
 			render: () => "## A Block",
-			suppress: () => new Set(["orchestration", "project-context"]),
+			suppress: () => new Set(["orchestration"]),
 		})
 		b.register({
-			id: "hide-skills",
+			id: "hide-context",
 			render: () => "## B Block",
-			suppress: () => new Set(["skills"]),
+			suppress: () => new Set(["project-context"]),
 		})
 
 		const result = buildSystemPrompt({
 			tools: testTools,
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
-			skills: [
-				{
-					name: "deploy",
-					description: "Deploy app",
-					filePath: "/skills/deploy/SKILL.md",
-					baseDir: "/skills/deploy",
-					sourceInfo: { path: "/skills/deploy/SKILL.md", source: "local", scope: "project", origin: "top-level" },
-					disableModelInvocation: false,
-				},
-			],
 			mode: "orchestrator",
 			sessionId: TEST_SESSION_ID,
 		})
@@ -203,7 +193,6 @@ describe("system prompt blocks", () => {
 		expect(result).toContain("## B Block")
 		expect(result).not.toContain("## Orchestration")
 		expect(result).not.toContain("Project rule.")
-		expect(result).not.toContain("available_skills")
 	})
 
 	it("suppression union is idempotent when multiple active blocks suppress the same section", () => {

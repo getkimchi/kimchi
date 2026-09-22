@@ -472,11 +472,12 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
 			// Read skills from pi's resolved resource inventory (system prompt
-			// options) so the rebuilt prompt advertises exactly what pi
+			// options) so the rebuilt prompt enumerates exactly what pi
 			// loaded — honoring settings.json, --skill/--no-skills, trust,
 			// packages, precedence and collision rules — rather than a second,
-			// divergent view composed here. Kimchi-specific sources reach pi
-			// through resources_discover above.
+			// divergent view composed here. Only NAMES are rendered (flat
+			// one-line enumeration); Kimchi-specific sources reach pi through
+			// resources_discover above.
 			const skills = event.systemPromptOptions?.skills ?? []
 
 			const now = new Date()
@@ -512,7 +513,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
-				skills: skills,
+				skills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
 				mode,

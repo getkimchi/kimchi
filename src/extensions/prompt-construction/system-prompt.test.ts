@@ -1,9 +1,7 @@
-import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
-import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -59,16 +57,6 @@ describe("formatEnvironmentSection", () => {
 		)
 	})
 })
-
-function createSkill(overrides: Partial<Skill> & { name: string; description: string }): Skill {
-	return {
-		filePath: `/skills/${overrides.name}/SKILL.md`,
-		baseDir: `/skills/${overrides.name}`,
-		sourceInfo: { path: `/skills/${overrides.name}/SKILL.md`, source: "local", scope: "project", origin: "top-level" },
-		disableModelInvocation: false,
-		...overrides,
-	}
-}
 
 describe("buildSystemPrompt", () => {
 	const tools = [
@@ -132,15 +120,18 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("verbatim quote of your own previous assistant message")
 	})
 
-	it("caps GitLab merge request diffs before targeted reads", () => {
+	it("leaves gh/glab workflow playbooks out of the core prompt (they are gated behaviour bodies)", () => {
 		const result = buildSystemPrompt({
 			tools,
 			env: testEnv,
 			mode: "single",
 		})
 
-		expect(result).toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
-		expect(result).toContain("--paginate")
+		// The unconditional core cheatsheet lines (~250 chars/request) were removed on
+		// benchmark evidence; the full gh/glab bodies only appear via the session-gated
+		// behaviour registry (CLI available + matching git remote).
+		expect(result).not.toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
+		expect(result).not.toContain("--paginate")
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
@@ -225,34 +216,6 @@ describe("buildSystemPrompt", () => {
 			expect(globalPos).toBeGreaterThan(-1)
 			expect(projectPos).toBeGreaterThan(-1)
 			expect(globalPos).toBeLessThan(projectPos)
-		})
-
-		it("injects skills", () => {
-			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				skills,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("available_skills")
-			expect(result).toContain("deploy")
-			expect(result).toContain("Deploy the app to production")
-		})
-
-		it("excludes skills with disableModelInvocation", () => {
-			const skills = [
-				createSkill({ name: "safe-skill", description: "Visible skill" }),
-				createSkill({ name: "hidden-skill", description: "Hidden skill", disableModelInvocation: true }),
-			]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				skills,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("safe-skill")
-			expect(result).not.toContain("hidden-skill")
 		})
 
 		it("injects environment info", () => {
@@ -353,37 +316,6 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("Follow **Orchestration** for what to do yourself vs delegate")
 			expect(result).not.toContain("Provide complete, functional code")
-		})
-
-		it("suppresses conflicting superpowers skills in orchestrator mode", () => {
-			const skills = [
-				createSkill({ name: "brainstorming", description: "Brainstorm" }),
-				createSkill({ name: "subagent-driven-development", description: "Alternate delegation workflow" }),
-			]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				skills,
-				roles: DEFAULT_MODEL_ROLES,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("brainstorming")
-			expect(result).not.toContain("subagent-driven-development")
-		})
-
-		it("documents the canonical names of suppressed orchestrator-conflicting skills", () => {
-			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
-				"dispatching-parallel-agents",
-				"executing-plans",
-				"finishing-a-development-branch",
-				"receiving-code-review",
-				"requesting-code-review",
-				"subagent-driven-development",
-				"systematic-debugging",
-				"test-driven-development",
-				"verification-before-completion",
-				"writing-plans",
-			])
 		})
 
 		it("includes thinking levels in orchestrator mode", () => {
@@ -504,18 +436,6 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("# Project Guidelines")
 			expect(result).toContain("Use TypeScript strict mode.")
-		})
-
-		it("injects skills", () => {
-			const skills = [createSkill({ name: "deploy", description: "Deploy the app" })]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				skills,
-				mode: "subagent",
-			})
-			expect(result).toContain("available_skills")
-			expect(result).toContain("deploy")
 		})
 
 		it("injects environment info", () => {

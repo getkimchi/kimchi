@@ -323,7 +323,10 @@ describe("prompt enrichment skills", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("renders skills from pi's resolved inventory in the rebuilt prompt", async () => {
+	it("renders a flat skills name enumeration (never the XML catalog) in the rebuilt prompt", async () => {
+		// The ~1.2k-char available_skills XML catalog was removed on benchmark
+		// evidence; a one-line name list keeps skills model-discoverable (incl.
+		// the dap-debugging reveal anchor) at a fraction of the cost.
 		const cwd = join(dir, "project")
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
@@ -343,9 +346,9 @@ describe("prompt enrichment skills", () => {
 			createContext({ cwd, hasUI: false }),
 		)) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
+		expect(result.systemPrompt).not.toContain("<available_skills>")
+		expect(result.systemPrompt).not.toContain("Use safe TypeScript patterns")
+		expect(result.systemPrompt).toContain("Available skills on this machine: typescript-safety")
 	})
 
 	it("no longer discovers skills itself when systemPromptOptions.skills is absent", async () => {
