@@ -27,19 +27,16 @@ test("a fresh conversation sends default communication guidance on successive tu
 			})
 			for (const prompt of prompts) {
 				expect(prompt).toContain("## Communication")
-				expect(prompt).toContain("Explicit output formats, including code-only or structured data, take precedence")
-				expect(prompt).toContain("A clarification-only reply is at most two short sentences")
+				expect(prompt).toContain("Requested detail and exact output formats take precedence over this style")
+				expect(prompt).toContain("Apply these rules to the wording and layout of user-facing replies")
 				expect(prompt).toContain("Use separate short paragraphs or bullets for distinct points")
 				expect(prompt).toContain("Put a blank line between paragraphs and before lists")
 				expect(prompt).toContain("do not squeeze the answer into a word count")
 				expect(prompt).not.toContain("under 60 words")
 				expect(prompt).toContain("an unmentioned check or state is unknown")
-				expect(prompt).toContain("A status or summary request asks what is known, not what to do next")
-				expect(prompt).toContain(
-					"Include next steps when the user asks for them or must act to unblock authorized work",
-				)
-				expect(prompt).toContain("Do not announce an upcoming tool call in text")
-				expect(prompt).toContain("On each turn of multi-step work, make the current step and progress visible")
+				expect(prompt).not.toContain("After three unsuccessful fixes")
+				expect(prompt).not.toContain("one or two checks")
+				expect(prompt).toContain("Never re-issue the same tool call after a successful result")
 				expect(prompt).toContain("Honor requests to change or stop this style for the rest of the session")
 			}
 			expect(prompts[1]).toBe(prompts[0])
