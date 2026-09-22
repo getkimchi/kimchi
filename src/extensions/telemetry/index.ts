@@ -900,7 +900,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			handleSessionCompact(telemetryCtx, ctx)
 		})
 		pi.on("tool_execution_start", async (event) => {
-			handleToolExecutionStart(telemetryCtx, event)
+			// Pi emits this before rejecting unknown tools; the name can contain generated content.
+			const toolName = pi.getActiveTools().includes(event.toolName) ? event.toolName : "unknown"
+			handleToolExecutionStart(telemetryCtx, { ...event, toolName })
 		})
 		pi.on("tool_execution_end", async (event, ctx) => {
 			handleToolExecutionEnd(telemetryCtx, ctx, event)
