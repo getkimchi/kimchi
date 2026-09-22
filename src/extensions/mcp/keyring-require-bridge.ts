@@ -11,6 +11,28 @@ const VIRTUAL_KEYRING_PATH = "/$bunfs/kimchi/@napi-rs/keyring/index.js"
 const INSTALLED_MARKER = Symbol.for("kimchi.mcp.keyring-require-bridge")
 const TEST_KEYRING_DIR_ENV = "KIMCHI_MCP_E2E_KEYRING_DIR"
 
+/** Kimchi-owned OS credential-store service for MCP OAuth credentials. */
+export const MCP_OAUTH_SERVICE = "dev.kimchi.mcp.oauth"
+
+/**
+ * The service name hardcoded in pi-mcp-adapter's mcp-auth. Reading and writing
+ * entries under this shared service also means sharing keychain access-control
+ * entries with every other binary embedding the adapter (upstream pi, dev
+ * builds), which triggers macOS keychain unlock prompts across differently
+ * signed binaries. Kimchi remaps it to MCP_OAUTH_SERVICE instead.
+ */
+export const LEGACY_MCP_OAUTH_SERVICE = "pi-mcp-adapter.oauth"
+
+/** Remap the adapter's OAuth service name to the kimchi-owned one; pass other services through untouched. */
+export function remapMcpOAuthService(service: string): string {
+	return service === LEGACY_MCP_OAUTH_SERVICE ? MCP_OAUTH_SERVICE : service
+}
+
+/** The keyring account pi-mcp-adapter derives for a server name. */
+export function mcpCredentialAccountId(serverName: string): string {
+	return `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
+}
+
 interface CommonJsModuleInternals {
 	_cache: Record<string, { exports: unknown }>
 	_resolveFilename(request: string, parent: unknown, isMain: boolean, options?: unknown): string
@@ -45,9 +67,54 @@ class FileBackedTestEntry {
 	}
 }
 
+/**
+ * The exact Entry surface pi-mcp-adapter consumes — its `KeyringEntry`
+ * interface in `mcp-auth.ts` calls only these three members. Keep this in
+ * sync on adapter upgrades: `verifyMcpKeyringRuntime` asserts each member on
+ * the bridged Entry (run by release/canary keyring-check on every target),
+ * so a drift that narrows or renames the surface fails loudly before
+ * release instead of at runtime for users.
+ */
+interface KeyringEntryLike {
+	getPassword(): string | null
+	setPassword(password: string): void
+	deleteCredential(): boolean
+}
+
+function createUnderlyingKeyringEntry(service: string, account: string): KeyringEntryLike {
+	return process.env[TEST_KEYRING_DIR_ENV]
+		? new FileBackedTestEntry(service, account)
+		: new keyring.Entry(service, account)
+}
+
+/**
+ * The Entry class served to pi-mcp-adapter through the require bridge: remaps
+ * the adapter's OAuth service name to the kimchi-owned service so kimchi never
+ * shares keychain ACL entries with other pi-mcp-adapter consumers, while all
+ * other services (including our runtime check) pass through unchanged.
+ */
+class RemappingKeyringEntry implements KeyringEntryLike {
+	private readonly entry: KeyringEntryLike
+
+	constructor(service: string, account: string) {
+		this.entry = createUnderlyingKeyringEntry(remapMcpOAuthService(service), account)
+	}
+
+	getPassword(): string | null {
+		return this.entry.getPassword()
+	}
+
+	setPassword(password: string): void {
+		this.entry.setPassword(password)
+	}
+
+	deleteCredential(): boolean {
+		return this.entry.deleteCredential()
+	}
+}
+
 function keyringExports(): unknown {
-	if (!process.env[TEST_KEYRING_DIR_ENV]) return keyring
-	return { ...keyring, Entry: FileBackedTestEntry }
+	return { ...keyring, Entry: RemappingKeyringEntry }
 }
 
 export type McpCredentialAccountStatus =
@@ -55,10 +122,13 @@ export type McpCredentialAccountStatus =
 	| { status: "absent" }
 	| { status: "unavailable" }
 
+/** Read an MCP OAuth credential entry under an explicit service (no remapping). */
+export function readMcpOAuthEntry(service: string, account: string): string | null {
+	return createUnderlyingKeyringEntry(service, account).getPassword()
+}
+
 function readSecureCredential(account: string): string | null {
-	return process.env[TEST_KEYRING_DIR_ENV]
-		? new FileBackedTestEntry("pi-mcp-adapter.oauth", account).getPassword()
-		: new keyring.Entry("pi-mcp-adapter.oauth", account).getPassword()
+	return readMcpOAuthEntry(MCP_OAUTH_SERVICE, account)
 }
 
 function isCredentialRecord(value: unknown): value is Record<string, unknown> {
@@ -72,19 +142,33 @@ function credentialRecord(value: unknown): Record<string, unknown> {
 	return value
 }
 
+export interface OAuthChunkManifest {
+	chunkCount: number
+	chunkDigest: string
+}
+
+/** Shape-check an already-parsed MCP OAuth credential record for a chunk manifest (null when not chunked). */
+export function parseOAuthChunkManifestRecord(value: Record<string, unknown>): OAuthChunkManifest | null {
+	if (
+		value.__piMcpAdapterOAuthChunked === 1 &&
+		typeof value.chunkCount === "number" &&
+		Number.isInteger(value.chunkCount) &&
+		value.chunkCount > 0 &&
+		typeof value.chunkDigest === "string" &&
+		/^[a-f0-9]{16}$/.test(value.chunkDigest)
+	) {
+		return { chunkCount: value.chunkCount, chunkDigest: value.chunkDigest }
+	}
+	return null
+}
+
 function parseCredentialServerUrl(account: string, payload: string): string | undefined {
 	let parsed = credentialRecord(JSON.parse(payload))
-	if (
-		parsed.__piMcpAdapterOAuthChunked === 1 &&
-		typeof parsed.chunkCount === "number" &&
-		Number.isInteger(parsed.chunkCount) &&
-		parsed.chunkCount > 0 &&
-		typeof parsed.chunkDigest === "string" &&
-		/^[a-f0-9]{16}$/.test(parsed.chunkDigest)
-	) {
+	const manifest = parseOAuthChunkManifestRecord(parsed)
+	if (manifest) {
 		const chunks: string[] = []
-		for (let index = 0; index < parsed.chunkCount; index++) {
-			const chunk = readSecureCredential(`${account}.chunk.${parsed.chunkDigest}.${index}`)
+		for (let index = 0; index < manifest.chunkCount; index++) {
+			const chunk = readSecureCredential(`${account}.chunk.${manifest.chunkDigest}.${index}`)
 			if (chunk === null) throw new Error("Missing MCP OAuth credential chunk")
 			chunks.push(chunk)
 		}
@@ -96,7 +180,7 @@ function parseCredentialServerUrl(account: string, payload: string): string | un
 }
 
 export function inspectMcpCredentialAccount(serverName: string): McpCredentialAccountStatus {
-	const account = `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
+	const account = mcpCredentialAccountId(serverName)
 	try {
 		const securePayload = readSecureCredential(account)
 		if (securePayload !== null) {
@@ -117,7 +201,9 @@ export function inspectMcpCredentialAccount(serverName: string): McpCredentialAc
  * pi-mcp-adapter deliberately loads the native keyring with createRequire().
  * Bun's compiled filesystem cannot resolve that dynamic package request even
  * though a static import can bundle and load the native addon. Bridge that one
- * exact request to the statically bundled module namespace.
+ * exact request to the statically bundled module namespace — serving a wrapped
+ * Entry that also renames the adapter's OAuth service to the kimchi-owned one
+ * (see RemappingKeyringEntry).
  */
 export function installKeyringRequireBridge(): void {
 	configureMcpKeyringRecoveryHelper()
@@ -152,6 +238,18 @@ export function verifyMcpKeyringRuntime(): McpKeyringRuntimeCheck {
 	const password = randomUUID()
 	const entry = new requiredKeyring.Entry("dev.kimchi.mcp-adapter.runtime-check", account)
 	let stored = false
+
+	// Assert the bridged Entry exposes every member pi-mcp-adapter's
+	// KeyringEntry interface calls (see KeyringEntryLike) — the wrapper fronts
+	// the native module for all adapter keyring access, so a drift here must
+	// fail the check rather than surface as a production-only failure.
+	for (const member of ["getPassword", "setPassword", "deleteCredential"] as const) {
+		if (typeof entry[member] !== "function") {
+			throw new Error(
+				`Bridged keyring Entry is missing ${member}() — pi-mcp-adapter's KeyringEntry surface changed; update KeyringEntryLike in keyring-require-bridge.ts`,
+			)
+		}
+	}
 
 	try {
 		entry.setPassword(password)

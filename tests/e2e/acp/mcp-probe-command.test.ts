@@ -14,6 +14,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
+import { MCP_OAUTH_SERVICE } from "../../../src/extensions/mcp/keyring-require-bridge.js"
 import {
 	createMcpFixture,
 	MCP_FIXTURE_OAUTH_ACCESS_TOKEN,
@@ -28,7 +29,7 @@ const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
 
 function keyringCredentialPath(keyringDir: string, serverName: string): string {
 	const account = `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
-	const key = createHash("sha256").update(`pi-mcp-adapter.oauth\0${account}`, "utf8").digest("hex")
+	const key = createHash("sha256").update(`${MCP_OAUTH_SERVICE}\0${account}`, "utf8").digest("hex")
 	return join(keyringDir, key)
 }
 

@@ -119,7 +119,15 @@ automatic migration targets.
 
 The published adapter dynamically requires `@napi-rs/keyring`. Kimchi's Bun
 binary cannot resolve that native module from its compiled virtual filesystem,
-so a narrow local bridge supplies the statically bundled module. A private,
+so a narrow local bridge supplies the statically bundled module. The bridged
+`Entry` also renames the adapter's OAuth service (`pi-mcp-adapter.oauth`) to
+the kimchi-owned `dev.kimchi.mcp.oauth` service: macOS partitions keychain
+item access control by code-signing identity, and the adapter's shared service
+name means items created by other binaries embedding the adapter (upstream pi,
+ad-hoc builds) trigger keychain unlock prompts under Kimchi. The kimchi-owned
+service deliberately starts empty — credentials under the shared service are
+never read, so no keychain access-control prompt can leak in from them, and
+users re-authenticate their MCP OAuth servers once after upgrading. A private,
 file-backed implementation is available only to isolated E2E processes. The
 `mcp keyring-check --json` command always exercises native credential-store
 CRUD and is run by release and canary workflows on each target OS.
