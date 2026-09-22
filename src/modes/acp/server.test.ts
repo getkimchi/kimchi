@@ -162,6 +162,19 @@ beforeEach(() => {
 	getVersionMock.mockReturnValue("1.2.3-test")
 })
 afterEach(cleanPermissionEnv)
+// Tests create many agents without shutdown(); each leaves a live chokidar
+// FSWatcher that would starve tests later in the file.
+afterEach(async () => {
+	const handles =
+		(
+			process as unknown as {
+				_getActiveHandles?: () => Array<{ constructor?: { name?: string }; close?: () => unknown }>
+			}
+		)._getActiveHandles?.() ?? []
+	for (const h of handles) {
+		if (h.constructor?.name === "FSWatcher" && h.close) await h.close()
+	}
+})
 
 /** Model shape used by FakeAgentSession's model registry. */
 interface FakeModel {

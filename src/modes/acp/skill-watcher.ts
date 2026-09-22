@@ -10,6 +10,8 @@ export interface SkillWatchSession {
 export interface SkillWatcher {
 	/** Register a session and start watching its skill roots. */
 	addSession(session: SkillWatchSession): void
+	/** Deregister a session; roots shared with other cwds stay watched. */
+	removeSession(session: SkillWatchSession): void
 	/** Close all watches (connection shutdown). */
 	close(): void
 }
@@ -36,8 +38,9 @@ function sessionSkillRoots(cwd: string, opts: { agentDir: string; extraPaths: re
  *
  * Watched roots are re-derived on every change event, so roots that appear
  * later (a skills dir created, trust granted) converge without bookkeeping.
- * Roots are never removed until close(): sessions within a connection are
- * short-lived and commonly share cwds, so refcounting is not worth it.
+ * Roots themselves are never removed until close(): contiguous sessions over
+ * a connection's lifetime tend to share roots, and unwatching+rewatching a
+ * dir costs more than leaving it watched briefly.
  */
 export function createSkillWatcher(opts: {
 	agentDir: string
@@ -47,7 +50,7 @@ export function createSkillWatcher(opts: {
 }): SkillWatcher {
 	let watcher: FSWatcher | undefined
 	const watched = new Set<string>()
-	const sessions = new Set<string>()
+	const sessions = new Map<string, number>()
 	const extraPaths = (): readonly string[] => opts.getExtraSkillPaths?.() ?? []
 
 	const add = (roots: string[]): void => {
@@ -58,7 +61,8 @@ export function createSkillWatcher(opts: {
 	}
 
 	const refreshRoots = (): void => {
-		for (const cwd of sessions) add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
+		for (const cwd of sessions.keys())
+			add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
 	}
 
 	const ensure = (): FSWatcher => {
@@ -84,10 +88,16 @@ export function createSkillWatcher(opts: {
 
 	return {
 		addSession(session: SkillWatchSession): void {
-			if (!sessions.has(session.cwd)) {
-				sessions.add(session.cwd)
+			const refs = sessions.get(session.cwd) ?? 0
+			sessions.set(session.cwd, refs + 1)
+			if (refs === 0) {
 				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
 			}
+		},
+		removeSession(session: SkillWatchSession): void {
+			const refs = sessions.get(session.cwd) ?? 0
+			if (refs <= 1) sessions.delete(session.cwd)
+			else sessions.set(session.cwd, refs - 1)
 		},
 		close(): void {
 			void watcher?.close()

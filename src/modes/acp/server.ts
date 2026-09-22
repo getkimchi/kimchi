@@ -1116,6 +1116,7 @@ export class KimchiAcpAgent implements Agent {
 		// fire-and-forgotten if we relied on dispose() alone.
 		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		entry.session.dispose()
+		this.skillWatcher?.removeSession(entry)
 	}
 
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
