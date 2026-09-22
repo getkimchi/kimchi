@@ -1,7 +1,8 @@
-import { homedir } from "node:os"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
-import type { KimchiConfig } from "../../config.js"
+import { loadConfig, type KimchiConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
 	createMemoryBackend,
@@ -144,6 +145,31 @@ describe("embedding endpoint configuration", () => {
 		expect(config.embedder.config.model).toBe("stub-model")
 		// Dims have no programmatic seam — the config file still supplies them.
 		expect(config.embedder.config.embeddingDims).toBe(3072)
+	})
+})
+
+describe("config-file values reach the memory backend", () => {
+	it("loadConfig output feeds buildMemoryConfig's embedder and store schema", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-memcfg-"))
+		const configPath = join(tempDir, "config.json")
+		try {
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					apiKey: "file-key",
+					memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 },
+				}),
+			)
+			// The full chain a real session runs: the config file is loaded,
+			// and the loaded config feeds the backend construction.
+			const loaded = loadConfig({ configPath })
+			const memConfig = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, loaded)
+			expect(memConfig.embedder.config.model).toBe("text-embedding-3-large")
+			expect(memConfig.embedder.config.embeddingDims).toBe(3072)
+			expect(memConfig.vectorStore.config.dimension).toBe(3072)
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true })
+		}
 	})
 })
 
