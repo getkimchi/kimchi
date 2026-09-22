@@ -25,7 +25,7 @@ import {
 	createBrandedMcpContext,
 	installMcpOAuthCallbackBranding,
 } from "./oauth-callback-branding.js"
-import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { configureMcpOAuthStorage } from "./oauth-storage.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
 
@@ -231,6 +231,7 @@ export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensi
 }
 
 function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterExtensionOptions): void {
+	configureMcpOAuthStorage()
 	installKeyringRequireBridge()
 	installMcpOAuthCallbackBranding()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
@@ -274,11 +275,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						mcpServers: { ...selectedResult.config.mcpServers, ...options.callerServers },
 					}
 				: selectedResult.config
-			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
 			const legacyConfigWarning = legacyMcpConfigWarning(cwd)
 			warnings = [
 				...selectedResult.warnings,
-				...oauthWarnings,
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]

@@ -8,12 +8,13 @@ import { gatewayMcpCall, modelReply, toolResultText } from "./support/mcp-model-
 
 test.use(TUI_TEST_CONFIG)
 
-test("migrates legacy plaintext OAuth credentials before the first connection", async ({ terminal }) => {
+test("reconnects legacy OAuth users without accessing the OS credential store", async ({ terminal }) => {
 	const echo = gatewayMcpCall("echo", { message: "legacy-oauth-migration" })
 	await runMcpKimchiSession(
 		terminal,
 		{
 			artifactName: "mcp-oauth-legacy-migration",
+			env: { PI_MCP_ADAPTER_TEST_AUTH_STORE: "unavailable" },
 			mcp: {
 				transport: "oauth",
 				oauthPreauthorized: true,
@@ -27,7 +28,7 @@ test("migrates legacy plaintext OAuth credentials before the first connection", 
 					],
 				},
 			},
-			responses: [echo.response, modelReply("The migrated OAuth credential worked without logging in again.")],
+			responses: [echo.response, modelReply("The MCP call succeeded with encrypted file credentials.")],
 			seedHome(homeDir) {
 				const agentDir = join(homeDir, ".config", "kimchi", "harness")
 				const config = JSON.parse(readFileSync(join(agentDir, "mcp.json"), "utf8")) as {
@@ -52,28 +53,33 @@ test("migrates legacy plaintext OAuth credentials before the first connection", 
 			},
 		},
 		async (fixture, trace) => {
-			await fixture.mcp.waitForEvent("http_session_initialized", {
-				description: "MCP connection using migrated OAuth credentials",
-			})
+			terminal.submit("/mcp-auth fixture")
+			await fixture.mcp.waitForEvent("oauth_token_issued")
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
 			const legacyPath = join(fixture.agentDir, "mcp-oauth", "fixture", "tokens.json")
 			expect(existsSync(legacyPath)).toBe(true)
-			expect(existsSync(join(dirname(legacyPath), ".pi-mcp-adapter-migrated"))).toBe(true)
-			const keyringDir = join(fixture.agentDir, "mcp-keyring")
-			const keyringPayloads = readdirSync(keyringDir).map((name) => readFileSync(join(keyringDir, name), "utf8"))
-			expect(keyringPayloads.some((payload) => payload.includes(MCP_FIXTURE_OAUTH_ACCESS_TOKEN))).toBe(true)
+			expect(existsSync(join(dirname(legacyPath), ".pi-mcp-adapter-migrated"))).toBe(false)
+			expect(existsSync(join(fixture.agentDir, "mcp-keyring"))).toBe(false)
+			const encryptedDir = join(fixture.agentDir, "mcp-oauth-encrypted")
+			expect(readdirSync(encryptedDir)).toHaveLength(1)
+			const encryptedPayload = readFileSync(
+				join(encryptedDir, readdirSync(encryptedDir)[0], "credentials.json"),
+				"utf8",
+			)
+			expect(encryptedPayload).not.toContain(MCP_FIXTURE_OAUTH_ACCESS_TOKEN)
 
-			terminal.submit("Call MCP using the credential stored by the previous Kimchi adapter")
-			await waitForText(terminal, "The migrated OAuth credential worked without logging in again.", {
+			terminal.submit("Call MCP after reconnecting")
+			await waitForText(terminal, "The MCP call succeeded with encrypted file credentials.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
 			await fixture.mcp.waitForEvent("tool_called", {
 				where: { name: "echo", arguments: { message: "legacy-oauth-migration" } },
 			})
 
-			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(false)
-			expect(fixture.mcp.hasEvent("oauth_token_issued")).toBe(false)
+			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(true)
+			expect(fixture.mcp.hasEvent("oauth_token_issued")).toBe(true)
 			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: legacy-oauth-migration")
-			trace.step("legacy plaintext credentials moved into and loaded from the upstream secure store")
+			trace.step("legacy files untouched; fresh OAuth credentials encrypted without OS store access")
 		},
 	)
 })
@@ -267,6 +273,7 @@ test("refreshes an expired MCP OAuth token after a real Kimchi process restart",
 		terminal,
 		{
 			artifactName: "mcp-oauth-refresh-restart",
+			env: { PI_MCP_ADAPTER_TEST_AUTH_STORE: "unavailable" },
 			mcp: {
 				transport: "oauth",
 				scenario: "oauth-expiring",

@@ -10,10 +10,10 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
 import { createMcpAdapter } from "pi-mcp-adapter"
-import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
+import { inspectMcpOAuthAccount } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
-import { inspectMcpCredentialAccount, installKeyringRequireBridge } from "./keyring-require-bridge.js"
-import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import { configureMcpOAuthStorage, MCP_OAUTH_STORAGE } from "./oauth-storage.js"
 
 type SdkTool = ListToolsResult["tools"][number]
 
@@ -201,13 +201,9 @@ function resultMessage(result: GatewayResult): string {
 function resolveProbeName(name: string, definition: ServerEntry): string {
 	if (!definition.url) return name
 	try {
-		const urlStatus = inspectMcpOAuthTokensForUrl(name, definition.url)
-		if (urlStatus.status === "present") return name
-		if (urlStatus.status === "absent") {
-			const account = inspectMcpCredentialAccount(name)
-			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
-			if (account.status === "present" && account.serverUrl === definition.url) return name
-		}
+		const account = inspectMcpOAuthAccount(name, MCP_OAUTH_STORAGE)
+		if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
+		if (account.status === "present" && account.serverUrl === definition.url) return name
 	} catch {
 		// Credential inspection is best-effort, but credential preservation is
 		// fail-closed: an unverified URL must never reuse the durable account name.
@@ -231,6 +227,7 @@ async function executeGateway(host: ProbeHost, params: Record<string, unknown>):
 export class UpstreamMcpProbe implements McpProbe {
 	async probeTools(name: string, definition: ServerEntry, options: McpProbeOptions = {}): Promise<ProbeResult> {
 		options.signal?.throwIfAborted()
+		configureMcpOAuthStorage()
 		installKeyringRequireBridge()
 		installProbeToolMetadataCapture()
 		const capturedTools = new Map<string, ProbeTool>()
@@ -262,10 +259,6 @@ export class UpstreamMcpProbe implements McpProbe {
 		capturedTools: Map<string, ProbeTool>,
 	): Promise<ProbeResult> {
 		const cwd = options.cwd ?? process.cwd()
-		if (definition.url) {
-			const { warnings } = migrateLegacyOAuthCredentials({ mcpServers: { [name]: definition } }, { cwd })
-			for (const warning of warnings) console.warn(warning)
-		}
 		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name
 		const host = createProbeHost(cwd, options.signal)
@@ -274,6 +267,7 @@ export class UpstreamMcpProbe implements McpProbe {
 				[probeName]: { ...definition, directTools: false, lifecycle: "lazy" as const },
 			},
 			settings: {
+				oauthCredentialStore: "encrypted-file" as const,
 				toolPrefix: "none" as const,
 				directTools: false,
 				scriptMode: false,

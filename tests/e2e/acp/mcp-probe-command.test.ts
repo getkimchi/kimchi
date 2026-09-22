@@ -12,7 +12,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
 import {
 	createMcpFixture,
@@ -25,12 +25,6 @@ const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
 const BINARY_NAME = process.platform === "win32" ? "kimchi.exe" : "kimchi"
 const BINARY_PATH = resolve(REPO_ROOT, "dist/bin", BINARY_NAME)
 const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
-
-function keyringCredentialPath(keyringDir: string, serverName: string): string {
-	const account = `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
-	const key = createHash("sha256").update(`pi-mcp-adapter.oauth\0${account}`, "utf8").digest("hex")
-	return join(keyringDir, key)
-}
 
 describe("compiled kimchi mcp probe command", () => {
 	const tempDirs: string[] = []
@@ -98,13 +92,25 @@ describe("compiled kimchi mcp probe command", () => {
 			behavior: { catalogTools: [{ name: "files.list", inputSchema: { type: "object" } }] },
 		})
 		fixtures.push(fixture)
+		const guardPath = join(workDir, "check-mcp-env.mjs")
+		writeFileSync(
+			guardPath,
+			'if (process.env.PI_MCP_ADAPTER_OAUTH_FILE_KEY) throw new Error("OAuth encryption key leaked to MCP child");',
+		)
 		const isolatedEnv = Object.fromEntries(
 			Object.entries(process.env).filter(([name]) => name !== "NODE_CHANNEL_FD" && name !== "NODE_UNIQUE_ID"),
 		)
 
 		const result = spawnSync(BINARY_PATH, ["mcp", "probe", "--json"], {
 			cwd: workDir,
-			input: JSON.stringify({ name: "probe-fixture", server: { ...fixture.serverDefinition, includeTools } }),
+			input: JSON.stringify({
+				name: "probe-fixture",
+				server: {
+					...fixture.serverDefinition,
+					args: ["--import", guardPath, ...(fixture.serverDefinition.args ?? [])],
+					includeTools,
+				},
+			}),
 			encoding: "utf-8",
 			env: {
 				...isolatedEnv,
@@ -205,9 +211,7 @@ describe("compiled kimchi mcp probe command", () => {
 		if (mode === "implicit-oauth") expect(result.stderr).toContain("MCP Auth:")
 	})
 
-	it.each(
-		process.platform === "linux" ? [false, true] : [false],
-	)("uses legacy OAuth credentials without opening a browser (revoked keyring: %s)", async (revokedKeyring) => {
+	it("reauthenticates legacy users without reading or recovering the OS store", async () => {
 		const homeDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-home-"))
 		const workDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-work-"))
 		tempDirs.push(homeDir, workDir)
@@ -225,21 +229,6 @@ describe("compiled kimchi mcp probe command", () => {
 		const isolatedEnv = Object.fromEntries(
 			Object.entries(process.env).filter(([name]) => name !== "NODE_CHANNEL_FD" && name !== "NODE_UNIQUE_ID"),
 		)
-		const recoveryEnv: NodeJS.ProcessEnv = {}
-		const recoveryTrace = join(workDir, "recovery-trace")
-		if (revokedKeyring) {
-			// Exercise the adapter's error classification and subprocess protocol.
-			// The file-backed test store does not require a real kernel keyring.
-			const keyctl = join(workDir, "keyctl")
-			writeFileSync(
-				keyctl,
-				'#!/bin/sh\n[ "$1" = session ] && [ "$2" = - ] || exit 2\nshift 2\nprintf "%s\\n" "$@" >> "$KIMCHI_TEST_RECOVERY_TRACE"\nexec "$@"\n',
-				{ mode: 0o700 },
-			)
-			recoveryEnv.PI_MCP_ADAPTER_TEST_AUTH_STORE = "keyrevoked"
-			recoveryEnv.PI_MCP_ADAPTER_KEYRING_RECOVERY_KEYCTL = keyctl
-			recoveryEnv.KIMCHI_TEST_RECOVERY_TRACE = recoveryTrace
-		}
 		const result = spawnSync(BINARY_PATH, ["mcp", "probe", "--json"], {
 			cwd: workDir,
 			input: JSON.stringify({ name: "fixture", server: fixture.serverDefinition }),
@@ -247,7 +236,7 @@ describe("compiled kimchi mcp probe command", () => {
 			env: {
 				...isolatedEnv,
 				...fixture.env,
-				...recoveryEnv,
+				PI_MCP_ADAPTER_TEST_AUTH_STORE: "unavailable",
 				HOME: homeDir,
 				PI_PACKAGE_DIR: PACKAGE_DIR,
 				KIMCHI_NO_UPDATE_CHECK: "1",
@@ -259,11 +248,11 @@ describe("compiled kimchi mcp probe command", () => {
 		expect(result.status, result.stderr).toBe(0)
 		expect(JSON.parse(result.stdout)).toMatchObject({ needsAuth: false, error: null })
 		expect(fixture.hasEvent("tools_listed")).toBe(true)
-		expect(fixture.hasEvent("oauth_browser_opened")).toBe(false)
-		expect(fixture.hasEvent("oauth_token_issued")).toBe(false)
-		if (revokedKeyring) {
-			expect(readFileSync(recoveryTrace, "utf8")).toContain(`${BINARY_PATH}\nmcp-keyring-helper\n`)
-		}
+		expect(fixture.hasEvent("oauth_browser_opened")).toBe(true)
+		expect(fixture.hasEvent("oauth_token_issued")).toBe(true)
+		expect(existsSync(join(agentDir, "mcp-keyring"))).toBe(false)
+		expect(existsSync(join(legacyDir, ".pi-mcp-adapter-migrated"))).toBe(false)
+		expect(existsSync(join(agentDir, "mcp-oauth-file.key"))).toBe(true)
 	})
 
 	it("preserves orphaned same-name credentials for an undiscoverable URL and removes the probe entry", async () => {
@@ -277,14 +266,38 @@ describe("compiled kimchi mcp probe command", () => {
 
 		const serverName = "edited-server"
 		const originalServerUrl = "https://original.example.test/mcp"
-		const keyringDir = join(agentDir, "mcp-keyring")
-		const credentialPath = keyringCredentialPath(keyringDir, serverName)
-		const originalCredential = JSON.stringify({
-			tokens: { accessToken: "original-server-token", expiresAt: 2_000_000_000 },
-			serverUrl: originalServerUrl,
-		})
-		mkdirSync(keyringDir, { recursive: true })
-		writeFileSync(credentialPath, originalCredential, { encoding: "utf8", mode: 0o600 })
+		const account = `sha256-${createHash("sha256").update(serverName).digest("hex")}`
+		const encryptedDir = join(agentDir, "mcp-oauth-encrypted")
+		const credentialPath = join(encryptedDir, account, "credentials.json")
+		const seed = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				"tsx",
+				"--input-type=module",
+				"--eval",
+				`
+			import { configureMcpOAuthStorage, MCP_OAUTH_STORAGE } from ${JSON.stringify(pathToFileURL(resolve(REPO_ROOT, "src/extensions/mcp/oauth-storage.ts")).href)};
+			import { updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth";
+			configureMcpOAuthStorage();
+			await updateMcpOAuthTokensForUrl(${JSON.stringify(serverName)}, ${JSON.stringify(originalServerUrl)}, {accessToken: "original-server-token"}, MCP_OAUTH_STORAGE);
+		`,
+			],
+			{
+				cwd: REPO_ROOT,
+				env: {
+					...process.env,
+					HOME: homeDir,
+					KIMCHI_CODING_AGENT_DIR: agentDir,
+					PI_PACKAGE_DIR: PACKAGE_DIR,
+					PI_MCP_ADAPTER_OAUTH_FILE_KEY: "",
+				},
+				encoding: "utf8",
+				timeout: 10_000,
+			},
+		)
+		expect(seed.status, seed.stderr).toBe(0)
+		const originalCredential = readFileSync(credentialPath, "utf8")
 
 		const isolatedEnv = Object.fromEntries(
 			Object.entries(process.env).filter(([name]) => name !== "NODE_CHANNEL_FD" && name !== "NODE_UNIQUE_ID"),
@@ -306,6 +319,8 @@ describe("compiled kimchi mcp probe command", () => {
 		expect(result.error).toBeUndefined()
 		expect(result.status, result.stderr).toBe(0)
 		expect(readFileSync(credentialPath, "utf8")).toBe(originalCredential)
-		expect(readdirSync(keyringDir)).toHaveLength(1)
+		expect(
+			readdirSync(encryptedDir).filter((entry) => existsSync(join(encryptedDir, entry, "credentials.json"))),
+		).toEqual([account])
 	})
 })

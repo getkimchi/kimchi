@@ -71,9 +71,9 @@ unit suites (101 MCP facade tests, 464 ACP tests), lint, typechecking (with
 `DOM.AsyncIterable` added for the new `http-ca.ts` per-origin CA support),
 and the compiled binary — `mcp keyring-check --json` passes on macOS arm64
 despite 2.34.0's lazy runtime module loading (#576). OAuth credential-store
-layout changes (#560: single-item records on macOS/Linux) are absorbed by
-the store's own read-time compaction; Kimchi's one-shot legacy migration
-tests remain green.
+layout changes (#560: single-item records on macOS/Linux) were absorbed by
+the store's own read-time compaction. Kimchi now uses encrypted files and
+requires reconnection instead of reading those older native records.
 
 The binary build combines master's Photon WASM embedding with this branch's
 `src/binary-entry.ts`, preserving the in-binary keyring recovery dispatcher.
@@ -108,14 +108,50 @@ Relevant code:
 - [`src/extensions/mcp/project-trust.ts`](../src/extensions/mcp/project-trust.ts)
 - [`src/cli-args.ts`](../src/cli-args.ts)
 
-### OAuth credential migration and compiled keyring support
+### OAuth credential storage and compiled keyring support
 
-Legacy plaintext OAuth records are copied once into the adapter's hashed
-credential layout. The migration preserves the full record, including tokens,
-dynamic client registration, PKCE verifier, state, and URL. Invalid records
-are left untouched with a warning, existing destination records are never
-overwritten, and untrusted custom OAuth directories are not selected as
-automatic migration targets.
+Kimchi uses the adapter's AES-256-GCM encrypted-file backend for MCP OAuth,
+including startup, the `/mcp` panel, authentication, refresh, logout, and
+CLI/ACP probes. These flows never fall back to the operating system credential
+store. The interactive panel keeps its existing file-backed configuration.
+
+On first use, Kimchi creates `mcp-oauth-file.key` in its agent directory
+(normally `~/.config/kimchi/harness/`) with owner-only permissions. Concurrent
+processes publish one complete key without overwriting each other. Encrypted
+records live under `mcp-oauth-encrypted/` in that directory. An externally
+supplied `PI_MCP_ADAPTER_OAUTH_FILE_KEY` (canonical base64 for 32 random bytes)
+takes precedence and prevents local key generation. Keep that key consistent
+across CLI and Studio launches. Lost or corrupt keys require restoration or
+explicitly clearing the encrypted credentials and reconnecting; Kimchi never
+silently replaces a missing key while encrypted records remain.
+
+The local key and encrypted files are protected by filesystem permissions;
+this does not provide Keychain's per-application access controls or protect
+against another process running as the same user. Do not copy keys into project
+configuration or source control. On Windows, access depends on the user
+profile's filesystem ACLs.
+
+The adapter excludes the encryption key from inherited stdio server,
+command-secret, npm resolution, and request-header helper environments. Explicit server
+environment overrides remain supported.
+
+Users upgrading from Keychain or legacy plaintext storage reconnect each MCP
+server once with `/mcp-auth <server>` (or Studio's connection flow). Kimchi does
+not read, migrate, or delete old Keychain entries or plaintext files: reading
+Keychain during migration could itself trigger the dialog. Browser OAuth
+consent still applies. Legacy files can be removed manually after successful
+reauthentication; rolling back requires the old credentials or another login.
+
+The small generated adapter patch adds a host-wide encrypted-store default and
+backend-neutral account inspection for probes. It follows upstream
+[encrypted-file support #580](https://github.com/nicobailon/pi-mcp-adapter/pull/580)
+and tracks [#574](https://github.com/nicobailon/pi-mcp-adapter/issues/574).
+The upstream PR plan is to expose those two host integration seams; remove
+these patch hunks once an adopted upstream version includes them. No cipher or
+credential format is implemented in Kimchi.
+
+Native keyring support below remains available for explicit diagnostics;
+normal MCP OAuth no longer uses it.
 
 The published adapter dynamically requires `@napi-rs/keyring`. Kimchi's Bun
 binary cannot resolve that native module from its compiled virtual filesystem,
@@ -141,7 +177,7 @@ protocol implementation is needed.
 
 Relevant code:
 
-- [`src/extensions/mcp/oauth-migration.ts`](../src/extensions/mcp/oauth-migration.ts)
+- [`src/extensions/mcp/oauth-storage.ts`](../src/extensions/mcp/oauth-storage.ts)
 - [`src/extensions/mcp/keyring-require-bridge.ts`](../src/extensions/mcp/keyring-require-bridge.ts)
 - [`src/extensions/mcp/keyring-recovery.ts`](../src/extensions/mcp/keyring-recovery.ts)
 - [`src/binary-entry.ts`](../src/binary-entry.ts)
@@ -306,7 +342,7 @@ regressions:
 | Risk | Expected failure if broken | Coverage / release gate |
 | --- | --- | --- |
 | Compiled native keyring loading | OAuth cannot read or persist credentials in a distributed binary | Build the binary and run `kimchi mcp keyring-check --json` on macOS, Linux under a Secret Service session, and Windows in release/canary CI |
-| OAuth layout migration | Existing users are prompted to authenticate again, lose dynamic registration, or have credentials overwritten | Compiled-process upgrade test plus invalid-record and destination-conflict unit cases |
+| Encrypted OAuth storage | Keychain prompts return, keys change across launches, or another URL loses credentials | Native-store-unavailable OAuth login/refresh/restart, concurrent key provisioning, corrupt/missing key, and URL-isolated probe tests |
 | OAuth callback branding | Users finish authorization on an unbranded package page or provider errors render unsafe HTML | Compiled-browser success/denial scenarios plus renderer and real HTTP-response unit tests |
 | Repository project trust | Opening a clone executes a project `.mcp.json` command during cache bootstrap | Compiled TUI accept/deny sentinel scenarios plus headless ACP denial and trust-resolution units |
 | Product/model branding | Setup, MCP App pages, or model guidance identifies Kimchi as Pi or recommends a hidden tool | Compiled setup/browser/model-contract scenarios plus exact-boundary units |

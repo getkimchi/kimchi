@@ -113,7 +113,7 @@ describe("ACP integration — MCP", () => {
 })
 
 describe("ACP integration — probe recovery", () => {
-	it("migrates preauthorized legacy credentials before the first probe, without a session", async () => {
+	it("requests fresh authentication for legacy credentials without importing them", async () => {
 		const fixture = await startAcpMcpFixture({
 			artifactName: "acp-mcp-legacy-probe",
 			mcp: { transport: "oauth", oauthPreauthorized: true },
@@ -132,9 +132,10 @@ describe("ACP integration — probe recovery", () => {
 				serverName: "fixture",
 				skipAuth: true,
 			})
-			expect(probe).toMatchObject({ needsAuth: false, error: null })
-			expect(probe.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "echo" })]))
+			expect(probe).toMatchObject({ needsAuth: true, error: null, tools: [] })
 			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(false)
+			expect(existsSync(join(legacyDir, "tokens.json"))).toBe(true)
+			expect(existsSync(join(legacyDir, ".pi-mcp-adapter-migrated"))).toBe(false)
 		} finally {
 			await fixture.stop()
 		}

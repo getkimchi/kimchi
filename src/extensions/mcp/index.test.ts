@@ -35,7 +35,7 @@ const planning = vi.hoisted(() => ({
 const permissionState = vi.hoisted(() => ({
 	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
 }))
-const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
+const configureMcpOAuthStorage = vi.hoisted(() => vi.fn())
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
@@ -93,12 +93,7 @@ vi.mock("../permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
 }))
 
-vi.mock("./oauth-migration.js", () => ({
-	migrateLegacyOAuthCredentials: vi.fn(() => ({
-		migratedServerNames: [],
-		warnings: oauthMigration.warnings,
-	})),
-}))
+vi.mock("./oauth-storage.js", () => ({ configureMcpOAuthStorage }))
 
 vi.mock("./oauth-callback-branding.js", () => ({
 	brandMcpAdapterOwnedToolResult: (result: unknown) => result,
@@ -144,7 +139,6 @@ describe("upstream MCP adapter facade", () => {
 		configState.useProgrammaticConfig = false
 		configState.warnings = []
 		configState.legacyKeys = []
-		oauthMigration.warnings = []
 		oauthBranding.install.mockClear()
 		cliState.mcpConfig = undefined
 		cliState.approve = undefined
@@ -573,7 +567,6 @@ describe("upstream MCP adapter facade", () => {
 	it("surfaces compatibility warnings when the session starts", async () => {
 		configState.warnings = ["legacy config is malformed"]
 		configState.legacyKeys = ["mcpSearch"]
-		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		const ctx = createContext()
@@ -581,7 +574,6 @@ describe("upstream MCP adapter facade", () => {
 		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy config is malformed", "warning")
-		expect(ctx.ui.notify).toHaveBeenCalledWith("legacy OAuth entry conflicts with the upstream layout", "warning")
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("mcpSearch no longer controls"), "warning")
 	})
 })

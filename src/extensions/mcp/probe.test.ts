@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { McpAdapterOptions } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const upstream = vi.hoisted(() => ({
 	options: undefined as McpAdapterOptions | undefined,
@@ -58,18 +58,18 @@ const credentialAccount = vi.hoisted(() => ({
 }))
 vi.mock("./keyring-require-bridge.js", () => ({
 	installKeyringRequireBridge,
-	inspectMcpCredentialAccount: () => credentialAccount.value,
 }))
 
-vi.mock("./oauth-migration.js", () => ({
-	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
+vi.mock("./oauth-storage.js", () => ({
+	configureMcpOAuthStorage: vi.fn(),
+	MCP_OAUTH_STORAGE: { credentialStore: "encrypted-file" },
+}))
+vi.mock("pi-mcp-adapter/oauth", () => ({
+	inspectMcpOAuthAccount: vi.fn(() => credentialAccount.value),
 }))
 
-import { inspectMcpOAuthTokensForUrl, updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
+import { inspectMcpOAuthAccount } from "pi-mcp-adapter/oauth"
 import { UpstreamMcpProbe } from "./probe.js"
-
-const authStoreEnv = "PI_MCP_ADAPTER_TEST_AUTH_STORE"
-let originalAuthStore: string | undefined
 
 function gatewayResult(details: Record<string, unknown>, text = "") {
 	return {
@@ -81,16 +81,6 @@ function gatewayResult(details: Record<string, unknown>, text = "") {
 function configuredServerNames(): string[] {
 	return Object.keys(upstream.options?.config?.mcpServers ?? {})
 }
-
-beforeAll(() => {
-	originalAuthStore = process.env[authStoreEnv]
-	process.env[authStoreEnv] = "memory"
-})
-
-afterAll(() => {
-	if (originalAuthStore === undefined) delete process.env[authStoreEnv]
-	else process.env[authStoreEnv] = originalAuthStore
-})
 
 beforeEach(() => {
 	vi.clearAllMocks()
@@ -232,12 +222,12 @@ describe("UpstreamMcpProbe", () => {
 	it("uses the real server name when credentials match the configured URL", async () => {
 		const name = "matching-url"
 		const url = "https://example.test/mcp"
-		updateMcpOAuthTokensForUrl(name, url, { accessToken: "existing-token" })
+		credentialAccount.value = { status: "present", serverUrl: url }
 
 		await new UpstreamMcpProbe().probeTools(name, { url })
 
-		expect(inspectMcpOAuthTokensForUrl(name, url).status).toBe("present")
 		expect(configuredServerNames()).toEqual([name])
+		expect(inspectMcpOAuthAccount).toHaveBeenCalledWith(name, { credentialStore: "encrypted-file" })
 		expect(upstream.logout).not.toHaveBeenCalled()
 	})
 
@@ -277,21 +267,18 @@ describe("UpstreamMcpProbe", () => {
 		const storedUrl = "https://old.example.test/mcp"
 		const probedUrl = "https://new.example.test/mcp"
 		credentialAccount.value = { status: "present", serverUrl: storedUrl }
-		updateMcpOAuthTokensForUrl(name, storedUrl, { accessToken: "preserve-me" })
 
 		await new UpstreamMcpProbe().probeTools(name, { url: probedUrl }, { authenticate: true })
 
 		const [probeName] = configuredServerNames()
 		expect(probeName).toMatch(/^__probe_[0-9a-f-]{36}$/)
 		expect(upstream.logout).toHaveBeenCalledWith(`logout ${probeName}`, expect.anything())
-		expect(inspectMcpOAuthTokensForUrl(name, storedUrl).status).toBe("present")
 	})
 
 	it("cleans up an isolated credential entry when probing throws", async () => {
 		const name = "different-url-failure"
 		const storedUrl = "https://old.example.test/mcp"
 		credentialAccount.value = { status: "present", serverUrl: storedUrl }
-		updateMcpOAuthTokensForUrl(name, storedUrl, { accessToken: "preserve-me" })
 		upstream.gatewayExecute.mockRejectedValue(new Error("connect failed"))
 
 		await expect(
@@ -301,7 +288,6 @@ describe("UpstreamMcpProbe", () => {
 		const [probeName] = configuredServerNames()
 		expect(upstream.logout).toHaveBeenCalledWith(`logout ${probeName}`, expect.anything())
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
-		expect(inspectMcpOAuthTokensForUrl(name, storedUrl).status).toBe("present")
 	})
 
 	it("shuts the adapter down when probing throws", async () => {

@@ -11,7 +11,7 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
 @@ -7,6 +9,11 @@ export function getConfigDirName(): string {
    return typeof configDir === "string" && configDir.trim() ? configDir.trim() : ".pi";
  }
- 
+
 +export function getMcpProjectConfigDirName(): string {
 +  const configDir = readPiConfig()?.mcpProjectConfigDir;
 +  return typeof configDir === "string" && configDir.trim() ? configDir.trim() : getConfigDirName();
@@ -50,12 +50,12 @@ index dfcccbfe12646daf4593f193c2649d422c2d4195..450b02972b7f624e38130aef2d00ee30
  import { loadClaudePluginBundles } from "./claude-plugin-loader.ts";
 @@ -192,7 +192,7 @@ export function getProjectConfigPath(cwd = process.cwd()): string {
  }
- 
+
  export function getProjectPiConfigPath(cwd = process.cwd()): string {
 -  return resolve(cwd, getConfigDirName(), PROJECT_PI_CONFIG_NAME);
 +  return resolve(cwd, getMcpProjectConfigDirName(), PROJECT_PI_CONFIG_NAME);
  }
- 
+
  export function getSharedConfigPath(target: SharedConfigTarget, cwd = process.cwd()): string {
 diff --git a/dist/agent-dir.d.ts b/dist/agent-dir.d.ts
 index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1a228c714 100644
@@ -264,6 +264,42 @@ index 8d6ca95250f3147878092a85799877476bf9e4ad..54d85cab222146ef63a247e050b23547
          }
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
+diff --git a/mcp-auth.ts b/mcp-auth.ts
+index ab62b3882885d6095e3be1ae7a0e66a8408ba203..3b8a205bc16e6f354b7d8b3baa4b8529c72b9955 100644
+--- a/mcp-auth.ts
++++ b/mcp-auth.ts
+@@ -597,6 +597,10 @@ export function loadTestKeyringEntryClass(keyringRequire: KeyringRequire, platfo
+ }
+
+ export function getAuthStorageOptions(oauthDir: unknown, cwd = process.cwd(), oauthCredentialStore?: unknown): AuthStorageOptions {
++  // Host storage policy; tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/574
++  // Upstream plan: expose a host-wide backend default without disabling file-backed config/UI.
++  // Remove this patch when upstream supports PI_MCP_ADAPTER_OAUTH_CREDENTIAL_STORE.
++  oauthCredentialStore ??= process.env.PI_MCP_ADAPTER_OAUTH_CREDENTIAL_STORE;
+   if (oauthCredentialStore !== undefined && oauthCredentialStore !== 'encrypted-file') {
+     throw new Error('settings.oauthCredentialStore must be "encrypted-file" when set');
+   }
+@@ -1041,10 +1045,18 @@ export function inspectAuthForUrl(
+   serverUrl: string,
+   options?: AuthStorageOptions,
+ ): OAuthCredentialStatus {
++  const status = inspectAuthEntry(serverName, options);
++  if (status.status !== 'present') return status;
++  return status.entry.serverUrl === serverUrl ? status : { status: 'absent' };
++}
++
++// Tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/574
++// Upstream plan: expose backend-neutral account inspection for safe same-name URL probes.
++// Remove when upstream exposes this through its public OAuth API.
++export function inspectAuthEntry(serverName: string, options?: AuthStorageOptions): OAuthCredentialStatus {
+   try {
+     const entry = readAuthEntry(serverName, options, { migrateLegacy: false });
+-    if (!entry?.serverUrl || entry.serverUrl !== serverUrl) return { status: 'absent' };
+-    return { status: 'present', entry };
++    return entry ? { status: 'present', entry } : { status: 'absent' };
+   } catch (error) {
+     if (!(error instanceof OAuthCredentialStoreError)) throw error;
+     return { status: 'unavailable', message: formatOAuthCredentialStoreUnavailable(error) };
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 0b449fe35389429912739bcfe10ce906ecb1ab33..a47d0ce9f3725b17b1f20c8071d67826c6bcd1a6 100644
 --- a/metadata-cache.ts
@@ -276,6 +312,109 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..a47d0ce9f3725b17b1f20c8071d67826
          ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
          ...(uiVisibility !== undefined ? { uiVisibility } : {}),
          ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+diff --git a/npx-resolver.ts b/npx-resolver.ts
+index c735a77fc87231f12e74b79a288e4b720ebde880..ff4a3235203f2c6ff2acf5fea8328295d58893b7 100644
+--- a/npx-resolver.ts
++++ b/npx-resolver.ts
+@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, readdirSync, statSync, writeFil
+ import { join, dirname, extname, resolve, sep } from "node:path";
+ import { getAgentPath } from "./agent-dir.ts";
+ import { throwIfAborted } from "./abort.ts";
++import { getMcpChildEnv } from "./utils.ts";
+ import crossSpawn from "cross-spawn";
+
+ const CACHE_VERSION = 2;
+@@ -255,7 +256,7 @@ async function forceNpxCache(packageSpec: string, signal?: AbortSignal): Promise
+       const proc = crossSpawn(
+         "npm",
+         ["exec", "--yes", "--package", packageSpec, "--", "node", "-e", "1"],
+-        { stdio: "ignore" }
++        { stdio: "ignore", env: getMcpChildEnv() }
+       );
+       const timer = setTimeout(() => {
+         proc.kill();
+@@ -416,7 +417,7 @@ function getNpmCacheDir(): string | null {
+     return npmCacheDirCached;
+   }
+   try {
+-    const result = crossSpawn.sync("npm", ["config", "get", "cache"], { encoding: "utf-8" });
++    const result = crossSpawn.sync("npm", ["config", "get", "cache"], { encoding: "utf-8", env: getMcpChildEnv() });
+     if (result.status === 0) {
+       const path = String(result.stdout).trim();
+       npmCacheDirCached = path || null;
+diff --git a/oauth.ts b/oauth.ts
+index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..556b861edd90c44bd659845f53e7e2906d4230d6 100644
+--- a/oauth.ts
++++ b/oauth.ts
+@@ -1,5 +1,6 @@
+ import { getValidToken } from "./mcp-auth-flow.ts";
+ import {
++  inspectAuthEntry,
+   inspectAuthForUrl,
+   updateTokens,
+   type AuthStorageOptions,
+@@ -10,6 +11,18 @@ import type { ServerEntry } from "./types.ts";
+
+ export type McpOAuthTokens = StoredTokens;
+ export type McpOAuthStorageOptions = AuthStorageOptions;
++
++// Tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/574
++// Upstream plan: add backend-neutral account inspection; remove when available upstream.
++export function inspectMcpOAuthAccount(serverName: string, options?: McpOAuthStorageOptions):
++  | { status: 'present'; serverUrl?: string }
++  | { status: 'absent' }
++  | { status: 'unavailable'; message: string } {
++  const status = inspectAuthEntry(serverName, options);
++  if (status.status !== 'present') return status;
++  const serverUrl = status.entry.serverUrl;
++  return { status: 'present', ...(serverUrl === undefined ? {} : { serverUrl }) };
++}
+ export interface McpOAuthTokenOptions {
+   authStorageOptions?: McpOAuthStorageOptions;
+   signal?: AbortSignal;
+diff --git a/request-headers-command.ts b/request-headers-command.ts
+index f564d3918d3ba0fc5ff49644af523615a8334362..968fb77ccef74b3634c6f7c302a4ff3bb182fffe 100644
+--- a/request-headers-command.ts
++++ b/request-headers-command.ts
+@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+ import { randomUUID } from "node:crypto";
+ import type { FetchLike } from "@modelcontextprotocol/client";
+ import type { HttpRequestHeadersCommand } from "./types.ts";
+-import { interpolateEnvVars } from "./utils.ts";
++import { getMcpChildEnv, interpolateEnvVars } from "./utils.ts";
+
+ const DEFAULT_TIMEOUT_MS = 10_000;
+ const MAX_OUTPUT_BYTES = 64 * 1024;
+@@ -175,7 +175,7 @@ function resolvedCommand(config: HttpRequestHeadersCommand): {
+     command: interpolateEnvVars(config.command),
+     args: (config.args ?? []).map(interpolateEnvVars),
+     env: {
+-      ...process.env,
++      ...getMcpChildEnv(),
+       ...Object.fromEntries(
+         Object.entries(config.env ?? {}).map(([key, value]) => [key, interpolateEnvVars(value)]),
+       ),
+diff --git a/server-manager.ts b/server-manager.ts
+index 3213c908a86c4baf483af3470bb6d5ea0c32028d..b42e1cb4ba399b574ef25459627cb2b81060a75a 100644
+--- a/server-manager.ts
++++ b/server-manager.ts
+@@ -59,6 +59,7 @@ import {
+   type ServerElicitationConfig,
+ } from "./elicitation-handler.ts";
+ import {
++  getMcpChildEnv,
+   interpolateEnvVars,
+   resolveBearerToken,
+   resolveCommandSecret,
+@@ -1822,7 +1823,7 @@ function resolveEnv(
+ ): Record<string, string> {
+   const resolved: Record<string, string> = {};
+   if (inheritEnv) {
+-    for (const [key, value] of Object.entries(process.env)) {
++    for (const [key, value] of Object.entries(getMcpChildEnv())) {
+       if (value !== undefined) resolved[key] = value;
+     }
+   }
 diff --git a/types.ts b/types.ts
 index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632aa729e057 100644
 --- a/types.ts
@@ -287,7 +426,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 +  annotations?: SdkTool["annotations"];
    _meta?: SdkTool["_meta"];
  }
- 
+
 @@ -730,6 +731,11 @@ export interface CachedTool {
    description?: string;
    inputSchema?: unknown;
@@ -303,7 +442,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 @@ -781,14 +787,22 @@ export interface McpPanelResult {
    cancelled: boolean;
  }
- 
+
 +// Host tool-name compatibility; tracking: getkimchi/kimchi#1168 (sanitize MCP
 +// tool names to the provider pattern). Remove when upstream sanitizes both name
 +// parts and caps wire names at the 128-char provider limit.
@@ -326,7 +465,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 +function sanitizeServerPrefix(serverName: string): string {
 +  return sanitizeNamePart(serverName);
  }
- 
+
  export function getServerPrefix(
 @@ -797,25 +811,44 @@ export function getServerPrefix(
  ): string {
@@ -342,7 +481,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 +  if (mode === "mcp") return `mcp__${sanitizeNamePart(serverName.replace(/-/g, "_"))}`;
 +  return sanitizeNamePart(serverName.replace(/-/g, "_"));
  }
- 
+
 +const warnedTruncatedNames = new Set<string>();
 +
  /**
@@ -378,11 +517,11 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 +  }
 +  return limited;
  }
- 
+
  export function resolveToolPrefix(
 @@ -881,10 +914,14 @@ export function formatPromptCommandName(
  }
- 
+
  function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
 +  // Pre-sanitization era spellings (vendored ≤2.4.x adapter): only hyphens
 +  // were replaced with "_", everything else passed through raw — including
@@ -396,12 +535,12 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 +  if (mode === "mcp") return `mcp__${serverName.replace(/-/g, "_")}`;
 +  return serverName.replace(/-/g, "_");
  }
- 
+
  function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
 @@ -944,13 +981,25 @@ export function createToolSelectorCandidateIndex(
    };
  }
- 
+
 +// Host exclusion compatibility; tracking: getkimchi/kimchi#1168. Patterns
 +// fuzzy-match the way master's fix did: hyphens and invalid characters
 +// normalize to "_" on BOTH sides, so excludes written with the raw name (as
@@ -412,7 +551,7 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
 +
  export function matchesToolPattern(candidates: Set<string>, patterns?: unknown): boolean {
    if (!Array.isArray(patterns) || patterns.length === 0) return false;
- 
+
    for (const pattern of patterns) {
      if (typeof pattern !== "string") continue;
 -    if (!pattern.includes("*") && !pattern.includes("?") && candidates.has(pattern)) {
@@ -426,3 +565,31 @@ index a8c407fabfc280c32cd363098a5d924673b091a0..ae54bfe5638e4ab726abf6beb863632a
      }
      if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
        return true;
+diff --git a/utils.ts b/utils.ts
+index 31993766b827d98ec9286622c5a25dee69a6eca1..5f26ce5a5235ecc0189e40d32f7114076292700b 100644
+--- a/utils.ts
++++ b/utils.ts
+@@ -176,6 +176,15 @@ export function interpolateEnvRecord(values: Record<string, string> | undefined,
+ const COMMAND_SECRET_TIMEOUT_MS = 10_000;
+ const COMMAND_SECRET_MAX_OUTPUT_BYTES = 1024 * 1024;
+
++// Tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/574
++// Upstream plan: exclude the OAuth encryption key from inherited MCP child environments.
++// Remove when upstream provides equivalent filtering; explicit server env remains supported.
++export function getMcpChildEnv(): NodeJS.ProcessEnv {
++  const env = { ...process.env };
++  delete env.PI_MCP_ADAPTER_OAUTH_FILE_KEY;
++  return env;
++}
++
+ /** Resolve a secret value, executing only a single leading `!` command marker. */
+ export function resolveCommandSecret(value: string, context: string): string;
+ export function resolveCommandSecret(value: undefined, context: string): undefined;
+@@ -186,6 +195,7 @@ export function resolveCommandSecret(value: string | undefined, context: string)
+   if (!value.startsWith("!")) return interpolateEnvVars(value);
+
+   const result = spawnSync(value.slice(1), {
++    env: getMcpChildEnv(),
+     shell: true,
+     encoding: "utf8",
+     timeout: COMMAND_SECRET_TIMEOUT_MS,
