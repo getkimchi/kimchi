@@ -176,78 +176,14 @@ describe("listWorkspaces", () => {
 		expect(mockFetch).toHaveBeenCalledTimes(11)
 	})
 
-	it("maps resource request fields from string-encoded int64 values (gRPC-gateway JSON)", async () => {
+	it("maps resource fields from spec.resources (the WorkspaceSpec contract)", async () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(
 				new Response(
 					JSON.stringify({
-						items: [
-							workspaceFixture({
-								cpuMillicores: "1500",
-								ramBytes: "6442450944",
-								pvcSizeBytes: "21474836480",
-							}),
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-			)
-
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
-
-		expect(result[0]).toMatchObject({
-			cpuMillicores: 1500,
-			ramBytes: 6442450944,
-			pvcSizeBytes: 21474836480,
-		})
-	})
-
-	it("maps resource request fields from plain numbers", async () => {
-		const mockFetch = vi
-			.fn()
-			.mockResolvedValueOnce(verifyResponse())
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({
-						items: [workspaceFixture({ cpuMillicores: 250, ramBytes: 1073741824, pvcSizeBytes: 10737418240 })],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-			)
-
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
-
-		expect(result[0]).toMatchObject({ cpuMillicores: 250, ramBytes: 1073741824, pvcSizeBytes: 10737418240 })
-	})
-
-	it("leaves resource fields undefined when the server omits them (older control planes)", async () => {
-		const mockFetch = vi
-			.fn()
-			.mockResolvedValueOnce(verifyResponse())
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ items: [workspaceFixture({ cpuMillicores: "not-a-number" })] }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				}),
-			)
-
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
-
-		expect(result[0].cpuMillicores).toBeUndefined()
-		expect(result[0].ramBytes).toBeUndefined()
-		expect(result[0].pvcSizeBytes).toBeUndefined()
-	})
-
-	it("maps resource fields from the nested quantity-string shape served by current servers", async () => {
-		const mockFetch = vi
-			.fn()
-			.mockResolvedValueOnce(verifyResponse())
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({
-						items: [workspaceFixture({ resources: { cpu: "200m", memory: "512Mi", pvcSize: "10Gi" } })],
+						items: [workspaceFixture({ spec: { resources: { cpu: "200m", memory: "512Mi", pvcSize: "10Gi" } } })],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
@@ -262,7 +198,25 @@ describe("listWorkspaces", () => {
 		})
 	})
 
-	it("prefers flat int64 fields over nested quantity strings when both shapes are present", async () => {
+	it("leaves resource fields undefined when the server omits spec", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [workspaceFixture({})] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+
+		expect(result[0].cpuMillicores).toBeUndefined()
+		expect(result[0].ramBytes).toBeUndefined()
+		expect(result[0].pvcSizeBytes).toBeUndefined()
+	})
+
+	it("ignores the deprecated legacy wire shapes (flat int64 fields, top-level resources)", async () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
@@ -272,6 +226,8 @@ describe("listWorkspaces", () => {
 						items: [
 							workspaceFixture({
 								cpuMillicores: "1500",
+								ramBytes: "6442450944",
+								pvcSizeBytes: "21474836480",
 								resources: { cpu: "200m", memory: "512Mi", pvcSize: "10Gi" },
 							}),
 						],
@@ -282,19 +238,19 @@ describe("listWorkspaces", () => {
 
 		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
 
-		expect(result[0].cpuMillicores).toBe(1500)
-		expect(result[0].ramBytes).toBe(536870912)
-		expect(result[0].pvcSizeBytes).toBe(10737418240)
+		expect(result[0].cpuMillicores).toBeUndefined()
+		expect(result[0].ramBytes).toBeUndefined()
+		expect(result[0].pvcSizeBytes).toBeUndefined()
 	})
 
-	it("leaves a resource field undefined when its nested quantity is invalid, without dropping the others", async () => {
+	it("leaves a spec.resources field undefined when its quantity is invalid, without dropping the others", async () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(
 				new Response(
 					JSON.stringify({
-						items: [workspaceFixture({ resources: { cpu: "banana", memory: "512Mi" } })],
+						items: [workspaceFixture({ spec: { resources: { cpu: "banana", memory: "512Mi" } } })],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),

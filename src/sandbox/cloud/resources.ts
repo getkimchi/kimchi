@@ -99,22 +99,30 @@ export function resolveWorkspaceResources(
 ): WorkspaceResourcesConfig | undefined {
 	if (!config) return undefined
 	const out: WorkspaceResourcesConfig = {}
+	// All violations are collected and reported at once (mirrors kap's
+	// errors.Join aggregation) rather than failing on the first bad field.
+	const violations: string[] = []
 	for (const field of WORKSPACE_RESOURCE_FIELDS) {
 		const raw = config[field]
 		if (raw === undefined) continue
 		const normalized = raw.trim()
 		const match = QUANTITY_RE.exec(normalized)
 		if (!match) {
-			throw new WorkspaceResourcesError(
+			violations.push(
 				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — expected a Kubernetes quantity (e.g. "500m", "1Gi", "20Gi").`,
 			)
+			continue
 		}
 		if (Number.parseFloat(match[1]) <= 0) {
-			throw new WorkspaceResourcesError(
+			violations.push(
 				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — must be positive; remove the field to inherit the org default.`,
 			)
+			continue
 		}
 		out[field] = normalized
+	}
+	if (violations.length > 0) {
+		throw new WorkspaceResourcesError(violations.join("\n"))
 	}
 	return Object.keys(out).length > 0 ? out : undefined
 }

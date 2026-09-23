@@ -4,7 +4,7 @@ import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
-import { resolveWorkspaceResources } from "../../../sandbox/cloud/resources.js"
+import { resolveWorkspaceSpec } from "../../../sandbox/cloud/spec.js"
 import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
@@ -404,10 +404,10 @@ export class AgentManager {
 		const dirName = basename(ctx.cwd) || "kimchi"
 		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
 		const workspaceId = byName?.id ?? randomUUID()
-		// Resource requests (kimchi_workspace.yaml) ride the upsert PUT only
-		// when minting — a name-matched workspace keeps its existing size
-		// (resources are create-time-only and immutable server-side).
-		const workspaceResources = byName ? undefined : resolveWorkspaceResources(loadWorkspaceFile(ctx.cwd)?.resources)
+		// Workspace spec (kimchi_workspace.yaml) rides the upsert PUT only
+		// when minting — a name-matched workspace keeps its existing spec
+		// (spec fields are create-time-only server-side).
+		const workspaceSpec = byName ? undefined : resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
 
 		// Resolve git clone plan from the local repo so the sandbox gets a
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
@@ -461,7 +461,7 @@ export class AgentManager {
 			localPath: ctx.cwd,
 			workspaceName: dirName,
 			outputFile: record.outputFile,
-			...(workspaceResources ? { resources: workspaceResources } : {}),
+			...(workspaceSpec ? { spec: workspaceSpec } : {}),
 			onReady: (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
 				// Capture the ACP session id for resume-after-restart persistence

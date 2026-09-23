@@ -118,31 +118,55 @@ describe("authenticateWorkspace", () => {
 		expect(putBody.options.agentApiKey).toBe("key1")
 	})
 
-	it("includes resources at the top level of the create/update body when provided", async () => {
+	it("nests the workspace spec under `spec` in the create/update body when provided", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
 		await authenticateWorkspace("ws-1", "key1", "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
+			spec: {
+				resources: { cpu: "250m", memory: "1Gi", pvcSize: "20Gi" },
+				dependencies: ["jq", "node@22"],
+				egressPolicy: { allowed: ["github.com:443"], denied: ["10.0.0.0/8"] },
+			},
+		})
+
+		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+		expect(putBody.spec).toEqual({
 			resources: { cpu: "250m", memory: "1Gi", pvcSize: "20Gi" },
+			dependencies: ["jq", "node@22"],
+			egressPolicy: { allowed: ["github.com:443"], denied: ["10.0.0.0/8"] },
 		})
-
-		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
-		expect(putBody.resources).toEqual({ cpu: "250m", memory: "1Gi", pvcSize: "20Gi" })
+		// Legacy top-level fields must never be set alongside spec (the
+		// server rejects the conflict).
+		expect(putBody).not.toHaveProperty("resources")
+		expect(putBody).not.toHaveProperty("dependencies")
 	})
 
-	it("sends only the resource fields that are set", async () => {
+	it("serializes an explicit denyByDefault: false (default-allow survives JSON)", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
 		await authenticateWorkspace("ws-1", "key1", "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
-			resources: { memory: "1Gi" },
+			spec: { egressPolicy: { denyByDefault: false, denied: ["10.0.0.0/8"] } },
 		})
 
 		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
-		expect(putBody.resources).toEqual({ memory: "1Gi" })
+		expect(putBody.spec.egressPolicy.denyByDefault).toBe(false)
 	})
 
-	it("omits the resources key entirely when not provided (re-auth stays byte-identical)", async () => {
+	it("sends only the spec fields that are set", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+		await authenticateWorkspace("ws-1", "key1", "desc", {
+			endpoint: BASE,
+			fetch: mockFetch,
+			spec: { resources: { memory: "1Gi" } },
+		})
+
+		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+		expect(putBody.spec).toEqual({ resources: { memory: "1Gi" } })
+	})
+
+	it("omits the spec key entirely when not provided (re-auth stays byte-identical)", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
 		await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch })
 
