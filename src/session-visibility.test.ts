@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
-import { INTERNAL_SESSION_ENTRY, isInternalSession } from "./session-visibility.js"
+import { getInternalSessionInfo, INTERNAL_SESSION_ENTRY } from "./session-visibility.js"
 
 const directories: string[] = []
 afterEach(() => {
@@ -23,8 +23,19 @@ async function savedSession(marker: boolean, name: string, prompt = "Ordinary wo
 			timestamp,
 			parentSession: join(directory, "parent.jsonl"),
 		},
-		...(marker ? [{ type: "custom", id: "marker", timestamp, customType: INTERNAL_SESSION_ENTRY }] : []),
+		...(marker
+			? [
+					{
+						type: "custom",
+						id: "marker",
+						timestamp,
+						customType: INTERNAL_SESSION_ENTRY,
+						data: { kind: "ferment-evaluator" },
+					},
+				]
+			: []),
 		{ type: "session_info", id: "name", timestamp, name },
+		{ type: "model_change", id: "model", timestamp, provider: "test", modelId: "evaluator-model" },
 		{ type: "message", id: "message", timestamp, message: { role: "user", content: prompt, timestamp: Date.now() } },
 	]
 	writeFileSync(join(directory, "child.jsonl"), entries.map((entry) => JSON.stringify(entry)).join("\n"))
@@ -35,10 +46,13 @@ async function savedSession(marker: boolean, name: string, prompt = "Ordinary wo
 
 describe("internal session classification", () => {
 	it("recognizes the persisted marker even after renaming", async () => {
-		expect(await isInternalSession(await savedSession(true, "A renamed session"))).toBe(true)
+		expect(await getInternalSessionInfo(await savedSession(true, "A renamed session"))).toEqual({
+			kind: "ferment-evaluator",
+			model: "test/evaluator-model",
+		})
 	})
 	it("preserves ordinary branches with an evaluator-like name", async () => {
-		expect(await isInternalSession(await savedSession(false, "Ferment V2 evaluator"))).toBe(false)
+		expect(await getInternalSessionInfo(await savedSession(false, "Ferment V2 evaluator"))).toBeUndefined()
 	})
 	it("recognizes legacy evaluator sessions by their reserved name and prompt structure", async () => {
 		const session = await savedSession(
@@ -46,11 +60,11 @@ describe("internal session classification", () => {
 			"Ferment V2 evaluator",
 			"Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
 		)
-		expect(await isInternalSession(session)).toBe(true)
+		expect(await getInternalSessionInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
 	})
 	it("does not hide an unreadable or concurrently removed session", async () => {
 		const session = await savedSession(true, "Internal")
 		rmSync(session.path)
-		expect(await isInternalSession(session)).toBe(false)
+		expect(await getInternalSessionInfo(session)).toBeUndefined()
 	})
 })

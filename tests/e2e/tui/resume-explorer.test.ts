@@ -12,6 +12,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 	const cwd = realpathSync(workDir)
 	const other = join(cwd, "other-project")
 	mkdirSync(other)
+	let parentSession = ""
 	for (const [directory, name, prompt, answer, timestamp] of [
 		[
 			cwd,
@@ -45,6 +46,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 		mkdirSync(dir, { recursive: true })
 		const id = randomUUID()
 		const internal = name === "Internal evaluator fixture"
+		if (name === "Fix pool timeouts") parentSession = join(dir, `${id}.jsonl`)
 		const entries = [
 			{
 				type: "session",
@@ -52,7 +54,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 				id,
 				timestamp,
 				cwd: directory,
-				...(internal ? { parentSession: join(dir, "parent.jsonl") } : {}),
+				...(internal ? { parentSession } : {}),
 			},
 			...(internal
 				? [
@@ -67,6 +69,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 					]
 				: []),
 			{ type: "session_info", id: "name", parentId: null, timestamp, name },
+			{ type: "model_change", id: "model", parentId: "name", timestamp, provider: "fake", modelId: "basic" },
 			{
 				type: "message",
 				id: "user",
@@ -172,6 +175,14 @@ test("CLI resume keeps a search while expanding to all folders and resumes the m
 			expect(viewText(terminal)).not.toContain("Internal evaluator fixture")
 			terminal.write("\x1bOS")
 			await waitForText(terminal, "Internal evaluator fixture", { full: false })
+			const tree = viewText(terminal)
+			expect(tree).toContain("Current folder · Threads")
+			expect(tree).toContain("└─ [internal] Internal evaluator fixture")
+			expect(tree.indexOf("Fix pool timeouts")).toBeLessThan(tree.indexOf("└─ [internal]"))
+			terminal.keyDown()
+			await waitForText(terminal, "Role:          Checks whether the parent task is complete", { full: false })
+			expect(viewText(terminal)).toContain("Parent:        Fix pool timeouts")
+			expect(viewText(terminal)).toContain("Initial model: fake/basic")
 			terminal.write("\x1bOS")
 			await waitForText(terminal, "1 internal hidden", { full: false })
 			expect(viewText(terminal)).not.toContain("Internal evaluator fixture")
@@ -222,7 +233,7 @@ test("page and cancel deletion without losing the resume controls in an 80 by 24
 			expect(viewText(terminal)).toContain("5/16 sessions")
 			trace.step("deletion is labeled accurately and cancellation preserves the selection")
 			terminal.write("\x1bOS")
-			await waitForText(terminal, "5/17 sessions", { full: false })
+			await waitForText(terminal, "6/17 sessions", { full: false })
 			terminal.write("\x1bOS")
 			await waitForText(terminal, "5/16 sessions", { full: false })
 			trace.step("interactive internal-session toggle keeps navigation working at 80 columns")

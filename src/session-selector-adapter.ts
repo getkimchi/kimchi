@@ -19,7 +19,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
-import { isInternalSession } from "./session-visibility.js"
+import { getInternalSessionInfo, type InternalSessionInfo } from "./session-visibility.js"
 
 // Pi 0.85.1 exposes the selector but not its presentation state. Keep this private
 // boundary here; the contract tests instantiate the real upstream component.
@@ -138,7 +138,13 @@ function preview(session: SessionInfo, query: string, width: number): string {
 	return excerpt || "(no conversation text)"
 }
 
-function renderSessions(list: SessionListState, width: number, loading: boolean, hiddenCount: number): string[] {
+function renderSessions(
+	list: SessionListState,
+	width: number,
+	loading: boolean,
+	hiddenCount: number,
+	internalSessions: WeakMap<SessionInfo, InternalSessionInfo>,
+): string[] {
 	const query = list.searchInput.getValue()
 	const { pattern, error } = searchPattern(query)
 	const lines = [...list.searchInput.render(width), colors.description("Search names, messages, folders or IDs")]
@@ -185,7 +191,8 @@ function renderSessions(list: SessionListState, width: number, loading: boolean,
 			code(cell(sessionDate(session.modified), dateWidth)) +
 			(createdColumn ? colors.description(cell(sessionDate(session.created), 13)) : "")
 		const project = projectWidth ? link(cell(`${clean(basename(session.cwd)) || "Unknown"} `, projectWidth)) : ""
-		const label = `${list.buildTreePrefix(node)}${current ? "[current] " : ""}${highlight(title, pattern)}`
+		const internal = internalSessions.has(session) ? colors.description("[internal] ") : ""
+		const label = `${list.buildTreePrefix(node)}${internal}${current ? "[current] " : ""}${highlight(title, pattern)}`
 		let row = `${selected ? "› " : "  "}${dates}${project}${selected ? bold(label) : label}`
 		row = truncateToWidth(row, width)
 		if (session.path === list.confirmingDeletePath) row = colors.selectedText(row)
@@ -200,30 +207,47 @@ function renderSessions(list: SessionListState, width: number, loading: boolean,
 	const selected = list.filteredSessions[list.selectedIndex]?.session
 	if (selected) {
 		lines.push("")
+		const internal = internalSessions.get(selected)
+		const parent = list.allSessions.find((session) => session.path === selected.parentSessionPath)
 		const labelWidth = 15
 		const detail = (label: string, value: string) => colors.description(cell(`${label}:`, labelWidth)) + value
 		lines.push(
 			detail("Last active", code(`${dateTime(selected.modified)} · ${age(selected.modified)}`)),
 			detail("Created", `${dateTime(selected.created)} · ${selected.messageCount} messages`),
-			detail("Folder", link(shortPath(selected.cwd, width - labelWidth) || "Unknown")),
+			internal
+				? detail(
+						"Parent",
+						clean(parent?.name || parent?.firstMessage || basename(selected.parentSessionPath ?? "")) || "Unavailable",
+					)
+				: detail("Folder", link(shortPath(selected.cwd, width - labelWidth) || "Unknown")),
 			detail("Session", colors.description(clean(selected.id))),
 		)
 		if (list.showPath) lines.push(detail("File", link(shortPath(selected.path, width - labelWidth))))
-		const previewWidth = Math.max(1, width - labelWidth)
-		// Reserve both preview rows so selecting a longer message cannot move the menu.
-		const context = wrapTextWithAnsi(highlight(preview(selected, query, previewWidth), pattern), previewWidth).concat(
-			"",
-		)
-		lines.push(
-			...context
-				.slice(0, 2)
-				.map(
-					(line, index) =>
-						(index === 0
-							? colors.selectedText(cell(query.trim() ? "Conversation:" : "First message:", labelWidth))
-							: " ".repeat(labelWidth)) + line,
+		if (internal) {
+			lines.push(
+				detail(
+					"Role",
+					internal.kind === "ferment-evaluator" ? "Checks whether the parent task is complete" : "Internal session",
 				),
-		)
+				detail("Initial model", internal.model ? clean(internal.model) : "Not recorded"),
+			)
+		} else {
+			const previewWidth = Math.max(1, width - labelWidth)
+			// Reserve both preview rows so selecting a longer message cannot move the menu.
+			const context = wrapTextWithAnsi(highlight(preview(selected, query, previewWidth), pattern), previewWidth).concat(
+				"",
+			)
+			lines.push(
+				...context
+					.slice(0, 2)
+					.map(
+						(line, index) =>
+							(index === 0
+								? colors.selectedText(cell(query.trim() ? "Conversation:" : "First message:", labelWidth))
+								: " ".repeat(labelWidth)) + line,
+					),
+			)
+		}
 	}
 	lines.push(
 		`${keyHint("tui.select.confirm", list.confirmingDeletePath ? "confirm deletion" : "resume")} · ${keyHint("tui.select.cancel", "cancel")}`,
@@ -246,14 +270,16 @@ prototype.buildBaseLayout = function (content, options) {
 	const list = this.sessionList
 	if (!installed.has(list)) {
 		installed.add(list)
-		const internalSessions = new WeakSet<SessionInfo>()
+		const internalSessions = new WeakMap<SessionInfo, InternalSessionInfo>()
 		let showInternal = false
+		let previousSort: SortMode = "relevance"
 		for (const key of ["currentSessionsLoader", "allSessionsLoader"] as const) {
 			const loader = this[key].bind(this)
 			this[key] = async (onProgress) => {
 				const sessions = await loader(onProgress)
 				for (const session of sessions) {
-					if (await isInternalSession(session)) internalSessions.add(session)
+					const info = await getInternalSessionInfo(session)
+					if (info) internalSessions.set(session, info)
 				}
 				return sessions
 			}
@@ -298,8 +324,16 @@ prototype.buildBaseLayout = function (content, options) {
 		const handleInput = list.handleInput.bind(list)
 		list.handleInput = (data) => {
 			if (matchesKey(data, "f4") && !list.confirmingDeletePath) {
+				const selected = list.filteredSessions[list.selectedIndex]?.session
+				if (!showInternal) previousSort = list.sortMode
 				showInternal = !showInternal
-				list.filterSessions(list.searchInput.getValue())
+				this.sortMode = showInternal ? "threaded" : previousSort
+				this.header.setSortMode(this.sortMode)
+				list.setSortMode(this.sortMode)
+				const selectedPath =
+					!showInternal && selected && internalSessions.has(selected) ? selected.parentSessionPath : selected?.path
+				const index = list.filteredSessions.findIndex(({ session }) => session.path === selectedPath)
+				if (index >= 0) list.selectedIndex = index
 				return
 			}
 			const keys = getKeybindings()
@@ -340,7 +374,7 @@ prototype.buildBaseLayout = function (content, options) {
 			// Leave room for the 17 panel rows and up to three harness footer rows.
 			list.maxVisible = Math.max(1, Math.min(10, (process.stdout.rows || 40) - 20 - Number(list.showPath)))
 			const hiddenCount = showInternal ? 0 : list.allSessions.filter((session) => internalSessions.has(session)).length
-			return renderSessions(list, width, this.header.loading, hiddenCount)
+			return renderSessions(list, width, this.header.loading, hiddenCount, internalSessions)
 		}
 	}
 	buildBaseLayout.call(this, content, options)

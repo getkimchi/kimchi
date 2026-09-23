@@ -57,6 +57,45 @@ beforeAll(() => {
 })
 
 describe("resume explorer using the upstream selector", () => {
+	it("reveals internal children as a tree and restores the parent and previous sort when hiding", async () => {
+		const parent = session("parent", { modified: new Date("2026-09-01") })
+		const internal = (id: string, modified: string) =>
+			session(id, {
+				name: "Ferment V2 evaluator",
+				parentSessionPath: parent.path,
+				modified: new Date(modified),
+				firstMessage: "Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
+			})
+		const { component, select } = await picker([
+			internal("child-a", "2026-09-23"),
+			internal("child-b", "2026-09-22"),
+			session("other"),
+			parent,
+		])
+		expect(text(component)).toContain("Session:       other")
+		component.handleInput("\x1bOS")
+		const tree = text(component)
+		expect(tree).toContain("Current folder · Threads")
+		expect(tree).toContain("Session:       other")
+		const rows = tree.split("\n").filter((line) => /Session parent|[├└]─/.test(line))
+		expect(rows).toHaveLength(3)
+		expect(rows[0]).toContain("Session parent")
+		expect(rows[1]).toContain("├─ [internal] Ferment V2 evaluator")
+		expect(rows[2]).toContain("└─ [internal] Ferment V2 evaluator")
+		component.handleInput("\x1b[A")
+		expect(text(component)).toContain("Session:       child-b")
+		expect(text(component)).toContain("Parent:        Session parent")
+		expect(text(component)).toContain("Role:          Checks whether the parent task is complete")
+		expect(text(component)).toContain("Initial model: Not recorded")
+		expect(component.render(120)).toHaveLength(tree.split("\n").length)
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("Current folder · Last active")
+		expect(text(component)).toContain("Session:       parent")
+		expect(text(component)).not.toContain("[internal]")
+		component.handleInput("\r")
+		expect(select).toHaveBeenCalledWith(parent.path)
+	})
+
 	it("shows project labels only in all-folder rows", async () => {
 		const { component } = await picker([session("a")], {
 			all: async () => [session("a"), session("b", { cwd: "/work/other-project" })],
