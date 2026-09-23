@@ -26,7 +26,7 @@ export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as 
 export const PROMPT_READY = "ask anything or type / for commands"
 
 // Env from run-tui-e2e.js, else derive from file location (stable regardless of cwd).
-const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
+export const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
 	: fileURLToPath(new URL("../../../../", import.meta.url))
 const TUI_ARTIFACT_RUN_ID = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`
