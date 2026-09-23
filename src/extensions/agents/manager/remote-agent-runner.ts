@@ -41,7 +41,7 @@ import {
 } from "../../../sandbox/worker/acp-client.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, deleteSession, getSession } from "../../../sandbox/worker/sessions.js"
-import { type SessionStatus, WorkerError } from "../../../sandbox/worker/types.js"
+import { type CreateSessionRequest, type SessionStatus, WorkerError } from "../../../sandbox/worker/types.js"
 import { appendTranscriptGapMarker } from "../../remote-run/session-recovery.js"
 import { provisionGitCredential } from "../../teleport/provisioning/git-provision.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
@@ -826,12 +826,7 @@ export async function runRemoteAgent(
 	// The try/finally wraps createSession too so WorkerClient is cleaned up
 	// even if createSession or acpClient.initialize throws.
 	try {
-		const sessionReq: {
-			agentMode: "ACP"
-			yolo: true
-			details?: { git: RemoteRunOptions["gitDetails"] }
-			tags?: Record<string, string>
-		} = {
+		const sessionReq: CreateSessionRequest = {
 			agentMode: "ACP",
 			yolo: true,
 		}
