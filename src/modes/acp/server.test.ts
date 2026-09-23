@@ -5302,6 +5302,9 @@ describe("newSession skill commands", () => {
 
 	it("re-advertises palettes when a global skill changes on disk", async () => {
 		const { dir, skillName, skill } = makeSkillDir()
+		// Hermetic home: the watcher resolves roots from os.homedir() ($HOME),
+		// so without this the real dev harness dir is also watched.
+		vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "acp-server-home-")))
 		const agentDir = mkdtempSync(join(tmpdir(), "acp-server-agdir-"))
 		const skills: Skill[] = []
 		const { fake, reloads } = makeRefreshableSession("session-skill-watch-global", dir, skills)
@@ -5326,25 +5329,32 @@ describe("newSession skill commands", () => {
 			// settings UI) — the agent notices on its own and re-advertises.
 			skills.push(skill)
 			updates.length = 0
-			// The watcher ignores chokidar's initial scan: writes must land
-			// after the watch registration settled (see ignoreInitial comment).
-			await new Promise((r) => setTimeout(r, 200))
+			// Probe-settle: spin a throwaway skill to prove the watch is live
+			// (chokidar's ignored initial-scan window can swallow a first write).
+			mkdirSync(join(agentDir, "skills", "__probe__"), { recursive: true })
+			writeFileSync(join(agentDir, "skills", "__probe__", "SKILL.md"), "---\nname: probe\n---\nbody", "utf-8")
+			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+			updates.length = 0
+			const reloadsBase = reloads.n
+
 			mkdirSync(join(agentDir, "skills", skillName), { recursive: true })
 			writeFileSync(join(agentDir, "skills", skillName, "SKILL.md"), `---\nname: ${skillName}\n---\nbody`, "utf-8")
 			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
 
-			expect(reloads.n).toBe(1)
+			expect(reloads.n).toBe(reloadsBase + 1)
 			const repaint = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 			const repaintedCmds =
 				(repaint?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
 			expect(repaintedCmds.map((c) => c.name)).toContain(`skill:${skillName}`)
 		} finally {
 			await agent.shutdown()
+			vi.unstubAllEnvs()
 		}
 	})
 
 	it("re-advertises palettes when a project skill changes on disk", async () => {
 		const { dir, skillName, skill } = makeSkillDir()
+		vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "acp-server-home-")))
 		// .claude/skills is one of the resolver's default config paths; it is
 		// picked up only while the project is trusted.
 		setProjectScopeTrusted(dir, true)
@@ -5368,7 +5378,13 @@ describe("newSession skill commands", () => {
 				...skill,
 				filePath: join(dir, ".claude", "skills", skillName, "SKILL.md"),
 			})
-			await new Promise((r) => setTimeout(r, 200))
+			// Probe-settle (see the global test comment).
+			mkdirSync(join(dir, ".claude", "skills", "__probe__"), { recursive: true })
+			writeFileSync(join(dir, ".claude", "skills", "__probe__", "SKILL.md"), "---\nname: probe\n---\nbody", "utf-8")
+			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+			updates.length = 0
+			const reloadsBase = reloads.n
+
 			mkdirSync(join(dir, ".claude", "skills", skillName), { recursive: true })
 			writeFileSync(
 				join(dir, ".claude", "skills", skillName, "SKILL.md"),
@@ -5377,7 +5393,7 @@ describe("newSession skill commands", () => {
 			)
 			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
 
-			expect(reloads.n).toBe(1)
+			expect(reloads.n).toBe(reloadsBase + 1)
 			const repaint = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 			const repaintedCmds =
 				(repaint?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
