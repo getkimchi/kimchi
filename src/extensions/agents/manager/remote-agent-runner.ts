@@ -84,8 +84,10 @@ export interface RemoteRunOptions {
 	 * giving the caller access to the live AcpSessionClient so it can be
 	 * wrapped in a RemoteAgentSession adapter. Also called again after a
 	 * successful reattach so the caller can rebind to the new client.
+	 * The first call (before prompt) is awaited when it returns a promise —
+	 * deterministic setup (e.g. baseline capture) can complete before the run.
 	 */
-	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void
+	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void | Promise<void>
 	/** Local output file path for transcript backfill during recovery. */
 	outputFile?: string
 	/**
@@ -96,6 +98,10 @@ export interface RemoteRunOptions {
 	 * resumes normal operation.
 	 */
 	onReconnecting?: (reconnecting: boolean) => void
+	/** Keep the remote session alive after a successful run — PR-intent runs
+	 *  leave the branch + ACP session for the review/steer loop (deleted only
+	 *  on terminal actions, or by the server-side TTL). Default: delete. */
+	keepAlive?: boolean
 	/**
 	 * Override the reconnect backoff schedule (ms) — one delay per reattach
 	 * attempt. Defaults to `[2000, 4000, 8000]`. The first element is also
@@ -149,6 +155,63 @@ const DEFAULT_TURN_SETTLE_GRACE_MS = 120_000
 /** Always-on status poll cadence: ~15s fixed + up to 5s jitter. */
 const POLL_INTERVAL_MS = 15_000
 const POLL_JITTER_MS = 5_000
+
+// ---------------------------------------------------------------------------
+// Kept-alive live ACP clients — the review/steer loop
+//
+// PR-intent runs (keepAlive) leave the REMOTE session alive; they now also
+// keep the LOCAL WebSocket connection: a follow-up steer is a plain
+// session/prompt over the SAME connection — NO session/load, which was the
+// observed 30s-timeout failure mode when steering after a gap. Entries are
+// written on successful completion of keepAlive runs/steers (including
+// clients swapped in by disconnect recovery) and closed+removed on terminal
+// actions (deleteRemoteSession) or when a new run supersedes them.
+// ---------------------------------------------------------------------------
+const liveKeptAcpClients = new Map<string, AcpSessionClient>()
+
+/** A live, non-closed, kept client for `sessionName`, when one exists. */
+export function getLiveKeptAcpClient(sessionName: string): AcpSessionClient | undefined {
+	const client = liveKeptAcpClients.get(sessionName)
+	if (!client) return undefined
+	if (client.isClosed) {
+		liveKeptAcpClients.delete(sessionName)
+		return undefined
+	}
+	return client
+}
+
+/** Close and forget the kept client for `sessionName` (terminal actions). */
+export function discardLiveKeptAcpClient(sessionName: string): void {
+	const client = liveKeptAcpClients.get(sessionName)
+	liveKeptAcpClients.delete(sessionName)
+	try {
+		client?.close()
+	} catch {
+		/* closing an already-torn connection */
+	}
+}
+
+/** TEST seam: module-level registry must not leak between test cases. */
+export function resetLiveKeptAcpClientsForTests(): void {
+	liveKeptAcpClients.clear()
+}
+
+/** Close the HTTP worker client; keep or close the ACP client per keepAlive. */
+async function retireStClients(st: RemoteRecoveryState, keepLiveAcpClient: boolean): Promise<void> {
+	if (keepLiveAcpClient && st.acpClient && !st.acpClient.isClosed) {
+		liveKeptAcpClients.set(st.meta.sessionName, st.acpClient)
+	} else {
+		try {
+			st.acpClient?.close()
+		} catch {
+			/* already torn */
+		}
+		if (st.meta.sessionName) liveKeptAcpClients.delete(st.meta.sessionName)
+	}
+	await st.client.close().catch((err) => {
+		console.error(`[remote-agent-runner] failed to close worker client:`, err)
+	})
+}
 /** Cap on re-auth + readiness attempts when a session is reported `!alive`. */
 const REVIVE_MAX_ATTEMPTS = 3
 /** Per-attempt readiness timeout when reviving a workspace. Smaller than the
@@ -225,7 +288,7 @@ interface RecoveryConfig {
 	signal: AbortSignal | undefined
 	outputFile: string | undefined
 	cwd: string
-	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void
+	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void | Promise<void>
 	onReconnecting?: (reconnecting: boolean) => void
 	backoffs: number[]
 	turnSettleGraceMs: number
@@ -611,6 +674,96 @@ async function runRecovery(st: RemoteRecoveryState, config: RecoveryConfig): Pro
 }
 
 /**
+ * Shared prompt cycle: sends ONE prompt on the already-initialized client in
+ * `st` while the always-on HTTP poller watches the session; a transient
+ * disconnect forces the prompt to reject and hands off to the recovery
+ * engine (which becomes the sole poller). Used by runRemoteAgent (initial
+ * prompt) and continueRemoteAgent (steer follow-up on a kept session).
+ * Non-disconnect errors (incl. user abort) propagate to the caller.
+ */
+async function runPromptWithPolling(
+	st: RemoteRecoveryState,
+	config: RecoveryConfig,
+	promptText: string,
+	opts?: { deleteSessionOnAbort?: boolean },
+): Promise<PromptOutcome> {
+	const signal = config.signal
+	let terminal = false
+	// One-way: set when recovery begins, never reset — the recovery loop
+	// becomes the sole poller; this poller must not force-disconnect the
+	// freshly attached client mid-recovery.
+	let recovering = false
+	let pollTimer: ReturnType<typeof setTimeout> | undefined
+
+	const pollStatus = async (): Promise<void> => {
+		if (terminal || recovering || signal?.aborted) return
+		let stop = false
+		let shouldForceDisconnect = false
+		let disconnectReason = ""
+		try {
+			const s = await getSession(st.client, config.sessionName, signal)
+			if (!s.alive || (!s.agentRunning && s.finishedAt)) {
+				stop = true
+			}
+			if (!s.clientConnected && !terminal) {
+				shouldForceDisconnect = true
+				disconnectReason = "worker reports client is disconnected"
+			}
+			if (stop) {
+				shouldForceDisconnect = true
+				disconnectReason = "remote agent finished"
+			}
+		} catch (err) {
+			if (signal?.aborted) return
+			if (err instanceof WorkerError && err.status === 404) {
+				stop = true
+			}
+			// HTTP poll failure says nothing about the WS — the WS keepalive owns transport death.
+		}
+		if (recovering) return
+		if (shouldForceDisconnect) {
+			st.acpClient?.forceDisconnect(disconnectReason)
+		}
+		if (terminal || signal?.aborted || stop) return
+		pollTimer = setTimeout(() => {
+			void pollStatus().catch(() => {})
+		}, config.pollDelayMs())
+	}
+
+	// The poll starts only after the caller's client is initialized — a poll
+	// around the handshake would see clientConnected=false and kill it.
+	pollTimer = setTimeout(() => {
+		void pollStatus().catch(() => {})
+	}, config.pollDelayMs())
+
+	try {
+		if (!st.acpClient) throw new Error("runPromptWithPolling requires an initialized ACP client")
+		try {
+			return await st.acpClient.prompt(promptText)
+		} catch (err) {
+			if (err instanceof RemoteConnectionError) {
+				// Mid-run disconnect: the recovery loop becomes the sole poller.
+				// (runRecovery owns the abort-time best-effort delete itself.)
+				recovering = true
+				if (pollTimer) clearTimeout(pollTimer)
+				return await runRecovery(st, config)
+			}
+			// User abort (Ctrl+X) of the initial run — the remote session must
+			// not outlive its owner (spec Q5). Steer continuation passes
+			// deleteSessionOnAbort: false — a killed follow-up keeps the
+			// PR-intent session alive for a retry.
+			if (signal?.aborted && opts?.deleteSessionOnAbort) {
+				await deleteSession(st.client, config.sessionName).catch(() => {})
+			}
+			throw err
+		}
+	} finally {
+		terminal = true
+		if (pollTimer) clearTimeout(pollTimer)
+	}
+}
+
+/**
  * Runs a single-turn prompt on a remote sandbox worker via ACP.
  *
  * 1. Authenticates to the workspace (auto-resolves or creates one)
@@ -682,6 +835,7 @@ export async function runRemoteAgent(
 	// these in place so the poll loop and finally block always see the latest
 	// client/creds. acpSessionId is captured from the first initialize so a
 	// reattach can session/load the SAME session instead of starting a new one.
+	let completed = false // success → keepAlive hands the ACP client to the steer registry
 	const st: RemoteRecoveryState = {
 		creds,
 		client,
@@ -751,76 +905,6 @@ export async function runRemoteAgent(
 
 	let stopReason = "end_turn"
 	let usage: RemoteRunResult["usage"]
-	let pollTimer: ReturnType<typeof setTimeout> | undefined
-	let terminal = false
-	// One-way: set when recovery begins, never reset (the run completes after
-	// recovery). The recovery loop becomes the sole poller — the always-on
-	// poller must not fire (or force-disconnect the fresh client) mid-recovery.
-	let recovering = false
-
-	// Always-on status poll: every ~15s + jitter, concurrent with `prompt()`.
-	// Proactively detects disconnects by checking session status via HTTP
-	// (separate from the WS connection). When it detects the connection is
-	// broken (HTTP failure, clientConnected=false, or agent finished), it
-	// forces the WS to disconnect so the hanging prompt() rejects with
-	// RemoteConnectionError and the recovery state machine takes over.
-	const pollStatus = async (): Promise<void> => {
-		if (terminal || recovering || signal?.aborted) return
-		let stop = false
-		let shouldForceDisconnect = false
-		let disconnectReason = ""
-		try {
-			const s = await getSession(client, sessionName, signal)
-			if (!s.alive || (!s.agentRunning && s.finishedAt)) {
-				stop = true
-			}
-			// The worker reports that no client is connected via WS — our WS
-			// is dead but TCP hasn't noticed yet. Force disconnect to trigger
-			// recovery immediately instead of waiting for a ping timeout.
-			if (!s.clientConnected && !terminal) {
-				shouldForceDisconnect = true
-				disconnectReason = "worker reports client is disconnected"
-			}
-			// Agent finished while we were connected via poll but the WS may
-			// still be hanging — force prompt() to reject so recovery runs.
-			if (stop) {
-				shouldForceDisconnect = true
-				disconnectReason = "remote agent finished"
-			}
-		} catch (err) {
-			if (signal?.aborted) return
-			if (err instanceof WorkerError && err.status === 404) {
-				stop = true
-			}
-			// HTTP poll failed (e.g. local network down). Do NOT force
-			// disconnect — the WS ping keepalive owns transport-death
-			// detection, and a poll failure says nothing about the WS.
-		}
-		// Recovery may have started while the poll was in flight — never
-		// force-disconnect the freshly attached client or double-poll; the
-		// recovery loop is the sole poller from here on.
-		if (recovering) return
-		if (shouldForceDisconnect) {
-			acpClient.forceDisconnect(disconnectReason)
-		}
-		if (terminal || signal?.aborted || stop) return
-		pollTimer = setTimeout(() => {
-			void pollStatus().catch(() => {})
-		}, pollDelayMs())
-	}
-
-	/**
-	 * Mid-run disconnect recovery: the recovery loop becomes the sole poller
-	 * (the always-on poller is stopped and barred — including any tick already
-	 * in flight — from force-disconnecting the freshly attached client), then
-	 * the shared recovery engine runs.
-	 */
-	const recoverFromDisconnect = async (): Promise<PromptOutcome> => {
-		recovering = true
-		if (pollTimer) clearTimeout(pollTimer)
-		pollTimer = undefined
-		return runRecovery(st, config)
-	}
 
 	// 3. Create ACP session + connect via AcpSessionClient.
 	// The try/finally wraps createSession too so WorkerClient is cleaned up
@@ -863,58 +947,33 @@ export async function runRemoteAgent(
 			})
 		}
 
-		// Start the status poll loop AFTER the WS is established. Starting it
-		// before initialize() risks force-disconnecting a still-handshaking
-		// client — the worker reports clientConnected=false until the first WS
-		// connection completes, and a poll in that window would kill a healthy run.
-		// Scheduling is wrapped so a throwing tick can never become an unhandled rejection.
-		pollTimer = setTimeout(() => {
-			void pollStatus().catch(() => {})
-		}, pollDelayMs())
-
 		await acpClient.initialize()
 		st.acpSessionId ??= acpClient.sessionId ?? undefined
 
 		// Expose the client to the caller so they can wrap it in RemoteAgentSession.
 		// Fired after initialize() (client is usable) and before prompt() (the run hasn't started).
+		// Awaited so deterministic pre-prompt setup (baseline capture) lands first.
 		if (options.onReady) {
-			options.onReady(acpClient, st.meta)
+			await options.onReady(acpClient, st.meta)
 		}
 
-		// 5. Send prompt — recover from transient WS disconnects instead of failing.
-		let promptResult: PromptOutcome
-		try {
-			promptResult = await acpClient.prompt(prompt)
-		} catch (err) {
-			if (err instanceof RemoteConnectionError) {
-				promptResult = await recoverFromDisconnect()
-			} else {
-				// User abort (Ctrl+X) while still connected — the remote session
-				// must not outlive its owner (spec Q5: abort deletes best-effort
-				// even while disconnected). Non-abort errors never delete — the
-				// session may still be inspectable.
-				if (signal?.aborted) {
-					await deleteSession(client, sessionName).catch(() => {})
-				}
-				throw err
-			}
-		}
-
-		// The run is complete (or recovered) — stop the poller immediately so
-		// no scheduled tick fires between prompt() resolving and the finally
-		// block (e.g. during deleteSession).
-		terminal = true
+		// 5. Send prompt — the shared cycle owns polling + disconnect recovery.
+		const promptResult = await runPromptWithPolling(st, config, prompt, { deleteSessionOnAbort: true })
 		stopReason = promptResult.stopReason
 		usage = promptResult.usage
 
-		// Success — the run is confirmed done; clean up the remote session.
-		// (Deletion is deferred to here: error/abort paths above never delete.)
-		// For recovered results, the session.jsonl has already been fetched
-		// and parsed — safe to delete the remote session now.
-		await deleteSession(st.client, sessionName).catch((err) => {
-			console.error(`[remote-agent-runner] failed to delete session ${sessionName}:`, err)
-		})
+		// Success — the run is confirmed done; clean up the remote session
+		// unless the caller keeps it alive for the PR review/steer loop
+		// (git-intent runs — deleted only on terminal actions or server TTL).
+		// With keepAlive, the ACP client's WebSocket survives too: the steer
+		// continuation reuses the SAME connection (no session/load).
+		if (!options.keepAlive) {
+			await deleteSession(st.client, sessionName).catch((err) => {
+				console.error(`[remote-agent-runner] failed to delete session ${sessionName}:`, err)
+			})
+		}
 
+		completed = true
 		return {
 			responseText: st.responseText,
 			stopReason,
@@ -923,12 +982,9 @@ export async function runRemoteAgent(
 			recoveryNote: st.recoveryNote,
 		}
 	} finally {
-		terminal = true
-		if (pollTimer) clearTimeout(pollTimer)
-		st.acpClient?.close()
-		await st.client.close().catch((err) => {
-			console.error(`[remote-agent-runner] failed to close worker client:`, err)
-		})
+		// Failures/aborts ALWAYS tear down both clients; a successful
+		// keepAlive run hands the ACP client to the steer loop registry.
+		await retireStClients(st, Boolean(options.keepAlive) && completed)
 	}
 }
 
@@ -966,6 +1022,9 @@ export interface AttachRemoteAgentOptions {
 	reconnectBackoffsMs?: number[]
 	turnSettleGraceMs?: number
 	pollIntervalMs?: number
+	/** Keep the session alive on resolve — PR-intent runs defer deletion to
+	 *  terminal actions / server TTL (same contract as RemoteRunOptions.keepAlive). */
+	keepAlive?: boolean
 }
 
 /**
@@ -986,6 +1045,23 @@ export interface AttachRemoteAgentOptions {
  */
 export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Promise<RemoteRunResult> {
 	const { apiKey, endpoint, signal, remoteSession, acpSessionId } = options
+
+	// TUI-E2E seam (KIMCHI_E2E_FAKE_SANDBOX_GIT=1): skip the WS/ACP worker
+	// entirely — the keep-alive cycle then the recovery result, with the same
+	//Async sequencing as the real path. Options.onReady sees a stub client;
+	// test-only, never set in production.
+	if (process.env.KIMCHI_E2E_FAKE_SANDBOX_GIT === "1") {
+		options.onReconnecting?.(true)
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		options.onReconnecting?.(false)
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		return {
+			responseText: "E2E fake remote result line one",
+			stopReason: "recovered",
+			remoteSession,
+		}
+	}
+
 	const workspaceName = options.workspaceName ?? "kimchi"
 	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
 	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
@@ -1045,13 +1121,15 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 	try {
 		const outcome = await runRecovery(st, config)
 		// The run is confirmed done (or its outcome is definitively unknown) —
-		// clean up the remote session. Same deferred-deletion contract as the
-		// main flow: only a resolved outcome deletes; throws (reaped session,
-		// unrevivable sandbox, user kill) never reach here — the kill path does
-		// its own best-effort delete inside runRecovery.
-		await deleteSession(st.client, config.sessionName).catch((err) => {
-			console.error(`[remote-agent-runner] failed to delete session ${config.sessionName}:`, err)
-		})
+		// clean up the remote session unless kept alive for the PR steer loop.
+		// Same deferred-deletion contract as the main flow: only a resolved
+		// outcome deletes; throws (reaped session, unrevivable sandbox, user
+		// kill) never reach here — the kill path does its own delete.
+		if (!options.keepAlive) {
+			await deleteSession(st.client, config.sessionName).catch((err) => {
+				console.error(`[remote-agent-runner] failed to delete session ${config.sessionName}:`, err)
+			})
+		}
 		return {
 			responseText: st.responseText,
 			stopReason: outcome.stopReason,
@@ -1064,6 +1142,216 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 		await st.client.close().catch((err) => {
 			console.error(`[remote-agent-runner] failed to close worker client:`, err)
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// continueRemoteAgent — steer follow-up on a kept-alive PR-intent session
+// ---------------------------------------------------------------------------
+
+/** Options for continueRemoteAgent — prompt an EXISTING kept-alive session. */
+export interface ContinueRemoteAgentOptions {
+	/** Cloud API key for workspace authentication (fresh creds each steer). */
+	apiKey: string
+	endpoint?: string
+	/** Abort signal — aborts the local wait; the kept session is never deleted here. */
+	signal?: AbortSignal
+	remoteSession: RemoteSessionMeta
+	/** The persisted ACP session id — session/load attaches by id, never session/new. */
+	acpSessionId: string
+	/** The steer prompt (the user's feedback + commit-discipline reminder). */
+	prompt: string
+	workspaceName?: string
+	outputFile?: string
+	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void | Promise<void>
+	onReconnecting?: (reconnecting: boolean) => void
+	callbacks?: AcpSessionCallbacks
+	reconnectBackoffsMs?: number[]
+	turnSettleGraceMs?: number
+	pollIntervalMs?: number
+}
+
+/**
+ * Sends a steer prompt to a kept-alive PR-intent remote session: attaches
+ * with session/load on the persisted ACP id (NEVER session/new — the branch
+ * and the agent's own context live only in this session), then runs the
+ * shared prompt cycle (always-on poller + RemoteConnectionError recovery).
+ *
+ * Lifecycle: the session is NEVER deleted here — deletion is reserved for
+ * terminal actions (sync done / push done) or the server-side TTL.
+ */
+export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): Promise<RemoteRunResult> {
+	const { apiKey, endpoint, signal, remoteSession, acpSessionId, prompt } = options
+	if (!acpSessionId) {
+		throw new Error("continueRemoteAgent requires the persisted acpSessionId (session/load attaches by id)")
+	}
+	const workspaceName = options.workspaceName ?? "kimchi"
+	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
+	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
+	const reviveDelayMs = backoffs[0] ?? 2_000
+	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
+	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
+	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+
+	const creds: WorkspaceCredentials = await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, {
+		endpoint,
+	})
+
+	// Fast path: the original keepAlive run LEFT THE SAME CONNECTION OPEN —
+	// a steer is then a plain session/prompt over it (no readiness wait, no
+	// session/load). A dead handshake falls through to the attach path.
+	const reusedAcpClient = getLiveKeptAcpClient(remoteSession.sessionName)
+	if (!reusedAcpClient) {
+		await waitForWorkspaceReady({ wsUrl: creds.wsUrl, connectToken: creds.connectToken, signal })
+	}
+
+	let completed = false // success → ACP client survives for the NEXT steer
+	const st: RemoteRecoveryState = {
+		creds,
+		client: new WorkerClient(creds),
+		acpClient: reusedAcpClient,
+		acpSessionId,
+		responseText: "",
+		recoveryNote: undefined,
+		meta: { ...remoteSession, wsUrl: creds.wsUrl, host: creds.host },
+		pollAuthRejected: false,
+	}
+	const wrappedCallbacks: AcpSessionCallbacks = {
+		...options.callbacks,
+		onTextDelta: (delta, fullText) => {
+			st.responseText = fullText
+			options.callbacks?.onTextDelta?.(delta, fullText)
+		},
+	}
+	const config: RecoveryConfig = {
+		sessionName: remoteSession.sessionName,
+		workspaceId: remoteSession.workspaceId,
+		apiKey,
+		workspaceName,
+		endpoint,
+		signal,
+		outputFile: options.outputFile,
+		cwd: remoteSession.cwd,
+		onReady: options.onReady,
+		onReconnecting: options.onReconnecting,
+		backoffs,
+		turnSettleGraceMs,
+		reviveDelayMs,
+		pollDelayMs,
+		wrappedCallbacks,
+	}
+
+	try {
+		let client: AcpSessionClient
+		if (reusedAcpClient) {
+			// Events stream through the CONSTRUCT-TIME callbacks — rebind them
+			// to THIS run's record/state, else the continuation's updates pour
+			// into the stale run-1 state (completion then never fires for the
+			// new record).
+			reusedAcpClient.setCallbacks(wrappedCallbacks)
+			client = reusedAcpClient
+		} else {
+			// session/load via the persisted id — the only way to keep the
+			// branch work and the agent's own context across steers. The
+			// attach itself gets a small retry budget: a just-woken sandbox
+			// (worker reachable, session process still cold) makes ONE
+			// loadSession race a 30s cap; retrying heals exactly that
+			// observed failure mode without any worker-side change.
+			// The attach budget reuses the recovery backoff schedule (the "timed
+			// out" race is exactly the single-attempt + 30s-cap failure mode).
+			const ATTACH_BACKOFFS_MS = backoffs
+			let attached: AcpSessionClient | undefined
+			let lastAttachError: unknown
+			for (let attempt = 0; attempt <= ATTACH_BACKOFFS_MS.length && !attached; attempt++) {
+				if (signal?.aborted) throw makeAbortError()
+				try {
+					const candidate = new AcpSessionClient({
+						sessionName: remoteSession.sessionName,
+						credentials: st.creds,
+						callbacks: wrappedCallbacks,
+						signal,
+						cwd: remoteSession.cwd,
+						sessionId: acpSessionId,
+					})
+					st.acpClient = candidate
+					await candidate.initialize()
+					attached = candidate
+				} catch (err) {
+					lastAttachError = err
+					try {
+						st.acpClient?.close()
+					} catch {
+						/* closing a half-initialized client */
+					}
+					st.acpClient = undefined
+					const last = attempt >= ATTACH_BACKOFFS_MS.length
+					if (last || !isRetryableAttachError(err)) break
+					if (signal?.aborted) throw makeAbortError()
+					await timersSleep(ATTACH_BACKOFFS_MS[attempt as number] ?? 20_000, undefined, { signal })
+					// Refresh creds between attempts — the connect token may have
+					// expired while the sandbox was hibernating.
+					try {
+						applyRecoveryCreds(
+							st,
+							await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, { endpoint }),
+						)
+					} catch {
+						// Keep the stale creds — the next attempt retries anyway.
+					}
+				}
+			}
+			if (!attached) throw lastAttachError
+			client = attached
+		}
+		if (options.onReady) {
+			await options.onReady(client, st.meta)
+		}
+
+		const outcome = await runPromptWithPolling(st, config, prompt)
+		completed = true
+		return {
+			responseText: st.responseText,
+			stopReason: outcome.stopReason,
+			usage: outcome.usage,
+			remoteSession: st.meta,
+			recoveryNote: st.recoveryNote,
+		}
+	} finally {
+		// Success keeps the ACP connection alive for the NEXT steer (same
+		// contract as the initial keepAlive run); failures always tear down.
+		await retireStClients(st, completed)
+	}
+}
+
+/** Errors worth another attach shot: transport/session-load timeouts and
+ *  connection blips; anything hard (auth, protocol) fails fast. */
+function isRetryableAttachError(err: unknown): boolean {
+	if (err instanceof RemoteConnectionError) return true
+	const message = err instanceof Error ? err.message : String(err)
+	return /timed out|loadSession|websocket|ECONNRESET|ECONNREFUSED/i.test(message)
+}
+
+/**
+ * Deletes a kept-alive remote session at a TERMINAL action (sync done,
+ * push done). Re-authenticates with fresh creds — connect tokens from the
+ * original run expired long ago.
+ */
+export async function deleteRemoteSession(
+	remoteSession: RemoteSessionMeta,
+	apiKey: string,
+	options?: { endpoint?: string; workspaceName?: string },
+): Promise<void> {
+	const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, options?.workspaceName ?? "kimchi", {
+		endpoint: options?.endpoint,
+	})
+	const client = new WorkerClient(creds)
+	try {
+		await deleteSession(client, remoteSession.sessionName)
+	} finally {
+		// Terminal action — close the steer-loop connection too, whatever the
+		// server said (it may already be gone over a hibernation wake).
+		discardLiveKeptAcpClient(remoteSession.sessionName)
+		await client.close().catch(() => {})
 	}
 }
 

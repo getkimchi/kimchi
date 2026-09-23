@@ -7,13 +7,25 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import {
+	consumePlanReviewContext,
+	emitPlanReviewDecision,
+	emitPlanReviewRequest,
+} from "../../shared/planning/plan-review-bus.js"
 import { createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { withPrintGate } from "../print-mode.js"
+import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
-import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
+import {
+	CLOUD_DECISION_OPTION,
+	clearAllPendingPlanReviews,
+	EXECUTE_LOCAL_DECISION_OPTION,
+	getPendingPlanReview,
+	setPendingPlanReview,
+} from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
@@ -38,6 +50,14 @@ vi.mock("../shared-status-line.js", () => ({
 // Default the /settings Auto-compact toggle to enabled (independent of dev machine's settings.json).
 vi.mock("../../settings-watcher.js", () => ({
 	getCompactionEnabled: () => true,
+}))
+
+// Remote run disabled by default in tests; plannotator-routing tests flip it
+// on per-case. runCloudAgent must resolve a thenable — the cloud dispatch
+// path chains `.catch` onto its return value.
+vi.mock("../remote-run/runner.js", () => ({
+	isRemoteRunEnabled: vi.fn(() => false),
+	runCloudAgent: vi.fn(async () => ({ id: "agent-1", result: "done", backgrounded: true })),
 }))
 
 // Stub the journey-grade judge so completeFerment doesn't try to call a real
@@ -115,6 +135,9 @@ afterEach(() => {
 	setContinuationPolicy("manual")
 	globalTipRegistry.clear()
 	clearAllPendingPlanReviews()
+	consumePlanReviewContext()
+	vi.mocked(isRemoteRunEnabled).mockReturnValue(false)
+	vi.mocked(runCloudAgent).mockClear()
 	requestSharedStatusLineRenderMock.mockClear()
 	clearAllLifecycleGuards()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
@@ -1732,6 +1755,167 @@ describe("agent-spawn-guard integration", () => {
 		// one that fired.
 		expect(redirect?.reason ?? "").toContain("has a pending step that has not been started")
 		expect(redirect?.reason ?? "").toContain("start_ferment_step")
+	})
+})
+
+// =============================================================================
+// Plannotator decision routing (approved plan + remote execution enabled)
+// =============================================================================
+
+describe("fermentExtension plannotator decision routing", () => {
+	function setupPlannotatorReviewFixture(label: string, ctx: ExtensionContext) {
+		const storage = new FermentEventStore(
+			mkdtempSync(join(tmpdir(), `ferment-plannotator-routing-${label.toLowerCase().replaceAll(" ", "-")}-`)),
+		)
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setContinuationPolicy("automated")
+		const draft = storage.create(label)
+		runtime.setActive(draft)
+		runtime.setPendingScope(draft.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+		setPendingPlanReview({ fermentId: draft.id, planMarkdown: `# Plan: ${label}` })
+		const { pi } = registerFermentExtension(runtime)
+		emitPlanReviewRequest(
+			pi,
+			{ planContent: `# Plan: ${label}`, source: "ferment", fermentId: draft.id },
+			{ ctx, planText: `# Plan: ${label}`, fermentId: draft.id },
+		)
+		return { storage, runtime, draft, pi }
+	}
+
+	it("asks where to run when plannotator approves with remote execution enabled — local pick executes locally", async () => {
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(true)
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue(EXECUTE_LOCAL_DECISION_OPTION) } })
+		const { storage, draft, pi } = setupPlannotatorReviewFixture("Local Pick", ctx)
+
+		emitPlanReviewDecision(pi, {
+			decision: "execute",
+			source: "plannotator",
+			planReviewSource: "ferment",
+			fermentId: draft.id,
+		})
+
+		await vi.waitFor(() => {
+			expect(storage.get(draft.id)?.status).toBe("planned")
+		})
+		expect(ctx.ui.select).toHaveBeenCalledWith("Plan approved — where should it run?", [
+			EXECUTE_LOCAL_DECISION_OPTION,
+			CLOUD_DECISION_OPTION,
+		])
+		expect(getPendingPlanReview(draft.id)).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+			expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+		)
+		expect(runCloudAgent).not.toHaveBeenCalled()
+	})
+
+	it("runs the cloud path when the remote workspace option is picked", async () => {
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(true)
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue(CLOUD_DECISION_OPTION) } })
+		const { storage, draft, pi } = setupPlannotatorReviewFixture("Cloud Pick", ctx)
+
+		emitPlanReviewDecision(pi, {
+			decision: "execute",
+			source: "plannotator",
+			planReviewSource: "ferment",
+			fermentId: draft.id,
+		})
+
+		await vi.waitFor(() => {
+			expect(runCloudAgent).toHaveBeenCalledTimes(1)
+		})
+		expect(ctx.ui.select).toHaveBeenCalledWith("Plan approved — where should it run?", [
+			EXECUTE_LOCAL_DECISION_OPTION,
+			CLOUD_DECISION_OPTION,
+		])
+		expect(storage.get(draft.id)?.status).toBe("paused")
+		expect(getPendingPlanReview(draft.id)).toBeUndefined()
+		const [, , cloudPrompt, , cloudOpts] = vi.mocked(runCloudAgent).mock.calls[0]
+		expect(cloudPrompt).toContain("# Plan: Cloud Pick")
+		expect(cloudOpts).toMatchObject({ background: true, origin: "ferment plan", fermentId: draft.id })
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+	})
+
+	it("defers execution when the run-location prompt is dismissed (Escape)", async () => {
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(true)
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue(undefined) } })
+		const { storage, draft, pi } = setupPlannotatorReviewFixture("Escape Dismiss", ctx)
+
+		emitPlanReviewDecision(pi, {
+			decision: "execute",
+			source: "plannotator",
+			planReviewSource: "ferment",
+			fermentId: draft.id,
+		})
+
+		await vi.waitFor(() => {
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Plan execution deferred — re-open the review to choose again.",
+				"info",
+			)
+		})
+		// Deferral path: scope NOT confirmed, pending review NOT cleared — the
+		// scheduler re-presents the review.
+		expect(storage.get(draft.id)?.status).toBe("draft")
+		expect(getPendingPlanReview(draft.id)).toBeDefined()
+		expect(runCloudAgent).not.toHaveBeenCalled()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("executes locally without asking when remote execution is disabled", async () => {
+		const ctx = createContext({ ui: { select: vi.fn() } })
+		const { storage, draft, pi } = setupPlannotatorReviewFixture("Direct Local", ctx)
+
+		emitPlanReviewDecision(pi, {
+			decision: "execute",
+			source: "plannotator",
+			planReviewSource: "ferment",
+			fermentId: draft.id,
+		})
+
+		await vi.waitFor(() => {
+			expect(storage.get(draft.id)?.status).toBe("planned")
+		})
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(getPendingPlanReview(draft.id)).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+			expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+		)
+	})
+
+	it("does not ask the TUI flow — kimchi-tui execute stays unchanged even with remote enabled", async () => {
+		vi.mocked(isRemoteRunEnabled).mockReturnValue(true)
+		const ctx = createContext({ ui: { select: vi.fn() } })
+		const { storage, draft, pi } = setupPlannotatorReviewFixture("Tui Direct", ctx)
+
+		emitPlanReviewDecision(pi, {
+			decision: "execute",
+			source: "kimchi-tui",
+			planReviewSource: "ferment",
+			fermentId: draft.id,
+		})
+
+		await vi.waitFor(() => {
+			expect(storage.get(draft.id)?.status).toBe("planned")
+		})
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(getPendingPlanReview(draft.id)).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+			expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+		)
 	})
 })
 

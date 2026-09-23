@@ -7,6 +7,7 @@ import type { ModelTier } from "../../orchestration/model-registry/types.js"
 import type { ModelRole } from "../../orchestration/model-roles.js"
 import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
+import type { PersistedGitWorkflow } from "../remote-run-persistence.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 
 /** Thinking/reasoning level for models that support it. */
@@ -224,6 +225,10 @@ export interface AgentRecord {
 	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
 	 *  pause the ferment during cloud execution and complete/resume it on completion. */
 	fermentId?: string
+	/** Git intent for PR-first remote runs (branch + captured baseline). Set at
+	 *  spawn from SpawnRemoteAgentOptions; baseSha/dirtyFiles are filled in by
+	 *  _runRemote's onReady baseline capture (sandbox-git.ts). */
+	gitWorkflow?: PersistedGitWorkflow
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

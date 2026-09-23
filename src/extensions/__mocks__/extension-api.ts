@@ -11,6 +11,7 @@ export function createExtensionApi(): {
 	getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
+	getCommands: ReturnType<typeof vi.fn<ExtensionAPI["getCommands"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
 	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
@@ -19,6 +20,8 @@ export function createExtensionApi(): {
 	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
 	getRegisteredTools(): ToolDefinition[]
 	getActiveToolNames(): string[]
+	registerMessageRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerMessageRenderer"]>>
+	getMessageRenderer(customType: string): (...args: never[]) => unknown
 	getAppendedEntries<T = unknown>(type: string): T[]
 	registerShortcut: ReturnType<typeof vi.fn<ExtensionAPI["registerShortcut"]>>
 	getShortcutHandler(key: string): ((ctx: ExtensionContext) => Promise<void> | void) | undefined
@@ -38,6 +41,7 @@ export function createExtensionApi(): {
 		appendedEntries.push({ type, payload })
 	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
+	const getCommands = vi.fn<ExtensionAPI["getCommands"]>(() => [])
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
 	const registeredTools = new Map<string, ToolDefinition>()
@@ -79,6 +83,7 @@ export function createExtensionApi(): {
 			registerEntryRenderer,
 			registerShortcut,
 			registerMessageRenderer,
+			getCommands,
 			events,
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
@@ -108,6 +113,14 @@ export function createExtensionApi(): {
 		getRegisteredTools: () => [...registeredTools.values()],
 		getActiveToolNames: () => [...activeToolNames],
 		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
+		getCommands,
+		registerMessageRenderer,
+		/** Return the renderer callback registered for a message or entry type. */
+		getMessageRenderer(customType: string): (...args: never[]) => unknown {
+			const call = registerMessageRenderer.mock.calls.find(([type]) => type === customType)
+			if (!call) throw new Error(`No message renderer registered for ${customType}`)
+			return call[1] as (...args: never[]) => unknown
+		},
 		getAppendedEntries<T = unknown>(type: string): T[] {
 			return appendedEntries.filter((entry) => entry.type === type).map((entry) => entry.payload as T)
 		},

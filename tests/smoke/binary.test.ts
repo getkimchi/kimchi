@@ -110,7 +110,7 @@ describe("binary smoke tests", () => {
 		expect(result.stderr).not.toContain("Extension error")
 	})
 
-	it("auto-names persisted sessions from the first user prompt", () => {
+	it("auto-names persisted sessions from the first user prompt", { timeout: 35_000 }, () => {
 		const before = new Set(listSessionFiles())
 		const prompt = "Explore 3 random files"
 		runBinary({

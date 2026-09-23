@@ -83,6 +83,7 @@ vi.mock("../../../sandbox/worker/acp-client.js", async (importOriginal) => {
 				close: mockClose,
 				cancel: mockCancel,
 				forceDisconnect: mockForceDisconnect,
+				setCallbacks: vi.fn(),
 			}
 		}),
 		RemoteConnectionError,
@@ -108,9 +109,13 @@ import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-loc
 import {
 	type AttachRemoteAgentOptions,
 	attachRemoteAgent,
+	type ContinueRemoteAgentOptions,
+	continueRemoteAgent,
+	deleteRemoteSession,
 	isRemoteSessionConnected,
 	type RemoteRunOptions,
 	type RemoteSessionMeta,
+	resetLiveKeptAcpClientsForTests,
 	runRemoteAgent,
 } from "./remote-agent-runner.js"
 
@@ -153,6 +158,7 @@ function quietRunningFor(runningFor: number) {
 
 beforeEach(() => {
 	vi.clearAllMocks()
+	resetLiveKeptAcpClientsForTests()
 	capturedOptions = undefined
 	// Re-establish mock implementations after clearAllMocks resets them
 	vi.mocked(authenticateWorkspace).mockResolvedValue({
@@ -206,6 +212,7 @@ beforeEach(() => {
 			close: mockClose,
 			cancel: mockCancel,
 			forceDisconnect: mockForceDisconnect,
+			setCallbacks: vi.fn(),
 			get loadReplay() {
 				return mockLoadReplay
 			},
@@ -1745,5 +1752,194 @@ describe("attachRemoteAgent", () => {
 			endpoint: undefined,
 		})
 		expect(authenticateWorkspace).not.toHaveBeenCalled()
+	})
+})
+
+describe("runRemoteAgent keepAlive", () => {
+	it("deletes the remote session on success by default", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+		expect(deleteSession).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps the remote session on success when keepAlive is set (PR review/steer loop)", async () => {
+		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ keepAlive: true }))
+		expect(result.stopReason).toBe("end_turn")
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+})
+
+describe("continueRemoteAgent", () => {
+	const PR_META: RemoteSessionMeta = {
+		workspaceId: "ws-123",
+		sessionName: "acp-pr0001",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-pr0001",
+	}
+
+	function makeContinueOptions(overrides: Partial<ContinueRemoteAgentOptions> = {}): ContinueRemoteAgentOptions {
+		return {
+			apiKey: "test-api-key",
+			remoteSession: PR_META,
+			acpSessionId: "acp-123",
+			prompt: "Rename the button to Save",
+			...overrides,
+		}
+	}
+
+	it("requires the persisted acpSessionId — session/load attaches by id, never session/new", async () => {
+		await expect(continueRemoteAgent(makeContinueOptions({ acpSessionId: "" }))).rejects.toThrow("acpSessionId")
+	})
+
+	it("loads the session by id, sends exactly one steer prompt, and returns the result", async () => {
+		const result = await continueRemoteAgent(makeContinueOptions())
+
+		// Never session/new — the branch work lives only in the kept session.
+		expect(createSession).not.toHaveBeenCalled()
+		// session/load via the persisted id.
+		expect(AcpSessionClient).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: "acp-123",
+				sessionName: "acp-pr0001",
+				cwd: "/home/sandbox/acp-pr0001",
+			}),
+		)
+		expect(mockInitialize).toHaveBeenCalledTimes(1)
+		expect(mockPrompt).toHaveBeenCalledTimes(1)
+		expect(mockPrompt).toHaveBeenCalledWith("Rename the button to Save")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.remoteSession.sessionName).toBe("acp-pr0001")
+	})
+
+	it("never deletes the kept session (deletion is reserved for terminal actions)", async () => {
+		await continueRemoteAgent(makeContinueOptions())
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("recovers the steer via the shared engine on a mid-prompt disconnect", async () => {
+		mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
+		vi.mocked(getSession).mockResolvedValue({
+			name: "acp-pr0001",
+			agentMode: "ACP",
+			yolo: true,
+			alive: true,
+			agentRunning: false,
+			finishedAt: new Date().toISOString(),
+			clientConnected: false,
+			connectedThroughBridge: false,
+		})
+
+		const result = await continueRemoteAgent(makeContinueOptions())
+
+		expect(result.stopReason).toBe("recovered")
+		expect(result.responseText).toContain("Recovered result text")
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("keeps the session when the steer is killed mid-prompt (retryable)", async () => {
+		const controller = new AbortController()
+		controller.abort()
+		const abortError = new Error("Aborted")
+		abortError.name = "AbortError"
+		mockPrompt.mockRejectedValueOnce(abortError)
+
+		await expect(continueRemoteAgent(makeContinueOptions({ signal: controller.signal }))).rejects.toThrow("Aborted")
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("retries the attach when loadSession times out on a just-woken sandbox", async () => {
+		mockInitialize
+			.mockRejectedValueOnce(new RemoteConnectionError("loadSession timed out after 30000ms"))
+			.mockRejectedValueOnce(new RemoteConnectionError("loadSession timed out after 30000ms"))
+
+		const result = await continueRemoteAgent(makeContinueOptions({ reconnectBackoffsMs: [1, 1] }))
+
+		expect(mockInitialize).toHaveBeenCalledTimes(3)
+		// Every attempt targeted the SAME kept ACP id — never a fresh session.
+		for (const call of vi.mocked(AcpSessionClient).mock.calls) {
+			expect(call[0]).toEqual(expect.objectContaining({ sessionId: "acp-123", sessionName: "acp-pr0001" }))
+		}
+		expect(mockPrompt).toHaveBeenCalledTimes(1)
+		expect(result.stopReason).toBe("end_turn")
+	})
+
+	it("surfaces the attach error after the retry budget is exhausted (kept session untouched)", async () => {
+		vi.useFakeTimers()
+		try {
+			mockInitialize.mockRejectedValue(new RemoteConnectionError("loadSession timed out after 30000ms"))
+			const run = continueRemoteAgent(makeContinueOptions({ reconnectBackoffsMs: [1, 1, 1, 1] }))
+			run.catch(() => {}) // no unhandled rejection while the timers advance
+			await vi.runAllTimersAsync()
+			await expect(run).rejects.toThrow("loadSession timed out")
+			expect(mockInitialize).toHaveBeenCalledTimes(5)
+			expect(deleteSession).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("reuses the SAME live ACP connection for consecutive steers — no session/load, no second attach", async () => {
+		// First steer attaches (session/load) and registers its client on success.
+		await continueRemoteAgent(makeContinueOptions())
+		expect(mockInitialize).toHaveBeenCalledTimes(1)
+		expect(AcpSessionClient).toHaveBeenCalledTimes(1)
+
+		// Second steer reuses that very client: NO readiness wait, NO
+		// initialize, NO new client — just one more prompt over it.
+		vi.mocked(waitForWorkspaceReady).mockClear()
+		const result = await continueRemoteAgent(makeContinueOptions({ prompt: "one more change" }))
+
+		expect(waitForWorkspaceReady).not.toHaveBeenCalled()
+		expect(AcpSessionClient).toHaveBeenCalledTimes(1) // unchanged
+		expect(mockInitialize).toHaveBeenCalledTimes(1) // no session/load again
+		// THE crux: the reused client's event callbacks were REBOUND to the
+		// second run — without this, run 2's turn updates pour into run 1's
+		// stale state and its completion never fires.
+		const reusedInstance = vi.mocked(AcpSessionClient).mock.results[0]?.value as {
+			setCallbacks: ReturnType<typeof vi.fn>
+		}
+		expect(reusedInstance.setCallbacks).toHaveBeenCalledTimes(1)
+		expect(mockPrompt).toHaveBeenCalledTimes(2)
+		expect(mockPrompt).toHaveBeenLastCalledWith("one more change")
+		expect(result.stopReason).toBe("end_turn")
+	})
+
+	it("fires onReady after the load, before the prompt", async () => {
+		const order: string[] = []
+		mockInitialize.mockImplementation(async () => {
+			order.push("initialize")
+		})
+		mockPrompt.mockImplementation(async () => {
+			order.push("prompt")
+			return { stopReason: "end_turn", usage: undefined }
+		})
+
+		await continueRemoteAgent(
+			makeContinueOptions({
+				onReady: () => {
+					order.push("onReady")
+				},
+			}),
+		)
+
+		expect(order).toEqual(["initialize", "onReady", "prompt"])
+	})
+})
+
+describe("deleteRemoteSession", () => {
+	const KEEP_META: RemoteSessionMeta = {
+		workspaceId: "ws-keep",
+		sessionName: "acp-keep01",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-keep01",
+	}
+
+	it("re-authenticates and deletes the kept session at a terminal action", async () => {
+		await deleteRemoteSession(KEEP_META, "test-api-key")
+		expect(authenticateWorkspace).toHaveBeenCalledWith(KEEP_META.workspaceId, "test-api-key", "kimchi", {
+			endpoint: undefined,
+		})
+		expect(deleteSession).toHaveBeenCalledWith(expect.anything(), KEEP_META.sessionName)
 	})
 })

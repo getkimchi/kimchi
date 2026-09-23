@@ -39,6 +39,56 @@ describe("persistRemoteRunState", () => {
 	})
 })
 
+describe("gitWorkflow persistence", () => {
+	/** Simulates append-to-transcript → restart → read-back: structured data
+	 *  crosses JSON, so undefined-valued keys disappear. */
+	function jsonRoundTrip<T>(value: T): T {
+		return JSON.parse(JSON.stringify(value))
+	}
+
+	it("round-trips the git intent + baseline through persist and resume", () => {
+		const gitWorkflow = {
+			branch: "kimchi/build-feature",
+			baseBranch: "main",
+			baseSha: "0123456789abcdef0123456789abcdef01234567",
+			dirtyFiles: ["src/dirty.ts", "notes.md"],
+		}
+		const state = makeState({ gitWorkflow })
+		const appendEntry = vi.fn()
+
+		persistRemoteRunState({ appendEntry }, state)
+
+		const persistedData = jsonRoundTrip(appendEntry.mock.calls[0]?.[1] as RemoteRunState)
+		const resumed = findResumableRemoteRuns({ getBranch: () => [entry(persistedData)] })
+		expect(resumed).toHaveLength(1)
+		expect(resumed[0]?.gitWorkflow).toEqual(gitWorkflow)
+	})
+
+	it("keeps legacy entries without gitWorkflow parseable and resumable", () => {
+		const legacyData = jsonRoundTrip(makeState())
+		expect("gitWorkflow" in legacyData).toBe(false)
+
+		const resumed = findResumableRemoteRuns({ getBranch: () => [entry(legacyData)] })
+		expect(resumed).toHaveLength(1)
+		expect(resumed[0]?.gitWorkflow).toBeUndefined()
+	})
+
+	it("drops an undefined baseBranch on the JSON round trip but keeps the branch", () => {
+		const state = makeState({ gitWorkflow: { branch: "kimchi/x", baseBranch: undefined } })
+		const persistedData = jsonRoundTrip(state)
+		expect(persistedData.gitWorkflow).toEqual({ branch: "kimchi/x" })
+		expect("baseBranch" in (persistedData.gitWorkflow ?? {})).toBe(false)
+	})
+
+	it("round-trips an intent captured before baseline exists (baseSha/dirtyFiles absent)", () => {
+		const state = makeState({ gitWorkflow: { branch: "kimchi/x", baseBranch: "main" } })
+		const resumed = findResumableRemoteRuns({ getBranch: () => [entry(jsonRoundTrip(state))] })
+		expect(resumed[0]?.gitWorkflow).toEqual({ branch: "kimchi/x", baseBranch: "main" })
+		expect(resumed[0]?.gitWorkflow?.baseSha).toBeUndefined()
+		expect(resumed[0]?.gitWorkflow?.dirtyFiles).toBeUndefined()
+	})
+})
+
 describe("findResumableRemoteRuns", () => {
 	it("returns only non-terminal remote runs; the last entry per id wins", () => {
 		const branch = [

@@ -14,18 +14,21 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
-import { PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
+import { emitPlanReviewDecision, PLAN_REVIEW_DECISION_CHANNEL } from "../../shared/planning/plan-review-bus.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
+import { runCloudAgent } from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
@@ -36,6 +39,17 @@ import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
+
+vi.mock("../remote-run/runner.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../remote-run/runner.js")>()
+	return {
+		...actual,
+		runCloudAgent: vi.fn(async () => ({ id: "agent-1", result: "done", backgrounded: true })),
+	}
+})
+
+const runCloudAgentMock = vi.mocked(runCloudAgent)
+
 import { SessionMemory } from "./session-memory.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
@@ -1086,6 +1100,69 @@ describe("plan mode assumption detection", () => {
 				expect.objectContaining({ customType: "plan-execute" }),
 				expect.anything(),
 			)
+		})
+
+		describe("remote workspace dispatch git intent", () => {
+			const CLOUD_OPTION = "Execute the plan in a remote workspace"
+			const PLAN = "## Goal\nBuild a feature\n\n## Chunks\n### Chunk 1\nDo the thing."
+
+			beforeEach(() => {
+				runCloudAgentMock.mockClear()
+			})
+
+			it("captures a branch name into the prompt and spawn opts", async () => {
+				const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+				await harness.fire("session_start", {}, createMockContext([]))
+				await harness.fire("tool_execution_start", {})
+
+				const ctx = createMockContext([CLOUD_OPTION, CUSTOM_BRANCH_ITEM], TEST_SESSION_ID, {
+					uiContext: { input: vi.fn(async () => "kimchi/my-branch") },
+				})
+				await submitPlan(harness, PLAN, ctx)
+
+				expect(runCloudAgentMock).toHaveBeenCalledTimes(1)
+				const [, , prompt, , opts] = runCloudAgentMock.mock.calls[0]
+				expect(prompt).toContain("[Git workflow — PR-first execution]")
+				expect(prompt).toContain("`kimchi/my-branch`")
+				expect(prompt).toContain("Never push — the harness pushes after user review.")
+				expect(opts).toMatchObject({ background: true, gitWorkflow: { branch: "kimchi/my-branch" } })
+				expect(ctx.ui.input).toHaveBeenCalledWith(CUSTOM_BRANCH_PROMPT, "kimchi-build-a-feature")
+			})
+
+			it("accepts the suggested branch slug by picking it in the branch picker", async () => {
+				const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+				await harness.fire("session_start", {}, createMockContext([]))
+				await harness.fire("tool_execution_start", {})
+
+				// The branch picker's first item is the goal-slug suggestion; picking
+				// it captures intent without opening the free-text input.
+				const ctx = createMockContext([CLOUD_OPTION, "kimchi-build-a-feature"])
+				await submitPlan(harness, PLAN, ctx)
+
+				expect(runCloudAgentMock).toHaveBeenCalledTimes(1)
+				const [, , prompt, , opts] = runCloudAgentMock.mock.calls[0]
+				expect(prompt).toContain("[Git workflow — PR-first execution]")
+				expect(prompt).toContain("`kimchi-build-a-feature`")
+				expect(opts).toMatchObject({ background: true, gitWorkflow: { branch: "kimchi-build-a-feature" } })
+				expect(ctx.ui.input).not.toHaveBeenCalled()
+			})
+
+			it("dispatches a plain run without intent on Escape (branch picker dismissed)", async () => {
+				const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+				await harness.fire("session_start", {}, createMockContext([]))
+				await harness.fire("tool_execution_start", {})
+
+				// createMockContext's select returns undefined once the results run out —
+				// the branch picker sees a dismiss, so the run goes out plain.
+				const ctx = createMockContext([CLOUD_OPTION])
+				await submitPlan(harness, PLAN, ctx)
+
+				expect(runCloudAgentMock).toHaveBeenCalledTimes(1)
+				const [, , prompt, , opts] = runCloudAgentMock.mock.calls[0]
+				expect(prompt).not.toContain("[Git workflow")
+				expect(opts).toMatchObject({ background: true })
+				expect((opts as { gitWorkflow?: unknown }).gitWorkflow).toBeUndefined()
+			})
 		})
 
 		it("Start as ferment handoff references the saved plan path", async () => {
@@ -3552,5 +3629,177 @@ describe("permission mode session-log persistence", () => {
 			unregisterSessionPermissionFlagController(previousSessionId)
 			unregisterSessionPermissionFlagController(newSessionId)
 		}
+	})
+})
+
+// =============================================================================
+// Plannotator decision routing (approved plan + remote execution enabled)
+// =============================================================================
+
+describe("adhoc plan review plannotator decision routing", () => {
+	const PLAN =
+		"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+
+	type SubmitPlanToolDef = {
+		execute: (
+			toolCallId: string,
+			params: { plan: string },
+			signal: AbortSignal | undefined,
+			onUpdate: undefined,
+			ctx: ExtensionContext,
+		) => Promise<unknown>
+	}
+
+	// Drive submit_plan so the review context (plan text/path) is stored on the
+	// bus, then flush the task queue so the TUI menu's resolved select has been
+	// handled before the test emits its own plannotator decision.
+	async function submitPlan(
+		harness: ReturnType<typeof createPermissionsHarness>,
+		plan: string,
+		ctx: ExtensionContext,
+	): Promise<unknown> {
+		const tool = harness.registeredTools.get("submit_plan") as SubmitPlanToolDef | undefined
+		if (!tool) throw new Error("submit_plan tool was not registered with pi")
+		const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+		return result
+	}
+
+	beforeEach(() => {
+		runCloudAgentMock.mockClear()
+	})
+
+	it("asks where to run when plannotator approves with remote enabled — local pick executes locally", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		// First select (TUI menu) returns undefined — no TUI decision; the
+		// plannotator decision below triggers the where-ask (second select).
+		const ctx = createMockContext([undefined, EXECUTE_LOCAL_DECISION_OPTION])
+		await submitPlan(harness, PLAN, ctx)
+
+		emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+
+		await vi.waitFor(() => {
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+				expect.anything(),
+			)
+		})
+		expect(ctx.ui.select).toHaveBeenCalledWith("Plan approved — where should it run?", [
+			EXECUTE_LOCAL_DECISION_OPTION,
+			CLOUD_DECISION_OPTION,
+		])
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+		expect(runCloudAgentMock).not.toHaveBeenCalled()
+	})
+
+	it("runs the cloud path when the remote workspace option is picked", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const planApproved = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.PLAN_APPROVED, planApproved)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-cloud-plannotator-"))
+		try {
+			const ctx = createMockContext([undefined, CLOUD_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			await submitPlan(harness, PLAN, ctx)
+
+			emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+
+			await vi.waitFor(() => {
+				expect(runCloudAgentMock).toHaveBeenCalledTimes(1)
+			})
+			const [, , cloudPrompt, , cloudOpts] = runCloudAgentMock.mock.calls[0]
+			expect(cloudPrompt).toContain(PLAN)
+			expect(cloudOpts).toMatchObject({ background: true })
+			expect(planApproved).toHaveBeenCalledTimes(1)
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+
+			// activePlanSlug is released: a new planning round with a different
+			// title writes a fresh plan file instead of overwriting the old one.
+			const command = harness.commands.get("permissions")
+			await command?.handler("mode plan", createMockContext([]))
+			const OTHER_PLAN = "# Plan: Rate Limits\n\n## Goal\nAdd rate limits."
+			const ctx2 = createMockContext([undefined])
+			ctx2.cwd = tmpDir
+			await submitPlan(harness, OTHER_PLAN, ctx2)
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans")).sort()).toEqual([
+				"plan-cache-layer.md",
+				"plan-rate-limits.md",
+			])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("defers execution when the run-location prompt is dismissed (Escape)", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const planApproved = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.PLAN_APPROVED, planApproved)
+		const ctx = createMockContext([undefined, undefined])
+		await submitPlan(harness, PLAN, ctx)
+
+		emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+
+		await vi.waitFor(() => {
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Plan execution deferred — re-open the review to choose again.",
+				"info",
+			)
+		})
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
+		expect(planApproved).not.toHaveBeenCalled()
+		expect(runCloudAgentMock).not.toHaveBeenCalled()
+		expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "plan-execute" }),
+			expect.anything(),
+		)
+	})
+
+	it("executes locally without asking when remote execution is disabled", async () => {
+		vi.stubEnv("KIMCHI_REMOTE_RUN", "0")
+		try {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext([undefined])
+			await submitPlan(harness, PLAN, ctx)
+
+			emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute" }),
+					expect.anything(),
+				)
+			})
+			// Only the TUI menu select ran — no where-ask.
+			expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+			expect(runCloudAgentMock).not.toHaveBeenCalled()
+		} finally {
+			vi.unstubAllEnvs()
+		}
+	})
+
+	it("does not ask the TUI flow — kimchi-tui execute stays unchanged even with remote enabled", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		// TUI menu pick ("Execute the plan locally") drives the kimchi-tui decision.
+		const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+		await submitPlan(harness, PLAN, ctx)
+
+		await vi.waitFor(() => {
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+				expect.anything(),
+			)
+		})
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+		expect(runCloudAgentMock).not.toHaveBeenCalled()
 	})
 })

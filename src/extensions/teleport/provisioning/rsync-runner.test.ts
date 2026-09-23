@@ -387,6 +387,8 @@ describe("buildMkdirArgv", () => {
 			"UserKnownHostsFile=/k",
 			"-o",
 			"BatchMode=yes",
+			"-o",
+			"ServerAliveInterval=15",
 			"u@h",
 			"mkdir -p /home/sandbox",
 		])
