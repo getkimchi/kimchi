@@ -76,6 +76,8 @@ function sanitizeLabel(label: string): string {
  * Run `fn` inside a balanced herdr:blocked activation pair (see the PROTOCOL
  * section above). Use this around any prompt that waits on the user so the
  * pairing cannot drift at the call site.
+ * Activation is synchronous and precedes `fn` so UI observers can yield
+ * before the prompt opens.
  */
 export async function withBlocked<T>(events: EventBus, label: string, fn: () => Promise<T>): Promise<T> {
 	events.emit(HERDR_EVENTS.BLOCKED, { active: true, label: sanitizeLabel(label) } satisfies HerdrBlockedPayload)

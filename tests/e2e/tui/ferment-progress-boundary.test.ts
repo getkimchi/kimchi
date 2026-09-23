@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync, realpathSync, writeFileSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import type { FakeResponseScript } from "./support/fake-openai-server.js"
-import { BINARY_PATH, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { REPO_ROOT, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -65,14 +65,8 @@ test("phase completion replaces open progress with an answerable Continue prompt
 					fermentsDir = join(cwd, ".kimchi", "ferments")
 					fermentId = execFileSync(
 						process.execPath,
-						[
-							"--import",
-							"tsx",
-							resolve(dirname(BINARY_PATH), "../../tests/e2e/tui/support/seed-ferment-boundary.ts"),
-							fermentsDir,
-							cwd,
-						],
-						{ cwd: resolve(dirname(BINARY_PATH), "../.."), encoding: "utf8" },
+						["--import", "tsx", resolve(REPO_ROOT, "tests/e2e/tui/support/seed-ferment-boundary.ts"), fermentsDir, cwd],
+						{ cwd: REPO_ROOT, encoding: "utf8" },
 					).trim()
 					const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 					const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
