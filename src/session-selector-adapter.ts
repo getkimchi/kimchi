@@ -162,7 +162,7 @@ function renderSessions(
 		const empty = query.trim()
 			? "No matching sessions. Clear the search or press Tab to change folder scope."
 			: hiddenCount === list.allSessions.length && hiddenCount > 0
-				? "No visible sessions. Press Ctrl+E to show evaluators."
+				? "No visible sessions. Press Ctrl+E to show background checks."
 				: list.nameFilter === "named"
 					? "No named sessions. Toggle the named filter to show all sessions."
 					: list.showCwd
@@ -193,7 +193,9 @@ function renderSessions(
 		const dates = code(cell(sessionDate(session.modified), dateWidth))
 		const project = projectWidth ? link(cell(`${clean(basename(session.cwd)) || "Unknown"} `, projectWidth)) : ""
 		const info = internalSessions.get(session)
-		const internal = info ? colors.description(info.kind === "ferment-evaluator" ? "[evaluator] " : "[internal] ") : ""
+		const internal = info
+			? colors.description(info.kind === "ferment-evaluator" ? "[background check] " : "[internal] ")
+			: ""
 		const label = `${list.buildTreePrefix(node)}${internal}${current ? "[current] " : ""}${highlight(title, pattern)}`
 		let row = `${selected ? "› " : "  "}${dates}${project}${selected ? bold(label) : label}`
 		row = truncateToWidth(row, width)
@@ -203,7 +205,7 @@ function renderSessions(
 	}
 	lines.push(
 		colors.description(
-			`${list.selectedIndex + 1}/${list.filteredSessions.length} sessions${query.trim() ? ` · ${list.allSessions.length - hiddenCount} in scope` : ""}${hiddenCount ? ` · ${hiddenCount} evaluator${hiddenCount === 1 ? "" : "s"} hidden` : ""}`,
+			`${list.selectedIndex + 1}/${list.filteredSessions.length} sessions${query.trim() ? ` · ${list.allSessions.length - hiddenCount} in scope` : ""}${hiddenCount ? ` · ${hiddenCount} background check${hiddenCount === 1 ? "" : "s"} hidden` : ""}`,
 		),
 	)
 	const selected = list.filteredSessions[list.selectedIndex]?.session
@@ -291,6 +293,11 @@ prototype.buildBaseLayout = function (content, options) {
 		const filter = list.filterSessions.bind(list)
 		let previousQuery = ""
 		list.filterSessions = (query) => {
+			if (!query.trim()) {
+				this.sortMode = "threaded"
+				this.header.setSortMode("threaded")
+				list.sortMode = "threaded"
+			}
 			filter(query)
 			if (!showInternal)
 				list.filteredSessions = list.filteredSessions.filter(({ session }) => !internalSessions.has(session))
@@ -341,15 +348,8 @@ prototype.buildBaseLayout = function (content, options) {
 				return
 			}
 			if (!list.confirmingDeletePath && keys.matches(data, "app.session.toggleSort")) {
-				// Recent and relevance have identical order without a query; threaded
-				// and relevance have identical search behavior. Skip the duplicate state.
-				this.sortMode = list.searchInput.getValue().trim()
-					? list.sortMode === "recent"
-						? "relevance"
-						: "recent"
-					: list.sortMode === "threaded"
-						? "relevance"
-						: "threaded"
+				if (!list.searchInput.getValue().trim()) return
+				this.sortMode = list.sortMode === "recent" ? "relevance" : "recent"
 				this.header.setSortMode(this.sortMode)
 				list.setSortMode(this.sortMode)
 				return
@@ -378,15 +378,11 @@ prototype.buildBaseLayout = function (content, options) {
 			const named = list.nameFilter === "named" ? " · Named only" : ""
 			const hints = renderHeader(width).slice(1)
 			if (!list.confirmingDeletePath && !this.header.statusMessage) {
-				const nextSort = list.searchInput.getValue().trim()
-					? list.sortMode === "recent"
-						? "best match"
-						: "last active"
-					: list.sortMode === "threaded"
-						? "last active"
-						: "group by parent"
+				const sortHint = list.searchInput.getValue().trim()
+					? ` · ${keyHint("app.session.toggleSort", `sort: ${list.sortMode === "recent" ? "best match" : "last active"}`)}`
+					: ""
 				hints[0] = truncateToWidth(
-					`${keyHint("tui.input.tab", "scope")} · ${keyHint("app.session.toggleSort", `sort: ${nextSort}`)} · ${colors.selectedText("ctrl+e")} ${showInternal ? "hide" : "show"} evaluators`,
+					`${keyHint("tui.input.tab", "scope")}${sortHint} · ${colors.selectedText("ctrl+e")} ${showInternal ? "hide" : "show"} background checks`,
 					width,
 				)
 				hints[1] = truncateToWidth(
