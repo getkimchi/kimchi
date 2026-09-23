@@ -8,7 +8,7 @@
 //
 // default (used by `build-binary`): theme files from node_modules → dist/share/kimchi/theme/
 //                                   export-html templates → dist/share/kimchi/export-html/
-//                                   plus package.json → dist/share/kimchi/
+//                                   plus package.json and CHANGELOG.md → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -80,6 +80,15 @@ for (const file of kimchiThemeFiles) {
 
 if (!isDev) {
 	cpSync(join(projectRoot, "package.json"), join(projectRoot, "dist", "share", "kimchi", "package.json"))
+
+	// Ship the changelog so /changelog + the "What's New" popup work in the standalone binary
+	// (it reads CHANGELOG.md from the shared data directory). Optional resource: warn + skip if absent.
+	const changelogSrc = join(projectRoot, "CHANGELOG.md")
+	if (existsSync(changelogSrc)) {
+		cpSync(changelogSrc, join(projectRoot, "dist", "share", "kimchi", "CHANGELOG.md"))
+	} else {
+		console.warn(`copy-resources: CHANGELOG.md not found at ${changelogSrc} — skipping`)
+	}
 
 	// Stage bundled skills (resources/skills) so the central skill-root
 	// resolver finds them via resolveAuxiliaryFilesDir in the compiled binary.

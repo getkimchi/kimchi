@@ -255,6 +255,9 @@ jobs:
           cd artifacts
           sha256sum kimchi_*.tar.gz kimchi_*.zip > checksums.txt
 
+      - name: Extract release notes from CHANGELOG.md
+        run: node scripts/release-notes.mjs extract --version "${GITHUB_REF_NAME#v}" --tag "$GITHUB_REF_NAME" --out RELEASE_NOTES.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
@@ -264,7 +267,7 @@ jobs:
             artifacts/checksums.txt
             scripts/install.sh
             scripts/install.ps1
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
 
   homebrew:
     needs: [release]
