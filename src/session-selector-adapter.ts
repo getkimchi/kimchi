@@ -274,7 +274,6 @@ prototype.buildBaseLayout = function (content, options) {
 		installed.add(list)
 		const internalSessions = new WeakMap<SessionInfo, InternalSessionInfo>()
 		let showInternal = true
-		let previousSort: SortMode = "relevance"
 		for (const key of ["currentSessionsLoader", "allSessionsLoader"] as const) {
 			const loader = this[key].bind(this)
 			this[key] = async (onProgress) => {
@@ -325,13 +324,10 @@ prototype.buildBaseLayout = function (content, options) {
 		}
 		const handleInput = list.handleInput.bind(list)
 		list.handleInput = (data) => {
-			if ((matchesKey(data, "ctrl+e") || matchesKey(data, "f4")) && !list.confirmingDeletePath) {
+			if (matchesKey(data, "ctrl+e") && !list.confirmingDeletePath) {
 				const selected = list.filteredSessions[list.selectedIndex]?.session
-				if (!showInternal) previousSort = list.sortMode
 				showInternal = !showInternal
-				this.sortMode = showInternal ? "threaded" : previousSort
-				this.header.setSortMode(this.sortMode)
-				list.setSortMode(this.sortMode)
+				list.filterSessions(list.searchInput.getValue())
 				const selectedPath =
 					!showInternal && selected && internalSessions.has(selected) ? selected.parentSessionPath : selected?.path
 				const index = list.filteredSessions.findIndex(({ session }) => session.path === selectedPath)
@@ -390,7 +386,7 @@ prototype.buildBaseLayout = function (content, options) {
 						? "last active"
 						: "group by parent"
 				hints[0] = truncateToWidth(
-					`${keyHint("tui.input.tab", "scope")} · ${keyHint("app.session.toggleSort", nextSort)} · ${colors.selectedText("ctrl+e")} evaluators (${showInternal ? "on" : "off"})`,
+					`${keyHint("tui.input.tab", "scope")} · ${keyHint("app.session.toggleSort", `sort: ${nextSort}`)} · ${colors.selectedText("ctrl+e")} ${showInternal ? "hide" : "show"} evaluators`,
 					width,
 				)
 				hints[1] = truncateToWidth(
