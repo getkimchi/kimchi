@@ -65,10 +65,28 @@ export interface CaptureJob {
 	messages: CaptureMessage[]
 	/** Project scope when captured inside a repository; null/absent → personal only. */
 	project?: { id: string; contextLine: string } | null
+	/** Session id at capture time — scopes the message hash so the same text
+	 * in different sessions (or projects) is captured independently, while
+	 * crash-resume still dedupes within a session. A uuid, not a timestamp. */
+	session?: string
 }
 
-export function messageHash(message: CaptureMessage): string {
-	return createHash("sha1").update(`${message.role}:${message.content}`).digest("hex")
+/**
+ * Hash a message for the captured-hashes ledger. v2 hashes are scoped by
+ * session + project so the same text in two projects ("use pnpm here") or
+ * a preference cycled A→B→A across sessions is captured each time, while
+ * a crashed drain reprocessing the same job still dedupes. Old-format
+ * (v1, text-only) ledger entries can never match a v2 hash — recurring
+ * texts get one re-extraction pass after upgrade; the fact-level dedup in
+ * addAll prevents double-storing.
+ */
+export function messageHash(message: CaptureMessage, scope?: { session?: string; project?: string | null }): string {
+	if (scope === undefined) {
+		// Legacy v1 hash (pre-upgrade pending jobs) — matches old ledger entries.
+		return createHash("sha1").update(`${message.role}:${message.content}`).digest("hex")
+	}
+	const prefix = `v2:${scope.session ?? ""}:${scope.project ?? "personal"}`
+	return createHash("sha1").update(`${prefix}:${message.role}:${message.content}`).digest("hex")
 }
 
 /**
@@ -568,6 +586,8 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 interface JobPlan {
 	jobFile: string
 	project: CaptureJob["project"]
+	/** Session id from the job — scopes the hashes marked at commit. */
+	session: string | undefined
 	windows: CaptureMessage[][]
 	personalFacts: string[]
 	projectFacts: string[]
@@ -772,7 +792,12 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 	}
 	const fresh = job.messages.filter((m) => {
 		if (!m.content.trim()) return false
-		const hash = messageHash(m)
+		// Pre-upgrade jobs without a session field fall back to the legacy
+		// v1 hash — matching the old ledger entries for that one drain.
+		const hash =
+			job.session === undefined
+				? messageHash(m)
+				: messageHash(m, { session: job.session, project: job.project?.id ?? null })
 		if (hashes.has(hash) || claimed.has(hash)) return false
 		claimed.add(hash)
 		return true
@@ -784,6 +809,7 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 	return {
 		jobFile,
 		project: job.project ?? null,
+		session: job.session,
 		windows: windowByBudget(fresh),
 		personalFacts: [],
 		projectFacts: [],
@@ -808,8 +834,13 @@ async function commitPlan(
 		const existing = await existingFactTexts(backend)
 		const added: string[] = []
 		for (const fact of facts) {
-			if (existing.has(normalizeFactText(fact))) continue
+			const normalized = normalizeFactText(fact)
+			if (existing.has(normalized)) continue
 			await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+			// The same fact can be returned twice within one job's extraction —
+			// track it so the second occurrence is skipped here, not just
+			// left for a later drain to dedupe against the store.
+			existing.add(normalized)
 			added.push(fact)
 			captured += 1
 		}
@@ -828,10 +859,26 @@ async function commitPlan(
 	// Mark only the successfully extracted windows — a crash resumes here.
 	const hashes = loadHashes()
 	for (const window of plan.extractedWindows) {
-		for (const message of window) hashes.add(messageHash(message))
+		for (const message of window) {
+			hashes.add(
+				plan.session === undefined
+					? messageHash(message)
+					: messageHash(message, { session: plan.session, project: plan.project?.id ?? null }),
+			)
+		}
 	}
 	saveHashes(hashes)
-	rmSync(plan.jobFile, { force: true })
+	// Delete the job file only when every window was extracted — a window
+	// that failed both attempts stays unmarked so the next drain retries it,
+	// which requires the job file to still exist. On a retry, the fresh-filter
+	// drops the already-hashed messages and reprocesses only the failed ones.
+	if (plan.extractedWindows.length === plan.windows.length) {
+		rmSync(plan.jobFile, { force: true })
+	} else {
+		console.warn(
+			`[memory-capture] job ${basename(plan.jobFile)} kept for retry: ${plan.windows.length - plan.extractedWindows.length} window(s) failed extraction`,
+		)
+	}
 	return { captured, personal, project }
 }
 

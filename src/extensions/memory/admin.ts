@@ -587,9 +587,12 @@ async function opReset(
 		const release = await deps.acquireLock(deps.memoryRoot)
 		try {
 			// The held lock lives on capture.lock (+ its .lock directory) —
-			// wiping them under the lock would break release.
+			// wiping them under the lock would break release. The migration
+			// marker also survives: it records that the legacy MEMORY.md import
+			// ran, which stays true — deleting it would re-import the old files
+			// on the next memory-enabled session and resurrect wiped memories.
 			for (const entry of readdirSync(deps.memoryRoot)) {
-				if (entry === "capture.lock" || entry === "capture.lock.lock") continue
+				if (entry === "capture.lock" || entry === "capture.lock.lock" || entry === ".agent-memory-migrated") continue
 				rmSync(join(deps.memoryRoot, entry), { recursive: true, force: true })
 			}
 		} finally {

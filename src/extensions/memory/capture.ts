@@ -10,11 +10,12 @@
  * hash, so overlapping captures are cheap no-ops.
  */
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { mkdirSync, renameSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
+import { getEnvironmentApiKey } from "../../config.js"
 import { defaultMemoryDir } from "./backend.js"
 import type { CaptureMessage } from "./capture-worker.js"
 import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
@@ -142,6 +143,14 @@ export function messageText(content: unknown): string {
 	return ""
 }
 
+/** The session id for the current process — scoping job ids and hashes.
+ * A uuid, not a timestamp: recording time never enters LLM input. */
+const CAPTURE_SESSION_ID = randomUUID()
+
+function captureSessionId(): string {
+	return CAPTURE_SESSION_ID
+}
+
 function captureMessages(messages: CaptureMessage[], cwd: string): void {
 	if (captureDisabled() || messages.length === 0) return
 	try {
@@ -152,12 +161,12 @@ function captureMessages(messages: CaptureMessage[], cwd: string): void {
 		// Deterministic job id: identical content in the same scope overwrites
 		// the same job file instead of queueing duplicates.
 		const id = createHash("sha1")
-			.update(JSON.stringify({ messages, project: project?.id ?? null }))
+			.update(JSON.stringify({ messages, project: project?.id ?? null, session: captureSessionId() }))
 			.digest("hex")
 			.slice(0, 16)
 		const jobFile = join(pendingDir, `${id}.json`)
 		const tmp = `${jobFile}.${process.pid}.tmp`
-		writeFileSync(tmp, JSON.stringify({ messages, project }))
+		writeFileSync(tmp, JSON.stringify({ messages, project, session: captureSessionId() }))
 		renameSync(tmp, jobFile)
 		spawnCaptureWorker(jobFile, dbPath)
 	} catch (err) {
@@ -176,7 +185,13 @@ export function spawnCaptureWorker(jobFile: string, dbPath: string): void {
 		// worker is routed as the memory-capture subcommand (cli.ts).
 		cmd = [process.execPath, "memory-capture", ...args]
 	}
-	const child = spawn(cmd[0], cmd.slice(1), { detached: true, stdio: "ignore" })
+	// The worker runs loadConfig() itself, but startup strips KIMCHI_API_KEY
+	// from the inherited environment (the security scrub in config.ts) —
+	// when the key came only from env (not the saved config file), the
+	// worker would start with no API key. Re-inject the retained key.
+	const apiKey = getEnvironmentApiKey()
+	const env = apiKey ? { ...process.env, KIMCHI_API_KEY: apiKey } : process.env
+	const child = spawn(cmd[0], cmd.slice(1), { detached: true, stdio: "ignore", env })
 	// A failed async spawn (e.g. ENOENT) emits 'error' — without a listener
 	// it throws (EventEmitter semantics) and crashes the harness. Log and
 	// move on: memory must never break a session.

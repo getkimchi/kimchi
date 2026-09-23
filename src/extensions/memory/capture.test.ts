@@ -1024,3 +1024,33 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		expect(readdirSync(join(home, ".config", "kimchi", "memory", "pending"))).toHaveLength(1)
 	})
 })
+
+describe("messageHash v2 scoping", () => {
+	it("same text in different sessions hashes differently", () => {
+		const m: CaptureMessage = { role: "user", content: "Use pnpm here" }
+		const h1 = messageHash(m, { session: "s1", project: "owner/repo-a" })
+		const h2 = messageHash(m, { session: "s2", project: "owner/repo-b" })
+		expect(h1).not.toBe(h2)
+	})
+
+	it("same text in different projects in the same session hashes differently", () => {
+		const m: CaptureMessage = { role: "user", content: "Use pnpm here" }
+		const h1 = messageHash(m, { session: "s1", project: "owner/repo-a" })
+		const h2 = messageHash(m, { session: "s1", project: "owner/repo-b" })
+		expect(h1).not.toBe(h2)
+	})
+
+	it("same message reprocessed in the same session hashes identically (crash-resume)", () => {
+		const m: CaptureMessage = { role: "user", content: "I have a dog named Rex" }
+		const h1 = messageHash(m, { session: "s1", project: null })
+		const h2 = messageHash(m, { session: "s1", project: null })
+		expect(h1).toBe(h2)
+	})
+
+	it("v2 hashes never collide with legacy v1", () => {
+		const m: CaptureMessage = { role: "user", content: "anything" }
+		const v1 = messageHash(m)
+		const v2 = messageHash(m, { session: "", project: null })
+		expect(v1).not.toBe(v2)
+	})
+})

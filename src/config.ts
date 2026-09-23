@@ -25,7 +25,7 @@ export function captureApiKeyFromEnvironment(): string | undefined {
 	return startupApiKey
 }
 
-function getEnvironmentApiKey(): string | undefined {
+export function getEnvironmentApiKey(): string | undefined {
 	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
 }
 
