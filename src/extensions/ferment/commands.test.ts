@@ -1,12 +1,13 @@
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import { createEventBus, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createContext } from "../__mocks__/context.js"
+import { HERDR_EVENTS, withBlocked } from "../herdr-events.js"
 import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
@@ -14,6 +15,7 @@ import {
 	startFermentForIntent,
 	startInteractiveFerment,
 } from "./commands.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
@@ -1145,6 +1147,92 @@ describe("registerFermentCommands", () => {
 		await fermentCommand.handler("progress", h.ctx)
 
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Progress Ferment"))
+	})
+
+	it.each([
+		{ depth: 0, refresh: false },
+		{ depth: 0, refresh: true },
+		{ depth: 1, refresh: true },
+		{ depth: 2, refresh: true },
+	])("progress yields to a blocking prompt at depth $depth with queued refresh=$refresh", async ({
+		depth,
+		refresh,
+	}) => {
+		const h = createHarness()
+		h.runtime.setActive(createRunningFerment(h, "Progress Ferment"))
+		const events = createEventBus()
+		const ctx = { ...h.ctx, hasUI: true }
+		const select = vi.mocked(ctx.ui.select)
+		for (let i = 0; i < depth; i++) {
+			select.mockImplementationOnce(async (_title, options) => options[0])
+		}
+		let opened = () => {}
+		const visible = new Promise<void>((resolve) => {
+			opened = resolve
+		})
+		select.mockImplementation(
+			(_title, _options, opts) =>
+				new Promise((resolve) => {
+					opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true })
+					opened()
+				}),
+		)
+		const progress = new FermentCommandController().execute(
+			{ type: "progress" },
+			{ raw: "progress", pi: { ...h.pi, events }, ctx, runtime: h.runtime },
+		)
+		await visible
+		// Phase completion queues a refresh; the boundary opens before that
+		// refresh's continuation runs. Progress must not reopen over the prompt.
+		if (refresh) events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {})
+		await withBlocked(events, "Ferment phase boundary", async () => {})
+		await progress
+		expect(select).toHaveBeenCalledTimes(depth + 1)
+	})
+
+	it("discards a pending progress selection when a blocking prompt takes focus", async () => {
+		const h = createHarness()
+		h.runtime.setActive(createRunningFerment(h, "Progress Ferment"))
+		const events = createEventBus()
+		const ctx = { ...h.ctx, hasUI: true }
+		vi.mocked(ctx.ui.select).mockResolvedValueOnce("Abandon ferment")
+		const progress = new FermentCommandController().execute(
+			{ type: "progress" },
+			{ raw: "progress", pi: { ...h.pi, events }, ctx, runtime: h.runtime },
+		)
+		await withBlocked(events, "Ferment phase boundary", async () => {})
+		await progress
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("progress still refreshes for domain events and ignores prompt deactivation", async () => {
+		const h = createHarness()
+		h.runtime.setActive(createRunningFerment(h, "Progress Ferment"))
+		const events = createEventBus()
+		const ctx = { ...h.ctx, hasUI: true }
+		const select = vi.mocked(ctx.ui.select)
+		let close = () => {}
+		select.mockImplementation(
+			(_title, _options, opts) =>
+				new Promise((resolve) => {
+					close = () => resolve(undefined)
+					opts?.signal?.addEventListener("abort", close, { once: true })
+				}),
+		)
+		const progress = new FermentCommandController().execute(
+			{ type: "progress" },
+			{ raw: "progress", pi: { ...h.pi, events }, ctx, runtime: h.runtime },
+		)
+		events.emit(HERDR_EVENTS.BLOCKED, { active: false })
+		expect(select).toHaveBeenCalledTimes(1)
+		events.emit(FERMENT_EVENTS.STEP_COMPLETED, {})
+		await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(2))
+		close()
+		await progress
+		events.emit(FERMENT_EVENTS.STEP_COMPLETED, {})
+		events.emit(HERDR_EVENTS.BLOCKED, { active: true })
+		expect(select).toHaveBeenCalledTimes(2)
 	})
 
 	it("/ferment auto at a phase boundary only changes continuation policy", async () => {

@@ -65,6 +65,7 @@ export function createContext(
 		ui: {
 			input: vi.fn(),
 			select: vi.fn(),
+			confirm: vi.fn(),
 			editor: vi.fn(),
 			notify: vi.fn(),
 			custom: vi.fn(),
