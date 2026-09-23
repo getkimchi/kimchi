@@ -3,6 +3,7 @@ import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isAutoModel } from "../router/constants.js"
+import { getAutoRoutingState, isRoutedModel } from "../router/state.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
@@ -27,10 +28,16 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 
 	let state: FeedbackState = "idle"
 	let autoModelUsed = false
+	// The concrete model a routed virtual model resolved to for the settled turn
+	// (`auto-beta` → `glm-5.3`). Captured alongside `autoModelUsed` so telemetry
+	// can report the actual pick rather than re-deriving it from whatever model
+	// happens to be selected when the rating dialog submits.
+	let routedUsedId: string | undefined
 
 	const reset = () => {
 		state = "idle"
 		autoModelUsed = false
+		routedUsedId = undefined
 		clearModelSwitchInvitation()
 		stopListeningForCtrlR()
 	}
@@ -87,14 +94,25 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// can prompt on a response that is about to be superseded.
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
 		state = "inviting"
-		autoModelUsed = isAutoModel(ctx.model)
+		const sessionId = ctx.sessionManager.getSessionId()
+		autoModelUsed = isAutoModel(ctx.model) || isRoutedModel(ctx.model, sessionId)
+		// Capture the concrete pick the router served, so `routing_model` reports
+		// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
+		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
+		const routingState = getAutoRoutingState(sessionId)
+		routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
 	})
 
 	pi.on("model_select", (event, ctx: ExtensionContext) => {
 		// Only react in TUI mode — headless modes can't show a dialog.
 		if (ctx.mode !== "tui" || !ctx.hasUI) return
-		// Only react when the previous model was auto.
-		if (!event.previousModel || !isAutoModel(event.previousModel)) return
+		// Only react when the previous model was auto or a routed virtual model.
+		if (
+			!event.previousModel ||
+			(!isAutoModel(event.previousModel) && !isRoutedModel(event.previousModel, ctx.sessionManager.getSessionId()))
+		) {
+			return
+		}
 		// Only react when the new model is a concrete model — skip auto/multi-model.
 		const newModel = event.model
 		if (isAutoModel(newModel)) return
@@ -193,13 +211,14 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// sees the same value, even if `autoModelUsed` is reset by a concurrent
 		// lifecycle event.
 		const usedAutoModel = autoModelUsed
+		const usedRoutedId = routedUsedId
 		let keepInviting = false
 		try {
 			// Yield once so the TUI removes the previous overlay (if any) before
 			// the details dialog is mounted. Without this yield the dialog's
 			// first frame can be composited with stale overlay content.
 			await Promise.resolve()
-			const submitted = await handleRating(pi, ctx, sentiment, usedAutoModel)
+			const submitted = await handleRating(pi, ctx, sentiment, usedAutoModel, usedRoutedId)
 			// Esc from the details dialog: keep the invitation alive so the
 			// user can rate the same turn again.
 			if (!submitted) keepInviting = true
@@ -222,6 +241,7 @@ async function handleRating(
 	ctx: ExtensionContext,
 	sentiment: FeedbackSentiment,
 	autoModelUsed: boolean,
+	routedUsedId: string | undefined,
 ): Promise<boolean> {
 	let result: { reason: string } | undefined
 	try {
@@ -246,6 +266,7 @@ async function handleRating(
 			reason,
 			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
 			autoModelUsed,
+			routingModelId: autoModelUsed ? routedUsedId : undefined,
 		})
 	} catch (err) {
 		ctx.ui.notify(`[feedback] Failed to record rating: ${err}`, "error")

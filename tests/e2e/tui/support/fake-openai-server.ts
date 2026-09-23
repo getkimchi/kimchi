@@ -83,6 +83,13 @@ export interface FakeResponseScript {
 	 * Without this, the session has no usage data and compaction gates
 	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
 	usage?: { prompt_tokens: number; completion_tokens: number }
+	/**
+	 * Concrete model id reported in the response `model` field instead of the
+	 * requested id — simulates a backend-routed virtual model (auto-beta) that
+	 * stamps the real pick. When set, the SSE chunk/body `model` differs from
+	 * the request's `model`, so pi-ai populates `AssistantMessage.responseModel`.
+	 */
+	responseModel?: string
 	/** Hold this response open — no headers, no body — until the promise
 	 * resolves. Test-controlled gate for asserting mid-request process state
 	 * (e.g. a CLI must stay alive and unfinished while a compaction
@@ -324,6 +331,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
+	const responseModel = script.responseModel ?? model
 	if (request.stream === false) {
 		writeJson(
 			res,
@@ -332,7 +340,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				id: "chatcmpl_fake",
 				object: "chat.completion",
 				created: unixNow(),
-				model,
+				model: responseModel,
 				choices: [
 					{
 						index: 0,
@@ -355,7 +363,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	// Emit one chunk envelope; only `choices` varies between chunks.
 	const chunk = (choices: unknown[]) =>
-		writeSse(res, { id: "chatcmpl_fake", object: "chat.completion.chunk", created: unixNow(), model, choices })
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model: responseModel,
+			choices,
+		})
 
 	let emitted = 0
 	chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
@@ -441,7 +455,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			id: "chatcmpl_fake",
 			object: "chat.completion.chunk",
 			created: unixNow(),
-			model,
+			model: responseModel,
 			choices: [finalChunk],
 			usage: {
 				prompt_tokens: script.usage.prompt_tokens,

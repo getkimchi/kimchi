@@ -1,8 +1,10 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, sendTerminalInput } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../router/state.js"
 import feedbackExtension from "./index.js"
 
 /**
@@ -66,6 +68,7 @@ describe("feedbackExtension state machine", () => {
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		const invitationState = await import("./invitation-state.js")
 		invitationState.clearModelSwitchInvitation()
+		clearAutoRoutingState("test-session")
 	})
 
 	it("registers only the rating shortcuts, leaving ctrl+r unclaimed", () => {
@@ -182,6 +185,29 @@ describe("feedbackExtension state machine", () => {
 
 		expect(dialogMock.show).toHaveBeenCalledWith(ctx, { sentiment: "positive", autoModelUsed: true })
 		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith(expect.objectContaining({ autoModelUsed: true }))
+	})
+
+	it("reports the resolved concrete pick as routing_model for a routed virtual model", async () => {
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
+		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
+		// Seed the routing state so the settled turn resolves auto-beta → glm-5.3.
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
+			requestedId: "auto-beta",
+		})
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
+
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+
+		expect(dialogMock.show).toHaveBeenCalledWith(ctx, { sentiment: "positive", autoModelUsed: true })
+		// routing_model carries the concrete pick, not the requested virtual id.
+		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith(
+			expect.objectContaining({ autoModelUsed: true, routingModelId: "glm-5.3" }),
+		)
 	})
 
 	it("returns to idle after the rating flow resolves, accepting new ratings", async () => {

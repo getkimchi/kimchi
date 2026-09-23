@@ -54,6 +54,7 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
@@ -741,6 +742,9 @@ try {
 			questionnaireExtension,
 			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
 			autoModelExtension,
+			// Backend-routed virtual models (`auto-beta`, future backend-owned `auto`)
+			// learn + display the concrete pick and re-sync capabilities.
+			autoModelRoutingExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),

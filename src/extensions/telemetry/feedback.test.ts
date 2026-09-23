@@ -59,6 +59,7 @@ describe("post-turn feedback telemetry", () => {
 		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue({ emit } as never)
 
 		trackFeedback({ sentiment: "positive", reason: "x", reasonType: "predefined", autoModelUsed: false })
+
 		trackModelSwitchFeedback({ reason: "x", modelName: "Claude", modelId: "claude-sonnet" })
 
 		expect(emit).not.toHaveBeenCalled()
@@ -84,6 +85,32 @@ describe("post-turn feedback telemetry", () => {
 				auto_model_used: true,
 				reason_type: "predefined",
 			})
+		})
+
+		it("emits routing_model with the resolved concrete pick when a routed model was used", () => {
+			const ctx = enableTelemetry()
+
+			trackFeedback({
+				sentiment: "positive",
+				reason: "",
+				reasonType: "predefined",
+				autoModelUsed: true,
+				routingModelId: "glm-5.3",
+			})
+
+			expect(ctx.emit).toHaveBeenCalledWith(
+				"survey_answered",
+				expect.objectContaining({ auto_model_used: true, routing_model: "glm-5.3" }),
+			)
+		})
+
+		it("omits routing_model when a routed model was not used", () => {
+			const ctx = enableTelemetry()
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+
+			const attrs = ctx.emit.mock.calls[0][1] as Record<string, unknown>
+			expect(attrs).not.toHaveProperty("routing_model")
 		})
 
 		it("maps positive sentiment to the exact PostHog choice label 'Good'", () => {
@@ -139,6 +166,7 @@ describe("post-turn feedback telemetry", () => {
 			const ctx = enableTelemetry()
 
 			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+
 			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
 
 			const ids = ctx.emit.mock.calls.map((c) => (c[1] as Record<string, unknown>).survey_submission_id)

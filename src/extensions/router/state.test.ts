@@ -88,6 +88,30 @@ describe("effective model resolution", () => {
 
 		expect(resolveEffectiveModel(model("auto"), SESSION_ID)).toBe(target)
 	})
+
+	it("resolves any backend-routed virtual model via its requestedId (id-agnostic)", () => {
+		const target = model("kimi-k3")
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target, requestedId: "auto-beta" })
+
+		expect(resolveEffectiveModel(model("auto-beta"), SESSION_ID)).toBe(target)
+	})
+
+	it("does not resolve a requestedId-scoped state for a different virtual model", () => {
+		const target = model("kimi-k3")
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target, requestedId: "auto-beta" })
+
+		const other = model("auto")
+		expect(resolveEffectiveModel(other, SESSION_ID)).toBe(other)
+	})
+
+	it("falls back to v1 isAutoModel semantics when resolved state has no requestedId", () => {
+		const target = model("kimi-k3")
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target })
+
+		const beta = model("auto-beta")
+		expect(resolveEffectiveModel(beta, SESSION_ID)).toBe(beta)
+		expect(resolveEffectiveModel(model("auto"), SESSION_ID)).toBe(target)
+	})
 })
 
 describe("hydrateAutoRoutingState", () => {
