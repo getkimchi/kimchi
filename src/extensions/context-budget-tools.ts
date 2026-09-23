@@ -145,7 +145,7 @@ interface ExtensionSource {
 }
 
 export const EXTENSION_SOURCES: ExtensionSource[] = [
-	{ module: "./todos/index.js", source: "todos" },
+	{ module: "./todos/core.js", source: "todos" },
 	{ module: "./web-search/index.js", source: "web-search" },
 	{ module: "./web-fetch/index.js", source: "web-fetch" },
 	{ module: "./questionnaire/questionnaire.js", source: "questionnaire" },

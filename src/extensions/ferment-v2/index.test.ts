@@ -26,7 +26,6 @@ import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "..
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { registerTodosCommand } from "../todos/command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
@@ -1895,21 +1894,6 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete" })
 	})
 
-	it("invalidates accepted final-answer delivery when the user changes Todos", async () => {
-		registerTodosCommand(harness.pi)
-		await harness.command("ship it")
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await completeVisibleTodo(harness)
-		await settleFermentV2(harness, "met", false)
-		expect(harness.currentFermentV2()).toMatchObject({ lastEvaluation: { verdict: "met" } })
-
-		await harness.runCommand("todos", "add Verify the changed result")
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-
-		expect(harness.currentFermentV2()).not.toHaveProperty("lastEvaluation")
-		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
-	})
-
 	it.each([
 		"queued",
 		"active",
@@ -2169,69 +2153,6 @@ describe("Ferment V2 extension", () => {
 			tokensUsed: 99,
 		})
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
-	})
-
-	it("waits before a user Todo mutation and resumes from the updated list", async () => {
-		registerTodosCommand(harness.pi)
-		await harness.command("ship it")
-		const details = applyWriteTodos(
-			{ todos: [{ content: "Keep until the user clears it", status: "in_progress" }] },
-			"session-a",
-		)
-		harness.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		harness.setIdle(false)
-		harness.sendMessage.mockClear()
-		await harness.runCommand("todos", "collapse")
-		expect(harness.waitForIdle).not.toHaveBeenCalled()
-		let releaseIdle: () => void = () => undefined
-		harness.waitForIdle.mockImplementationOnce(
-			() =>
-				new Promise<void>((resolve) => {
-					releaseIdle = resolve
-				}),
-		)
-
-		const clear = harness.runCommand("todos", "clear")
-		await vi.waitFor(() => expect(harness.waitForIdle).toHaveBeenCalledOnce())
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a")).toHaveLength(1)
-		harness.setIdle(true)
-		releaseIdle()
-		await clear
-
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a")).toEqual([])
-		expect(harness.abort).not.toHaveBeenCalled()
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
-		expect(harness.sendMessage.mock.calls.map((call) => call[0].details?.source)).toEqual([
-			"todo_command",
-			"todo_command",
-		])
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		expect(
-			await harness.fire("tool_call", {
-				type: "tool_call",
-				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
-				input: { status: "complete" },
-			}),
-		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo list") })
-	})
-
-	it("keeps the current Todo mutation handler when a previous session shuts down late", async () => {
-		registerTodosCommand(harness.pi)
-		harness.setSession("session-b", [])
-		await harness.fire("session_start", { type: "session_start", reason: "new" })
-		await harness.command("ship it")
-		const details = applyWriteTodos({ todos: [{ content: "Keep it", status: "in_progress" }] }, "session-b")
-		harness.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
-		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		harness.setIdle(false)
-
-		await harness.fire("session_shutdown", { type: "session_shutdown" }, "session-a")
-		const clear = harness.runCommand("todos", "clear")
-
-		expect(harness.waitForIdle).toHaveBeenCalledOnce()
-		harness.setIdle(true)
-		await clear
 	})
 
 	it("preserves active time when an edit cannot be persisted", async () => {
@@ -3776,18 +3697,6 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "tested" })
 	})
 
-	it("does not start when only part of the Todo toolset is visible", async () => {
-		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES, TODO_TOOL_NAMES[0]])
-		await harness.command("keep going")
-
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(harness.currentFermentV2()).toBeUndefined()
-		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
-			"warning",
-		)
-	})
-
 	it("pauses accounting when an agent turn is cancelled", async () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("keep going")
@@ -4520,6 +4429,9 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 		sendMessage,
 		events,
 		getActiveTools: vi.fn(() => activeTools),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 	} as unknown as ExtensionAPI
 	const ctx = {
 		cwd: options.cwd ?? process.cwd(),

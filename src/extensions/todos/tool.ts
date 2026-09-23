@@ -17,6 +17,26 @@ export const TODO_TOOL_NAMES = [
 	CLEAR_TODOS_TOOL_NAME,
 ] as const
 
+/**
+ * Guarded wrapper around {@link registerTodosTool}: registering the same
+ * tools twice for the same session throws, so lazy registrants (the ferment
+ * tool-scope on a non-idle profile, ferment-v2 on activation) must funnel
+ * through this. Presence is checked against the session's actual tool list
+ * (each extension has its own ExtensionAPI, so a per-`pi` guard would
+ * double-register when two extensions both engage).
+ */
+export function ensureTodoToolsRegistered(pi: ExtensionAPI): void {
+	try {
+		const registered = typeof pi.getAllTools === "function" ? pi.getAllTools() : []
+		if (TODO_TOOL_NAMES.every((name) => registered.some((tool) => tool.name === name))) return
+		registerTodosTool(pi)
+	} catch (err) {
+		// Best-effort: a host without tool registration (minimal test harnesses,
+		// embedders) must not break ferment activation.
+		console.error("[todos] failed to register todo tools:", err)
+	}
+}
+
 const TODO_STATUS_PARAMETER = Type.Union([
 	Type.Literal("pending"),
 	Type.Literal("in_progress"),

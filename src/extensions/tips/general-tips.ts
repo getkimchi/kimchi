@@ -27,11 +27,6 @@ export const GENERAL_TIPS = [
 		message: "Use `/agents` to manage agents or display running agents sessions",
 	},
 	{
-		id: "todos-overlay",
-		scope: "general",
-		message: "Todos: `/todos` or `F7`; expand tools with `ctrl+o`.",
-	},
-	{
 		id: "add-tags",
 		scope: "general",
 		message: "Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).",

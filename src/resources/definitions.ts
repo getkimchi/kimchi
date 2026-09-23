@@ -50,14 +50,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
-		id: "extensions.todos",
-		kind: "extensions",
-		label: "Todos",
-		description: "Enable tactical todo tracking with a live overlay.",
-		defaultEnabled: true,
-		restartRequired: true,
-	},
-	{
 		id: "extensions.bash-tool-guard",
 		kind: "extensions",
 		label: "Bash-tool guard",

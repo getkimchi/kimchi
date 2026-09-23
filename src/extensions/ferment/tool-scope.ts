@@ -3,6 +3,7 @@ import type { Ferment } from "../../ferment/types.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
+import { ensureTodoToolsRegistered } from "../todos/tool.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
@@ -134,6 +135,13 @@ export class FermentToolScope {
 		const catalogProfile = (
 			profile === "planning" ? "planning-ferment" : profile === "implementation" ? "implementation-ferment" : profile
 		) as "idle" | "worker" | "planning-ferment" | "implementation-ferment"
+		// Todo tools are ferment-internal surface (the user-facing todo feature
+		// was removed): in top-level sessions they are not registered at birth,
+		// so a non-idle ferment profile must register them before applying the
+		// catalog snapshot that names them.
+		if (catalogProfile === "planning-ferment" || catalogProfile === "implementation-ferment") {
+			ensureTodoToolsRegistered(this.pi)
+		}
 		ToolProfileManager.apply(catalogProfile, "ferment", this.pi)
 	}
 }

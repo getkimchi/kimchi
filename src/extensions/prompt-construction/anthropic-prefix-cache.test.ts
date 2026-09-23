@@ -28,7 +28,7 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from 
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
-import todosExtension from "../todos/index.js"
+import todosCoreExtension from "../todos/core.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 
 const SESSION_ID = "cache-replay-session"
@@ -107,7 +107,7 @@ function createHarness() {
 		},
 	})
 
-	todosExtension(pi)
+	todosCoreExtension(pi)
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
 		let result: unknown

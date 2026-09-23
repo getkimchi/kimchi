@@ -274,12 +274,11 @@ const BASH_CONTROL_TOOLS = ["bash_control"] as const
  *  deriving it from the same factories would make this test circular. */
 const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	...UPSTREAM_BUILTINS,
-	// todos
-	"create_todos",
-	"update_todos",
-	"mark_todo",
-	"add_todo",
-	"clear_todos",
+	// NOTE: the five todo tools (create_todos/update_todos/add_todo/mark_todo/
+	// clear_todos) are NOT part of the session-start surface — the user-facing
+	// todo feature was removed. They are ferment-internal now and register
+	// lazily when a ferment profile engages (see extensions/todos/core.ts and
+	// ferment/tool-scope.ts).
 	// web-search / web-fetch / questionnaire
 	"web_search",
 	"web_fetch",
@@ -375,13 +374,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 26-tool surface and hides the 17 deferred tools", async () => {
+	it("advertises exactly the documented 21-tool surface and hides the 17 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(26)
+		expect(visible.size).toBe(21)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -409,7 +408,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(24)
+			expect(visible.size).toBe(19)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}

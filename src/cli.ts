@@ -146,7 +146,7 @@ import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-
 import themeSelectorExtension from "./extensions/theme-selector.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
-import todosExtension from "./extensions/todos/index.js"
+import todosCoreExtension from "./extensions/todos/core.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
@@ -762,9 +762,10 @@ try {
 			// Named so startup diagnostics read `<inline:feedback>` rather than a
 			// positional `<inline:N>` that shifts whenever the list above changes.
 			{ name: "feedback", factory: feedbackExtension },
-			...enabledExtensionFactories([
-				{ id: "extensions.todos", factory: todosExtension },
-			] satisfies ManagedExtensionFactory[]),
+			// Ferment-internal todo machinery only (tools, state persistence, store
+			// restore). The user-facing todo feature (prompt guidance, /todos, F7
+			// overlay, nudges) was removed; see extensions/todos/core.ts.
+			todosCoreExtension,
 			hideThinkingExtension,
 			thinkingStepsExtension,
 			assistantPrefixExtension,

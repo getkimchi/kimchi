@@ -16,9 +16,8 @@ import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
 import { buildPlanModeSupplementBlock } from "../permissions/index.js"
 import type { PermissionModeState } from "../permissions/types.js"
-import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
+import todosCoreExtension from "../todos/core.js"
 import { FERMENT_TODO_GUIDANCE } from "../todos/ferment-prompt-block.js"
-import todosExtension, { TODO_EARLY_NUDGE_THRESHOLD } from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
@@ -277,7 +276,7 @@ describe("system prompt stability contract", () => {
 					harness = createHarness(surface)
 					__resetTodoStore()
 					setActive(surface === "non-ferment" ? undefined : makeFerment())
-					todosExtension(harness.pi)
+					todosCoreExtension(harness.pi)
 					harness.registerPlanningBlock()
 					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
 					await harness.fire("session_start", { reason: "new" })
@@ -293,7 +292,15 @@ describe("system prompt stability contract", () => {
 
 				it("keeps the assembled system prompt stable when todos are added, updated, and cleared", async () => {
 					const promptBefore = await harness.buildFinalSystemPrompt()
-					expect(promptBefore).toContain("## Todos")
+					// The user-facing todo feature was removed: no unconditional todo
+					// guidance in adhoc; ferment sessions get only the ferment
+					// supplement block.
+					if (surface === "non-ferment") {
+						expect(promptBefore).not.toContain("## Todos")
+						expect(promptBefore).not.toContain(FERMENT_TODO_GUIDANCE)
+					} else {
+						expect(promptBefore).toContain(FERMENT_TODO_GUIDANCE)
+					}
 					expect(await harness.buildContextText()).not.toContain("## Current Todos")
 
 					if (surface !== "non-ferment") {
@@ -334,7 +341,7 @@ describe("system prompt stability contract", () => {
 					harness = createHarness(surface)
 					__resetTodoStore()
 					setActive(surface === "non-ferment" ? undefined : makeFerment())
-					todosExtension(harness.pi)
+					todosCoreExtension(harness.pi)
 					harness.registerPlanningBlock()
 					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
 					await harness.fire("session_start", { reason: "new" })
@@ -414,7 +421,7 @@ describe("system prompt stability contract", () => {
 					harness = createHarness(surface)
 					__resetTodoStore()
 					setActive(surface === "non-ferment" ? undefined : makeFerment())
-					todosExtension(harness.pi)
+					todosCoreExtension(harness.pi)
 					harness.registerPlanningBlock()
 					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
 					await harness.fire("session_start", { reason: "new" })
@@ -513,7 +520,7 @@ describe("system prompt stability contract", () => {
 					__resetTodoStore()
 					ferment = makeFerment()
 					setActive(ferment)
-					todosExtension(harness.pi)
+					todosCoreExtension(harness.pi)
 					harness.registerPlanningBlock()
 					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
 					await harness.fire("session_start", { reason: "new" })
@@ -539,7 +546,7 @@ describe("system prompt stability contract", () => {
 
 					const promptBefore = await harness.buildFinalSystemPrompt()
 					const contextBefore = await harness.buildContextText()
-					expect(promptBefore).toContain("## Todos")
+					expect(promptBefore).toContain(FERMENT_TODO_GUIDANCE)
 					expect(contextBefore).toContain("## Current Todos")
 					expect(contextBefore).toContain("## Current lifecycle state")
 					expect(contextBefore).toContain("write parser")
@@ -624,14 +631,14 @@ describe("system prompt stability contract", () => {
 		}
 	})
 
-	describe("todo-guidance vs ferment supplement split", () => {
+	describe("ferment supplement block lifecycle", () => {
 		let harness: TestHarness
 
 		beforeEach(async () => {
 			harness = createHarness("non-ferment")
 			__resetTodoStore()
 			setActive(undefined)
-			todosExtension(harness.pi)
+			todosCoreExtension(harness.pi)
 			await harness.fire("session_start", { reason: "new" })
 		})
 
@@ -641,29 +648,21 @@ describe("system prompt stability contract", () => {
 			__resetTodoStore()
 		})
 
-		it("holds the static todo-guidance block byte-identical while the supplement appears and disappears with ferment activation", async () => {
+		it("shows only the ferment supplement block while a ferment is active and nothing otherwise", async () => {
 			const blocksBefore = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
-			expect(blocksBefore.map((b) => `${b.owner}/${b.id}`)).toEqual(["todos/todo-guidance"])
+			expect(blocksBefore.map((b) => `${b.owner}/${b.id}`)).toEqual([])
 			const promptBefore = await harness.buildFinalSystemPrompt()
-			expect(promptBefore).toContain("## Todos")
+			expect(promptBefore).not.toContain("## Todos")
 			expect(promptBefore).not.toContain(FERMENT_TODO_GUIDANCE)
 
 			setActive(makeFerment())
 
 			const blocksActive = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
-			expect(blocksActive.map((b) => `${b.owner}/${b.id}`)).toEqual([
-				"todos/todo-guidance",
-				"todos/todo-guidance-ferment",
-			])
-			// The static block is byte-identical — activation mutates only the supplement.
-			expect(blocksActive[0]?.content).toBe(blocksBefore[0]?.content)
-			expect(blocksActive[1]?.content).toBe(FERMENT_TODO_GUIDANCE)
+			expect(blocksActive.map((b) => `${b.owner}/${b.id}`)).toEqual(["todos/todo-guidance-ferment"])
+			expect(blocksActive[0]?.content).toBe(FERMENT_TODO_GUIDANCE)
 
 			const promptActive = await harness.buildFinalSystemPrompt()
-			// The supplement renders immediately after the base guidance (sorted
-			// block ids), so the prompt contains the exact guidance+supplement
-			// sequence as one contiguous run of todo instructions.
-			expect(promptActive).toContain(`${blocksBefore[0]?.content}\n\n${FERMENT_TODO_GUIDANCE}`)
+			expect(promptActive).toContain(FERMENT_TODO_GUIDANCE)
 
 			setActive(undefined)
 
@@ -671,86 +670,6 @@ describe("system prompt stability contract", () => {
 			// Full byte-identity restored: ferment activation leaves no residue in
 			// the prompt a cached prefix would see.
 			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
-		})
-	})
-
-	describe("todo early-nudge trigger boundary", () => {
-		let harness: TestHarness
-
-		beforeEach(async () => {
-			harness = createHarness("non-ferment")
-			__resetTodoStore()
-			setActive(undefined)
-			todosExtension(harness.pi)
-			await harness.fire("session_start", { reason: "new" })
-		})
-
-		afterEach(async () => {
-			await harness.fire("session_shutdown", {})
-			setActive(undefined)
-			__resetTodoStore()
-		})
-
-		async function fireToolExecutionEnd(toolName: string): Promise<void> {
-			await harness.fire("tool_execution_end", {
-				type: "tool_execution_end",
-				toolName,
-				toolCallId: `call-${toolName}`,
-				input: {},
-				isError: false,
-				result: { content: [], details: {} },
-			})
-		}
-
-		function earlyNudgeCalls(): SendMessageCall[] {
-			return harness.getSentMessages().filter((call) => {
-				const details = (call.message as { details?: { reason?: string } } | undefined)?.details
-				return call.options?.deliverAs === "steer" && details?.reason === "early_nudge"
-			})
-		}
-
-		/* Steer messages are transient injections into the current request's
-		 * prefix. Every steer that fires without its declared trigger is a cache
-		 * invalidation, so these tests pin the boundary: only work-tool-call
-		 * threshold crossings on todo-less sessions may emit the early nudge. */
-
-		it("does not fire below the work-tool threshold", async () => {
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 1; i++) await fireToolExecutionEnd("bash")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-		})
-
-		it("fires exactly once when the threshold is crossed and never recurs", async () => {
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD; i++) await fireToolExecutionEnd("bash")
-
-			const firstPass = earlyNudgeCalls()
-			expect(firstPass).toHaveLength(1)
-			expect((firstPass[0]?.message as { customType?: string }).customType).toBe(TODO_CUSTOM_ENTRY_TYPE)
-
-			// Further work tool calls must not emit another nudge — the prefix
-			// stabilises after the single steer.
-			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("bash")
-			expect(earlyNudgeCalls()).toHaveLength(1)
-		})
-
-		it("never fires once the session has had a todo list", async () => {
-			applyWriteTodos({ todos: [{ content: "planned task", status: "pending" }] }, SESSION_ID)
-			applyWriteTodos({ todos: [] }, SESSION_ID)
-
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD + 3; i++) await fireToolExecutionEnd("bash")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-		})
-
-		it("does not count todo tool calls toward the threshold", async () => {
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 2; i++) await fireToolExecutionEnd("bash")
-			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("write_todos")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-
-			await fireToolExecutionEnd("read")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-
-			// Second-to-last work tool call plus this one reaches the threshold.
-			await fireToolExecutionEnd("read")
-			expect(earlyNudgeCalls()).toHaveLength(1)
 		})
 	})
 
@@ -781,7 +700,7 @@ describe("system prompt stability contract", () => {
 			harness = createHarness("non-ferment")
 			__resetTodoStore()
 			setActive(undefined)
-			todosExtension(harness.pi)
+			todosCoreExtension(harness.pi)
 			wireBehaviours(harness.pi, [glabBehaviour], { resolverIO: stubResolverIO })
 			await harness.fire("session_start", { reason: "new" })
 		})
@@ -838,7 +757,7 @@ describe("system prompt stability contract", () => {
 			__resetTodoStore()
 			setActive(undefined)
 			mode = { mode: "plan", initiatedBy: "user", source: "runtime" }
-			todosExtension(harness.pi)
+			todosCoreExtension(harness.pi)
 			createSystemPromptBlocks(harness.pi, "permissions").register(buildPlanModeSupplementBlock(() => mode))
 			await harness.fire("session_start", { reason: "new" })
 		})
@@ -866,8 +785,9 @@ describe("system prompt stability contract", () => {
 			mode = { mode: "default", initiatedBy: "user", source: "runtime" }
 			const promptDefault = await harness.buildFinalSystemPrompt()
 			expect(promptDefault).not.toContain("Plan mode is active")
-			// Static sections are untouched by the mode toggle.
-			expect(promptDefault).toContain("## Todos")
+			// Static sections are untouched by the mode toggle; the removed
+			// todo-guidance block must stay absent.
+			expect(promptDefault).not.toContain(FERMENT_TODO_GUIDANCE)
 
 			mode = { mode: "plan", initiatedBy: "user", source: "runtime" }
 			expect(await harness.buildFinalSystemPrompt()).toBe(promptPlan)
@@ -890,7 +810,7 @@ describe("system prompt stability contract", () => {
 			__resetTodoStore()
 			setActive(undefined)
 			engine = new TriggerEngine([behaviour])
-			todosExtension(harness.pi)
+			todosCoreExtension(harness.pi)
 			const behaviourBlocks = createSystemPromptBlocks(harness.pi, "behaviours")
 			behaviourBlocks.register({
 				id: "rules",

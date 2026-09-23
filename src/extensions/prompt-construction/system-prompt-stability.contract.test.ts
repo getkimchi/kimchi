@@ -33,23 +33,14 @@ interface BlockRegistrar {
  */
 const KNOWN_REGISTRARS: BlockRegistrar[] = [
 	{
-		file: "src/extensions/todos/prompt-block.ts",
-		owner: "todos",
-		blockId: "todo-guidance",
-		expectedStability: "static",
-		reason:
-			"todo guidance is constant; live todo state lives in the transient context event " +
-			"(state-markdown.ts, non-registrar) and the ferment supplement is split out into " +
-			"its own dynamic block, so this file carries zero volatile imports",
-	},
-	{
 		file: "src/extensions/todos/ferment-prompt-block.ts",
 		owner: "todos",
 		blockId: "todo-guidance-ferment",
 		expectedStability: "dynamic",
 		reason:
-			"ferment todo supplement appears only while a ferment is active; " +
-			"id sorts immediately after the base todo-guidance block in the assembled prompt",
+			"ferment todo supplement appears only while a ferment is active. The base static " +
+			"todo-guidance block was removed together with the user-facing todo feature — todo " +
+			"machinery is ferment-internal now, so this is the only todos prompt block.",
 	},
 	{
 		file: "src/extensions/ferment/index.ts",
@@ -220,34 +211,29 @@ describe("system-prompt block cache contract (source)", () => {
 		})
 	}
 
-	it("keeps the todos system-prompt block static and reintroducing todo-state impossible by omission", () => {
-		const promptBlock = readSource("src/extensions/todos/prompt-block.ts")
+	it("keeps the user-facing todo prompt block removed and reintroducing todo-state impossible by omission", () => {
 		const fermentBlock = readSource("src/extensions/todos/ferment-prompt-block.ts")
-		const index = readSource("src/extensions/todos/index.ts")
+		const core = readSource("src/extensions/todos/core.ts")
 
-		expect(promptBlock).toContain('id: "todo-guidance"')
-		expect(promptBlock).not.toContain('id: "todo-state"')
-		expect(promptBlock).not.toContain("registerTodoStateBlock")
-		// The static block must not re-grow a ferment-state branch — that is
-		// what the dynamic supplement block is for.
-		expect(promptBlock).not.toContain("getActive")
-		// The removed before_agent_start fallback must stay removed: a silent
-		// patch would mask block-pipeline regressions these tests exist to catch.
-		expect(promptBlock).not.toContain("appendTodoPromptBlockIfMissing")
-		expect(index).not.toContain("appendTodoPromptBlockIfMissing")
+		// The static `## Todos` base block (`id: "todo-guidance"`) was deleted
+		// with the user-facing todo feature: no todos registrar may reintroduce
+		// unconditional todo guidance into the adhoc system prompt.
+		expect(fermentBlock).not.toContain('id: "todo-guidance"')
+		expect(fermentBlock).not.toContain("registerTodoStateBlock")
 
 		expect(fermentBlock).toContain('id: "todo-guidance-ferment"')
 
-		expect(index).toContain("registerTodoStatePersistence(pi)")
-		expect(index).toContain("registerFermentTodoPromptBlock(pi)")
-		expect(index).not.toContain("registerTodoStateBlock")
+		expect(core).toContain("registerTodoStatePersistence(pi)")
+		expect(core).toContain("registerFermentTodoPromptBlock(pi)")
+		expect(core).not.toContain("registerTodoStateBlock")
+		expect(core).not.toContain("registerTodoPromptBlock")
 	})
 
 	it("delivers dynamic state via persist-on-change, never via tail-push", () => {
 		const contextState = readSource("src/extensions/todos/context-state.ts")
 		const lifecycleContext = readSource("src/extensions/ferment/lifecycle-context.ts")
 		const stateMarkdown = readSource("src/extensions/todos/state-markdown.ts")
-		const todosIndex = readSource("src/extensions/todos/index.ts")
+		const todosCore = readSource("src/extensions/todos/core.ts")
 
 		// Persist-on-change: state blocks are written to session history via
 		// sendMessage, so they join the growing stable prefix. The machinery is
@@ -270,9 +256,9 @@ describe("system-prompt block cache contract (source)", () => {
 		expect(sharedPersistence).not.toContain("messages.push")
 		expect(sharedPersistence).not.toContain("event.messages.push")
 
-		// The todos index wires persistence, not transient injection.
-		expect(todosIndex).toContain("registerTodoStatePersistence(pi)")
-		expect(todosIndex).not.toContain("registerTodoContextState")
+		// The todos core wires persistence, not transient injection.
+		expect(todosCore).toContain("registerTodoStatePersistence(pi)")
+		expect(todosCore).not.toContain("registerTodoContextState")
 
 		// The renderer lives outside any registrar file so the static
 		// import guard above can be strict (zero allowlisted exceptions).

@@ -478,21 +478,12 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(JSON.stringify(result)).toContain("Plan mode")
 	})
 
-	it("keeps todo tools visible and allowed under explicit --plan", async () => {
+	it("hides todo tools under explicit --plan (todo tools are ferment-internal)", async () => {
 		const harness = createPermissionsHarness(["read", "bash", ...TODO_TOOL_NAMES], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...TODO_TOOL_NAMES].sort())
-		for (const toolName of TODO_TOOL_NAMES) {
-			await expect(
-				harness.fire(
-					"tool_call",
-					{ toolName, input: { todos: [{ content: "Plan task", status: "pending" }] } },
-					createMockContext([]),
-				),
-			).resolves.toBeUndefined()
-		}
+		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
 	})
 
 	it("keeps Ferment V2 state tools visible under explicit --plan", async () => {
@@ -502,7 +493,7 @@ describe("permissions plan-mode tool visibility", () => {
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES].sort())
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...FERMENT_V2_TOOL_NAMES].sort())
 		for (const toolName of [FERMENT_TOOLS.PROPOSE_SCOPING, "edit", "write"]) {
 			expect(harness.activeTools()).not.toContain(toolName)
 		}

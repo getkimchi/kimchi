@@ -21,7 +21,12 @@ import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js
 import { getTodoScopeKey, normalizeTodoScope, validateExplicitTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
-import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+import {
+	ensureTodoToolsRegistered,
+	MARK_TODO_TOOL_NAME,
+	TODO_TOOL_NAMES,
+	UPDATE_TODOS_TOOL_NAME,
+} from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import {
@@ -569,6 +574,22 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return fermentV2?.presentation?.kind === "approved-plan" ? "plan execution" : "Ferment V2"
 	}
 
+	function activateTodoTools(): void {
+		// Todo tools are ferment-internal surface: not registered (and thus not
+		// active) at session birth in top-level sessions, so v2 activation
+		// registers them lazily and surfaces them into the active set — the
+		// availability check reads pi.getActiveTools().
+		ensureTodoToolsRegistered(pi)
+		try {
+			const active = pi.getActiveTools()
+			const missing = TODO_TOOL_NAMES.filter((name) => !active.includes(name))
+			if (missing.length > 0) pi.setActiveTools([...active, ...missing])
+		} catch {
+			// Best-effort: hosts without active-tool introspection rely on lazy
+			// registration only; profile snapshots re-derive the set afterwards.
+		}
+	}
+
 	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = [UPDATE_FERMENT_V2_TOOL_NAME]): boolean {
 		try {
 			const active = new Set(pi.getActiveTools())
@@ -1098,6 +1119,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		settleBeforeMutation = true,
 	): Promise<FermentV2PlanExecutorResult | "unavailable"> {
 		const sessionId = bindSession(ctx)
+		// Todo tools are ferment-internal surface: register + activate lazily
+		// before the availability check below.
+		activateTodoTools()
 		const captured = currentFermentV2
 		let terminalWaiter: Promise<void> | undefined
 		const approvedPlan = presentation?.kind === "approved-plan"
@@ -1528,6 +1552,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		replaySession(ctx)
+		// A restored session carrying an unfinished Ferment V2 needs the
+		// ferment-internal todo tools registered (they are lazy by design).
+		if (currentFermentV2 && currentFermentV2.status !== "complete") activateTodoTools()
 		// Defer a resumed Ferment V2's kick so an embedder's incoming prompt wins the
 		// streaming-slot race; the timer rechecks busy, pending, and Ferment V2 identity.
 		// No waiter is held open, and pendingContinuation keeps repeated resumes idempotent.

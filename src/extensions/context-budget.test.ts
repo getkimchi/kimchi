@@ -62,13 +62,14 @@ const BUDGET = {
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 2150,
-	/** Total canonical tool surface (26 tools after the DAP session-tool +
-	 *  bash_control deferrals, the mcp zero-server registration gate, and the
-	 *  lsp no-server detection gate; ~5% headroom). Dev sessions in a repo WITH
+	/** Total canonical tool surface (21 tools after the DAP session-tool +
+	 *  bash_control deferrals, the mcp zero-server registration gate, the
+	 *  lsp no-server detection gate, and the todo-tools lazy-registration
+	 *  removal; ~5% headroom). Dev sessions in a repo WITH
 	 *  a detected language server will exceed this by the five gated lsp_* tools
 	 *  — that is by design, see LSP_TOOL_NAMES in lsp.ts. */
 	toolSurface: 7100,
-	/** Print-mode slice (24 tools — the canonical surface minus questionnaire
+	/** Print-mode slice (19 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
 	 *  runs; ~5% headroom). */
 	printToolSurface: 6300,
@@ -214,11 +215,8 @@ describe("context budget", () => {
 				"grep",
 				"find",
 				"ls",
-				"create_todos",
-				"update_todos",
-				"mark_todo",
-				"add_todo",
-				"clear_todos",
+				// The five todo tools are deliberately absent from the canonical
+				// surface — ferment-internal, lazily registered (todos/core.ts).
 				"web_search",
 				"web_fetch",
 				"questionnaire",
@@ -262,11 +260,11 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 26-tool set above; in print
+		// The interactive surface is the canonical 21-tool set above; in print
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(24)
+		expect(tools.length).toBe(19)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

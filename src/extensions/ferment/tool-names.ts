@@ -62,6 +62,9 @@ export function isFermentToolName(name: string): boolean {
  * is excluded so it remains visible in normal chat and idle mode.
  */
 export function isFermentOnlyToolName(name: string): boolean {
+	// Todo tools are ferment-internal surface (the user-facing todo feature was
+	// removed): they must stay hidden in the idle profile, which is derived
+	// from the full registered toolset minus isFermentOnlyToolName.
 	return PLANNER_ONLY_FERMENT_TOOL_NAMES.has(name)
 }
 

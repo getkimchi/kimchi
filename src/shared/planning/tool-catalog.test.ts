@@ -46,7 +46,6 @@ const TOOL_NAMES = {
 		...WORKFLOW_OUTPUT_TOOL_NAMES,
 		"mcp",
 		...DAP_TOOL_NAMES,
-		...TODO_TOOL_NAMES,
 		...FERMENT_V2_TOOL_NAMES,
 	],
 	adhocOnly: ["questionnaire"],
@@ -133,6 +132,13 @@ describe("FERMENT_MODE_TOOLS", () => {
 	it("contains the ferment lifecycle tools", () => {
 		for (const name of [...expectedPlanningTools, ...expectedImplementationTools]) {
 			expect(allNames).toContain(name)
+		}
+	})
+
+	it("contains the ferment-internal todo lifecycle tools", () => {
+		for (const name of TODO_TOOL_NAMES) {
+			expect(allNames).toContain(name)
+			expect(FERMENT_MODE_TOOLS.find((t) => t.name === name)?.modes).toEqual(["ferment"])
 		}
 	})
 
@@ -252,6 +258,7 @@ describe("getToolsForProfile", () => {
 				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",
+				...TODO_TOOL_NAMES,
 			]
 			for (const name of fermentOnly) {
 				expect(names).not.toContain(name)
@@ -286,7 +293,7 @@ describe("getToolsForProfile", () => {
 			}
 		})
 
-		it("includes todo lifecycle tools (shared core)", () => {
+		it("includes todo lifecycle tools (ferment-only)", () => {
 			for (const name of TODO_TOOL_NAMES) {
 				expect(names).toContain(name)
 			}
@@ -328,7 +335,7 @@ describe("getToolsForProfile", () => {
 			}
 		})
 
-		it("includes todo lifecycle tools (shared core)", () => {
+		it("includes todo lifecycle tools (ferment-only)", () => {
 			for (const name of TODO_TOOL_NAMES) {
 				expect(names).toContain(name)
 			}
