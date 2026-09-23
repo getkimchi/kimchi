@@ -45,6 +45,42 @@ describe("resolveWorkspaceSpec dependencies", () => {
 	it("rejects duplicates, naming the entry", () => {
 		expect(() => resolveWorkspaceSpec({ dependencies: ["jq", "node@22", "jq"] })).toThrowError(/duplicate entry/)
 	})
+
+	// Parity pin, NOT a laxity bug: the client grammar must stay
+	// byte-identical to the server's buf.validate patterns, which also
+	// accept a bare "@". Diverging here would make the client reject tool
+	// references the server accepts. Install-time failure (if any)
+	// surfaces server-side — same as any accepted-but-uninstallable entry.
+	it("accepts a bare @ (parity pin with the server grammar)", () => {
+		expect(resolveWorkspaceSpec({ dependencies: ["@"] })).toEqual({ dependencies: ["@"] })
+	})
+
+	it("reports the grammar violation for every occurrence of a repeated invalid entry (no duplicate masking)", () => {
+		try {
+			resolveWorkspaceSpec({ dependencies: ["no de", "no de"] })
+			expect.unreachable()
+		} catch (err) {
+			const message = (err as Error).message
+			expect(message).toContain("dependencies[0]")
+			expect(message).toContain("dependencies[1]")
+			expect(message).not.toContain("duplicate")
+		}
+	})
+
+	it("reports duplicates only for otherwise-valid entries", () => {
+		try {
+			resolveWorkspaceSpec({ dependencies: ["bad dep", "bad dep", "jq", "jq"] })
+			expect.unreachable()
+		} catch (err) {
+			const message = (err as Error).message
+			// [0], [1]: grammar violations (not masked as duplicates).
+			expect(message).toContain('dependencies[0] value "bad dep"')
+			expect(message).toContain('dependencies[1] value "bad dep"')
+			// [2]: valid; [3]: the only duplicate.
+			expect(message).toContain('dependencies[3] value "jq"')
+			expect(message).toMatch(/duplicate/)
+		}
+	})
 })
 
 describe("resolveWorkspaceSpec egressPolicy", () => {

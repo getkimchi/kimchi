@@ -1,5 +1,5 @@
-import { resolveWorkspaceResources, WorkspaceResourcesError } from "./resources.js"
-import type { EgressPolicyConfig, WorkspaceResourcesConfig, WorkspaceSpecConfig } from "./types.js"
+import { collectResourceViolations, resolveWorkspaceResources } from "./resources.js"
+import type { EgressPolicyConfig, WorkspaceSpecConfig } from "./types.js"
 import type { WorkspaceFileConfig } from "./workspace-file.js"
 import { WORKSPACE_FILE_NAME } from "./workspace-file.js"
 
@@ -41,22 +41,18 @@ export function resolveWorkspaceSpec(config: WorkspaceFileConfig | undefined): W
 	if (!config) return undefined
 
 	const violations: string[] = []
-	let resources: WorkspaceResourcesConfig | undefined
-	try {
-		resources = resolveWorkspaceResources(config.resources)
-	} catch (err) {
-		if (err instanceof WorkspaceResourcesError) {
-			violations.push(...err.message.split("\n"))
-		} else {
-			throw err
-		}
-	}
+	violations.push(...collectResourceViolations(config.resources))
 	violations.push(...dependencyViolations(config.dependencies))
 	violations.push(...egressPolicyViolations(config.egressPolicy))
 
 	if (violations.length > 0) {
 		throw new WorkspaceSpecError(violations.join("\n"))
 	}
+
+	// Resources validated clean above; resolve repeats the field iteration to
+	// normalize, sharing one violation implementation via
+	// collectResourceViolations rather than re-parsing a thrown message.
+	const resources = resolveWorkspaceResources(config.resources)
 
 	const out: WorkspaceSpecConfig = {}
 	if (resources) out.resources = resources
@@ -79,22 +75,27 @@ function dependencyViolations(deps: string[] | undefined): string[] {
 	}
 	const seen = new Set<string>()
 	for (const [i, d] of deps.entries()) {
+		// Report the concrete violation for every invalid occurrence; an entry
+		// joins the duplicate set only when it is otherwise valid — a repeated
+		// invalid entry must surface its real problem each time, not a bare
+		// "duplicate" that hides it for later occurrences.
+		let violation: string | undefined
+		if (d === "") {
+			violation = `Invalid dependencies[${i}] in ${WORKSPACE_FILE_NAME} — empty entry.`
+		} else if (d.length > MAX_DEPENDENCY_LENGTH) {
+			violation = `Invalid dependencies[${i}] in ${WORKSPACE_FILE_NAME} — entry exceeds ${MAX_DEPENDENCY_LENGTH} characters.`
+		} else if (!DEPENDENCY_RE.test(d) || BARE_VERSION_RE.test(d)) {
+			violation = `Invalid dependencies[${i}] value "${d}" in ${WORKSPACE_FILE_NAME} — not a valid tool reference (expected [registry:]tool[@version]).`
+		}
+		if (violation) {
+			violations.push(violation)
+			continue
+		}
 		if (seen.has(d)) {
 			violations.push(`Invalid dependencies[${i}] value "${d}" in ${WORKSPACE_FILE_NAME} — duplicate entry.`)
 			continue
 		}
 		seen.add(d)
-		if (d === "") {
-			violations.push(`Invalid dependencies[${i}] in ${WORKSPACE_FILE_NAME} — empty entry.`)
-		} else if (d.length > MAX_DEPENDENCY_LENGTH) {
-			violations.push(
-				`Invalid dependencies[${i}] in ${WORKSPACE_FILE_NAME} — entry exceeds ${MAX_DEPENDENCY_LENGTH} characters.`,
-			)
-		} else if (!DEPENDENCY_RE.test(d) || BARE_VERSION_RE.test(d)) {
-			violations.push(
-				`Invalid dependencies[${i}] value "${d}" in ${WORKSPACE_FILE_NAME} — not a valid tool reference (expected [registry:]tool[@version]).`,
-			)
-		}
 	}
 	return violations
 }

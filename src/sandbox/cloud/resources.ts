@@ -84,23 +84,15 @@ export function byteQuantityToBytes(raw: unknown): number | undefined {
 }
 
 /**
- * Validate and normalize resource requests from `kimchi_workspace.yaml`.
- *
- * The client owns syntax only — values pass through to the server verbatim
- * as quantity strings; no millicore/byte conversion here. Normalization is
- * outer-whitespace trimming only — internal whitespace makes the value
- * invalid (a typo like "2 0Gi" must never silently become "20Gi").
- * Positivity is enforced (zero and unparseable values rejected); a field
- * left unset is omitted (inherits org policy). Returns undefined when no
- * resources are set at all.
+ * Resource violations as a list, without the throwing wrapper — shared by
+ * resolveWorkspaceResources (which joins them into its message) and
+ * resolveWorkspaceSpec (cross-section aggregation), so both consume one
+ * source of truth instead of re-parsing a formatted error string.
  */
-export function resolveWorkspaceResources(
-	config: WorkspaceResourcesConfig | undefined,
-): WorkspaceResourcesConfig | undefined {
-	if (!config) return undefined
-	const out: WorkspaceResourcesConfig = {}
-	// All violations are collected and reported at once (mirrors kap's
-	// errors.Join aggregation) rather than failing on the first bad field.
+export function collectResourceViolations(config: WorkspaceResourcesConfig | undefined): string[] {
+	if (!config) return []
+	// All violations are collected and reported at once rather than failing
+	// on the first bad field.
 	const violations: string[] = []
 	for (const field of WORKSPACE_RESOURCE_FIELDS) {
 		const raw = config[field]
@@ -117,12 +109,35 @@ export function resolveWorkspaceResources(
 			violations.push(
 				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — must be positive; remove the field to inherit the org default.`,
 			)
-			continue
 		}
-		out[field] = normalized
 	}
+	return violations
+}
+
+/**
+ * Validate and normalize resource requests from `kimchi_workspace.yaml`.
+ *
+ * The client owns syntax only — values pass through to the server verbatim
+ * as quantity strings; no millicore/byte conversion here. Normalization is
+ * outer-whitespace trimming only — internal whitespace makes the value
+ * invalid (a typo like "2 0Gi" must never silently become "20Gi").
+ * Positivity is enforced (zero and unparseable values rejected); a field
+ * left unset is omitted (inherits org policy). Returns undefined when no
+ * resources are set at all.
+ */
+export function resolveWorkspaceResources(
+	config: WorkspaceResourcesConfig | undefined,
+): WorkspaceResourcesConfig | undefined {
+	if (!config) return undefined
+	const violations = collectResourceViolations(config)
 	if (violations.length > 0) {
 		throw new WorkspaceResourcesError(violations.join("\n"))
+	}
+	const out: WorkspaceResourcesConfig = {}
+	for (const field of WORKSPACE_RESOURCE_FIELDS) {
+		const raw = config[field]
+		if (raw === undefined) continue
+		out[field] = raw.trim()
 	}
 	return Object.keys(out).length > 0 ? out : undefined
 }
