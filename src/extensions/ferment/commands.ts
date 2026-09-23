@@ -423,7 +423,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 	] as const
 
 	let currentController: AbortController | undefined
-	let interrupted = false
+	const interruption = new AbortController()
 
 	const refreshHandler = () => {
 		currentController?.abort()
@@ -438,7 +438,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 	unsubscribers.push(
 		pi.events.on(HERDR_EVENTS.BLOCKED, (data) => {
 			if (!(data as HerdrBlockedPayload).active) return
-			interrupted = true
+			interruption.abort()
 			currentController?.abort()
 		}),
 	)
@@ -449,12 +449,12 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 	// Auto-refreshing select: retries with fresh title/options when the
 	// underlying ferment state changes while the dialog is open.
 	async function liveSelect(buildTitle: () => string, buildOptions: () => string[]): Promise<string | undefined> {
-		while (!interrupted) {
+		while (!interruption.signal.aborted) {
 			const controller = new AbortController()
 			currentController = controller
 			const choice = await select(buildTitle(), buildOptions(), { signal: controller.signal })
 			currentController = undefined
-			if (interrupted) return undefined
+			if (interruption.signal.aborted) return undefined
 			// If aborted by a domain event, loop and re-render with fresh data.
 			if (choice === undefined && controller.signal.aborted) continue
 			return choice
@@ -480,10 +480,13 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 			}
 
 			if (l1choice === "Abandon ferment") {
+				if (interruption.signal.aborted) return
 				const confirmed = await confirm(
 					`Abandon "${f.name}"?`,
 					"Marks the ferment abandoned. Work done so far is preserved.",
+					{ signal: interruption.signal },
 				)
+				if (interruption.signal.aborted) return
 				if (confirmed) {
 					const outcome = applyAndPersist(f.id, { type: "abandon" })
 					if (outcome.ok) {

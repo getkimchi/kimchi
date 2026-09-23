@@ -1190,7 +1190,77 @@ describe("registerFermentCommands", () => {
 		expect(select).toHaveBeenCalledTimes(depth + 1)
 	})
 
-	it("discards a pending progress selection when a blocking prompt takes focus", async () => {
+	it.each([
+		"interrupt",
+		"confirm",
+		"cancel",
+	] as const)("progress confirmation settles on %s and releases listeners", async (action) => {
+		const h = createHarness()
+		const ferment = createRunningFerment(h, "Progress Ferment")
+		h.runtime.setActive(ferment)
+		const events = createEventBus()
+		const subscribe = events.on
+		const unsubscribed = vi.fn()
+		const subscriptions = vi.spyOn(events, "on").mockImplementation((...args) => {
+			const off = subscribe(...args)
+			return () => {
+				off()
+				unsubscribed()
+			}
+		})
+		const ctx = { ...h.ctx, hasUI: true }
+		vi.mocked(ctx.ui.select).mockResolvedValueOnce("Abandon ferment")
+		let answer = (_confirmed: boolean) => {}
+		const confirm = vi.mocked(ctx.ui.confirm).mockImplementation(
+			(_title, _message, options) =>
+				new Promise<boolean>((resolve) => {
+					answer = resolve
+					options?.signal?.addEventListener("abort", () => resolve(false), { once: true })
+				}),
+		)
+		let settled = false
+		const progress = new FermentCommandController()
+			.execute({ type: "progress" }, { raw: "progress", pi: { ...h.pi, events }, ctx, runtime: h.runtime })
+			.then(() => {
+				settled = true
+			})
+		try {
+			await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce())
+			const progressSubscriptionCount = subscriptions.mock.calls.length
+			events.emit(FERMENT_EVENTS.STEP_COMPLETED, {})
+			await Promise.resolve()
+			expect(settled).toBe(false)
+			expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+			if (action === "interrupt") await withBlocked(events, "Ferment phase boundary", async () => {})
+			else answer(action === "confirm")
+			await vi.waitFor(() => expect(settled).toBe(true))
+			expect(h.storage.get(ferment.id)?.status).toBe(action === "confirm" ? "abandoned" : "running")
+			expect(unsubscribed).toHaveBeenCalledTimes(progressSubscriptionCount)
+		} finally {
+			answer(false)
+			await progress
+		}
+	})
+
+	it("does not abandon when a blocking prompt preempts the confirmation result", async () => {
+		const h = createHarness()
+		const ferment = createRunningFerment(h, "Progress Ferment")
+		h.runtime.setActive(ferment)
+		const events = createEventBus()
+		const ctx = { ...h.ctx, hasUI: true }
+		vi.mocked(ctx.ui.select).mockResolvedValueOnce("Abandon ferment")
+		vi.mocked(ctx.ui.confirm).mockImplementation(async () => {
+			await withBlocked(events, "Ferment phase boundary", async () => {})
+			return true
+		})
+		await new FermentCommandController().execute(
+			{ type: "progress" },
+			{ raw: "progress", pi: { ...h.pi, events }, ctx, runtime: h.runtime },
+		)
+		expect(h.storage.get(ferment.id)?.status).toBe("running")
+	})
+
+	it.each([false, true])("ignores a preempted selection (returned=%s)", async (returned) => {
 		const h = createHarness()
 		h.runtime.setActive(createRunningFerment(h, "Progress Ferment"))
 		const events = createEventBus()
@@ -1200,6 +1270,7 @@ describe("registerFermentCommands", () => {
 			{ type: "progress" },
 			{ raw: "progress", pi: { ...h.pi, events }, ctx, runtime: h.runtime },
 		)
+		if (returned) await Promise.resolve()
 		await withBlocked(events, "Ferment phase boundary", async () => {})
 		await progress
 		expect(ctx.ui.confirm).not.toHaveBeenCalled()
