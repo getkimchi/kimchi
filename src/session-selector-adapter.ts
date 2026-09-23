@@ -19,7 +19,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
-import { getInternalSessionInfo, type InternalSessionInfo } from "./session-visibility.js"
+import { getSessionRoleInfo, type SessionRoleInfo } from "./session-visibility.js"
 
 // Pi 0.85.1 exposes the selector but not its presentation state. Keep this private
 // boundary here; the contract tests instantiate the real upstream component.
@@ -146,7 +146,7 @@ function renderSessions(
 	width: number,
 	loading: boolean,
 	hiddenCount: number,
-	internalSessions: WeakMap<SessionInfo, InternalSessionInfo>,
+	sessionRoles: WeakMap<SessionInfo, SessionRoleInfo>,
 ): string[] {
 	const query = list.searchInput.getValue()
 	const { pattern, error } = searchPattern(query)
@@ -192,11 +192,13 @@ function renderSessions(
 		const title = clean(session.name?.trim() || session.firstMessage || "(untitled session)")
 		const dates = code(cell(sessionDate(session.modified), dateWidth))
 		const project = projectWidth ? link(cell(`${clean(basename(session.cwd)) || "Unknown"} `, projectWidth)) : ""
-		const info = internalSessions.get(session)
-		const internal = info
-			? colors.description(info.kind === "ferment-evaluator" ? "[background check] " : "[internal] ")
+		const info = sessionRoles.get(session)
+		const badge = info
+			? colors.description(
+					`[${info.kind === "subagent" ? clean(info.name) : info.kind === "ferment-evaluator" ? "background check" : "internal"}] `,
+				)
 			: ""
-		const label = `${list.buildTreePrefix(node)}${internal}${current ? "[current] " : ""}${highlight(title, pattern)}`
+		const label = `${list.buildTreePrefix(node)}${badge}${current ? "[current] " : ""}${highlight(title, pattern)}`
 		let row = `${selected ? "› " : "  "}${dates}${project}${selected ? bold(label) : label}`
 		row = truncateToWidth(row, width)
 		if (session.path === list.confirmingDeletePath) row = colors.selectedText(row)
@@ -211,7 +213,8 @@ function renderSessions(
 	const selected = list.filteredSessions[list.selectedIndex]?.session
 	if (selected) {
 		lines.push("")
-		const internal = internalSessions.get(selected)
+		const role = sessionRoles.get(selected)
+		const internal = role?.kind === "subagent" ? undefined : role
 		const parent = list.allSessions.find((session) => session.path === selected.parentSessionPath)
 		const labelWidth = 15
 		const detail = (label: string, value: string) => colors.description(cell(`${label}:`, labelWidth)) + value
@@ -226,7 +229,8 @@ function renderSessions(
 				: detail("Folder", link(shortPath(selected.cwd, width - labelWidth) || "Unknown")),
 			detail("Session", colors.description(clean(selected.id))),
 		)
-		if (list.showPath) lines.push(detail("File", link(shortPath(selected.path, width - labelWidth))))
+		// Reserve the file row so toggling it cannot move the table or preview.
+		lines.push(list.showPath ? detail("File", link(shortPath(selected.path, width - labelWidth))) : "")
 		if (internal) {
 			lines.push(
 				detail(
@@ -274,15 +278,19 @@ prototype.buildBaseLayout = function (content, options) {
 	const list = this.sessionList
 	if (!installed.has(list)) {
 		installed.add(list)
-		const internalSessions = new WeakMap<SessionInfo, InternalSessionInfo>()
+		const sessionRoles = new WeakMap<SessionInfo, SessionRoleInfo>()
+		const isInternal = (session: SessionInfo) => {
+			const role = sessionRoles.get(session)
+			return role !== undefined && role.kind !== "subagent"
+		}
 		let showInternal = true
 		for (const key of ["currentSessionsLoader", "allSessionsLoader"] as const) {
 			const loader = this[key].bind(this)
 			this[key] = async (onProgress) => {
 				const sessions = await loader(onProgress)
 				for (const session of sessions) {
-					const info = await getInternalSessionInfo(session)
-					if (info) internalSessions.set(session, info)
+					const info = await getSessionRoleInfo(session)
+					if (info) sessionRoles.set(session, info)
 				}
 				return sessions
 			}
@@ -299,8 +307,7 @@ prototype.buildBaseLayout = function (content, options) {
 				list.sortMode = "threaded"
 			}
 			filter(query)
-			if (!showInternal)
-				list.filteredSessions = list.filteredSessions.filter(({ session }) => !internalSessions.has(session))
+			if (!showInternal) list.filteredSessions = list.filteredSessions.filter(({ session }) => !isInternal(session))
 			const literal = query
 				.trim()
 				.replace(/^"([^"]+)"$/, "$1")
@@ -336,7 +343,7 @@ prototype.buildBaseLayout = function (content, options) {
 				showInternal = !showInternal
 				list.filterSessions(list.searchInput.getValue())
 				const selectedPath =
-					!showInternal && selected && internalSessions.has(selected) ? selected.parentSessionPath : selected?.path
+					!showInternal && selected && isInternal(selected) ? selected.parentSessionPath : selected?.path
 				const index = list.filteredSessions.findIndex(({ session }) => session.path === selectedPath)
 				if (index >= 0) list.selectedIndex = index
 				return
@@ -396,10 +403,10 @@ prototype.buildBaseLayout = function (content, options) {
 			]
 		}
 		list.render = (width) => {
-			// Leave room for the 17 panel rows and up to three harness footer rows.
-			list.maxVisible = Math.max(1, Math.min(10, (process.stdout.rows || 40) - 20 - Number(list.showPath)))
-			const hiddenCount = showInternal ? 0 : list.allSessions.filter((session) => internalSessions.has(session)).length
-			return renderSessions(list, width, this.header.loading, hiddenCount, internalSessions)
+			// Leave room for the 18 panel rows and up to three harness footer rows.
+			list.maxVisible = Math.max(1, Math.min(10, (process.stdout.rows || 40) - 21))
+			const hiddenCount = showInternal ? 0 : list.allSessions.filter((session) => isInternal(session)).length
+			return renderSessions(list, width, this.header.loading, hiddenCount, sessionRoles)
 		}
 	}
 	buildBaseLayout.call(this, content, options)

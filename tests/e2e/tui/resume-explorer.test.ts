@@ -8,7 +8,7 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
-function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void {
+function seedSessions(homeDir: string, workDir: string, archivedCount = 0, includeSubagent = false): void {
 	const cwd = realpathSync(workDir)
 	const other = join(cwd, "other-project")
 	mkdirSync(other)
@@ -30,6 +30,9 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 		],
 		[other, "Other project work", "Review cross-project-marker", "SAVED_OTHER_RESPONSE", "2026-03-03T10:00:00.000Z"],
 		[cwd, "Internal evaluator fixture", "Evaluate the saved task", "INTERNAL_RESPONSE", "2026-04-01T10:00:00.000Z"],
+		...(includeSubagent
+			? [[cwd, "Find retry boundary", "Inspect retries", "EXPLORER_RESPONSE", "2026-03-01T10:00:00.000Z"]]
+			: []),
 		...Array.from({ length: archivedCount }, (_, index) => [
 			cwd,
 			`Archived session ${index}`,
@@ -46,6 +49,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 		mkdirSync(dir, { recursive: true })
 		const id = randomUUID()
 		const internal = name === "Internal evaluator fixture"
+		const subagent = name === "Find retry boundary"
 		if (name === "Fix pool timeouts") parentSession = join(dir, `${id}.jsonl`)
 		const entries = [
 			{
@@ -54,17 +58,17 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void
 				id,
 				timestamp,
 				cwd: directory,
-				...(internal ? { parentSession } : {}),
+				...(internal || subagent ? { parentSession } : {}),
 			},
-			...(internal
+			...(internal || subagent
 				? [
 						{
 							type: "custom",
 							id: "internal",
 							parentId: null,
 							timestamp,
-							customType: "kimchi:internal-session",
-							data: { kind: "ferment-evaluator" },
+							customType: internal ? "kimchi:internal-session" : "kimchi:subagent-session",
+							data: internal ? { kind: "ferment-evaluator" } : { type: "Explore" },
 						},
 					]
 				: []),
@@ -118,7 +122,13 @@ test("find a session by conversation text, inspect its dates, and continue it", 
 			await waitForText(terminal, "/resume", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
 			await waitForText(terminal, "First message:", { full: false })
+			const position = (label: string) =>
+				viewText(terminal)
+					.split("\n")
+					.findIndex((line) => line.includes(label))
 			const initial = viewText(terminal)
+			const headingRow = position("Resume session")
+			const actionsRow = position("enter resume")
 			expect(initial).toContain("Current folder · Threads")
 			expect(initial.indexOf("Fix pool timeouts")).toBeLessThan(initial.indexOf("Documentation notes"))
 			expect(initial).toContain("Last active:")
@@ -131,16 +141,14 @@ test("find a session by conversation text, inspect its dates, and continue it", 
 			terminal.write("\x06")
 			await waitForText(terminal, "File:", { full: false })
 			expect(viewText(terminal)).toContain("ctrl+f file (on)")
+			expect(position("Resume session")).toBe(headingRow)
+			expect(position("enter resume")).toBe(actionsRow)
 			terminal.write("\x06")
 			await waitForText(terminal, "ctrl+f file (off)", { full: false })
 			expect(viewText(terminal)).not.toContain("File:")
 			trace.step("file shortcut works inside the running harness")
-			const position = (label: string) =>
-				viewText(terminal)
-					.split("\n")
-					.findIndex((line) => line.includes(label))
-			const headingRow = position("Resume session")
-			const actionsRow = position("enter resume")
+			expect(position("Resume session")).toBe(headingRow)
+			expect(position("enter resume")).toBe(actionsRow)
 			terminal.keyDown()
 			await waitForText(terminal, "2/3 sessions", { full: false })
 			expect(viewText(terminal)).toContain("Role:          Checks whether the parent task is complete")
@@ -234,6 +242,34 @@ test("CLI resume keeps a search while expanding to all folders and resumes the m
 	)
 })
 
+test("keep labeled subagents in the tree when hiding background checks", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "resume-explorer-agent-labels",
+			seedHome: (home, work) => seedSessions(home, work, 0, true),
+			responses: [],
+			extraArgs: ["--resume"],
+			startupText: "First message:",
+		},
+		async (_fixture, trace) => {
+			expect(viewText(terminal)).toContain("└─ [Explore] Find retry boundary")
+			expect(viewText(terminal)).toContain("├─ [background check] Internal evaluator fixture")
+			terminal.write("\x05")
+			await waitForText(terminal, "1 background check hidden", { full: false })
+			expect(viewText(terminal)).toContain("└─ [Explore] Find retry boundary")
+			expect(viewText(terminal)).not.toContain("[background check]")
+			terminal.keyDown()
+			await waitForText(terminal, "First message: Inspect retries", { full: false })
+			trace.step("ordinary subagent keeps its role and parent tree while evaluators are hidden")
+			terminal.submit("")
+			await waitForText(terminal, "EXPLORER_RESPONSE", { full: false })
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			trace.step("labeled child resumes its saved history")
+		},
+	)
+})
+
 test("page and cancel deletion without losing the resume controls in an 80 by 24 terminal", async ({ terminal }) => {
 	terminal.resize(80, 24)
 	await runKimchiSession(
@@ -249,7 +285,7 @@ test("page and cancel deletion without losing the resume controls in an 80 by 24
 			terminal.submit("")
 			await waitForText(terminal, "1/17 sessions", { full: false })
 			terminal.write("\x1b[6~")
-			await waitForText(terminal, "5/17 sessions", { full: false })
+			await waitForText(terminal, "4/17 sessions", { full: false })
 			expect(viewText(terminal)).toContain("Resume session · Current folder")
 			expect(viewText(terminal)).toContain("First message:")
 			expect(viewText(terminal)).toContain("enter resume")
@@ -259,12 +295,12 @@ test("page and cancel deletion without losing the resume controls in an 80 by 24
 			expect(viewText(terminal)).not.toContain("enter resume")
 			terminal.write("\x1b")
 			await waitForText(terminal, "enter resume", { full: false })
-			expect(viewText(terminal)).toContain("5/17 sessions")
+			expect(viewText(terminal)).toContain("4/17 sessions")
 			trace.step("deletion is labeled accurately and cancellation preserves the selection")
 			terminal.write("\x05")
-			await waitForText(terminal, "4/16 sessions", { full: false })
+			await waitForText(terminal, "3/16 sessions", { full: false })
 			terminal.write("\x05")
-			await waitForText(terminal, "5/17 sessions", { full: false })
+			await waitForText(terminal, "4/17 sessions", { full: false })
 			trace.step("interactive internal-session toggle keeps navigation working at 80 columns")
 		},
 	)

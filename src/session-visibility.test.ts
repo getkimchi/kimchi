@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
-import { getInternalSessionInfo, INTERNAL_SESSION_ENTRY } from "./session-visibility.js"
+import { getSessionRoleInfo, INTERNAL_SESSION_ENTRY } from "./session-visibility.js"
 
 const directories: string[] = []
 afterEach(() => {
@@ -47,7 +47,7 @@ async function savedSession(marker: boolean, name: string, prompt = "Ordinary wo
 describe("internal session classification", () => {
 	it("reads metadata before a first message larger than the bounded header read", async () => {
 		const session = await savedSession(true, "Large evaluator", "Objective details ".repeat(10_000))
-		expect(await getInternalSessionInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
+		expect(await getSessionRoleInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
 	})
 	it("keeps the initial model after later model changes and an interrupted final write", async () => {
 		const session = await savedSession(true, "Evaluator")
@@ -55,22 +55,22 @@ describe("internal session classification", () => {
 			session.path,
 			`\n${JSON.stringify({ type: "model_change", provider: "other", modelId: "later" })}\n{"type":`,
 		)
-		expect(await getInternalSessionInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
+		expect(await getSessionRoleInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
 	})
 	it("does not describe an unknown internal kind as a completion evaluator", async () => {
 		const session = await savedSession(true, "Other internal")
 		writeFileSync(session.path, readFileSync(session.path, "utf8").replace('"ferment-evaluator"', '"other"'))
-		expect(await getInternalSessionInfo(session)).toEqual({ kind: "internal", model: "test/evaluator-model" })
+		expect(await getSessionRoleInfo(session)).toEqual({ kind: "internal", model: "test/evaluator-model" })
 	})
 
 	it("recognizes the persisted marker even after renaming", async () => {
-		expect(await getInternalSessionInfo(await savedSession(true, "A renamed session"))).toEqual({
+		expect(await getSessionRoleInfo(await savedSession(true, "A renamed session"))).toEqual({
 			kind: "ferment-evaluator",
 			model: "test/evaluator-model",
 		})
 	})
 	it("preserves ordinary branches with an evaluator-like name", async () => {
-		expect(await getInternalSessionInfo(await savedSession(false, "Ferment V2 evaluator"))).toBeUndefined()
+		expect(await getSessionRoleInfo(await savedSession(false, "Ferment V2 evaluator"))).toBeUndefined()
 	})
 	it("recognizes legacy evaluator sessions by their reserved name and prompt structure", async () => {
 		const session = await savedSession(
@@ -78,11 +78,11 @@ describe("internal session classification", () => {
 			"Ferment V2 evaluator",
 			"Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
 		)
-		expect(await getInternalSessionInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
+		expect(await getSessionRoleInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
 	})
 	it("does not hide an unreadable or concurrently removed session", async () => {
 		const session = await savedSession(true, "Internal")
 		rmSync(session.path)
-		expect(await getInternalSessionInfo(session)).toBeUndefined()
+		expect(await getSessionRoleInfo(session)).toBeUndefined()
 	})
 })

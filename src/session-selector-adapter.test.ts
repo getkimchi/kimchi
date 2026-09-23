@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
 	initTheme,
 	type KeybindingsManager,
@@ -7,6 +10,7 @@ import {
 import { setKeybindings, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import "./session-selector-adapter.js"
+import { prepareAgentSessionFile } from "./extensions/agents/manager/session-file.js"
 
 function session(id: string, overrides: Partial<SessionInfo> = {}): SessionInfo {
 	return {
@@ -57,6 +61,52 @@ beforeAll(() => {
 })
 
 describe("resume explorer using the upstream selector", () => {
+	it("labels subagents without hiding them with background checks", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "resume-agent-badge-"))
+		try {
+			const parent = session("parent")
+			const file = prepareAgentSessionFile(directory, parent.path, parent.cwd, "\x1b[31mExplorer\x1b[0m")
+			if (!file) throw new Error("Expected a persisted child")
+			const child = session("child", {
+				path: file.sessionFile,
+				parentSessionPath: parent.path,
+				name: "Find the retry boundary",
+			})
+			const evaluator = session("evaluator", {
+				name: "Ferment V2 evaluator",
+				parentSessionPath: parent.path,
+				firstMessage: "Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
+			})
+			const { component } = await picker([parent, child, evaluator])
+			expect(text(component)).toContain("├─ [Explorer] Find the retry boundary")
+			expect(text(component)).toContain("[background check]")
+			component.handleInput("\x1b[B")
+			component.handleInput("\x05")
+			expect(text(component)).toContain("[Explorer] Find the retry boundary")
+			expect(text(component)).toContain("Session:       child")
+			expect(text(component)).toContain("2/2 sessions · 1 background check hidden")
+			expect(text(component)).not.toContain("[background check]")
+			component.handleInput("retry")
+			expect(text(component)).toContain("[Explorer] Find the retry boundary")
+		} finally {
+			rmSync(directory, { recursive: true, force: true })
+		}
+	})
+
+	it.each([80, 120, 230])("keeps the table and details fixed when toggling file paths at width %i", async (width) => {
+		const { component } = await picker(Array.from({ length: 14 }, (_, index) => session(String(index))))
+		const before = text(component, width).split("\n")
+		component.handleInput("\x06")
+		const after = text(component, width).split("\n")
+		expect(after.join("\n")).toContain("File:")
+		expect(after).toHaveLength(before.length)
+		for (const label of ["Last active", "Session 0", "Created:", "First message:"]) {
+			expect(after.findIndex((line) => line.includes(label))).toBe(before.findIndex((line) => line.includes(label)))
+		}
+		component.handleInput("\x06")
+		expect(text(component, width)).toBe(before.join("\n"))
+	})
+
 	it.each([
 		"threaded",
 		"search",
@@ -442,8 +492,8 @@ describe("resume explorer using the upstream selector", () => {
 			component.handleInput("\x1b[6~")
 			const rendered = text(component, 80)
 			expect(rendered).toContain("Search names")
-			expect(rendered).toContain("Session:       4")
-			expect(rendered).toContain("5/20 sessions")
+			expect(rendered).toContain("Session:       3")
+			expect(rendered).toContain("4/20 sessions")
 		} finally {
 			process.stdout.rows = rows
 		}

@@ -3,14 +3,15 @@ import { parseSessionEntries, type SessionInfo } from "@earendil-works/pi-coding
 
 export const INTERNAL_SESSION_ENTRY = "kimchi:internal-session"
 
-export interface InternalSessionInfo {
-	kind: "ferment-evaluator" | "internal"
+export const SUBAGENT_SESSION_ENTRY = "kimchi:subagent-session"
+
+export type SessionRoleInfo = ({ kind: "ferment-evaluator" | "internal" } | { kind: "subagent"; name: string }) & {
 	model?: string
 }
 
-export async function getInternalSessionInfo(session: SessionInfo): Promise<InternalSessionInfo | undefined> {
+export async function getSessionRoleInfo(session: SessionInfo): Promise<SessionRoleInfo | undefined> {
 	if (!session.parentSessionPath) return undefined
-	let info: InternalSessionInfo | undefined
+	let info: SessionRoleInfo | undefined
 	// Older evaluator files predate the marker. Require their full identifying
 	// shape rather than treating every branch or similarly named session as internal.
 	if (
@@ -35,6 +36,18 @@ export async function getInternalSessionInfo(session: SessionInfo): Promise<Inte
 						typeof data === "object" && data !== null && "kind" in data && data.kind === "ferment-evaluator"
 							? "ferment-evaluator"
 							: "internal",
+				}
+			}
+			if (marker?.type === "custom" && marker.customType === SUBAGENT_SESSION_ENTRY) {
+				const data = marker.data
+				if (
+					typeof data === "object" &&
+					data !== null &&
+					"type" in data &&
+					typeof data.type === "string" &&
+					data.type.trim()
+				) {
+					info = { kind: "subagent", name: data.type }
 				}
 			}
 			const model = entries.find((entry) => entry.type === "model_change")
