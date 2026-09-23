@@ -33,6 +33,7 @@ interface SessionListState extends Component {
 	nameFilter: "all" | "named"
 	showCwd: boolean
 	showPath: boolean
+	onTogglePath(showPath: boolean): void
 	confirmingDeletePath: string | null
 	maxVisible: number
 	filterSessions(query: string): void
@@ -49,6 +50,8 @@ interface SelectorState extends Pick<SessionSelectorComponent, "children" | "ren
 	header: Component & {
 		scope: "current" | "all"
 		loading: boolean
+		statusMessage: unknown
+		showRenameHint: boolean
 		loadProgress: { loaded: number; total: number } | null
 		setSortMode(mode: SortMode): void
 	}
@@ -147,7 +150,10 @@ function renderSessions(
 ): string[] {
 	const query = list.searchInput.getValue()
 	const { pattern, error } = searchPattern(query)
-	const lines = [...list.searchInput.render(width), colors.description("Search names, messages, folders or IDs")]
+	const lines = [
+		...list.searchInput.render(width),
+		colors.description('Search names, messages, folders or IDs · "phrase" exact · re:regex'),
+	]
 	if (loading) {
 		lines.push(colors.description("Loading sessions…"))
 		return lines.map((line) => truncateToWidth(line, width))
@@ -156,7 +162,7 @@ function renderSessions(
 		const empty = query.trim()
 			? "No matching sessions. Clear the search or press Tab to change folder scope."
 			: hiddenCount === list.allSessions.length && hiddenCount > 0
-				? "No visible sessions. Press F4 to show internal sessions."
+				? "No visible sessions. Press Ctrl+E to show evaluators."
 				: list.nameFilter === "named"
 					? "No named sessions. Toggle the named filter to show all sessions."
 					: list.showCwd
@@ -167,13 +173,10 @@ function renderSessions(
 	}
 
 	const dateWidth = width >= 60 ? 13 : 10
-	const createdColumn = width >= 100
 	const projectWidth = list.showCwd && width >= 60 ? 18 : 0
 	lines.push(
 		colors.selectedText(
-			bold(
-				`  ${cell("Last active", dateWidth)}${createdColumn ? cell("Created", 13) : ""}${projectWidth ? cell("Project", projectWidth) : ""}Session`,
-			),
+			bold(`  ${cell("Last active", dateWidth)}${projectWidth ? cell("Project", projectWidth) : ""}Session`),
 		),
 	)
 	const start = Math.max(
@@ -187,11 +190,10 @@ function renderSessions(
 		const selected = index === list.selectedIndex
 		const current = list.isCurrentSessionPath(session.path)
 		const title = clean(session.name?.trim() || session.firstMessage || "(untitled session)")
-		const dates =
-			code(cell(sessionDate(session.modified), dateWidth)) +
-			(createdColumn ? colors.description(cell(sessionDate(session.created), 13)) : "")
+		const dates = code(cell(sessionDate(session.modified), dateWidth))
 		const project = projectWidth ? link(cell(`${clean(basename(session.cwd)) || "Unknown"} `, projectWidth)) : ""
-		const internal = internalSessions.has(session) ? colors.description("[internal] ") : ""
+		const info = internalSessions.get(session)
+		const internal = info ? colors.description(info.kind === "ferment-evaluator" ? "[evaluator] " : "[internal] ") : ""
 		const label = `${list.buildTreePrefix(node)}${internal}${current ? "[current] " : ""}${highlight(title, pattern)}`
 		let row = `${selected ? "› " : "  "}${dates}${project}${selected ? bold(label) : label}`
 		row = truncateToWidth(row, width)
@@ -201,7 +203,7 @@ function renderSessions(
 	}
 	lines.push(
 		colors.description(
-			`${list.selectedIndex + 1}/${list.filteredSessions.length} sessions${query.trim() ? ` · ${list.allSessions.length - hiddenCount} in scope` : ""}${hiddenCount ? ` · ${hiddenCount} internal hidden` : ""}`,
+			`${list.selectedIndex + 1}/${list.filteredSessions.length} sessions${query.trim() ? ` · ${list.allSessions.length - hiddenCount} in scope` : ""}${hiddenCount ? ` · ${hiddenCount} evaluator${hiddenCount === 1 ? "" : "s"} hidden` : ""}`,
 		),
 	)
 	const selected = list.filteredSessions[list.selectedIndex]?.session
@@ -323,7 +325,7 @@ prototype.buildBaseLayout = function (content, options) {
 		}
 		const handleInput = list.handleInput.bind(list)
 		list.handleInput = (data) => {
-			if (matchesKey(data, "f4") && !list.confirmingDeletePath) {
+			if ((matchesKey(data, "ctrl+e") || matchesKey(data, "f4")) && !list.confirmingDeletePath) {
 				const selected = list.filteredSessions[list.selectedIndex]?.session
 				if (!showInternal) previousSort = list.sortMode
 				showInternal = !showInternal
@@ -337,6 +339,25 @@ prototype.buildBaseLayout = function (content, options) {
 				return
 			}
 			const keys = getKeybindings()
+			if (!list.confirmingDeletePath && matchesKey(data, "ctrl+f")) {
+				list.showPath = !list.showPath
+				list.onTogglePath(list.showPath)
+				return
+			}
+			if (!list.confirmingDeletePath && keys.matches(data, "app.session.toggleSort")) {
+				// Recent and relevance have identical order without a query; threaded
+				// and relevance have identical search behavior. Skip the duplicate state.
+				this.sortMode = list.searchInput.getValue().trim()
+					? list.sortMode === "recent"
+						? "relevance"
+						: "recent"
+					: list.sortMode === "threaded"
+						? "relevance"
+						: "threaded"
+				this.header.setSortMode(this.sortMode)
+				list.setSortMode(this.sortMode)
+				return
+			}
 			if (
 				this.header.loading &&
 				(keys.matches(data, "tui.select.confirm") ||
@@ -360,11 +381,23 @@ prototype.buildBaseLayout = function (content, options) {
 			const loading = this.header.loading ? ` · Loading${progress ? ` ${progress.loaded}/${progress.total}` : "…"}` : ""
 			const named = list.nameFilter === "named" ? " · Named only" : ""
 			const hints = renderHeader(width).slice(1)
-			if (!list.confirmingDeletePath)
+			if (!list.confirmingDeletePath && !this.header.statusMessage) {
+				const nextSort = list.searchInput.getValue().trim()
+					? list.sortMode === "recent"
+						? "best match"
+						: "last active"
+					: list.sortMode === "threaded"
+						? "last active"
+						: "group by parent"
 				hints[0] = truncateToWidth(
-					`${hints[0]} · ${colors.selectedText("F4")} internal (${showInternal ? "on" : "off"})`,
+					`${keyHint("tui.input.tab", "scope")} · ${keyHint("app.session.toggleSort", nextSort)} · ${colors.selectedText("ctrl+e")} evaluators (${showInternal ? "on" : "off"})`,
 					width,
 				)
+				hints[1] = truncateToWidth(
+					`${keyHint("app.session.toggleNamedFilter", "named")} · ${keyHint("app.session.delete", "delete")} · ${colors.selectedText("ctrl+f")} file (${list.showPath ? "on" : "off"})${this.header.showRenameHint ? ` · ${keyHint("app.session.rename", "rename")}` : ""}`,
+					width,
+				)
+			}
 			return [
 				truncateToWidth(colors.selectedText(bold(`Resume session · ${scope} · ${sort}${named}${loading}`)), width),
 				...hints,
