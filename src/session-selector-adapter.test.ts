@@ -63,24 +63,25 @@ describe("resume explorer using the upstream selector", () => {
 		const { component } = await picker([child, parent])
 		expect(text(component)).toContain("ctrl+f file (off)")
 		expect(text(component)).not.toContain("ctrl+p path")
-		expect(text(component)).toContain("ctrl+e evaluators (off)")
-		expect(text(component)).toContain("ctrl+s group by parent")
+		expect(text(component)).toContain("ctrl+e evaluators (on)")
+		expect(text(component)).toContain("ctrl+s last active")
 		expect(text(component)).not.toMatch(/Last active\s+Created\s+Session/)
 		expect(text(component)).toContain("Created:")
 		component.handleInput("\x06")
-		expect(text(component)).toContain("File:          /tmp/child.jsonl")
+		expect(text(component)).toContain("File:          /tmp/parent.jsonl")
 		component.handleInput("\x06")
 		expect(text(component)).not.toContain("File:")
+		component.handleInput("\x13")
+		expect(text(component)).toContain("Current folder · Last active")
+		expect(text(component)).toContain("ctrl+s group by parent")
 		component.handleInput("\x13")
 		expect(text(component)).toContain("Current folder · Threads")
 		expect(text(component)).toContain("ctrl+s last active")
 		expect(text(component).indexOf("Session parent")).toBeLessThan(text(component).indexOf("└─ Session child"))
 		component.handleInput("\x13")
 		expect(text(component)).toContain("Current folder · Last active")
-		component.handleInput("\x13")
-		expect(text(component)).toContain("Current folder · Threads")
 		component.handleInput("\x05")
-		expect(text(component)).toContain("ctrl+e evaluators (on)")
+		expect(text(component)).toContain("ctrl+e evaluators (off)")
 	})
 
 	it("finds an internal session with a missing parent and resolves its parent after switching scope", async () => {
@@ -92,6 +93,8 @@ describe("resume explorer using the upstream selector", () => {
 		const { component, select } = await picker([internal], {
 			all: async () => [{ ...internal }, session("parent", { cwd: "/work/another-project" })],
 		})
+		expect(text(component)).toContain("[evaluator] Ferment V2 evaluator")
+		component.handleInput("\x1bOS")
 		expect(text(component)).toContain("No visible sessions")
 		component.handleInput("internal")
 		expect(text(component)).toContain("No matching sessions")
@@ -119,7 +122,6 @@ describe("resume explorer using the upstream selector", () => {
 		})
 		const rename = vi.fn(async () => {})
 		const { component } = await picker([internal, session("parent", { name: undefined })], { rename })
-		component.handleInput("\x1bOS")
 		component.handleInput("\x0e")
 		expect(text(component)).toContain("1/1 sessions")
 		expect(text(component)).toContain("[evaluator] Ferment V2 evaluator")
@@ -142,7 +144,7 @@ describe("resume explorer using the upstream selector", () => {
 		expect(text(component)).toContain("1/1 sessions · 1 evaluator hidden")
 	})
 
-	it("reveals internal children as a tree and restores the parent and previous sort when hiding", async () => {
+	it("shows internal children as a tree by default and restores the parent when hiding", async () => {
 		const parent = session("parent", { modified: new Date("2026-09-01") })
 		const internal = (id: string, modified: string) =>
 			session(id, {
@@ -157,17 +159,17 @@ describe("resume explorer using the upstream selector", () => {
 			session("other"),
 			parent,
 		])
-		expect(text(component)).toContain("Session:       other")
-		component.handleInput("\x1bOS")
 		const tree = text(component)
 		expect(tree).toContain("Current folder · Threads")
-		expect(tree).toContain("Session:       other")
+		expect(tree).toContain("ctrl+e evaluators (on)")
+		expect(tree).toContain("Session:       parent")
 		const rows = tree.split("\n").filter((line) => /Session parent|[├└]─/.test(line))
 		expect(rows).toHaveLength(3)
 		expect(rows[0]).toContain("Session parent")
 		expect(rows[1]).toContain("├─ [evaluator] Ferment V2 evaluator")
 		expect(rows[2]).toContain("└─ [evaluator] Ferment V2 evaluator")
-		component.handleInput("\x1b[A")
+		component.handleInput("\x1b[B")
+		component.handleInput("\x1b[B")
 		expect(text(component)).toContain("Session:       child-b")
 		expect(text(component)).toContain("Parent:        Session parent")
 		expect(text(component)).toContain("Role:          Checks whether the parent task is complete")
@@ -222,6 +224,7 @@ describe("resume explorer using the upstream selector", () => {
 			session("branch", { parentSessionPath: "/tmp/parent.jsonl" }),
 			internal,
 		])
+		component.handleInput("\x1bOS")
 		expect(text(component)).toContain("1/1 sessions · 1 evaluator hidden")
 		expect(text(component)).not.toContain("Ferment V2 evaluator")
 		component.handleInput("\x1bOS")
@@ -234,14 +237,16 @@ describe("resume explorer using the upstream selector", () => {
 		expect(select).toHaveBeenCalledWith("/tmp/branch.jsonl")
 	})
 
-	it("shows recent sessions with labeled dates and details instead of default thread ordering", async () => {
+	it("groups related sessions by default with labeled dates and details", async () => {
 		const child = session("child", { parentSessionPath: "/tmp/parent.jsonl" })
 		const parent = session("parent", { modified: new Date("2026-01-01T08:00:00Z") })
 		const { component } = await picker([child, parent], { currentPath: child.path })
+		const tree = text(component)
+		expect(tree).toContain("Resume session · Current folder · Threads")
+		expect(tree).toContain("[current] Session child")
+		expect(tree.indexOf("Session parent")).toBeLessThan(tree.indexOf("Session child"))
+		component.handleInput("\x1b[B")
 		const rendered = text(component)
-		expect(rendered).toContain("Resume session · Current folder · Last active")
-		expect(rendered).toContain("[current] Session child")
-		expect(rendered.indexOf("Session child")).toBeLessThan(rendered.indexOf("Session parent"))
 		expect(rendered).toContain(`Last active:   ${child.modified.toLocaleString()}`)
 		expect(rendered).toContain(`Created:       ${child.created.toLocaleString()} · 12 messages`)
 		expect(rendered).toContain("Folder:        /projects/kimchi")

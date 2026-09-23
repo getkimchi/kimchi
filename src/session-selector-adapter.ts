@@ -273,7 +273,7 @@ prototype.buildBaseLayout = function (content, options) {
 	if (!installed.has(list)) {
 		installed.add(list)
 		const internalSessions = new WeakMap<SessionInfo, InternalSessionInfo>()
-		let showInternal = false
+		let showInternal = true
 		let previousSort: SortMode = "relevance"
 		for (const key of ["currentSessionsLoader", "allSessionsLoader"] as const) {
 			const loader = this[key].bind(this)
@@ -286,9 +286,9 @@ prototype.buildBaseLayout = function (content, options) {
 				return sessions
 			}
 		}
-		this.sortMode = "relevance"
-		this.header.setSortMode("relevance")
-		list.setSortMode("relevance")
+		this.sortMode = "threaded"
+		this.header.setSortMode("threaded")
+		list.setSortMode("threaded")
 		const filter = list.filterSessions.bind(list)
 		let previousQuery = ""
 		list.filterSessions = (query) => {
