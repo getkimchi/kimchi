@@ -25,7 +25,7 @@ export function captureApiKeyFromEnvironment(): string | undefined {
 	return startupApiKey
 }
 
-function getEnvironmentApiKey(): string | undefined {
+export function getEnvironmentApiKey(): string | undefined {
 	return startupApiKey || process.env.KIMCHI_API_KEY || undefined
 }
 
@@ -199,6 +199,9 @@ export interface KimchiConfig {
 	onboarding: OnboardingConfig
 	deviceId: string
 	redaction?: { enabled?: boolean }
+	/** Memory embedding overrides — model and vector dimensions (see docs/memory-extension.md). */
+	memoryEmbedding?: { model?: string; dims?: number }
+	memoryExtraction?: { model?: string }
 }
 
 /**
@@ -235,6 +238,8 @@ function readConfigExtras(configPath: string): {
 	preferences?: PreferencesConfig
 	deviceId?: string
 	redaction?: { enabled?: boolean }
+	memoryEmbedding?: { model?: string; dims?: number }
+	memoryExtraction?: { model?: string }
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -307,6 +312,29 @@ function readConfigExtras(configPath: string): {
 			redaction = { enabled: rd.enabled }
 		}
 
+		// Read memory embedding overrides — model + vector dimensions.
+		// Invalid parts are ignored (fall back to defaults), matching the
+		// redaction/mcpSearch parse conventions.
+		let memoryEmbedding: { model?: string; dims?: number } | undefined
+		const me = parsed.memoryEmbedding
+		if (me && typeof me === "object") {
+			const model = typeof me.model === "string" && me.model.length > 0 ? me.model : undefined
+			const dims = typeof me.dims === "number" && Number.isInteger(me.dims) && me.dims > 0 ? me.dims : undefined
+			if (model !== undefined || dims !== undefined) {
+				memoryEmbedding = {
+					...(model !== undefined ? { model } : {}),
+					...(dims !== undefined ? { dims } : {}),
+				}
+			}
+		}
+
+		// Read memory extraction model override — same parse conventions.
+		let memoryExtraction: { model?: string } | undefined
+		const mx = parsed.memoryExtraction
+		if (mx && typeof mx === "object" && typeof mx.model === "string" && mx.model.length > 0) {
+			memoryExtraction = { model: mx.model }
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -319,6 +347,8 @@ function readConfigExtras(configPath: string): {
 			deviceId,
 			preferences,
 			redaction,
+			memoryEmbedding,
+			memoryExtraction,
 		}
 	} catch {
 		return {}
@@ -528,6 +558,8 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 		redaction: projectExtras.redaction ?? globalExtras.redaction,
+		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
+		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 	}
 
 	return {
@@ -543,6 +575,8 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
 		redaction: extras.redaction,
+		memoryEmbedding: extras.memoryEmbedding,
+		memoryExtraction: extras.memoryExtraction,
 	}
 }
 

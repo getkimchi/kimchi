@@ -34,9 +34,30 @@ export function getResourceOverride(id: string, path = getResourceSettingsPath()
 
 export function isResourceEnabled(id: string, path = getResourceSettingsPath()): boolean {
 	assertResourceId(id)
+	const override = getResourceOverride(id, path)
+	if (override !== undefined) return override
+	if (envEnabledResources().has(id)) return true
 	const definition = getResourceDefinition(id)
 	const fallback = definition?.defaultEnabled ?? true
-	return getResourceOverride(id, path) ?? fallback
+	return fallback
+}
+
+/**
+ * Resource ids from KIMCHI_ENABLE_RESOURCES (comma-separated) — a transient,
+ * per-invocation enablement layer for any resource. Malformed entries are
+ * dropped rather than failing the session (the KIMCHI_TAGS fail-open
+ * precedent); unknown ids are inert. A deliberate `resources disable` still
+ * wins: the persistent override is checked first.
+ */
+function envEnabledResources(): Set<string> {
+	const raw = process.env.KIMCHI_ENABLE_RESOURCES
+	if (!raw) return new Set<string>()
+	const ids = new Set<string>()
+	for (const entry of raw.split(",")) {
+		const trimmed = entry.trim()
+		if (isResourceId(trimmed)) ids.add(trimmed)
+	}
+	return ids
 }
 
 export function listResourceSettings(path = getResourceSettingsPath()): ListedResourceSetting[] {
