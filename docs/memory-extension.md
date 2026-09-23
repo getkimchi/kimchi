@@ -106,7 +106,9 @@ The embedder defaults to `bge-m3` at 1024 dims — the phase-1 embedding study's
 
 Both fields are optional and validated (model: non-empty string; dims: positive integer — invalid values fall back to the defaults). The pair must move together — the vector store schema is built from the dims — so stores created with one dimension cannot be searched with another; reset them (`kimchi memory reset`) when switching. The A/B testing surface from the study (`MEMORY_EMBEDDING_*`, `OPENROUTER_API_KEY`) has been removed and is ignored if set; stores created with the old 1536-dim default must be reset.
 
-The usage-tracking tag (`memory:embedding`) is gateway-only — requests are matched by origin, so a request to any other host never receives it. The extraction LLM is likewise not configurable; it always resolves against the gateway (`deepseek-v4-flash`).
+The usage-tracking tag (`memory:embedding`) is gateway-only — requests are matched by origin, so a request to any other host never receives it. The extraction LLM is likewise not configurable; it always resolves against the gateway (`deepseek-v4-flash-0731`).
+
+Dependency footprint: mem0ai's peer `natural` is stubbed out (`shims/natural` via a pnpm override, version-matched to the peer range) — its only use is a lazy PorterStemmer lookup that degrades to the built-in simpleStem, identical to the compiled binary where the package is externalized. Stubbing it removes natural's transitive tree (mongoose, mongodb, redis, memjs, wordnet-db, stopwords-iso) from every install. `compromise` and `pg` stay installed: `pg` is eagerly imported by mem0's bundle, and `compromise` is truthiness-guarded in the search-path entity extraction, where an empty stub would throw instead of degrade.
 
 ## Management
 

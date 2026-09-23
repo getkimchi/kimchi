@@ -107,6 +107,11 @@ You are a senior X engineer who...
   `.kimchi/skills` directory are available automatically.
 - **`prompt_mode: append`** — Treat body as an addendum to the parent's full
   system prompt. The default `replace` makes the persona fully self-contained.
+- **`memory` (removed)** — The per-agent persistent-memory field no longer has
+  any effect; frontmatter carrying it is silently ignored. Persistent memory
+  now lives in the session-level `--memory` extension — see
+  [docs/memory-extension.md](memory-extension.md). Legacy `MEMORY.md` content
+  migrates automatically on the first session with memory enabled.
 - **`disallowed_tools`** — Always-deny list. Wins over `extensions` and inherited
   tools. Useful for read-only agents that may inherit a write tool from MCP.
 

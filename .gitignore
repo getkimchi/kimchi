@@ -71,7 +71,8 @@ benchmark/memory-spike/data/
 benchmark/memory-spike/dist/
 
 # Stray macOS-style bun cache from invocations with HOME at the repo root
-Library/
+# (anchored to the repo root so a legitimate Library/ dir elsewhere is not ignored)
+/Library/
 
 # LLM tools
 .codegraph/

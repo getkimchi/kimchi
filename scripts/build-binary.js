@@ -80,14 +80,20 @@ if (!isCI) {
 }
 
 cleanDist()
-// Opt-in skip (KIMCHI_SKIP_TYPECHECK=1): memory-constrained CI pods can OOM
-// tsc before the compile step. Benchmark artifact builds use it — product CI
-// still typechecks every src change; the benchmarked ref's own CI covers it.
-if (!process.env.KIMCHI_SKIP_TYPECHECK) {
+// Opt-in skip (KIMCHI_SKIP_TYPECHECK=1 in CI): memory-constrained CI pods
+// can OOM tsc before the compile step. Benchmark artifact builds use it —
+// product CI still typechecks every src change; the benchmarked ref's own
+// CI covers it. Scoped to CI so the env var cannot leak into local or
+// release builds through an exported shell profile.
+const skipTypecheck = process.env.KIMCHI_SKIP_TYPECHECK === "1" && process.env.CI === "true"
+if (process.env.KIMCHI_SKIP_TYPECHECK === "1" && !skipTypecheck) {
+	console.warn("[build] KIMCHI_SKIP_TYPECHECK is ignored outside CI — typechecking anyway")
+}
+if (!skipTypecheck) {
 	run("typecheck", "pnpm run typecheck")
 } else {
 	console.warn(
-		"[build] KIMCHI_SKIP_TYPECHECK set — skipping typecheck (intended for memory-constrained benchmark CI only)",
+		"[build] KIMCHI_SKIP_TYPECHECK=1 set in CI — skipping typecheck (memory-constrained benchmark builds only)",
 	)
 }
 

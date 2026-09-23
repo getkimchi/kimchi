@@ -420,9 +420,10 @@ describe("boolean =-form normalization", () => {
 		expect(getParsedCliArgs().options.plan).toBe(false)
 	})
 
-	it("leaves non-boolean =-values untouched", () => {
-		populateCliArgs(["--memory=1", "fix tests"])
-		expect(getParsedCliArgs().options.memory).toBe("1")
+	it("rejects non-boolean =-values for boolean flags", () => {
+		expect(() => populateCliArgs(["--memory=1", "fix tests"])).toThrow(
+			/--memory expects a boolean \(=true or =false\); got --memory="1"/,
+		)
 	})
 })
 

@@ -61,10 +61,11 @@
 		"@types/ssh2": "^1.15.5",
 		"@xterm/headless": "^6.0.0",
 		"chokidar": "^5.0.0",
-		"better-sqlite3": "link:./shims/better-sqlite3",
+		"better-sqlite3": "link:shims/better-sqlite3",
 		"diff": "^9.0.0",
 		"mem0ai": "3.1.8",
 		"micromatch": "^4.0.8",
+		"natural": "link:shims/natural",
 		"open": "^10.2.0",
 		"pi-mcp-adapter": "2.34.0",
 		"proper-lockfile": "^4.1.2",
@@ -131,7 +132,8 @@
 			"nan"
 		],
 		"overrides": {
-			"better-sqlite3": "link:./shims/better-sqlite3"
+			"better-sqlite3": "link:./shims/better-sqlite3",
+			"natural": "link:./shims/natural"
 		},
 		"patchedDependencies": {
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",

@@ -336,10 +336,14 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		let value = values[key]
 		if (value === undefined) continue
 		// node:util parseArgs with strict:false returns the raw string for
-		// `--flag=value` even when the flag is declared boolean — normalize
-		// "true"/"false" so `--memory=true` (and every other boolean flag)
-		// behaves as typed instead of being silently ignored.
-		if (CLI_OPTIONS[key]?.type === "boolean" && (value === "true" || value === "false")) {
+		// `--flag=value` even when the flag is declared boolean. For boolean
+		// flags, accept only the explicit =true/=false forms — anything else
+		// (e.g. --memory=1) would store a string into a boolean-typed option,
+		// making `=== true` and truthiness checks disagree.
+		if (CLI_OPTIONS[key]?.type === "boolean" && typeof value === "string") {
+			if (value !== "true" && value !== "false") {
+				throw new Error(`--${key} expects a boolean (=true or =false); got --${key}=${JSON.stringify(value)}`)
+			}
 			value = value === "true"
 		}
 		;(options as Record<string, unknown>)[key] = value
