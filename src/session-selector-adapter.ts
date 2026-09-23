@@ -1,4 +1,5 @@
 import { homedir } from "node:os"
+import { basename } from "node:path"
 import {
 	getMarkdownTheme,
 	getSelectListTheme,
@@ -10,6 +11,7 @@ import {
 	type Component,
 	getKeybindings,
 	type Input,
+	matchesKey,
 	Spacer,
 	sliceByColumn,
 	stripTerminalSequences,
@@ -17,6 +19,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
+import { isInternalSession } from "./session-visibility.js"
 
 // Pi 0.85.1 exposes the selector but not its presentation state. Keep this private
 // boundary here; the contract tests instantiate the real upstream component.
@@ -38,7 +41,9 @@ interface SessionListState extends Component {
 	isCurrentSessionPath(path: string): boolean
 	handleInput(data: string): void
 }
-interface SelectorState extends Pick<SessionSelectorComponent, "children"> {
+interface SelectorState extends Pick<SessionSelectorComponent, "children" | "render"> {
+	currentSessionsLoader: ConstructorParameters<typeof SessionSelectorComponent>[0]
+	allSessionsLoader: ConstructorParameters<typeof SessionSelectorComponent>[1]
 	sessionList: SessionListState
 	sortMode: SortMode
 	header: Component & {
@@ -51,7 +56,7 @@ interface SelectorState extends Pick<SessionSelectorComponent, "children"> {
 }
 
 const colors = getSelectListTheme()
-const { bold } = getMarkdownTheme()
+const { bold, code, link, underline } = getMarkdownTheme()
 
 function clean(text: string): string {
 	return stripTerminalSequences(text)
@@ -80,6 +85,21 @@ function dateTime(date: Date): string {
 	return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Unknown"
 }
 
+function sessionDate(date: Date): string {
+	if (!Number.isFinite(date.getTime())) return "Unknown"
+	const today = new Date()
+	const yesterday = new Date(today)
+	yesterday.setDate(today.getDate() - 1)
+	if (date.toDateString() === today.toDateString())
+		return `Today ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}`
+	if (date.toDateString() === yesterday.toDateString()) return "Yesterday"
+	return date.toLocaleDateString(undefined, {
+		month: "short",
+		day: "numeric",
+		year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined,
+	})
+}
+
 function cell(text: string, width: number): string {
 	return truncateToWidth(text, width, "…", true)
 }
@@ -87,7 +107,7 @@ function cell(text: string, width: number): string {
 function highlight(text: string, pattern?: RegExp): string {
 	const match = pattern?.exec(text)
 	if (!match?.[0]) return text
-	return text.slice(0, match.index) + colors.selectedText(bold(match[0])) + text.slice(match.index + match[0].length)
+	return text.slice(0, match.index) + code(bold(underline(match[0]))) + text.slice(match.index + match[0].length)
 }
 
 // Search itself stays in Pi. This expression only locates visible match context.
@@ -102,9 +122,8 @@ function searchPattern(query: string): { pattern?: RegExp; error?: string } {
 			return { error: "Invalid regular expression. Fix the pattern or clear the search." }
 		}
 	}
-	const words = value
-		.replaceAll('"', "")
-		.split(/\s+/)
+	const words = (value.match(/"[^"]+"|[^\s"]+/g) ?? [])
+		.map((word) => word.replace(/^"|"$/g, "").replace(/\s+/g, " "))
 		.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
 	return { pattern: new RegExp(words.join("|"), "i") }
 }
@@ -112,12 +131,14 @@ function searchPattern(query: string): { pattern?: RegExp; error?: string } {
 function preview(session: SessionInfo, query: string, width: number): string {
 	const text = clean(query.trim() ? session.allMessagesText : session.firstMessage)
 	const match = searchPattern(query).pattern?.exec(text)
-	const start = Math.max(0, (match?.index ?? 0) - Math.floor(width / 4))
-	const excerpt = (start ? "…" : "") + text.slice(start, start + width * 3)
+	let start = Math.max(0, (match?.index ?? 0) - Math.floor(width / 4))
+	// RegExp indices count UTF-16 units; don't start on the low half of an emoji.
+	if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start])) start--
+	const excerpt = (start ? "…" : "") + sliceByColumn(text.slice(start), 0, width * 3, true)
 	return excerpt || "(no conversation text)"
 }
 
-function renderSessions(list: SessionListState, width: number, loading: boolean): string[] {
+function renderSessions(list: SessionListState, width: number, loading: boolean, hiddenCount: number): string[] {
 	const query = list.searchInput.getValue()
 	const { pattern, error } = searchPattern(query)
 	const lines = [...list.searchInput.render(width), colors.description("Search names, messages, folders or IDs")]
@@ -128,19 +149,26 @@ function renderSessions(list: SessionListState, width: number, loading: boolean)
 	if (error || list.filteredSessions.length === 0) {
 		const empty = query.trim()
 			? "No matching sessions. Clear the search or press Tab to change folder scope."
-			: list.nameFilter === "named"
-				? "No named sessions. Toggle the named filter to show all sessions."
-				: list.showCwd
-					? "No saved sessions yet. Start a conversation to create one."
-					: "No sessions in this folder. Press Tab to search all folders."
+			: hiddenCount === list.allSessions.length && hiddenCount > 0
+				? "No visible sessions. Press F4 to show internal sessions."
+				: list.nameFilter === "named"
+					? "No named sessions. Toggle the named filter to show all sessions."
+					: list.showCwd
+						? "No saved sessions yet. Start a conversation to create one."
+						: "No sessions in this folder. Press Tab to search all folders."
 		lines.push(...wrapTextWithAnsi(colors.noMatch(error ?? empty), width))
 		return lines.map((line) => truncateToWidth(line, width))
 	}
 
 	const dateWidth = width >= 60 ? 13 : 10
 	const createdColumn = width >= 100
+	const projectWidth = list.showCwd && width >= 60 ? 18 : 0
 	lines.push(
-		colors.description(`  ${cell("Last active", dateWidth)}${createdColumn ? cell("Created", 13) : ""}Session`),
+		colors.selectedText(
+			bold(
+				`  ${cell("Last active", dateWidth)}${createdColumn ? cell("Created", 13) : ""}${projectWidth ? cell("Project", projectWidth) : ""}Session`,
+			),
+		),
 	)
 	const start = Math.max(
 		0,
@@ -153,44 +181,64 @@ function renderSessions(list: SessionListState, width: number, loading: boolean)
 		const selected = index === list.selectedIndex
 		const current = list.isCurrentSessionPath(session.path)
 		const title = clean(session.name?.trim() || session.firstMessage || "(untitled session)")
-		const dates = cell(age(session.modified), dateWidth) + (createdColumn ? cell(age(session.created), 13) : "")
+		const dates =
+			code(cell(sessionDate(session.modified), dateWidth)) +
+			(createdColumn ? colors.description(cell(sessionDate(session.created), 13)) : "")
+		const project = projectWidth ? link(cell(`${clean(basename(session.cwd)) || "Unknown"} `, projectWidth)) : ""
 		const label = `${list.buildTreePrefix(node)}${current ? "[current] " : ""}${highlight(title, pattern)}`
-		let row = `${selected ? "› " : "  "}${colors.description(dates)}${selected ? bold(label) : label}`
+		let row = `${selected ? "› " : "  "}${dates}${project}${selected ? bold(label) : label}`
 		row = truncateToWidth(row, width)
 		if (session.path === list.confirmingDeletePath) row = colors.selectedText(row)
-		if (selected) row = colors.selectedText(cell(row, width))
+		if (selected) row = `\x1b[7m${colors.selectedText(bold(cell(stripTerminalSequences(row), width)))}\x1b[27m`
 		lines.push(row)
 	}
 	lines.push(
 		colors.description(
-			`${list.selectedIndex + 1}/${list.filteredSessions.length} sessions${query.trim() ? ` · ${list.allSessions.length} in scope` : ""}`,
+			`${list.selectedIndex + 1}/${list.filteredSessions.length} sessions${query.trim() ? ` · ${list.allSessions.length - hiddenCount} in scope` : ""}${hiddenCount ? ` · ${hiddenCount} internal hidden` : ""}`,
 		),
 	)
 	const selected = list.filteredSessions[list.selectedIndex]?.session
 	if (selected) {
 		lines.push("")
-		const details = [
-			`Last active: ${dateTime(selected.modified)} · ${age(selected.modified)}`,
-			`Created: ${dateTime(selected.created)} · ${selected.messageCount} messages`,
-			`Folder: ${shortPath(selected.cwd, width - 8) || "Unknown"}`,
-			`Session: ${clean(selected.id)}`,
-		]
-		if (list.showPath) details.push(`File: ${shortPath(selected.path, width - 6)}`)
-		lines.push(...details.map((line) => colors.description(line)))
+		const labelWidth = 15
+		const detail = (label: string, value: string) => colors.description(cell(`${label}:`, labelWidth)) + value
 		lines.push(
-			...wrapTextWithAnsi(
-				`${query.trim() ? "Conversation" : "First message"}: ${highlight(preview(selected, query, width), pattern)}`,
-				width,
-			).slice(0, 2),
+			detail("Last active", code(`${dateTime(selected.modified)} · ${age(selected.modified)}`)),
+			detail("Created", `${dateTime(selected.created)} · ${selected.messageCount} messages`),
+			detail("Folder", link(shortPath(selected.cwd, width - labelWidth) || "Unknown")),
+			detail("Session", colors.description(clean(selected.id))),
+		)
+		if (list.showPath) lines.push(detail("File", link(shortPath(selected.path, width - labelWidth))))
+		const previewWidth = Math.max(1, width - labelWidth)
+		// Reserve both preview rows so selecting a longer message cannot move the menu.
+		const context = wrapTextWithAnsi(highlight(preview(selected, query, previewWidth), pattern), previewWidth).concat(
+			"",
+		)
+		lines.push(
+			...context
+				.slice(0, 2)
+				.map(
+					(line, index) =>
+						(index === 0
+							? colors.selectedText(cell(query.trim() ? "Conversation:" : "First message:", labelWidth))
+							: " ".repeat(labelWidth)) + line,
+				),
 		)
 	}
-	lines.push(`${keyHint("tui.select.confirm", "resume")} · ${keyHint("tui.select.cancel", "cancel")}`)
+	lines.push(
+		`${keyHint("tui.select.confirm", list.confirmingDeletePath ? "confirm deletion" : "resume")} · ${keyHint("tui.select.cancel", "cancel")}`,
+	)
 	return lines.map((line) => truncateToWidth(line, width))
 }
 
 const installed = new WeakSet<SessionListState>()
 const prototype = SessionSelectorComponent.prototype as unknown as SelectorState
 const buildBaseLayout = prototype.buildBaseLayout
+const render = prototype.render
+
+prototype.render = function (width) {
+	return render.call(this, Math.min(width, 120))
+}
 
 // Decorate the shared upstream selector, including CLI --resume. Loading, input,
 // focus, scope, rename, deletion confirmation and switching remain upstream-owned.
@@ -198,6 +246,18 @@ prototype.buildBaseLayout = function (content, options) {
 	const list = this.sessionList
 	if (!installed.has(list)) {
 		installed.add(list)
+		const internalSessions = new WeakSet<SessionInfo>()
+		let showInternal = false
+		for (const key of ["currentSessionsLoader", "allSessionsLoader"] as const) {
+			const loader = this[key].bind(this)
+			this[key] = async (onProgress) => {
+				const sessions = await loader(onProgress)
+				for (const session of sessions) {
+					if (await isInternalSession(session)) internalSessions.add(session)
+				}
+				return sessions
+			}
+		}
 		this.sortMode = "relevance"
 		this.header.setSortMode("relevance")
 		list.setSortMode("relevance")
@@ -205,6 +265,8 @@ prototype.buildBaseLayout = function (content, options) {
 		let previousQuery = ""
 		list.filterSessions = (query) => {
 			filter(query)
+			if (!showInternal)
+				list.filteredSessions = list.filteredSessions.filter(({ session }) => !internalSessions.has(session))
 			const literal = query
 				.trim()
 				.replace(/^"([^"]+)"$/, "$1")
@@ -229,11 +291,17 @@ prototype.buildBaseLayout = function (content, options) {
 					.sort((a, b) => a.priority - b.priority)
 					.map(({ node }) => node)
 			}
-			list.selectedIndex = query !== previousQuery ? 0 : Math.max(0, list.selectedIndex)
+			list.selectedIndex =
+				query !== previousQuery ? 0 : Math.max(0, Math.min(list.selectedIndex, list.filteredSessions.length - 1))
 			previousQuery = query
 		}
 		const handleInput = list.handleInput.bind(list)
 		list.handleInput = (data) => {
+			if (matchesKey(data, "f4") && !list.confirmingDeletePath) {
+				showInternal = !showInternal
+				list.filterSessions(list.searchInput.getValue())
+				return
+			}
 			const keys = getKeybindings()
 			if (
 				this.header.loading &&
@@ -257,14 +325,22 @@ prototype.buildBaseLayout = function (content, options) {
 			const progress = this.header.loadProgress
 			const loading = this.header.loading ? ` · Loading${progress ? ` ${progress.loaded}/${progress.total}` : "…"}` : ""
 			const named = list.nameFilter === "named" ? " · Named only" : ""
+			const hints = renderHeader(width).slice(1)
+			if (!list.confirmingDeletePath)
+				hints[0] = truncateToWidth(
+					`${hints[0]} · ${colors.selectedText("F4")} internal (${showInternal ? "on" : "off"})`,
+					width,
+				)
 			return [
-				truncateToWidth(bold(`Resume session · ${scope} · ${sort}${named}${loading}`), width),
-				...renderHeader(width).slice(1),
+				truncateToWidth(colors.selectedText(bold(`Resume session · ${scope} · ${sort}${named}${loading}`)), width),
+				...hints,
 			]
 		}
 		list.render = (width) => {
-			list.maxVisible = Math.max(1, Math.min(10, (process.stdout.rows || 40) - 18 - Number(list.showPath)))
-			return renderSessions(list, width, this.header.loading)
+			// Leave room for the 17 panel rows and up to three harness footer rows.
+			list.maxVisible = Math.max(1, Math.min(10, (process.stdout.rows || 40) - 20 - Number(list.showPath)))
+			const hiddenCount = showInternal ? 0 : list.allSessions.filter((session) => internalSessions.has(session)).length
+			return renderSessions(list, width, this.header.loading, hiddenCount)
 		}
 	}
 	buildBaseLayout.call(this, content, options)

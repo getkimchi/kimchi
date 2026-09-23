@@ -16,11 +16,11 @@ import {
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
-export const SESSION_NAME_MODEL = "deepseek-v4-flash"
+export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
 
 const SESSION_NAME_MAX_LEN = 50
-const SESSION_NAME_SYSTEM_PROMPT = `You are a title generator. Respond ONLY with a short, descriptive title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars, easy to scan). No quotes, no explanation, no markdown.`
+const SESSION_NAME_SYSTEM_PROMPT = `Name the user's actual task: lead with the action and name the affected component, bug, or feature. For example: Fix resume menu jumping. Ignore greetings and conversational filler. Avoid generic labels like Coding Help or Greeting and Introduction. Respond ONLY with the title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars). No quotes, explanation, or markdown.`
 const HINT_MAX_LEN = 500
 
 function getSessionNameMaxRetries(cwd: string): number {
@@ -83,7 +83,7 @@ function extractEarlyUserText(entries: SessionEntries): string | null {
 			}
 		}
 
-		if (text && text.length > 0) {
+		if (text && !/^(?:hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you)[\s!.?]*$/i.test(text)) {
 			texts.push(text)
 			if (texts.length >= 3) break
 		}
@@ -182,7 +182,12 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 export default function sessionNameExtension() {
 	return (pi: ExtensionAPI) => {
 		let hasAutoNamed = false
-		let pendingAutoName: Promise<void> | undefined
+		let generation = 0
+		const pendingNames = new Set<Promise<void>>()
+		pi.on("session_start", () => {
+			hasAutoNamed = false
+			generation++
+		})
 
 		// Auto-name sessions after the first turn when no name was set.
 		//
@@ -197,22 +202,21 @@ export default function sessionNameExtension() {
 					return
 				}
 				const hint = extractFirstUserMessage(ctx)
-				if (!hint) {
-					hasAutoNamed = true
-					return
-				}
+				if (!hint) return
 				hasAutoNamed = true
-				pendingAutoName = suggestSessionName(ctx, hint, true)
+				const namingGeneration = generation
+				const pending = suggestSessionName(ctx, hint, true)
 					// ctx may be stale once this resolves; a throw here would surface as a model error.
 					.then((suggestion) => {
-						if (suggestion && !ctx.sessionManager.getSessionName()) {
+						if (suggestion && namingGeneration === generation && !ctx.sessionManager.getSessionName()) {
 							pi.setSessionName(suggestion)
 						}
 					})
 					.catch(() => {})
 					.finally(() => {
-						pendingAutoName = undefined
+						pendingNames.delete(pending)
 					})
+				pendingNames.add(pending)
 			} catch {
 				hasAutoNamed = true
 			}
@@ -221,7 +225,7 @@ export default function sessionNameExtension() {
 		// One-shot runs exit as soon as the turn ends, which would drop the in-flight request.
 		// Safe to await: suggestSessionName is bounded by SESSION_NAME_TIMEOUT_MS.
 		pi.on("session_shutdown", async () => {
-			await pendingAutoName
+			await Promise.all(pendingNames)
 		})
 	}
 }

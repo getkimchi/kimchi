@@ -8,12 +8,18 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
-function seedSessions(homeDir: string, workDir: string): void {
+function seedSessions(homeDir: string, workDir: string, archivedCount = 0): void {
 	const cwd = realpathSync(workDir)
 	const other = join(cwd, "other-project")
 	mkdirSync(other)
 	for (const [directory, name, prompt, answer, timestamp] of [
-		[cwd, "Documentation notes", "Explain the readme", "OLD_DOCUMENTATION", "2026-01-01T08:00:00.000Z"],
+		[
+			cwd,
+			"Documentation notes",
+			"Explain the readme and its setup instructions. ".repeat(12),
+			"OLD_DOCUMENTATION",
+			"2026-01-01T08:00:00.000Z",
+		],
 		[
 			cwd,
 			"Fix pool timeouts",
@@ -22,6 +28,14 @@ function seedSessions(homeDir: string, workDir: string): void {
 			"2026-02-02T12:30:00.000Z",
 		],
 		[other, "Other project work", "Review cross-project-marker", "SAVED_OTHER_RESPONSE", "2026-03-03T10:00:00.000Z"],
+		[cwd, "Internal evaluator fixture", "Evaluate the saved task", "INTERNAL_RESPONSE", "2026-04-01T10:00:00.000Z"],
+		...Array.from({ length: archivedCount }, (_, index) => [
+			cwd,
+			`Archived session ${index}`,
+			"Investigate a long-running request and preserve its context. ".repeat(8),
+			"ARCHIVED_RESPONSE",
+			new Date(Date.UTC(2025, 0, 20 - index)).toISOString(),
+		]),
 	]) {
 		const dir = join(
 			homeDir,
@@ -30,8 +44,28 @@ function seedSessions(homeDir: string, workDir: string): void {
 		)
 		mkdirSync(dir, { recursive: true })
 		const id = randomUUID()
+		const internal = name === "Internal evaluator fixture"
 		const entries = [
-			{ type: "session", version: 3, id, timestamp, cwd: directory },
+			{
+				type: "session",
+				version: 3,
+				id,
+				timestamp,
+				cwd: directory,
+				...(internal ? { parentSession: join(dir, "parent.jsonl") } : {}),
+			},
+			...(internal
+				? [
+						{
+							type: "custom",
+							id: "internal",
+							parentId: null,
+							timestamp,
+							customType: "kimchi:internal-session",
+							data: { kind: "ferment-evaluator" },
+						},
+					]
+				: []),
 			{ type: "session_info", id: "name", parentId: null, timestamp, name },
 			{
 				type: "message",
@@ -88,7 +122,24 @@ test("find a session by conversation text, inspect its dates, and continue it", 
 			expect(initial).toContain("Created:")
 			expect(initial).toContain("2 messages")
 			expect(initial).not.toContain("Other project work")
+			expect(initial).not.toContain("Internal evaluator fixture")
+			expect(initial).toContain("1 internal hidden")
 			trace.step("recent sessions and selected metadata visible")
+			const position = (label: string) =>
+				viewText(terminal)
+					.split("\n")
+					.findIndex((line) => line.includes(label))
+			const headingRow = position("Resume session")
+			const actionsRow = position("enter resume")
+			terminal.keyDown()
+			await waitForText(terminal, "2/2 sessions", { full: false })
+			expect(position("Resume session")).toBe(headingRow)
+			expect(position("enter resume")).toBe(actionsRow)
+			terminal.keyUp()
+			await waitForText(terminal, "1/2 sessions", { full: false })
+			expect(position("Resume session")).toBe(headingRow)
+			expect(position("enter resume")).toBe(actionsRow)
+			trace.step("short and long previews keep the menu in place on Down and Up")
 			terminal.write('"saffron retry"')
 			await waitForText(terminal, "1/1 sessions", { full: false })
 			expect(viewText(terminal)).toContain("Conversation:")
@@ -118,6 +169,13 @@ test("CLI resume keeps a search while expanding to all folders and resumes the m
 			startupText: "First message:",
 		},
 		async (_fixture, trace) => {
+			expect(viewText(terminal)).not.toContain("Internal evaluator fixture")
+			terminal.write("\x1bOS")
+			await waitForText(terminal, "Internal evaluator fixture", { full: false })
+			terminal.write("\x1bOS")
+			await waitForText(terminal, "1 internal hidden", { full: false })
+			expect(viewText(terminal)).not.toContain("Internal evaluator fixture")
+			trace.step("CLI internal-session toggle reveals the marked child and hides it again")
 			terminal.write("cross-project-marker")
 			await waitForText(terminal, "No matching sessions", { full: false })
 			trace.step("current folder has no matching session")
@@ -126,11 +184,48 @@ test("CLI resume keeps a search while expanding to all folders and resumes the m
 			expect(viewText(terminal)).toContain("All folders · Best match")
 			expect(viewText(terminal)).toContain("other-project")
 			expect(viewText(terminal)).toContain("Other project work")
+			expect(viewText(terminal)).toMatch(/Project\s+Session/)
 			trace.step("all folders retains the query and shows the target directory")
 			terminal.submit("")
 			await waitForText(terminal, PROMPT_READY, { full: false })
-			expect(viewText(terminal)).toContain("SAVED_OTHER_RESPONSE")
+			await waitForText(terminal, "SAVED_OTHER_RESPONSE", { full: false })
 			trace.step("CLI resumes the selected conversation")
+		},
+	)
+})
+
+test("page and cancel deletion without losing the resume controls in an 80 by 24 terminal", async ({ terminal }) => {
+	terminal.resize(80, 24)
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "resume-explorer-small-terminal",
+			seedHome: (home, work) => seedSessions(home, work, 14),
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/resume")
+			await waitForText(terminal, "/resume", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.submit("")
+			await waitForText(terminal, "1/16 sessions", { full: false })
+			terminal.write("\x1b[6~")
+			await waitForText(terminal, "5/16 sessions", { full: false })
+			expect(viewText(terminal)).toContain("Resume session · Current folder")
+			expect(viewText(terminal)).toContain("First message:")
+			expect(viewText(terminal)).toContain("enter resume")
+			trace.step("paging retains the heading, preview and actions above the harness footer")
+			terminal.write("\x04")
+			await waitForText(terminal, "enter confirm deletion", { full: false })
+			expect(viewText(terminal)).not.toContain("enter resume")
+			terminal.write("\x1b")
+			await waitForText(terminal, "enter resume", { full: false })
+			expect(viewText(terminal)).toContain("5/16 sessions")
+			trace.step("deletion is labeled accurately and cancellation preserves the selection")
+			terminal.write("\x1bOS")
+			await waitForText(terminal, "5/17 sessions", { full: false })
+			terminal.write("\x1bOS")
+			await waitForText(terminal, "5/16 sessions", { full: false })
+			trace.step("interactive internal-session toggle keeps navigation working at 80 columns")
 		},
 	)
 })

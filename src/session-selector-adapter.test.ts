@@ -44,7 +44,7 @@ async function picker(
 		options.currentPath,
 	)
 	setKeybindings((component as unknown as { keybindings: KeybindingsManager }).keybindings)
-	await Promise.resolve()
+	await vi.waitFor(() => expect(text(component)).not.toContain("Loading"))
 	return { component, select, cancel }
 }
 
@@ -57,6 +57,59 @@ beforeAll(() => {
 })
 
 describe("resume explorer using the upstream selector", () => {
+	it("shows project labels only in all-folder rows", async () => {
+		const { component } = await picker([session("a")], {
+			all: async () => [session("a"), session("b", { cwd: "/work/other-project" })],
+		})
+		expect(text(component)).not.toMatch(/Project\s+Session/)
+		component.handleInput("\t")
+		await vi.waitFor(() => expect(text(component)).toContain("1/2 sessions"))
+		expect(text(component)).toMatch(/Project\s+Session/)
+		expect(text(component)).toMatch(/other-project\s+Session b/)
+	})
+
+	it("uses local calendar dates and includes years for older sessions", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date(2026, 8, 23, 15, 0))
+		try {
+			const { component } = await picker([
+				session("today", { modified: new Date(2026, 8, 23, 14, 32) }),
+				session("yesterday", { modified: new Date(2026, 8, 22, 23, 59) }),
+				session("old", { modified: new Date(2025, 8, 18, 10, 0) }),
+			])
+			const rendered = text(component)
+			expect(rendered).toContain("Today 14:32")
+			expect(rendered).toContain("Yesterday")
+			expect(rendered).toContain(
+				new Date(2025, 8, 18).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("hides legacy evaluators, preserves ordinary branches, and clamps selection after hiding again", async () => {
+		const internal = session("internal", {
+			name: "Ferment V2 evaluator",
+			parentSessionPath: "/tmp/parent.jsonl",
+			firstMessage: "Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
+		})
+		const { component, select } = await picker([
+			session("branch", { parentSessionPath: "/tmp/parent.jsonl" }),
+			internal,
+		])
+		expect(text(component)).toContain("1/1 sessions · 1 internal hidden")
+		expect(text(component)).not.toContain("Ferment V2 evaluator")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("1/2 sessions")
+		expect(text(component)).toContain("Ferment V2 evaluator")
+		component.handleInput("\x1b[B")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("1/1 sessions")
+		component.handleInput("\r")
+		expect(select).toHaveBeenCalledWith("/tmp/branch.jsonl")
+	})
+
 	it("shows recent sessions with labeled dates and details instead of default thread ordering", async () => {
 		const child = session("child", { parentSessionPath: "/tmp/parent.jsonl" })
 		const parent = session("parent", { modified: new Date("2026-01-01T08:00:00Z") })
@@ -65,10 +118,10 @@ describe("resume explorer using the upstream selector", () => {
 		expect(rendered).toContain("Resume session · Current folder · Last active")
 		expect(rendered).toContain("[current] Session child")
 		expect(rendered.indexOf("Session child")).toBeLessThan(rendered.indexOf("Session parent"))
-		expect(rendered).toContain(`Last active: ${child.modified.toLocaleString()}`)
-		expect(rendered).toContain(`Created: ${child.created.toLocaleString()} · 12 messages`)
-		expect(rendered).toContain("Folder: /projects/kimchi")
-		expect(rendered).toContain("Session: child")
+		expect(rendered).toContain(`Last active:   ${child.modified.toLocaleString()}`)
+		expect(rendered).toContain(`Created:       ${child.created.toLocaleString()} · 12 messages`)
+		expect(rendered).toContain("Folder:        /projects/kimchi")
+		expect(rendered).toContain("Session:       child")
 		expect(rendered).toContain("First message: Investigate request latency")
 	})
 
@@ -102,6 +155,21 @@ describe("resume explorer using the upstream selector", () => {
 		expect(select).toHaveBeenCalledWith("/tmp/a.jsonl")
 	})
 
+	it.each([
+		60, 80, 120,
+	])("keeps the menu height stable when navigating between short and long previews at %i columns", async (width) => {
+		const { component } = await picker([
+			session("short", { firstMessage: "Short prompt" }),
+			session("long", { firstMessage: "A much longer conversation preview. ".repeat(20) }),
+		])
+		const height = component.render(width).length
+		component.handleInput("\x1b[B")
+		expect(text(component, width)).toContain("2/2 sessions")
+		expect(component.render(width)).toHaveLength(height)
+		component.handleInput("\x1b[A")
+		expect(component.render(width)).toHaveLength(height)
+	})
+
 	it("explains invalid regex and distinguishes no matches from an empty folder", async () => {
 		const { component, select } = await picker([session("a")])
 		component.handleInput("re:[")
@@ -113,6 +181,34 @@ describe("resume explorer using the upstream selector", () => {
 		expect(text(component)).toContain("No matching sessions")
 		const empty = await picker([])
 		expect(text(empty.component)).toContain("No sessions in this folder")
+	})
+
+	it("shows the exact phrase context instead of an earlier individual word", async () => {
+		const { component } = await picker([
+			session("a", { allMessagesText: `connection failed. ${"unrelated text ".repeat(40)}connection pooling fixed` }),
+		])
+		component.handleInput('"connection pooling"')
+		expect(text(component)).toContain("connection pooling fixed")
+	})
+
+	it.each([25, 29])("keeps emoji intact at a preview boundary with %i characters before the match", async (gap) => {
+		const { component } = await picker([session("a", { allMessagesText: `prefix 😀${"x".repeat(gap)}needle found` })])
+		component.handleInput("needle")
+		expect(text(component)).not.toMatch(/[\uD800-\uDFFF]/u)
+		expect(text(component)).toContain("needle found")
+	})
+
+	it("aligns detail values and bounds the panel on a wide terminal", async () => {
+		const { component } = await picker([session("a")])
+		const lines = text(component, 230).split("\n")
+		expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true)
+		const labels = ["Last active:", "Created:", "Folder:", "Session:"]
+		const columns = labels.map((label) => {
+			const line = lines.find((line) => line.includes(label)) ?? ""
+			expect(line).toContain(label)
+			return line.indexOf(label) + label.length + line.slice(line.indexOf(label) + label.length).search(/\S/)
+		})
+		expect(new Set(columns).size).toBe(1)
 	})
 
 	it("prefers literal titles and IDs over body and fuzzy matches without changing explicit recent sorting", async () => {
@@ -145,9 +241,9 @@ describe("resume explorer using the upstream selector", () => {
 		expect(text(component)).not.toContain("Delete session?")
 		component.handleInput("elsewhere")
 		resolveAll([session("elsewhere", { cwd: "/another/project" })])
-		await Promise.resolve()
+		await vi.waitFor(() => expect(text(component)).not.toContain("Loading"))
 		expect(text(component)).toContain("All folders · Best match")
-		expect(text(component)).toContain("Folder: /another/project")
+		expect(text(component)).toContain("Folder:        /another/project")
 		component.handleInput("\r")
 		expect(select).toHaveBeenCalledWith("/tmp/elsewhere.jsonl")
 	})
@@ -156,7 +252,7 @@ describe("resume explorer using the upstream selector", () => {
 		const { component, select } = await picker([], { all: async () => [session("other")] })
 		component.handleInput("\x1b[B")
 		component.handleInput("\t")
-		await Promise.resolve()
+		await vi.waitFor(() => expect(text(component)).not.toContain("Loading"))
 		expect(text(component)).toContain("1/1 sessions")
 		component.handleInput("\r")
 		expect(select).toHaveBeenCalledWith("/tmp/other.jsonl")
@@ -173,12 +269,12 @@ describe("resume explorer using the upstream selector", () => {
 					}),
 				),
 			)
-			expect(component.render(80).length).toBeLessThanOrEqual(24)
+			expect(component.render(80).length).toBeLessThanOrEqual(21)
 			component.handleInput("\x1b[6~")
 			const rendered = text(component, 80)
 			expect(rendered).toContain("Search names")
-			expect(rendered).toContain("Session: 6")
-			expect(rendered).toContain("7/20 sessions")
+			expect(rendered).toContain("Session:       4")
+			expect(rendered).toContain("5/20 sessions")
 		} finally {
 			process.stdout.rows = rows
 		}
@@ -188,7 +284,7 @@ describe("resume explorer using the upstream selector", () => {
 		const rename = vi.fn(async () => {})
 		const { component, cancel } = await picker([session("a")], { rename })
 		component.handleInput("\x10")
-		expect(text(component)).toContain("File: /tmp/a.jsonl")
+		expect(text(component)).toContain("File:          /tmp/a.jsonl")
 		component.handleInput("\x12")
 		expect(text(component)).toContain("Rename Session")
 		component.handleInput("\x05")
@@ -199,6 +295,10 @@ describe("resume explorer using the upstream selector", () => {
 		await vi.waitFor(() => expect(text(component)).toContain("Resume session"))
 		component.handleInput("\x04")
 		expect(text(component)).toContain("Delete session?")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("Delete session?")
+		expect(text(component)).toContain("enter confirm deletion")
+		expect(text(component)).not.toContain("enter resume")
 		component.handleInput("\x1b")
 		expect(cancel).not.toHaveBeenCalled()
 		component.handleInput("\x1b")
