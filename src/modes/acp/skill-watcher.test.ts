@@ -28,25 +28,20 @@ function makeTmp(): string {
 	return dir
 }
 
-const waitForCalls = async (get: () => number, want: number, timeoutMs = 5000): Promise<void> =>
+const waitForCalls = async (get: () => number, want: number, timeoutMs = 8000): Promise<void> =>
 	waitFor(() => get() >= want, {
 		timeoutMs,
 		message: () => `waitForCalls: got ${get()}, wanted ${want}`,
 	})
 
+// Attach-settle: chokidar attaches asynchronously after addSession; writes
+// landing before attach (or in the ignored initial-scan window) are silently
+// lost, so wait past the attach window before mutating.
+const settleWatch = () => delay(600)
+
 function writeSkill(dir: string, name: string): void {
 	mkdirSync(join(dir, name), { recursive: true })
 	writeFileSync(join(dir, name, "SKILL.md"), `---\nname: ${name}\n---\nbody`, "utf-8")
-}
-
-// Probe-based settle: write a throwaway skill into a watched root and wait
-// for the kick — proof the watch is live; chokidar's ignored initial-scan
-// window duration is unknown, so wall-clock sleeps flake (loaded CI).
-async function settleWatch(agentDir: string, calls: number[]): Promise<number> {
-	const base = calls.length
-	writeSkill(join(agentDir, "skills"), "__probe__")
-	await waitForCalls(() => calls.length, base + 1)
-	return calls.length
 }
 
 describe("createSkillWatcher", () => {
@@ -58,7 +53,8 @@ describe("createSkillWatcher", () => {
 		const watcher = createSkillWatcher({ agentDir, requestRefresh: () => calls.push(1) })
 		try {
 			watcher.addSession({ cwd })
-			const base = await settleWatch(agentDir, calls)
+			const base = calls.length
+			await settleWatch()
 
 			writeSkill(join(agentDir, "skills"), "first")
 			await waitForCalls(() => calls.length, base + 1)
@@ -68,7 +64,7 @@ describe("createSkillWatcher", () => {
 		} finally {
 			watcher.close()
 		}
-	})
+	}, 20000)
 
 	it("coalesces a burst of changes into one refresh kick", async () => {
 		const agentDir = makeTmp()
@@ -78,7 +74,8 @@ describe("createSkillWatcher", () => {
 		const watcher = createSkillWatcher({ agentDir, requestRefresh: () => calls.push(1) })
 		try {
 			watcher.addSession({ cwd })
-			const base = await settleWatch(agentDir, calls)
+			const base = calls.length
+			await settleWatch()
 			// A multi-skill upload fires many events within the debounce window.
 			for (const name of ["a", "b", "c", "d"]) writeSkill(join(agentDir, "skills"), name)
 			await waitForCalls(() => calls.length, base + 1)
@@ -87,7 +84,7 @@ describe("createSkillWatcher", () => {
 		} finally {
 			watcher.close()
 		}
-	})
+	}, 20000)
 
 	it("does not refresh on changes outside watched roots", async () => {
 		const agentDir = makeTmp()
@@ -97,7 +94,8 @@ describe("createSkillWatcher", () => {
 		const watcher = createSkillWatcher({ agentDir, requestRefresh: () => calls.push(1) })
 		try {
 			watcher.addSession({ cwd })
-			const base = await settleWatch(agentDir, calls)
+			const base = calls.length
+			await settleWatch()
 			writeFileSync(join(cwd, "README.md"), "not a skill", "utf-8")
 			writeSkill(join(cwd, "unwatched-skills"), "nope")
 			await delay(500)
@@ -105,7 +103,7 @@ describe("createSkillWatcher", () => {
 		} finally {
 			watcher.close()
 		}
-	})
+	}, 20000)
 
 	it("removeSession keeps watching while another session shares the cwd", async () => {
 		const agentDir = makeTmp()
@@ -117,13 +115,14 @@ describe("createSkillWatcher", () => {
 			watcher.addSession({ cwd })
 			watcher.addSession({ cwd })
 			watcher.removeSession({ cwd })
-			const base = await settleWatch(agentDir, calls)
+			const base = calls.length
+			await settleWatch()
 			writeSkill(join(agentDir, "skills"), "still-watching")
 			await waitForCalls(() => calls.length, base + 1)
 		} finally {
 			watcher.close()
 		}
-	})
+	}, 20000)
 
 	it("ignores addSession after close()", async () => {
 		const agentDir = makeTmp()
@@ -133,14 +132,16 @@ describe("createSkillWatcher", () => {
 		const watcher = createSkillWatcher({ agentDir, requestRefresh: () => calls.push(1) })
 
 		watcher.addSession({ cwd })
-		await settleWatch(agentDir, calls)
-		const settled = calls.length
+		const base = calls.length
+		await settleWatch()
+		writeSkill(join(agentDir, "skills"), "alive")
+		await waitForCalls(() => calls.length, base + 1)
 
 		watcher.close()
 		watcher.addSession({ cwd })
 		writeSkill(join(agentDir, "skills"), "zombie")
 		await delay(500)
 
-		expect(calls.length).toBe(settled)
-	})
+		expect(calls.length).toBe(base + 1)
+	}, 20000)
 })

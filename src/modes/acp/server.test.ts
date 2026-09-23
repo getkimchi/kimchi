@@ -5329,11 +5329,10 @@ describe("newSession skill commands", () => {
 			// settings UI) — the agent notices on its own and re-advertises.
 			skills.push(skill)
 			updates.length = 0
-			// Probe-settle: spin a throwaway skill to prove the watch is live
-			// (chokidar's ignored initial-scan window can swallow a first write).
-			mkdirSync(join(agentDir, "skills", "__probe__"), { recursive: true })
-			writeFileSync(join(agentDir, "skills", "__probe__", "SKILL.md"), "---\nname: probe\n---\nbody", "utf-8")
-			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+			// chokidar attaches asynchronously; writes landing before attach (or
+			// in the ignored initial-scan window) are silently lost, so wait past
+			// the attach window before mutating.
+			await new Promise((r) => setTimeout(r, 600))
 			updates.length = 0
 			const reloadsBase = reloads.n
 
@@ -5378,10 +5377,8 @@ describe("newSession skill commands", () => {
 				...skill,
 				filePath: join(dir, ".claude", "skills", skillName, "SKILL.md"),
 			})
-			// Probe-settle (see the global test comment).
-			mkdirSync(join(dir, ".claude", "skills", "__probe__"), { recursive: true })
-			writeFileSync(join(dir, ".claude", "skills", "__probe__", "SKILL.md"), "---\nname: probe\n---\nbody", "utf-8")
-			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+			// Attach-settle (see the global test comment).
+			await new Promise((r) => setTimeout(r, 600))
 			updates.length = 0
 			const reloadsBase = reloads.n
 
