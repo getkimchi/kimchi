@@ -33,6 +33,7 @@ import "./login-command-patch.js"
 // child process does not crash the CLI. Load early for the same reason as above.
 import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
+import "./session-selector-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
