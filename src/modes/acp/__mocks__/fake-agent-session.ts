@@ -50,6 +50,7 @@ export class BaseFakeAgentSession {
 	setActiveToolsByName = vi.fn()
 	subscribe = () => () => {}
 	async bindExtensions(): Promise<void> {}
+	async extendResourcesFromExtensions(_reason: "reload" | "startup"): Promise<void> {}
 	async prompt(): Promise<void> {}
 	async abort(): Promise<void> {}
 	getSteeringMessages(): readonly string[] {

@@ -143,6 +143,7 @@ import {
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
+import { waitFor as sharedWaitFor } from "./test-utils.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -162,6 +163,19 @@ beforeEach(() => {
 	getVersionMock.mockReturnValue("1.2.3-test")
 })
 afterEach(cleanPermissionEnv)
+// Tests create many agents without shutdown(); each leaves a live chokidar
+// FSWatcher that would starve tests later in the file.
+afterEach(async () => {
+	const handles =
+		(
+			process as unknown as {
+				_getActiveHandles?: () => Array<{ constructor?: { name?: string }; close?: () => unknown }>
+			}
+		)._getActiveHandles?.() ?? []
+	for (const h of handles) {
+		if (h.constructor?.name === "FSWatcher" && h.close) await h.close()
+	}
+})
 
 /** Model shape used by FakeAgentSession's model registry. */
 interface FakeModel {
@@ -380,6 +394,10 @@ class FakeAgentSession {
 		await this.bindExtensionsImpl(bindings)
 	}
 
+	// Palette refresh re-derives extension-contributed resources through the
+	// real (private) upstream method; the fake just resolves.
+	async extendResourcesFromExtensions(_reason: "reload" | "startup"): Promise<void> {}
+
 	getToolDefinition(name: string): unknown {
 		return this.registeredTools.get(name)
 	}
@@ -444,6 +462,8 @@ function makeRecordingConn(): {
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+// Poll until cond() holds with the shared helper; slow tests pass a bigger budget.
+const waitFor = (cond: () => boolean, timeoutMs = 2000) => sharedWaitFor(cond, { timeoutMs })
 
 // newSession/loadSession schedule available_commands_update via setImmediate so
 // it lands after the session/new|load response; flush it before asserting on it.
@@ -5259,6 +5279,125 @@ describe("newSession skill commands", () => {
 		const availableCommands =
 			(update?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
 		expect(availableCommands.map((c) => c.name)).toContain(`skill:${skillName}`)
+	})
+
+	function makeRefreshableSession(
+		id: string,
+		dir: string,
+		skills: Skill[],
+	): {
+		fake: FakeAgentSession
+		reloads: { n: number }
+	} {
+		const reloads = { n: 0 }
+		const fake = new FakeAgentSession(id, dir)
+		fake.resourceLoader = {
+			...makeSkillLoader(skills),
+			reload: async () => {
+				reloads.n++
+			},
+		} as unknown as ResourceLoader
+		return { fake, reloads }
+	}
+
+	it("re-advertises palettes when a global skill changes on disk", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		// Hermetic home: the watcher resolves roots from os.homedir() ($HOME),
+		// so without this the real dev harness dir is also watched.
+		vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "acp-server-home-")))
+		const agentDir = mkdtempSync(join(tmpdir(), "acp-server-agdir-"))
+		const skills: Skill[] = []
+		const { fake, reloads } = makeRefreshableSession("session-skill-watch-global", dir, skills)
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir,
+			sessionFactory: factory,
+		})
+		try {
+			await agent.newSession({ cwd: dir, mcpServers: [] })
+			await flushDeferredCommands()
+
+			// Baseline palette: no skill commands yet.
+			const baseline = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const baselineCmds =
+				(baseline?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(baselineCmds.map((c) => c.name)).not.toContain(`skill:${skillName}`)
+
+			// A skill lands in the global skills dir (e.g. uploaded from a
+			// settings UI) — the agent notices on its own and re-advertises.
+			skills.push(skill)
+			updates.length = 0
+			// chokidar attaches asynchronously; writes landing before attach (or
+			// in the ignored initial-scan window) are silently lost, so wait past
+			// the attach window before mutating.
+			await new Promise((r) => setTimeout(r, 600))
+			updates.length = 0
+			const reloadsBase = reloads.n
+
+			mkdirSync(join(agentDir, "skills", skillName), { recursive: true })
+			writeFileSync(join(agentDir, "skills", skillName, "SKILL.md"), `---\nname: ${skillName}\n---\nbody`, "utf-8")
+			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+
+			expect(reloads.n).toBe(reloadsBase + 1)
+			const repaint = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const repaintedCmds =
+				(repaint?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(repaintedCmds.map((c) => c.name)).toContain(`skill:${skillName}`)
+		} finally {
+			await agent.shutdown()
+			vi.unstubAllEnvs()
+		}
+	})
+
+	it("re-advertises palettes when a project skill changes on disk", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "acp-server-home-")))
+		// .claude/skills is one of the resolver's default config paths; it is
+		// picked up only while the project is trusted.
+		setProjectScopeTrusted(dir, true)
+		mkdirSync(join(dir, ".claude", "skills"), { recursive: true })
+		const agentDir = mkdtempSync(join(tmpdir(), "acp-server-agdir-"))
+		const skills: Skill[] = []
+		const { fake, reloads } = makeRefreshableSession("session-skill-watch-project", dir, skills)
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir,
+			sessionFactory: factory,
+		})
+		try {
+			await agent.newSession({ cwd: dir, mcpServers: [] })
+			await flushDeferredCommands()
+			updates.length = 0
+
+			skills.push({
+				...skill,
+				filePath: join(dir, ".claude", "skills", skillName, "SKILL.md"),
+			})
+			// Attach-settle (see the global test comment).
+			await new Promise((r) => setTimeout(r, 600))
+			updates.length = 0
+			const reloadsBase = reloads.n
+
+			mkdirSync(join(dir, ".claude", "skills", skillName), { recursive: true })
+			writeFileSync(
+				join(dir, ".claude", "skills", skillName, "SKILL.md"),
+				`---\nname: ${skillName}\n---\nbody`,
+				"utf-8",
+			)
+			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+
+			expect(reloads.n).toBe(reloadsBase + 1)
+			const repaint = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const repaintedCmds =
+				(repaint?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(repaintedCmds.map((c) => c.name)).toContain(`skill:${skillName}`)
+		} finally {
+			await agent.shutdown()
+		}
 	})
 
 	it("rewrites a skill command prompt to inject skill content", async () => {
