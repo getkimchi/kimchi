@@ -113,10 +113,15 @@ describe("createCommandsRefresher", () => {
 	function makeRecordHolder() {
 		const reloads = { n: 0 }
 		let gate: (() => void) | undefined
+		// Mutated per reload so consecutive sweeps keep seeing changes — the
+		// refresher only broadcasts palettes that differ after the reload.
+		const skills: Array<{ name: string; description?: string; filePath: string }> = []
 		const session = new BaseFakeAgentSession("acp-test-session")
 		session.resourceLoader = makeResourceLoader({
+			skills,
 			onReload: () => {
 				reloads.n++
+				skills.push({ name: `s${reloads.n}`, description: "", filePath: `/s/s${reloads.n}/SKILL.md` })
 				return new Promise<void>((r) => {
 					gate = r
 				})
@@ -175,8 +180,12 @@ describe("createCommandsRefresher", () => {
 			session: asSession(failingSession),
 			skillCommands: new Map([["old", { name: "old", description: "", filePath: "/s/old/SKILL.md" }]]),
 		}
+		const healthySession = new BaseFakeAgentSession("s-good")
+		healthySession.resourceLoader = makeResourceLoader({
+			skills: [{ name: "fresh", description: "", filePath: "/s/fresh/SKILL.md" }],
+		})
 		const healthy = {
-			session: asSession(new BaseFakeAgentSession("s-good")),
+			session: asSession(healthySession),
 			skillCommands: new Map<string, { name: string; description: string; filePath: string }>(),
 		}
 		const broadcasts: string[] = []
@@ -209,10 +218,13 @@ describe("createCommandsRefresher", () => {
 
 	it("a sweep escape (e.g. broadcast throwing) is logged and does not wedge the refresher", async () => {
 		const reloads = { n: 0 }
+		const skills: Array<{ name: string; description?: string; filePath: string }> = []
 		const session = new BaseFakeAgentSession("acp-test-session")
 		session.resourceLoader = makeResourceLoader({
+			skills,
 			onReload: () => {
 				reloads.n++
+				skills.push({ name: `s${reloads.n}`, description: "", filePath: `/s/s${reloads.n}/SKILL.md` })
 			},
 		})
 		const record = { session: asSession(session), skillCommands: new Map() }
@@ -242,6 +254,69 @@ describe("createCommandsRefresher", () => {
 		} finally {
 			process.stderr.write = origWrite
 		}
+	})
+
+	it("a second sweep with the same palette does not re-broadcast (delete-burst regression)", async () => {
+		// chokidar reports one `rm -rf <skillDir>/` as several events spaced
+		// ~100ms apart, each spilling into its own debounce window: without the
+		// palette diff, every trailing sweep re-broadcast the unchanged
+		// palette, so one deletion produced N identical
+		// available_commands_update notifications per session.
+		const skills = [
+			{ name: "deploy", description: "Ship it", filePath: "/s/deploy/SKILL.md" },
+			{ name: "build", description: "Compile", filePath: "/s/build/SKILL.md" },
+		]
+		const session = new BaseFakeAgentSession("acp-test-session")
+		session.resourceLoader = makeResourceLoader({ skills })
+		const record = {
+			session: asSession(session),
+			skillCommands: new Map<string, { name: string; description: string; filePath: string }>(),
+		}
+		const broadcasts: string[] = []
+		const refresher = createCommandsRefresher({
+			sessions: () => [["s1", record] as [string, typeof record]],
+			broadcast: (id) => broadcasts.push(id),
+			debounceMs: 0,
+		})
+
+		// First event window: the skills change (a skill disappears)…
+		skills.splice(1) // build skill deleted
+		refresher.request()
+		await waitForCount(() => broadcasts.length, 1)
+
+		// …trailing event windows for the same deletion carry no new
+		// information: the palette is unchanged, so nothing re-broadcasts.
+		refresher.request()
+		await tick(50)
+		refresher.request()
+		await tick(50)
+
+		expect(broadcasts).toEqual(["s1"])
+	})
+
+	it("a description-only change between sweeps still broadcasts", async () => {
+		const skills = [{ name: "deploy", description: "Ship it", filePath: "/s/deploy/SKILL.md" }]
+		const session = new BaseFakeAgentSession("acp-test-session")
+		session.resourceLoader = makeResourceLoader({ skills })
+		const record = {
+			session: asSession(session),
+			skillCommands: new Map<string, { name: string; description: string; filePath: string }>(),
+		}
+		const broadcasts: string[] = []
+		const refresher = createCommandsRefresher({
+			sessions: () => [["s1", record] as [string, typeof record]],
+			broadcast: (id) => broadcasts.push(id),
+			debounceMs: 0,
+		})
+
+		refresher.request()
+		await waitForCount(() => broadcasts.length, 1)
+		const deploy = skills[0]
+		if (deploy) deploy.description = "Ship it, but faster"
+		refresher.request()
+		await waitForCount(() => broadcasts.length, 2)
+
+		expect(broadcasts).toEqual(["s1", "s1"])
 	})
 
 	it("cancelling before the debounce fires drops the sweep", async () => {
