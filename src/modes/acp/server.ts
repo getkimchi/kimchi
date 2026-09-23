@@ -63,7 +63,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, writeApiKey } from "../../config.js"
+import { clearApiKey, loadConfig as loadKimchiConfig, writeApiKey } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
@@ -112,7 +112,7 @@ import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
-import { AVAILABLE_COMMANDS } from "./commands.js"
+import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
@@ -124,12 +124,11 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { AcpPlanTracker } from "./plans.js"
 import {
 	type AcpSkillInfo,
-	buildSkillAvailableCommands,
 	buildSkillCommandPrompt,
 	buildSkillListBlock,
-	discoverAcpSkillCommands,
 	tryParseSkillCommand,
 } from "./skill-commands.js"
+import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
@@ -290,8 +289,13 @@ interface RetireToolCallOpts {
 
 export class KimchiAcpAgent implements Agent {
 	private sessions = new Map<string, SessionRecord>()
+	private readonly commandsRefresher = createCommandsRefresher({
+		sessions: () => this.sessions,
+		broadcast: (sessionId) => this.scheduleAvailableCommandsUpdate(sessionId),
+	})
 	private readonly sessionFactory: AcpSessionFactory
 	private readonly agentDir: string
+	private readonly skillWatcher: SkillWatcher
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
 	private readonly mcpProbe: McpProbe | undefined
@@ -330,6 +334,11 @@ export class KimchiAcpAgent implements Agent {
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 		this.mcpProbe = options.mcpProbe
+		this.skillWatcher = createSkillWatcher({
+			agentDir: options.agentDir,
+			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
+			requestRefresh: () => this.commandsRefresher.request(),
+		})
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
@@ -533,6 +542,7 @@ export class KimchiAcpAgent implements Agent {
 			// cwd-local skill roots to the loader during resources_discover, so
 			// the palette and /skill: parsing see every skill exactly once.
 			this.populateSkillCommands(session, record)
+			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
@@ -592,7 +602,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private populateSkillCommands(session: AgentSession, record: SessionRecord): void {
-		record.skillCommands = new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s]))
+		record.skillCommands = discoverSkillCommandsMap(session)
 	}
 
 	/** Start forwarding this session's Todo store writes to the ACP client. */
@@ -808,6 +818,7 @@ export class KimchiAcpAgent implements Agent {
 
 			// Same post-binding skill population as newSession (see there).
 			this.populateSkillCommands(session, record)
+			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
@@ -1020,7 +1031,8 @@ export class KimchiAcpAgent implements Agent {
 				// Sessionless write half of the import (ADR-0043/ADR-0044): copies
 				// selected skills into Kimchi's own skills dir, merges selected MCP
 				// servers conservatively, and satisfies the migration marker. No
-				// session is touched.
+				// session is touched. The copied skills land in a watched root, so
+				// the file watcher re-advertises palettes on its own.
 				return { ...handleImportApply({ agentDir: this.agentDir }, params) }
 			default:
 				throw RequestError.methodNotFound(method)
@@ -1034,6 +1046,8 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async doShutdown(_cause: "signal" | "disconnect"): Promise<void> {
+		this.commandsRefresher.cancel()
+		this.skillWatcher.close()
 		// Drain any in-flight turn promises before tearing down the session.
 		// On the signal path we process.exit immediately so this is mostly
 		// cosmetic, but runAcpMode's finally also calls shutdown when conn.closed
@@ -1102,6 +1116,7 @@ export class KimchiAcpAgent implements Agent {
 		// fire-and-forgotten if we relied on dispose() alone.
 		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		entry.session.dispose()
+		this.skillWatcher?.removeSession(entry)
 	}
 
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
@@ -1715,12 +1730,11 @@ export class KimchiAcpAgent implements Agent {
 			// palette for a dead session.
 			const record = this.sessions.get(sessionId)
 			if (!record) return
-			const skillCommands = buildSkillAvailableCommands(Array.from(record.skillCommands.values()))
 			this.send({
 				sessionId,
 				update: {
 					sessionUpdate: "available_commands_update",
-					availableCommands: [...AVAILABLE_COMMANDS, ...skillCommands],
+					availableCommands: composeAvailableCommands(record.skillCommands),
 				},
 			})
 		})

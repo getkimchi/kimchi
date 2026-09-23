@@ -2,6 +2,7 @@ import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
+import { INTERNAL_SESSION_ENTRY } from "../../session-visibility.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
@@ -340,6 +341,7 @@ export async function evaluateFermentV2(
 			],
 		}
 		const evaluatorSession = createEvaluatorSession(ctx)
+		evaluatorSession.appendCustomEntry(INTERNAL_SESSION_ENTRY, { kind: "ferment-evaluator" })
 		evaluatorSession.appendSessionInfo("Ferment V2 evaluator")
 		evaluatorSession.appendModelChange(model.provider, model.id)
 		evaluatorSession.appendMessage(context.messages[0])

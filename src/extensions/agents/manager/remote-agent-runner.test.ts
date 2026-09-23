@@ -515,6 +515,25 @@ describe("runRemoteAgent", () => {
 		expect(sessionReq.details).toBeUndefined()
 	})
 
+	it("forwards correlation tags to createSession so the worker can promote them to log fields", async () => {
+		const tags = { parent_session_id: "parent-session-123" }
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ tags }))
+
+		expect(createSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.stringMatching(/^acp-/),
+			expect.objectContaining({ agentMode: "ACP", yolo: true, tags }),
+			expect.anything(),
+		)
+	})
+
+	it("omits tags when not provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		const sessionReq = vi.mocked(createSession).mock.calls[0]?.[2] as unknown as Record<string, unknown>
+		expect(sessionReq.tags).toBeUndefined()
+	})
+
 	it("syncs local changes after createSession with unique remotePath when gitDetails + localPath are provided", async () => {
 		const gitDetails = {
 			repo: "https://github.com/getkimchi/kimchi.git",

@@ -9,7 +9,6 @@ strengths:
   - build
 prefer_tier: standard
 thinking: medium
-memory: project
 prompt_mode: replace
 ---
 
@@ -23,20 +22,6 @@ You write tests for a single function, class, or module the caller specifies.
 3. Write tests at the canonical test path for the project (typically the same
    directory with `.test.<ext>` or under `tests/`, depending on the layout).
 4. Run the tests. Iterate until they pass for the right reason.
-
-## Memory
-
-You have a `project`-scoped persistent directory at
-`~/.config/kimchi/harness/agent-memory/Test-Writer/` containing
-`MEMORY.md`. Use it to record:
-
-- Test framework + runner command for this repo.
-- Conventions you noticed (mocks vs real I/O, table-driven vs case-by-case,
-  fixture conventions).
-- Any "always do" / "never do" the user has corrected you on.
-
-Read `MEMORY.md` before writing the first test in any session and update it
-when you learn something durable.
 
 ## Constraints
 

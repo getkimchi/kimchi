@@ -8,6 +8,37 @@ import { getAvailableModels, setAvailableModels } from "../startup-context.js"
 import { printBanner } from "./banner.js"
 
 /**
+ * Bare confirmation — read a single line from stdin; bare Enter means yes.
+ * Deliberately not @clack/prompts: subcommands may run non-interactively
+ * (CI pipelines pass --yes / --force instead). A stdin that closes without
+ * emitting data (closed pipe, lost TTY) declines rather than hanging.
+ */
+export async function confirm(prompt: string): Promise<boolean> {
+	process.stdout.write(prompt)
+	return new Promise((resolve) => {
+		let settled = false
+		const settle = (value: boolean) => {
+			if (settled) return
+			settled = true
+			process.stdin.off("data", onData)
+			process.stdin.off("end", onClosed)
+			process.stdin.off("close", onClosed)
+			resolve(value)
+		}
+		const onData = (chunk: Buffer) => {
+			process.stdin.pause()
+			const answer = chunk.toString("utf-8").trim().toLowerCase()
+			settle(answer === "" || answer === "y" || answer === "yes")
+		}
+		const onClosed = () => settle(false)
+		process.stdin.resume()
+		process.stdin.on("data", onData)
+		process.stdin.once("end", onClosed)
+		process.stdin.once("close", onClosed)
+	})
+}
+
+/**
  * Resolve the kimchi API key from $KIMCHI_API_KEY first, then the config
  * file. Returns null when neither is set; callers print a friendly "run
  * kimchi setup" message rather than throwing.

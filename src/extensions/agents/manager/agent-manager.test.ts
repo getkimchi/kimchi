@@ -51,6 +51,7 @@ vi.mock("../../teleport/provisioning/git-token.js", () => ({
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import type { AgentRecord } from "../personas/types.js"
@@ -1025,6 +1026,7 @@ describe("AgentManager remote git credential resolution", () => {
 			cwd: "/work/myrepo",
 			mode,
 			ui: { custom: vi.fn() },
+			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
 
@@ -1100,6 +1102,21 @@ describe("AgentManager remote git credential resolution", () => {
 			}),
 		)
 		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("resources")
+	})
+
+	it("tags the remote session with the parent (local) session id for sandbox log correlation", async () => {
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({ tags: { [SESSION_TAG_PARENT_SESSION_ID]: "parent-test-session" } }),
+		)
 	})
 
 	it("broken kimchi_workspace.yaml surfaces as an agent error and never starts a remote run", async () => {
@@ -1212,6 +1229,7 @@ describe("AgentManager remote stopReason mapping", () => {
 			cwd: "/work/myrepo",
 			mode: "tui",
 			ui: { custom: vi.fn() },
+			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
 
@@ -1326,6 +1344,7 @@ describe("AgentManager reconnecting lifecycle", () => {
 			cwd: "/work/myrepo",
 			mode: "tui",
 			ui: { custom: vi.fn() },
+			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
 

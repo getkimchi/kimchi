@@ -109,6 +109,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
 		placeholder: "<pattern>",
 	},
+	models: {
+		type: "string",
+		description: "Comma-separated model ids the auto model picks from",
+		placeholder: "<a,b>",
+	},
 	"multi-model": {
 		type: "boolean",
 		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
@@ -235,6 +240,7 @@ export interface SessionCliArgs {
 		model?: string
 		models?: string
 		"multi-model"?: boolean
+		memory?: boolean
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -284,7 +290,7 @@ for (const [name, short] of Object.entries(PRE_DISPATCH_VALUE_FLAG_SHORTS)) {
 }
 
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
-const CACHEABLE_OPTION_NAMES = [
+export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
@@ -315,8 +321,19 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 	})
 	const options: SessionCliArgs["options"] = {}
 	for (const key of CACHEABLE_OPTION_NAMES) {
-		const value = values[key]
+		let value = values[key]
 		if (value === undefined) continue
+		// node:util parseArgs with strict:false returns the raw string for
+		// `--flag=value` even when the flag is declared boolean. For boolean
+		// flags, accept only the explicit =true/=false forms — anything else
+		// (e.g. --memory=1) would store a string into a boolean-typed option,
+		// making `=== true` and truthiness checks disagree.
+		if (CLI_OPTIONS[key]?.type === "boolean" && typeof value === "string") {
+			if (value !== "true" && value !== "false") {
+				throw new Error(`--${key} expects a boolean (=true or =false); got --${key}=${JSON.stringify(value)}`)
+			}
+			value = value === "true"
+		}
 		;(options as Record<string, unknown>)[key] = value
 	}
 	return { options, positionals }

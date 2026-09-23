@@ -331,6 +331,11 @@ describe("Ferment V2 evaluator", () => {
 				.find((path) => path !== parentFile)
 			if (!childFile) throw new Error("expected an evaluator child session")
 			const child = SessionManager.open(childFile, sessionDir)
+			expect(child.getEntries()[0]).toMatchObject({
+				type: "custom",
+				customType: "kimchi:internal-session",
+				data: { kind: "ferment-evaluator" },
+			})
 			expect(child.getHeader()?.parentSession).toBe(parentFile)
 			expect(child.getSessionName()).toBe("Ferment V2 evaluator")
 			expect(child.getEntries()).toEqual(

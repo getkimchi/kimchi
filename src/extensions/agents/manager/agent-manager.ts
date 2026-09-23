@@ -8,6 +8,7 @@ import { resolveWorkspaceSpec } from "../../../sandbox/cloud/spec.js"
 import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
+import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
@@ -461,6 +462,7 @@ export class AgentManager {
 			localPath: ctx.cwd,
 			workspaceName: dirName,
 			outputFile: record.outputFile,
+			tags: { [SESSION_TAG_PARENT_SESSION_ID]: ctx.sessionManager.getSessionId() },
 			...(workspaceSpec ? { spec: workspaceSpec } : {}),
 			onReady: (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+	CACHEABLE_OPTION_NAMES,
+	CLI_OPTIONS,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -369,5 +371,41 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+	})
+})
+
+describe("boolean =-form normalization", () => {
+	it('enables --yolo=true (previously the string "true" — silently ignored)', () => {
+		populateCliArgs(["--yolo=true", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+	})
+
+	it("disables on --yolo=false and keeps the bare flag true", () => {
+		populateCliArgs(["--yolo=false", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(false)
+		populateCliArgs(["--yolo", "fix tests"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+	})
+
+	it("normalizes every boolean flag's =-form", () => {
+		populateCliArgs(["--yolo=true", "--plan=false"])
+		expect(getParsedCliArgs().options.yolo).toBe(true)
+		expect(getParsedCliArgs().options.plan).toBe(false)
+	})
+
+	it("rejects non-boolean =-values for boolean flags", () => {
+		expect(() => populateCliArgs(["--yolo=1", "fix tests"])).toThrow(
+			/--yolo expects a boolean \(=true or =false\); got --yolo="1"/,
+		)
+	})
+})
+
+describe("cacheable option coverage", () => {
+	it("every CACHEABLE_OPTION_NAMES entry is declared in CLI_OPTIONS", () => {
+		// parseCliArgs dereferences CLI_OPTIONS[key].type for each of these;
+		// a name missing from the catalog is a startup crash, not a silent
+		// miss, so the invariant is enforced here.
+		const missing = CACHEABLE_OPTION_NAMES.filter((name) => !CLI_OPTIONS[name])
+		expect(missing).toEqual([])
 	})
 })

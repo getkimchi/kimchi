@@ -669,7 +669,7 @@ export async function spawnGraderAgent(
 		const parentSessionDir = ctx.sessionManager.getSessionDir()
 		const parentSessionFile = ctx.sessionManager.getSessionFile()
 		if (parentSessionDir && parentSessionFile) {
-			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd, AGENT_GRADER_TYPE)
 			sessionFile = prepared?.sessionFile
 			sessionDir = parentSessionDir
 		}
@@ -1755,6 +1755,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							parentSessionDir,
 							ctx.sessionManager.getSessionFile(),
 							ctx.cwd,
+							subagentType,
 						)?.sessionFile
 					} catch (err) {
 						const detail = err instanceof Error ? err.message : String(err)
@@ -1904,6 +1905,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						parentSessionDir,
 						ctx.sessionManager.getSessionFile(),
 						ctx.cwd,
+						subagentType,
 					)?.sessionFile
 					fgOutputFile = createOutputFilePath(
 						ctx.cwd,
@@ -2617,7 +2619,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 		if (cfg.inheritContext) fmFields.push("inherit_context: true")
 		if (cfg.runInBackground) fmFields.push("run_in_background: true")
 		if (cfg.isolated) fmFields.push("isolated: true")
-		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`)
 		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`)
 
 		const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`
