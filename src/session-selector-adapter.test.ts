@@ -57,6 +57,65 @@ beforeAll(() => {
 })
 
 describe("resume explorer using the upstream selector", () => {
+	it("finds an internal session with a missing parent and resolves its parent after switching scope", async () => {
+		const internal = session("internal", {
+			name: "Ferment V2 evaluator",
+			parentSessionPath: "/tmp/parent.jsonl",
+			firstMessage: "Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
+		})
+		const { component, select } = await picker([internal], {
+			all: async () => [{ ...internal }, session("parent", { cwd: "/work/another-project" })],
+		})
+		expect(text(component)).toContain("No visible sessions")
+		component.handleInput("internal")
+		expect(text(component)).toContain("No matching sessions")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("Parent:        parent.jsonl")
+		expect(text(component)).toContain("1/1 sessions")
+		component.handleInput("\t")
+		await vi.waitFor(() => expect(text(component)).toContain("Parent:        Session parent"))
+		expect(text(component)).toContain("All folders · Best match")
+		expect(text(component)).toContain("1/1 sessions · 2 in scope")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("No matching sessions")
+		component.handleInput("\r")
+		expect(select).not.toHaveBeenCalled()
+		component.handleInput("\x1bOS")
+		component.handleInput("\r")
+		expect(select).toHaveBeenCalledWith(internal.path)
+	})
+
+	it("keeps internal visibility through sort, named-only filtering and cancelled dialogs", async () => {
+		const internal = session("internal", {
+			name: "Ferment V2 evaluator",
+			parentSessionPath: "/tmp/parent.jsonl",
+			firstMessage: "Objective:\nFix it\n\nCurrent Todo state:\n[]\n\nDurable Ferment V2 lessons:\n(none)",
+		})
+		const rename = vi.fn(async () => {})
+		const { component } = await picker([internal, session("parent", { name: undefined })], { rename })
+		component.handleInput("\x1bOS")
+		component.handleInput("\x0e")
+		expect(text(component)).toContain("1/1 sessions")
+		expect(text(component)).toContain("[internal] Ferment V2 evaluator")
+		component.handleInput("\x12")
+		expect(text(component)).toContain("Rename Session")
+		component.handleInput("\x1b")
+		expect(rename).not.toHaveBeenCalled()
+		expect(text(component)).toContain("Role:          Checks whether the parent task is complete")
+		component.handleInput("\x04")
+		expect(text(component)).toContain("enter confirm deletion")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("enter confirm deletion")
+		component.handleInput("\x1b")
+		component.handleInput("\x13")
+		expect(text(component)).toContain("Last active · Named only")
+		expect(text(component)).toContain("[internal]")
+		component.handleInput("\x1bOS")
+		expect(text(component)).toContain("No named sessions")
+		component.handleInput("\x0e")
+		expect(text(component)).toContain("1/1 sessions · 1 internal hidden")
+	})
+
 	it("reveals internal children as a tree and restores the parent and previous sort when hiding", async () => {
 		const parent = session("parent", { modified: new Date("2026-09-01") })
 		const internal = (id: string, modified: string) =>

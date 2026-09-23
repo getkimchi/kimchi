@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
@@ -45,6 +45,24 @@ async function savedSession(marker: boolean, name: string, prompt = "Ordinary wo
 }
 
 describe("internal session classification", () => {
+	it("reads metadata before a first message larger than the bounded header read", async () => {
+		const session = await savedSession(true, "Large evaluator", "Objective details ".repeat(10_000))
+		expect(await getInternalSessionInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
+	})
+	it("keeps the initial model after later model changes and an interrupted final write", async () => {
+		const session = await savedSession(true, "Evaluator")
+		appendFileSync(
+			session.path,
+			`\n${JSON.stringify({ type: "model_change", provider: "other", modelId: "later" })}\n{"type":`,
+		)
+		expect(await getInternalSessionInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })
+	})
+	it("does not describe an unknown internal kind as a completion evaluator", async () => {
+		const session = await savedSession(true, "Other internal")
+		writeFileSync(session.path, readFileSync(session.path, "utf8").replace('"ferment-evaluator"', '"other"'))
+		expect(await getInternalSessionInfo(session)).toEqual({ kind: "internal", model: "test/evaluator-model" })
+	})
+
 	it("recognizes the persisted marker even after renaming", async () => {
 		expect(await getInternalSessionInfo(await savedSession(true, "A renamed session"))).toEqual({
 			kind: "ferment-evaluator",
