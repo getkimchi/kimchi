@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
@@ -31,7 +31,10 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0, inclu
 		[other, "Other project work", "Review cross-project-marker", "SAVED_OTHER_RESPONSE", "2026-03-03T10:00:00.000Z"],
 		[cwd, "Internal evaluator fixture", "Evaluate the saved task", "INTERNAL_RESPONSE", "2026-04-01T10:00:00.000Z"],
 		...(includeSubagent
-			? [[cwd, "Find retry boundary", "Inspect retries", "EXPLORER_RESPONSE", "2026-03-01T10:00:00.000Z"]]
+			? [
+					[cwd, "Find retry boundary", "Inspect retries", "EXPLORER_RESPONSE", "2026-03-01T10:00:00.000Z"],
+					[cwd, "Review retry fix", "Review the change", "LEGACY_REVIEW_RESPONSE", "2026-02-15T10:00:00.000Z"],
+				]
 			: []),
 		...Array.from({ length: archivedCount }, (_, index) => [
 			cwd,
@@ -50,6 +53,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0, inclu
 		const id = randomUUID()
 		const internal = name === "Internal evaluator fixture"
 		const subagent = name === "Find retry boundary"
+		const legacySubagent = name === "Review retry fix"
 		if (name === "Fix pool timeouts") parentSession = join(dir, `${id}.jsonl`)
 		const entries = [
 			{
@@ -58,7 +62,7 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0, inclu
 				id,
 				timestamp,
 				cwd: directory,
-				...(internal || subagent ? { parentSession } : {}),
+				...(internal || subagent || legacySubagent ? { parentSession } : {}),
 			},
 			...(internal || subagent
 				? [
@@ -106,6 +110,19 @@ function seedSessions(homeDir: string, workDir: string, archivedCount = 0, inclu
 			},
 		]
 		writeFileSync(join(dir, `${id}.jsonl`), `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`)
+		if (legacySubagent) {
+			appendFileSync(
+				parentSession,
+				`${JSON.stringify({
+					type: "custom",
+					id: "legacy-agent",
+					parentId: "assistant",
+					timestamp,
+					customType: "subagents:record",
+					data: { sessionFile: join(dir, `${id}.jsonl`), type: "Reviewer" },
+				})}\n`,
+			)
+		}
 	}
 }
 
@@ -253,17 +270,21 @@ test("keep labeled subagents in the tree when hiding background checks", async (
 			startupText: "First message:",
 		},
 		async (_fixture, trace) => {
-			expect(viewText(terminal)).toContain("└─ [Explore] Find retry boundary")
+			expect(viewText(terminal)).toContain("├─ [Explore] Find retry boundary")
+			expect(viewText(terminal)).toContain("└─ [Reviewer] Review retry fix")
 			expect(viewText(terminal)).toContain("├─ [background check] Internal evaluator fixture")
 			terminal.write("\x05")
 			await waitForText(terminal, "1 background check hidden", { full: false })
-			expect(viewText(terminal)).toContain("└─ [Explore] Find retry boundary")
+			expect(viewText(terminal)).toContain("├─ [Explore] Find retry boundary")
+			expect(viewText(terminal)).toContain("└─ [Reviewer] Review retry fix")
 			expect(viewText(terminal)).not.toContain("[background check]")
 			terminal.keyDown()
 			await waitForText(terminal, "First message: Inspect retries", { full: false })
+			terminal.keyDown()
+			await waitForText(terminal, "First message: Review the change", { full: false })
 			trace.step("ordinary subagent keeps its role and parent tree while evaluators are hidden")
 			terminal.submit("")
-			await waitForText(terminal, "EXPLORER_RESPONSE", { full: false })
+			await waitForText(terminal, "LEGACY_REVIEW_RESPONSE", { full: false })
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			trace.step("labeled child resumes its saved history")
 		},

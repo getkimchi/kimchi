@@ -9,6 +9,55 @@ export type SessionRoleInfo = ({ kind: "ferment-evaluator" | "internal" } | { ki
 	model?: string
 }
 
+export async function getSessionRoles(sessions: SessionInfo[]): Promise<Map<SessionInfo, SessionRoleInfo>> {
+	const roles = new Map<SessionInfo, SessionRoleInfo>()
+	const parents = new Map<string, Map<string, SessionInfo>>()
+	for (const session of sessions) {
+		const role = await getSessionRoleInfo(session)
+		if (role) roles.set(session, role)
+		else if (session.parentSessionPath) {
+			let children = parents.get(session.parentSessionPath)
+			if (!children) {
+				children = new Map()
+				parents.set(session.parentSessionPath, children)
+			}
+			children.set(session.path, session)
+		}
+	}
+	// Older children saved their role only in the parent's subagent record.
+	// Stream each needed parent once, including parents outside the current scope.
+	for (const [path, children] of parents) {
+		try {
+			const file = await open(path, "r")
+			try {
+				for await (const line of file.readLines({ autoClose: false })) {
+					if (!line.includes('"subagents:record"')) continue
+					const entry = parseSessionEntries(line)[0]
+					if (entry?.type !== "custom" || entry.customType !== "subagents:record") continue
+					const data = entry.data
+					if (
+						typeof data !== "object" ||
+						data === null ||
+						!("sessionFile" in data) ||
+						typeof data.sessionFile !== "string" ||
+						!("type" in data) ||
+						typeof data.type !== "string" ||
+						!data.type.trim()
+					)
+						continue
+					const child = children.get(data.sessionFile)
+					if (child) roles.set(child, { kind: "subagent", name: data.type })
+				}
+			} finally {
+				await file.close()
+			}
+		} catch {
+			// Missing parents leave their children visible without an inferred role.
+		}
+	}
+	return roles
+}
+
 export async function getSessionRoleInfo(session: SessionInfo): Promise<SessionRoleInfo | undefined> {
 	if (!session.parentSessionPath) return undefined
 	let info: SessionRoleInfo | undefined

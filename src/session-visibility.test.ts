@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
-import { getSessionRoleInfo, INTERNAL_SESSION_ENTRY } from "./session-visibility.js"
+import { getSessionRoleInfo, getSessionRoles, INTERNAL_SESSION_ENTRY } from "./session-visibility.js"
 
 const directories: string[] = []
 afterEach(() => {
@@ -45,6 +45,47 @@ async function savedSession(marker: boolean, name: string, prompt = "Ordinary wo
 }
 
 describe("internal session classification", () => {
+	it("recovers legacy roles from their shared parent without labeling unrelated forks", async () => {
+		const reviewer = await savedSession(false, "Renamed review")
+		const builder = { ...reviewer, path: `${reviewer.path}.builder`, name: "Implement changes" }
+		const fork = { ...reviewer, path: `${reviewer.path}.fork` }
+		const parentPath = reviewer.parentSessionPath ?? ""
+		writeFileSync(
+			parentPath,
+			[
+				JSON.stringify({ type: "message", message: { content: "Large parent history ".repeat(10_000) } }),
+				...[
+					{ sessionFile: reviewer.path, type: "Reviewer" },
+					{ sessionFile: builder.path, type: "Builder" },
+					{ sessionFile: fork.path, type: 42 },
+				].map((data) => JSON.stringify({ type: "custom", customType: "subagents:record", data })),
+				'{"type":',
+			].join("\n"),
+		)
+		const roles = await getSessionRoles([reviewer, builder, fork])
+		expect(roles.get(reviewer)).toEqual({ kind: "subagent", name: "Reviewer" })
+		expect(roles.get(builder)).toEqual({ kind: "subagent", name: "Builder" })
+		expect(roles.has(fork)).toBe(false)
+		rmSync(parentPath)
+		expect((await getSessionRoles([reviewer])).has(reviewer)).toBe(false)
+	})
+
+	it("prefers explicit child metadata over a parent record", async () => {
+		const evaluator = await savedSession(true, "Renamed check")
+		writeFileSync(
+			evaluator.parentSessionPath ?? "",
+			JSON.stringify({
+				type: "custom",
+				customType: "subagents:record",
+				data: { sessionFile: evaluator.path, type: "Reviewer" },
+			}),
+		)
+		expect((await getSessionRoles([evaluator])).get(evaluator)).toEqual({
+			kind: "ferment-evaluator",
+			model: "test/evaluator-model",
+		})
+	})
+
 	it("reads metadata before a first message larger than the bounded header read", async () => {
 		const session = await savedSession(true, "Large evaluator", "Objective details ".repeat(10_000))
 		expect(await getSessionRoleInfo(session)).toEqual({ kind: "ferment-evaluator", model: "test/evaluator-model" })

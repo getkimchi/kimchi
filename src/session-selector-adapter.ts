@@ -19,7 +19,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
-import { getSessionRoleInfo, type SessionRoleInfo } from "./session-visibility.js"
+import { getSessionRoles, type SessionRoleInfo } from "./session-visibility.js"
 
 // Pi 0.85.1 exposes the selector but not its presentation state. Keep this private
 // boundary here; the contract tests instantiate the real upstream component.
@@ -288,10 +288,7 @@ prototype.buildBaseLayout = function (content, options) {
 			const loader = this[key].bind(this)
 			this[key] = async (onProgress) => {
 				const sessions = await loader(onProgress)
-				for (const session of sessions) {
-					const info = await getSessionRoleInfo(session)
-					if (info) sessionRoles.set(session, info)
-				}
+				for (const [session, role] of await getSessionRoles(sessions)) sessionRoles.set(session, role)
 				return sessions
 			}
 		}
