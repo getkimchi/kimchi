@@ -10,7 +10,8 @@ permissions:
 jobs:
   tui-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Files run serially; allow setup/build plus the roughly 20-minute suite.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
