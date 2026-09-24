@@ -579,6 +579,33 @@ describe("startup auth gate", () => {
 		expect(harness.state.authenticated).toBe(true)
 	})
 
+	it("runs a fresh browser login instead of reusing a saved key from another region", async () => {
+		let savedConfigKey = "us-key"
+		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey, region: "us" }))
+		configMock.writeApiKey.mockImplementation((key: string) => {
+			savedConfigKey = key
+		})
+		const harness = createHarness()
+		// The saved US key yields no models, so the gate opens.
+		const syncWithModels = piAuthMock.syncPiAuth.getMockImplementation()
+		piAuthMock.syncPiAuth.mockImplementation(async (authPath: string, modelsPath: string, apiKey: string) => {
+			if (apiKey !== "us-key") await syncWithModels?.(authPath, modelsPath, apiKey)
+		})
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\n") // Kimchi account
+		await harness.waitForCustomPrompts(2)
+		harness.input("j") // Europe
+		harness.input("\n")
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledWith(
+			expect.objectContaining({ webAppUrl: "https://app.eu.kimchi.dev" }),
+		)
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, { region: "eu" })
+	})
+
 	it("Back on the region selector returns to the auth-method selector", async () => {
 		const onCancel = vi.fn()
 		const harness = createHarness({ onCancel })

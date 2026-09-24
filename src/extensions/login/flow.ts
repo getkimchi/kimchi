@@ -387,7 +387,10 @@ export async function performKimchiBrowserLogin(
 	host: KimchiBrowserLoginHost,
 	options: KimchiBrowserLoginOptions = {},
 ): Promise<boolean> {
-	const existingToken = options.reuseExistingToken ? loadConfig().apiKey : ""
+	const cfg = loadConfig()
+	// A key only works in its own region, so a newly picked region needs a fresh login.
+	const regionChanged = options.region !== undefined && options.region !== getRegion(cfg.region).id
+	const existingToken = options.reuseExistingToken && !regionChanged ? cfg.apiKey : ""
 	if (existingToken) {
 		host.showStatus?.("Refreshing Kimchi models with existing login...")
 		return configureKimchiToken(host, existingToken)
