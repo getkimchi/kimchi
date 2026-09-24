@@ -1,109 +1,139 @@
-import { test } from "@microsoft/tui-test"
-import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
+import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import type { FakeResponseScript } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-// Bug repro + regression test (session 01a0cd6c / Discord "borked todos" screenshot): the model
-// marks 2 of 3 todos completed, delivers its final summary, and the turn-end
-// closure steer must nudge it to close the remaining active todo. Baseline
-// (no steer): the pinned overlay stranded "2/3 done · 1 active" forever —
-// verified failing before the closure steer landed. The two reserved trailing
-// responses are consumed by the steer's follow-up model call.
-test("terminal turn strands a dangling active todo with no closure nudge", async ({ terminal }) => {
-	await runKimchiSession(
-		terminal,
-		{
-			artifactName: "todos-dangling-active",
-			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
-			responses: [
-				{
-					stream: ["Planning the work."],
-					toolCalls: [
-						{
-							id: "call_create_todos",
-							function: {
-								name: "create_todos",
-								arguments: JSON.stringify({
-									todos: [
-										{ content: "read inputs", status: "pending" },
-										{ content: "run the analysis", status: "pending" },
-										{ content: "write the summary", status: "pending" },
-									],
-								}),
-							},
-						},
-					],
+for (const scenario of ["completed", "deferred", "superseded"]) {
+	const deferred = scenario === "deferred"
+	const cancelled = scenario === "superseded"
+	test(
+		deferred
+			? "settled reconciliation preserves deferred work"
+			: cancelled
+				? "settled reconciliation retains superseded work as cancelled"
+				: "settled reconciliation closes a forgotten todo without another main-agent turn",
+		async ({ terminal }) => {
+			const reconciliation: FakeResponseScript = {
+				match(request) {
+					const body = request.body as { messages?: { role: string; content: string }[] }
+					if (
+						!body.messages?.some(
+							(message) => message.role === "system" && message.content.startsWith("Reconcile todo bookkeeping"),
+						)
+					)
+						return false
+					const user = body.messages.find((message) => message.role === "user")
+					if (!user) throw new Error("Reconciliation request omitted transcript")
+					const input = JSON.parse(user.content)
+					const proof = input.transcript.find((entry: { role: string }) => entry.role === "toolResult:bash")
+					reconciliation.stream = [
+						JSON.stringify({
+							updates: [
+								{
+									id: 1,
+									status: cancelled ? "cancelled" : "completed",
+									reason: cancelled ? "Replacement completed" : "Input verified",
+									evidence: [proof.entryId],
+								},
+							],
+						}),
+					]
+					return true
 				},
-				{
-					toolCalls: [
-						{
-							id: "call_work",
-							function: { name: "bash", arguments: JSON.stringify({ command: "sleep 0.2" }) },
-						},
-					],
-				},
-				// Two sequential turns, one mark each: mark_todo registers with
-				// executionMode "parallel", so two mark calls in ONE response race
-				// their read-modify-write and one write is lost (observed while
-				// debugging the closure steer — separate harness finding).
-				{
-					toolCalls: [
-						{
-							id: "call_mark_1",
-							function: { name: "mark_todo", arguments: JSON.stringify({ id: 1, status: "completed" }) },
-						},
-					],
-				},
-				{
-					toolCalls: [
-						{
-							id: "call_mark_2",
-							function: { name: "mark_todo", arguments: JSON.stringify({ id: 2, status: "completed" }) },
-						},
-					],
-				},
-				{ stream: ["Work complete."] },
-				// Reserved for the turn-end closure steer's follow-up model call.
-				{
-					toolCalls: [
-						{
-							id: "call_mark_3",
-							function: { name: "mark_todo", arguments: JSON.stringify({ id: 3, status: "completed" }) },
-						},
-					],
-				},
-				{ stream: ["All todos closed."] },
-			],
-		},
-		async (_fixture, trace) => {
-			terminal.submit("run the task")
-			await waitForText(terminal, "Work complete.", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("final summary delivered")
-
-			// The closure steer fires at the terminal turn's end and its
-			// continuation closes the dangling todo — waiting for the reserved
-			// scripted response proves the steer reached the model. (Never type
-			// input to verify the list: a still-streaming continuation queues it
-			// as a prompt instead of running the /todos command.)
-			await waitForText(terminal, "All todos closed.", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("closure steer continuation closed the dangling todo")
-
-			// Final state: the pinned overlay only stays up while active todos
-			// exist, so once the continuation marks the last item completed the
-			// overlay disappears from the viewable buffer. Two consecutive clean
-			// checks guard against transient renders mid-update.
-			const deadline = Date.now() + STREAM_TIMEOUT_MS
-			let cleanChecks = 0
-			while (cleanChecks < 2 && Date.now() < deadline) {
-				cleanChecks = /\d+\/\d+ done/.test(viewText(terminal)) ? 0 : cleanChecks + 1
-				if (cleanChecks < 2) await new Promise((resolve) => setTimeout(resolve, 250))
+				stream: [],
 			}
-			if (cleanChecks < 2) {
-				throw new Error("Timed out waiting for the pinned todo overlay to hide (active todos remain).")
-			}
-			trace.step("todo overlay unpinned after the last item closed")
+			await runKimchiSession(
+				terminal,
+				{
+					artifactName: deferred ? "todos-preserve-deferred" : "todos-dangling-active",
+					models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
+					responses: [
+						reconciliation,
+						{
+							toolCalls: [
+								{
+									id: "create",
+									function: {
+										name: "create_todos",
+										arguments: JSON.stringify({
+											todos: [
+												{ content: cancelled ? "Old approach" : "Verify input", status: "in_progress" },
+												{ content: "Collect results", status: "pending" },
+												{ content: deferred ? "Publish after approval" : "Compare results", status: "pending" },
+											],
+										}),
+									},
+								},
+							],
+						},
+						{
+							toolCalls: [
+								{
+									id: "work",
+									function: { name: "bash", arguments: JSON.stringify({ command: "printf 'input verified\\n'" }) },
+								},
+							],
+						},
+						{
+							toolCalls: [
+								{
+									id: "mark2",
+									function: { name: "mark_todo", arguments: JSON.stringify({ id: 2, status: "completed" }) },
+								},
+							],
+						},
+						...(deferred
+							? []
+							: [
+									{
+										toolCalls: [
+											{
+												id: "mark3",
+												function: { name: "mark_todo", arguments: JSON.stringify({ id: 3, status: "completed" }) },
+											},
+										],
+									},
+								]),
+						{ stream: [deferred ? "Analysis complete. Publishing awaits approval." : "Comparison complete."] },
+					],
+				},
+				async (fixture, trace) => {
+					terminal.submit(
+						deferred
+							? "Analyze the input; defer publishing until I approve."
+							: "Verify the input and compare the results.",
+					)
+					await waitForText(terminal, deferred ? "Analysis complete." : "Comparison complete.", {
+						timeoutMs: STREAM_TIMEOUT_MS,
+					})
+					trace.step("main answer delivered with first todo still active")
+					if (deferred) {
+						await waitForText(terminal, "2/3 done · 1 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+						await waitForText(terminal, "Publish after approval", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					} else {
+						const deadline = Date.now() + STREAM_TIMEOUT_MS
+						while (/\d+\/\d+ done/.test(viewText(terminal)) && Date.now() < deadline)
+							await new Promise((resolve) => setTimeout(resolve, 100))
+						expect(viewText(terminal)).not.toMatch(/\d+\/\d+ done/)
+					}
+					trace.step("reconciled widget reflects completed and deferred work")
+					terminal.write("/todos")
+					await waitForText(terminal, "/todos", { timeoutMs: STREAM_TIMEOUT_MS })
+					terminal.submit("")
+					// Deferred lists were already expanded, so /todos collapses them. Completed lists reopen.
+					if (!deferred)
+						await waitForText(terminal, cancelled ? "2/3 done · 0 active · 1 cancelled" : "3/3 done · 0 active", {
+							timeoutMs: STREAM_TIMEOUT_MS,
+							full: false,
+						})
+					const chat = fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
+					expect(chat).toHaveLength(deferred ? 5 : 6)
+					expect(JSON.stringify(chat)).not.toContain("terminal-turn-closure")
+					trace.step("one tool-free reconciliation request and no main-agent continuation")
+				},
+			)
 		},
 	)
-})
+}

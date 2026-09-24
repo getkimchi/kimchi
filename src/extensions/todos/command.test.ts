@@ -13,6 +13,7 @@ describe("/todos command helpers", () => {
 	it("parses supported subcommands", () => {
 		expect(__test_parseTodoArgs("")).toEqual({ action: "open", text: "", index: null })
 		expect(__test_parseTodoArgs("add ship it")).toEqual({ action: "add", text: "ship it", index: null })
+		expect(__test_parseTodoArgs("cancel 2")).toEqual({ action: "cancel", text: "", index: 1 })
 		expect(__test_parseTodoArgs("done 2")).toEqual({ action: "done", text: "", index: 1 })
 		expect(__test_parseTodoArgs("start 1")).toEqual({ action: "start", text: "", index: 0 })
 		expect(__test_parseTodoArgs("block 3")).toEqual({ action: "block", text: "", index: 2 })
@@ -43,6 +44,10 @@ describe("/todos command helpers", () => {
 
 		__test_applyTodoAction({ action: "done", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "completed" })
+		__test_applyTodoAction({ action: "cancel", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "cancelled" })
+		__test_applyTodoAction({ action: "pending", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "pending" })
 	})
 
 	it("removes and clears todos", () => {

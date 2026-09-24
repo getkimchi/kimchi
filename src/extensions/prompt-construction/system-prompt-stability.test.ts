@@ -16,9 +16,8 @@ import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
 import { buildPlanModeSupplementBlock } from "../permissions/index.js"
 import type { PermissionModeState } from "../permissions/types.js"
-import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { FERMENT_TODO_GUIDANCE } from "../todos/ferment-prompt-block.js"
-import todosExtension, { TODO_EARLY_NUDGE_THRESHOLD } from "../todos/index.js"
+import todosExtension from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
@@ -674,84 +673,17 @@ describe("system prompt stability contract", () => {
 		})
 	})
 
-	describe("todo early-nudge trigger boundary", () => {
-		let harness: TestHarness
-
-		beforeEach(async () => {
-			harness = createHarness("non-ferment")
-			__resetTodoStore()
-			setActive(undefined)
-			todosExtension(harness.pi)
-			await harness.fire("session_start", { reason: "new" })
-		})
-
-		afterEach(async () => {
-			await harness.fire("session_shutdown", {})
-			setActive(undefined)
-			__resetTodoStore()
-		})
-
-		async function fireToolExecutionEnd(toolName: string): Promise<void> {
-			await harness.fire("tool_execution_end", {
-				type: "tool_execution_end",
-				toolName,
-				toolCallId: `call-${toolName}`,
-				input: {},
-				isError: false,
-				result: { content: [], details: {} },
-			})
-		}
-
-		function earlyNudgeCalls(): SendMessageCall[] {
-			return harness.getSentMessages().filter((call) => {
-				const details = (call.message as { details?: { reason?: string } } | undefined)?.details
-				return call.options?.deliverAs === "steer" && details?.reason === "early_nudge"
-			})
-		}
-
-		/* Steer messages are transient injections into the current request's
-		 * prefix. Every steer that fires without its declared trigger is a cache
-		 * invalidation, so these tests pin the boundary: only work-tool-call
-		 * threshold crossings on todo-less sessions may emit the early nudge. */
-
-		it("does not fire below the work-tool threshold", async () => {
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 1; i++) await fireToolExecutionEnd("bash")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-		})
-
-		it("fires exactly once when the threshold is crossed and never recurs", async () => {
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD; i++) await fireToolExecutionEnd("bash")
-
-			const firstPass = earlyNudgeCalls()
-			expect(firstPass).toHaveLength(1)
-			expect((firstPass[0]?.message as { customType?: string }).customType).toBe(TODO_CUSTOM_ENTRY_TYPE)
-
-			// Further work tool calls must not emit another nudge — the prefix
-			// stabilises after the single steer.
-			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("bash")
-			expect(earlyNudgeCalls()).toHaveLength(1)
-		})
-
-		it("never fires once the session has had a todo list", async () => {
-			applyWriteTodos({ todos: [{ content: "planned task", status: "pending" }] }, SESSION_ID)
-			applyWriteTodos({ todos: [] }, SESSION_ID)
-
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD + 3; i++) await fireToolExecutionEnd("bash")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-		})
-
-		it("does not count todo tool calls toward the threshold", async () => {
-			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 2; i++) await fireToolExecutionEnd("bash")
-			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("write_todos")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-
-			await fireToolExecutionEnd("read")
-			expect(earlyNudgeCalls()).toHaveLength(0)
-
-			// Second-to-last work tool call plus this one reaches the threshold.
-			await fireToolExecutionEnd("read")
-			expect(earlyNudgeCalls()).toHaveLength(1)
-		})
+	it("does not inject todo reminders during long work", async () => {
+		const harness = createHarness("non-ferment")
+		todosExtension(harness.pi)
+		await harness.fire("session_start", { reason: "new" })
+		for (let i = 0; i < 30; i++) await harness.fire("tool_execution_end", { toolName: "bash", isError: false })
+		expect(harness.getSentMessages()).toHaveLength(0)
+		applyWriteTodos({ todos: [{ content: "unfinished", status: "in_progress" }] }, SESSION_ID)
+		const count = harness.getSentMessages().length
+		for (let i = 0; i < 30; i++) await harness.fire("tool_execution_end", { toolName: "bash", isError: false })
+		expect(harness.getSentMessages()).toHaveLength(count)
+		await harness.fire("session_shutdown", {})
 	})
 
 	describe("behaviours steer trigger boundary", () => {

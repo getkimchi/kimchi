@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earen
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
-import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope, hasEverHadTodos } from "./store.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
@@ -283,66 +283,6 @@ describe("passive staleness counter", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("sends exactly one closure steer after a terminal turn with active todos", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-
-		// The bounded closure steer replaces the removed forced-reconciliation
-		// turn: hidden, one-shot, non-directive.
-		const closureCalls = steerCallsByReason(harness.sendMessage, "terminal-turn-closure")
-		expect(closureCalls).toHaveLength(1)
-		const [message, options] = closureCalls[0] as [
-			{ customType?: string; display?: boolean; content?: string },
-			{ deliverAs?: string },
-		]
-		expect(message.customType).toBe("todo-closure")
-		expect(message.display).toBe(false)
-		expect(options.deliverAs).toBe("steer")
-		expect(message.content).toContain("still active")
-		expect(message.content).toContain("carry over")
-		// Nothing else beyond the persisted state block and the closure steer.
-		expect(nonStateSyncCalls(harness.sendMessage)).toHaveLength(1)
-	})
-
-	it("fires the closure steer once across repeated terminal turns (one-shot per todo-write epoch)", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-
-		// Without a store write between turns, repeated terminal stops do not
-		// re-nag — the steer's own continuation turn cannot ping-pong.
-		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(1)
-
-		// A todo write resets the epoch, so the next terminal turn steers again.
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(2)
-	})
-
-	it("sends no closure steer when every todo is completed or the store is empty", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		applyWriteTodos({ todos: [{ content: "all done", status: "completed" }] }, "session")
-		await harness.fire("turn_end", terminalTurn(), ctx)
-		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(0)
-
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(0)
-	})
-
 	it("resyncs the active todo widget on terminal turns after the TUI clears widgets", async () => {
 		const harness = createTodosHarness()
 		const setWidget = vi.fn()
@@ -360,9 +300,8 @@ describe("passive staleness counter", () => {
 		await harness.fire("turn_end", terminalTurn(), ctx)
 
 		expect(setWidget).toHaveBeenCalledTimes(2)
-		// The closure steer also fires here (active todo at a terminal turn);
-		// the widget resync is the behavior under test.
-		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(1)
+		// Widget refresh must not continue the main agent.
+		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(0)
 	})
 
 	it("does not reconcile on non-terminal turns", async () => {
@@ -394,148 +333,5 @@ describe("passive staleness counter", () => {
 		applyWriteTodos({ todos: [{ content: "beta for B", status: "pending" }] }, "session-b")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a").map((todo) => todo.content)).toEqual(["alpha for A"])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b").map((todo) => todo.content)).toEqual(["beta for B"])
-	})
-})
-
-describe("early todo nudge", () => {
-	beforeEach(() => {
-		__resetTodoStore()
-	})
-
-	it("fires when the model does multi-step work without ever creating a todo list", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		// Ten successful non-todo tool calls, no list ever created. The one-shot
-		// nudge threshold is 5, so it should have fired.
-		for (let i = 0; i < 10; i++) {
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		}
-
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(harness.sendMessage).mock.calls[0]?.[0]).toMatchObject({
-			details: { reason: "early_nudge" },
-		})
-	})
-
-	it("does not fire when the session already has a todo list", async () => {
-		const harness = createTodosHarness()
-		// Resumed session: the branch already contains a todo list.
-		const ctx = createContext("session", [writeTodosEntry("a", "restored work", "in_progress")])
-		await harness.fire("session_start", { reason: "resume" }, ctx)
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")).toHaveLength(1)
-
-		for (let i = 0; i < 10; i++) {
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		}
-
-		expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
-	})
-
-	it("fires only once even if the model continues without creating a list", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		for (let i = 0; i < 20; i++) {
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		}
-
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
-	})
-
-	it("delivers the nudge as a steer, never a follow-up", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		for (let i = 0; i < 10; i++) {
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		}
-
-		expect(vi.mocked(harness.sendMessage).mock.calls[0]?.[1]).toEqual({ deliverAs: "steer" })
-	})
-
-	it("does not fire when the model creates a todo list before the threshold", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		// Three tool calls, then create a todo list (below threshold of 5).
-		for (let i = 0; i < 3; i++) {
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		}
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session")
-		expect(hasEverHadTodos("session")).toBe(true)
-
-		// More tool calls — nudge should not fire because the session has had todos.
-		for (let i = 0; i < 10; i++) {
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		}
-
-		expect(steerCallsByReason(harness.sendMessage, "early_nudge")).toHaveLength(0)
-	})
-
-	describe("staleness threshold steers", () => {
-		it("fires one-shot steers at 9/17/25 post-write tool calls and resets on todo write", async () => {
-			const harness = createTodosHarness()
-			const ctx = createContext("session", [])
-			await harness.fire("session_start", { reason: "new" }, ctx)
-			applyWriteTodos({ todos: [{ content: "long task", status: "in_progress" }] }, "session")
-
-			const stalenessCalls = () => steerCallsByReason(harness.sendMessage, "staleness")
-
-			// Below the first threshold: nothing.
-			for (let i = 0; i < 8; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(0)
-
-			// Ninth call crosses 9: exactly one steer, and no refire on later calls.
-			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			expect(stalenessCalls()).toHaveLength(1)
-			expect((stalenessCalls()[0]?.[0] as { content: string }).content).toContain("9 changes since last update")
-			expect((stalenessCalls()[0]?.[0] as { content: string }).content).toMatch(/^<system-reminder>\n/)
-			expect(stalenessCalls()[0]?.[1]).toEqual({ deliverAs: "steer" })
-
-			for (let i = 0; i < 3; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(1)
-
-			// 17 and 25 crossings each fire once more.
-			for (let i = 0; i < 5; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(2)
-			expect((stalenessCalls()[1]?.[0] as { content: string }).content).toContain("17 changes since last update")
-
-			for (let i = 0; i < 8; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(3)
-			expect((stalenessCalls()[2]?.[0] as { content: string }).content).toContain("significantly stale")
-
-			// A todo write resets both the counter and the epoch: crossing 9
-			// again fires a fresh steer.
-			applyWriteTodos({ todos: [{ id: 1, content: "long task", status: "completed" }] }, "session")
-			for (let i = 0; i < 9; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(stalenessCalls()).toHaveLength(4)
-		})
-
-		it("does not fire when the current scope has no todos", async () => {
-			const harness = createTodosHarness()
-			const ctx = createContext("session", [])
-			await harness.fire("session_start", { reason: "new" }, ctx)
-
-			// No list ever created: work calls only trigger the early nudge.
-			for (let i = 0; i < 12; i++) {
-				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-			}
-			expect(steerCallsByReason(harness.sendMessage, "staleness")).toHaveLength(0)
-		})
 	})
 })
