@@ -49,7 +49,9 @@ Use paths relative to the skill folder for bundled files. Keep secrets and machi
 
 ## 5. Check the result
 
-Read back the saved files. Check the frontmatter, folder/name match, referenced paths, and that instructions preserve the user's intended workflow. Remove unfinished placeholders.
+Run `node <this-skill-folder>/scripts/validate-skill.mjs <saved-skill-folder>` using the [bundled validator](scripts/validate-skill.mjs). It checks YAML syntax, required name and description, their limits, and the folder/name match. Fix reported errors before continuing.
+
+Read back the saved files. Check referenced paths and that instructions preserve the user's intended workflow. Remove unfinished placeholders. Passing frontmatter validation does not prove the workflow works.
 
 Try a representative request using supplied or clearly labeled sample input. Check the actual result against the requested output, including how the skill handles missing information. Revise the skill when the trial reveals a concrete problem.
 
