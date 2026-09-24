@@ -448,6 +448,17 @@ function parsePreferencesConfig(value: unknown): PreferencesConfig | undefined {
 }
 
 /**
+ * Effective region: KIMCHI_REGION (for headless/CI setups that cannot run the
+ * interactive login selector) → the global config value → DEFAULT_REGION.
+ * An unknown value at either layer is treated as unset.
+ */
+function effectiveRegion(fileRegion: unknown): RegionId {
+	const envRegion = process.env[REGION_ENV]
+	if (isRegionId(envRegion)) return envRegion
+	return isRegionId(fileRegion) ? fileRegion : DEFAULT_REGION
+}
+
+/**
  * Read telemetry configuration from config.json without requiring an API key.
  * Safe to call before authentication is set up.
  *
@@ -500,10 +511,11 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
-	// Default ingest targets follow the configured region; explicit telemetry.*
-	// config still wins. getRegion treats an unknown value as the default, the
-	// same as readConfigExtras' "unknown means unset" parse.
-	const region = getRegion(fileRegion)
+	// Default ingest targets follow the effective region (KIMCHI_REGION, then
+	// the file) — the same precedence loadConfig uses, so a headless EU setup
+	// does not ship telemetry and its key to the US ingest. Explicit
+	// telemetry.* config still wins.
+	const region = getRegion(effectiveRegion(fileRegion))
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -582,12 +594,9 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	}
 
 	// Region is account-level: only the global config may set it, and it is
-	// written at login. KIMCHI_REGION overrides the file for headless/CI setups
-	// that cannot run the interactive login selector; an unknown env value is
-	// treated as unset, same as the config-file parse. A custom per-project
-	// gateway keeps working through the `llmEndpoint` field.
-	const envRegion = process.env[REGION_ENV]
-	const region = (isRegionId(envRegion) ? envRegion : undefined) ?? globalExtras.region ?? DEFAULT_REGION
+	// written at login. A custom per-project gateway keeps working through the
+	// `llmEndpoint` field.
+	const region = effectiveRegion(globalExtras.region)
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",

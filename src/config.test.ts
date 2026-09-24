@@ -637,6 +637,14 @@ describe("region config", () => {
 		expect(cfg.endpoint).toBe("https://custom.example/logs:ingest")
 		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
+
+	it("telemetry defaults honour the KIMCHI_REGION env override like loadConfig", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		const cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
 })
 
 describe("clearApiKey", () => {
