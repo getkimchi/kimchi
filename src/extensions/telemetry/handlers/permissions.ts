@@ -25,14 +25,7 @@ export const TOOL_DECISION_EVENT = "claude_code.tool_decision"
  */
 export function handleToolDecision(tm: TelemetryContext, raw: unknown): void {
 	const payload = raw as Partial<PermissionToolDecisionPayload> | undefined
-	if (
-		!payload ||
-		!payload.toolName ||
-		!payload.decision ||
-		!payload.source ||
-		!payload.sourceDetail ||
-		!payload.permissionMode
-	) {
+	if (!payload?.toolName || !payload.decision || !payload.source || !payload.sourceDetail || !payload.permissionMode) {
 		return
 	}
 	tm.emit(TOOL_DECISION_EVENT, {
