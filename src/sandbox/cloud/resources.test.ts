@@ -85,6 +85,19 @@ describe("resolveWorkspaceResources", () => {
 	it("a bad value in one field does not hide a good value in another field's error", () => {
 		expect(() => resolveWorkspaceResources({ cpu: "250m", memory: "bogus" })).toThrowError(/memory/)
 	})
+
+	it("reports violations in every bad field at once", () => {
+		try {
+			resolveWorkspaceResources({ cpu: "abc", memory: "0", pvcSize: "20Gi" })
+			expect.unreachable()
+		} catch (err) {
+			expect(err).toBeInstanceOf(WorkspaceResourcesError)
+			const message = (err as Error).message
+			expect(message).toContain('cpu value "abc"')
+			expect(message).toContain('memory value "0"')
+			expect(message).not.toContain("pvcSize")
+		}
+	})
 })
 
 describe("cpuQuantityToMillicores", () => {

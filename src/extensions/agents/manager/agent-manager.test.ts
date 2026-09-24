@@ -1091,8 +1091,12 @@ describe("AgentManager remote git credential resolution", () => {
 		)
 	})
 
-	it("forwards kimchi_workspace.yaml resources to runRemoteAgent when minting a workspace", async () => {
-		mockLoadWorkspaceFile.mockReturnValue({ resources: { cpu: " 500m ", pvcSize: "20Gi" } })
+	it("forwards the kimchi_workspace.yaml spec to runRemoteAgent when minting a workspace", async () => {
+		mockLoadWorkspaceFile.mockReturnValue({
+			resources: { cpu: " 500m ", pvcSize: "20Gi" },
+			dependencies: ["jq"],
+			egressPolicy: { denyByDefault: false },
+		})
 		manager = new AgentManager()
 
 		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
@@ -1100,13 +1104,20 @@ describe("AgentManager remote git credential resolution", () => {
 			remote: true,
 		})
 
-		// No name-matched workspace (listWorkspaces → []) → mint → resources ride.
-		// Outer whitespace trimmed by the real validator.
+		// No name-matched workspace (listWorkspaces → []) → mint → spec rides.
+		// Outer whitespace trimmed by the real validator; other sections verbatim.
 		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.any(String),
-			expect.objectContaining({ resources: { cpu: "500m", pvcSize: "20Gi" } }),
+			expect.objectContaining({
+				spec: {
+					resources: { cpu: "500m", pvcSize: "20Gi" },
+					dependencies: ["jq"],
+					egressPolicy: { denyByDefault: false },
+				},
+			}),
 		)
+		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("resources")
 	})
 
 	it("tags the remote session with the parent (local) session id for sandbox log correlation", async () => {
@@ -1143,7 +1154,7 @@ describe("AgentManager remote git credential resolution", () => {
 		expect(mockRunRemoteAgent).not.toHaveBeenCalled()
 	})
 
-	it("does not forward resources when a name-matched workspace is reused", async () => {
+	it("does not forward a spec when a name-matched workspace is reused", async () => {
 		mockLoadWorkspaceFile.mockReturnValue({ resources: { cpu: "500m" } })
 		mockListWorkspaces.mockResolvedValue([
 			{ id: "ws-existing", name: "myrepo", createdAt: new Date(), lastActivityAt: new Date(), status: "active" },
@@ -1157,7 +1168,7 @@ describe("AgentManager remote git credential resolution", () => {
 
 		expect(record.status).toBe("completed")
 		expect(mockLoadWorkspaceFile).not.toHaveBeenCalled()
-		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("resources")
+		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("spec")
 	})
 
 	it("passes undefined gitCredential when no token is resolved (non-interactive mode)", async () => {

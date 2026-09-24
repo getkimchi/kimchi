@@ -1227,3 +1227,92 @@ describe("readAutoDefaultApplied error handling", () => {
 		expect(readAutoDefaultApplied(path)).toBe(false)
 	})
 })
+
+describe("memoryEmbedding config parsing", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("parses a valid model and dims", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 } }),
+		)
+		expect(loadConfig({ configPath }).memoryEmbedding).toEqual({
+			model: "text-embedding-3-large",
+			dims: 3072,
+		})
+	})
+
+	it("parses each field independently", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { dims: 768 } }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ dims: 768 })
+
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "bge-m3" } }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ model: "bge-m3" })
+	})
+
+	it("drops invalid parts — empty model and non-integer dims leave no section", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "", dims: 12.5 } }))
+		// Both fields invalid: nothing survives the parse, so the pinned
+		// defaults apply downstream.
+		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
+	})
+
+	it("rejects non-positive-integer dims but keeps a valid model", () => {
+		for (const dims of [0, -3, 1024.5, "1024"]) {
+			writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "bge-m3", dims } }))
+			expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ model: "bge-m3" })
+		}
+	})
+
+	it("ignores a non-object memoryEmbedding section", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: "bge-m3" }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
+	})
+
+	it("is absent without the section", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
+	})
+})
+
+describe("memoryExtraction config parsing", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("parses a valid model", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: { model: "glm-5.3-flash" } }))
+		expect(loadConfig({ configPath }).memoryExtraction).toEqual({ model: "glm-5.3-flash" })
+	})
+
+	it("drops an empty model", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: { model: "" } }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+	})
+
+	it("ignores a non-object section and absence", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: "glm-5.3-flash" }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+	})
+})

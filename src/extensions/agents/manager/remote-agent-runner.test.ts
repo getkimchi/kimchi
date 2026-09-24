@@ -415,16 +415,16 @@ describe("runRemoteAgent", () => {
 		)
 	})
 
-	it("forwards resources to authenticateWorkspace when provided", async () => {
-		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ resources: { cpu: "250m", memory: "1Gi" } }))
+	it("forwards the workspace spec to authenticateWorkspace when provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ spec: { resources: { cpu: "250m", memory: "1Gi" } } }))
 
 		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
 			endpoint: undefined,
-			resources: { cpu: "250m", memory: "1Gi" },
+			spec: { resources: { cpu: "250m", memory: "1Gi" } },
 		})
 	})
 
-	it("omits the resources key when not provided", async () => {
+	it("omits the spec key when not provided", async () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
 
 		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {

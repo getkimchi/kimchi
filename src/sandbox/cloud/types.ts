@@ -54,6 +54,32 @@ export interface WorkspaceResourcesConfig {
 /** Field names accepted under `resources:` — single source of truth for file parsing and quantity validation. */
 export const WORKSPACE_RESOURCE_FIELDS = ["cpu", "memory", "pvcSize"] as const
 
+/** Field names accepted under `egressPolicy:` — single source of truth for file parsing and validation. */
+export const EGRESS_POLICY_FIELDS = ["denyByDefault", "allowed", "denied"] as const
+
+/**
+ * Outbound network policy of a workspace, enforced by the in-pod sidekick
+ * proxy. `denyByDefault` is tri-state: absent keeps the server's default
+ * (fail-closed — only `allowed` destinations pass); explicit `false`
+ * requests the default-allow posture. `denied` always wins over `allowed`.
+ */
+export interface EgressPolicyConfig {
+	denyByDefault?: boolean
+	allowed?: string[]
+	denied?: string[]
+}
+
+/**
+ * Create-time workspace parameters sent under `spec` on workspace upserts.
+ * Mirrors the control-plane WorkspaceSpec message (workspaces_api.proto):
+ * resources / dependencies / egressPolicy.
+ */
+export interface WorkspaceSpecConfig {
+	resources?: WorkspaceResourcesConfig
+	dependencies?: string[]
+	egressPolicy?: EgressPolicyConfig
+}
+
 export interface WorkspaceCredentials {
 	connectToken: string
 	expiresAt: string
@@ -79,12 +105,14 @@ export interface AuthenticateOptions {
 	 */
 	gitToken?: string
 	/**
-	 * Workspace resource requests sent on workspace-create PUTs. Resources
-	 * are create-time-only and immutable server-side (a re-PUT with changed
-	 * values 400s) — only pass these when the workspace is being created,
-	 * never on re-auth of an existing workspace.
+	 * Create-time workspace spec (resources, dependencies, egress policy)
+	 * sent nested under `spec` on workspace-create PUTs. All three sections
+	 * are create-time-only server-side: resources are immutable (a re-PUT
+	 * with changed values 400s), dependencies and egressPolicy are silently
+	 * ignored on upsert — only pass when minting a new workspace, never on
+	 * re-auth of an existing one.
 	 */
-	resources?: WorkspaceResourcesConfig
+	spec?: WorkspaceSpecConfig
 }
 
 export interface ListWorkspacesOptions extends AuthenticateOptions {
