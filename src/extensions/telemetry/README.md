@@ -107,6 +107,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
 | `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)*, `request.trace_id` / `request.span_id` *(when a provider request context exists)* |
+| `claude_code.tool_decision` | Every gated permission decision, prompted or automatic | `tool_name`, `tool_use_id`, `decision` (`accept` / `reject`), `decision_source` (`config` / `hook` / `user_permanent` / `user_temporary` / `user_abort` / `user_reject`), `source_detail`, `permission_mode` (`default` / `plan` / `auto` / `yolo`), `model` — the user-facing selection: `auto` when the Auto router is active, otherwise the concrete model id |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
 | `remote_execution.started` | Remote agent successfully spawned | `origin` |
 | `remote_execution.completed` | Remote agent finished successfully | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
@@ -125,6 +126,8 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
+
+> **Tool decisions:** `decision_source` is the official Claude Code `source` attribute, renamed because `source` already holds the session origin (`cli` / `acp`). `source_detail` is a kimchi-specific refinement (see `PermissionDecisionSourceDetail` in `permissions/permissions-events.ts`). Acceptance rate = `accept / (accept + reject)`.
 
 ## Workflow Events
 

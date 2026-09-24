@@ -22,6 +22,7 @@ export const PERMISSION_EVENTS = {
 	MODE_CHANGED: "permissions:mode_changed",
 	BEFORE_PROMPT: "permissions:before_prompt",
 	AFTER_DECISION: "permissions:after_decision",
+	TOOL_DECISION: "permissions:tool_decision",
 	CONFIG_LOADED: "permissions:config_loaded",
 	PLAN_APPROVED: "permissions:plan_approved",
 	CLASSIFIER_UNAVAILABLE: "permissions:classifier_unavailable",
@@ -92,6 +93,61 @@ export interface PermissionAfterDecisionPayload {
 		behavior: "allow" | "deny"
 		source: RuleSource
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool decision (every gated permission decision, not just prompts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Why the gate decided (kept deliberately enum-bounded — never per-rule or
+ * free-form strings). Telemetry maps each value onto the official Claude Code
+ * `claude_code.tool_decision` `source` vocabulary.
+ */
+export type PermissionDecisionSourceDetail =
+	| "yolo_bypass"
+	| "plan_readonly"
+	| "plan_gate"
+	| "builtin_safe"
+	| "readonly"
+	| "ferment_internal"
+	| "compound_rule"
+	| "rule"
+	| "session_rule"
+	| "questionnaire_promotion"
+	| "classifier"
+	| "classifier_no_ui"
+	| "no_ui"
+	| "allow_once"
+	| "allow_remember"
+	| "allow_remember_wildcard"
+	| "deny"
+	| "deny_with_feedback"
+	| "abort"
+	| "mode_flap"
+
+/**
+ * Emitted for EVERY permission decision the tool_call gate makes — prompts and
+ * automatic allows/denies alike. Usually once per tool call, with two
+ * exceptions that share the parent `toolCallId`:
+ *  - a prompt abort followed by re-evaluation under a new mode emits the abort
+ *    and the re-evaluated outcome;
+ *  - a compound bash command settled per subcommand emits one decision per
+ *    evaluated segment.
+ *
+ * Not emitted for the IDE diff-viewer deferral (default mode + IDE connected):
+ * the decision is made inside the IDE.
+ *
+ * Privacy: structured enums + ids only. No command text, file paths, rule
+ * contents, or user feedback strings.
+ */
+export interface PermissionToolDecisionPayload {
+	toolCallId: string
+	toolName: string
+	decision: "accept" | "reject"
+	sourceDetail: PermissionDecisionSourceDetail
+	/** Permission mode the decision was made under (for prompts: when the prompt opened). */
+	permissionMode: PermissionMode
 }
 
 // ---------------------------------------------------------------------------
