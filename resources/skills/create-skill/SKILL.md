@@ -22,7 +22,7 @@ Honor an explicit destination and any workspace instructions. Otherwise ask whet
 - This project: `.kimchi/skills/<name>/SKILL.md` in the project root. Project skills load only after the folder is trusted.
 - All projects: `~/.config/kimchi/harness/skills/<name>/SKILL.md`.
 
-Use an existing project skills root when one is already present. Check for a same-name skill before writing; update it only when that is the requested intent, otherwise choose a distinct name. Do not write into this bundled skill's directory or a temporary discovery copy.
+Do not choose another harness's skills directory merely because it exists; Kimchi may not be configured to load it. Check for a same-name skill before writing; update it only when that is the requested intent, otherwise choose a distinct name. Do not write into this bundled skill's directory or a temporary discovery copy.
 
 ## 3. Write the instructions
 
