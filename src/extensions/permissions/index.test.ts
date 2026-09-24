@@ -3731,6 +3731,88 @@ describe("permissions:tool_decision emissions", () => {
 		])
 	})
 
+	it("auto mode: requires-confirmation with a prompt surface falls through to the prompt", async () => {
+		// hasUI makes canPrompt() true: the classifier defers to the terminal
+		// prompter, whose outcome is emitted with permissionMode "auto".
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const decisions = collectDecisions(harness)
+		const ctx = {
+			...createClassifierContext(),
+			hasUI: true,
+			ui: { ...createMockContext([]).ui, select: vi.fn(async () => "Yes — just this call") },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			riskScore: "medium",
+			reason: "could mutate state",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		expect(await harness.fire("tool_call", tcall("bash", { command: "make build" }, "tc-allow"), ctx)).toBeUndefined()
+
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			riskScore: "medium",
+			reason: "could mutate state",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		ctx.ui.select = vi.fn(async () => "No — tell the assistant what to do differently")
+		const blocked = await harness.fire("tool_call", tcall("bash", { command: "make deploy" }, "tc-deny"), ctx)
+		expect(blocked).toMatchObject({ block: true })
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolCallId: "tc-allow",
+				decision: "accept",
+				sourceDetail: "allow_once",
+				permissionMode: "auto",
+			}),
+			expect.objectContaining({
+				toolCallId: "tc-deny",
+				decision: "reject",
+				sourceDetail: "deny",
+				permissionMode: "auto",
+			}),
+		])
+	})
+
+	it("auto mode: a compound command is classified as a whole and emits once, not per segment", async () => {
+		// Auto mode never opens the compound card: the classifier sees the whole
+		// command and a requires-confirmation verdict falls through to the
+		// single-command confirm, so the payload has no embedded command text.
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const decisions = collectDecisions(harness)
+		const ctx = {
+			...createClassifierContext(),
+			hasUI: true,
+			ui: { ...createMockContext([]).ui, select: vi.fn(async () => "Yes — just this call") },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			riskScore: "medium",
+			reason: "could mutate state",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		const command = "echo a && make deploy"
+		expect(await harness.fire("tool_call", tcall("bash", { command }, "tc-compound"), ctx)).toBeUndefined()
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolCallId: "tc-compound",
+				decision: "accept",
+				sourceDetail: "allow_once",
+				permissionMode: "auto",
+			}),
+		])
+		expect(JSON.stringify(decisions)).not.toContain(command)
+	})
+
 	it("prompt allow-once emits accept/user_temporary/allow_once", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const ctx = createMockContext(["Yes — just this call"])
