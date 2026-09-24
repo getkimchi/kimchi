@@ -84,6 +84,37 @@ export function byteQuantityToBytes(raw: unknown): number | undefined {
 }
 
 /**
+ * Resource violations as a list, without the throwing wrapper — shared by
+ * resolveWorkspaceResources (which joins them into its message) and
+ * resolveWorkspaceSpec (cross-section aggregation), so both consume one
+ * source of truth instead of re-parsing a formatted error string.
+ */
+export function collectResourceViolations(config: WorkspaceResourcesConfig | undefined): string[] {
+	if (!config) return []
+	// All violations are collected and reported at once rather than failing
+	// on the first bad field.
+	const violations: string[] = []
+	for (const field of WORKSPACE_RESOURCE_FIELDS) {
+		const raw = config[field]
+		if (raw === undefined) continue
+		const normalized = raw.trim()
+		const match = QUANTITY_RE.exec(normalized)
+		if (!match) {
+			violations.push(
+				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — expected a Kubernetes quantity (e.g. "500m", "1Gi", "20Gi").`,
+			)
+			continue
+		}
+		if (Number.parseFloat(match[1]) <= 0) {
+			violations.push(
+				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — must be positive; remove the field to inherit the org default.`,
+			)
+		}
+	}
+	return violations
+}
+
+/**
  * Validate and normalize resource requests from `kimchi_workspace.yaml`.
  *
  * The client owns syntax only — values pass through to the server verbatim
@@ -98,23 +129,15 @@ export function resolveWorkspaceResources(
 	config: WorkspaceResourcesConfig | undefined,
 ): WorkspaceResourcesConfig | undefined {
 	if (!config) return undefined
+	const violations = collectResourceViolations(config)
+	if (violations.length > 0) {
+		throw new WorkspaceResourcesError(violations.join("\n"))
+	}
 	const out: WorkspaceResourcesConfig = {}
 	for (const field of WORKSPACE_RESOURCE_FIELDS) {
 		const raw = config[field]
 		if (raw === undefined) continue
-		const normalized = raw.trim()
-		const match = QUANTITY_RE.exec(normalized)
-		if (!match) {
-			throw new WorkspaceResourcesError(
-				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — expected a Kubernetes quantity (e.g. "500m", "1Gi", "20Gi").`,
-			)
-		}
-		if (Number.parseFloat(match[1]) <= 0) {
-			throw new WorkspaceResourcesError(
-				`Invalid ${field} value "${raw}" in ${WORKSPACE_FILE_NAME} — must be positive; remove the field to inherit the org default.`,
-			)
-		}
-		out[field] = normalized
+		out[field] = raw.trim()
 	}
 	return Object.keys(out).length > 0 ? out : undefined
 }
