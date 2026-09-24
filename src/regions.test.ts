@@ -10,7 +10,6 @@ import {
 	platformApiUrl,
 	REGIONS,
 	searchUrl,
-	statsApiBaseUrl,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
 } from "./regions.js"
@@ -49,7 +48,6 @@ describe("derivation helpers — us golden URLs", () => {
 			keyValidationUrl: keyValidationUrl(us),
 			telemetryLogsUrl: telemetryLogsUrl(us),
 			telemetryMetricsUrl: telemetryMetricsUrl(us),
-			statsApiBaseUrl: statsApiBaseUrl(us),
 		}).toEqual({
 			platformApiUrl: "https://app.kimchi.dev/api",
 			openAiBaseUrl: "https://llm.kimchi.dev/openai/v1",
@@ -59,7 +57,6 @@ describe("derivation helpers — us golden URLs", () => {
 			keyValidationUrl: "https://api.cast.ai/v1/llm/openai/supported-providers",
 			telemetryLogsUrl: "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest",
 			telemetryMetricsUrl: "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
-			statsApiBaseUrl: "https://api.cast.ai",
 		})
 	})
 })
@@ -74,7 +71,6 @@ describe("derivation helpers — eu variants", () => {
 		expect(keyValidationUrl(eu)).toBe("https://api.eu.cast.ai/v1/llm/openai/supported-providers")
 		expect(telemetryLogsUrl(eu)).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
 		expect(telemetryMetricsUrl(eu)).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
-		expect(statsApiBaseUrl(eu)).toBe("https://api.eu.cast.ai")
 	})
 })
 

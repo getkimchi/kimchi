@@ -1,8 +1,6 @@
-import { resolve } from "node:path"
-import { getAgentConfigDir, loadConfig, readTelemetryConfig, writeRegion, writeTelemetryEnabled } from "../config.js"
+import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
-import { updateModelsConfig } from "../models.js"
-import { DEFAULT_REGION, getRegion, isRegionId, REGIONS } from "../regions.js"
+import { DEFAULT_REGION, getRegion, isRegionId, REGION_ENV, REGIONS } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -100,56 +98,35 @@ function parseSwitch(s: string): boolean | null {
 function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
 	console.error("       kimchi config telemetry           # show current status")
-	console.error("       kimchi config region [us|eu]      # show or set the endpoint region")
+	console.error("       kimchi config region              # show the endpoint region (chosen at login)")
 }
 
 /**
- * `kimchi config region [us|eu]` — show or set the endpoint region in
- * config.json. With no value, prints the current region (or the default when
- * none is configured) and the available ids.
- *
- * When an API key is stored, the model metadata cache is refreshed from the
- * new region best-effort: a refresh failure must not fail the command — the
- * region is already persisted and the cache refreshes on next use.
+ * `kimchi config region` — show the endpoint region (or the default when none
+ * is configured). Region is chosen at login: it is persisted alongside the API
+ * key, and a key only works against the region it was issued for, so there is
+ * deliberately no set verb here — switching regions means running `kimchi
+ * login` again (headless setups can set KIMCHI_REGION).
  */
-async function handleRegion(args: string[]): Promise<number> {
-	const cfg = loadConfig()
-	if (args.length === 0) {
-		const current = getRegion(cfg.region)
-		const suffix = isRegionId(cfg.region) ? "" : " (default)"
-		console.log(`Region: ${current.id} — ${current.label}${suffix}`)
-		console.log(`Available regions: ${Object.values(REGIONS).map(formatRegionChoice).join(", ")}`)
-		return 0
-	}
-
-	const value = args[0].toLowerCase()
-	if (!isRegionId(value)) {
-		console.error(`kimchi config region: expected one of ${Object.keys(REGIONS).join("|")}, got "${args[0]}"`)
+function handleRegion(args: string[]): number {
+	if (args.length > 0) {
+		console.error(
+			`kimchi config region: region is chosen at login and tied to your API key. Run "kimchi login" again to switch regions (headless setups can set ${REGION_ENV}=us|eu).`,
+		)
 		return 2
 	}
 
-	writeRegion(value)
-	console.log(`Region set to ${getRegion(value).label} (${value})`)
-	if (cfg.customLlmEndpoint) {
-		console.log("Note: a custom llmEndpoint is configured; it takes precedence over the region for the LLM gateway.")
+	const cfg = loadConfig()
+	const current = getRegion(cfg.region)
+	const envVal = process.env[REGION_ENV]
+	if (envVal !== undefined && envVal !== "") {
+		console.log(`Region: ${current.id} — ${current.label} (from ${REGION_ENV}=${envVal}, overrides config)`)
+	} else {
+		const suffix = isRegionId(cfg.region) ? "" : " (default)"
+		console.log(`Region: ${current.id} — ${current.label}${suffix}`)
 	}
-
-	const apiKey = cfg.apiKey
-	if (apiKey) {
-		const modelsPath = resolve(process.env.KIMCHI_CODING_AGENT_DIR ?? getAgentConfigDir(), "models.json")
-		try {
-			// Pass the custom endpoint through when one is configured — without it
-			// the refresh would fetch metadata from the region gateway even though
-			// that user's traffic goes to their own gateway.
-			await updateModelsConfig(modelsPath, apiKey, cfg.customLlmEndpoint ? { endpoint: cfg.customLlmEndpoint } : {})
-			console.log("Model metadata refreshed for the new region.")
-		} catch (error) {
-			console.warn(
-				`Could not refresh model metadata for the new region right now (${error instanceof Error ? error.message : String(error)}); it will refresh on next use.`,
-			)
-		}
-		console.log("Billing and status will follow the new region on next refresh.")
-	}
+	console.log(`Available regions: ${Object.values(REGIONS).map(formatRegionChoice).join(", ")}`)
+	console.log('To switch regions, run "kimchi login" again.')
 	return 0
 }
 

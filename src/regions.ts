@@ -38,6 +38,15 @@ export const REGIONS: Record<RegionId, KimchiRegion> = {
 
 export const DEFAULT_REGION: RegionId = "us"
 
+/**
+ * Env override for the region, for headless/CI setups that cannot run the
+ * interactive login selector (e.g. `KIMCHI_REGION=eu` next to
+ * `KIMCHI_API_KEY`). Unknown values are treated as unset, same as the config
+ * file parse. Region is otherwise chosen at login, not set via `kimchi
+ * config`.
+ */
+export const REGION_ENV = "KIMCHI_REGION"
+
 export function isRegionId(value: unknown): value is RegionId {
 	// Object.hasOwn, not `value in REGIONS`: the `in` operator walks the
 	// prototype chain, so "constructor"/"toString"/"__proto__" would pass and
@@ -85,9 +94,4 @@ export function telemetryLogsUrl(r: KimchiRegion): string {
 
 export function telemetryMetricsUrl(r: KimchiRegion): string {
 	return `${r.castApiUrl}/ai-optimizer/v1beta/metrics:ingest`
-}
-
-/** Cast AI stats API base (analytics, productivity metrics). */
-export function statsApiBaseUrl(r: KimchiRegion): string {
-	return r.castApiUrl
 }

@@ -27,7 +27,6 @@ import {
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
-	writeRegion,
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
@@ -524,6 +523,7 @@ describe("region config", () => {
 		// developer machine had set — deletion would leak into later tests.
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
+		vi.stubEnv("KIMCHI_REGION", undefined)
 		resetProjectScopeTrustForTests()
 	})
 
@@ -562,11 +562,24 @@ describe("region config", () => {
 		expect(cfg.customLlmEndpoint).toBe("https://custom.example/v1")
 	})
 
-	it("writeRegion round-trips through loadConfig and writeApiKey", () => {
-		writeRegion("eu", configPath)
-		expect(loadConfig({ configPath }).region).toBe("eu")
+	it("KIMCHI_REGION env overrides the config-file region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "us" }))
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://llm.eu.kimchi.dev/openai/v1")
+	})
+
+	it("treats an unknown KIMCHI_REGION value as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		vi.stubEnv("KIMCHI_REGION", "moon")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+	})
+
+	it("writeApiKey without a region option leaves the stored region untouched", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
 		writeApiKey("token", configPath)
-		// writeApiKey without a region option leaves the stored region untouched
 		expect(loadConfig({ configPath }).region).toBe("eu")
 	})
 

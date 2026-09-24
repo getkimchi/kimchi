@@ -10,6 +10,7 @@ import {
 	isRegionId,
 	openAiBaseUrl,
 	platformApiUrl,
+	REGION_ENV,
 	type RegionId,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
@@ -580,9 +581,13 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 	}
 
-	// Region is account-level: only the global config may set it. A custom
-	// per-project gateway keeps working through the `llmEndpoint` field.
-	const region = globalExtras.region ?? DEFAULT_REGION
+	// Region is account-level: only the global config may set it, and it is
+	// written at login. KIMCHI_REGION overrides the file for headless/CI setups
+	// that cannot run the interactive login selector; an unknown env value is
+	// treated as unset, same as the config-file parse. A custom per-project
+	// gateway keeps working through the `llmEndpoint` field.
+	const envRegion = process.env[REGION_ENV]
+	const region = (isRegionId(envRegion) ? envRegion : undefined) ?? globalExtras.region ?? DEFAULT_REGION
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
@@ -626,7 +631,7 @@ export interface ResolvedEndpoints {
 // Env overrides are still read live on every call, and explicit-options
 // callers (tests, one-off reads against another path) stay uncached.
 // In-session mutations must go through a writer that calls
-// invalidateResolvedEndpoints (writeApiKey, writeRegion).
+// invalidateResolvedEndpoints (writeApiKey).
 let resolvedEndpointsConfigCache: KimchiConfig | undefined
 
 /** Drop the memoized config used by the default resolveEndpoints() path. */
@@ -900,11 +905,6 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
 	})
-	invalidateResolvedEndpoints()
-}
-
-export function writeRegion(region: RegionId, configPath?: string): void {
-	writeConfigField("region", region, configPath ?? KIMCHI_CONFIG_PATH)
 	invalidateResolvedEndpoints()
 }
 

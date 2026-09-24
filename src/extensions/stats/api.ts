@@ -4,8 +4,7 @@
  * Fetches analytics, productivity metrics, and timeseries data from Cast AI.
  */
 
-import { loadConfig } from "../../config.js"
-import { getRegion, statsApiBaseUrl } from "../../regions.js"
+import { resolveEndpoints } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 import type {
 	GenerateAnalyticsResponse,
@@ -13,9 +12,9 @@ import type {
 	GetProductivityMetricsResponse,
 } from "./types.js"
 
-/** The Cast AI stats API base follows the configured region. */
+/** The Cast AI stats API base follows the configured region (memoized config read). */
 function defaultBaseUrl(): string {
-	return statsApiBaseUrl(getRegion(loadConfig().region))
+	return resolveEndpoints().castApiUrl
 }
 
 interface ApiClientConfig {
