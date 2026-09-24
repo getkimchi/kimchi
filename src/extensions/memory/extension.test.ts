@@ -1,9 +1,9 @@
-import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { MEMORY_SEARCH_TIMEOUT_MS } from "./config.js"
+import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
 
@@ -193,7 +193,7 @@ describe("memory extension", () => {
 		expect(turn3?.systemPrompt).toBe(turn1?.systemPrompt)
 	})
 
-	it("an empty digest injects no facts — only the always-on notice (drift retries bounded by the cap)", async () => {
+	it("an empty digest injects no facts — only the always-on notice (drift keeps re-evaluating)", async () => {
 		const search = vi.fn(async () => [{ memory: "weak", score: 0.1 }])
 		const { start } = await setup(
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
@@ -208,7 +208,7 @@ describe("memory extension", () => {
 			expect(result?.systemPrompt).not.toContain("weak")
 		}
 		// Turn 1 (digest) + turns 2-3: nothing was delivered, so the gate sees
-		// drift and retries retrieval — the session cap bounds this.
+		// drift and retries retrieval — nothing new clears the bar, nothing lands.
 		expect(search).toHaveBeenCalledTimes(3)
 	})
 
@@ -324,6 +324,38 @@ describe("memory extension", () => {
 		expect(sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("bounds the drift-recall embedding query to the prompt plus the response tail", async () => {
+		const longResponse = `HEAD_MARKER${"x".repeat(2000)}TAIL_MARKER`
+		// lastAssistantText reads the entry structurally (role + text content)
+		// only; a full AssistantMessage carries provider metadata the reader
+		// never touches — same partial-literal style as startEvent above.
+		const assistantEntry = {
+			type: "message",
+			id: "e1",
+			parentId: null,
+			timestamp: Date.now(),
+			message: { role: "assistant", content: [{ type: "text", text: longResponse }] },
+		} as unknown as SessionEntry
+		const ctx = createContext({
+			sessionManager: { getEntries: () => [assistantEntry] },
+		})
+		const search = vi.fn(async (query: string) => [{ memory: `fact for ${query.length}`, score: 0.6 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("first prompt"), fakeCtx)
+		await start(startEvent("second prompt"), ctx)
+		// Turn 1 embedded the prompt alone; turn 2's drift query carries the
+		// prompt plus only the TAIL of the last assistant response — the
+		// 2000-char body stays out of the embedding payload.
+		const driftQuery = search.mock.calls[1]?.[0]
+		expect(typeof driftQuery).toBe("string")
+		expect(driftQuery).toContain("second prompt")
+		expect(driftQuery).toContain("TAIL_MARKER")
+		expect(driftQuery).not.toContain("HEAD_MARKER")
+		expect(driftQuery?.length).toBeLessThanOrEqual(TURN_RECALL_QUERY_MAX_CHARS)
+	})
+
 	it("gate skips retrieval when the conversation stays covered", async () => {
 		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
 		const { sendMessage, start } = await setup(
@@ -337,7 +369,7 @@ describe("memory extension", () => {
 		expect(sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("bounds progressive re-evaluations by the session cap", async () => {
+	it("recalls on every drifted turn — no per-session evaluation cap", async () => {
 		let n = 0
 		const search = vi.fn(async () => [{ memory: `distinct fact number ${++n}`, score: 0.6 }])
 		const { sendMessage, start } = await setup(
@@ -346,9 +378,9 @@ describe("memory extension", () => {
 		for (let turn = 0; turn < 8; turn++) {
 			await start(startEvent(`drift topic ${turn}`), fakeCtx)
 		}
-		// Turn 1 (digest) + TURN_RECALL_MAX_EVALUATIONS (5) drift retrievals —
-		// the 6th+ drift turns are out of budget.
-		expect(search).toHaveBeenCalledTimes(6)
-		expect(sendMessage).toHaveBeenCalledTimes(5)
+		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
+		// message is fresh signal, so recall keeps running for the whole session.
+		expect(search).toHaveBeenCalledTimes(8)
+		expect(sendMessage).toHaveBeenCalledTimes(7)
 	})
 })

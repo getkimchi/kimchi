@@ -46,7 +46,7 @@ Auto-injected context must earn its tokens:
 - **Value gate.** The retrieval query is the session's opening prompt. Facts below the 0.2 relevance threshold never enter the digest; at most 5 facts and 2,000 estimated tokens. An empty digest is the normal outcome for unrelated sessions.
 - **Enabled notice.** A constant `## Memory` section goes out on every start whenever memory is enabled — even when the digest is empty — telling the model that capture is automatic (it has no write tool, so it must not claim it cannot remember) and that `memory_search` is the retrieval path. Constant bytes, so the prefix stays stable.
 - **Cache contract.** The digest is computed on turn 1 (awaited) and appended with identical bytes on every subsequent turn, so the provider-facing prefix is stable from the first request and memory causes zero mid-session cache breaks. It is recomputed only after compaction, where the prefix breaks anyway.
-- **Progressive recall.** From turn 2, each new prompt plus the last assistant response is a drift signal. A free lexical-coverage gate (≥30% of content words already covered by delivered facts means skip) decides whether a retrieval is worth an embedding call; new facts deliver as hidden steer messages appended to the conversation tail — never the prefix. Bounded by 5 evaluations and 3 new facts per session.
+- **Progressive recall.** From turn 2, each new prompt plus the tail of the last assistant response (400 chars, 1,000 total — code-heavy bodies stay out of the embedding payload) is a drift signal. A free lexical-coverage gate (≥30% of content words already covered by delivered facts means skip) decides whether a retrieval is worth an embedding call; new facts deliver as hidden steer messages appended to the conversation tail — never the prefix. Recall runs on every drifted user message — no per-session evaluation cap; a hard retrieval failure is the only valve. One shared deduping embedder serves the personal and project stores, so each lookup embeds its query once.
 - **`memory_search`.** The pull-based supplement for anything the digest did not surface; results carry a `[project]` provenance label when they come from the project store.
 
 ## Security framing
@@ -85,7 +85,7 @@ All in `src/extensions/memory/config.ts`.
 | `SUPERSEDE_SEARCH_TOPK` | 8 | candidate search width per new fact for the supersede judge |
 | `MEMORY_CAPTURE_INCREMENTAL_MESSAGES` | 10 | drains content mid-session, shrinking the shutdown tail and the next-session staleness race |
 | `MEMORY_CAPTURE_ASSISTANT_MAX_CHARS` | 1,000 | an answer's key statement sits at its start — truncate, don't exclude |
-| `TURN_RECALL_MAX_EVALUATIONS` / `MAX_FACTS` / `MAX_FACT_CHARS` | 5 / 3 / 400 | progressive-recall cost bound |
+| `TURN_RECALL_RESPONSE_CHARS` / `QUERY_MAX_CHARS` / `MAX_FACTS` / `MAX_FACT_CHARS` | 400 / 1,000 / 3 / 400 | drift-query bounds (response tail, total query) and steer size |
 | `GATE_MIN_COVERAGE` | 0.3 | below this coverage, retrieval is likely to add value |
 | `MEMORY_SEARCH_TIMEOUT_MS` | 10,000 | user-visible critical-path bound |
 | `CAPTURE_LOCK_STALE_MS` / `CAPTURE_LOCK_UPDATE_MS` | 15 min / 30 s | staleness must exceed the worst-case legitimate drain |

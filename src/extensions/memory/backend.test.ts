@@ -16,6 +16,7 @@ import {
 	resolveExtractionModel,
 	tagEmbeddingRequests,
 } from "./backend.js"
+import type { SharedEmbedder } from "./embedder.js"
 
 function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 	return {
@@ -74,6 +75,21 @@ describe("buildMemoryConfig", () => {
 		// LLM untouched — still gateway-wired.
 		expect(config.llm.config.baseURL).toBe("https://gateway.test/openai/v1")
 		expect(config.llm.config.apiKey).toBe("test-key")
+	})
+
+	it("a shared embedder rides in through the langchain provider", () => {
+		const shared: SharedEmbedder = {
+			embedQuery: async () => [1, 2, 3],
+			embedDocuments: async (texts) => texts.map(() => [1, 2, 3]),
+		}
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db", sharedEmbedder: shared }, testConfig())
+		// mem0's LangchainEmbedder delegates to any embedQuery/embedDocuments
+		// object passed as config.model — the seam that lets several stores
+		// share one deduping gateway client.
+		expect(config.embedder.provider).toBe("langchain")
+		expect(config.embedder.config.model).toBe(shared)
+		// The store schema still needs the resolved dimension.
+		expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
 	})
 
 	it("sets the embedding dimension the store schema requires", () => {
