@@ -9,6 +9,7 @@ import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
+import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection } from "../../remote-run/sandbox-git.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
@@ -81,9 +82,13 @@ interface SpawnOptions {
 	isBackground?: boolean
 	/** When true, runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** PR-first git intent for remote runs (branch override; presence selects
+	 *  keepAlive + baseline capture). Planted onto the record synchronously at
+	 *  spawn so `_runRemote` never depends on post-spawn mutation timing. */
+	gitWorkflow?: RemoteGitWorkflow
 	/** Steer continuation: attach to a KEPT-ALIVE PR session (session/load on
 	 *  the persisted ACP id) instead of provisioning a new workspace/session.
-	 *  Requires remote: true. */
+	 *  Requires remote: true — `spawn` throws when this invariant is violated. */
 	continuation?: { remoteSession: RemoteSessionMeta; acpSessionId: string }
 	/** Fired when the remote session is established (or re-established after
 	 *  a reattach) — carries the meta + ACP session id needed to persist the
@@ -194,6 +199,12 @@ export class AgentManager {
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
 		const effectiveOptions = applyLinkedWorkerLimits(options)
+		// Steer continuations attach to a kept remote session — silently
+		// defaulting to a LOCAL run would execute a sandbox-context prompt on
+		// the user's machine, so fail fast instead (spawn options contract).
+		if (effectiveOptions.continuation && !effectiveOptions.remote) {
+			throw new Error("SpawnOptions.continuation requires remote: true")
+		}
 		const id = randomUUID().slice(0, 17)
 		const abortController = new AbortController()
 		const record: AgentRecord = {
@@ -214,6 +225,7 @@ export class AgentManager {
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 			remote: effectiveOptions.remote,
+			gitWorkflow: effectiveOptions.gitWorkflow,
 		}
 		this.agents.set(id, record)
 
@@ -618,6 +630,13 @@ export class AgentManager {
 				// post-commit HEAD as baseSha (silently poisoning the diff range).
 				if (record.gitWorkflow && !record.gitWorkflow.baseSha && !baselineCaptureAttempted) {
 					baselineCaptureAttempted = true
+					// Bounded per ssh round trip (two commands: rev-parse + status);
+					// the run otherwise looks idle for up to ~90s on a cold sandbox —
+					// name what it's doing instead of staring at "analyzing".
+					ctx.ui.notify?.(
+						"Capturing the pre-run git baseline over SSH (one-time snapshot used for the review diff)…",
+						"info",
+					)
 					// One retry for the ssh layer: the proxy enumerates the control
 					// API with its own deadline and transient stalls answer as exit
 					// status 255. Everything else fails once, honestly.
@@ -626,7 +645,10 @@ export class AgentManager {
 							const connection = await resolveSandboxGitConnection(meta, apiKey, {
 								endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 							})
-							const baseline = await captureBaseline(connection, { signal: record.abortController?.signal })
+							const baseline = await captureBaseline(connection, {
+								signal: record.abortController?.signal,
+								timeoutMs: 45_000,
+							})
 							record.gitWorkflow.baseSha = baseline.baseSha
 							record.gitWorkflow.dirtyFiles = baseline.dirtyFiles
 							break

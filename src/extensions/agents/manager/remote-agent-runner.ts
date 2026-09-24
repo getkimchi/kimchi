@@ -42,6 +42,7 @@ import {
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, deleteSession, getSession } from "../../../sandbox/worker/sessions.js"
 import { type CreateSessionRequest, type SessionStatus, WorkerError } from "../../../sandbox/worker/types.js"
+import { readE2eSeam } from "../../e2e-seam.js"
 import { appendTranscriptGapMarker } from "../../remote-run/session-recovery.js"
 import { provisionGitCredential } from "../../teleport/provisioning/git-provision.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
@@ -169,21 +170,31 @@ const POLL_JITTER_MS = 5_000
 // ---------------------------------------------------------------------------
 const liveKeptAcpClients = new Map<string, AcpSessionClient>()
 
-/** A live, non-closed, kept client for `sessionName`, when one exists. */
-export function getLiveKeptAcpClient(sessionName: string): AcpSessionClient | undefined {
-	const client = liveKeptAcpClients.get(sessionName)
+/** Registry key: session names are only unique within a workspace — the same
+ *  sessionName on another workspaceId is a DIFFERENT connection. */
+function keptAcpClientKey(meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">): string {
+	return `${meta.workspaceId}:${meta.sessionName}`
+}
+
+/** A live, non-closed, kept client for this remote session, when one exists. */
+export function getLiveKeptAcpClient(
+	meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">,
+): AcpSessionClient | undefined {
+	const key = keptAcpClientKey(meta)
+	const client = liveKeptAcpClients.get(key)
 	if (!client) return undefined
 	if (client.isClosed) {
-		liveKeptAcpClients.delete(sessionName)
+		liveKeptAcpClients.delete(key)
 		return undefined
 	}
 	return client
 }
 
-/** Close and forget the kept client for `sessionName` (terminal actions). */
-export function discardLiveKeptAcpClient(sessionName: string): void {
-	const client = liveKeptAcpClients.get(sessionName)
-	liveKeptAcpClients.delete(sessionName)
+/** Close and forget the kept client for this remote session (terminal actions). */
+export function discardLiveKeptAcpClient(meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">): void {
+	const key = keptAcpClientKey(meta)
+	const client = liveKeptAcpClients.get(key)
+	liveKeptAcpClients.delete(key)
 	try {
 		client?.close()
 	} catch {
@@ -199,14 +210,14 @@ export function resetLiveKeptAcpClientsForTests(): void {
 /** Close the HTTP worker client; keep or close the ACP client per keepAlive. */
 async function retireStClients(st: RemoteRecoveryState, keepLiveAcpClient: boolean): Promise<void> {
 	if (keepLiveAcpClient && st.acpClient && !st.acpClient.isClosed) {
-		liveKeptAcpClients.set(st.meta.sessionName, st.acpClient)
+		liveKeptAcpClients.set(keptAcpClientKey(st.meta), st.acpClient)
 	} else {
 		try {
 			st.acpClient?.close()
 		} catch {
 			/* already torn */
 		}
-		if (st.meta.sessionName) liveKeptAcpClients.delete(st.meta.sessionName)
+		liveKeptAcpClients.delete(keptAcpClientKey(st.meta))
 	}
 	await st.client.close().catch((err) => {
 		console.error(`[remote-agent-runner] failed to close worker client:`, err)
@@ -650,7 +661,10 @@ async function recoverFromDisconnectInner(st: RemoteRecoveryState, config: Recov
 		// branch recovers on the next poll. Either way: rebind, resume UI,
 		// and keep polling — do NOT recover immediately (the turn may
 		// still be running).
-		if (config.onReady) config.onReady(reattachClient, st.meta)
+		// Await: onReady may be async (baseline capture, resume persistence) — a
+		// detached promise would race the recovery flow and surface rejections as
+		// unhandled.
+		await config.onReady?.(reattachClient, st.meta)
 		config.onReconnecting?.(false)
 	}
 }
@@ -1050,7 +1064,7 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 	// entirely — the keep-alive cycle then the recovery result, with the same
 	//Async sequencing as the real path. Options.onReady sees a stub client;
 	// test-only, never set in production.
-	if (process.env.KIMCHI_E2E_FAKE_SANDBOX_GIT === "1") {
+	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") {
 		options.onReconnecting?.(true)
 		await new Promise((resolve) => setTimeout(resolve, 250))
 		options.onReconnecting?.(false)
@@ -1200,7 +1214,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 	// Fast path: the original keepAlive run LEFT THE SAME CONNECTION OPEN —
 	// a steer is then a plain session/prompt over it (no readiness wait, no
 	// session/load). A dead handshake falls through to the attach path.
-	const reusedAcpClient = getLiveKeptAcpClient(remoteSession.sessionName)
+	const reusedAcpClient = getLiveKeptAcpClient(remoteSession)
 	if (!reusedAcpClient) {
 		await waitForWorkspaceReady({ wsUrl: creds.wsUrl, connectToken: creds.connectToken, signal })
 	}
@@ -1350,7 +1364,7 @@ export async function deleteRemoteSession(
 	} finally {
 		// Terminal action — close the steer-loop connection too, whatever the
 		// server said (it may already be gone over a hibernation wake).
-		discardLiveKeptAcpClient(remoteSession.sessionName)
+		discardLiveKeptAcpClient(remoteSession)
 		await client.close().catch(() => {})
 	}
 }

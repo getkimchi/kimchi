@@ -33,6 +33,7 @@ import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { WorkerClient } from "../../sandbox/worker/client.js"
 import { getSession } from "../../sandbox/worker/sessions.js"
 import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { buildProxyCommand } from "../teleport/provisioning/proxy-command.js"
 import {
@@ -61,6 +62,9 @@ export interface RunSandboxGitOptions {
 	args: string[]
 	/** Cancellation. Kills the ssh child when it fires. */
 	signal?: AbortSignal
+	/** Hard bound on the ssh round trip; exceeds it → the child is killed and
+	 *  the call rejects with a timeout error. Omit for no bound. */
+	timeoutMs?: number
 	/** Fired with each stdout chunk as it arrives (streaming diff viewer). */
 	onStdoutChunk?: (chunk: string) => void
 	/**
@@ -106,7 +110,7 @@ export async function resolveSandboxGitConnection(
 	apiKey: string,
 	opts?: { endpoint?: string; description?: string },
 ): Promise<SandboxGitConnection> {
-	if (process.env.KIMCHI_E2E_FAKE_SANDBOX_GIT === "1") {
+	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") {
 		// TUI-E2E seam: skip the credential exchange entirely.
 		return { host: "e2e.fake", remoteUser: SANDBOX_USER, authToken: "e2e", cwd: remoteSession.cwd }
 	}
@@ -193,7 +197,7 @@ function fakeSandboxGitResponse(opts: RunSandboxGitOptions): SandboxGitResult {
  * non-zero exit (stderr captured), or with the spawn error itself.
  */
 export async function runSandboxGit(opts: RunSandboxGitOptions): Promise<SandboxGitResult> {
-	if (process.env.KIMCHI_E2E_FAKE_SANDBOX_GIT === "1") {
+	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") {
 		return Promise.resolve(fakeSandboxGitResponse(opts))
 	}
 	const spawner = opts._spawn ?? spawn
@@ -213,6 +217,7 @@ export async function runSandboxGit(opts: RunSandboxGitOptions): Promise<Sandbox
 			args: argv,
 			env,
 			signal: opts.signal,
+			timeoutMs: opts.timeoutMs,
 			onStdoutChunk: opts.onStdoutChunk,
 		})
 	})
@@ -223,6 +228,7 @@ interface RunSshChildInput {
 	args: string[]
 	env: NodeJS.ProcessEnv
 	signal?: AbortSignal
+	timeoutMs?: number
 	onStdoutChunk?: (chunk: string) => void
 }
 
@@ -249,10 +255,21 @@ async function runSshChild(input: RunSshChildInput): Promise<SandboxGitResult> {
 		child.stderr?.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString("utf-8")
 		})
-		child.on("error", (err) => reject(err))
+		const timer =
+			input.timeoutMs !== undefined
+				? setTimeout(() => {
+						child.kill()
+						reject(new Error(`sandbox git timed out after ${input.timeoutMs}ms (ssh round trip)`))
+					}, input.timeoutMs)
+				: undefined
+		const settle = (done: () => void) => {
+			if (timer) clearTimeout(timer)
+			done()
+		}
+		child.on("error", (err) => settle(() => reject(err)))
 		child.on("close", (code) => {
-			if (code === 0) resolve({ stdout, stderr })
-			else reject(new SandboxGitError(code ?? -1, stderr))
+			if (code === 0) settle(() => resolve({ stdout, stderr }))
+			else settle(() => reject(new SandboxGitError(code ?? -1, stderr)))
 		})
 	})
 }
@@ -271,7 +288,7 @@ export interface SandboxBaseline {
  */
 export async function captureBaseline(
 	connection: SandboxGitConnection,
-	opts?: { signal?: AbortSignal; apiKey?: string; proxyCommand?: string; _spawn?: typeof spawn },
+	opts?: { signal?: AbortSignal; apiKey?: string; proxyCommand?: string; timeoutMs?: number; _spawn?: typeof spawn },
 ): Promise<SandboxBaseline> {
 	const rev = await runSandboxGit({ connection, args: ["rev-parse", "HEAD"], ...opts })
 	const status = await runSandboxGit({ connection, args: ["status", "--porcelain"], ...opts })

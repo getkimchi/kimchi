@@ -112,6 +112,7 @@ import {
 	type ContinueRemoteAgentOptions,
 	continueRemoteAgent,
 	deleteRemoteSession,
+	getLiveKeptAcpClient,
 	isRemoteSessionConnected,
 	type RemoteRunOptions,
 	type RemoteSessionMeta,
@@ -747,6 +748,38 @@ describe("runRemoteAgent", () => {
 			// Attached exactly once (original new-session init + one load), then
 			// watched the turn — no repeated attach attempts.
 			expect(mockInitialize).toHaveBeenCalledTimes(2)
+		})
+
+		it("awaits an async onReady on the reattach path (no detached promise)", async () => {
+			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WebSocket closed"))
+			vi.mocked(getSession).mockImplementation(quietRunningFor(1))
+
+			const events: string[] = []
+			let initialCallFired = false
+			const result = await runUntilTurnEnd(
+				makeRecoveryOptions({
+					onReady: async () => {
+						if (!initialCallFired) {
+							initialCallFired = true
+							return // initial attach — fast path
+						}
+						// Reattach call: async work that MUST settle before the recovery
+						// flow resumes (regression: previously fired without await →
+						// detached promise / unhandled rejection risk).
+						await new Promise((resolve) => setTimeout(resolve, 50))
+						events.push("reattach-onready-settled")
+					},
+					onReconnecting: (reconnecting) => {
+						if (!reconnecting) events.push("reconnecting-false")
+					},
+				}),
+			)
+
+			expect(result.stopReason).toBe("recovered")
+			// Without the await the detached promise settles AFTER recovery
+			// resolves — the event must be present by resolution time.
+			expect(events).toContain("reattach-onready-settled")
+			expect(events.indexOf("reattach-onready-settled")).toBeLessThan(events.indexOf("reconnecting-false"))
 		})
 
 		it("waits without burning reconnect attempts when session/load reports a turn in progress", async () => {
@@ -1902,6 +1935,27 @@ describe("continueRemoteAgent", () => {
 		expect(mockPrompt).toHaveBeenCalledTimes(2)
 		expect(mockPrompt).toHaveBeenLastCalledWith("one more change")
 		expect(result.stopReason).toBe("end_turn")
+	})
+
+	it("same sessionName on another workspaceId never reuses the kept client", async () => {
+		// Session names are only unique within a workspace — a same-named kept
+		// client from a DIFFERENT workspace is another connection entirely.
+		await continueRemoteAgent(makeContinueOptions())
+		expect(AcpSessionClient).toHaveBeenCalledTimes(1)
+
+		const otherWorkspace: RemoteSessionMeta = { ...PR_META, workspaceId: "ws-999" }
+		vi.mocked(waitForWorkspaceReady).mockClear()
+		const result = await continueRemoteAgent(makeContinueOptions({ remoteSession: otherWorkspace }))
+
+		// Attaching: readiness wait + a NEW client — no reuse across workspaces.
+		expect(waitForWorkspaceReady).toHaveBeenCalled()
+		expect(AcpSessionClient).toHaveBeenCalledTimes(2)
+		expect(result.stopReason).toBe("end_turn")
+
+		// A terminal action on one workspace leaves the other's kept client alone.
+		await deleteRemoteSession(PR_META, "test-api-key")
+		expect(getLiveKeptAcpClient(PR_META)).toBeUndefined()
+		expect(getLiveKeptAcpClient(otherWorkspace)).toBeDefined()
 	})
 
 	it("fires onReady after the load, before the prompt", async () => {

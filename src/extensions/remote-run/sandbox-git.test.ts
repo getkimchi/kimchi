@@ -144,6 +144,39 @@ describe("runSandboxGit", () => {
 		})
 		expect((spawner as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2].signal).toBe(controller.signal)
 	})
+
+	it("kills a hung ssh child after timeoutMs and rejects with a timeout", async () => {
+		// A black-holed ssh: the child never emits close/error. Without a
+		// timeout the caller would wait forever (pre-prompt stall).
+		const child = new EventEmitter() as ChildProcess
+		child.stdout = new EventEmitter() as ChildProcess["stdout"]
+		child.stderr = new EventEmitter() as ChildProcess["stderr"]
+		child.kill = vi.fn()
+		const spawner = vi.fn(() => child) as unknown as typeof spawn
+		await expect(
+			runSandboxGit({
+				connection: CONNECTION,
+				args: ["rev-parse", "HEAD"],
+				apiKey: "k",
+				timeoutMs: 10,
+				_spawn: spawner,
+			}),
+		).rejects.toThrow(/timed out after 10ms/)
+		expect(child.kill).toHaveBeenCalled()
+	})
+
+	it("clears the timeout after a fast completion (no stray armed timers)", async () => {
+		vi.useFakeTimers()
+		try {
+			const spawner = fakeSpawn({ stdout: "ok\n" })
+			await expect(
+				runSandboxGit({ connection: CONNECTION, args: ["status"], apiKey: "k", timeoutMs: 60_000, _spawn: spawner }),
+			).resolves.toEqual({ stdout: "ok\n", stderr: "" })
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
 })
 
 describe("parsePorcelainPaths", () => {

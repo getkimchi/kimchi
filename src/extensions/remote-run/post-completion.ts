@@ -16,6 +16,7 @@ import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { deleteRemoteSession, type RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import type { PersistedGitWorkflow } from "../agents/remote-run-persistence.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { withWorkingHidden } from "../ferment/prompt-ui.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { createApplyAndPersist } from "../ferment/tool-helpers.js"
@@ -625,7 +626,7 @@ async function handlePrCompletion(
 	// The E2E seam counts as available: the rig needs the entry to drive the
 	// review flow at all (its canned decision short-circuits plannotator).
 	const browserReviewAvailable =
-		isPlannotatorReviewAvailable(pi) || process.env.KIMCHI_E2E_FAKE_BROWSER_REVIEW !== undefined
+		isPlannotatorReviewAvailable(pi) || readE2eSeam("KIMCHI_E2E_FAKE_BROWSER_REVIEW") !== undefined
 	const menuOptions = [
 		...(browserReviewAvailable ? [SHOW_DIFF_BROWSER] : []),
 		REQUEST_CHANGES,
@@ -911,7 +912,7 @@ async function deleteKeptRemoteSession(
 	remoteSession: RemoteSessionMeta,
 	apiKey: string,
 ): Promise<void> {
-	if (process.env.KIMCHI_E2E_FAKE_SANDBOX_GIT === "1") return // TUI-E2E seam: nothing real to delete
+	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") return // TUI-E2E seam: nothing real to delete
 	try {
 		await deleteRemoteSession(remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })
 	} catch (err) {
@@ -1020,7 +1021,7 @@ async function runBrowserReview(
 	// E2E seam: canned decision, no plannotator/browser (a real browser can't
 	// be driven from the TUI test rig). First, so the rig bypasses both the
 	// availability gate and the diff stream.
-	const canned = process.env.KIMCHI_E2E_FAKE_BROWSER_REVIEW
+	const canned = readE2eSeam("KIMCHI_E2E_FAKE_BROWSER_REVIEW")
 	if (canned) {
 		const decision: ReviewDecision = canned.startsWith("changes")
 			? {

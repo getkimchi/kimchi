@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
@@ -129,6 +130,10 @@ vi.mock("./settings.js", () => ({
 	applyAndEmitLoaded: vi.fn(),
 	saveAndEmitChanged: vi.fn(),
 }))
+vi.mock("../../cli-args.js", async (importActual) => {
+	const actual = await importActual<typeof import("../../cli-args.js")>()
+	return { ...actual, getParsedCliArgs: vi.fn(actual.getParsedCliArgs) }
+})
 vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
 vi.mock("../model-guard.js", () => ({ sessionHasImages: vi.fn().mockReturnValue(false) }))
 vi.mock("../shared-input.js", () => ({ isRawInputCaptureActive: vi.fn().mockReturnValue(false) }))
@@ -1095,6 +1100,27 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		await fireSessionStart(pi, ctx)
 
 		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
+	})
+
+	it("tolerates a getParsedCliArgs failure during boot — no unhandled rejection, no notify", async () => {
+		// Embedding boots (ACP/server) may have unparsed CLI state; the
+		// session_start resume flow must never surface that as a rejection.
+		vi.mocked(getParsedCliArgs).mockImplementationOnce(() => {
+			throw new Error("args not parsed")
+		})
+		const notify = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: () => [] },
+		}
+		await expect(fireSessionStart(pi, ctx)).resolves.toBeUndefined()
+		expect(notify).not.toHaveBeenCalled()
 	})
 
 	it("persists the terminal state when a remote run completes", () => {

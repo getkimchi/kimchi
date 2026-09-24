@@ -30,6 +30,7 @@ import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
@@ -766,7 +767,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// decision shortly after the review request so TUI e2e tests drive the
 			// plannotator decision route — including the "where should it run?"
 			// dialog — without a browser. Test-only; never set in production.
-			const fakeDecision = process.env.KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION
+			const fakeDecision = readE2eSeam("KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION")
 			if (fakeDecision) {
 				setTimeout(() => {
 					emitPlanReviewDecision(pi, {

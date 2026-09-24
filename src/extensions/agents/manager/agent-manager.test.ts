@@ -1489,11 +1489,13 @@ describe("AgentManager git-intent baseline capture", () => {
 		vi.clearAllMocks()
 	})
 
+	let uiNotify: ReturnType<typeof vi.fn> | undefined
 	function fakeRemoteCtx(): ExtensionContext {
+		uiNotify = vi.fn()
 		return {
 			cwd: "/work/myrepo",
 			mode: "tui",
-			ui: { custom: vi.fn() },
+			ui: { custom: vi.fn(), notify: uiNotify },
 			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
@@ -1516,11 +1518,10 @@ describe("AgentManager git-intent baseline capture", () => {
 	type FakeClient = Parameters<NonNullable<RemoteOpts["onReady"]>>[0]
 	const fakeAcpClient = { sessionId: "acp-1" } as unknown as FakeClient
 
-	/** Spawn a remote record with the runner parked at runRemoteAgent. The
-	 *  spawn spy plants record.gitWorkflow synchronously right after record
-	 *  registration — before _runRemote's first awaited continuation resumes
-	 *  on the microtask queue — making branch override and baseline capture
-	 *  deterministic without sleeping. */
+	/** Spawn a remote record with the runner parked at runRemoteAgent.
+	 *  record.gitWorkflow is planted synchronously by spawn from SpawnOptions,
+	 *  so branch override and baseline capture are deterministic without
+	 *  sleeping. */
 	async function spawnControlledRemote(opts?: { captureError?: boolean; gitWorkflow?: PersistedGitWorkflow }) {
 		let capturedOpts: RemoteOpts | undefined
 		let resolveRun: (v: Awaited<ReturnType<typeof runRemoteAgent>>) => void = () => {}
@@ -1551,16 +1552,10 @@ describe("AgentManager git-intent baseline capture", () => {
 				}),
 		)
 		manager = new AgentManager()
-		const originalSpawn = manager.spawn.bind(manager)
-		vi.spyOn(manager, "spawn").mockImplementation((...args: Parameters<AgentManager["spawn"]>) => {
-			const id = originalSpawn(...args)
-			const record = manager?.getRecord(id)
-			if (record && opts?.gitWorkflow) record.gitWorkflow = opts.gitWorkflow
-			return id
-		})
 		const done = manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
 			description: "test",
 			remote: true,
+			gitWorkflow: opts?.gitWorkflow,
 		})
 		await vi.waitFor(() => expect(capturedOpts).toBeDefined())
 		const record = manager?.listAgents()[0]
@@ -1590,6 +1585,10 @@ describe("AgentManager git-intent baseline capture", () => {
 		expect(mockCaptureBaseline).toHaveBeenCalledTimes(1)
 		expect(h.record.gitWorkflow?.baseSha).toBe(SHA)
 		expect(h.record.gitWorkflow?.dirtyFiles).toEqual(["dirty.ts"])
+		// The bounded ssh window must be named while it runs (no silent stall)
+		// — and the capture gets an explicit per-command timeout.
+		expect(uiNotify).toHaveBeenCalledWith(expect.stringContaining("Capturing the pre-run git baseline"), "info")
+		expect(mockCaptureBaseline).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ timeoutMs: 45_000 }))
 
 		h.resolveRun(remoteResult)
 		await h.done
@@ -1659,6 +1658,18 @@ describe("AgentManager steer continuation", () => {
 		host: "worker.example.com",
 		cwd: "/home/sandbox/acp-pr0001",
 	}
+
+	it("throws when continuation is set without remote: true", () => {
+		manager = new AgentManager()
+		// The steer prompt assumes sandbox context — defaulting to a LOCAL run
+		// would execute it on the user's machine, so spawn must fail fast.
+		expect(() =>
+			manager?.spawn(fakePi(), fakeRemoteCtx(), "Explore", "steer prompt text", {
+				description: "steer without remote",
+				continuation: { remoteSession: CONTINUE_META, acpSessionId: "acp-9" },
+			}),
+		).toThrow(/requires remote: true/)
+	})
 
 	it("attaches to the kept session — no workspace listing, no clone, no fresh session", async () => {
 		mockContinueRemoteAgent.mockImplementation(async (opts) => {

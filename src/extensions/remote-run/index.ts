@@ -23,6 +23,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
 import { handleRemoteCompletion } from "./post-completion.js"
@@ -38,7 +39,7 @@ import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
  * vars; never set in production.
  */
 function maybeFireFakeCompletion(pi: ExtensionAPI): void {
-	if (process.env.KIMCHI_E2E_FAKE_REMOTE_COMPLETION !== "1") return
+	if (readE2eSeam("KIMCHI_E2E_FAKE_REMOTE_COMPLETION") !== "1") return
 	pi.on("session_start", (_event, ctx) => {
 		setTimeout(() => {
 			if (!ctx.hasUI) return

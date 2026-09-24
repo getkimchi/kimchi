@@ -1180,6 +1180,9 @@ export default function (pi: ExtensionAPI) {
 			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
+			// PR-first git intent — planted onto the record inside spawn (see
+			// SpawnOptions.gitWorkflow), so _runRemote reads it deterministically.
+			gitWorkflow: opts?.gitWorkflow,
 			// PR steer continuation: attach to the kept-alive session instead of
 			// provisioning a fresh workspace (never session/new).
 			...(opts?.continuation ? { continuation: opts.continuation } : {}),
@@ -1228,7 +1231,6 @@ export default function (pi: ExtensionAPI) {
 			record.spawnCtx = ctx
 			record.remoteOrigin = opts?.origin ?? "plan"
 			record.fermentId = opts?.fermentId
-			record.gitWorkflow = opts?.gitWorkflow
 			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
 			setOutputPath(record.outputFile, id)
@@ -1336,13 +1338,19 @@ export default function (pi: ExtensionAPI) {
 		// "startup", never "resume") -- so resume-chain defects surface in
 		// terminal output instead of opaque timeouts.
 		if (resumable.length === 0 && ctx.hasUI) {
-			const continueRequested =
-				event.reason === "resume" ||
-				Boolean(
-					getParsedCliArgs().options.continue ??
-						getParsedCliArgs().options.resume ??
-						getParsedCliArgs().options.session,
-				)
+			// Parsed CLI state reflects explicit continuation intent (-c / --resume
+			// / -s). Guarded: getParsedCliArgs reads process-global CLI state that
+			// may be missing in embeddings (ACP/server boot) — a throw here must
+			// never surface as an unhandled rejection in the session_start flow.
+			let continueRequested = event.reason === "resume"
+			if (!continueRequested) {
+				try {
+					const cli = getParsedCliArgs().options
+					continueRequested = Boolean(cli.continue ?? cli.resume ?? cli.session)
+				} catch {
+					// CLI args unavailable — treat as a plain boot (no intent signal).
+				}
+			}
 			if (continueRequested) {
 				ctx.ui.notify?.("Continued session — no in-progress remote runs to resume")
 			}
