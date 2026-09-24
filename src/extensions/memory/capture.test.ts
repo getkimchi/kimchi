@@ -32,6 +32,9 @@ import {
 	chatWithRetry,
 	EXTRACTION_SYSTEM_PROMPT,
 	extractAssistantFacts,
+	factTokens,
+	isAttributedNearDuplicate,
+	isDurableFact,
 	mapWithConcurrency,
 	messageHash,
 	normalizeFactText,
@@ -39,6 +42,8 @@ import {
 	parseTaggedFacts,
 	runCaptureWorker,
 	SUPERSEDE_SYSTEM_PROMPT,
+	stripAttribution,
+	tokenJaccard,
 	windowByBudget,
 } from "./capture-worker.js"
 
@@ -446,6 +451,20 @@ describe("extraction prompt guards (injection resistance)", () => {
 		// the bedtime failure: right value, detached from its night.
 		expect(EXTRACTION_SYSTEM_PROMPT).toContain("carries that update's date")
 	})
+
+	it("both extraction prompts carry the session-state negatives, the placeholder-date ban, and the credential rule", () => {
+		for (const prompt of [EXTRACTION_SYSTEM_PROMPT, ASSISTANT_FACTS_SYSTEM_PROMPT]) {
+			expect(prompt).toContain("PR/MR statuses")
+			expect(prompt).toContain("environment inspection")
+			expect(prompt).toContain('"As of the conversation"')
+			expect(prompt).toContain("[REDACTED-API_KEY]")
+		}
+	})
+
+	it("the supersede judge replaces consider/question/want states with the later decision", () => {
+		expect(SUPERSEDE_SYSTEM_PROMPT).toContain("considers, questions, or wants")
+		expect(SUPERSEDE_SYSTEM_PROMPT).toContain('"approved the rename to X"')
+	})
 })
 
 describe("messageHash", () => {
@@ -459,6 +478,79 @@ describe("normalizeFactText", () => {
 	it("trims, collapses whitespace, and lowercases for exact-duplicate comparison", () => {
 		expect(normalizeFactText("  The   User prefers   PNPM ")).toBe("the user prefers pnpm")
 		expect(normalizeFactText("the user prefers pnpm")).toBe(normalizeFactText("THE  USER\nprefers pnpm"))
+	})
+})
+
+describe("isDurableFact (the non-durable gate)", () => {
+	it("keeps stable user facts and properly dated facts", () => {
+		expect(isDurableFact("I prefer pnpm over npm")).toBe(true)
+		expect(isDurableFact("As of 2023-05-26, planning a trip to Seattle")).toBe(true)
+		expect(isDurableFact("The devkit server is the only component that talks to mise")).toBe(true)
+		expect(
+			isDurableFact("My devkit project serves bundles kimchi:@anthropic-ai/claude-code and kimchi:@openai/codex"),
+		).toBe(true)
+	})
+
+	it("drops session state by category — each case is a real store entry from the audit", () => {
+		expect(isDurableFact("As of the conversation, PR #1255 status: tui-e2e still queued")).toBe(false)
+		expect(
+			isDurableFact(
+				"I opened PR #1255 on getkimchi/kimchi from branch memory-local-scope-default with commit f7985a0fc",
+			),
+		).toBe(false)
+		expect(isDurableFact("The user's MR !53 was the first MR since !2 to touch api/public/rest/openapi.yaml")).toBe(
+			false,
+		)
+		expect(isDurableFact("The project's pages:test pipeline in CI is failing")).toBe(false)
+		expect(isDurableFact("I have uncommitted WIP in my working tree: scripts/build-binary.js")).toBe(false)
+		expect(isDurableFact("I have 0 agents configured")).toBe(false)
+		expect(isDurableFact("I use a .env file for environment variables, with 0 variables currently injected")).toBe(
+			false,
+		)
+		expect(isDurableFact("I have js-debug not installed")).toBe(false)
+		expect(isDurableFact("I have a thinking:max setting in my editor")).toBe(false)
+		expect(
+			isDurableFact("I have the lapack@0.1.0 npm package installed, which is failing to load due to an FFI error"),
+		).toBe(false)
+		expect(
+			isDurableFact("As of today (2025-05-26), the Bun cache entries for the natural tree are all stamped at 19:35"),
+		).toBe(false)
+		expect(isDurableFact("Bash(npm run *)")).toBe(false)
+		expect(isDurableFact("darwin")).toBe(false)
+	})
+})
+
+describe("attribution-aware twin suppression", () => {
+	it("strips the attribution clause and collapses a real assistant-pass twin", () => {
+		const twin =
+			"The user decided to create an auth.json file in their bundle containing the API key, per the assistant's explanation that the TUI ignores CODEX_API_KEY and uses auth.json instead"
+		expect(stripAttribution(twin)).toBe("decided to create an auth.json file in their bundle containing the API key")
+		const userPass = factTokens(
+			"I decided to create an auth.json file in our bundle with the API key, to fix the 403 issue",
+		)
+		expect(isAttributedNearDuplicate(twin, [userPass])).toBe(true)
+	})
+
+	it("collapses a near-verbatim 'the user's'-prefixed twin", () => {
+		const attributed =
+			"The user decided to remove the home-containment and symlink-escape checks from the devkit path config, per the assistant's decision the user accepted"
+		const userPass = factTokens(
+			"I decided to remove the home-containment and symlink-escape checks from the devkit path config",
+		)
+		expect(isAttributedNearDuplicate(attributed, [userPass])).toBe(true)
+	})
+
+	it("never checks plain user-pass facts — the marker confines the risk", () => {
+		const plain = "I want /memory list to show only the current project's memories plus personal"
+		const similar = factTokens("I use the kimchi memory system, which stores memories per project plus personal")
+		expect(isAttributedNearDuplicate(plain, [similar])).toBe(false)
+	})
+
+	it("keeps distinct attributed facts that only share a subject", () => {
+		const attributed = "The user's devkit server runs at http://localhost:64816/"
+		const candidate = factTokens("The devkit server PVC backs the server's home directory at /home/devkit")
+		expect(isAttributedNearDuplicate(attributed, [candidate])).toBe(false)
+		expect(tokenJaccard(factTokens("ab cd"), factTokens("ab cd ef gh ij kl"))).toBe(2 / 6)
 	})
 })
 
@@ -828,6 +920,135 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		)
 		expect(captured).toBe(0)
 		expect(fake.added).toHaveLength(0)
+	})
+
+	it("skips non-durable extractions and logs nothing to the store", async () => {
+		const fake = makeFakeBackend()
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [
+						{
+							message: {
+								content: JSON.stringify({
+									personal: [
+										"I decided to remove the home-containment and symlink-escape checks from the devkit path config",
+										"As of the conversation, PR #1255 status: tui-e2e still queued",
+									],
+									project: [],
+								}),
+							},
+						},
+					],
+				}),
+				{ status: 200 },
+			)
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job1", [msg("user", "irrelevant")]), "--db", dbPath()],
+			{
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			},
+		)
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual([
+			"I decided to remove the home-containment and symlink-escape checks from the devkit path config",
+		])
+	})
+
+	it("redacts credentials via the session-export redactor before storage", async () => {
+		const fake = makeFakeBackend()
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [
+						{
+							message: {
+								content: JSON.stringify({
+									personal: [
+										"My ~/.codex/auth.json contains my real OpenAI API key (sk-proj-AbC1234567890XyZ9876543210)",
+									],
+									project: [],
+								}),
+							},
+						},
+					],
+				}),
+				{ status: 200 },
+			)
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job1", [msg("user", "irrelevant")]), "--db", dbPath()],
+			{
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			},
+		)
+		expect(captured).toBe(1)
+		expect(fake.added).toHaveLength(1)
+		expect(fake.added[0]).toContain("[REDACTED-")
+		expect(fake.added[0]).not.toContain("sk-proj-")
+	})
+
+	it("captures the user-pass fact once, collapsing the assistant-pass twin", async () => {
+		const fake = makeFakeBackend()
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [
+						{
+							message: {
+								content: JSON.stringify({
+									personal: [
+										"I decided to remove the home-containment and symlink-escape checks from the devkit path config",
+										"The user decided to remove the home-containment and symlink-escape checks from the devkit path config, per the assistant's decision the user accepted",
+									],
+									project: [],
+								}),
+							},
+						},
+					],
+				}),
+				{ status: 200 },
+			)
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job1", [msg("user", "irrelevant")]), "--db", dbPath()],
+			{
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			},
+		)
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual([
+			"I decided to remove the home-containment and symlink-escape checks from the devkit path config",
+		])
+	})
+
+	it("the judge deletes the 'considering' fact when the later decision arrives", async () => {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			const user = body.messages[1]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				// The judge deletes the older ask-state fact (m1 = first added).
+				return new Response(JSON.stringify({ choices: [{ message: { content: '["m1"]' } }] }), { status: 200 })
+			}
+			const fact = (user.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const fake = makeFakeBackend()
+		const older = writeJob("older", [msg("user", "I am considering renaming bundles to toolsets")])
+		const newer = writeJob("newer", [msg("user", "I approved the 'bundles' naming")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(fake.deleted).toEqual(["m1"])
+		expect(fake.items.map((item) => item.memory)).toEqual(["I approved the 'bundles' naming"])
 	})
 
 	it("extracts windows from multiple jobs concurrently (drain-wide parallelism)", async () => {
