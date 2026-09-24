@@ -177,6 +177,71 @@ describe("auto-model extension", () => {
 		])
 	})
 
+	it("unknown routed id clears a previously-resolved pick (no stale label/telemetry)", () => {
+		const { getHandler, getAppendedEntries, setModel } = setup()
+		const byId = (id: string) => ({
+			find: (_p: string, mid: string) => (mid === id ? model(id, { contextWindow: 128_000 }) : undefined),
+		})
+		const onMessageEnd = getHandler<MessageEndEvent>("message_end")
+
+		// First resolve to a known model, then the backend re-routes to an
+		// unknown id — the stale resolved pick must be dropped.
+		onMessageEnd(
+			messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }),
+			ctx({ modelRegistry: byId("kimi-k3") }) as never,
+		)
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
+
+		onMessageEnd(
+			messageEnd({ model: "auto-beta", responseModel: "brand-new" }),
+			ctx({ modelRegistry: byId("undefined") }) as never,
+		)
+
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+		expect(setModel).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(2)
+	})
+
+	it("a rejected capability sync clears the routing state (no stale descriptor)", async () => {
+		const { getHandler, setModel } = setup()
+		const target = model("kimi-k3", { contextWindow: 128_000 })
+		const c = ctx({ modelRegistry: { find: () => target } })
+		setModel.mockRejectedValueOnce(new Error("boom"))
+
+		getHandler<MessageEndEvent>("message_end")(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		// The fire-and-forget sync rejected; state degrades to unresolved rather
+		// than crashing or leaving a stale resolved pick.
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+	})
+
+	it("model_select to a different model invalidates the pick so it can re-resolve", () => {
+		const { getHandler, getAppendedEntries, setModel } = setup()
+		const c = ctx({ modelRegistry: { find: () => model("kimi-k3", { contextWindow: 128_000 }) } })
+		const onMessageEnd = getHandler<MessageEndEvent>("message_end")
+		const onModelSelect = getHandler<"model_select">("model_select")
+
+		onMessageEnd(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved" })
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(1)
+
+		// User switches away from auto-beta; state and dedup are invalidated.
+		onModelSelect(
+			{ type: "model_select", model: model("glm-5.3"), previousModel: model("auto-beta") } as never,
+			c as never,
+		)
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+
+		// Re-selecting auto-beta and resolving to the same pick re-syncs again
+		// (the dedup guard no longer short-circuits it). The notice re-appends
+		// because the per-session dedup was reset with the pick.
+		onMessageEnd(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(2)
+		expect(setModel).toHaveBeenCalledTimes(2) // re-synced after the switch
+	})
+
 	it("ignores non-routed responses (no responseModel or same-as-requested)", () => {
 		const { getHandler, getAppendedEntries, setModel } = setup()
 		const c = ctx({})

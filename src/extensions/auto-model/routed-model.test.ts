@@ -41,10 +41,25 @@ describe("resolveRoutedModel", () => {
 	})
 
 	it("does not cross providers on lookup", () => {
-		const resolved = resolveRoutedModel("kimchi-dev", "kimi-k3", registry([model("kimi-k3")]))
+		const calls: Array<{ provider: string; id: string }> = []
+		const registry = {
+			find: (provider: string, id: string) => {
+				calls.push({ provider, id })
+				// A model sharing the id under a different provider must not match.
+				return provider === "kimchi-dev" && id === "kimi-k3" ? model("kimi-k3") : undefined
+			},
+		} as Pick<ModelRegistry, "find">
 
-		// Registry find is provider-scoped; a stub that ignores provider would
-		// still resolve, so assert the correct provider id is requested.
+		const resolved = resolveRoutedModel("kimchi-dev", "kimi-k3", registry)
+
 		expect(resolved.kind).toBe("model")
+		expect(calls).toEqual([{ provider: "kimchi-dev", id: "kimi-k3" }])
+	})
+
+	it("fails to resolve an id that exists only under another provider", () => {
+		const foreign = { ...model("kimi-k3"), provider: "other-provider" }
+		const resolved = resolveRoutedModel("kimchi-dev", "kimi-k3", registry([foreign]))
+
+		expect(resolved.kind).toBe("unknown")
 	})
 })

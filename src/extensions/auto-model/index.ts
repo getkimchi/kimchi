@@ -118,8 +118,16 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 		if (resolution.kind !== "unknown") {
 			setAutoRoutingState(sessionId, { status: "resolved", model: resolution.model, requestedId: message.model })
 			if (ctx.model) {
-				void syncAutoCapabilities(pi, ctx.model as Model<Api>, resolution.model as Model<Api>)
+				void syncAutoCapabilities(pi, ctx.model as Model<Api>, resolution.model as Model<Api>).catch(() =>
+					clearAutoRoutingState(sessionId),
+				)
 			}
+		} else {
+			// The backend routed to a model the catalog doesn't know: drop any prior
+			// resolved pick so downstream resolvers and telemetry fall back to the
+			// advertised descriptor (and don't show a stale `(old-model)` label)
+			// until a known pick arrives.
+			clearAutoRoutingState(sessionId)
 		}
 
 		pi.appendEntry(ROUTED_MODEL_RESOLUTION_ENTRY, routedEntry(resolution, message.model))
@@ -151,7 +159,10 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 				resetLastNotified(sessionId)
 				return
 			}
-			// A backend-routed virtual model must not be wrapped by multi-model.
+			// A selected model on the `kimchi-dev` provider must not be wrapped by
+			// multi-model. This covers every `kimchi-dev` session model (routed
+			// virtual ids and v1 `auto`), which is safe because none of them use
+			// multi-model.
 			setMultiModelEnabled(sessionId, false)
 
 			const last = ctx.sessionManager
@@ -181,6 +192,20 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 					clearAutoRoutingState(sessionId)
 				}
 			}
+		})
+
+		// When the user switches to a different model, invalidate the per-session
+		// pick so re-selecting a virtual model re-runs the capability sync. Without
+		// this, the dedup guard would short-circuit on a repeated pick after a
+		// switch-away, leaving the advertised (e.g. 1M) window applied while the
+		// serving model is smaller. Guarded on an actual id change so a no-op
+		// select (e.g. resume) doesn't clobber the hydrated pick.
+		pi.on("model_select", (event: { model: { id: string }; previousModel?: { id: string } | undefined }, ctx) => {
+			const prev = event.previousModel?.id
+			if (prev === undefined || prev === event.model.id) return
+			const sessionId = ctx.sessionManager.getSessionId()
+			resetLastNotified(sessionId)
+			clearAutoRoutingState(sessionId)
 		})
 
 		pi.on("session_shutdown", (_event, ctx) => {
