@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, onTestFinished, vi } from "vitest"
 import { validateApiKey } from "./validator.js"
 
 // loadConfig() reads the launch-time global config path (real HOME). Mock it so
@@ -58,6 +58,15 @@ describe("validateApiKey", () => {
 		expect(result.valid).toBe(false)
 		expect(result.error).toMatch(/Invalid/)
 		expect(result.suggestions).toEqual(expect.arrayContaining([expect.stringMatching(/app\.kimchi\.dev/)]))
+	})
+
+	it("points 401 suggestions at the configured region's web app", async () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", region: "eu" })
+		onTestFinished(() => {
+			loadConfigMock.mockReturnValue({ apiKey: "", region: undefined })
+		})
+		const result = await validateApiKey("bad", { fetch: fakeFetch({ status: 401 }) })
+		expect(result.suggestions).toContain("Verify your API key at https://app.eu.kimchi.dev")
 	})
 
 	it("returns scope error on 403", async () => {

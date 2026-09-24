@@ -106,7 +106,7 @@ export async function executeWebSearch(params: WebSearchParams, signal?: AbortSi
 	const apiKey = loadConfig().apiKey
 	if (!apiKey) {
 		throw new Error(
-			"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.kimchi.dev to create a key.",
+			`Web search requires an API key. Run 'kimchi' and log in, or visit ${getRegion(loadConfig().region).webAppUrl} to create a key.`,
 		)
 	}
 

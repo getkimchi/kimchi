@@ -38,7 +38,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			valid: false,
 			error: "API key is required",
 			suggestions: [
-				"Get your API key at https://app.kimchi.dev",
+				`Get your API key at ${getRegion(loadConfig().region).webAppUrl}`,
 				"Set it via KIMCHI_API_KEY environment variable or run 'kimchi setup'",
 			],
 		}
@@ -67,7 +67,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			error: "Network error: unable to reach Kimchi API",
 			suggestions: [
 				"Check your internet connection",
-				"Verify you can reach https://api.cast.ai",
+				`Verify you can reach ${getRegion(loadConfig().region).castApiUrl}`,
 				"Try again in a few moments",
 			],
 		}
@@ -81,7 +81,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			valid: false,
 			error: "Invalid API key",
 			suggestions: [
-				"Verify your API key at https://app.kimchi.dev",
+				`Verify your API key at ${getRegion(loadConfig().region).webAppUrl}`,
 				"Ensure the key has not been revoked",
 				"Check for typos or extra whitespace",
 			],
@@ -92,7 +92,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			valid: false,
 			error: "API key lacks required permissions",
 			suggestions: [
-				"Verify your API key has the required scopes at https://app.kimchi.dev",
+				`Verify your API key has the required scopes at ${getRegion(loadConfig().region).webAppUrl}`,
 				"Contact support if the issue persists",
 			],
 		}
