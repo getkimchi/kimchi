@@ -66,13 +66,7 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import {
-	type ModeChangeReason,
-	PERMISSION_EVENTS,
-	type PermissionDecision,
-	type PermissionDecisionSourceDetail,
-	type PermissionToolDecisionPayload,
-} from "./permissions-events.js"
+import { type ModeChangeReason, PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -93,6 +87,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
+import { emitOutcomeDecision, emitToolDecision, ruleSourceDetail } from "./tool-decision-emitter.js"
 import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
@@ -1314,68 +1309,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		},
 		updateStatus,
 	})
-}
-
-// ---------------------------------------------------------------------------
-// Tool-decision instrumentation (permissions:tool_decision bus event)
-// ---------------------------------------------------------------------------
-
-/** Config vs remembered-session rule for rule-driven decisions. */
-function ruleSourceDetail(rule: Rule | undefined): PermissionDecisionSourceDetail {
-	return rule?.source === "session" ? "session_rule" : "rule"
-}
-
-function emitToolDecision(
-	pi: ExtensionAPI,
-	event: ToolCallEvent,
-	permissionMode: PermissionMode,
-	decision: "accept" | "reject",
-	sourceDetail: PermissionDecisionSourceDetail,
-): void {
-	const payload: PermissionToolDecisionPayload = {
-		toolCallId: event.toolCallId,
-		toolName: event.toolName.toLowerCase(),
-		decision,
-		sourceDetail,
-		permissionMode,
-	}
-	pi.events.emit(PERMISSION_EVENTS.TOOL_DECISION, payload)
-}
-
-/**
- * Map a prompt outcome to a tool_decision emission. "pick-per-subcommand" emits
- * nothing here — each segment's outcome is emitted individually in the loop.
- */
-function emitOutcomeDecision(
-	pi: ExtensionAPI,
-	event: ToolCallEvent,
-	permissionMode: PermissionMode,
-	kind: ApprovalOutcome["kind"] | CompoundApprovalOutcome["kind"],
-): void {
-	switch (kind) {
-		case "allow-once":
-		case "allow-all-once":
-			emitToolDecision(pi, event, permissionMode, "accept", "allow_once")
-			return
-		case "allow-remember":
-		case "allow-all-remember":
-			emitToolDecision(pi, event, permissionMode, "accept", "allow_remember")
-			return
-		case "allow-remember-wildcard":
-			emitToolDecision(pi, event, permissionMode, "accept", "allow_remember_wildcard")
-			return
-		case "deny":
-			emitToolDecision(pi, event, permissionMode, "reject", "deny")
-			return
-		case "deny-with-feedback":
-			emitToolDecision(pi, event, permissionMode, "reject", "deny_with_feedback")
-			return
-		case "aborted":
-			emitToolDecision(pi, event, permissionMode, "reject", "abort")
-			return
-		case "pick-per-subcommand":
-			return
-	}
 }
 
 interface ConfirmOptions {
