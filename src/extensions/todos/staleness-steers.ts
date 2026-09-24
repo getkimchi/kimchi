@@ -39,7 +39,7 @@ export function stalenessIndicator(changes: number): string | undefined {
 	if (changes <= 8) return undefined
 	if (changes <= 16) return `${changes} changes since last update — refresh the list at the next natural breakpoint`
 	if (changes <= 24) return `⚠ ${changes} changes since last update — update at the next natural breakpoint`
-	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint`
+	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint; remove or complete items whose work is done`
 }
 
 /** Send a hidden persistent steer message (lands in session history at the
