@@ -204,8 +204,13 @@ export function createAutoModelRoutingExtension(): ExtensionFactory {
 			const prev = event.previousModel?.id
 			if (prev === undefined || prev === event.model.id) return
 			const sessionId = ctx.sessionManager.getSessionId()
+			// Reset the notice + sync dedup so re-selecting a virtual model re-runs
+			// the capability sync, but KEEP the resolved routing state: feedback's
+			// model_select handler reads it (via isRoutedModel) to decide whether a
+			// switch away from a routed virtual model should prompt for a reason.
+			// The state is inert while a different model is selected (resolvers only
+			// match the currently-selected id) and is overwritten on the next resolve.
 			resetLastNotified(sessionId)
-			clearAutoRoutingState(sessionId)
 		})
 
 		pi.on("session_shutdown", (_event, ctx) => {

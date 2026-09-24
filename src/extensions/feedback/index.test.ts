@@ -327,6 +327,33 @@ describe("feedbackExtension state machine", () => {
 		expect(invitationState.getModelSwitchInvitation()).toBeNull()
 	})
 
+	it("model_select from a resolved routed virtual model sets the invitation", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
+		// The routed virtual model resolved to a concrete pick earlier in the
+		// session; that resolved state must be visible to the switch-away check.
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
+			requestedId: "auto-beta",
+		})
+		feedbackExtension(api)
+
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+
+		const invitationState = await import("./invitation-state.js")
+		expect(invitationState.getModelSwitchInvitation()).toMatchObject({
+			modelName: "Concrete",
+			modelId: "concrete-model",
+		})
+	})
+
 	it("defers the invitation entry so the upstream Default model status prints first", async () => {
 		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
 		feedbackExtension(api)

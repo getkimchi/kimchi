@@ -216,26 +216,29 @@ describe("auto-model extension", () => {
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
 	})
 
-	it("model_select to a different model invalidates the pick so it can re-resolve", () => {
+	it("model_select to a different model resets the dedup but keeps the resolved pick", () => {
 		const { getHandler, getAppendedEntries, setModel } = setup()
 		const c = ctx({ modelRegistry: { find: () => model("kimi-k3", { contextWindow: 128_000 }) } })
 		const onMessageEnd = getHandler<MessageEndEvent>("message_end")
 		const onModelSelect = getHandler<"model_select">("model_select")
 
 		onMessageEnd(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
-		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved" })
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
 		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(1)
 
-		// User switches away from auto-beta; state and dedup are invalidated.
+		// User switches away from auto-beta. The resolved pick is KEPT so
+		// feedback's model_select handler can detect (via isRoutedModel) that a
+		// routed virtual model was abandoned, but the dedup is reset so a later
+		// re-selection re-runs the capability sync.
 		onModelSelect(
 			{ type: "model_select", model: model("glm-5.3"), previousModel: model("auto-beta") } as never,
 			c as never,
 		)
-		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
 
 		// Re-selecting auto-beta and resolving to the same pick re-syncs again
 		// (the dedup guard no longer short-circuits it). The notice re-appends
-		// because the per-session dedup was reset with the pick.
+		// because the per-session dedup was reset on the switch.
 		onMessageEnd(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
 		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
 		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(2)
