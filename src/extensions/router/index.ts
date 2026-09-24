@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs"
-import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
@@ -8,6 +7,7 @@ import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
 import { shouldDefaultToAuto } from "./auto-default-gate.js"
+import { autoModelForTarget, hasTargetCapabilities, syncAutoCapabilities } from "./capabilities.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PROVIDER, isAutoModel } from "./constants.js"
 import { routeQuery } from "./router-client.js"
 import { getRouterConfig, type RouterConfig } from "./router-config.js"
@@ -43,36 +43,6 @@ function branchHasImages(entries: readonly SessionEntry[]): boolean {
 
 function routeFailureReason(reason: "cancelled" | "timeout" | "network" | "http" | "malformed"): AutoFailureReason {
 	return reason === "http" ? "router_http" : reason
-}
-
-type ModelCapabilities = Pick<Model<Api>, "reasoning" | "thinkingLevelMap" | "contextWindow" | "maxTokens">
-
-function hasTargetCapabilities(autoModel: ModelCapabilities, target: ModelCapabilities): boolean {
-	return (
-		autoModel.reasoning === target.reasoning &&
-		autoModel.thinkingLevelMap === target.thinkingLevelMap &&
-		autoModel.contextWindow === target.contextWindow &&
-		autoModel.maxTokens === target.maxTokens
-	)
-}
-
-function autoModelForTarget<TApi extends Api>(autoModel: Model<TApi>, target: ModelCapabilities): Model<TApi> {
-	return {
-		...autoModel,
-		reasoning: target.reasoning,
-		thinkingLevelMap: target.thinkingLevelMap,
-		contextWindow: target.contextWindow,
-		maxTokens: target.maxTokens,
-	}
-}
-
-async function syncAutoCapabilities<TApi extends Api>(
-	pi: ExtensionAPI,
-	autoModel: Model<TApi>,
-	target: ModelCapabilities,
-): Promise<boolean> {
-	if (hasTargetCapabilities(autoModel, target)) return true
-	return pi.setModel(autoModelForTarget(autoModel, target))
 }
 
 /**

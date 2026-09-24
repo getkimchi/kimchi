@@ -5,8 +5,7 @@ import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
-import { AUTO_MODEL_ID, isAutoModel } from "./router/constants.js"
-import { formatAutoModelLabel, getEffectiveModel } from "./router/state.js"
+import { formatRoutedModelLabel, resolveEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {
@@ -110,14 +109,16 @@ function formatUsageRows(
 }
 
 /**
- * Value for the model row, mirroring the status bar's model segment: once the
- * Auto router resolves a concrete model, show `auto (<model id>)`. Undefined
- * for concrete selections and unresolved Auto sessions — those add no row.
+ * Value for the model row: once a backend-routed virtual model resolves a
+ * concrete pick, show `<requested> (<routed>)` (e.g. `auto-beta (glm-5.3)`).
+ * Undefined for concrete selections and unresolved virtual sessions — those
+ * add no row.
  */
-function resolveAutoModelLabel(ctx: ExtensionContext): string | undefined {
-	if (!isAutoModel(ctx.model)) return undefined
-	const effective = getEffectiveModel(ctx)
-	return effective && effective.id !== AUTO_MODEL_ID ? formatAutoModelLabel(effective.id) : undefined
+function resolveRoutedModelLabel(ctx: ExtensionContext): string | undefined {
+	if (!ctx.model) return undefined
+	const effective = resolveEffectiveModel(ctx.model, ctx.sessionManager.getSessionId())
+	if (!effective || effective.id === ctx.model.id) return undefined
+	return formatRoutedModelLabel(ctx.model.id, effective.id)
 }
 
 export const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
@@ -268,7 +269,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			subagentsByModel,
 			total: grandTotal,
 			extras: summaryExtras.length > 0 ? [...summaryExtras] : undefined,
-			model: resolveAutoModelLabel(ctx),
+			model: resolveRoutedModelLabel(ctx),
 		}
 		pendingSummary = true
 		const version = ++summaryVersion

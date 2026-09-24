@@ -58,6 +58,27 @@ it("discovers with the override and leaves the saved model cache byte-identical"
 	expect(existsSync(authPath)).toBe(false)
 })
 
+it("collision guard: does not synthesize a second auto when the fetched catalog advertises one", async () => {
+	const original = JSON.stringify({ providers: providersFor("saved-model") })
+	writeFileSync(modelsPath, original)
+	const backendAuto: ModelMetadata = {
+		slug: "auto",
+		display_name: "Auto (backend encoded)",
+		provider: "ai-enabler",
+		reasoning: true,
+		input_modalities: ["text"],
+		is_serverless: true,
+		limits: { context_window: 1048576, max_output_tokens: 16384 },
+	}
+	const fetchMock = vi.fn(async () => Response.json({ models: [backendAuto] }))
+	vi.stubGlobal("fetch", fetchMock)
+
+	const discovered = await discoverEnvironmentModels(modelsPath, "environment-key", { experimental: false })
+
+	const ids = discovered.providers["kimchi-dev"].models?.map((model) => model.id)
+	expect(ids?.filter((id) => id === "auto")).toHaveLength(1)
+})
+
 it("isolates simultaneous runtime keys and catalogs, then restores the config account on a normal launch", async () => {
 	const savedProviders = providersFor("saved-model")
 	const originalModels = JSON.stringify({

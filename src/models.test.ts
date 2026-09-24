@@ -1040,6 +1040,31 @@ describe("injectAutoModel", () => {
 
 		expect(autoModels).toHaveLength(1)
 	})
+
+	it("collision guard: leaves a fetched/backend-owned kimchi-dev/auto entry untouched", () => {
+		// Backend now owns the `auto` name (end state): the normalized catalog
+		// advertises it. The harness injection must NOT shadow it by replacing or
+		// duplicating the entry.
+		const backendAuto = {
+			id: "auto",
+			name: "Auto (backend encoded)",
+			provider: "ai-enabler",
+			reasoning: true,
+			input: ["text"],
+			contextWindow: 1048576,
+			maxTokens: 16384,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers["kimchi-dev"].models.push(backendAuto)
+		writeFileSync(modelsJsonPath, JSON.stringify(config), "utf-8")
+
+		injectAutoModel(modelsJsonPath)
+
+		const finalConfig = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const autoModels = finalConfig.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
+		expect(autoModels).toEqual([backendAuto])
+	})
 })
 
 describe("readExistingProviders strips kimchi-experimental", () => {

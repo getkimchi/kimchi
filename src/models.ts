@@ -428,11 +428,13 @@ export function injectAutoModel(modelsJsonPath: string): void {
 	}
 	const kimchiDev = config.providers?.["kimchi-dev"]
 	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
-	const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
-	kimchiDev.models = [
-		...kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID),
-		autoModelConfig(concreteMetadata),
-	]
+	// Only synthesize the harness virtual `auto` when the catalog does not
+	// already advertise a `kimchi-dev/auto` entry; a backend-owned `auto` then
+	// wins and this normalization leaves it untouched.
+	if (!kimchiDev.models.some((model) => model.id === AUTO_MODEL_ID)) {
+		const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
+		kimchiDev.models = [...kimchiDev.models, autoModelConfig(concreteMetadata)]
+	}
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 

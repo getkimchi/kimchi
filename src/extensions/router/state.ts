@@ -21,7 +21,10 @@ export type AutoFailureReason =
 export type AutoRoutingState =
 	| { status: "unresolved" }
 	| { status: "attempting" }
-	| { status: "resolved"; model: Model<string> }
+	// `requestedId` identifies the virtual model this resolution applies to.
+	// v1 resolved state (and legacy persisted hydration) may omit it; those
+	// fall back to the v1 `isAutoModel` semantics in `resolveEffectiveModel`.
+	| { status: "resolved"; model: Model<string>; requestedId?: string }
 	| { status: "failed"; reason: AutoFailureReason }
 
 type PersistedAutoResolution = { version: 1; status: "resolved"; provider: string; modelId: string }
@@ -85,22 +88,66 @@ export function getEffectiveModel<TApi extends string>(ctx: EffectiveModelContex
 }
 
 /**
- * Shared `auto (<model id>)` label for the resolved Auto router pick, used by
- * the status bar's model segment and the prompt summary's model row so both
- * surfaces stay in sync.
+ * `auto (<model id>)` label for the resolved v1 Auto router pick.
+ *
+ * @deprecated use {@link formatRoutedModelLabel} with the requested virtual id
+ *   so any backend-routed model renders correctly.
  */
 export function formatAutoModelLabel(modelId: string): string {
-	return `auto (${modelId})`
+	return formatRoutedModelLabel("auto", modelId)
 }
 
-/** Low-level Auto resolver for integration boundaries without an extension context. */
+/**
+ * `<requested id> (<routed model id>)` label for a resolved backend-routed
+ * model pick, shared by the prompt summary's model row (and any other surface
+ * that labels a concrete pick). `prefix` is the requested (virtual) id — the
+ * harness keeps requesting that id while displaying the routed pick.
+ */
+export function formatRoutedModelLabel(prefix: string, modelId: string): string {
+	return `${prefix} (${modelId})`
+}
+
+/**
+ * Whether the given model is a backend-routed virtual model with a resolved
+ * concrete pick in this session.
+ *
+ * Id-agnostic: covers v1 `auto` (legacy state / `requestedId` "auto") and any
+ * other backend-routed virtual model that resolved via `setAutoRoutingState`.
+ * Concrete models and unresolved virtual sessions return false.
+ */
+export function isRoutedModel(model: Pick<Model<string>, "id" | "provider"> | undefined, sessionId: string): boolean {
+	if (!model) return false
+	const state = getAutoRoutingState(sessionId)
+	if (state.status !== "resolved") return false
+	if (state.requestedId !== undefined) return state.requestedId === model.id
+	// Legacy v1 resolved state has no requestedId — only matches v1 `auto`.
+	return isAutoModel(model)
+}
+
+/** Low-level resolver for integration boundaries without an extension context.
+ *
+ * Returns the concrete model that handles requests for this session when the
+ * given `model` matches the requested id of a resolved routing state, and the
+ * input `model` otherwise. Any backend-routed virtual model resolves so long
+ * as its per-session routing state is populated and its id matches the state's
+ * `requestedId`; legacy v1 state carries no `requestedId` and falls back to the
+ * v1 `isAutoModel` guard.
+ */
 export function resolveEffectiveModel<TApi extends string>(
 	model: Model<TApi> | undefined,
 	sessionId: string,
 ): Model<TApi> | undefined {
-	if (!isAutoModel(model)) return model
+	if (!model) return model
 	const state = getAutoRoutingState(sessionId)
-	return state.status === "resolved" ? (state.model as Model<TApi>) : model
+	if (state.status !== "resolved") return model
+	// Id-agnostic: resolve when this model is the requested virtual id of the
+	// resolved routing state. Legacy v1 state (and persisted hydration) carries
+	// no `requestedId` — fall back to the v1 `isAutoModel` guard so behavior is
+	// unchanged for Auto sessions.
+	if (state.requestedId !== undefined) {
+		return state.requestedId === model.id ? (state.model as Model<TApi>) : model
+	}
+	return isAutoModel(model) ? (state.model as Model<TApi>) : model
 }
 
 export function isPersistedAutoResolution(data: unknown): data is PersistedAutoResolution {

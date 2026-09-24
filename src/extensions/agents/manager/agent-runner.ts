@@ -19,6 +19,7 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
@@ -27,7 +28,7 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { isAutoModel } from "../../router/constants.js"
+import { AUTO_MODEL_PROVIDER, isAutoModel } from "../../router/constants.js"
 import { createAutoModelExtension } from "../../router/index.js"
 import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
@@ -483,9 +484,16 @@ ${skillLines}`
 				},
 			]
 		: []
+	// A backend-routed virtual parent has no staged pre-route work, but its child
+	// sessions still need the auto-model extension so per-session capability sync
+	// and pick learning run there too. It's a no-op for concrete models
+	// (responseModel equals the requested id).
+	const routedModelExtensionFactories: InlineExtension[] =
+		model?.provider === AUTO_MODEL_PROVIDER && !isAutoModel(model) ? [createAutoModelRoutingExtension()] : []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
 		...autoExtensionFactories,
+		...routedModelExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
 	]
