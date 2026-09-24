@@ -3554,3 +3554,343 @@ describe("permission mode session-log persistence", () => {
 		}
 	})
 })
+
+describe("permissions:tool_decision emissions", () => {
+	const tcall = (toolName: string, input: Record<string, unknown>, toolCallId = "tc-1") => ({
+		type: "tool_call",
+		toolCallId,
+		toolName,
+		input,
+	})
+
+	function collectDecisions(harness: ReturnType<typeof createPermissionsHarness>) {
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		return decisions
+	}
+
+	it("yolo bypass emits accept/config/yolo_bypass with permissionMode yolo", async () => {
+		const harness = createPermissionsHarness(["bash", "write"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "rm -rf /tmp/x" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				source: "config",
+				sourceDetail: "yolo_bypass",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("edit tool decisions carry the bare file extension, never the path", async () => {
+		const harness = createPermissionsHarness(["write"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire(
+				"tool_call",
+				tcall("write", { path: "/secret/dir/foo.ts", content: "x" }),
+				createMockContext([]),
+			),
+		).toBeUndefined()
+
+		expect(decisions).toHaveLength(1)
+		expect(decisions[0]).toMatchObject({ toolName: "write", fileExtension: "ts" })
+		expect(JSON.stringify(decisions)).not.toContain("/secret/dir")
+	})
+
+	it("plan mode: read-only bash accepts (plan_readonly), writes reject (plan_gate)", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, ctx)
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" })
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "ls" }, "tc-ro"), ctx)).toBeUndefined()
+		const blocked = await harness.fire("tool_call", tcall("bash", { command: "npm install" }, "tc-wr"), ctx)
+		expect(blocked).toMatchObject({ block: true })
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-ro",
+				toolName: "bash",
+				decision: "accept",
+				source: "config",
+				sourceDetail: "plan_readonly",
+				permissionMode: "plan",
+			},
+			{
+				toolCallId: "tc-wr",
+				toolName: "bash",
+				decision: "reject",
+				source: "config",
+				sourceDetail: "plan_gate",
+				permissionMode: "plan",
+			},
+		])
+	})
+
+	it("builtin allow-listed tools emit accept/config/builtin_safe", async () => {
+		const harness = createPermissionsHarness(["set_phase"])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		expect(
+			await harness.fire("tool_call", tcall("set_phase", { phase: "build" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolName: "set_phase",
+				decision: "accept",
+				source: "config",
+				sourceDetail: "builtin_safe",
+				permissionMode: "default",
+			}),
+		])
+	})
+
+	it("read-only bash inference emits accept/config/readonly", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "ls" }), createMockContext([]))).toBeUndefined()
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				decision: "accept",
+				source: "config",
+				sourceDetail: "readonly",
+				permissionMode: "default",
+			}),
+		])
+	})
+
+	it("auto mode: classifier safe accepts (hook/classifier), unsafe without UI rejects (classifier_no_ui)", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const decisions = collectDecisions(harness)
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		// Default mock verdict is "safe".
+		expect(await harness.fire("tool_call", tcall("bash", { command: "make build" }, "tc-safe"), ctx)).toBeUndefined()
+
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			riskScore: "medium",
+			reason: "could mutate state",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		const blocked = await harness.fire("tool_call", tcall("bash", { command: "make deploy" }, "tc-unsafe"), ctx)
+		expect(blocked).toMatchObject({ block: true })
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolCallId: "tc-safe",
+				decision: "accept",
+				source: "hook",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			}),
+			expect.objectContaining({
+				toolCallId: "tc-unsafe",
+				decision: "reject",
+				source: "hook",
+				sourceDetail: "classifier_no_ui",
+				permissionMode: "auto",
+			}),
+		])
+	})
+
+	it("prompt allow-once emits accept/user_temporary/allow_once", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext(["Yes — just this call"])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, ctx)
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)).toBeUndefined()
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				decision: "accept",
+				source: "user_temporary",
+				sourceDetail: "allow_once",
+				permissionMode: "default",
+			}),
+		])
+		// Privacy: no raw command text in the payload.
+		expect(JSON.stringify(decisions)).not.toContain("npm install")
+	})
+
+	it("prompt deny emits reject/user_reject/deny", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext(["No — tell the assistant what to do differently"])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, ctx)
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		const result = await harness.fire("tool_call", tcall("bash", { command: "npm publish" }), ctx)
+		expect(result).toEqual({ block: true, reason: "Declined by user" })
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				decision: "reject",
+				source: "user_reject",
+				sourceDetail: "deny",
+				permissionMode: "default",
+			}),
+		])
+	})
+
+	it("compound remember → compound_rule on repeat, then session_rule for a matching plain call", async () => {
+		const command = "cd /tmp && npm install"
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext(["Allow all from now on"])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, ctx)
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		expect(await harness.fire("tool_call", tcall("bash", { command }, "tc-1"), ctx)).toBeUndefined()
+		// Identical compound settles via the remembered rules — no prompt.
+		expect(await harness.fire("tool_call", tcall("bash", { command }, "tc-2"), ctx)).toBeUndefined()
+		// A matching plain (non-compound) call settles via the session rule.
+		expect(await harness.fire("tool_call", tcall("bash", { command: "npm install" }, "tc-3"), ctx)).toBeUndefined()
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolCallId: "tc-1",
+				decision: "accept",
+				source: "user_permanent",
+				sourceDetail: "allow_remember",
+			}),
+			expect.objectContaining({
+				toolCallId: "tc-2",
+				decision: "accept",
+				source: "config",
+				sourceDetail: "compound_rule",
+			}),
+			expect.objectContaining({
+				toolCallId: "tc-3",
+				decision: "accept",
+				source: "config",
+				sourceDetail: "session_rule",
+			}),
+		])
+	})
+
+	it("internal ferment tools emit accept/config/ferment_internal", async () => {
+		const harness = createPermissionsHarness(["bash", "agent", FERMENT_TOOLS.LIST])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall(FERMENT_TOOLS.LIST, {}), createMockContext([]))).toBeUndefined()
+
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolName: FERMENT_TOOLS.LIST,
+				decision: "accept",
+				source: "config",
+				sourceDetail: "ferment_internal",
+			}),
+		])
+	})
+
+	it("questionnaire in default mode emits accept/config/questionnaire_promotion", async () => {
+		const harness = createPermissionsHarness(["questionnaire"])
+		const ctx = createMockContext([])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, ctx)
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		expect(await harness.fire("tool_call", tcall("questionnaire", { questions: [] }), ctx)).toBeUndefined()
+
+		expect(decisions).toEqual([
+			expect.objectContaining({ decision: "accept", source: "config", sourceDetail: "questionnaire_promotion" }),
+		])
+	})
+
+	it("IDE diff-viewer deferral emits nothing", async () => {
+		const { isIdeConnected } = await import("../ide-adapter/index.js")
+		vi.mocked(isIdeConnected).mockReturnValue(true)
+		const harness = createPermissionsHarness(["write"])
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+		expect(
+			await harness.fire("tool_call", tcall("write", { path: "foo.ts", content: "x" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([])
+	})
+
+	it("abort re-evaluates; exhausted attempts fail closed with mode_flap", async () => {
+		// An aborted prompt (e.g. user changed mode via shift+tab) re-evaluates
+		// under the new mode. Simulate a prompter that aborts on every attempt.
+		registerAcpPrompter(TEST_SESSION_ID, { request: vi.fn(async () => ({ kind: "aborted" as const })) })
+		try {
+			const harness = createPermissionsHarness(["bash"])
+			const ctx = { ...createClassifierContext(), mode: "rpc" } as ExtensionContext
+			const decisions = collectDecisions(harness)
+			await harness.fire("session_start", {}, ctx)
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+			const result = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(result).toMatchObject({ block: true })
+
+			const aborts = decisions.filter((d) => (d as { sourceDetail?: string }).sourceDetail === "abort")
+			expect(aborts).toHaveLength(4) // MODES.length attempts
+			for (const abort of aborts) {
+				expect(abort).toMatchObject({ decision: "reject", source: "user_abort" })
+			}
+			expect(decisions[decisions.length - 1]).toMatchObject({
+				decision: "reject",
+				source: "config",
+				sourceDetail: "mode_flap",
+			})
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("handleCompoundConfirm without a prompt surface emits reject/hook/no_ui", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const decisions = collectDecisions(harness)
+		const ctx = { ...createMockContext([]), mode: "rpc", hasUI: false } as ExtensionContext
+		const session = new SessionMemory()
+		const activeAborts = new Set<AbortController>()
+
+		const result = await handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi: harness.pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a", "echo b"],
+		})
+
+		expect(result).toEqual({ block: true, reason: "No UI to confirm permission" })
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolCallId: "tool-call-1",
+				decision: "reject",
+				source: "hook",
+				sourceDetail: "no_ui",
+			}),
+		])
+	})
+})
