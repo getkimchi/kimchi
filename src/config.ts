@@ -637,11 +637,22 @@ export interface ResolvedEndpoints {
 // The no-options resolution feeds render-time getters (billing links,
 // login URLs) that run on every streaming render — memoize the loadConfig()
 // disk read instead of re-reading and re-parsing the config files each call.
-// Env overrides are still read live on every call, and explicit-options
+// URL env overrides are still read live on every call, and explicit-options
 // callers (tests, one-off reads against another path) stay uncached.
-// In-session mutations must go through a writer that calls
+// The cache is keyed on the global config file's stat so a region written by
+// another process (e.g. `kimchi login` launched by ACP Terminal Auth next to a
+// long-lived server) is picked up; in-process writers additionally call
 // invalidateResolvedEndpoints (writeApiKey).
-let resolvedEndpointsConfigCache: KimchiConfig | undefined
+let resolvedEndpointsConfigCache: { cfg: KimchiConfig; stamp: string } | undefined
+
+function globalConfigStamp(): string {
+	try {
+		const st = statSync(KIMCHI_CONFIG_PATH)
+		return `${st.mtimeMs}:${st.size}`
+	} catch {
+		return "missing"
+	}
+}
 
 /** Drop the memoized config used by the default resolveEndpoints() path. */
 export function invalidateResolvedEndpoints(): void {
@@ -653,8 +664,11 @@ export function resolveEndpoints(options?: { configPath?: string; cwd?: string }
 	if (options) {
 		cfg = loadConfig(options)
 	} else {
-		resolvedEndpointsConfigCache ??= loadConfig()
-		cfg = resolvedEndpointsConfigCache
+		const stamp = globalConfigStamp()
+		if (resolvedEndpointsConfigCache?.stamp !== stamp) {
+			resolvedEndpointsConfigCache = { cfg: loadConfig(), stamp }
+		}
+		cfg = resolvedEndpointsConfigCache.cfg
 	}
 	const region = getRegion(cfg.region)
 	return {
