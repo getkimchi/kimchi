@@ -8,9 +8,11 @@ import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
 import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
 import {
+	closureIndicator,
 	createThresholdSteerTracker,
 	sendHiddenSteer,
 	stalenessIndicator,
+	TODO_CLOSURE_CUSTOM_TYPE,
 	TODO_STALENESS_CUSTOM_TYPE,
 	TODO_STALENESS_THRESHOLDS,
 } from "./staleness-steers.js"
@@ -106,6 +108,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// listener below resets both the counter and this tracker).
 	const stalenessTracker = createThresholdSteerTracker()
 
+	// Terminal-turn closure steers: one-shot per todo-write epoch, reset by
+	// the same store-write listener so the steer's own continuation turn
+	// cannot re-fire without an intervening todo write (no ping-pong).
+	const closureSteeredSessions = new Set<string>()
+
 	function setSessionContext(sessionId: string, ctx: ExtensionContext): void {
 		_activeSessionContexts.set(sessionId, ctx)
 	}
@@ -137,6 +144,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		unsubscribeTodoStore = subscribeTodoStore((_, emitterSessionId) => {
 			resetToolCallsSinceTodoWrite(emitterSessionId)
 			stalenessTracker.reset(emitterSessionId)
+			closureSteeredSessions.delete(emitterSessionId)
 			const sessionCtx = getSessionContext(emitterSessionId)
 			if (sessionCtx) syncTodoWidget(sessionCtx)
 		})
@@ -190,14 +198,34 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("turn_end", (event, ctx) => {
-		// Sync the widget on terminal turns but do NOT force reconciliation.
-		// The model updates todos on its own schedule guided by the system
-		// prompt and the one-shot staleness steers.
+		// Terminal turns: resync the widget, then fire the bounded closure
+		// steer below. No forced reconciliation — the model updates todos on
+		// its own schedule guided by the system prompt and the one-shot
+		// staleness steers.
 		const message = event.message
 		if (!isRecord(message) || message.role !== "assistant") return
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
+
+		// Closure steer: the turn just ended with active todos still in the
+		// store. Hidden, non-directive nudge so the model closes finished
+		// items or knowingly carries them over (session 01a0cd6c ended
+		// "2/3 done · 1 active" after the final summary, nothing prompting
+		// closure). One-shot per todo-write epoch: the steer's own
+		// continuation turn cannot re-fire without a todo write in between,
+		// so a model that carries items over is not re-nagged every turn.
+		const sessionId = ctx.sessionManager.getSessionId()
+		if (closureSteeredSessions.has(sessionId)) return
+		const scope = resolveTodoScope()
+		const activeTodos = getTodosForScope(scope, sessionId).filter(
+			(todo) => todo.status === "pending" || todo.status === "in_progress",
+		)
+		if (activeTodos.length === 0) return
+		closureSteeredSessions.add(sessionId)
+		sendHiddenSteer(pi, TODO_CLOSURE_CUSTOM_TYPE, closureIndicator(activeTodos), {
+			reason: "terminal-turn-closure",
+		})
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {

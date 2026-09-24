@@ -18,6 +18,17 @@ import { markHarnessSteer } from "../steer-marker.js"
 
 export const TODO_STALENESS_CUSTOM_TYPE = "todo-staleness"
 
+export const TODO_CLOSURE_CUSTOM_TYPE = "todo-closure"
+
+/** Non-directive wording for the terminal-turn closure steer: lists the
+ * still-active items so the model can close them or knowingly carry them
+ * over — never asserts that they must be closed. */
+export function closureIndicator(activeTodos: ReadonlyArray<{ content: string }>): string {
+	const items = activeTodos.map((todo) => `- ${todo.content}`).join("\n")
+	const plural = activeTodos.length === 1 ? "" : "s"
+	return `The turn ended with ${activeTodos.length} active todo${plural}:\n${items}\nIf their work is complete, mark them completed or clear_todos now; otherwise they carry over to the next turn.`
+}
+
 /** Thresholds (post-increment count of non-todo tool calls) at which a
  *  staleness steer fires. Mirrors the old per-request indicator ranges. */
 export const TODO_STALENESS_THRESHOLDS = [9, 17, 25] as const

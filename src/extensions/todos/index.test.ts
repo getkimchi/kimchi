@@ -283,7 +283,7 @@ describe("passive staleness counter", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("does not send reconciliation follow-ups after terminal turns", async () => {
+	it("sends exactly one closure steer after a terminal turn with active todos", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -292,12 +292,24 @@ describe("passive staleness counter", () => {
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
-		// No reconciliation follow-up should be sent — the old forced-turn
-		// mechanism has been removed. Only the persisted state block is sent.
-		expect(nonStateSyncCalls(harness.sendMessage)).toHaveLength(0)
+		// The bounded closure steer replaces the removed forced-reconciliation
+		// turn: hidden, one-shot, non-directive.
+		const closureCalls = steerCallsByReason(harness.sendMessage, "terminal-turn-closure")
+		expect(closureCalls).toHaveLength(1)
+		const [message, options] = closureCalls[0] as [
+			{ customType?: string; display?: boolean; content?: string },
+			{ deliverAs?: string },
+		]
+		expect(message.customType).toBe("todo-closure")
+		expect(message.display).toBe(false)
+		expect(options.deliverAs).toBe("steer")
+		expect(message.content).toContain("still active")
+		expect(message.content).toContain("carry over")
+		// Nothing else beyond the persisted state block and the closure steer.
+		expect(nonStateSyncCalls(harness.sendMessage)).toHaveLength(1)
 	})
 
-	it("does not send reconciliation follow-ups even after multiple terminal stops", async () => {
+	it("fires the closure steer once across repeated terminal turns (one-shot per todo-write epoch)", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -308,18 +320,27 @@ describe("passive staleness counter", () => {
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
-		expect(nonStateSyncCalls(harness.sendMessage)).toHaveLength(0)
+		// Without a store write between turns, repeated terminal stops do not
+		// re-nag — the steer's own continuation turn cannot ping-pong.
+		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(1)
+
+		// A todo write resets the epoch, so the next terminal turn steers again.
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(2)
 	})
 
-	it("does not reconcile immediately after only writing todos", async () => {
+	it("sends no closure steer when every todo is completed or the store is empty", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "new plan", status: "pending" }] }, "session")
+		applyWriteTodos({ todos: [{ content: "all done", status: "completed" }] }, "session")
 		await harness.fire("turn_end", terminalTurn(), ctx)
+		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(0)
 
-		expect(nonStateSyncCalls(harness.sendMessage)).toHaveLength(0)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(0)
 	})
 
 	it("resyncs the active todo widget on terminal turns after the TUI clears widgets", async () => {
@@ -339,7 +360,9 @@ describe("passive staleness counter", () => {
 		await harness.fire("turn_end", terminalTurn(), ctx)
 
 		expect(setWidget).toHaveBeenCalledTimes(2)
-		expect(nonStateSyncCalls(harness.sendMessage)).toHaveLength(0)
+		// The closure steer also fires here (active todo at a terminal turn);
+		// the widget resync is the behavior under test.
+		expect(steerCallsByReason(harness.sendMessage, "terminal-turn-closure")).toHaveLength(1)
 	})
 
 	it("does not reconcile on non-terminal turns", async () => {
