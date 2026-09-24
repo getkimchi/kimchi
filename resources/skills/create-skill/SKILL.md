@@ -56,5 +56,3 @@ Read back the saved files. Check the frontmatter, folder/name match, referenced 
 Try a representative request using supplied or clearly labeled sample input and check the actual result against the requested output. For a meeting skill, for example, include a missing owner or date and verify it is not invented. Keep tests local or draft-only when the workflow would otherwise change an external system. If a required tool or input is unavailable, or execution is blocked pending approval, say what remains untested instead of claiming success. Do not relax permission rules to make a check pass.
 
 Finish with the saved path and an example `/skill:<name> <request>`. Tell the user to run `/reload` (or start a new session) so Kimchi discovers the new skill; do not claim discovery was verified unless it was checked. Revise the skill when the trial reveals a concrete problem.
-
-Authoring structure informed by [OpenAI's skill-creator](https://github.com/openai/skills/tree/main/skills/.system/skill-creator), adapted to Kimchi's native skill format and discovery paths. This skill is self-contained; the link is attribution, not a runtime dependency.
