@@ -15,6 +15,23 @@ next rebaser must avoid. Keep patch headers to the three durable fields.
 
 ---
 
+## 0.85.1 (mid-version, in PR)
+
+### `@earendil-works/pi-coding-agent`
+
+- **Added the user-message pre-render hunk** (no version bump — same 0.85.1 pin,
+  patch hash updated in pnpm-lock.yaml). `prompt()` now emits `message_start`
+  for the user message before `before_agent_start` hooks run so the submitted
+  prompt renders while slow hooks (memory retrieval) process; `_handleAgentEvent`
+  suppresses the agent loop's duplicate listener dispatch via a `_preRenderedUserMessages`
+  WeakSet. Extensions still see their `message_start` at the normal point (suppression
+  sits after extension dispatch) and persistence stays on `message_end`. Regressions
+  to watch on the next rebase: upstream renaming `prompt()`'s message assembly or
+  `_handleAgentEvent`'s emit section would silently drop the early render or
+  double-render the prompt; `src/extensions/*` tests pin the contract. Requires
+  `pnpm install` to take effect — the dist bundle carries the old behavior until
+  then.
+
 ## 0.84.1 → 0.85.1
 
 ### `@earendil-works/pi-ai`
