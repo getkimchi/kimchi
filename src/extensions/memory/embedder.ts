@@ -28,7 +28,7 @@ export interface SharedEmbedder {
 }
 
 /** The mem0 embedder surface the dedupe wrapper delegates to. */
-interface UnderlyingEmbedder {
+export interface UnderlyingEmbedder {
 	embed(text: string): Promise<number[]>
 	embedBatch(texts: string[]): Promise<number[][]>
 }
@@ -41,22 +41,46 @@ const MEMO_LIMIT = 32
  * calls with the same text (or the same batch of texts) await the same
  * in-flight promise, and the most recent MEMO_LIMIT results are reused
  * verbatim. Failures propagate to every awaiter and are never memoized —
- * the next call retries. Batches dedupe as a unit: mem0's search path
- * embeds the query and its extracted entities separately, and both stores
- * extract the same entities from the same query, so the whole batch is
- * the natural key (one HTTP request either way).
+ * the next call retries (guarded by identity: a stale rejection must not
+ * evict a newer entry a burst re-memoized under the same key). Overflow
+ * evicts the oldest SETTLED entry so a burst can never drop an in-flight
+ * promise's dedupe window, falling back to the oldest overall only when
+ * everything is still in flight. Batches dedupe as a unit: mem0's search
+ * path embeds the query and its extracted entities separately, and both
+ * stores extract the same entities from the same query, so the whole
+ * batch is the natural key (one HTTP request either way).
  */
 export function dedupeEmbedder(underlying: UnderlyingEmbedder): SharedEmbedder {
 	const memo = new Map<string, Promise<number[]>>()
 	const batchMemo = new Map<string, Promise<number[][]>>()
+	// Unresolved promises across both memos (identity-keyed, so a query text
+	// and a single-text batch cannot alias). Each promise removes itself on
+	// settle, so the set is bounded by the in-flight count.
+	const pending = new Set<Promise<unknown>>()
 	const track = <T>(store: Map<string, Promise<T>>, key: string, call: () => Promise<T>): Promise<T> => {
 		const inFlight = store.get(key)
 		if (inFlight) return inFlight
 		const promise = call()
-		promise.catch(() => store.delete(key))
+		pending.add(promise)
+		const settle = () => pending.delete(promise)
+		promise.then(settle, settle)
+		promise.catch(() => {
+			// Evict on failure — but only while THIS promise is the memoized
+			// entry: a burst may have evicted the key and a newer call re-set it,
+			// and a stale rejection must not delete that newer entry.
+			if (store.get(key) === promise) store.delete(key)
+		})
 		store.set(key, promise)
 		if (store.size > MEMO_LIMIT) {
-			// Map preserves insertion order — evict the oldest entry.
+			// Map preserves insertion order. Evict the oldest SETTLED entry;
+			// when everything is still in flight, the oldest overall.
+			for (const candidate of store.keys()) {
+				const entry = store.get(candidate)
+				if (entry !== undefined && !pending.has(entry)) {
+					store.delete(candidate)
+					return promise
+				}
+			}
 			store.delete(store.keys().next().value as string)
 		}
 		return promise

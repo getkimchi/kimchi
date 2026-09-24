@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { dedupeEmbedder } from "./embedder.js"
+import { dedupeEmbedder, type UnderlyingEmbedder } from "./embedder.js"
 
 /** A controllable underlying embedder counting its calls. */
 function makeUnderlying() {
@@ -51,6 +51,56 @@ describe("dedupeEmbedder", () => {
 		expect(underlying.embed).toHaveBeenCalledTimes(1)
 		await expect(shared.embedQuery("flaky")).resolves.toBeDefined()
 		expect(underlying.embed).toHaveBeenCalledTimes(2)
+	})
+
+	/** Deferred-controllable underlying: each call parks until the test resolves or rejects it. */
+	function deferredUnderlying() {
+		const calls: Array<{ text: string; resolve: (v: number[]) => void; reject: (e: Error) => void }> = []
+		const underlying: UnderlyingEmbedder = {
+			embed: (text) => new Promise((resolve, reject) => calls.push({ text, resolve, reject })),
+			embedBatch: async (texts) => texts.map((t) => [t.length]),
+		}
+		return { calls, underlying }
+	}
+
+	it("a stale rejection does not evict a newer memoized entry", async () => {
+		const { calls, underlying } = deferredUnderlying()
+		const shared = dedupeEmbedder(underlying)
+		const stale = shared.embedQuery("flaky")
+		// 32 more distinct texts, all left in flight: every entry is pending, so
+		// the overflow fallback evicts the oldest — "flaky" — while unresolved.
+		for (let i = 0; i < 32; i++) void shared.embedQuery(`filler-${i}`)
+		// A newer call re-memoizes "flaky" with a fresh promise.
+		const fresh = shared.embedQuery("flaky")
+		expect(calls).toHaveLength(34)
+		// The stale promise now rejects; the newer entry must survive it.
+		calls[0]?.reject(new Error("stale failure"))
+		await expect(stale).rejects.toThrow("stale failure")
+		calls[33]?.resolve([42])
+		await expect(fresh).resolves.toEqual([42])
+		// The newer entry survived: a repeat is served from the memo with no new call.
+		await expect(shared.embedQuery("flaky")).resolves.toEqual([42])
+		expect(calls).toHaveLength(34)
+	})
+
+	it("a burst of settled entries never evicts an in-flight promise", async () => {
+		const { calls, underlying } = deferredUnderlying()
+		const shared = dedupeEmbedder(underlying)
+		const slow = shared.embedQuery("slow") // stays in flight throughout
+		// More than the memo limit of distinct texts, each settled (and its settle
+		// handler drained) before the next insert — eviction must keep skipping
+		// the pending "slow" entry.
+		for (let i = 0; i < 35; i++) {
+			const filler = shared.embedQuery(`filler-${i}`)
+			calls[calls.length - 1]?.resolve([i])
+			await filler
+		}
+		calls[0]?.resolve([99])
+		await expect(slow).resolves.toEqual([99])
+		// "slow" was never evicted while pending: the repeat is served from the
+		// memo — a burst that dropped in-flight entries would re-issue the call.
+		await expect(shared.embedQuery("slow")).resolves.toEqual([99])
+		expect(calls).toHaveLength(36)
 	})
 
 	it("the memo is bounded — evicted texts re-embed", async () => {
