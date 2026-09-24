@@ -328,6 +328,11 @@ export function launchKimchi(
 		// deliberately cover the remote-run menu opt in via
 		// `env: { KIMCHI_REMOTE_RUN: "1" }`.
 		"KIMCHI_REMOTE_RUN=0",
+		// Forward the test-harness marker: KIMCHI_E2E_* seams (readE2eSeam)
+		// fire only under a harness — production binaries must never see them.
+		// (set by scripts/run-tui-e2e.js for the tui-test runner; smoke harness
+		// children get VITEST from their vitest parent)
+		...((process.env.KIMCHI_TEST_HARNESS === "1" ? ["KIMCHI_TEST_HARNESS=1"] : []) as string[]),
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",

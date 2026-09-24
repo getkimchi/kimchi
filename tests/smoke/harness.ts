@@ -151,6 +151,9 @@ export function runBinary(opts: RunBinaryOptions = {}): SpawnSyncReturns<string>
 			PATH: process.env.PATH,
 			HOME: home,
 			PI_PACKAGE_DIR: PACKAGE_DIR,
+			// Forward vitest's marker: KIMCHI_E2E_* seams (readE2eSeam) fire only
+			// under a test harness — production binaries must never see them.
+			...(process.env.VITEST !== undefined ? { VITEST: process.env.VITEST } : {}),
 			...extraEnv,
 		},
 	})
@@ -232,6 +235,9 @@ export function spawnInteractive(opts: RunInteractiveOptions = {}): InteractiveS
 			PI_PACKAGE_DIR: PACKAGE_DIR,
 			TERM: "xterm-256color",
 			KIMCHI_API_KEY: "smoke-test-dummy",
+			// Forward vitest's marker: KIMCHI_E2E_* seams (readE2eSeam) fire only
+			// under a test harness — production binaries must never see them.
+			...(process.env.VITEST !== undefined ? { VITEST: process.env.VITEST } : {}),
 			...extraEnv,
 		},
 	})

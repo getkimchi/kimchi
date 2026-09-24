@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
@@ -129,6 +130,10 @@ vi.mock("./settings.js", () => ({
 	applyAndEmitLoaded: vi.fn(),
 	saveAndEmitChanged: vi.fn(),
 }))
+vi.mock("../../cli-args.js", async (importActual) => {
+	const actual = await importActual<typeof import("../../cli-args.js")>()
+	return { ...actual, getParsedCliArgs: vi.fn(actual.getParsedCliArgs) }
+})
 vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
 vi.mock("../model-guard.js", () => ({ sessionHasImages: vi.fn().mockReturnValue(false) }))
 vi.mock("../shared-input.js", () => ({ isRawInputCaptureActive: vi.fn().mockReturnValue(false) }))
@@ -808,6 +813,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 			triggersRemoteCompletion: true,
 			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
 			remoteOrigin: "plan",
+			acpSessionId: "acp-1",
 			startedAt,
 			completedAt: Date.now(),
 			toolUses: 3,
@@ -887,6 +893,66 @@ describe("user abort suppresses the remote completion dropdown", () => {
 
 		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
 	})
+
+	// Regression: a get_subagent_result poll sets resultConsumed BEFORE the run
+	// finishes; the completion path must still show the dropdown — otherwise the
+	// changes stay stranded on the sandbox.
+	it("still shows the dropdown when the result was consumed before completion (get_subagent_result poll)", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		manager.onComplete({ ...makeCloudRecord(5_000), resultConsumed: true })
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+
+	it("consumed records without remote completion still skip the completion surface", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		manager.onComplete({ ...makeCloudRecord(5_000), resultConsumed: true, triggersRemoteCompletion: false })
+
+		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
+	})
+
+	it("threads the record's gitWorkflow into handleRemoteCompletion opts", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+		const gitWorkflow = { branch: "kimchi/x", baseBranch: "main", baseSha: "a".repeat(40), dirtyFiles: ["a.ts"] }
+
+		manager.onComplete({ ...makeCloudRecord(5_000), gitWorkflow })
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(handleRemoteCompletion).mock.calls[0]?.[4]).toMatchObject({ gitWorkflow, acpSessionId: "acp-1" })
+	})
+
+	it("includes the record's gitWorkflow in the terminal remote_run:state entry", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		manager.onComplete({
+			...makeCloudRecord(5_000),
+			remote: true,
+			acpSessionId: "acp-1",
+			remoteSession: {
+				workspaceId: "ws-1",
+				sessionName: "acp-test",
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+				cwd: "/home/sandbox/acp-test",
+			},
+			gitWorkflow: { branch: "kimchi/x", baseBranch: "main" },
+		})
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"remote_run:state",
+			expect.objectContaining({ gitWorkflow: { branch: "kimchi/x", baseBranch: "main" } }),
+		)
+	})
 })
 
 describe("remote run session resume (persisted across kimchi restarts)", () => {
@@ -895,10 +961,10 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 	})
 
 	/** Fire every session_start handler the extension registered. */
-	async function fireSessionStart(pi: ReturnType<typeof makeMockPi>, ctx: unknown): Promise<void> {
+	async function fireSessionStart(pi: ReturnType<typeof makeMockPi>, ctx: unknown, event: unknown = {}): Promise<void> {
 		const handlers = pi._handlers.get("session_start") ?? []
 		expect(handlers.length).toBeGreaterThan(0)
-		for (const handler of handlers) await handler({}, ctx)
+		for (const handler of handlers) await handler(event, ctx)
 	}
 
 	function currentManager(): {
@@ -934,6 +1000,24 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 	function entry(data: RemoteRunState): Record<string, unknown> {
 		return { type: "custom", customType: "remote_run:state", data }
 	}
+
+	it("reports a bare outcome line on explicit continuation with no resumable runs", async () => {
+		const notify = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: () => [] },
+		}
+		await fireSessionStart(pi, ctx, { type: "session_start", reason: "resume" })
+
+		expect(notify).toHaveBeenCalledWith("Continued session — no in-progress remote runs to resume")
+		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
+	})
 
 	it("spares remote records on session shutdown", async () => {
 		const pi = makeMockPi()
@@ -1016,6 +1100,27 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		await fireSessionStart(pi, ctx)
 
 		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
+	})
+
+	it("tolerates a getParsedCliArgs failure during boot — no unhandled rejection, no notify", async () => {
+		// Embedding boots (ACP/server) may have unparsed CLI state; the
+		// session_start resume flow must never surface that as a rejection.
+		vi.mocked(getParsedCliArgs).mockImplementationOnce(() => {
+			throw new Error("args not parsed")
+		})
+		const notify = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: () => [] },
+		}
+		await expect(fireSessionStart(pi, ctx)).resolves.toBeUndefined()
+		expect(notify).not.toHaveBeenCalled()
 	})
 
 	it("persists the terminal state when a remote run completes", () => {

@@ -15,7 +15,10 @@ import {
 	type SpawnRemoteAgentOptions,
 	spawnRemoteAgent,
 } from "../agents/index.js"
+import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
+import type { PersistedGitWorkflow } from "../agents/remote-run-persistence.js"
 import { trackRemoteExecution } from "../telemetry/index.js"
+import { buildRemoteSteerPrompt } from "./prompt-builder.js"
 
 /** Max characters for the result preview in the completion notification. */
 const PREVIEW_MAX = 500
@@ -77,7 +80,7 @@ export async function runCloudAgent(
 					opts?.fermentId
 						? " do not re-plan, re-execute, create todos, or call activate_ferment_phase. The ferment is paused while the remote agent works."
 						: " do not re-plan or re-execute."
-				} Wait for the completion notification. The agent ID is ${id}.`,
+				} Wait for the completion notification — Do NOT poll this agent with get_subagent_result (with or without wait: true): polling consumes the completion result and suppresses the user's post-completion menu (sync/review/push options), leaving the remote changes stranded. End your turn; the notification arrives on its own. The agent ID is ${id}.`,
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -98,4 +101,52 @@ export async function runCloudAgent(
 	const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
 	ctx.ui.notify(`${preview || "Remote agent completed with no output."}${transcriptNote}`, "info")
 	return { id, result, transcriptPath }
+}
+
+/** Options for continueCloudAgent. */
+export interface ContinueCloudAgentOpts {
+	/** The kept-alive session of the original PR-intent run. */
+	remoteSession: RemoteSessionMeta
+	/** Persisted ACP id of that session — session/load attaches by id. */
+	acpSessionId: string
+	/** The original git intent (the continuation record carries it too). */
+	gitWorkflow?: PersistedGitWorkflow
+	origin?: string
+	fermentId?: string
+}
+
+/**
+ * Steers the kept-alive PR remote session with user feedback: spawns a
+ * fresh background Remote-Runner record attached to the SAME remote session
+ * + ACP id (session/load — never a fresh clone, never session/new). The
+ * completion dropdown re-opens automatically when it finishes
+ * (handleRemoteCompletion fires from the manager's onComplete — the record
+ * carries gitWorkflow + remoteSession).
+ */
+export async function continueCloudAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	feedback: string,
+	opts: ContinueCloudAgentOpts,
+): Promise<{ id: string }> {
+	const prompt = buildRemoteSteerPrompt({ feedback, gitWorkflow: opts.gitWorkflow })
+	const target = opts.gitWorkflow?.branch ?? opts.remoteSession.sessionName
+	const { id } = await spawnRemoteAgent(pi, ctx, prompt, `steer: ${target}`, {
+		background: true,
+		origin: opts.origin ?? "plan",
+		fermentId: opts.fermentId,
+		gitWorkflow: opts.gitWorkflow,
+		continuation: { remoteSession: opts.remoteSession, acpSessionId: opts.acpSessionId },
+	})
+	trackRemoteExecution("started", opts.origin ?? "plan")
+	ctx.ui.notify(`Steering the remote agent on ${target} — you'll be notified when the changes land.`, "info")
+	pi.sendMessage(
+		{
+			customType: "cloud_agent_steered",
+			content: `A follow-up steer run was dispatched to the SAME remote session (${opts.remoteSession.sessionName}) on branch ${target}. You will be notified when it completes — do not re-plan or re-dispatch. Do NOT poll it with get_subagent_result — polling consumes the completion result and suppresses the user's post-completion menu. The agent ID is ${id}.`,
+			display: false,
+		},
+		{ triggerTurn: true },
+	)
+	return { id }
 }

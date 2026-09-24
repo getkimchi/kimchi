@@ -1,7 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process"
-import { randomUUID } from "node:crypto"
-import { mkdir, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, writeFile } from "node:fs/promises"
 import { join, dirname as nodePathDirname, posix } from "node:path"
 import { loadConfig } from "../../../config.js"
 
@@ -9,6 +7,7 @@ const posixDirname = posix.dirname
 
 import { estimateUploadBytes } from "./estimate-bytes.js"
 import { buildProxyCommand } from "./proxy-command.js"
+import { buildSshArgv, buildSshCommandString, buildSshProxyEnv, withSshSession } from "./sandbox-ssh.js"
 
 /**
  * Default exclude globs applied to every teleport rsync. Caller-supplied
@@ -164,34 +163,12 @@ interface BuildSshOptionInput {
 }
 
 /**
- * Builds the SSH command string that rsync's `-e` (or stand-alone ssh) uses.
- * The ProxyCommand chains the local node proxy that bridges the WS tunnel.
- * StrictHostKeyChecking=accept-new accepts the sandbox's ephemeral host key
- * on first contact; we trust the WSS endpoint's TLS for identity. The `-p`
- * flag fills `%p` in the ProxyCommand so the proxy connects to the right
- * WSS port — rsync's own `--port` is for daemon mode, not ssh transport.
+ * Builds the SSH command string that rsync's `-e` flag uses. Thin adapter
+ * onto the sandbox-ssh transport (sandbox-ssh.ts) — see there for why the
+ * space-bearing values are POSIX single-quoted.
  */
 export function buildSshOption(input: BuildSshOptionInput): string {
-	// IMPORTANT: rsync's `-e` parser re-splits this whole string on
-	// whitespace (respecting POSIX single quotes) before exec'ing ssh. Any
-	// option value containing literal spaces — most notably the
-	// ProxyCommand value, which embeds `%h %p` for ssh to substitute — has
-	// to be single-quoted or rsync turns the trailing words into stray
-	// positional ssh args. UserKnownHostsFile gets the same treatment as a
-	// defensive measure (some $TMPDIR layouts have spaces).
-	return [
-		"ssh",
-		"-o",
-		`ProxyCommand=${rsyncShellQuote(input.proxyCommand)}`,
-		"-o",
-		"StrictHostKeyChecking=accept-new",
-		"-o",
-		`UserKnownHostsFile=${rsyncShellQuote(input.knownHostsFile)}`,
-		"-o",
-		"BatchMode=yes",
-		"-o",
-		"ServerAliveInterval=15",
-	].join(" ")
+	return buildSshCommandString(input)
 }
 
 export type RsyncListMode = { kind: "exclude-from"; file: string } | { kind: "files-from"; file: string }
@@ -273,22 +250,16 @@ interface BuildMkdirArgvInput {
 
 /**
  * Pure helper: assembles the ssh argv that pre-creates a directory on the
- * sandbox. Must run before rsync so the target (or its parent, for single
- * files) exists.
+ * sandbox. Thin adapter onto the sandbox-ssh transport (sandbox-ssh.ts) —
+ * the one policy, keepalive included, applies here as everywhere else.
  */
 export function buildMkdirArgv(input: BuildMkdirArgvInput): string[] {
-	return [
-		"-o",
-		`ProxyCommand=${input.proxyCommand}`,
-		"-o",
-		"StrictHostKeyChecking=accept-new",
-		"-o",
-		`UserKnownHostsFile=${input.knownHostsFile}`,
-		"-o",
-		"BatchMode=yes",
-		`${input.remoteUser}@${input.remoteHost}`,
-		`mkdir -p ${input.remoteDir}`,
-	]
+	return buildSshArgv({
+		proxyCommand: input.proxyCommand,
+		knownHostsFile: input.knownHostsFile,
+		destination: `${input.remoteUser}@${input.remoteHost}`,
+		remoteCommand: `mkdir -p ${input.remoteDir}`,
+	})
 }
 
 /**
@@ -360,14 +331,9 @@ export async function resolveGitIgnored(
 export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 	const startedAt = Date.now()
 	const spawner = opts._spawn ?? spawn
-	const sessionDir = join(tmpdir(), `kimchi-teleport-${randomUUID()}`)
-	const knownHostsFile = join(sessionDir, "known_hosts")
 	const dir = opts.direction ?? "up"
 
-	try {
-		await mkdir(sessionDir, { recursive: true })
-		await writeFile(knownHostsFile, "", "utf-8")
-
+	return withSshSession(async ({ dir: sessionDir, knownHostsFile }) => {
 		// Two list-file modes, mutually exclusive: `--files-from` (explicit
 		// include list, far faster on huge gitignored trees) or
 		// `--exclude-from` (the legacy path used by `/sync`). The caller
@@ -398,7 +364,10 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			listMode = { kind: "exclude-from", file: excludeFile }
 		}
 
-		const env: NodeJS.ProcessEnv = { ...process.env, KIMCHI_API_KEY: loadConfig().apiKey, AUTH_TOKEN: opts.authToken }
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			...buildSshProxyEnv({ apiKey: loadConfig().apiKey, authToken: opts.authToken }),
+		}
 
 		const proxyCommand = opts.proxyCommand ?? buildProxyCommand()
 
@@ -490,9 +459,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			totalBytes: stats.totalBytes,
 			durationMs: Date.now() - startedAt,
 		}
-	} finally {
-		await rm(sessionDir, { recursive: true, force: true }).catch(() => {})
-	}
+	})
 }
 
 interface RunChildInput {
@@ -672,15 +639,4 @@ export function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: n
 		const multiplier = SUFFIX_MULTIPLIER[suffix] ?? 1
 		stats.totalBytes = Math.round(raw * multiplier)
 	}
-}
-
-/**
- * Single-quote `value` so that rsync's `-e` word splitter preserves it as
- * one token when re-tokenising the ssh command. Always wraps in single
- * quotes — values containing literal spaces (e.g. `node /path/proxy.js %h %p`,
- * which intentionally has the `%h %p` placeholders) must survive rsync's
- * splitter intact.
- */
-function rsyncShellQuote(value: string): string {
-	return `'${value.replace(/'/g, "'\\''")}'`
 }

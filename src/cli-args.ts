@@ -248,6 +248,9 @@ export interface SessionCliArgs {
 		"allow-tool"?: string[]
 		"deny-tool"?: string[]
 		plan?: boolean
+		continue?: boolean
+		resume?: string
+		session?: string
 		auto?: boolean
 		yolo?: boolean
 		approve?: boolean
@@ -302,6 +305,9 @@ export const CACHEABLE_OPTION_NAMES = [
 	"allow-tool",
 	"deny-tool",
 	"plan",
+	"continue",
+	"resume",
+	"session",
 	"auto",
 	"yolo",
 	"approve",

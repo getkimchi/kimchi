@@ -28,8 +28,8 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { withBlocked } from "../herdr-events.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
-import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
-import { runCloudAgent } from "../remote-run/runner.js"
+import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
+import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
 import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
@@ -40,9 +40,15 @@ import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
 import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
-import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
+import {
+	CLOUD_DECISION_OPTION,
+	EXECUTE_LOCAL_DECISION_OPTION,
+	type PendingPlanReview,
+	promptPlanReview,
+} from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
+import { withWorkingHidden } from "./prompt-ui.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
@@ -257,7 +263,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	// Decision handler for ferment plan reviews — handles decisions from both
 	// the TUI review component and plannotator's browser UI (first decision wins).
-	onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+	onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
 		if (payload.planReviewSource !== "ferment") return
 		const reviewCtx = consumePlanReviewContext()
 		if (!reviewCtx) return
@@ -266,7 +272,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 		planReviewRunning = false
 
-		if (payload.decision === "execute") {
+		const executeLocally = () => {
 			const scopeOutcome = confirmPendingScope(runtime, fermentId, undefined, "turn_end", pi)
 			if (!scopeOutcome.ok) {
 				reviewCtx.ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
@@ -283,11 +289,13 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				fermentId,
 				tag: "Plan review start",
 			})
-		} else if (payload.decision === "start_cloud") {
-			// Confirm pending scope so the ferment is saved locally, then spawn
-			// a remote agent to execute the plan in a cloud sandbox. The local
-			// ferment is left as-is (scoped, not activated) — the remote agent
-			// creates its own ferment from the plan text.
+		}
+
+		// Confirm pending scope so the ferment is saved locally, then spawn
+		// a remote agent to execute the plan in a cloud sandbox. The local
+		// ferment is left as-is (scoped, not activated) — the remote agent
+		// creates its own ferment from the plan text.
+		const startCloudExecution = async () => {
 			const scopeOutcome = confirmPendingScope(runtime, fermentId, undefined, "turn_end", pi)
 			if (!scopeOutcome.ok) {
 				reviewCtx.ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
@@ -304,14 +312,9 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				runtime.setActive(pauseOutcome.ferment)
 			}
 			const planMarkdown = reviewCtx.planText
-			const cloudPrompt = buildRemotePlanPrompt(planMarkdown, { origin: "ferment" })
 			const cloudDescription = `${planMarkdown.slice(0, 60)}${planMarkdown.length > 60 ? "..." : ""}`
 			const ui = reviewCtx.ctx?.ui
-			void runCloudAgent(pi, reviewCtx.ctx, cloudPrompt, cloudDescription, {
-				background: true,
-				origin: "ferment plan",
-				fermentId,
-			}).catch((err) => {
+			const onSpawnFailure = (err: unknown) => {
 				// Spawn failed after the ferment was paused — resume it so the
 				// user isn't left with a stuck ferment and no recovery path,
 				// and surface the error.
@@ -321,7 +324,61 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				if (resumeOutcome.ok) {
 					runtime.setActive(resumeOutcome.ferment)
 				}
-			})
+			}
+			try {
+				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(
+					reviewCtx.ctx,
+					planMarkdown,
+					{ origin: "ferment" },
+				)
+				void runCloudAgent(pi, reviewCtx.ctx, cloudPrompt, cloudDescription, {
+					background: true,
+					origin: "ferment plan",
+					fermentId,
+					gitWorkflow,
+				}).catch(onSpawnFailure)
+			} catch (err) {
+				onSpawnFailure(err)
+			}
+		}
+
+		if (payload.decision === "execute") {
+			// Plannotator's own dialog has no cloud option — when remote
+			// execution is enabled, ask where the plan should run instead of
+			// auto-executing locally. Escape/dismiss defers: the pending review
+			// stays armed so the scheduler re-presents it (agent_end /
+			// setPendingPlanReviewTrigger).
+			if (payload.source === "plannotator" && isRemoteRunEnabled()) {
+				// The same decision event dismisses the older review surface (TUI
+				// menu/popup) via a listener registered AFTER this handler. pi's TUI
+				// keeps a single extensionSelector and disposes whatever is current on
+				// abort — opening our dialog before that listener runs gets OUR dialog
+				// destroyed and its promise never resolves. Defer one macrotask so the
+				// old surface tears down first.
+				await new Promise((resolve) => setTimeout(resolve, 0))
+				const ui = reviewCtx.ctx?.ui
+				const choice = ui
+					? await withWorkingHidden(
+							ui,
+							() =>
+								ui.select?.("Plan approved — where should it run?", [
+									EXECUTE_LOCAL_DECISION_OPTION,
+									CLOUD_DECISION_OPTION,
+								]) ?? Promise.resolve(undefined),
+						)
+					: undefined
+				if (choice === CLOUD_DECISION_OPTION) {
+					await startCloudExecution()
+				} else if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
+					executeLocally()
+				} else {
+					ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
+				}
+				return
+			}
+			executeLocally()
+		} else if (payload.decision === "start_cloud") {
+			await startCloudExecution()
 		} else if (payload.decision === "feedback") {
 			// Clear the pending review before triggering the revision turn.
 			// The model needs its full toolset to revise the plan (read files,
