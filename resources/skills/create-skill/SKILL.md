@@ -5,7 +5,7 @@ description: Create or update reusable skills from a task or workflow.
 
 # Create a skill
 
-Turn the user's workflow into a skill Kimchi can reuse. Use plain language: a skill is a folder with instructions, and most skills need no code.
+Turn the user's workflow into a skill Kimchi can reuse. Use plain language: a skill is a folder containing instructions and any scripts, references, or assets needed for the workflow.
 
 ## Understand the workflow
 
