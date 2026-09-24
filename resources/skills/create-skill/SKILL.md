@@ -45,7 +45,7 @@ Start with `SKILL.md` alone. Add supporting files only when they serve the workf
 
 - `references/` for detailed guidance needed only in certain cases. Link each file from `SKILL.md` and explain when to read it.
 - `assets/` for templates or other files used in the output.
-- `scripts/` for repeatable operations that benefit from executable code. Run changed scripts with a safe example.
+- `scripts/` for repeatable operations that benefit from executable code. Run changed scripts with a safe example. When using or testing the skill must leave its folder unchanged, keep outputs and caches in the caller's workspace; use `python3 -B` for Python helpers and tests to avoid `__pycache__` writes.
 
 Use paths relative to the skill folder for bundled files. Keep secrets and machine-specific paths out of reusable content. Do not add placeholder files, require Python for a text-only skill, or introduce metadata intended solely for another harness.
 
@@ -53,7 +53,7 @@ Use paths relative to the skill folder for bundled files. Keep secrets and machi
 
 Read back the saved files. Check the frontmatter, folder/name match, referenced paths, and that instructions preserve the user's intended workflow. Remove unfinished placeholders.
 
-Try a representative request using supplied or clearly labeled sample input and check the actual result against the requested output. For a meeting skill, for example, include a missing owner or date and verify it is not invented. Keep tests local or draft-only when the workflow would otherwise change an external system. If a required tool or input is unavailable, say what remains untested instead of claiming success.
+Try a representative request using supplied or clearly labeled sample input and check the actual result against the requested output. For a meeting skill, for example, include a missing owner or date and verify it is not invented. Keep tests local or draft-only when the workflow would otherwise change an external system. If a required tool or input is unavailable, or execution is blocked pending approval, say what remains untested instead of claiming success. Do not relax permission rules to make a check pass.
 
 Finish with the saved path and an example `/skill:<name> <request>`. Tell the user to run `/reload` (or start a new session) so Kimchi discovers the new skill; do not claim discovery was verified unless it was checked. Revise the skill when the trial reveals a concrete problem.
 
