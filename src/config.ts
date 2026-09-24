@@ -907,20 +907,17 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
-		const region = options.region
-		const llmEndpoint = options.llmEndpoint?.trim()
-		if (region && isRegionId(region)) {
-			raw.region = region
+		if (isRegionId(options.region)) {
+			raw.region = options.region
 		}
+		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
 			// An explicit endpoint still wins over the region for the LLM gateway
 			// (resolveEndpoints precedence); keep both.
 			raw.llmEndpoint = llmEndpoint
-		} else if (region && isRegionId(region)) {
-			// Region now drives the endpoint; drop any stale custom endpoint.
-			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
-			delete raw.llmEndpoint
 		} else {
+			// No explicit endpoint: the region (stored or default) drives it, so
+			// drop any stale custom endpoint.
 			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 			delete raw.llmEndpoint
 		}
