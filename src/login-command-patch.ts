@@ -27,7 +27,7 @@ import {
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
-import type { RegionId } from "./regions.js"
+import { getRegion, type RegionId } from "./regions.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice
@@ -207,6 +207,30 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
+	// Mirror the account login: region first (when selector support exists),
+	// then the key/endpoint inputs. Esc returns to the auth-method selector.
+	if (modeLike.showSelector) {
+		modeLike.showSelector((done) => {
+			const selector = createRegionSelector({
+				currentRegion: loadConfig().region,
+				onSelect: (region) => {
+					done()
+					void runKimchiApiKeyLogin(im, region)
+				},
+				onBack: () => {
+					done()
+					showLoginChoiceSelector(im)
+				},
+			})
+			return { component: selector, focus: selector }
+		})
+		return
+	}
+	await runKimchiApiKeyLogin(im)
+}
+
+async function runKimchiApiKeyLogin(im: InteractiveMode, region?: RegionId): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
@@ -222,13 +246,19 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const registry = asLoginRegistry(runtime)
 
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
-	if (apiKey === undefined) return
-	const defaultEndpoint = getKimchiDefaultEndpoint()
+	if (apiKey === undefined) {
+		if (modeLike.showSelector) showLoginChoiceSelector(im)
+		return
+	}
+	const defaultEndpoint = region ? getRegion(region).llmBaseUrl : getKimchiDefaultEndpoint()
 	const endpointInput = await modeLike.showExtensionInput(
 		`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`,
 		"",
 	)
-	if (endpointInput === undefined) return
+	if (endpointInput === undefined) {
+		if (modeLike.showSelector) showLoginChoiceSelector(im)
+		return
+	}
 
 	await performKimchiApiKeyLogin(
 		{
@@ -241,6 +271,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 		{
 			apiKey,
 			endpoint: endpointInput.trim() || defaultEndpoint,
+			region,
 		},
 	)
 }

@@ -846,8 +846,9 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 
 export interface WriteApiKeyOptions {
 	llmEndpoint?: string
-	/** Region selected at login. Region drives the LLM endpoint, so any stored
-	 *  custom `llmEndpoint` is dropped. */
+	/** Region selected at login. Stored alongside the key; when no custom
+	 *  `llmEndpoint` is given, the region drives every endpoint and any stale
+	 *  custom endpoint is dropped. */
 	region?: RegionId
 }
 
@@ -859,11 +860,15 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (region && isRegionId(region)) {
 			raw.region = region
+		}
+		if (llmEndpoint) {
+			// An explicit endpoint still wins over the region for the LLM gateway
+			// (resolveEndpoints precedence); keep both.
+			raw.llmEndpoint = llmEndpoint
+		} else if (region && isRegionId(region)) {
 			// Region now drives the endpoint; drop any stale custom endpoint.
 			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 			delete raw.llmEndpoint
-		} else if (llmEndpoint) {
-			raw.llmEndpoint = llmEndpoint
 		} else {
 			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 			delete raw.llmEndpoint

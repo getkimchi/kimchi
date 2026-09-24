@@ -133,8 +133,13 @@ async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
 	await flushAsyncLogin()
 }
 
-async function selectApiKeyLoginOption(fakeIm: FakeIm): Promise<void> {
+async function selectApiKeyLoginOption(fakeIm: FakeIm, regionOffset = 0): Promise<void> {
 	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	// API-key login leads to the region selector (same as account login);
+	// confirm the region (default US unless regionOffset moves the cursor).
+	for (let i = 0; i < regionOffset; i += 1) fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 }
@@ -389,6 +394,7 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.kimchi.dev...")
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
+		region: "us",
 	})
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/models.json",
@@ -432,6 +438,7 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-456", undefined, {
 		llmEndpoint: "https://custom.example/",
+		region: "us",
 	})
 	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/auth.json",
@@ -442,6 +449,56 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 		{ id: "custom-model", provider: "kimchi-dev" },
 		{ persist: true },
 	)
+})
+
+it("selecting Europe for API-key login defaults the endpoint to the EU gateway", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("eu-key-789").mockResolvedValueOnce("")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 1) // Europe region
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
+		2,
+		"Kimchi endpoint (press Enter to use https://llm.eu.kimchi.dev):",
+		"",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("eu-key-789", undefined, {
+		llmEndpoint: "https://llm.eu.kimchi.dev",
+		region: "eu",
+	})
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-api-login-test/models.json", "eu-key-789", {
+		allowCachedFallback: false,
+		endpoint: "https://llm.eu.kimchi.dev",
+	})
+})
+
+it("Esc on the API-key region selector returns to the auth-method selector", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	fakeIm.selectorComponent.handleInput("j") // API key option
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	// Region selector is up; Esc goes back to the auth-method selector.
+	fakeIm.selectorComponent.handleInput("\x1b")
+	await flushAsyncLogin()
+
+	expect(fakeIm.showSelector).toHaveBeenCalledTimes(3)
+	expect(fakeIm.showExtensionInput).not.toHaveBeenCalled()
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 })
 
 it("does not persist API-key login when model discovery rejects an invalid key", async () => {
@@ -521,6 +578,7 @@ it("keeps the validated API key persisted when registry refresh rejects", async 
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
+		region: "us",
 	})
 })
 
@@ -549,6 +607,7 @@ it("keeps the validated API key persisted when no Kimchi models become available
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
+		region: "us",
 	})
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })

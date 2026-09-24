@@ -239,11 +239,13 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
-		harness.input("\n")
+		harness.input("\n") // Kimchi account
+		await harness.waitForCustomPrompts(2)
+		harness.input("\n") // region: default US
 		await started
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
-		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, {})
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, { region: "us" })
 		expect(piAuthMock.syncPiAuth).toHaveBeenCalledWith(
 			"/tmp/kimchi-startup-auth-test/auth.json",
 			"/tmp/kimchi-startup-auth-test/models.json",
@@ -267,7 +269,9 @@ describe("startup auth gate", () => {
 			const started = harness.start()
 
 			await harness.settle()
-			harness.input("\n")
+			harness.input("\n") // Kimchi account
+			await harness.waitForCustomPrompts(2)
+			harness.input("\n") // region: default US
 			await started
 
 			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
@@ -300,9 +304,11 @@ describe("startup auth gate", () => {
 		await harness.settle()
 		harness.input("\n")
 		await harness.waitForCustomPrompts(2)
+		harness.input("\n") // region: default US
+		await harness.waitForCustomPrompts(3)
 
 		harness.input("\x1b")
-		await harness.waitForCustomPrompts(3)
+		await harness.waitForCustomPrompts(4)
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
 		expect(harness.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Kimchi login failed"), "error")
@@ -332,13 +338,18 @@ describe("startup auth gate", () => {
 		try {
 			const started = harness.start()
 
-			// Each Kimchi attempt opens two customs: the auth-method selector, then the
-			// login dialog. So selectors land on prompts #1, #3, #5 (dialogs are #2, #4).
+			// Each Kimchi attempt opens three customs: the auth-method selector, the
+			// region selector, then the login dialog. So auth selectors land on prompts
+			// #1, #4, #7 (regions are #2, #5; dialogs are #3, #6).
 			await harness.settle()
 			harness.input("\n")
-			await harness.waitForCustomPrompts(3)
+			await harness.waitForCustomPrompts(2)
+			harness.input("\n")
+			await harness.waitForCustomPrompts(4)
 			harness.input("\n")
 			await harness.waitForCustomPrompts(5)
+			harness.input("\n")
+			await harness.waitForCustomPrompts(7)
 			harness.input("\x1b")
 			await started
 
@@ -377,6 +388,8 @@ describe("startup auth gate", () => {
 			await harness.settle()
 			harness.input("\n")
 			await harness.waitForCustomPrompts(2)
+			harness.input("\n")
+			await harness.waitForCustomPrompts(4)
 			harness.input("\x1b")
 			await started
 
@@ -426,7 +439,9 @@ describe("startup auth gate", () => {
 
 		expect(harness.ctx.ui.custom).toHaveBeenCalledOnce()
 
-		harness.input("\n")
+		harness.input("\n") // Kimchi account
+		await harness.waitForCustomPrompts(2)
+		harness.input("\n") // region: default US
 		await started
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
@@ -499,6 +514,10 @@ describe("startup auth gate", () => {
 		// Select the API key option (second item: j then Enter)
 		harness.input("j")
 		harness.input("\n")
+		await harness.waitForCustomPrompts(2)
+
+		// Region selector follows; confirm the default (US).
+		harness.input("\n")
 
 		await started
 
@@ -512,6 +531,10 @@ describe("startup auth gate", () => {
 			"my-api-key",
 			expect.objectContaining({ endpoint: "https://custom.kimchi.example" }),
 		)
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("my-api-key", undefined, {
+			llmEndpoint: "https://custom.kimchi.example",
+			region: "us",
+		})
 		expect(harness.state.authenticated).toBe(true)
 	})
 
@@ -523,16 +546,88 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 		await harness.settle()
 
-		// Select API key option
+		// Select API key option, then confirm the default region
 		harness.input("j")
+		harness.input("\n")
+		await harness.waitForCustomPrompts(2)
 		harness.input("\n")
 
 		// After cancellation the gate loops back to the selector — cancel it
-		await harness.waitForCustomPrompts(2)
+		await harness.waitForCustomPrompts(3)
 		harness.input("\x1b")
 		await started
 
 		expect(harness.state.cancelled).toBe(true)
 		expect(modelsMock.updateModelsConfig).not.toHaveBeenCalled()
+	})
+
+	it("follows the selected region for the browser login", async () => {
+		const harness = createHarness()
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\n") // Kimchi account
+		await harness.waitForCustomPrompts(2)
+		harness.input("j") // Europe
+		harness.input("\n")
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledWith(
+			expect.objectContaining({ webAppUrl: "https://app.eu.kimchi.dev" }),
+		)
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, { region: "eu" })
+		expect(harness.state.authenticated).toBe(true)
+	})
+
+	it("Back on the region selector returns to the auth-method selector", async () => {
+		const onCancel = vi.fn()
+		const harness = createHarness({ onCancel })
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\n") // Kimchi account
+		await harness.waitForCustomPrompts(2)
+		harness.input("\x1b") // back to auth methods
+		await harness.waitForCustomPrompts(3)
+		harness.input("\x1b") // cancel the gate
+		await started
+
+		expect(authMock.authenticateViaBrowser).not.toHaveBeenCalled()
+		expect(configMock.writeApiKey).not.toHaveBeenCalled()
+		expect(harness.state.cancelled).toBe(true)
+		expect(onCancel).toHaveBeenCalledOnce()
+	})
+
+	it("follows the selected region for the API key default endpoint", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-startup-auth-test")
+		const harness = createHarness()
+		harness.ctx.ui.input.mockResolvedValueOnce("eu-api-key").mockResolvedValueOnce("")
+		modelsMock.updateModelsConfig.mockResolvedValue({ models: [{ slug: "kimi-k2.6", provider: "ai-enabler" }] })
+
+		const started = harness.start()
+		await harness.settle()
+
+		harness.input("j")
+		harness.input("\n") // API key option
+		await harness.waitForCustomPrompts(2)
+		harness.input("j")
+		harness.input("\n") // Europe
+
+		await started
+
+		expect(harness.ctx.ui.input).toHaveBeenNthCalledWith(
+			2,
+			"Kimchi endpoint (press Enter to use https://llm.eu.kimchi.dev):",
+		)
+		expect(modelsMock.updateModelsConfig).toHaveBeenCalledWith(
+			expect.stringContaining("models.json"),
+			"eu-api-key",
+			expect.objectContaining({ endpoint: "https://llm.eu.kimchi.dev" }),
+		)
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("eu-api-key", undefined, {
+			llmEndpoint: "https://llm.eu.kimchi.dev",
+			region: "eu",
+		})
+		expect(harness.state.authenticated).toBe(true)
 	})
 })

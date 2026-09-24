@@ -281,6 +281,12 @@ export interface KimchiBrowserLoginOptions {
 export interface KimchiApiKeyLoginOptions {
 	apiKey: string
 	endpoint: string
+	/**
+	 * Region picked at login. Persisted with the token so non-LLM endpoints
+	 * (web app, telemetry, search, validation) follow the same choice; the
+	 * explicit `endpoint` still wins for the LLM gateway.
+	 */
+	region?: RegionId
 }
 
 function formatKimchiTokenError(error: unknown, options: { saved: boolean }): string {
@@ -369,7 +375,7 @@ export async function performKimchiApiKeyLogin(
 		host.showStatus?.(`Refreshing Kimchi models from ${endpoint}...`)
 		return await configureKimchiToken(host, token, endpoint, {
 			strictFreshDiscovery: true,
-			persistConfig: () => writeApiKey(token, undefined, { llmEndpoint: endpoint }),
+			persistConfig: () => writeApiKey(token, undefined, { llmEndpoint: endpoint, region: options.region }),
 		})
 	} catch (error) {
 		host.showError?.(`Kimchi API-key login failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -432,6 +438,7 @@ export type KimchiBrowserLoginDialogResult = "success" | "failed" | "cancelled"
 export async function performKimchiBrowserLoginWithDialog(
 	ctx: ExtensionContext,
 	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown,
+	options?: { region?: RegionId },
 ): Promise<KimchiBrowserLoginDialogResult> {
 	return ctx.ui.custom<KimchiBrowserLoginDialogResult>((tui, _theme, _keybindings, done) => {
 		let finished = false
@@ -473,7 +480,7 @@ export async function performKimchiBrowserLoginWithDialog(
 						]),
 					signal: dialog.signal,
 				},
-				{ reuseExistingToken: true },
+				{ region: options?.region, reuseExistingToken: true },
 			)
 			if (cancelled || dialog.signal.aborted) finish("cancelled")
 			else finish(ok ? "success" : "failed")
@@ -486,10 +493,13 @@ export async function performKimchiBrowserLoginWithDialog(
 export async function performKimchiApiKeyLoginViaExtensionUI(
 	ctx: ExtensionContext,
 	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown,
+	options?: { region?: RegionId },
 ): Promise<"success" | "failed" | "cancelled"> {
 	const apiKey = await ctx.ui.input("Kimchi API Key:")
 	if (!apiKey?.trim()) return "cancelled"
-	const defaultEndpoint = getKimchiDefaultEndpoint()
+	// The default endpoint shown in the prompt follows the region just picked
+	// in the selector, not only the stored config region.
+	const defaultEndpoint = options?.region ? getRegion(options.region).llmBaseUrl : getKimchiDefaultEndpoint()
 	const endpoint = await ctx.ui.input(`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`)
 	const trimmedEndpoint = endpoint?.trim() || defaultEndpoint
 	const ok = await performKimchiApiKeyLogin(
@@ -500,7 +510,7 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 			showError: (message) => ctx.ui.notify(message, "error"),
 			addFeedback: (message) => ctx.ui.notify(message, "info"),
 		},
-		{ apiKey: apiKey.trim(), endpoint: trimmedEndpoint },
+		{ apiKey: apiKey.trim(), endpoint: trimmedEndpoint, region: options?.region },
 	)
 	return ok ? "success" : "failed"
 }
