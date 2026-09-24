@@ -56,7 +56,12 @@ export interface AdminResult {
 	useJson: boolean
 }
 
-export type ScopeFilter = { kind: "all" } | { kind: "personal" } | { kind: "project"; scopeId: string }
+export type ScopeFilter =
+	| { kind: "all" }
+	| { kind: "personal" }
+	| { kind: "project"; scopeId: string }
+	/** The personal store plus the current project's — the same scoping retrieval uses (personal-only outside a repository). */
+	| { kind: "local"; scopeId: string | undefined }
 
 export type AdminCommand =
 	| { op: "overview"; json: boolean }
@@ -69,11 +74,15 @@ export type AdminCommand =
 export const USAGE = `usage: memory [list|search|delete|reset]
 
   (no arguments)   overview: storage path, per-store stats, pending jobs
-  list    [--scope personal|project|all] [--project <owner/name>]
+  list    [--scope local|personal|project|all] [--project <owner/name>]
           [--limit N|all] [--offset N] [--json]
   search  <query> [--scope ...] [--json]
   delete  <id> [<id>...]
-  reset   --scope all|personal|project [--project <owner/name>] [--yes]`
+  reset   --scope all|personal|project [--project <owner/name>] [--yes]
+
+  The default scope for list and search is local: the personal store plus
+  the current project (personal only outside a repository). --scope all
+  sees every store; --project pairs with --scope project only.`
 
 // --- grammar ------------------------------------------------------------------
 
@@ -119,20 +128,43 @@ function parseNonNegativeInt(raw: string, flag: string): number | { error: strin
 	return value
 }
 
+/** The default scope: the personal store plus the cwd's project (personal-only outside a repository). */
+function localScope(cwd: string): ScopeFilter {
+	return { kind: "local", scopeId: resolveProjectScope(cwd)?.id }
+}
+
+/**
+ * The local scope before project resolution. Overview and delete discard the
+ * parsed scope, so they never pay the git probe that resolution runs — only
+ * list and search resolve it (usesScope).
+ */
+const LOCAL_UNRESOLVED: ScopeFilter = { kind: "local", scopeId: undefined }
+
 function parseScopeFilter(
 	flags: ParsedFlags,
 	opts: { cwd: string },
-	{ required }: { required: boolean },
+	{ reset, usesScope }: { reset: boolean; usesScope: boolean },
 ): ScopeFilter | { error: string } {
 	const raw = flags.values.scope
+	// --project names an explicit target and pairs with --scope project only —
+	// every other scope silently discarded it before.
+	if (flags.values.project !== undefined && raw !== "project") {
+		return { error: "--project requires --scope project" }
+	}
 	if (raw === undefined) {
-		if (required) return { error: `reset requires --scope (all, personal, or project)` }
-		return { kind: "all" }
+		if (reset) return { error: `reset requires --scope (all, personal, or project)` }
+		return usesScope ? localScope(opts.cwd) : LOCAL_UNRESOLVED
 	}
 	if (raw === "all") return { kind: "all" }
 	if (raw === "personal") return { kind: "personal" }
+	if (raw === "local") {
+		// Reset names its target explicitly — wiping "wherever I am" is too
+		// easy to run by accident.
+		if (reset) return { error: "reset does not accept --scope local (use personal, project, or all)" }
+		return usesScope ? localScope(opts.cwd) : LOCAL_UNRESOLVED
+	}
 	if (raw !== "project") {
-		return { error: `invalid --scope ${JSON.stringify(raw)} — expected all, personal, or project` }
+		return { error: `invalid --scope ${JSON.stringify(raw)} — expected local, personal, project, or all` }
 	}
 	const project = flags.values.project
 	if (project !== undefined) {
@@ -149,7 +181,7 @@ function parseScopeFilter(
 	return { kind: "project", scopeId: resolved.id }
 }
 
-/** Parse the management grammar. Pure — unit-tested under Node. */
+/** Parse the management grammar. Unit-tested under Node — resolving a local/project scope for list/search probes git (resolveProjectScope). */
 export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminCommand {
 	const first = args[0] ?? ""
 	if (first !== "" && !KNOWN_SUBCOMMANDS.has(first) && !first.startsWith("--")) {
@@ -159,7 +191,12 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 	const rest = sub === "" ? args : args.slice(1)
 	const flags = parseFlagTokens(rest)
 	if ("error" in flags) return { op: "usage-error", message: flags.error }
-	const scope = parseScopeFilter(flags, opts, { required: sub === "reset" })
+	// Only list and search consume the parsed scope — overview and delete get
+	// the unresolved local marker instead of paying the git probe.
+	const scope = parseScopeFilter(flags, opts, {
+		reset: sub === "reset",
+		usesScope: sub === "list" || sub === "search",
+	})
 	if ("error" in scope) return { op: "usage-error", message: scope.error }
 
 	if (sub === "" || sub === "list") {
@@ -243,6 +280,8 @@ function collectProjectStores(dir: string, projectsRoot: string, stores: AdminSt
 function selectStores(stores: AdminStore[], filter: ScopeFilter): AdminStore[] {
 	if (filter.kind === "all") return stores
 	if (filter.kind === "personal") return stores.filter((s) => s.kind === "personal")
+	if (filter.kind === "local")
+		return stores.filter((s) => s.kind === "personal" || (filter.scopeId !== undefined && s.scopeId === filter.scopeId))
 	return stores.filter((s) => s.kind === "project" && s.scopeId === filter.scopeId)
 }
 
@@ -304,6 +343,10 @@ function sortNewestFirst<T extends AdminMemoryItem>(items: T[]): T[] {
 function noMemoriesLine(scope: ScopeFilter): string {
 	if (scope.kind === "personal") return "No memories in the personal store yet."
 	if (scope.kind === "project") return `No memories for project ${scope.scopeId} yet.`
+	if (scope.kind === "local")
+		return scope.scopeId === undefined
+			? "No memories in the personal store yet."
+			: `No memories in the personal store or for project ${scope.scopeId} yet.`
 	return "No memories stored yet."
 }
 

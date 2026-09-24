@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +15,16 @@ const fact = (id: string, memory: string, createdAt?: string): AdminMemoryItem =
 
 /** A non-repo cwd so --scope project never resolves accidentally. */
 const NO_REPO_CWD = join(tmpdir(), "kimchi-memory-admin-norepo")
+
+/** A throwaway git repository cwd for local-scope resolution (same pattern as scope.test.ts). */
+function makeRepo(remote?: string): string {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-memory-admin-repo-"))
+	roots.push(dir)
+	const run = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8", stdio: "pipe" })
+	run(["init", "--quiet"])
+	if (remote) run(["remote", "add", "origin", remote])
+	return dir
+}
 
 function makeFakeBackend(items: AdminMemoryItem[]) {
 	const deleted: string[] = []
@@ -79,14 +90,51 @@ describe("parseAdminArgs", () => {
 		expect(parseAdminArgs(["--json"], { cwd: NO_REPO_CWD })).toEqual({ op: "overview", json: true })
 	})
 
-	it("list defaults: all scopes, limit 50, offset 0", () => {
+	it("list defaults: local scope (personal + the cwd's project), limit 50, offset 0", () => {
 		expect(parseAdminArgs(["list"], { cwd: NO_REPO_CWD })).toEqual({
 			op: "list",
-			scope: { kind: "all" },
+			scope: { kind: "local", scopeId: undefined },
 			limit: 50,
 			offset: 0,
 			json: false,
 		})
+	})
+
+	it("the local default resolves the cwd's repository into the scope", () => {
+		const repo = makeRepo("https://github.com/castai/kimchi.git")
+		expect(parseAdminArgs(["list"], { cwd: repo })).toMatchObject({
+			scope: { kind: "local", scopeId: "castai/kimchi" },
+		})
+		// Explicit --scope local is the same default, spelled out.
+		expect(parseAdminArgs(["list", "--scope", "local"], { cwd: repo })).toMatchObject({
+			scope: { kind: "local", scopeId: "castai/kimchi" },
+		})
+		expect(parseAdminArgs(["search", "dog"], { cwd: repo })).toMatchObject({
+			op: "search",
+			scope: { kind: "local", scopeId: "castai/kimchi" },
+		})
+	})
+
+	it("reset rejects the local scope — it names its target explicitly", () => {
+		expect(parseAdminArgs(["reset", "--scope", "local"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
+	})
+
+	it("--project is rejected outside --scope project", () => {
+		const cases: string[][] = [
+			["list", "--project", "owner/name"],
+			["list", "--scope", "local", "--project", "owner/name"],
+			["list", "--scope", "all", "--project", "owner/name"],
+			["list", "--scope", "personal", "--project", "owner/name"],
+			["search", "q", "--project", "owner/name"],
+			["reset", "--project", "owner/name"],
+		]
+		for (const args of cases) {
+			const parsed = parseAdminArgs(args, { cwd: NO_REPO_CWD })
+			expect(parsed, JSON.stringify(args)).toMatchObject({ op: "usage-error" })
+			if (parsed.op === "usage-error") {
+				expect(parsed.message).toContain("--project requires --scope project")
+			}
+		}
 	})
 
 	it("list parses --limit all / N, --offset N, and --scope personal", () => {
@@ -175,12 +223,12 @@ describe("listStores", () => {
 // --- runAdminCommand (ops with fake backends) ---------------------------------------
 
 describe("runAdminCommand — list", () => {
-	it("lists across stores, newest first, with pagination", async () => {
+	it("lists across every store with --scope all, newest first, with pagination", async () => {
 		const h = trackedHarness({
 			personal: [fact("p1", "older personal fact", "2026-09-10"), fact("p2", "newest fact", "2026-09-11")],
 			"a/b": [fact("q1", "project fact", "2026-09-10T12:00:00Z")],
 		})
-		const result = await h.run(["list"])
+		const result = await h.run(["list", "--scope", "all"])
 		expect(result.code).toBe(0)
 		expect(result.text).toContain("showing 1–3 of 3")
 		expect(result.text).toContain("newest fact")
@@ -188,6 +236,35 @@ describe("runAdminCommand — list", () => {
 		expect(result.text).toContain("a/b")
 		// Newest first: the newest fact's line appears before the older one's.
 		expect(result.text.indexOf("newest fact")).toBeLessThan(result.text.indexOf("older personal fact"))
+	})
+
+	it("list defaults to the local scope: the cwd's project plus personal", async () => {
+		const repo = makeRepo("https://github.com/cur/proj.git")
+		const h = trackedHarness(
+			{
+				personal: [fact("p1", "personal fact", "2026-09-10")],
+				"cur/proj": [fact("q1", "current project fact", "2026-09-11")],
+				"othr/x": [fact("x1", "other project fact", "2026-09-12")],
+			},
+			repo,
+		)
+		const result = await h.run(["list"])
+		expect(result.code).toBe(0)
+		expect(result.text).toContain("showing 1–2 of 2")
+		expect(result.text).toContain("personal fact")
+		expect(result.text).toContain("current project fact")
+		expect(result.text).not.toContain("other project fact")
+	})
+
+	it("outside a repository the local default is personal-only", async () => {
+		const h = trackedHarness({
+			personal: [fact("p1", "personal fact")],
+			"a/b": [fact("q1", "project fact")],
+		})
+		const result = await h.run(["list"])
+		expect(result.code).toBe(0)
+		expect(result.text).toContain("personal fact")
+		expect(result.text).not.toContain("project fact")
 	})
 
 	it("paginates and hints at the next page", async () => {
@@ -209,35 +286,64 @@ describe("runAdminCommand — list", () => {
 
 	it("empty stores render the normal empty state, never an error", async () => {
 		const h = trackedHarness({})
-		const all = await h.run(["list"])
+		const all = await h.run(["list", "--scope", "all"])
 		expect(all.code).toBe(0)
 		expect(all.text).toBe("No memories stored yet.")
 		const personal = await h.run(["list", "--scope", "personal"])
 		expect(personal.text).toBe("No memories in the personal store yet.")
 		const project = await h.run(["list", "--scope", "project", "--project", "no/such"])
 		expect(project.text).toBe("No memories for project no/such yet.")
+		// The local default names both of its stores when a repo resolves.
+		const repo = makeRepo("https://github.com/cur/proj.git")
+		const local = await trackedHarness({ "othr/x": [fact("x1", "unrelated")] }, repo).run(["list"])
+		expect(local.text).toBe("No memories in the personal store or for project cur/proj yet.")
 	})
 
 	it("--json produces parseable output and sets useJson", async () => {
 		const h = trackedHarness({ personal: [fact("p1", "a fact", "2026-09-11")] })
 		const result = await h.run(["list", "--json"])
 		expect(result.useJson).toBe(true)
-		const data = JSON.parse(result.json) as { total: number; facts: Array<{ id: string; scope: string }> }
+		const data = JSON.parse(result.json) as {
+			total: number
+			scope: { kind: string }
+			facts: Array<{ id: string; scope: string }>
+		}
 		expect(data.total).toBe(1)
+		// The default scope shows up in the JSON as the resolved local filter.
+		expect(data.scope).toEqual({ kind: "local" })
 		expect(data.facts[0]).toMatchObject({ id: "p1", scope: "personal" })
 	})
 })
 
 describe("runAdminCommand — search", () => {
-	it("returns matching facts with scores across stores", async () => {
+	it("returns matching facts with scores across stores with --scope all", async () => {
 		const h = trackedHarness({
 			personal: [fact("p1", "the user's dog is named Fred")],
 			"a/b": [fact("q1", "the repo uses vitest")],
 		})
-		const result = await h.run(["search", "dog"])
+		const result = await h.run(["search", "dog", "--scope", "all"])
 		expect(result.code).toBe(0)
 		expect(result.text).toContain("Fred")
 		expect(result.text).not.toContain("vitest")
+	})
+
+	it("search defaults to the local scope: the cwd's project plus personal", async () => {
+		const repo = makeRepo("https://github.com/cur/proj.git")
+		const h = trackedHarness(
+			{
+				personal: [fact("p1", "the user's dog is named Fred")],
+				"cur/proj": [fact("q1", "the repo uses vitest")],
+				"othr/x": [fact("x1", "the other repo uses bun")],
+			},
+			repo,
+		)
+		const result = await h.run(["search", "vitest"])
+		expect(result.code).toBe(0)
+		expect(result.text).toContain("vitest")
+		// A query matching only another project's facts comes back empty.
+		const miss = await h.run(["search", "bun"])
+		expect(miss.code).toBe(0)
+		expect(miss.text).toBe('No memories match "bun".')
 	})
 
 	it("no matches is the normal empty state", async () => {
