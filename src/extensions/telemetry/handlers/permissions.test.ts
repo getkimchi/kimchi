@@ -32,7 +32,6 @@ describe("handleToolDecision", () => {
 			toolCallId: "tc-1",
 			toolName: "bash",
 			decision: "reject",
-			source: "user_reject",
 			sourceDetail: "deny",
 			permissionMode: "default",
 		})
@@ -55,37 +54,65 @@ describe("handleToolDecision", () => {
 		expect(event?.attrs.source).toBe("cli")
 	})
 
-	it("includes file_extension for edit tools only when present", async () => {
+	it("maps every source detail onto the official decision_source vocabulary", async () => {
 		const ctx = new TelemetryContext(makeConfig())
-		handleToolDecision(ctx, {
-			toolCallId: "tc-2",
-			toolName: "write",
-			decision: "accept",
-			source: "user_temporary",
-			sourceDetail: "allow_once",
-			permissionMode: "default",
-			fileExtension: "ts",
-		})
+		const cases = [
+			["yolo_bypass", "config"],
+			["no_ui", "config"],
+			["classifier", "hook"],
+			["allow_once", "user_temporary"],
+			["allow_remember_wildcard", "user_permanent"],
+			["deny_with_feedback", "user_reject"],
+			["abort", "user_abort"],
+		] as const
+		for (const [sourceDetail] of cases) {
+			handleToolDecision(ctx, {
+				toolCallId: `tc-${sourceDetail}`,
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail,
+				permissionMode: "auto",
+			})
+		}
 
 		ctx.flushLogBuffer()
 
-		let event: ReturnType<typeof logEvents>[number] | undefined
 		await vi.waitFor(() => {
-			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
-			expect(event).toBeDefined()
+			const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).filter(
+				(e) => e.eventName === TOOL_DECISION_EVENT,
+			)
+			expect(events).toHaveLength(cases.length)
 		})
-		expect(event?.attrs.file_extension).toBe("ts")
+		const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).filter(
+			(e) => e.eventName === TOOL_DECISION_EVENT,
+		)
+		for (const [sourceDetail, decisionSource] of cases) {
+			const event = events.find((e) => e.attrs.source_detail === sourceDetail)
+			expect(event?.attrs.decision_source).toBe(decisionSource)
+		}
 	})
 
 	it("skips malformed payloads instead of emitting partial events", async () => {
 		const ctx = new TelemetryContext(makeConfig())
+		const valid = {
+			toolCallId: "tc-1",
+			toolName: "bash",
+			decision: "accept",
+			sourceDetail: "rule",
+			permissionMode: "default",
+		}
 		for (const bad of [
 			undefined,
 			{},
-			{ toolName: "bash" },
-			{ toolName: "bash", decision: "accept" },
-			{ toolName: "bash", decision: "accept", source: "config" },
-			{ toolName: "bash", decision: "accept", source: "config", sourceDetail: "rule" },
+			{ ...valid, toolCallId: undefined },
+			{ ...valid, toolCallId: "" },
+			{ ...valid, toolName: undefined },
+			{ ...valid, decision: undefined },
+			{ ...valid, decision: "maybe" },
+			{ ...valid, sourceDetail: undefined },
+			{ ...valid, sourceDetail: "made_up" },
+			{ ...valid, sourceDetail: "toString" },
+			{ ...valid, permissionMode: undefined },
 		]) {
 			handleToolDecision(ctx, bad)
 		}

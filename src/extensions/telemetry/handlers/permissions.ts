@@ -5,10 +5,45 @@
  * permissions internals (same pattern as bash-tool-guard / loop-guard).
  */
 
-import type { PermissionToolDecisionPayload } from "../../permissions/permissions-events.js"
+import type {
+	PermissionDecisionSourceDetail,
+	PermissionToolDecisionPayload,
+} from "../../permissions/permissions-events.js"
 import type { TelemetryContext } from "../session-context.js"
 
 export const TOOL_DECISION_EVENT = "claude_code.tool_decision"
+
+/**
+ * Official Claude Code `claude_code.tool_decision` `source` vocabulary (see
+ * https://code.claude.com/docs/en/monitoring-usage). It is a closed enum, so
+ * kimchi's automated gates map onto it: `config` for mode/rule/builtin
+ * decisions, `hook` for the auto-mode classifier. The mode itself is carried
+ * by `permission_mode`.
+ */
+type DecisionSource = "config" | "hook" | "user_permanent" | "user_temporary" | "user_abort" | "user_reject"
+
+const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = {
+	yolo_bypass: "config",
+	plan_readonly: "config",
+	plan_gate: "config",
+	builtin_safe: "config",
+	readonly: "config",
+	ferment_internal: "config",
+	compound_rule: "config",
+	rule: "config",
+	session_rule: "config",
+	questionnaire_promotion: "config",
+	no_ui: "config",
+	mode_flap: "config",
+	classifier: "hook",
+	classifier_no_ui: "hook",
+	allow_once: "user_temporary",
+	allow_remember: "user_permanent",
+	allow_remember_wildcard: "user_permanent",
+	deny: "user_reject",
+	deny_with_feedback: "user_reject",
+	abort: "user_abort",
+}
 
 /**
  * Emit one `claude_code.tool_decision` log record per permission decision.
@@ -20,21 +55,22 @@ export const TOOL_DECISION_EVENT = "claude_code.tool_decision"
  * consumers (PostHog mapping) must use that key. `source` on the record
  * remains the session origin, consistent with every other kimchi event.
  *
- * Privacy: the payload contract is enums + ids only (no commands, paths, or
- * feedback), asserted by tests in the permissions extension.
+ * Privacy: only enums and the provider-issued tool-call id are exported.
  */
 export function handleToolDecision(tm: TelemetryContext, raw: unknown): void {
 	const payload = raw as Partial<PermissionToolDecisionPayload> | undefined
-	if (!payload?.toolName || !payload.decision || !payload.source || !payload.sourceDetail || !payload.permissionMode) {
-		return
-	}
+	if (!payload?.toolCallId || !payload.toolName || !payload.sourceDetail || !payload.permissionMode) return
+	if (payload.decision !== "accept" && payload.decision !== "reject") return
+	// Drop out-of-contract values rather than exporting them.
+	if (!Object.hasOwn(DECISION_SOURCE, payload.sourceDetail)) return
+	const decisionSource = DECISION_SOURCE[payload.sourceDetail]
+
 	tm.emit(TOOL_DECISION_EVENT, {
 		tool_name: payload.toolName,
+		tool_use_id: payload.toolCallId,
 		decision: payload.decision,
-		decision_source: payload.source,
+		decision_source: decisionSource,
 		source_detail: payload.sourceDetail,
 		permission_mode: payload.permissionMode,
-		...(payload.toolCallId ? { tool_use_id: payload.toolCallId } : {}),
-		...(payload.fileExtension ? { file_extension: payload.fileExtension } : {}),
 	})
 }

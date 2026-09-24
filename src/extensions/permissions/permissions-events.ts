@@ -100,29 +100,9 @@ export interface PermissionAfterDecisionPayload {
 // ---------------------------------------------------------------------------
 
 /**
- * Where a permission decision came from. Mirrors the official Claude Code
- * `claude_code.tool_decision` event vocabulary (see
- * https://code.claude.com/docs/en/monitoring-usage) so downstream consumers
- * and dashboards stay portable:
- *  - `config`: decided automatically (permission mode, allow/deny rules,
- *    builtin-safe tools, plan-mode gate).
- *  - `hook`: an automated gate decided (the auto-mode classifier).
- *  - `user_permanent` / `user_temporary`: the user accepted at a prompt,
- *    with/without a remembered (session-scoped) rule.
- *  - `user_reject` / `user_abort`: the user declined or aborted a prompt.
- */
-export type PermissionDecisionSource =
-	| "config"
-	| "hook"
-	| "user_permanent"
-	| "user_temporary"
-	| "user_abort"
-	| "user_reject"
-
-/**
- * Fine-grained origin of the decision (kept deliberately enum-bounded — never
- * per-rule or free-form strings). Lets consumers distinguish yolo/auto/default
- * handling without parsing `source`.
+ * Why the gate decided (kept deliberately enum-bounded — never per-rule or
+ * free-form strings). Telemetry maps each value onto the official Claude Code
+ * `claude_code.tool_decision` `source` vocabulary.
  */
 export type PermissionDecisionSourceDetail =
 	| "yolo_bypass"
@@ -148,30 +128,26 @@ export type PermissionDecisionSourceDetail =
 
 /**
  * Emitted for EVERY permission decision the tool_call gate makes — prompts and
- * automatic allows/denies alike — exactly once per evaluated tool call
- * (a prompt abort followed by re-evaluation under a new mode produces two:
- * the abort and the re-evaluated outcome).
- *
- * This is the per-call acceptance signal that execution-side telemetry cannot
- * provide: an executed tool is indistinguishable between yolo, rule, and
- * explicit user approval, and prompts that were accepted leave no trace.
+ * automatic allows/denies alike. Usually once per tool call, with two
+ * exceptions that share the parent `toolCallId`:
+ *  - a prompt abort followed by re-evaluation under a new mode emits the abort
+ *    and the re-evaluated outcome;
+ *  - a compound bash command settled per subcommand emits one decision per
+ *    evaluated segment.
  *
  * Not emitted for the IDE diff-viewer deferral (default mode + IDE connected):
- * the decision is made inside the IDE — a known gap tracked as a follow-up.
+ * the decision is made inside the IDE.
  *
- * Privacy: structured enums only. No command text, file paths (`fileExtension`
- * is just the extension), rule contents, or user feedback strings.
+ * Privacy: structured enums + ids only. No command text, file paths, rule
+ * contents, or user feedback strings.
  */
 export interface PermissionToolDecisionPayload {
 	toolCallId: string
 	toolName: string
 	decision: "accept" | "reject"
-	source: PermissionDecisionSource
 	sourceDetail: PermissionDecisionSourceDetail
-	/** Permission mode active when the decision was made. */
+	/** Permission mode the decision was made under (for prompts: when the prompt opened). */
 	permissionMode: PermissionMode
-	/** Edit tools only — bare extension (e.g. "ts") for language inference. */
-	fileExtension?: string
 }
 
 // ---------------------------------------------------------------------------

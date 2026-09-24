@@ -2419,6 +2419,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2434,6 +2435,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["npm install", "npm test"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2455,6 +2457,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo a"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({
@@ -2474,6 +2477,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({
@@ -2493,6 +2497,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
@@ -2516,6 +2521,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: [command, "npm install"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2538,6 +2544,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["cd /tmp", "npm install"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2559,6 +2566,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["cd /tmp", "npm install"],
+			permissionMode: "default",
 		})
 
 		// cd is skipped; denying npm install stores nothing.
@@ -2581,6 +2589,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: [command, "npm install"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2607,6 +2616,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["git diff", "npm install", "npm publish"],
+			permissionMode: "default",
 		})
 
 		expect(select).toHaveBeenCalledTimes(1)
@@ -2628,6 +2638,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo a", "whoami"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2647,6 +2658,7 @@ describe("handleCompoundConfirm", () => {
 			// Non-read-only subcommands: read-only segments skip the per-subcommand
 			// prompt entirely (a standalone call would never ask either).
 			subcommands: ["npm install", "cargo build"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2664,6 +2676,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["npm install", "cargo build"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({
@@ -2687,6 +2700,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["npm install", "cargo build"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
@@ -2702,6 +2716,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: [],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2719,6 +2734,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo hello"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2739,6 +2755,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["npm install", "cargo build"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({ block: true, reason: "Subcommand blocked by rule: npm install" })
@@ -2767,6 +2784,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["npm install", "cargo build"],
+			permissionMode: "default",
 		})
 
 		expect(result).toBeUndefined()
@@ -2785,6 +2803,7 @@ describe("handleCompoundConfirm", () => {
 			pi,
 			activeAborts,
 			subcommands: ["echo a"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
@@ -2828,6 +2847,7 @@ describe("herdr:blocked signaling", () => {
 			session,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
+			permissionMode: "default",
 		})
 
 		// The compound prompt reaches ui.select after an async hop; wait for the
@@ -2856,6 +2876,7 @@ describe("herdr:blocked signaling", () => {
 			activeAborts,
 			// Non-read-only subcommands so both nested prompts fire.
 			subcommands: ["npm install", "cargo build"],
+			permissionMode: "default",
 		})
 		expect(result).toBeUndefined()
 
@@ -2885,6 +2906,7 @@ describe("herdr:blocked signaling", () => {
 				session,
 				activeAborts,
 				subcommands: ["echo a"],
+				permissionMode: "default",
 			}),
 		).rejects.toThrow("select blew up")
 
@@ -2903,6 +2925,7 @@ describe("herdr:blocked signaling", () => {
 			session,
 			activeAborts,
 			subcommands: ["echo a"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({ block: true, reason: "No UI to confirm permission" })
@@ -3583,14 +3606,13 @@ describe("permissions:tool_decision emissions", () => {
 				toolCallId: "tc-1",
 				toolName: "bash",
 				decision: "accept",
-				source: "config",
 				sourceDetail: "yolo_bypass",
 				permissionMode: "yolo",
 			},
 		])
 	})
 
-	it("edit tool decisions carry the bare file extension, never the path", async () => {
+	it("edit tool decisions carry no file path", async () => {
 		const harness = createPermissionsHarness(["write"], { yolo: true })
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, createMockContext([]))
@@ -3604,8 +3626,8 @@ describe("permissions:tool_decision emissions", () => {
 		).toBeUndefined()
 
 		expect(decisions).toHaveLength(1)
-		expect(decisions[0]).toMatchObject({ toolName: "write", fileExtension: "ts" })
-		expect(JSON.stringify(decisions)).not.toContain("/secret/dir")
+		expect(JSON.stringify(decisions)).not.toContain("secret")
+		expect(JSON.stringify(decisions)).not.toContain("foo")
 	})
 
 	it("plan mode: read-only bash accepts (plan_readonly), writes reject (plan_gate)", async () => {
@@ -3624,7 +3646,6 @@ describe("permissions:tool_decision emissions", () => {
 				toolCallId: "tc-ro",
 				toolName: "bash",
 				decision: "accept",
-				source: "config",
 				sourceDetail: "plan_readonly",
 				permissionMode: "plan",
 			},
@@ -3632,7 +3653,6 @@ describe("permissions:tool_decision emissions", () => {
 				toolCallId: "tc-wr",
 				toolName: "bash",
 				decision: "reject",
-				source: "config",
 				sourceDetail: "plan_gate",
 				permissionMode: "plan",
 			},
@@ -3653,7 +3673,6 @@ describe("permissions:tool_decision emissions", () => {
 			expect.objectContaining({
 				toolName: "set_phase",
 				decision: "accept",
-				source: "config",
 				sourceDetail: "builtin_safe",
 				permissionMode: "default",
 			}),
@@ -3671,7 +3690,6 @@ describe("permissions:tool_decision emissions", () => {
 		expect(decisions).toEqual([
 			expect.objectContaining({
 				decision: "accept",
-				source: "config",
 				sourceDetail: "readonly",
 				permissionMode: "default",
 			}),
@@ -3701,14 +3719,12 @@ describe("permissions:tool_decision emissions", () => {
 			expect.objectContaining({
 				toolCallId: "tc-safe",
 				decision: "accept",
-				source: "hook",
 				sourceDetail: "classifier",
 				permissionMode: "auto",
 			}),
 			expect.objectContaining({
 				toolCallId: "tc-unsafe",
 				decision: "reject",
-				source: "hook",
 				sourceDetail: "classifier_no_ui",
 				permissionMode: "auto",
 			}),
@@ -3727,7 +3743,6 @@ describe("permissions:tool_decision emissions", () => {
 		expect(decisions).toEqual([
 			expect.objectContaining({
 				decision: "accept",
-				source: "user_temporary",
 				sourceDetail: "allow_once",
 				permissionMode: "default",
 			}),
@@ -3749,7 +3764,6 @@ describe("permissions:tool_decision emissions", () => {
 		expect(decisions).toEqual([
 			expect.objectContaining({
 				decision: "reject",
-				source: "user_reject",
 				sourceDetail: "deny",
 				permissionMode: "default",
 			}),
@@ -3775,19 +3789,16 @@ describe("permissions:tool_decision emissions", () => {
 			expect.objectContaining({
 				toolCallId: "tc-1",
 				decision: "accept",
-				source: "user_permanent",
 				sourceDetail: "allow_remember",
 			}),
 			expect.objectContaining({
 				toolCallId: "tc-2",
 				decision: "accept",
-				source: "config",
 				sourceDetail: "compound_rule",
 			}),
 			expect.objectContaining({
 				toolCallId: "tc-3",
 				decision: "accept",
-				source: "config",
 				sourceDetail: "session_rule",
 			}),
 		])
@@ -3804,7 +3815,6 @@ describe("permissions:tool_decision emissions", () => {
 			expect.objectContaining({
 				toolName: FERMENT_TOOLS.LIST,
 				decision: "accept",
-				source: "config",
 				sourceDetail: "ferment_internal",
 			}),
 		])
@@ -3820,7 +3830,7 @@ describe("permissions:tool_decision emissions", () => {
 		expect(await harness.fire("tool_call", tcall("questionnaire", { questions: [] }), ctx)).toBeUndefined()
 
 		expect(decisions).toEqual([
-			expect.objectContaining({ decision: "accept", source: "config", sourceDetail: "questionnaire_promotion" }),
+			expect.objectContaining({ decision: "accept", sourceDetail: "questionnaire_promotion" }),
 		])
 	})
 
@@ -3856,11 +3866,10 @@ describe("permissions:tool_decision emissions", () => {
 			const aborts = decisions.filter((d) => (d as { sourceDetail?: string }).sourceDetail === "abort")
 			expect(aborts).toHaveLength(4) // MODES.length attempts
 			for (const abort of aborts) {
-				expect(abort).toMatchObject({ decision: "reject", source: "user_abort" })
+				expect(abort).toMatchObject({ decision: "reject" })
 			}
 			expect(decisions[decisions.length - 1]).toMatchObject({
 				decision: "reject",
-				source: "config",
 				sourceDetail: "mode_flap",
 			})
 		} finally {
@@ -3868,7 +3877,32 @@ describe("permissions:tool_decision emissions", () => {
 		}
 	})
 
-	it("handleCompoundConfirm without a prompt surface emits reject/hook/no_ui", async () => {
+	it("abort reports the mode the prompt was opened under, not the mode switched to", async () => {
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: vi.fn(async () => {
+				setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" })
+				return { kind: "aborted" as const }
+			}),
+		})
+		try {
+			const harness = createPermissionsHarness(["bash"])
+			const ctx = { ...createClassifierContext(), mode: "rpc" } as ExtensionContext
+			const decisions = collectDecisions(harness)
+			await harness.fire("session_start", {}, ctx)
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+			await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+
+			expect(decisions).toEqual([
+				expect.objectContaining({ decision: "reject", sourceDetail: "abort", permissionMode: "default" }),
+				expect.objectContaining({ decision: "reject", sourceDetail: "plan_gate", permissionMode: "plan" }),
+			])
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("handleCompoundConfirm without a prompt surface emits reject/no_ui", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const decisions = collectDecisions(harness)
 		const ctx = { ...createMockContext([]), mode: "rpc", hasUI: false } as ExtensionContext
@@ -3881,6 +3915,7 @@ describe("permissions:tool_decision emissions", () => {
 			session,
 			activeAborts,
 			subcommands: ["echo a", "echo b"],
+			permissionMode: "default",
 		})
 
 		expect(result).toEqual({ block: true, reason: "No UI to confirm permission" })
@@ -3888,7 +3923,6 @@ describe("permissions:tool_decision emissions", () => {
 			expect.objectContaining({
 				toolCallId: "tool-call-1",
 				decision: "reject",
-				source: "hook",
 				sourceDetail: "no_ui",
 			}),
 		])

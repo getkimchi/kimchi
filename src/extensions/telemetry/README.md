@@ -107,13 +107,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
 | `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)*, `request.trace_id` / `request.span_id` *(when a provider request context exists)* |
-| `claude_code.tool_decision` | Every gated permission decision — prompted and automatic alike | `tool_name`, `tool_use_id`, `decision` (`accept` / `reject`), `decision_source` (`config` / `hook` / `user_permanent` / `user_temporary` / `user_abort` / `user_reject`), `source_detail`, `permission_mode` (`default` / `plan` / `auto` / `yolo`), `file_extension` *(edit tools only)* |
-
-> **Tool decisions.** Emitted once per evaluated tool call via the `permissions:tool_decision` bus event (a prompt abort followed by re-evaluation under a new mode produces two — both real outcomes). `decision_source` mirrors the official Claude Code `claude_code.tool_decision` vocabulary; it is renamed from the official `source` because this extension's common attributes already use `source` for the session origin (`cli` / `acp`). `source_detail` is a kimchi-specific refinement enum (see `PermissionDecisionSourceDetail` in `permissions/permissions-events.ts`) for slicing by path (e.g. `yolo_bypass`, `classifier`, `rule`, `session_rule`, prompt outcomes). Tool-call acceptance rate = `decision=accept / (accept + reject)`, filterable to user decisions with `decision_source=user_*` or by excluding YOLO with `permission_mode`.
->
-> **Known gap:** in default mode with an IDE connected, write/edit approvals are handled by the IDE diff viewer and produce **no** tool_decision record (the decision happens inside the ide-adapter extension) — tracked as a follow-up.
->
-> **Privacy:** payloads are enums + ids only — no command text, file paths (bare `file_extension` only), rule contents, or user feedback strings. Note a denied call also produces the un-changed `error` (`tool_failure`, "Declined by user") record; the two signals are additive for different consumers.
+| `claude_code.tool_decision` | Every gated permission decision, prompted or automatic | `tool_name`, `tool_use_id`, `decision` (`accept` / `reject`), `decision_source` (`config` / `hook` / `user_permanent` / `user_temporary` / `user_abort` / `user_reject`), `source_detail`, `permission_mode` (`default` / `plan` / `auto` / `yolo`) |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
 | `remote_execution.started` | Remote agent successfully spawned | `origin` |
 | `remote_execution.completed` | Remote agent finished successfully | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
@@ -132,6 +126,8 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
+
+> **Tool decisions:** `decision_source` is the official Claude Code `source` attribute, renamed because `source` already holds the session origin (`cli` / `acp`). `source_detail` is a kimchi-specific refinement (see `PermissionDecisionSourceDetail` in `permissions/permissions-events.ts`). Acceptance rate = `accept / (accept + reject)`.
 
 ## Workflow Events
 
@@ -170,7 +166,7 @@ Accumulated across the whole session and flushed every 30s to the **metrics endp
 | `claude_code.lines_of_code.count` | Sum | Lines added or removed | `type` (`added` / `removed`), `language` |
 | `claude_code.tool.usage` | Sum | Tool invocation count | `tool_name` |
 | `claude_code.tool.duration_ms` | Sum | Total tool execution time (ms) | `tool_name` |
-| `claude_code.code_edit_tool.decision` | Sum | Edit tool **executions** by language (kimchi-specific — see note) | `tool_name`, `decision`, `language`, `source` |
+| `claude_code.code_edit_tool.decision` | Sum | Edit tool decisions by language | `tool_name`, `decision`, `language`, `source` |
 
 ### `editDecisions` Key Format
 
@@ -181,14 +177,6 @@ The accumulator stores edit decisions under a pipe-delimited key:
 ```
 
 Example: `write|accept|TypeScript|auto`
-
-> **Deviation from official semantics:** Claude Code defines this metric as
-> *permission-decision* counts (`decision=accept|reject`, real `source` values).
-> Kimchi currently records it at **execution** time with hardcoded
-> `decision=accept, source=auto` — it counts successful edit executions, not
-> decisions, and cannot express rejects or auto-vs-prompt origin. Use the
-> `claude_code.tool_decision` log event (above) for the real acceptance signal.
-> Aligning this metric to official semantics is a deliberate follow-up.
 
 ## Transport Details
 
