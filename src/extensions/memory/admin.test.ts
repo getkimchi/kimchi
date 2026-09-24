@@ -119,6 +119,24 @@ describe("parseAdminArgs", () => {
 		expect(parseAdminArgs(["reset", "--scope", "local"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
 	})
 
+	it("--project is rejected outside --scope project", () => {
+		const cases: string[][] = [
+			["list", "--project", "owner/name"],
+			["list", "--scope", "local", "--project", "owner/name"],
+			["list", "--scope", "all", "--project", "owner/name"],
+			["list", "--scope", "personal", "--project", "owner/name"],
+			["search", "q", "--project", "owner/name"],
+			["reset", "--project", "owner/name"],
+		]
+		for (const args of cases) {
+			const parsed = parseAdminArgs(args, { cwd: NO_REPO_CWD })
+			expect(parsed, JSON.stringify(args)).toMatchObject({ op: "usage-error" })
+			if (parsed.op === "usage-error") {
+				expect(parsed.message).toContain("--project requires --scope project")
+			}
+		}
+	})
+
 	it("list parses --limit all / N, --offset N, and --scope personal", () => {
 		expect(parseAdminArgs(["list", "--limit", "all"], { cwd: NO_REPO_CWD })).toMatchObject({ limit: "all" })
 		expect(parseAdminArgs(["list", "--limit", "10", "--offset", "5"], { cwd: NO_REPO_CWD })).toMatchObject({

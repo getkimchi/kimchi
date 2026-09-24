@@ -123,7 +123,7 @@ kimchi memory delete <id> [...]
 kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes]
 ```
 
-- `list` and `search` default to the local scope — the personal store plus the current project's (personal only outside a repository), the same scoping retrieval uses; `--scope all` sees every store, `--scope local` spells the default out.
+- `list` and `search` default to the local scope — the personal store plus the current project's (personal only outside a repository), the same scoping retrieval uses; `--scope all` sees every store, `--scope local` spells the default out, and `--project` pairs with `--scope project` only (every other scope rejects it).
 - `list` shows the newest 50 facts, scope-labeled, with the ids that `delete` takes; `--limit all` lists everything.
 - `delete` resolves ids across all stores, so no `--scope` is needed.
 - `reset --scope personal` or `--scope project` wipes that store via mem0 `deleteAll` (the hash ledger is kept — already-captured sessions never re-capture). `--scope all` wipes the whole memory root — stores, history, ledger, pending — under the capture lock, keeping only the lock artifacts. Interactive confirmation unless `--yes`.

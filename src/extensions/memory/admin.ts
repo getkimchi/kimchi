@@ -82,7 +82,7 @@ export const USAGE = `usage: memory [list|search|delete|reset]
 
   The default scope for list and search is local: the personal store plus
   the current project (personal only outside a repository). --scope all
-  sees every store.`
+  sees every store; --project pairs with --scope project only.`
 
 // --- grammar ------------------------------------------------------------------
 
@@ -133,15 +133,27 @@ function localScope(cwd: string): ScopeFilter {
 	return { kind: "local", scopeId: resolveProjectScope(cwd)?.id }
 }
 
+/**
+ * The local scope before project resolution. Overview and delete discard the
+ * parsed scope, so they never pay the git probe that resolution runs — only
+ * list and search resolve it (usesScope).
+ */
+const LOCAL_UNRESOLVED: ScopeFilter = { kind: "local", scopeId: undefined }
+
 function parseScopeFilter(
 	flags: ParsedFlags,
 	opts: { cwd: string },
-	{ reset }: { reset: boolean },
+	{ reset, usesScope }: { reset: boolean; usesScope: boolean },
 ): ScopeFilter | { error: string } {
 	const raw = flags.values.scope
+	// --project names an explicit target and pairs with --scope project only —
+	// every other scope silently discarded it before.
+	if (flags.values.project !== undefined && raw !== "project") {
+		return { error: "--project requires --scope project" }
+	}
 	if (raw === undefined) {
 		if (reset) return { error: `reset requires --scope (all, personal, or project)` }
-		return localScope(opts.cwd)
+		return usesScope ? localScope(opts.cwd) : LOCAL_UNRESOLVED
 	}
 	if (raw === "all") return { kind: "all" }
 	if (raw === "personal") return { kind: "personal" }
@@ -149,7 +161,7 @@ function parseScopeFilter(
 		// Reset names its target explicitly — wiping "wherever I am" is too
 		// easy to run by accident.
 		if (reset) return { error: "reset does not accept --scope local (use personal, project, or all)" }
-		return localScope(opts.cwd)
+		return usesScope ? localScope(opts.cwd) : LOCAL_UNRESOLVED
 	}
 	if (raw !== "project") {
 		return { error: `invalid --scope ${JSON.stringify(raw)} — expected local, personal, project, or all` }
@@ -169,7 +181,7 @@ function parseScopeFilter(
 	return { kind: "project", scopeId: resolved.id }
 }
 
-/** Parse the management grammar. Pure — unit-tested under Node. */
+/** Parse the management grammar. Unit-tested under Node — resolving a local/project scope for list/search probes git (resolveProjectScope). */
 export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminCommand {
 	const first = args[0] ?? ""
 	if (first !== "" && !KNOWN_SUBCOMMANDS.has(first) && !first.startsWith("--")) {
@@ -179,7 +191,12 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 	const rest = sub === "" ? args : args.slice(1)
 	const flags = parseFlagTokens(rest)
 	if ("error" in flags) return { op: "usage-error", message: flags.error }
-	const scope = parseScopeFilter(flags, opts, { reset: sub === "reset" })
+	// Only list and search consume the parsed scope — overview and delete get
+	// the unresolved local marker instead of paying the git probe.
+	const scope = parseScopeFilter(flags, opts, {
+		reset: sub === "reset",
+		usesScope: sub === "list" || sub === "search",
+	})
 	if ("error" in scope) return { op: "usage-error", message: scope.error }
 
 	if (sub === "" || sub === "list") {
