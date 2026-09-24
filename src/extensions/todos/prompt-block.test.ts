@@ -138,6 +138,7 @@ describe("todo prompt block", () => {
 		expect(block).toContain("staleness warning")
 		expect(block).toContain("never authorize")
 		expect(block).toContain("explicit user approval")
+		expect(block).toContain("Before ending a turn that declares the work complete")
 		expect(block).not.toContain("before your final response")
 	})
 
