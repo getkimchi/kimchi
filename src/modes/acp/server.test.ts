@@ -609,7 +609,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(1)
+			expect(response.authMethods).toHaveLength(3)
 			expect(response.authMethods?.[0]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
@@ -619,6 +619,26 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// `type` field, so we verify absence rather than equality.
 			const method = response.authMethods?.[0]
 			expect("type" in (method ?? {})).toBe(false)
+		})
+
+		// Region-pinned methods double as the capability signal: new Studio shows
+		// a region picker only when these are advertised; old Studio ignores them.
+		it("advertises a region-pinned companion method per region", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			const ids = response.authMethods?.map((m) => m.id)
+			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
+			expect(response.authMethods?.[1]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
+			expect(response.authMethods?.[2]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
+			// Agent Auth leaves `type` absent, like the plain method.
+			for (const method of response.authMethods ?? []) {
+				expect("type" in method).toBe(false)
+			}
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {
@@ -632,7 +652,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: true } },
 			})
-			expect(response.authMethods).toHaveLength(2)
+			expect(response.authMethods).toHaveLength(4)
 			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
 			expect(terminalMethod).toMatchObject({
 				id: "kimchi-terminal",
@@ -651,7 +671,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			// No clientCapabilities at all
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(1)
+			expect(response.authMethods).toHaveLength(3)
 			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 
 			// clientCapabilities present but auth.terminal is false/omitted
@@ -659,7 +679,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: false } },
 			})
-			expect(response2.authMethods).toHaveLength(1)
+			expect(response2.authMethods).toHaveLength(3)
 			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 		})
 
@@ -751,10 +771,51 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(authenticateViaBrowser).toHaveBeenCalledOnce()
 			// The callback page copy is per-context: ACP-initiated logins (Studio's
 			// in-app flow) must not show the terminal `kimchi login` CLI wording.
-			expect(authenticateViaBrowser).toHaveBeenCalledWith({ successMessage: ACP_SUCCESS_MESSAGE })
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: undefined,
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
 			expect(ACP_SUCCESS_MESSAGE).not.toContain("CLI")
-			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token")
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token", undefined, {})
 			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_test-token")
+		})
+
+		it("authenticates against the EU region with kimchi-agent-eu and persists the region", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_eu-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent-eu" })
+
+			expect(result).toEqual({})
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://app.eu.kimchi.dev",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_eu-token", undefined, { region: "eu" })
+			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_eu-token")
+		})
+
+		it("authenticates against the US region with kimchi-agent-us and persists the region", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_us-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent-us" })
+
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://app.kimchi.dev",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_us-token", undefined, { region: "us" })
 		})
 
 		it("throws invalidParams for unknown methodId", async () => {
@@ -765,6 +826,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			await expect(testAgent.authenticate({ methodId: "unknown" })).rejects.toThrow(/unknown auth method/)
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		})
+
+		it("throws invalidParams for an unknown region suffix", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent-moon" })).rejects.toThrow(/unknown auth method/)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 		})
 

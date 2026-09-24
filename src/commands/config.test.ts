@@ -8,6 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("../config.js", () => ({
 	readTelemetryConfig: vi.fn(),
 	writeTelemetryEnabled: vi.fn(),
+	loadConfig: vi.fn(),
+	writeRegion: vi.fn(),
+	getAgentConfigDir: vi.fn(() => "/tmp/kimchi-agent-dir"),
+}))
+
+// Mock models.js so region switches don't hit the network.
+vi.mock("../models.js", () => ({
+	updateModelsConfig: vi.fn(),
 }))
 
 // Mock sendPreSessionEvent — we assert the config command invokes it with the
@@ -18,8 +26,9 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	sendPreSessionEvent: vi.fn(),
 }))
 
-import { readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { loadConfig, readTelemetryConfig, writeRegion, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
+import { updateModelsConfig } from "../models.js"
 import { runConfig } from "./config.js"
 
 // ---------------------------------------------------------------------------
@@ -145,5 +154,99 @@ describe("kimchi config telemetry — config_changed event", () => {
 		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		const configArg = vi.mocked(sendPreSessionEvent).mock.calls[0]![0]
 		expect(configArg).toBe(cfg)
+	})
+})
+
+describe("kimchi config region", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-agent-dir")
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+	})
+
+	it("prints the default region when none is configured", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "" } as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: us — United States (default)")
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toContain("Available regions:")
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toContain("eu")
+		expect(writeRegion).not.toHaveBeenCalled()
+	})
+
+	it("prints the configured region", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "eu" } as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: eu — Europe")
+	})
+
+	it("writes the region and refreshes model metadata from the new region when logged in", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "stored-key", customLlmEndpoint: undefined } as ReturnType<
+			typeof loadConfig
+		>)
+		vi.mocked(updateModelsConfig).mockResolvedValue({ models: [] })
+
+		const exit = await runConfig(["region", "eu"])
+
+		expect(exit).toBe(0)
+		expect(writeRegion).toHaveBeenCalledWith("eu")
+		// updateModelsConfig with no endpoint option derives the metadata URL
+		// from the persisted region (read back via loadConfig inside models.ts).
+		expect(updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-agent-dir/models.json", "stored-key")
+		expect(vi.mocked(console.log).mock.calls.map((c) => c[0])).toContain("Model metadata refreshed for the new region.")
+		expect(vi.mocked(console.log).mock.calls.map((c) => c[0])).toContain(
+			"Billing and status will follow the new region on next refresh.",
+		)
+	})
+
+	it("warns but still succeeds when the metadata refresh fails", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "stored-key", customLlmEndpoint: undefined } as ReturnType<
+			typeof loadConfig
+		>)
+		vi.mocked(updateModelsConfig).mockRejectedValue(new Error("network down"))
+
+		const exit = await runConfig(["region", "eu"])
+
+		expect(exit).toBe(0)
+		expect(writeRegion).toHaveBeenCalledWith("eu")
+		expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("network down"))
+	})
+
+	it("notes that a custom llmEndpoint takes precedence over the region", async () => {
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			customLlmEndpoint: "https://custom.example",
+		} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region", "eu"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls.map((c) => c[0])).toContain(
+			"Note: a custom llmEndpoint is configured; it takes precedence over the region for the LLM gateway.",
+		)
+		expect(updateModelsConfig).not.toHaveBeenCalled()
+	})
+
+	it("rejects an unknown region id with exit 2 and writes nothing", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "" } as ReturnType<typeof loadConfig>)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const exit = await runConfig(["region", "moon"])
+
+		expect(exit).toBe(2)
+		expect(writeRegion).not.toHaveBeenCalled()
+		expect(updateModelsConfig).not.toHaveBeenCalled()
+		errorSpy.mockRestore()
 	})
 })

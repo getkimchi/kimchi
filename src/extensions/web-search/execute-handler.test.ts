@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { DEFAULT_LIMIT, executeWebSearch, SEARCH_ENDPOINT, type SearchResponse } from "./execute-handler.js"
+import { DEFAULT_LIMIT, executeWebSearch, type SearchResponse, searchEndpoint } from "./execute-handler.js"
 
 const configMock = vi.hoisted(() => ({ loadConfig: vi.fn(() => ({ apiKey: "test-key-123" })) }))
 vi.mock("../../config.js", () => configMock)
@@ -112,7 +112,7 @@ describe("executeWebSearch", () => {
 
 			await executeWebSearch({ query: "test" })
 
-			expect(vi.mocked(fetch).mock.calls[0][0]).toBe(SEARCH_ENDPOINT)
+			expect(vi.mocked(fetch).mock.calls[0][0]).toBe(searchEndpoint())
 		})
 	})
 

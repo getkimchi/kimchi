@@ -1,3 +1,5 @@
+import { loadConfig } from "../config.js"
+import { getRegion, keyValidationUrl } from "../regions.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 export interface ValidateResult {
@@ -6,7 +8,11 @@ export interface ValidateResult {
 	suggestions?: string[]
 }
 
-export const VALIDATION_ENDPOINT = "https://api.cast.ai/v1/llm/openai/supported-providers"
+/** The key-validation endpoint follows the configured region. */
+export function validationEndpoint(): string {
+	return keyValidationUrl(getRegion(loadConfig().region))
+}
+
 export const REQUEST_TIMEOUT_MS = 10_000
 
 interface ValidatorOptions {
@@ -38,7 +44,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 		}
 	}
 
-	const endpoint = options.endpoint ?? VALIDATION_ENDPOINT
+	const endpoint = options.endpoint ?? validationEndpoint()
 	const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS
 	const fetchImpl = options.fetch ?? globalThis.fetch
 

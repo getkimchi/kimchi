@@ -1,3 +1,4 @@
+import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 export interface MeResponse {
@@ -18,8 +19,8 @@ export interface GetMeOptions {
 
 function resolveEndpoint(options?: GetMeOptions): string {
 	if (options?.endpoint) return options.endpoint
-	const fromEnv = process.env.KIMCHI_REMOTE_ENDPOINT
-	return fromEnv ?? "https://app.kimchi.dev/api"
+	// ResolveEndpoints honours KIMCHI_REMOTE_ENDPOINT, then the configured region.
+	return resolveEndpoints().platformApiUrl
 }
 
 /**

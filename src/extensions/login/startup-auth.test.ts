@@ -243,7 +243,7 @@ describe("startup auth gate", () => {
 		await started
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
-		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token")
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, {})
 		expect(piAuthMock.syncPiAuth).toHaveBeenCalledWith(
 			"/tmp/kimchi-startup-auth-test/auth.json",
 			"/tmp/kimchi-startup-auth-test/models.json",

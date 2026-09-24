@@ -1,5 +1,8 @@
-import { readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { resolve } from "node:path"
+import { getAgentConfigDir, loadConfig, readTelemetryConfig, writeRegion, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
+import { updateModelsConfig } from "../models.js"
+import { DEFAULT_REGION, getRegion, isRegionId, REGIONS } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -23,6 +26,8 @@ export async function runConfig(args: string[]): Promise<number> {
 	switch (sub) {
 		case "telemetry":
 			return handleTelemetry(rest)
+		case "region":
+			return handleRegion(rest)
 		default:
 			console.error(`kimchi config: unknown subcommand "${sub}"`)
 			printUsage()
@@ -95,4 +100,56 @@ function parseSwitch(s: string): boolean | null {
 function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
 	console.error("       kimchi config telemetry           # show current status")
+	console.error("       kimchi config region [us|eu]      # show or set the endpoint region")
+}
+
+/**
+ * `kimchi config region [us|eu]` — show or set the endpoint region in
+ * config.json. With no value, prints the current region (or the default when
+ * none is configured) and the available ids.
+ *
+ * When an API key is stored, the model metadata cache is refreshed from the
+ * new region best-effort: a refresh failure must not fail the command — the
+ * region is already persisted and the cache refreshes on next use.
+ */
+async function handleRegion(args: string[]): Promise<number> {
+	const cfg = loadConfig()
+	if (args.length === 0) {
+		const current = getRegion(cfg.region)
+		const suffix = isRegionId(cfg.region) ? "" : " (default)"
+		console.log(`Region: ${current.id} — ${current.label}${suffix}`)
+		console.log(`Available regions: ${Object.values(REGIONS).map(formatRegionChoice).join(", ")}`)
+		return 0
+	}
+
+	const value = args[0].toLowerCase()
+	if (!isRegionId(value)) {
+		console.error(`kimchi config region: expected one of ${Object.keys(REGIONS).join("|")}, got "${args[0]}"`)
+		return 2
+	}
+
+	writeRegion(value)
+	console.log(`Region set to ${getRegion(value).label} (${value})`)
+	if (cfg.customLlmEndpoint) {
+		console.log("Note: a custom llmEndpoint is configured; it takes precedence over the region for the LLM gateway.")
+	}
+
+	const apiKey = cfg.apiKey
+	if (apiKey) {
+		const modelsPath = resolve(process.env.KIMCHI_CODING_AGENT_DIR ?? getAgentConfigDir(), "models.json")
+		try {
+			await updateModelsConfig(modelsPath, apiKey)
+			console.log("Model metadata refreshed for the new region.")
+		} catch (error) {
+			console.warn(
+				`Could not refresh model metadata for the new region right now (${error instanceof Error ? error.message : String(error)}); it will refresh on next use.`,
+			)
+		}
+		console.log("Billing and status will follow the new region on next refresh.")
+	}
+	return 0
+}
+
+function formatRegionChoice(r: (typeof REGIONS)[keyof typeof REGIONS]): string {
+	return r.id === DEFAULT_REGION ? `${r.id} (${r.label}, default)` : `${r.id} (${r.label})`
 }

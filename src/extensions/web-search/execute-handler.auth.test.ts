@@ -42,11 +42,11 @@ it.each([
 	captureApiKeyFromEnvironment()
 	expect(process.env.KIMCHI_API_KEY).toBeUndefined()
 
-	const { executeWebSearch, SEARCH_ENDPOINT } = await import("./execute-handler.js")
+	const { executeWebSearch, searchEndpoint } = await import("./execute-handler.js")
 	await executeWebSearch({ query: "test" })
 
 	expect(fetch).toHaveBeenCalledWith(
-		SEARCH_ENDPOINT,
+		searchEndpoint(),
 		expect.objectContaining({
 			headers: expect.objectContaining({ Authorization: `Bearer ${environmentKey ?? savedKey}` }),
 		}),

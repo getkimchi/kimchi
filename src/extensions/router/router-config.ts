@@ -1,4 +1,6 @@
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../config.js"
+import { getRegion } from "../../regions.js"
 import { AUTO_MODEL_PROVIDER } from "./constants.js"
 
 export interface RouterConfig {
@@ -6,7 +8,10 @@ export interface RouterConfig {
 	apiKey: string
 }
 
-export const DEFAULT_ROUTER_ENDPOINT = "https://llm.kimchi.dev"
+/** The default router endpoint follows the configured region. */
+export function defaultRouterEndpoint(): string {
+	return getRegion(loadConfig().region).llmBaseUrl
+}
 
 export async function getRouterConfig(
 	modelRegistry: Pick<ModelRegistry, "getApiKeyForProvider">,
@@ -14,7 +19,7 @@ export async function getRouterConfig(
 	const apiKey = (await modelRegistry.getApiKeyForProvider(AUTO_MODEL_PROVIDER))?.trim()
 	if (!apiKey) return undefined
 	return {
-		endpoint: process.env.KIMCHI_ROUTER_ENDPOINT?.trim() || DEFAULT_ROUTER_ENDPOINT,
+		endpoint: process.env.KIMCHI_ROUTER_ENDPOINT?.trim() || defaultRouterEndpoint(),
 		apiKey,
 	}
 }

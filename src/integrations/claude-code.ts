@@ -6,7 +6,7 @@ import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
 import { confirm } from "../setup-wizard/prompt.js"
-import { ANTHROPIC_BASE_URL } from "./constants.js"
+import { kimchiAnthropicBaseUrl } from "./constants.js"
 import { detectBinaryFactory, findBinary } from "./detect.js"
 import { register } from "./registry.js"
 
@@ -23,7 +23,7 @@ const TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metr
  */
 export function claudeCodeEnv(
 	apiKey: string,
-	baseUrl: string = ANTHROPIC_BASE_URL,
+	baseUrl: string = kimchiAnthropicBaseUrl(),
 	options?: { telemetryEnabled?: boolean },
 ): Record<string, string> {
 	const env: Record<string, string> = {
@@ -165,7 +165,7 @@ async function writeClaudeCode(
 	const before = structuredClone
 		? structuredClone(envBlock)
 		: (JSON.parse(JSON.stringify(envBlock)) as Record<string, unknown>)
-	injectClaudeCodeEnv(envBlock, ANTHROPIC_BASE_URL, apiKey, options)
+	injectClaudeCodeEnv(envBlock, kimchiAnthropicBaseUrl(), apiKey, options)
 	const diffs = envDiff(before, envBlock)
 
 	if (diffs.length > 0 && process.stdin?.isTTY) {

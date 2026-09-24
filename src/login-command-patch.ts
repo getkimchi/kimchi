@@ -14,18 +14,20 @@ import {
 	OAuthSelectorComponent,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
-import { clearApiKey } from "./config.js"
+import { clearApiKey, loadConfig } from "./config.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
 	createLoginChoiceSelector,
+	createRegionSelector,
 	formatBrowserLoginMessage,
-	KIMCHI_DEFAULT_ENDPOINT,
+	getKimchiDefaultEndpoint,
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import type { RegionId } from "./regions.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice
@@ -146,7 +148,7 @@ async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<A
 	return visibleAuthProviders(await originalGetLogoutProviderOptions.call(this))
 }
 
-async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
+async function startKimchiBrowserLogin(im: InteractiveMode, region?: RegionId): Promise<void> {
 	const modeLike = im as unknown as { showStatus?: (msg: string) => void; session: SessionLike }
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
@@ -157,17 +159,49 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 		return
 	}
 
-	await performKimchiBrowserLogin({
-		modelRegistry: asLoginRegistry(runtime),
-		// The user picked this model during login, so save it as their default.
-		setModel: (model) => session.setModel(model, { persist: true }),
-		showStatus,
-		showError,
-		addFeedback: (message) => addLoginFeedback(im, message),
-		// Surface the generated browser-login URL in the TUI. The auto-open can land
-		// in the wrong browser or Chrome profile (and still "succeed"), so the user
-		// needs the URL to copy into the right one. console.log is swallowed under the TUI.
-		onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
+	await performKimchiBrowserLogin(
+		{
+			modelRegistry: asLoginRegistry(runtime),
+			// The user picked this model during login, so save it as their default.
+			setModel: (model) => session.setModel(model, { persist: true }),
+			showStatus,
+			showError,
+			addFeedback: (message) => addLoginFeedback(im, message),
+			// Surface the generated browser-login URL in the TUI. The auto-open can land
+			// in the wrong browser or Chrome profile (and still "succeed"), so the user
+			// needs the URL to copy into the right one. console.log is swallowed under the TUI.
+			onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
+		},
+		{ region },
+	)
+}
+
+/**
+ * Account login starts with a region choice: the selector drives both the
+ * browser-auth web-app URL and the persisted `region` config. Esc returns to
+ * the auth-method selector. Without selector support (headless surfaces) the
+ * configured region applies with no extra prompt.
+ */
+async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
+	if (!modeLike.showSelector) {
+		await startKimchiBrowserLogin(im)
+		return
+	}
+
+	modeLike.showSelector((done) => {
+		const selector = createRegionSelector({
+			currentRegion: loadConfig().region,
+			onSelect: (region) => {
+				done()
+				void startKimchiBrowserLogin(im, region)
+			},
+			onBack: () => {
+				done()
+				showLoginChoiceSelector(im)
+			},
+		})
+		return { component: selector, focus: selector }
 	})
 }
 
@@ -189,8 +223,9 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
 	if (apiKey === undefined) return
+	const defaultEndpoint = getKimchiDefaultEndpoint()
 	const endpointInput = await modeLike.showExtensionInput(
-		`Kimchi endpoint (press Enter to use ${KIMCHI_DEFAULT_ENDPOINT}):`,
+		`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`,
 		"",
 	)
 	if (endpointInput === undefined) return
@@ -205,7 +240,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 		},
 		{
 			apiKey,
-			endpoint: endpointInput.trim() || KIMCHI_DEFAULT_ENDPOINT,
+			endpoint: endpointInput.trim() || defaultEndpoint,
 		},
 	)
 }

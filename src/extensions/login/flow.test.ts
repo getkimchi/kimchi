@@ -2,7 +2,7 @@ import { initTheme, LoginDialogComponent } from "@earendil-works/pi-coding-agent
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
-import { SwappableAuthComponent } from "./flow.js"
+import { createRegionSelector, SwappableAuthComponent } from "./flow.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -11,6 +11,43 @@ beforeAll(() => {
 function createTui(): TUI {
 	return { requestRender: vi.fn() } as unknown as TUI
 }
+
+describe("createRegionSelector", () => {
+	function optionsOf(selector: unknown): string[] {
+		return (selector as { options: string[] }).options
+	}
+
+	it("lists US first as the default and Europe second", () => {
+		const selector = createRegionSelector({ onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(selector)).toEqual(["United States (default)", "Europe"])
+	})
+
+	it("indicates the currently configured region in its label", () => {
+		const selector = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(selector)).toEqual(["United States (default)", "Europe \u2014 current"])
+	})
+
+	it("maps the selected option to its region id", () => {
+		const onSelect = vi.fn()
+		const selector = createRegionSelector({ onSelect, onBack: vi.fn() })
+		selector.handleInput("\n")
+		expect(onSelect).toHaveBeenCalledWith("us")
+
+		const second = createRegionSelector({ onSelect, onBack: vi.fn() })
+		second.handleInput("j")
+		second.handleInput("\n")
+		expect(onSelect).toHaveBeenCalledWith("eu")
+	})
+
+	it("invokes onBack on Esc without selecting", () => {
+		const onSelect = vi.fn()
+		const onBack = vi.fn()
+		const selector = createRegionSelector({ onSelect, onBack })
+		selector.handleInput("\x1b")
+		expect(onBack).toHaveBeenCalledOnce()
+		expect(onSelect).not.toHaveBeenCalled()
+	})
+})
 
 describe("SwappableAuthComponent", () => {
 	// Regression for https://github.com/getkimchi/kimchi/issues/616: the subscription

@@ -15,6 +15,20 @@ import {
 	updateModelsConfig,
 } from "./models.js"
 
+// loadConfig() reads the launch-time global config (real HOME). Pin it without
+// a region so endpoint derivation (experimental provider, metadata defaults)
+// resolves the US URLs regardless of the developer machine's config.
+vi.mock("./config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./config.js")>()
+	return {
+		...actual,
+		loadConfig: () =>
+			({ apiKey: process.env.KIMCHI_API_KEY ?? "", region: undefined }) as unknown as ReturnType<
+				typeof actual.loadConfig
+			>,
+	}
+})
+
 const KIMI: unknown = {
 	slug: "kimi-k2.5",
 	display_name: "Kimi K2.5",

@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
 import { validateApiKey } from "./validator.js"
 
+// loadConfig() reads the launch-time global config path (real HOME). Mock it so
+// the developer machine's config cannot leak into the resolved endpoints.
+const loadConfigMock = vi.hoisted(() => vi.fn(() => ({ apiKey: "", region: undefined as "us" | "eu" | undefined })))
+vi.mock("../config.js", () => ({
+	loadConfig: loadConfigMock,
+}))
+
 type FetchWithRetryOptions = {
 	fetchImpl?: typeof fetch
 	timeoutMs?: number
@@ -87,6 +94,18 @@ describe("validateApiKey", () => {
 		await validateApiKey("my-key", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
 		expect(fetchSpy).toHaveBeenCalledWith(
 			"https://api.cast.ai/v1/llm/openai/supported-providers",
+			expect.objectContaining({
+				headers: expect.objectContaining({ Authorization: "Bearer my-key" }),
+			}),
+		)
+	})
+
+	it("uses the configured region's validation endpoint", async () => {
+		loadConfigMock.mockReturnValueOnce({ apiKey: "", region: "eu" })
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }))
+		await validateApiKey("my-key", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
+		expect(fetchSpy).toHaveBeenCalledWith(
+			"https://api.eu.cast.ai/v1/llm/openai/supported-providers",
 			expect.objectContaining({
 				headers: expect.objectContaining({ Authorization: "Bearer my-key" }),
 			}),

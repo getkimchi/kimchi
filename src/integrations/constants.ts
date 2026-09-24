@@ -1,8 +1,18 @@
-/** Endpoints and identifiers shared by every tool integration. */
+import { loadConfig } from "../config.js"
+import { anthropicBaseUrl, getRegion, openAiBaseUrl } from "../regions.js"
+
+/** Identifiers shared by every tool integration. */
 export const PROVIDER_NAME = "kimchi"
 export const API_KEY_ENV = "KIMCHI_API_KEY"
-export const BASE_URL = "https://llm.kimchi.dev/openai/v1"
-export const ANTHROPIC_BASE_URL = "https://llm.kimchi.dev/anthropic"
+
+/** Endpoints follow the configured region; computed at call time. */
+export function kimchiBaseUrl(): string {
+	return openAiBaseUrl(getRegion(loadConfig().region))
+}
+
+export function kimchiAnthropicBaseUrl(): string {
+	return anthropicBaseUrl(getRegion(loadConfig().region))
+}
 
 export const NPM_REGISTRY_BASE_URL = "https://registry.npmjs.org"
 export const OPENCODE_PLUGIN_PACKAGE = "@kimchi-dev/opencode-kimchi"

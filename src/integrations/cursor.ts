@@ -3,7 +3,7 @@ import { platform } from "node:os"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
-import { BASE_URL, PROVIDER_NAME } from "./constants.js"
+import { kimchiBaseUrl, PROVIDER_NAME } from "./constants.js"
 import { resolveModelRole } from "./models.js"
 import { register } from "./registry.js"
 
@@ -86,7 +86,7 @@ export function mergeCursorConfig(
 ): Record<string, unknown> {
 	if (!models || models.length === 0) return storage
 
-	storage.openAIBaseUrl = BASE_URL
+	storage.openAIBaseUrl = kimchiBaseUrl()
 	storage.useOpenAIKey = true
 
 	const aiSettings =

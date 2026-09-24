@@ -7,9 +7,14 @@
 
 import { truncateHead, truncateLine } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { getRegion, searchUrl } from "../../regions.js"
 import { fetchWithRetry } from "../../utils/http.js"
 
-export const SEARCH_ENDPOINT = "https://llm.kimchi.dev/v1/search"
+/** The web-search endpoint follows the configured region. */
+export function searchEndpoint(): string {
+	return searchUrl(getRegion(loadConfig().region))
+}
+
 export const SEARCH_TIMEOUT_MS = 25_000
 export const DEFAULT_LIMIT = 8
 export const DEFAULT_MAX_CONTENT_CHARS = 2000
@@ -62,7 +67,7 @@ async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortS
 	let response: Response
 	try {
 		response = await fetchWithRetry(
-			SEARCH_ENDPOINT,
+			searchEndpoint(),
 			{
 				method: "POST",
 				headers: {
