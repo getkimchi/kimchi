@@ -6,14 +6,16 @@ import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
 import { confirm } from "../setup-wizard/prompt.js"
-import { kimchiAnthropicBaseUrl } from "./constants.js"
+import {
+	ALL_TELEMETRY_URLS,
+	kimchiAnthropicBaseUrl,
+	kimchiTelemetryLogsUrl,
+	kimchiTelemetryMetricsUrl,
+} from "./constants.js"
 import { detectBinaryFactory, findBinary } from "./detect.js"
 import { register } from "./registry.js"
 
 const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
-
-const TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
-const TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
 /**
  * Build the env-var map Claude Code reads from `~/.claude/settings.json`'s
@@ -34,12 +36,12 @@ export function claudeCodeEnv(
 	}
 	if (options?.telemetryEnabled) {
 		env.CLAUDE_CODE_ENABLE_TELEMETRY = "1"
-		env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = TELEMETRY_LOGS_ENDPOINT
+		env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = kimchiTelemetryLogsUrl()
 		env.OTEL_EXPORTER_OTLP_LOGS_HEADERS = `Authorization=Bearer ${apiKey}`
 		env.OTEL_EXPORTER_OTLP_LOGS_PROTOCOL = "http/json"
 		env.OTEL_LOGS_EXPORTER = "otlp"
 		env.OTEL_LOGS_EXPORT_INTERVAL = "15000"
-		env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = TELEMETRY_METRICS_ENDPOINT
+		env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = kimchiTelemetryMetricsUrl()
 		env.OTEL_EXPORTER_OTLP_METRICS_HEADERS = `Authorization=Bearer ${apiKey}`
 		env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL = "http/json"
 		env.OTEL_METRICS_EXPORTER = "otlp"
@@ -56,13 +58,9 @@ export function claudeCodeEnv(
  * to compute the env block without writing to disk (e.g. the inject-mode
  * launcher in `kimchi claude`).
  */
-function removeCastAiOtelVar(
-	env: Record<string, unknown>,
-	endpointKey: string,
-	expectedEndpoint: string,
-	headerKey: string,
-): void {
-	if (env[endpointKey] !== expectedEndpoint) return
+function removeCastAiOtelVar(env: Record<string, unknown>, endpointKey: string, headerKey: string): void {
+	const endpoint = env[endpointKey]
+	if (typeof endpoint !== "string" || !ALL_TELEMETRY_URLS.has(endpoint)) return
 	env[endpointKey] = undefined
 	const headers = env[headerKey]
 	if (typeof headers === "string" && headers.startsWith("Authorization=Bearer ")) {
@@ -81,18 +79,8 @@ export function injectClaudeCodeEnv(
 		env[k] = v
 	}
 	if (!options?.telemetryEnabled) {
-		removeCastAiOtelVar(
-			env,
-			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-			TELEMETRY_LOGS_ENDPOINT,
-			"OTEL_EXPORTER_OTLP_LOGS_HEADERS",
-		)
-		removeCastAiOtelVar(
-			env,
-			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-			TELEMETRY_METRICS_ENDPOINT,
-			"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
-		)
+		removeCastAiOtelVar(env, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_HEADERS")
+		removeCastAiOtelVar(env, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_HEADERS")
 	}
 }
 

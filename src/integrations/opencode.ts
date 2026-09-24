@@ -6,6 +6,8 @@ import { readTelemetryConfig, THIRD_PARTY_MAX_RETRIES } from "../config.js"
 import type { ModelMetadata } from "../models.js"
 import { fetchWithRetry } from "../utils/http.js"
 import {
+	kimchiTelemetryLogsUrl,
+	kimchiTelemetryMetricsUrl,
 	NPM_REGISTRY_BASE_URL,
 	OPENCODE_PLUGIN_ARRAY_MIN_VERSION,
 	OPENCODE_PLUGIN_PACKAGE,
@@ -18,8 +20,6 @@ import { register } from "./registry.js"
 
 const OPENCODE_CONFIG_PATH = "~/.config/opencode/opencode.json"
 const NPM_REQUEST_TIMEOUT_MS = 10_000
-const TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
-const TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
 const OPENCODE_VERSION_REGEX = /^(?:opencode\s+)?v?(\d+\.\d+\.\d+)/m
 
@@ -136,8 +136,8 @@ export function buildUpdatedPlugins(inputs: PluginUpdateInputs): PluginUpdateRes
 	const pluginConfig: Record<string, unknown> = {}
 	if (telemetryEnabled) {
 		pluginConfig.telemetry = true
-		pluginConfig.logsEndpoint = TELEMETRY_LOGS_ENDPOINT
-		pluginConfig.metricsEndpoint = TELEMETRY_METRICS_ENDPOINT
+		pluginConfig.logsEndpoint = kimchiTelemetryLogsUrl()
+		pluginConfig.metricsEndpoint = kimchiTelemetryMetricsUrl()
 	}
 
 	let existingVersion: string | null = null
