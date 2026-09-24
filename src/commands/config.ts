@@ -119,10 +119,11 @@ function handleRegion(args: string[]): number {
 	const cfg = loadConfig()
 	const current = getRegion(cfg.region)
 	const envVal = process.env[REGION_ENV]
-	if (envVal !== undefined && envVal !== "") {
+	if (isRegionId(envVal)) {
 		console.log(`Region: ${current.id} — ${current.label} (from ${REGION_ENV}=${envVal}, overrides config)`)
 	} else {
-		const suffix = isRegionId(cfg.region) ? "" : " (default)"
+		if (envVal) console.warn(`Ignoring invalid ${REGION_ENV}=${envVal} (expected us|eu)`)
+		const suffix = cfg.explicitRegion ? "" : " (default)"
 		console.log(`Region: ${current.id} — ${current.label}${suffix}`)
 	}
 	console.log(`Available regions: ${Object.values(REGIONS).map(formatRegionChoice).join(", ")}`)

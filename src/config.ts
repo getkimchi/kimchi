@@ -192,6 +192,8 @@ export interface KimchiConfig {
 	/** Configured region (global config only); DEFAULT_REGION when unset or invalid.
 	 *  Optional so partial test fixtures stay assignable; loadConfig always populates it. */
 	region?: RegionId
+	/** Region set via KIMCHI_REGION or login; undefined when the default applies. */
+	explicitRegion?: RegionId
 	llmEndpoint: string
 	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
 	customLlmEndpoint: string | undefined
@@ -447,15 +449,11 @@ function parsePreferencesConfig(value: unknown): PreferencesConfig | undefined {
 	}
 }
 
-/**
- * Effective region: KIMCHI_REGION (for headless/CI setups that cannot run the
- * interactive login selector) → the global config value → DEFAULT_REGION.
- * An unknown value at either layer is treated as unset.
- */
-function effectiveRegion(fileRegion: unknown): RegionId {
+/** Region set via KIMCHI_REGION or the global config; unknown values count as unset. */
+function configuredRegion(fileRegion: unknown): RegionId | undefined {
 	const envRegion = process.env[REGION_ENV]
 	if (isRegionId(envRegion)) return envRegion
-	return isRegionId(fileRegion) ? fileRegion : DEFAULT_REGION
+	return isRegionId(fileRegion) ? fileRegion : undefined
 }
 
 /**
@@ -511,11 +509,8 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
-	// Default ingest targets follow the effective region (KIMCHI_REGION, then
-	// the file) — the same precedence loadConfig uses, so a headless EU setup
-	// does not ship telemetry and its key to the US ingest. Explicit
-	// telemetry.* config still wins.
-	const region = getRegion(effectiveRegion(fileRegion))
+	// Explicit telemetry.* config wins over the region defaults.
+	const region = getRegion(configuredRegion(fileRegion))
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -593,16 +588,15 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 	}
 
-	// Region is account-level: only the global config may set it, and it is
-	// written at login. A custom per-project gateway keeps working through the
-	// `llmEndpoint` field.
-	const region = effectiveRegion(globalExtras.region)
+	// Region is account-level, so only the global config may set it.
+	const explicitRegion = configuredRegion(globalExtras.region)
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		region,
-		llmEndpoint: extras.llmEndpoint ?? openAiBaseUrl(getRegion(region)),
+		region: explicitRegion ?? DEFAULT_REGION,
+		explicitRegion,
+		llmEndpoint: extras.llmEndpoint ?? openAiBaseUrl(getRegion(explicitRegion)),
 		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
@@ -637,20 +631,16 @@ export interface ResolvedEndpoints {
 // The no-options resolution feeds render-time getters (billing links,
 // login URLs) that run on every streaming render — memoize the loadConfig()
 // disk read instead of re-reading and re-parsing the config files each call.
-// URL env overrides are still read live on every call, and explicit-options
-// callers (tests, one-off reads against another path) stay uncached.
-// The cache is keyed on the global config file's stat so a region written by
-// another process (e.g. `kimchi login` launched by ACP Terminal Auth next to a
-// long-lived server) is picked up; in-process writers additionally call
-// invalidateResolvedEndpoints (writeApiKey).
+// Explicit-options callers stay uncached. The cache key covers KIMCHI_REGION
+// and the global config stat, so out-of-process logins are picked up too.
 let resolvedEndpointsConfigCache: { cfg: KimchiConfig; stamp: string } | undefined
 
 function globalConfigStamp(): string {
 	try {
 		const st = statSync(KIMCHI_CONFIG_PATH)
-		return `${st.mtimeMs}:${st.size}`
+		return `${process.env[REGION_ENV]}:${st.mtimeMs}:${st.size}`
 	} catch {
-		return "missing"
+		return `${process.env[REGION_ENV]}:missing`
 	}
 }
 
@@ -912,12 +902,8 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		}
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
-			// An explicit endpoint still wins over the region for the LLM gateway
-			// (resolveEndpoints precedence); keep both.
 			raw.llmEndpoint = llmEndpoint
 		} else {
-			// No explicit endpoint: the region (stored or default) drives it, so
-			// drop any stale custom endpoint.
 			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 			delete raw.llmEndpoint
 		}

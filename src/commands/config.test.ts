@@ -162,7 +162,7 @@ describe("kimchi config region", () => {
 	})
 
 	it("prints the default region when none is configured", async () => {
-		vi.mocked(loadConfig).mockReturnValue({ apiKey: "" } as ReturnType<typeof loadConfig>)
+		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
@@ -174,7 +174,11 @@ describe("kimchi config region", () => {
 
 	it("notes the KIMCHI_REGION env override when it is in effect", async () => {
 		vi.stubEnv("KIMCHI_REGION", "eu")
-		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "eu" } as ReturnType<typeof loadConfig>)
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "eu",
+			explicitRegion: "eu",
+		} as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
@@ -185,11 +189,30 @@ describe("kimchi config region", () => {
 	})
 
 	it("prints the configured region", async () => {
-		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "eu" } as ReturnType<typeof loadConfig>)
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "eu",
+			explicitRegion: "eu",
+		} as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
 		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: eu — Europe")
+	})
+
+	it("does not claim an invalid KIMCHI_REGION as an override", async () => {
+		vi.stubEnv("KIMCHI_REGION", "moon")
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "eu",
+			explicitRegion: "eu",
+		} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toBe("Ignoring invalid KIMCHI_REGION=moon (expected us|eu)")
 		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: eu — Europe")
 	})
 

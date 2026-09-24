@@ -324,6 +324,24 @@ it("shows the region selector after account login and runs EU browser auth when 
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 })
 
+it("does not mark the implicit default region as current in the region selector", async () => {
+	vi.mocked(configModule.loadConfig).mockReturnValue({
+		apiKey: "",
+		region: "us",
+	} as ReturnType<typeof configModule.loadConfig>)
+
+	const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	const rendered = fakeIm.selectorComponent.render(120).join("\n")
+	expect(rendered).toContain("United States (default)")
+	expect(rendered).not.toContain("current")
+})
+
 it("returns to the auth-method selector when Esc is pressed on the region selector", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser")

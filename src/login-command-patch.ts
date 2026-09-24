@@ -191,7 +191,7 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 	modeLike.showSelector((done) => {
 		const selector = createRegionSelector({
-			currentRegion: loadConfig().region,
+			currentRegion: loadConfig().explicitRegion,
 			onSelect: (region) => {
 				done()
 				void startKimchiBrowserLogin(im, region)
@@ -212,7 +212,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	if (modeLike.showSelector) {
 		modeLike.showSelector((done) => {
 			const selector = createRegionSelector({
-				currentRegion: loadConfig().region,
+				currentRegion: loadConfig().explicitRegion,
 				onSelect: (region) => {
 					done()
 					void runKimchiApiKeyLogin(im, region)

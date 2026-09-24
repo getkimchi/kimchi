@@ -2,8 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
 
-// resolveEndpoints() without options reads the global config at a path fixed
-// at import time from homedir(), so point homedir at a temp dir before import.
+// The global config path is fixed from homedir() at import time.
 const home = await vi.hoisted(async () => {
 	const fs = await import("node:fs")
 	const os = await import("node:os")
@@ -43,13 +42,20 @@ describe("resolveEndpoints (default config path)", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "us" }))
 		expect(resolveEndpoints().webAppUrl).toBe("https://app.kimchi.dev")
 
-		// Simulates an out-of-band `kimchi login` (e.g. ACP Terminal Auth):
-		// the file changes without any in-process invalidation.
+		// Out-of-process write, no in-process invalidation.
 		writeFileSync(configPath, JSON.stringify({ region: "eu", apiKey: "k" }))
 
 		const resolved = resolveEndpoints()
 		expect(resolved.region).toBe("eu")
 		expect(resolved.webAppUrl).toBe("https://app.eu.kimchi.dev")
 		expect(resolved.castApiUrl).toBe("https://api.eu.cast.ai")
+	})
+
+	it("picks up a KIMCHI_REGION change without a config write", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "us" }))
+		expect(resolveEndpoints().region).toBe("us")
+
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		expect(resolveEndpoints().region).toBe("eu")
 	})
 })
