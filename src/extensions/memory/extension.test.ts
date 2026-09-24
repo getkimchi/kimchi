@@ -112,7 +112,9 @@ describe("memory extension", () => {
 			{ id: "f1", memory: "the user's dog is named Fred", scopeId: "personal", createdAt: "2026-09-11" },
 		])
 		await command.handler("list", ctx)
-		expect(admin.adminListFacts).toHaveBeenCalledWith({ kind: "all" })
+		// /tmp (the mock cwd) is not a repository — the local default degrades
+		// to personal-only.
+		expect(admin.adminListFacts).toHaveBeenCalledWith({ kind: "local", scopeId: undefined })
 		expect(ctx.ui.custom).toHaveBeenCalledTimes(1)
 		// Mount the factory as the TUI would and inspect the resulting panel.
 		const factory = vi.mocked(ctx.ui.custom).mock.calls[0]?.[0]
