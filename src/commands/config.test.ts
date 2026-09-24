@@ -203,7 +203,7 @@ describe("kimchi config region", () => {
 		expect(writeRegion).toHaveBeenCalledWith("eu")
 		// updateModelsConfig with no endpoint option derives the metadata URL
 		// from the persisted region (read back via loadConfig inside models.ts).
-		expect(updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-agent-dir/models.json", "stored-key")
+		expect(updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-agent-dir/models.json", "stored-key", {})
 		expect(vi.mocked(console.log).mock.calls.map((c) => c[0])).toContain("Model metadata refreshed for the new region.")
 		expect(vi.mocked(console.log).mock.calls.map((c) => c[0])).toContain(
 			"Billing and status will follow the new region on next refresh.",
@@ -236,6 +236,24 @@ describe("kimchi config region", () => {
 			"Note: a custom llmEndpoint is configured; it takes precedence over the region for the LLM gateway.",
 		)
 		expect(updateModelsConfig).not.toHaveBeenCalled()
+	})
+
+	it("refreshes model metadata from the custom llmEndpoint, not the region gateway", async () => {
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "stored-key",
+			customLlmEndpoint: "https://custom.example",
+		} as ReturnType<typeof loadConfig>)
+		vi.mocked(updateModelsConfig).mockResolvedValue({ models: [] })
+
+		const exit = await runConfig(["region", "eu"])
+
+		expect(exit).toBe(0)
+		expect(writeRegion).toHaveBeenCalledWith("eu")
+		// A custom gateway user must not have their models.json re-populated from
+		// the region gateway — the endpoint goes through as the third argument.
+		expect(updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-agent-dir/models.json", "stored-key", {
+			endpoint: "https://custom.example",
+		})
 	})
 
 	it("rejects an unknown region id with exit 2 and writes nothing", async () => {

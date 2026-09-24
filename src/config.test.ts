@@ -520,8 +520,10 @@ describe("region config", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-region-test-"))
 		configPath = join(tempDir, "config.json")
 		vi.stubEnv("KIMCHI_API_KEY", "")
-		delete process.env.KIMCHI_WEB_APP_URL
-		delete process.env.KIMCHI_REMOTE_ENDPOINT
+		// Stub (not raw `delete`) so vi.unstubAllEnvs() restores any values the
+		// developer machine had set — deletion would leak into later tests.
+		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		resetProjectScopeTrustForTests()
 	})
 

@@ -466,10 +466,12 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	let fileEndpoint: string | undefined
 	let fileMetricsEndpoint: string | undefined
 	let fileHeaders: Record<string, string> | undefined
+	let fileRegion: unknown
 
 	try {
 		const raw = readFileSync(path, "utf-8")
 		const parsed = JSON.parse(raw)
+		fileRegion = parsed.region
 		const t = parsed.telemetry
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
@@ -498,8 +500,9 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
 	// Default ingest targets follow the configured region; explicit telemetry.*
-	// config still wins.
-	const region = getRegion(readConfigExtras(path).region)
+	// config still wins. getRegion treats an unknown value as the default, the
+	// same as readConfigExtras' "unknown means unset" parse.
+	const region = getRegion(fileRegion)
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -617,8 +620,28 @@ export interface ResolvedEndpoints {
  * Dev/CI env overrides therefore keep absolute precedence over the configured
  * region, and a config with no `region` resolves to exactly today's URLs.
  */
+// The no-options resolution feeds render-time getters (billing links,
+// login URLs) that run on every streaming render — memoize the loadConfig()
+// disk read instead of re-reading and re-parsing the config files each call.
+// Env overrides are still read live on every call, and explicit-options
+// callers (tests, one-off reads against another path) stay uncached.
+// In-session mutations must go through a writer that calls
+// invalidateResolvedEndpoints (writeApiKey, writeRegion).
+let resolvedEndpointsConfigCache: KimchiConfig | undefined
+
+/** Drop the memoized config used by the default resolveEndpoints() path. */
+export function invalidateResolvedEndpoints(): void {
+	resolvedEndpointsConfigCache = undefined
+}
+
 export function resolveEndpoints(options?: { configPath?: string; cwd?: string }): ResolvedEndpoints {
-	const cfg = loadConfig(options)
+	let cfg: KimchiConfig
+	if (options) {
+		cfg = loadConfig(options)
+	} else {
+		resolvedEndpointsConfigCache ??= loadConfig()
+		cfg = resolvedEndpointsConfigCache
+	}
 	const region = getRegion(cfg.region)
 	return {
 		region: region.id,
@@ -877,10 +900,12 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
 	})
+	invalidateResolvedEndpoints()
 }
 
 export function writeRegion(region: RegionId, configPath?: string): void {
 	writeConfigField("region", region, configPath ?? KIMCHI_CONFIG_PATH)
+	invalidateResolvedEndpoints()
 }
 
 export function writeDeviceId(id: string, configPath?: string): void {

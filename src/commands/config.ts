@@ -138,7 +138,10 @@ async function handleRegion(args: string[]): Promise<number> {
 	if (apiKey) {
 		const modelsPath = resolve(process.env.KIMCHI_CODING_AGENT_DIR ?? getAgentConfigDir(), "models.json")
 		try {
-			await updateModelsConfig(modelsPath, apiKey)
+			// Pass the custom endpoint through when one is configured — without it
+			// the refresh would fetch metadata from the region gateway even though
+			// that user's traffic goes to their own gateway.
+			await updateModelsConfig(modelsPath, apiKey, cfg.customLlmEndpoint ? { endpoint: cfg.customLlmEndpoint } : {})
 			console.log("Model metadata refreshed for the new region.")
 		} catch (error) {
 			console.warn(

@@ -39,7 +39,10 @@ export const REGIONS: Record<RegionId, KimchiRegion> = {
 export const DEFAULT_REGION: RegionId = "us"
 
 export function isRegionId(value: unknown): value is RegionId {
-	return typeof value === "string" && value in REGIONS
+	// Object.hasOwn, not `value in REGIONS`: the `in` operator walks the
+	// prototype chain, so "constructor"/"toString"/"__proto__" would pass and
+	// getRegion would return Object.prototype members instead of a KimchiRegion.
+	return typeof value === "string" && Object.hasOwn(REGIONS, value)
 }
 
 export function getRegion(id: unknown): KimchiRegion {
@@ -69,24 +72,6 @@ export function experimentalOpenAiBaseUrl(r: KimchiRegion): string {
 /** Web-search tool endpoint. */
 export function searchUrl(r: KimchiRegion): string {
 	return `${r.llmBaseUrl}/v1/search`
-}
-
-/** Auto-model router endpoint. */
-export function routeUrl(r: KimchiRegion): string {
-	return `${r.llmBaseUrl}/v1/route`
-}
-
-/** Browser login page. */
-export function cliAuthUrl(r: KimchiRegion): string {
-	return `${r.webAppUrl}/cli-auth`
-}
-
-export function billingUrl(r: KimchiRegion): string {
-	return `${r.webAppUrl}/billing`
-}
-
-export function pricingUrl(r: KimchiRegion): string {
-	return `${r.webAppUrl}/pricing`
 }
 
 /** API-key validation endpoint. */
