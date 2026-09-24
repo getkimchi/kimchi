@@ -9,7 +9,9 @@ Turn the user's workflow into a skill Kimchi can reuse. Use plain language: a sk
 
 ## 1. Define the workflow
 
-Use the request and conversation to identify what the skill should do, when to use it, the inputs it needs, and what a good result looks like. This can be a business task (meeting notes, customer updates, report preparation) or a technical task. If the purpose is missing, ask for one example of work the user wants to repeat. Ask only for information that would change the result; do not make the user fill out a technical template.
+First, check whether the user's request or conversation identifies the workflow. If the user invokes this skill without a purpose, ask one short question about the work they want to repeat, then stop and wait for their answer. Do not inspect files, Git history, or other skills to guess the purpose.
+
+Once the purpose is clear, identify what the skill should do, when to use it, the inputs it needs, and what a good result looks like. This can be a business task (meeting notes, customer updates, report preparation) or a technical task. Ask only for information that would change the result; do not make the user fill out a technical template.
 
 Inspect an existing skill before updating it. Reuse a matching skill instead of creating a duplicate, and preserve unrelated instructions and supporting files.
 
