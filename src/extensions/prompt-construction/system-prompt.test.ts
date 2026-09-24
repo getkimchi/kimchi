@@ -4,7 +4,7 @@ import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
-import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
+import { buildSystemPrompt, COMMUNICATION, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -85,6 +85,82 @@ function createSkill(overrides: Partial<Skill> & { name: string; description: st
 }
 
 describe("buildSystemPrompt", () => {
+	it.each(["single", "orchestrator"] as const)("provides default communication guidance in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result.match(/^## Communication$/gm)).toHaveLength(1)
+		expect(result).toContain("Requested detail and exact output formats take precedence over this style")
+		expect(result).toContain("When asked for JSON only, emit the JSON value directly without Markdown fences")
+		expect(result).toContain("Apply these rules to the wording and layout of user-facing replies")
+		expect(result).toContain(
+			"Task execution, tool use, verification, clarification, and completion follow their existing instructions",
+		)
+		expect(result).toContain("Honor requests to change or stop this style for the rest of the session")
+	})
+
+	it.each([
+		"single",
+		"orchestrator",
+	] as const)("guides readable answers without arbitrary length quotas in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result).toContain("Default reply: answer first")
+		expect(result).toContain("do not squeeze the answer into a word count")
+		expect(result).not.toContain("under 60 words")
+		expect(result).not.toContain("sets of roughly five")
+		expect(result).toContain("Put commands before their explanation")
+		expect(result).toContain("Introduce a necessary technical term with its meaning")
+		expect(result).toContain("Use separate short paragraphs or bullets for distinct points")
+		expect(result).toContain("Put a blank line between paragraphs and before lists")
+		expect(result).toContain("use a brief bold label for each item")
+		expect(result).toContain("an unmentioned check or state is unknown")
+		expect(result).toContain("Examples of reply formatting")
+		expect(result).not.toContain("one short paragraph of two to four short sentences")
+		expect(result).toContain("Keep requested points, necessary evidence, uncertainty, and safety conditions")
+		expect(result).toContain("Use a table when it makes a comparison easier to read")
+		expect(result).toContain("one point per sentence")
+		expect(result).not.toContain("Explain fully when asked")
+	})
+
+	it.each(["single", "orchestrator"] as const)("preserves existing execution rules in %s mode", (mode) => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode })
+		expect(result).toContain("Never re-issue the same tool call after a successful result")
+		expect(result).toContain("If a tool call fails to advance the task after 3 attempts")
+		expect(result).toContain("state that clearly and ask the user to provide them")
+		expect(result).toContain("ask the user to confirm before acting on it")
+		if (mode === "single") {
+			expect(result).toContain("Your first response to a complex task MUST include visible text")
+		}
+	})
+
+	it("does not add investigation, clarification or stopping policies to communication", () => {
+		for (const rule of [
+			"After three unsuccessful fixes",
+			"one or two checks",
+			"Ask for one diagnostic artifact and stop",
+			"A clarification-only reply is at most two short sentences",
+			"Use a task/plan tool",
+			"Finish the current issue before raising another",
+			"otherwise stop after the status",
+		]) {
+			expect(COMMUNICATION).not.toContain(rule)
+		}
+	})
+
+	it.each(["single", "orchestrator"] as const)("places reply formatting after project context in %s mode", (mode) => {
+		const result = buildSystemPrompt({
+			tools: [],
+			env: testEnv,
+			mode,
+			contextFiles: [{ path: "AGENTS.md", content: "Project instruction marker." }],
+		})
+		expect(result.indexOf("## Communication")).toBeGreaterThan(result.indexOf("Project instruction marker."))
+	})
+
+	it("keeps human communication guidance out of the subagent output protocol", () => {
+		const result = buildSystemPrompt({ tools: [], env: testEnv, mode: "subagent" })
+		expect(result).not.toContain("## Communication")
+		expect(result).toContain("Do NOT add any text before or after the JSON")
+	})
+
 	const tools = [
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },

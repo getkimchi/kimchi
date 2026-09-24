@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
+import { COMMUNICATION } from "../../prompt-construction/system-prompt.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
 	AGENT_EXPLORE,
@@ -29,6 +30,26 @@ function getRequired(name: string): ReturnType<typeof DEFAULT_AGENTS.get> & obje
 }
 
 describe("default agents — subagent system prompt snapshot", () => {
+	it.each([
+		undefined,
+		["read"],
+	])("omits human response style from inherited worker prompts (tools: %s)", (activeToolNames) => {
+		const agent: AgentConfig = { ...getRequired(AGENT_GENERAL_PURPOSE), promptMode: "append" }
+		const parent = `## Rules\nKeep rules.\n\n## Environment\nKeep environment.\n\n${COMMUNICATION}\n\n## Appended instructions\nKeep appended instructions.`
+		const result = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parent, { activeToolNames })
+		expect(result).not.toContain("Communication")
+		expect(result).not.toContain(COMMUNICATION)
+		expect(result).toContain("Keep rules.")
+		expect(result).toContain("Keep environment.")
+		expect(result).toContain("Keep appended instructions.")
+	})
+
+	it("preserves project-authored Communication headings in inherited prompts", () => {
+		const agent: AgentConfig = { ...getRequired(AGENT_GENERAL_PURPOSE), promptMode: "append" }
+		const parent = "## Project Guidelines\n\n## Communication\nReport build failures to the parent."
+		expect(buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parent)).toContain(parent)
+	})
+
 	it("General-Purpose agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
