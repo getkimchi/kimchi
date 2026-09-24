@@ -199,9 +199,7 @@ export class AgentManager {
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
 		const effectiveOptions = applyLinkedWorkerLimits(options)
-		// Steer continuations attach to a kept remote session — silently
-		// defaulting to a LOCAL run would execute a sandbox-context prompt on
-		// the user's machine, so fail fast instead (spawn options contract).
+		// Steer prompts assume sandbox context — never default to a local run.
 		if (effectiveOptions.continuation && !effectiveOptions.remote) {
 			throw new Error("SpawnOptions.continuation requires remote: true")
 		}

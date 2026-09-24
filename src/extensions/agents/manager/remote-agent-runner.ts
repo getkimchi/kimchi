@@ -191,7 +191,7 @@ export function getLiveKeptAcpClient(
 }
 
 /** Close and forget the kept client for this remote session (terminal actions). */
-export function discardLiveKeptAcpClient(meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">): void {
+function discardLiveKeptAcpClient(meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">): void {
 	const key = keptAcpClientKey(meta)
 	const client = liveKeptAcpClients.get(key)
 	liveKeptAcpClients.delete(key)

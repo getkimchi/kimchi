@@ -262,14 +262,14 @@ async function runSshChild(input: RunSshChildInput): Promise<SandboxGitResult> {
 						reject(new Error(`sandbox git timed out after ${input.timeoutMs}ms (ssh round trip)`))
 					}, input.timeoutMs)
 				: undefined
-		const settle = (done: () => void) => {
+		child.on("error", (err) => {
 			if (timer) clearTimeout(timer)
-			done()
-		}
-		child.on("error", (err) => settle(() => reject(err)))
+			reject(err)
+		})
 		child.on("close", (code) => {
-			if (code === 0) settle(() => resolve({ stdout, stderr }))
-			else settle(() => reject(new SandboxGitError(code ?? -1, stderr)))
+			if (timer) clearTimeout(timer)
+			if (code === 0) resolve({ stdout, stderr })
+			else reject(new SandboxGitError(code ?? -1, stderr))
 		})
 	})
 }

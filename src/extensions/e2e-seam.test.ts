@@ -32,14 +32,11 @@ describe("readE2eSeam", () => {
 	it("is dead outside a test harness — a stray seam var never reaches production", () => {
 		process.env[SEAM] = "1"
 		const savedVitest = process.env.VITEST
-		const savedWorkerId = process.env.VITEST_WORKER_ID
 		delete process.env.VITEST
-		delete process.env.VITEST_WORKER_ID
 		try {
 			expect(readE2eSeam(SEAM)).toBeUndefined()
 		} finally {
 			if (savedVitest !== undefined) process.env.VITEST = savedVitest
-			if (savedWorkerId !== undefined) process.env.VITEST_WORKER_ID = savedWorkerId
 		}
 	})
 })

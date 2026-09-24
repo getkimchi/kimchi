@@ -1217,7 +1217,7 @@ export default function (pi: ExtensionAPI) {
 					acpSessionId,
 					remoteOrigin: opts?.origin ?? "plan",
 					fermentId: opts?.fermentId,
-					gitWorkflow: rec?.gitWorkflow ?? opts?.gitWorkflow,
+					gitWorkflow: rec?.gitWorkflow,
 					outputFile: rec?.outputFile,
 					startedAt: rec?.startedAt ?? Date.now(),
 					status: "running",
