@@ -12,8 +12,11 @@ function todo(id: number, status: TodoItem["status"], note?: string): TodoItem {
 }
 
 describe("Ferment V2 lessons", () => {
-	it("keeps terminal todo notes after the todo leaves the current list", () => {
-		const lessons = updateFermentV2Lessons([], [todo(1, "completed", "Decision: keep the native session journal")])
+	it.each([
+		"completed",
+		"cancelled",
+	] as const)("keeps %s todo notes after the todo leaves the current list", (status) => {
+		const lessons = updateFermentV2Lessons([], [todo(1, status, "Decision: keep the native session journal")])
 
 		expect(lessons).toEqual([{ todoId: 1, kind: "decision", text: "keep the native session journal" }])
 		expect(updateFermentV2Lessons(lessons, [])).toEqual(lessons)

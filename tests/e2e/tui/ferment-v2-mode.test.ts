@@ -9,6 +9,60 @@ test.use(TUI_TEST_CONFIG)
 
 const COMPACTION_SUMMARY_MARKER = "FERMENT_V2_COMPACTION_SUMMARY"
 
+test("Ferment V2 completes with a cancelled approach and a verified replacement", async ({ terminal }) => {
+	const tool = (name: string, args: Record<string, unknown>): FakeResponseScript => ({
+		toolCalls: [{ id: `call-${name}`, function: { name, arguments: JSON.stringify(args) } }],
+	})
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-cancelled-approach",
+			seedHome: enableFermentV2Mode,
+			responses: [
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [
+						JSON.stringify({
+							verdict: "met",
+							checks: [
+								{
+									requirement: "Verify replacement",
+									met: true,
+									failureMode: "Replacement could fail; l2 records its verified result",
+									evidence: ["l2"],
+									todoIds: [2],
+								},
+							],
+							reason: "Replacement verified.",
+						}),
+					],
+				},
+				tool("create_todos", {
+					todos: [
+						{ content: "Old approach", status: "in_progress" },
+						{ content: "Verify replacement", status: "pending" },
+					],
+				}),
+				tool("mark_todo", { id: 1, status: "cancelled", note: "Decision: superseded by replacement" }),
+				tool("bash", { command: "printf 'replacement verified\\n'" }),
+				tool("mark_todo", { id: 2, status: "completed", note: "Evidence: replacement verified" }),
+				tool("update_ferment_v2", { status: "complete", completion_confidence: "tested" }),
+				{ stream: ["REPLACEMENT_COMPLETE"] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/ferment-v2 verify the replacement and retain the superseded approach as cancelled")
+			await waitForText(terminal, "REPLACEMENT_COMPLETE", { timeoutMs: 15_000 })
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			trace.step("Ferment accepts the verified replacement without reopening the cancelled approach")
+			terminal.submit("/todos")
+			await waitForText(terminal, "1/2 done · 0 active · 1 cancelled", { timeoutMs: 5_000, full: false })
+			expect(viewText(terminal)).toContain("Old approach (cancelled)")
+			trace.step("cancelled work and its reason remain visible separately from completed work")
+		},
+	)
+})
+
 test("stopping a run preserves a paused goal that can be edited, resumed and cleared", async ({ terminal }) => {
 	const objective = "Build a complete OAuth login and account linking migration with rollout safeguards"
 	await runKimchiSession(

@@ -81,12 +81,13 @@ function transcript(branch: readonly SessionEntry[]) {
 }
 
 async function evaluate(ctx: ExtensionContext, todos: TodoItem[], branch: SessionEntry[], signal: AbortSignal) {
-	if (!ctx.model) return
+	const model = ctx.model
+	if (!model) return
 	const entries = transcript(branch)
 	if (!entries.some((entry) => entry.role === "user")) return
 	let prompt = JSON.stringify({ todos, transcript: entries })
 	if (prompt.length > 32_000) return
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model)
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model)
 	if (!auth.ok) return
 	if (getRedactionConfig().enabled) prompt = await redactTextOrThrow(prompt)
 	signal.throwIfAborted()
@@ -96,11 +97,11 @@ async function evaluate(ctx: ExtensionContext, todos: TodoItem[], branch: Sessio
 		: SessionManager.inMemory(ctx.cwd)
 	audit.appendCustomEntry(INTERNAL_SESSION_ENTRY, { kind: "internal" })
 	audit.appendSessionInfo("Todo reconciliation")
-	audit.appendModelChange(ctx.model.provider, ctx.model.id)
+	audit.appendModelChange(model.provider, model.id)
 	const message = { role: "user" as const, content: prompt, timestamp: Date.now() }
 	audit.appendMessage(message)
 	const response = await completeSimple(
-		ctx.model,
+		model,
 		{
 			systemPrompt: SYSTEM,
 			messages: [message],

@@ -27,7 +27,8 @@ export function updateFermentV2Lessons(
 }
 
 function lessonFromTodo(todo: TodoItem): FermentV2Lesson | undefined {
-	if ((todo.status !== "completed" && todo.status !== "blocked") || !todo.note?.trim()) return undefined
+	if ((todo.status !== "completed" && todo.status !== "blocked" && todo.status !== "cancelled") || !todo.note?.trim())
+		return undefined
 
 	const note = todo.note.trim()
 	const prefix = note.match(NOTE_KIND_PREFIX)

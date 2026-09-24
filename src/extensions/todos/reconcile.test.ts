@@ -327,6 +327,33 @@ describe("settled todo reconciliation", () => {
 		expect(completeSimple).not.toHaveBeenCalled()
 	})
 
+	it("keeps the model and credentials paired when the user switches models during authentication", async () => {
+		const h = harness()
+		const original = createModel("model-a", "provider-a")
+		const replacement = createModel("model-b", "provider-b")
+		let current = original
+		Object.defineProperty(h.ctx, "model", { get: () => current })
+		let finishAuth!: (result: Awaited<ReturnType<typeof h.ctx.modelRegistry.getApiKeyAndHeaders>>) => void
+		const auth = new Promise<Awaited<ReturnType<typeof h.ctx.modelRegistry.getApiKeyAndHeaders>>>((resolve) => {
+			finishAuth = resolve
+		})
+		vi.mocked(h.ctx.modelRegistry.getApiKeyAndHeaders).mockReturnValue(auth)
+		await h.end()
+		const settling = h.settle()
+		expect(h.ctx.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledWith(original)
+		current = replacement
+		h.manager.appendModelChange(replacement.provider, replacement.id)
+		await h.fire("model_select", { model: replacement, previousModel: original, source: "set" })
+		finishAuth({ ok: true, apiKey: "provider-a-key", headers: { "x-provider": "a" } })
+		await settling
+		expect(completeSimple).toHaveBeenCalledWith(
+			original,
+			expect.anything(),
+			expect.objectContaining({ apiKey: "provider-a-key", headers: { "x-provider": "a" } }),
+		)
+		expect(h.todos()[0].status).toBe("completed")
+	})
+
 	it("leaves the global list to Ferment V2 until its journal is cleared", async () => {
 		const h = harness()
 		const run = createFermentV2(undefined, "Read inputs", "run", new Date().toISOString())
