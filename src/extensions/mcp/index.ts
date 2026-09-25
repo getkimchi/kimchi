@@ -15,6 +15,7 @@ import {
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
+import { installConsoleWarnRelay, trackConsoleWarnRelayContext } from "../console-warn-relay.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { loadKimchiMcpConfig } from "./config.js"
@@ -28,7 +29,6 @@ import {
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
-import { installMcpWarnRelay, trackMcpWarnRelayContext } from "./upstream-console.js"
 
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
@@ -234,7 +234,7 @@ export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensi
 function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterExtensionOptions): void {
 	installKeyringRequireBridge()
 	installMcpOAuthCallbackBranding()
-	installMcpWarnRelay()
+	installConsoleWarnRelay()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
@@ -252,7 +252,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
-		trackMcpWarnRelayContext(ctx)
+		trackConsoleWarnRelayContext(ctx)
 		if (!policy) {
 			const cliOptions = getParsedCliArgs().options
 			const overridePath = cliOptions["mcp-config"]

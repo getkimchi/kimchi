@@ -93,7 +93,7 @@ vi.mock("../permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
 }))
 
-import { resetMcpWarnRelayForTests } from "./upstream-console.js"
+import { resetConsoleWarnRelayForTests } from "../console-warn-relay.js"
 
 vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({
@@ -136,7 +136,7 @@ async function start(
 
 describe("upstream MCP adapter facade", () => {
 	afterEach(() => {
-		resetMcpWarnRelayForTests()
+		resetConsoleWarnRelayForTests()
 	})
 	beforeEach(() => {
 		upstream.api = undefined
@@ -596,7 +596,7 @@ describe("upstream MCP adapter facade", () => {
 		sink.mockRestore()
 	})
 
-	it("leaves non-MCP console.warn output on the terminal", async () => {
+	it("reroutes non-MCP console.warn output to the UI as well", async () => {
 		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
 		upstream.sessionStart.mockImplementation(() => {
 			console.warn("something else entirely")
@@ -605,8 +605,8 @@ describe("upstream MCP adapter facade", () => {
 		mcpAdapterExtension(harness.api)
 		const ctx = await start(harness)
 
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("something else"), "warning")
-		expect(sink).toHaveBeenCalledWith("something else entirely")
+		expect(ctx.ui.notify).toHaveBeenCalledWith("something else entirely", "warning")
+		expect(sink).not.toHaveBeenCalled()
 		sink.mockRestore()
 	})
 
