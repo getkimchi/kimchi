@@ -24,11 +24,13 @@ test("gh-cli/glab-cli ship as cataloged bundled skills, not eager prompt bodies"
 
 			// The skills catalog advertises both skills with their descriptions —
 			// that entry is the only standing prompt surface for the CLIs.
-			expect(prompt).toContain("<available_skills>")
-			expect(prompt).toContain("gh-cli")
+			expect(prompt).toContain("## Skills")
+			expect(prompt).toContain("**gh-cli**")
 			expect(prompt).toContain("GitHub CLI")
-			expect(prompt).toContain("glab-cli")
+			expect(prompt).toContain("**glab-cli**")
 			expect(prompt).toContain("GitLab CLI")
+			// Codex-style markdown catalog: no XML tags in the prompt.
+			expect(prompt).not.toContain("<available_skills>")
 
 			// The eager body content is gone from the prompt — it enters context
 			// only when the agent reads the skill file.

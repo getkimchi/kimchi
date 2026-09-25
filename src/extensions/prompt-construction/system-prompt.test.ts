@@ -250,9 +250,20 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("available_skills")
-			expect(result).toContain("deploy")
+			expect(result).toContain("## Skills")
+			expect(result).toContain("**deploy**")
 			expect(result).toContain("Deploy the app to production")
+			expect(result).toContain("SKILL.md")
+			// Codex-style markdown catalog: name + description, no XML tags.
+			expect(result).not.toContain("<available_skills>")
+		})
+
+		it("truncates over-budget skill descriptions at a word boundary", () => {
+			const long = "A very long description. ".repeat(20)
+			const skills = [createSkill({ name: "verbose", description: long })]
+			const result = buildSystemPrompt({ tools, env: testEnv, skills, mode: "single" })
+			expect(result).toContain("…")
+			expect(result).not.toContain(long.trim())
 		})
 
 		it("excludes skills with disableModelInvocation", () => {
@@ -534,7 +545,7 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "subagent",
 			})
-			expect(result).toContain("available_skills")
+			expect(result).toContain("## Skills")
 			expect(result).toContain("deploy")
 		})
 

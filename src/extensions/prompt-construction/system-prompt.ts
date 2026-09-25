@@ -7,7 +7,7 @@
  * subagent and single-model content lives in this file.
  */
 
-import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
@@ -539,7 +539,34 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 	return `## Project Guidelines\n\n${combined}`
 }
 
+/** Render-time description budget per skill (Codex-style metadata budget:
+ *  name + a bounded description always ride in the prompt, the body loads on
+ *  demand). Long authored descriptions are truncated at a word boundary. */
+const SKILL_DESCRIPTION_MAX_CHARS = 200
+
+function truncateDescription(description: string): string {
+	const trimmed = description.trim()
+	if (trimmed.length <= SKILL_DESCRIPTION_MAX_CHARS) return trimmed
+	const cut = trimmed.slice(0, SKILL_DESCRIPTION_MAX_CHARS)
+	const lastSpace = cut.lastIndexOf(" ")
+	return `${lastSpace > 0 ? cut.slice(0, lastSpace) : cut}…`
+}
+
+/** Markdown skills catalog — same formatting language as the rest of the
+ *  prompt (no XML). Name + description are always in context; the SKILL.md
+ *  body enters only when the agent reads the file. Mirrors the Codex
+ *  three-level loading model (metadata → body → scripts). */
 function formatSkills(skills?: readonly Skill[]): string {
-	if (!skills || skills.length === 0) return ""
-	return formatSkillsForPrompt(skills as Skill[])
+	const visible = (skills ?? []).filter((skill) => !skill.disableModelInvocation)
+	if (visible.length === 0) return ""
+	const lines = [
+		"## Skills",
+		"",
+		"The following skills provide specialized instructions for specific tasks. When a task matches a skill's description, read its SKILL.md with the read tool and follow it. Resolve paths referenced inside a skill file against that file's directory.",
+		"",
+	]
+	for (const skill of visible) {
+		lines.push(`- **${skill.name}** — ${truncateDescription(skill.description)} (\`${skill.filePath}\`)`)
+	}
+	return lines.join("\n")
 }

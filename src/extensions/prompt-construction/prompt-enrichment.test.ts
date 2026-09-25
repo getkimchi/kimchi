@@ -344,8 +344,8 @@ describe("prompt enrichment skills", () => {
 			createContext({ cwd, hasUI: false }),
 		)) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("## Skills")
+		expect(result.systemPrompt).toContain("**typescript-safety**")
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
 	})
 

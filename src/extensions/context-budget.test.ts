@@ -59,10 +59,10 @@ const BUDGET = {
 	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
 	systemPrompt: 2050,
 	/** Sum of name + description chars across resources/skills frontmatter,
-	 * including create-skill and the new gh-cli/glab-cli bundled skills
-	 * (raised 105 → 300 deliberately in the gh/glab → skills PR: the bodies
-	 *  moved out of the eager prompt, so only name+description ride the
-	 *  catalog; ~10% headroom over the measured 272). */
+	 * including create-skill and the gh-cli/glab-cli bundled skills. Rendered
+	 * as a Codex-style markdown catalog (name + description capped at 200
+	 * chars + path; no XML). Budget unchanged by the format switch: the sum
+	 * metric is capped only at render time, ~10% headroom over measured. */
 	skillsCatalog: 300,
 	/** Total canonical system-prompt + skills surface (raised 2150 → 2350
 	 *  with the skillsCatalog raise above). */
