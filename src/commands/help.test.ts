@@ -1,8 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { printMergedHelp } from "./help.js"
+import { installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
 
 describe("printMergedHelp", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
@@ -10,7 +8,7 @@ describe("printMergedHelp", () => {
 
 	// Isolate package-command discovery from the real machine state.
 	beforeEach(() => {
-		agentDir = mkdtempSync(join(tmpdir(), "kimchi-help-test-"))
+		agentDir = setupFakeAgentDir()
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 	})
@@ -18,7 +16,7 @@ describe("printMergedHelp", () => {
 	afterEach(() => {
 		logSpy.mockRestore()
 		vi.unstubAllEnvs()
-		rmSync(agentDir, { recursive: true, force: true })
+		teardownFakeAgentDir(agentDir)
 	})
 
 	it("includes the multi-model, model, and provider flags", async () => {
@@ -57,14 +55,7 @@ describe("printMergedHelp", () => {
 	})
 
 	it("lists installed package commands with their providing package", async () => {
-		const pkgRoot = join(agentDir, "npm", "node_modules", "@fake/help")
-		mkdirSync(join(pkgRoot, "dist"), { recursive: true })
-		writeFileSync(
-			join(pkgRoot, "package.json"),
-			JSON.stringify({ name: "@fake/help", type: "module", kimchi: { commands: { hello: "./dist/hello.js" } } }),
-		)
-		writeFileSync(join(pkgRoot, "dist", "hello.js"), "export async function run() { return 0 }\n")
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:@fake/help"] }))
+		installFakePackage(agentDir, "@fake/help", { hello: "./dist/hello.js" })
 
 		await printMergedHelp()
 

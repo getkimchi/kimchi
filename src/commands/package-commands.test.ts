@@ -1,57 +1,30 @@
-import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { findPackageCommand, listPackageCommands, type PackageCommand, runPackageCommand } from "./package-commands.js"
+import {
+	ECHO_MODULE,
+	installFakePackage,
+	setupFakeAgentDir,
+	teardownFakeAgentDir,
+	writeSettings,
+} from "./test-helpers.js"
 
 let agentDir: string
 
 beforeEach(() => {
-	agentDir = mkdtemp()
+	agentDir = setupFakeAgentDir()
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 })
 
 afterEach(() => {
+	teardownFakeAgentDir(agentDir)
 	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
 })
 
-function mkdtemp(): string {
-	const dir = join(process.cwd(), ".tmp-package-commands-test", `${Date.now()}-${Math.random().toString(36).slice(2)}`)
-	mkdirSync(dir, { recursive: true })
-	return dir
-}
-
-function writePackage(name: string, manifest: Record<string, unknown>, modules: Record<string, string> = {}): void {
-	const pkgRoot = join(agentDir, "npm", "node_modules", name)
-	mkdirSync(pkgRoot, { recursive: true })
-	writeFileSync(join(pkgRoot, "package.json"), JSON.stringify({ name, type: "module", ...manifest }, null, 2))
-	for (const [relPath, content] of Object.entries(modules)) {
-		const target = join(pkgRoot, relPath)
-		mkdirSync(join(target, ".."), { recursive: true })
-		writeFileSync(target, content)
-	}
-}
-
-function writeSettings(packages: string[]): void {
-	mkdirSync(agentDir, { recursive: true })
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages }, null, 2))
-}
-
-const HELLO_MODULE = `
-export async function run(args) {
-	console.log("hello " + args.join(" "))
-	return 7
-}
-`
-
 describe("package-commands discovery", () => {
 	it("finds commands declared by an installed package", () => {
-		writeSettings(["npm:@fake/commands"])
-		writePackage(
-			"@fake/commands",
-			{ kimchi: { commands: { hello: "./dist/hello.js" } } },
-			{ "dist/hello.js": HELLO_MODULE },
-		)
+		installFakePackage(agentDir, "@fake/commands", { hello: "./dist/hello.js" }, { "dist/hello.js": ECHO_MODULE })
 
 		const command = findPackageCommand("hello")
 
@@ -63,12 +36,15 @@ describe("package-commands discovery", () => {
 	})
 
 	it("is unaffected by pi packages without a kimchi manifest (strictly additive)", () => {
-		writeSettings(["npm:@fake/pi-only"])
-		writePackage(
-			"@fake/pi-only",
-			{ pi: { extensions: ["./src/ext.ts"] } },
-			{ "src/ext.ts": "export default function () {}" },
+		writeSettings(agentDir, ["npm:@fake/pi-only"])
+		const pkgRoot = join(agentDir, "npm", "node_modules", "@fake/pi-only")
+		const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
+		mkdirSync(join(pkgRoot, "src"), { recursive: true })
+		writeFileSync(
+			join(pkgRoot, "package.json"),
+			JSON.stringify({ name: "@fake/pi-only", type: "module", pi: { extensions: ["./src/ext.ts"] } }),
 		)
+		writeFileSync(join(pkgRoot, "src", "ext.ts"), "export default function () {}")
 
 		expect(findPackageCommand("hello")).toBeUndefined()
 		expect(listPackageCommands()).toEqual([])
@@ -77,37 +53,70 @@ describe("package-commands discovery", () => {
 	it("returns nothing without settings.json, with corrupt settings, or for non-npm sources", () => {
 		expect(findPackageCommand("hello")).toBeUndefined()
 
+		const { writeFileSync } = require("node:fs") as typeof import("node:fs")
 		writeFileSync(join(agentDir, "settings.json"), "{not json")
 		expect(findPackageCommand("hello")).toBeUndefined()
 
-		writeSettings(["git:https://example.com/pkg", "path:../local"])
+		writeSettings(agentDir, ["git:https://example.com/pkg", "path:../local"])
 		expect(findPackageCommand("hello")).toBeUndefined()
 	})
 
 	it("lets the first package in settings order win a name collision", () => {
-		writeSettings(["npm:@fake/first", "npm:@fake/second"])
-		writePackage("@fake/first", { kimchi: { commands: { hello: "./dist/one.js" } } }, { "dist/one.js": HELLO_MODULE })
-		writePackage("@fake/second", { kimchi: { commands: { hello: "./dist/two.js" } } }, { "dist/two.js": HELLO_MODULE })
+		writeSettings(agentDir, ["npm:@fake/first", "npm:@fake/second"])
+		const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
+		for (const name of ["@fake/first", "@fake/second"]) {
+			const pkgRoot = join(agentDir, "npm", "node_modules", name)
+			mkdirSync(join(pkgRoot, "dist"), { recursive: true })
+			writeFileSync(
+				join(pkgRoot, "package.json"),
+				JSON.stringify({ name, type: "module", kimchi: { commands: { hello: "./dist/one.js" } } }),
+			)
+		}
 
 		expect(findPackageCommand("hello")?.packageName).toBe("@fake/first")
 	})
 
+	it("skips an npm: entry whose package name escapes the node_modules root", () => {
+		writeSettings(agentDir, ["npm:../../outside"])
+
+		expect(findPackageCommand("hello")).toBeUndefined()
+	})
+
+	it("skips manifest entries escaping the package root", () => {
+		installFakePackage(agentDir, "@fake/escape", { hello: "../../../outside.js" })
+
+		expect(findPackageCommand("hello")).toBeUndefined()
+	})
+
+	it("never looks up flags or empty names", () => {
+		installFakePackage(agentDir, "@fake/commands", { hello: "./dist/hello.js" }, { "dist/hello.js": ECHO_MODULE })
+
+		expect(findPackageCommand("--version")).toBeUndefined()
+		expect(findPackageCommand("")).toBeUndefined()
+	})
+
+	it("lists all commands sorted by name", () => {
+		installFakePackage(
+			agentDir,
+			"@fake/commands",
+			{ zebra: "./dist/zebra.js", alpha: "./dist/alpha.js" },
+			{ "dist/zebra.js": ECHO_MODULE, "dist/alpha.js": ECHO_MODULE },
+		)
+
+		expect(listPackageCommands().map((c) => c.name)).toEqual(["alpha", "zebra"])
+	})
+
 	it("never discovers kimchi built-in or pi CLI command names", () => {
-		writeSettings(["npm:@fake/shadow"])
-		writePackage("@fake/shadow", {
-			kimchi: {
-				commands: {
-					version: "./dist/version.js", // kimchi built-in
-					memory: "./dist/memory.js", // kimchi built-in
-					install: "./dist/install.js", // pi installer
-					update: "./dist/update.js", // pi updater
-					config: "./dist/config.js", // pi config TUI
-					list: "./dist/list.js", // pi list
-					remove: "./dist/remove.js", // pi remove
-					uninstall: "./dist/uninstall.js", // pi uninstall alias
-					workspace: "./dist/workspace.js", // allowed
-				},
-			},
+		installFakePackage(agentDir, "@fake/shadow", {
+			version: "./dist/shadow.js",
+			memory: "./dist/shadow.js",
+			install: "./dist/shadow.js",
+			update: "./dist/shadow.js",
+			config: "./dist/shadow.js",
+			list: "./dist/shadow.js",
+			remove: "./dist/shadow.js",
+			uninstall: "./dist/shadow.js",
+			workspace: "./dist/workspace.js",
 		})
 
 		for (const reserved of ["version", "memory", "install", "update", "config", "list", "remove", "uninstall"]) {
@@ -115,76 +124,39 @@ describe("package-commands discovery", () => {
 		}
 		expect(listPackageCommands().map((c) => c.name)).toEqual(["workspace"])
 	})
-
-	it("skips manifest entries escaping the package root", () => {
-		writeSettings(["npm:@fake/escape"])
-		writePackage("@fake/escape", { kimchi: { commands: { hello: "../../../outside.js" } } })
-
-		expect(findPackageCommand("hello")).toBeUndefined()
-	})
-
-	it("never looks up flags or empty names", () => {
-		writeSettings(["npm:@fake/commands"])
-		writePackage(
-			"@fake/commands",
-			{ kimchi: { commands: { hello: "./dist/hello.js" } } },
-			{ "dist/hello.js": HELLO_MODULE },
-		)
-
-		expect(findPackageCommand("--version")).toBeUndefined()
-		expect(findPackageCommand("")).toBeUndefined()
-	})
-
-	it("lists all commands sorted by name", () => {
-		writeSettings(["npm:@fake/commands"])
-		writePackage(
-			"@fake/commands",
-			{ kimchi: { commands: { zebra: "./dist/zebra.js", alpha: "./dist/alpha.js" } } },
-			{ "dist/zebra.js": HELLO_MODULE, "dist/alpha.js": HELLO_MODULE },
-		)
-
-		expect(listPackageCommands().map((c) => c.name)).toEqual(["alpha", "zebra"])
-	})
 })
 
 describe("runPackageCommand", () => {
-	it("runs the module and returns its exit code", async () => {
-		writeSettings(["npm:@fake/commands"])
-		writePackage(
-			"@fake/commands",
-			{ kimchi: { commands: { hello: "./dist/hello.js" } } },
-			{ "dist/hello.js": HELLO_MODULE },
-		)
-		const command: PackageCommand = {
+	function commandFor(packageName: string, moduleRel: string): PackageCommand {
+		return {
 			name: "hello",
-			packageName: "@fake/commands",
-			modulePath: join(agentDir, "npm", "node_modules", "@fake/commands", "dist/hello.js"),
+			packageName,
+			modulePath: join(agentDir, "npm", "node_modules", packageName, moduleRel),
 		}
+	}
+
+	it("runs the module and returns its exit code", async () => {
+		installFakePackage(agentDir, "@fake/commands", { hello: "./dist/hello.js" }, { "dist/hello.js": ECHO_MODULE })
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 
-		const code = await runPackageCommand(command, ["world"])
+		const code = await runPackageCommand(commandFor("@fake/commands", "dist/hello.js"), ["world"])
 
 		expect(code).toBe(7)
-		expect(logSpy).toHaveBeenCalledWith("hello world")
+		expect(logSpy).toHaveBeenCalledWith("package ran: world")
 	})
 
 	it("maps a missing run() export to a clean error and exit 1", async () => {
-		writeSettings(["npm:@fake/commands"])
-		writePackage(
+		installFakePackage(
+			agentDir,
 			"@fake/commands",
-			{ kimchi: { commands: { hello: "./dist/no-run.js" } } },
+			{ hello: "./dist/no-run.js" },
 			{
 				"dist/no-run.js": "export const something = 1",
 			},
 		)
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-		const command: PackageCommand = {
-			name: "hello",
-			packageName: "@fake/commands",
-			modulePath: join(agentDir, "npm", "node_modules", "@fake/commands", "dist/no-run.js"),
-		}
 
-		const code = await runPackageCommand(command, [])
+		const code = await runPackageCommand(commandFor("@fake/commands", "dist/no-run.js"), [])
 
 		expect(code).toBe(1)
 		expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("exports no run()"))
@@ -192,33 +164,53 @@ describe("runPackageCommand", () => {
 
 	it("maps an import failure to a clean error and exit 1", async () => {
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-		const command: PackageCommand = {
-			name: "hello",
-			packageName: "@fake/commands",
-			modulePath: join(agentDir, "npm", "node_modules", "@fake/commands", "dist/missing.js"),
-		}
 
-		const code = await runPackageCommand(command, [])
+		const code = await runPackageCommand(commandFor("@fake/commands", "dist/missing.js"), [])
 
 		expect(code).toBe(1)
 		expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('failed to load "hello"'))
 	})
 
+	it("maps a throwing run() to a clean error and exit 1", async () => {
+		installFakePackage(
+			agentDir,
+			"@fake/throwing",
+			{ hello: "./dist/throw.js" },
+			{
+				"dist/throw.js": "export async function run() { throw new Error('boom') }",
+			},
+		)
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const code = await runPackageCommand(commandFor("@fake/throwing", "dist/throw.js"), [])
+
+		expect(code).toBe(1)
+		expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("failed: boom"))
+	})
+
 	it("treats an undefined return as exit 0", async () => {
-		writeSettings(["npm:@fake/commands"])
-		writePackage(
+		installFakePackage(
+			agentDir,
 			"@fake/commands",
-			{ kimchi: { commands: { hello: "./dist/void.js" } } },
+			{ hello: "./dist/void.js" },
 			{
 				"dist/void.js": "export async function run() {}",
 			},
 		)
-		const command: PackageCommand = {
-			name: "hello",
-			packageName: "@fake/commands",
-			modulePath: join(agentDir, "npm", "node_modules", "@fake/commands", "dist/void.js"),
-		}
 
-		expect(await runPackageCommand(command, [])).toBe(0)
+		expect(await runPackageCommand(commandFor("@fake/commands", "dist/void.js"), [])).toBe(0)
+	})
+
+	it("treats a non-integer return as exit 0", async () => {
+		installFakePackage(
+			agentDir,
+			"@fake/commands",
+			{ hello: "./dist/garbage.js" },
+			{
+				"dist/garbage.js": "export async function run() { return 'not a number' }",
+			},
+		)
+
+		expect(await runPackageCommand(commandFor("@fake/commands", "dist/garbage.js"), [])).toBe(0)
 	})
 })

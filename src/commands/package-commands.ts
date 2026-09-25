@@ -90,6 +90,10 @@ function discoverPackageCommands(): Map<string, PackageCommand> {
 		if (typeof entry !== "string" || !entry.startsWith("npm:")) continue
 		const packageName = entry.slice("npm:".length)
 		const pkgRoot = join(dir, "npm", "node_modules", packageName)
+		// Defense-in-depth: an npm: entry containing ../ resolves outside the
+		// package store — skip it (same trust model as the module-path check).
+		const npmRoot = resolve(dir, "npm", "node_modules")
+		if (!resolve(pkgRoot).startsWith(npmRoot + sep)) continue
 		const pkgJsonPath = join(pkgRoot, "package.json")
 		if (!existsSync(pkgJsonPath)) continue
 
@@ -136,6 +140,16 @@ export async function runPackageCommand(command: PackageCommand, args: string[])
 		console.error(`✗ ${command.packageName} declares "${command.name}" but its module exports no run()`)
 		return 1
 	}
-	const code = await (mod.run as (args: string[]) => Promise<number | undefined>)(args)
-	return code ?? 0
+	let code: unknown
+	try {
+		code = await (mod.run as (args: string[]) => Promise<unknown>)(args)
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err)
+		console.error(`✗ "${command.name}" from ${command.packageName} failed: ${detail}`)
+		return 1
+	}
+	// A package returning a non-number (or undefined) must not leak into
+	// process.exit() — coerce garbage to 0, not a stack trace.
+	if (typeof code === "number" && Number.isInteger(code)) return code
+	return 0
 }
