@@ -170,6 +170,25 @@ describe("ACP integration — project trust surfacing", () => {
 			const denyResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, { sessionId, decision: "deny" })
 			expect(denyResult).toEqual({ trusted: false, blocked: ["skills"] })
 			expect(existsSync(trustPath)).toBe(false)
+
+			// trust_session is the mirror: the gate opens live (skills load) but
+			// nothing is persisted — a new session on the same cwd asks again.
+			const sessionResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, {
+				sessionId,
+				decision: "trust_session",
+			})
+			expect(sessionResult).toEqual({ trusted: true, blocked: [] })
+			expect(existsSync(trustPath)).toBe(false)
+			await waitFor(
+				() => commandNames(fixture, sessionId),
+				(names) => names.includes("skill:e2e-invalid-skill"),
+			)
+			const followUpSession = await newSession(fixture, fixture.workDir)
+			const followUp = await waitFor(
+				() => lastTrustUpdate(fixture, followUpSession),
+				(u) => u !== undefined,
+			)
+			expect(followUp?.trusted).toBe(false)
 		},
 		STARTUP_TIMEOUT_MS + WAIT_MS,
 	)

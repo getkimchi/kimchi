@@ -1777,6 +1777,9 @@ export class KimchiAcpAgent implements Agent {
 	 *
 	 * - "trust" / "deny_persist" persist via pi's ProjectTrustStore (canonical
 	 *   keying is the store's job — the /var vs /private/var trap lives there).
+	 * - "trust_session" opens the gate for this connection only — the mirror
+	 *   of "deny": skills load live, but nothing is stored and the next
+	 *   session asks again.
 	 * - "deny" keeps the decision in-memory for this connection only.
 	 * - The kimchi project-scope gate is updated immediately, and the skill
 	 *   palette + system-prompt skill list refresh live on BOTH grant and
@@ -1802,10 +1805,13 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
 		}
 		const decision = parseProjectTrustDecision(params.decision)
-		const trusted = decision === "trust"
+		const trusted = decision === "trust" || decision === "trust_session"
 		const cwd = record.cwd
 
-		if (decision !== "deny") {
+		// Only "trust" (grant) and "deny_persist" (stored refusal) touch the
+		// trust store; "trust_session" and "deny" stay in-memory for this
+		// connection, leaving any stored decision to govern new sessions.
+		if (decision === "trust" || decision === "deny_persist") {
 			new ProjectTrustStore(this.agentDir).set(cwd, trusted)
 		}
 		setProjectScopeTrusted(cwd, trusted)

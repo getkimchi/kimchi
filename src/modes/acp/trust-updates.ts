@@ -26,8 +26,8 @@ import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 /** Coarse categories the project-trust gate can hold back for a cwd. */
 export type BlockedTrustCategory = "skills" | "project_config" | "pi_settings"
 
-/** Tri-state client decision on the trust survey. */
-export type ProjectTrustDecision = "trust" | "deny" | "deny_persist"
+/** Trust-survey decisions. Mirrored from the TUI prompt's options. */
+export type ProjectTrustDecision = "trust" | "trust_session" | "deny" | "deny_persist"
 
 /** Push payload delivered as the `_kimchi.dev/project_trust_update` extNotification. */
 export interface ProjectTrustUpdate {
@@ -101,12 +101,12 @@ export function notifyProjectTrustUpdate(conn: AgentSideConnection, update: Proj
 /**
  * Validate the `decision` param of `_kimchi.dev/set_project_trust`.
  *
- * @throws RequestError.invalidParams for anything but the three known values.
+ * @throws RequestError.invalidParams for anything but the four known values.
  */
 export function parseProjectTrustDecision(raw: unknown): ProjectTrustDecision {
-	if (raw === "trust" || raw === "deny" || raw === "deny_persist") return raw
+	if (raw === "trust" || raw === "trust_session" || raw === "deny" || raw === "deny_persist") return raw
 	throw RequestError.invalidParams(
 		undefined,
-		`decision must be one of "trust", "deny", "deny_persist" (got ${JSON.stringify(raw)})`,
+		`decision must be one of "trust", "trust_session", "deny", "deny_persist" (got ${JSON.stringify(raw)})`,
 	)
 }
