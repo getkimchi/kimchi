@@ -7,6 +7,7 @@ import type { ConfigMode } from "./state.js"
 
 export interface ApplyOutcome {
 	successes: string[]
+	skipped: string[]
 	failures: Array<{ id: string; error: string }>
 }
 
@@ -29,7 +30,7 @@ export async function applyToolConfigs(options: {
 	models: readonly ModelMetadata[]
 }): Promise<ApplyOutcome> {
 	const { selectedTools, apiKey, scope, mode, telemetryEnabled, models } = options
-	const outcome: ApplyOutcome = { successes: [], failures: [] }
+	const outcome: ApplyOutcome = { successes: [], skipped: [], failures: [] }
 
 	for (const id of selectedTools) {
 		const tool = byId(id)
@@ -55,7 +56,14 @@ export async function applyToolConfigs(options: {
 			log.info(`Configuring ${tool.name}…`)
 		}
 		try {
-			await tool.write(scope, apiKey, models, { telemetryEnabled })
+			const result = await tool.write(scope, apiKey, models, { telemetryEnabled })
+			if (result === "skipped") {
+				outcome.skipped.push(tool.name)
+				const message = `${tool.name}: skipped (configuration left unchanged)`
+				if (s) s.stop(message)
+				else log.info(message)
+				continue
+			}
 			outcome.successes.push(tool.name)
 			if (s) s.stop(`${tool.name}: configured`)
 			else log.info(`${tool.name}: configured`)

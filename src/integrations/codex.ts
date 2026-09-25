@@ -1,9 +1,13 @@
 import { mkdirSync, readFileSync } from "node:fs"
 import { dirname } from "node:path"
+import { log } from "@clack/prompts"
+import { parse, stringify, TomlDate, type TomlTable } from "smol-toml"
 import { writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
+import { confirm } from "../setup-wizard/prompt.js"
+import { backupToolConfig } from "./config-backup.js"
 import { BASE_URL, PROVIDER_NAME } from "./constants.js"
 import { detectBinaryFactory } from "./detect.js"
 import { resolveModelRole } from "./models.js"
@@ -116,77 +120,50 @@ export function buildModelCatalog(models: readonly ModelMetadata[]): CodexModelC
 	return { models: entries }
 }
 
-const TOP_LEVEL_KIMCHI_KEYS = new Set(["model_provider", "model", "model_catalog_json"])
-const KIMCHI_PROVIDER_SECTION = `model_providers.${PROVIDER_NAME}`
+/** Get the provider table without accepting a scalar/array that setup would destroy. */
+function providersTable(config: TomlTable): TomlTable {
+	const providers = config.model_providers ?? {}
+	if (typeof providers !== "object" || Array.isArray(providers) || providers instanceof TomlDate) {
+		throw new Error("Codex model_providers must be a TOML table. No changes written.")
+	}
+	return providers
+}
 
 /**
- * Merge freshly-generated kimchi Codex config on top of an existing
- * config.toml. Strips the old `[model_providers.kimchi]` block and the
- * top-level `model_provider` / `model` / `model_catalog_json` keys, then
- * prepends `freshToml` to whatever user-owned sections remain (e.g.
- * `[plugins]`, `[features]`, `[projects]`, `[marketplaces]`).
- *
- * Blank-line runs are collapsed to a single blank line so the rewritten
- * file stays readable.
- *
- * @param existingText - Raw contents of an existing `~/.codex/config.toml` (empty string if absent).
- * @param freshToml    - Newly-generated TOML to take precedence.
+ * Replace only the selected model, catalog and Kimchi provider. Parsing keeps
+ * user settings in their original tables, including quoted keys and multiline
+ * values. Serialization normalizes formatting; the backup retains comments.
  */
 export function mergeCodexToml(existingText: string, freshToml: string): string {
-	const lines = existingText.split("\n")
-	const kept: string[] = []
-	let inKimchiProviderSection = false
-	let inAnySection = false
-
-	for (const line of lines) {
-		// Match a [section] header. We deliberately do not match [[array.of.tables]]
-		// here — those keep their content untouched so user-defined project lists
-		// survive a refresh.
-		const headerMatch = line.match(/^\s*\[([^[\]]+)\]\s*$/)
-		if (headerMatch) {
-			const sectionName = headerMatch[1].trim()
-			inKimchiProviderSection = sectionName === KIMCHI_PROVIDER_SECTION
-			inAnySection = true
-			if (inKimchiProviderSection) {
-				// Drop the header — freshToml re-emits it.
-				continue
-			}
-			kept.push(line)
-			continue
-		}
-
-		// Match [[array.of.tables]] headers. These are user-owned sections
-		// (e.g. [[projects]]) — never part of the kimchi provider block.
-		const arrayHeaderMatch = line.match(/^\s*\[\[(.+)\]\]\s*$/)
-		if (arrayHeaderMatch) {
-			inKimchiProviderSection = false
-			inAnySection = true
-			kept.push(line)
-			continue
-		}
-
-		// Body of the kimchi provider section: skip until the next header.
-		if (inKimchiProviderSection) continue
-
-		// Top-level keys: only strip before we enter any table. Inside a table,
-		// `model`/`model_provider` would refer to a nested key — leave those alone.
-		if (!inAnySection) {
-			const keyMatch = line.match(/^([A-Za-z0-9_-]+)\s*=/)
-			if (keyMatch && TOP_LEVEL_KIMCHI_KEYS.has(keyMatch[1])) continue
-		}
-
-		kept.push(line)
+	let existing: TomlTable
+	let fresh: TomlTable
+	try {
+		existing = parse(existingText, { integersAsBigInt: true })
+	} catch {
+		// Parser errors include source excerpts, which may contain API keys.
+		throw new Error("Codex config is invalid TOML. No changes written.")
 	}
+	try {
+		fresh = parse(freshToml, { integersAsBigInt: true })
+	} catch {
+		throw new Error("Generated Codex config is invalid TOML. No changes written.")
+	}
+	const merged = {
+		...existing,
+		...fresh,
+		model_providers: { ...providersTable(existing), ...providersTable(fresh) },
+	}
+	return stringify(merged, { numbersAsFloat: true })
+}
 
-	// Collapse runs of blank lines, then strip leading/trailing whitespace so
-	// the separator between freshToml and existing stays tidy.
-	const collapsed = kept
-		.join("\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.replace(/^\n+|\n+$/g, "")
-
-	if (collapsed.length === 0) return freshToml
-	return `${freshToml}\n${collapsed}\n`
+function readExistingText(path: string): string | undefined {
+	try {
+		return readFileSync(path, "utf-8")
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined
+		const code = error instanceof Error && "code" in error && typeof error.code === "string" ? ` (${error.code})` : ""
+		throw new Error(`Could not read Codex configuration at ${path}${code}. No changes written.`, { cause: error })
+	}
 }
 
 async function writeCodex(
@@ -194,7 +171,7 @@ async function writeCodex(
 	apiKey: string,
 	models: readonly ModelMetadata[],
 	_options?: { telemetryEnabled?: boolean },
-): Promise<void> {
+): Promise<undefined | "skipped"> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
 	}
@@ -207,21 +184,48 @@ async function writeCodex(
 
 	mkdirSync(dirname(configPath), { recursive: true })
 
-	let existingText = ""
-	try {
-		existingText = readFileSync(configPath, "utf-8")
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
-	}
+	const existingText = readExistingText(configPath) ?? ""
+	const existingCatalog = readExistingText(catalogPath)
 
 	const main = resolveModelRole(models, "main")
 	const mainSlug = main?.slug ?? models[0].slug
 
 	const freshToml = buildCodexToml(apiKey, mainSlug, catalogPath)
 	const merged = mergeCodexToml(existingText, freshToml)
+	const catalog = buildModelCatalog(models)
+	const configChanged = merged !== existingText
+	const catalogChanged = `${JSON.stringify(catalog, null, 2)}\n` !== existingCatalog
+	if (!configChanged && !catalogChanged) {
+		log.info("Codex configuration is already up to date.")
+		return
+	}
 
-	writeFileAtomic(configPath, merged)
-	writeJson(catalogPath, buildModelCatalog(models))
+	const changes: string[] = []
+	if (configChanged) {
+		changes.push(
+			`This switches Codex's default model and provider to Kimchi in ${configPath}, ` +
+				"including when you launch codex directly. Existing settings are preserved, but TOML comments and formatting are rewritten.",
+		)
+	}
+	if (catalogChanged) changes.push(`The model catalog at ${catalogPath} will be replaced.`)
+	changes.push("Existing files that change will be backed up before writing.")
+	log.warn(changes.join(" "))
+	if (process.stdin.isTTY) {
+		const answer = await confirm({
+			message: "Apply these changes to Codex configuration?",
+			initialValue: false,
+			backable: false,
+		})
+		if (answer.kind !== "next" || !answer.value) return "skipped"
+	}
+
+	// Complete all required backups before writing either file.
+	if (configChanged) backupToolConfig(configPath)
+	if (catalogChanged) backupToolConfig(catalogPath)
+	// Publish the catalog before switching the model that references it. These
+	// writes are not a transaction; retained backups recover a partial update.
+	if (catalogChanged) writeJson(catalogPath, catalog)
+	if (configChanged) writeFileAtomic(configPath, merged)
 }
 
 register({
@@ -232,4 +236,5 @@ register({
 	binaryName: "codex",
 	isInstalled: detectBinaryFactory("codex"),
 	write: writeCodex,
+	interactiveWrite: true,
 })

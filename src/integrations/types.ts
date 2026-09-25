@@ -3,6 +3,9 @@ import type { ModelMetadata } from "../models.js"
 
 export type ToolId = "opencode" | "claudecode" | "cursor" | "openclaw" | "gsd2" | "codex"
 
+// biome-ignore lint/suspicious/noConfusingVoidType: Preserve compatibility with existing Promise<void> writers.
+export type ToolWriteResult = void | "skipped"
+
 /**
  * A configurable third-party tool that kimchi can point at the kimchi LLM
  * proxy. Each tool ships its own `write(scope, apiKey)` that mutates the
@@ -25,11 +28,11 @@ export interface ToolDefinition {
 	interactiveWrite?: boolean
 	/** Detect whether the tool is installed locally (PATH probe, well-known dir, etc). */
 	isInstalled: () => boolean
-	/** Write configuration so this tool talks to kimchi's LLM endpoints. */
+	/** Write configuration, or return "skipped" when the user declines the change. */
 	write: (
 		scope: ConfigScope,
 		apiKey: string,
 		models: readonly ModelMetadata[],
 		options?: { telemetryEnabled?: boolean },
-	) => Promise<void>
+	) => Promise<ToolWriteResult>
 }

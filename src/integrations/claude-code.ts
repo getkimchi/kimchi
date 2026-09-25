@@ -6,6 +6,7 @@ import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
 import { confirm } from "../setup-wizard/prompt.js"
+import { backupToolConfig } from "./config-backup.js"
 import { ANTHROPIC_BASE_URL } from "./constants.js"
 import { detectBinaryFactory, findBinary } from "./detect.js"
 import { register } from "./registry.js"
@@ -109,7 +110,7 @@ function envDiff(before: Record<string, unknown>, after: Record<string, unknown>
 	for (const key of allKeys) {
 		const a = String(before[key] ?? "")
 		const b = String(after[key] ?? "")
-		if (a === b) continue
+		if (a === b && (before[key] === undefined) === (after[key] === undefined)) continue
 
 		if (before[key] === undefined || !(key in before)) {
 			diffs.push({ kind: "add", key, new: b })
@@ -125,11 +126,18 @@ function envDiff(before: Record<string, unknown>, after: Record<string, unknown>
 function formatDiff(diffs: EnvDiff[]): string {
 	if (diffs.length === 0) return "No changes."
 
+	// Only show exact values generated without credentials. Even an old endpoint
+	// URL or a normally harmless setting can contain a user's secret.
+	const publicValues = claudeCodeEnv("", ANTHROPIC_BASE_URL, { telemetryEnabled: true })
 	const lines: string[] = []
 	for (const d of diffs) {
-		if (d.kind === "add") lines.push(`  + ${d.key}: ${d.new}`)
-		else if (d.kind === "remove") lines.push(`  - ${d.key}: ${d.old}`)
-		else lines.push(`  ~ ${d.key}: ${d.old} → ${d.new}`)
+		const display = (value: string | undefined) => {
+			if (!value) return "(empty)"
+			return publicValues[d.key] === value ? value : "[redacted]"
+		}
+		if (d.kind === "add") lines.push(`  + ${d.key}: ${display(d.new)}`)
+		else if (d.kind === "remove") lines.push(`  - ${d.key}: ${display(d.old)}`)
+		else lines.push(`  ~ ${d.key}: ${display(d.old)} → ${display(d.new)}`)
 	}
 	return lines.join("\n")
 }
@@ -139,7 +147,7 @@ async function writeClaudeCode(
 	apiKey: string,
 	_models: readonly ModelMetadata[],
 	options?: { telemetryEnabled?: boolean },
-): Promise<void> {
+): Promise<undefined | "skipped"> {
 	if (!findBinary("claude")) {
 		throw new Error(
 			"Claude Code is not installed or not on PATH. " +
@@ -154,38 +162,45 @@ async function writeClaudeCode(
 	const path = resolveScopePath(scope, CLAUDE_CONFIG_PATH)
 	mkdirSync(dirname(path), { recursive: true })
 
-	const existing = readJson(path)
-	const envBlock =
-		existing.env && typeof existing.env === "object" && !Array.isArray(existing.env)
-			? structuredClone
-				? (structuredClone(existing.env) as Record<string, unknown>)
-				: (JSON.parse(JSON.stringify(existing.env)) as Record<string, unknown>)
-			: {}
+	let existing: Record<string, unknown>
+	try {
+		existing = readJson(path)
+	} catch (error) {
+		// JSON parser errors can include the source line, including credentials.
+		const code = error instanceof Error && "code" in error && typeof error.code === "string" ? ` (${error.code})` : ""
+		throw new Error(`Could not read Claude Code settings at ${path}${code}. No changes written.`)
+	}
+	const envBlock: Record<string, unknown> =
+		existing.env && typeof existing.env === "object" && !Array.isArray(existing.env) ? { ...existing.env } : {}
 
-	const before = structuredClone
-		? structuredClone(envBlock)
-		: (JSON.parse(JSON.stringify(envBlock)) as Record<string, unknown>)
+	const before = { ...envBlock }
 	injectClaudeCodeEnv(envBlock, ANTHROPIC_BASE_URL, apiKey, options)
 	const diffs = envDiff(before, envBlock)
+	if (diffs.length === 0) {
+		log.info("Claude Code configuration is already up to date.")
+		return
+	}
 
-	if (diffs.length > 0 && process.stdin?.isTTY) {
+	log.warn(
+		`This changes Claude Code authentication in ${path}, including when you launch claude directly. ` +
+			"ANTHROPIC_AUTH_TOKEN takes precedence over your claude.ai login and disables claude.ai connectors. " +
+			"Existing settings will be backed up before writing. " +
+			"For a temporary session without saving these changes, decline and run `kimchi claude`.",
+	)
+	if (process.stdin.isTTY) {
 		log.message(`Claude Code environment variable changes (${path}):`)
 		log.message(formatDiff(diffs))
 
 		const answer = await confirm({
 			message: "Apply these changes to Claude Code environment variables?",
-			initialValue: true,
+			initialValue: false,
 			backable: false,
 		})
 
-		if (answer.kind === "cancel") {
-			throw new Error("User cancelled the settings update.")
-		}
-		if (answer.kind === "next" && !answer.value) {
-			throw new Error("User declined the settings update.")
-		}
+		if (answer.kind !== "next" || !answer.value) return "skipped"
 	}
 
+	backupToolConfig(path)
 	existing.env = envBlock
 	writeJson(path, existing)
 

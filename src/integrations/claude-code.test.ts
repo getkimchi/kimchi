@@ -1,10 +1,15 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { log } from "@clack/prompts"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { readJson } from "../config/json.js"
+import { confirm } from "../setup-wizard/prompt.js"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { claudeCodeEnv, injectClaudeCodeEnv } from "./claude-code.js"
 import { byId } from "./registry.js"
+
+vi.mock("../setup-wizard/prompt.js", () => ({ confirm: vi.fn() }))
 
 // Mock detect.js to control findBinary behavior in binary-check tests
 vi.mock("../integrations/detect.js", async () => {
@@ -221,6 +226,7 @@ describe("claude-code tool registration", () => {
 		expect(tool).toBeDefined()
 		expect(tool?.binaryName).toBe("claude")
 		expect(tool?.configPath).toBe("~/.claude/settings.json")
+		expect(tool?.interactiveWrite).toBe(true)
 	})
 
 	it("write() merges env into ~/.claude/settings.json without clobbering other keys", async () => {
@@ -483,5 +489,152 @@ describe("claude-code tool registration", () => {
 		await expect(tool?.write("global", "test-key", TEST_MODELS)).rejects.toThrow(
 			/ANTHROPIC_API_KEY must be an empty string/,
 		)
+	})
+})
+
+describe("Claude configuration safety", () => {
+	let scratchHome: string
+	let settings: string
+	const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY")
+
+	beforeEach(() => {
+		scratchHome = mkdtempSync(join(tmpdir(), "kimchi-claude-safety-"))
+		vi.stubEnv("HOME", scratchHome)
+		settings = join(scratchHome, ".claude", "settings.json")
+		mkdirSync(join(scratchHome, ".claude"))
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true })
+		vi.mocked(confirm).mockResolvedValue({ kind: "next", value: true })
+		vi.spyOn(log, "message").mockImplementation(() => {})
+		vi.spyOn(log, "warn").mockImplementation(() => {})
+		vi.spyOn(log, "info").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		if (stdinTty) Object.defineProperty(process.stdin, "isTTY", stdinTty)
+		else Reflect.deleteProperty(process.stdin, "isTTY")
+		vi.unstubAllEnvs()
+		vi.restoreAllMocks()
+		rmSync(scratchHome, { recursive: true, force: true })
+	})
+
+	it("hides unexpected values even in endpoint and telemetry settings", async () => {
+		writeFileSync(
+			settings,
+			JSON.stringify({
+				env: {
+					ANTHROPIC_BASE_URL: "https://user:proxy-secret@example.com?token=url-secret",
+					OTEL_LOGS_EXPORTER: "unexpected-exporter-secret",
+					MY_PROXY_CREDENTIALS: "unmodified-secret",
+				},
+			}),
+		)
+		await byId("claudecode")?.write("global", "key", TEST_MODELS, { telemetryEnabled: true })
+		const preview = JSON.stringify(vi.mocked(log.message).mock.calls)
+		for (const secret of ["proxy-secret", "url-secret", "unexpected-exporter-secret", "unmodified-secret"]) {
+			expect(preview).not.toContain(secret)
+		}
+		expect(preview).toContain("https://llm.kimchi.dev/anthropic")
+		expect(preview).toContain("[redacted]")
+		expect(JSON.parse(readFileSync(settings, "utf8")).env.MY_PROXY_CREDENTIALS).toBe("unmodified-secret")
+	})
+
+	it("reports filesystem error codes without exposing the error message", async () => {
+		vi.mocked(readJson).mockImplementationOnce(() => {
+			throw Object.assign(new Error("private-source-excerpt"), { code: "EACCES" })
+		})
+		await expect(byId("claudecode")?.write("global", "key", TEST_MODELS)).rejects.toThrow(
+			`Could not read Claude Code settings at ${settings} (EACCES). No changes written.`,
+		)
+	})
+
+	it("still writes an explicit empty API key when other Kimchi settings already match", async () => {
+		const env = claudeCodeEnv("key")
+		Reflect.deleteProperty(env, "ANTHROPIC_API_KEY")
+		writeFileSync(settings, JSON.stringify({ env }))
+		await byId("claudecode")?.write("global", "key", TEST_MODELS)
+		expect(JSON.parse(readFileSync(settings, "utf8")).env.ANTHROPIC_API_KEY).toBe("")
+	})
+
+	it("does not rewrite settings or create another backup when nothing changes", async () => {
+		const original = JSON.stringify({ env: claudeCodeEnv("key") })
+		writeFileSync(settings, original)
+		await byId("claudecode")?.write("global", "key", TEST_MODELS)
+		expect(log.info).toHaveBeenCalledWith("Claude Code configuration is already up to date.")
+		expect(readFileSync(settings, "utf8")).toBe(original)
+		expect(readdirSync(join(scratchHome, ".claude"))).toEqual(["settings.json"])
+	})
+
+	it("rejects malformed settings without echoing credentials from parser errors", async () => {
+		const original = '{"env": {"ANTHROPIC_AUTH_TOKEN": "private-secret" invalid}}'
+		writeFileSync(settings, original)
+		await expect(byId("claudecode")?.write("global", "key", TEST_MODELS)).rejects.toThrow(
+			`Could not read Claude Code settings at ${settings}. No changes written.`,
+		)
+		expect(readFileSync(settings, "utf8")).toBe(original)
+		expect(readdirSync(join(scratchHome, ".claude"))).toEqual(["settings.json"])
+	})
+
+	it.each([
+		true,
+		false,
+	])("redacts old and new credentials, including telemetry headers (telemetry=%s)", async (telemetryEnabled) => {
+		writeFileSync(
+			settings,
+			JSON.stringify({
+				env: {
+					ANTHROPIC_API_KEY: "old-api-secret",
+					ANTHROPIC_AUTH_TOKEN: "old-token-secret",
+					OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest",
+					OTEL_EXPORTER_OTLP_LOGS_HEADERS: "Authorization=Bearer old-header-secret",
+					OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+					OTEL_EXPORTER_OTLP_METRICS_HEADERS: "Authorization=Bearer old-metrics-secret",
+				},
+			}),
+		)
+		await byId("claudecode")?.write("global", "new-api-secret", TEST_MODELS, { telemetryEnabled })
+		const output = JSON.stringify([
+			vi.mocked(log.message).mock.calls,
+			vi.mocked(log.warn).mock.calls,
+			vi.mocked(log.info).mock.calls,
+		])
+		for (const secret of [
+			"old-api-secret",
+			"old-token-secret",
+			"old-header-secret",
+			"old-metrics-secret",
+			"new-api-secret",
+		]) {
+			expect(output).not.toContain(secret)
+		}
+		expect(output).toContain("[redacted]")
+		expect(output).toContain("claude.ai connectors")
+		expect(output).toContain("kimchi claude")
+		expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ initialValue: false }))
+		expect(JSON.parse(readFileSync(settings, "utf8")).env.ANTHROPIC_AUTH_TOKEN).toBe("new-api-secret")
+	})
+
+	it("backs up the exact original bytes and reports how to restore them", async () => {
+		const original = '{\n  "theme": "dark", "env": {"CUSTOM": "yes"}\n}\n'
+		writeFileSync(settings, original)
+		await byId("claudecode")?.write("global", "key", TEST_MODELS)
+		const backups = readdirSync(join(scratchHome, ".claude")).filter((name) => name.includes(".bak"))
+		expect(backups).toHaveLength(1)
+		const backup = join(scratchHome, ".claude", backups[0])
+		expect(readFileSync(backup, "utf8")).toBe(original)
+		expect(statSync(backup).mode & 0o777).toBe(0o600)
+		expect(log.info).toHaveBeenCalledWith(expect.stringContaining(backup))
+		expect(log.info).toHaveBeenCalledWith(expect.stringContaining("Restore"))
+	})
+
+	it.each([
+		{ kind: "next", value: false },
+		{ kind: "cancel" },
+	] as const)("leaves settings untouched when confirmation is %j", async (answer) => {
+		const original = '{"env":{"CUSTOM":"keep"}}'
+		writeFileSync(settings, original)
+		vi.mocked(confirm).mockResolvedValue(answer)
+		await expect(byId("claudecode")?.write("global", "key", TEST_MODELS)).resolves.toBe("skipped")
+		expect(readFileSync(settings, "utf8")).toBe(original)
+		expect(readdirSync(join(scratchHome, ".claude"))).toEqual(["settings.json"])
 	})
 })

@@ -25,6 +25,25 @@ describe("applyToolConfigs", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("records a declined writer as skipped and continues configuring other tools", async () => {
+		const { applyToolConfigs } = await import("./apply-tools.js")
+		const claude = byId("claudecode")
+		const cursor = byId("cursor")
+		if (!claude || !cursor) throw new Error("Expected registered integrations")
+		vi.spyOn(claude, "write").mockResolvedValue("skipped")
+		vi.spyOn(cursor, "write").mockResolvedValue()
+		const outcome = await applyToolConfigs({
+			selectedTools: ["claudecode", "cursor"],
+			apiKey: "test-key",
+			scope: "global",
+			mode: "override",
+			telemetryEnabled: false,
+			models: TEST_MODELS,
+		})
+		expect(outcome).toEqual({ successes: ["Cursor"], skipped: ["Claude Code"], failures: [] })
+		expect(logInfoSpy).toHaveBeenCalledWith("Claude Code: skipped (configuration left unchanged)")
+	})
+
 	// -------------------------------------------------------------------------
 	// Override mode
 	// -------------------------------------------------------------------------

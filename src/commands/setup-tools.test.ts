@@ -18,6 +18,7 @@ vi.mock("../config.js", () => ({
 	getApiKeyMismatchWarning: vi.fn(),
 	isTelemetryExplicitlyConfigured: vi.fn(),
 	readTelemetryConfig: vi.fn(),
+	loadConfig: vi.fn(() => ({ llmEndpoint: "http://localhost:1234" })),
 }))
 
 vi.mock("../models.js", () => ({
@@ -33,8 +34,14 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 	drain: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { getApiKeyMismatchWarning, isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import {
+	getApiKeyMismatchWarning,
+	isTelemetryExplicitlyConfigured,
+	loadConfig,
+	readTelemetryConfig,
+} from "../config.js"
 import { drain, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
+import { TEST_MODELS } from "../integrations/__fixtures__/models.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import { promptTelemetry } from "../setup-wizard/steps/telemetry.js"
@@ -99,6 +106,28 @@ describe("runSetupTools", () => {
 		expect(result).toBe(0)
 	})
 
+	it("does not misreport config resolution errors as model fetch failures", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["claudecode"] })
+		vi.mocked(loadConfig).mockImplementationOnce(() => {
+			throw new Error("config resolution failed")
+		})
+		await expect(runSetupTools([])).rejects.toThrow("config resolution failed")
+		expect(updateModelsConfig).not.toHaveBeenCalled()
+		expect(sendPreSessionEvent).not.toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_aborted", {
+			step: "models",
+		})
+	})
+
+	it("exits successfully without configured-tool telemetry when changes are declined", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["claudecode"] })
+		vi.mocked(updateModelsConfig).mockResolvedValue({ models: [...TEST_MODELS] })
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: [], skipped: ["Claude Code"], failures: [] })
+		expect(await runSetupTools([])).toBe(0)
+		expect(sendPreSessionEvent).not.toHaveBeenCalledWith(mockTelemetryConfig, "tool_configured", expect.anything())
+	})
+
 	it("exits with code 0 when all selected tools configure successfully", async () => {
 		vi.mocked(resolveApiKey).mockReturnValue("test-key")
 		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
@@ -106,10 +135,13 @@ describe("runSetupTools", () => {
 			models: [{ id: "kimi-k2.5" }],
 			// biome-ignore lint/suspicious/noExplicitAny: test data
 		} as any)
-		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], skipped: [], failures: [] })
 
 		const result = await runSetupTools([])
 		expect(result).toBe(0)
+		expect(updateModelsConfig).toHaveBeenCalledWith(expect.any(String), "test-key", {
+			endpoint: "http://localhost:1234",
+		})
 	})
 
 	it("exits with code 1 when a selected tool fails to configure", async () => {
@@ -121,6 +153,7 @@ describe("runSetupTools", () => {
 		} as any)
 		vi.mocked(applyToolConfigs).mockResolvedValue({
 			successes: [],
+			skipped: [],
 			failures: [{ id: "cursor", error: "write failed" }],
 		})
 
@@ -143,7 +176,7 @@ describe("runSetupTools", () => {
 			models: [{ id: "kimi-k2.5" }],
 			// biome-ignore lint/suspicious/noExplicitAny: test data
 		} as any)
-		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], skipped: [], failures: [] })
 
 		await runSetupTools([])
 
@@ -160,7 +193,7 @@ describe("runSetupTools", () => {
 			models: [{ id: "kimi-k2.5" }],
 			// biome-ignore lint/suspicious/noExplicitAny: test data
 		} as any)
-		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], skipped: [], failures: [] })
 
 		await runSetupTools([])
 
@@ -183,7 +216,7 @@ describe("runSetupTools", () => {
 			models: [{ id: "kimi-k2.5" }],
 			// biome-ignore lint/suspicious/noExplicitAny: test data
 		} as any)
-		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], skipped: [], failures: [] })
 
 		const result = await runSetupTools([])
 		expect(result).toBe(0)
@@ -222,6 +255,7 @@ describe("runSetupTools", () => {
 		} as any)
 		vi.mocked(applyToolConfigs).mockResolvedValue({
 			successes: ["Cursor", "OpenCode"],
+			skipped: [],
 			failures: [],
 		})
 

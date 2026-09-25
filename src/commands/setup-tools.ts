@@ -9,10 +9,15 @@ import "../integrations/codex.js"
 
 import { resolve } from "node:path"
 import { intro, log, note, outro, spinner } from "@clack/prompts"
-import { getApiKeyMismatchWarning, isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import {
+	getApiKeyMismatchWarning,
+	isTelemetryExplicitlyConfigured,
+	loadConfig,
+	readTelemetryConfig,
+} from "../config.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { all as allTools } from "../integrations/registry.js"
-import { updateModelsConfig } from "../models.js"
+import { type ModelMetadata, updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import type { ConfigMode } from "../setup-wizard/state.js"
 import { promptTelemetry } from "../setup-wizard/steps/telemetry.js"
@@ -89,11 +94,12 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	const agentDir =
 		process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(process.env.HOME ?? "~", ".config/kimchi-coding-agent")
 	const modelsJsonPath = resolve(agentDir, "models.json")
-	let models: readonly import("../models.js").ModelMetadata[] = []
+	const { llmEndpoint } = loadConfig()
+	let models: readonly ModelMetadata[] = []
 	const modelSpinner = spinner()
 	modelSpinner.start("Fetching available models…")
 	try {
-		const result = await updateModelsConfig(modelsJsonPath, apiKey)
+		const result = await updateModelsConfig(modelsJsonPath, apiKey, { endpoint: llmEndpoint })
 		models = result.models
 		modelSpinner.stop("Models fetched.")
 	} catch (err) {
@@ -138,10 +144,11 @@ export async function runSetupTools(args: string[]): Promise<number> {
 
 	// Print summary.
 	const summaryLines = [
-		`Mode: ${mode}${mode === "override" ? " (configs written)" : " (runtime wrapper)"}`,
+		`Mode: ${mode}${mode === "override" ? " (persistent configuration)" : " (runtime wrapper)"}`,
 		`Scope: ${scope}`,
 		`Telemetry: ${telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
+		outcome.skipped.length > 0 ? `Skipped: ${outcome.skipped.join(", ")}` : "",
 		outcome.failures.length > 0 ? `Failed: ${outcome.failures.map((f) => f.id).join(", ")}` : "",
 	].filter((l) => l.length > 0)
 

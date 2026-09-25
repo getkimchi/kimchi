@@ -24,13 +24,13 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		const msg = (err as Error).message
 		modelSpinner.stop(`Could not fetch available models: ${msg}`)
 		outro("Aborted.")
-		return { successes: [], failures: [{ id: "*", error: `model fetch failed: ${msg}` }] }
+		return { successes: [], skipped: [], failures: [{ id: "*", error: `model fetch failed: ${msg}` }] }
 	}
 
 	if (models.length === 0) {
 		log.error("API returned an empty model list — is your API key valid?")
 		outro("Aborted.")
-		return { successes: [], failures: [{ id: "*", error: "empty model list from API" }] }
+		return { successes: [], skipped: [], failures: [{ id: "*", error: "empty model list from API" }] }
 	}
 
 	// Apply tool configurations.
@@ -45,11 +45,12 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 
 	const summaryLines = [
 		state.selectedTools.length > 0
-			? `Mode: ${state.mode}${state.mode === "override" ? " (configs written)" : " (runtime wrapper)"}`
+			? `Mode: ${state.mode}${state.mode === "override" ? " (persistent configuration)" : " (runtime wrapper)"}`
 			: "",
 		state.selectedTools.length > 0 ? `Scope: ${state.scope}` : "",
 		`Telemetry: ${state.telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
+		outcome.skipped.length > 0 ? `Skipped: ${outcome.skipped.join(", ")}` : "",
 		outcome.failures.length > 0
 			? `Failed: ${outcome.failures.map((f) => byId(f.id as ToolId)?.name ?? f.id).join(", ")}`
 			: "",

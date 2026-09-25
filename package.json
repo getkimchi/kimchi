@@ -71,6 +71,7 @@
 		"proper-lockfile": "^4.1.2",
 		"shell-quote": "1.8.4",
 		"shiki": "^4.0.2",
+		"smol-toml": "1.8.0",
 		"ssh2": "^1.17.0",
 		"strip-json-comments": "5.0.3",
 		"tar": "^7.5.15",

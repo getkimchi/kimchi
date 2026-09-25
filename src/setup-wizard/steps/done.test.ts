@@ -100,6 +100,14 @@ describe("runDoneStep", () => {
 		return tool
 	}
 
+	it("summarizes declined configurations as skipped without errors", async () => {
+		vi.spyOn(getClaudeCodeTool(), "write").mockResolvedValue("skipped")
+		const outcome = await runDoneStep(baseState())
+		expect(outcome).toEqual({ successes: [], skipped: ["Claude Code"], failures: [] })
+		expect(clackMock.note).toHaveBeenCalledWith(expect.stringContaining("Skipped: Claude Code"), "Summary")
+		expect(clackMock.outro).toHaveBeenCalledWith("Done.")
+	})
+
 	it("override mode invokes the integration writer with models from the API", async () => {
 		const tool = getClaudeCodeTool()
 		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()

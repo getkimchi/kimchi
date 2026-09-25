@@ -1,12 +1,26 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { log } from "@clack/prompts"
+import { parse } from "smol-toml"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { ModelMetadata } from "../models.js"
+import { confirm } from "../setup-wizard/prompt.js"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { buildCodexToml, buildModelCatalog, mergeCodexToml } from "./codex.js"
 import { byId } from "./registry.js"
 
+vi.mock("../setup-wizard/prompt.js", () => ({ confirm: vi.fn() }))
+
 describe("buildCodexToml", () => {
+	it("round-trips quotes, backslashes and newlines in generated values", () => {
+		const value = 'quoted"\\value\nnext line'
+		const config = parse(buildCodexToml(value, value, value))
+		expect(config.model).toBe(value)
+		expect(config.model_catalog_json).toBe(value)
+		expect(config.model_providers).toMatchObject({ kimchi: { http_headers: { Authorization: `Bearer ${value}` } } })
+	})
+
 	it("emits the three top-level keys Codex needs", () => {
 		const out = buildCodexToml("test-key", "kimi-k2.6", "/home/u/.codex/model_catalog.json")
 		expect(out).toMatch(/^model_provider = "kimchi"\n/m)
@@ -31,9 +45,46 @@ describe("buildCodexToml", () => {
 })
 
 describe("mergeCodexToml", () => {
-	it("returns the fresh TOML unchanged when existingText is empty", () => {
+	it("distinguishes invalid generated TOML without exposing its contents", () => {
+		expect(() => mergeCodexToml('model = "valid"', 'model = "private-generated-secret" invalid')).toThrow(
+			"Generated Codex config is invalid TOML. No changes written.",
+		)
+	})
+
+	it("preserves the meaning of unrelated top-level settings", () => {
+		const original = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nmodel = "old"\n'
+		const merged = parse(mergeCodexToml(original, buildCodexToml("key", "new", "/catalog.json")))
+		expect(merged.approval_policy).toBe("on-request")
+		expect(merged.sandbox_mode).toBe("workspace-write")
+		expect(merged.model).toBe("new")
+	})
+
+	it("handles quoted keys, commented headers and multiline strings as TOML", () => {
+		const original = `"model" = "old"
+instructions = """
+[model_providers.kimchi]
+this is text, not a table
+"""
+[model_providers."kimchi"] # previous setup
+name = "old"
+[model_providers.other] # user provider
+base_url = "https://example.com"
+`
+		const merged = parse(mergeCodexToml(original, buildCodexToml("key", "new", "/catalog.json")))
+		expect(merged.model).toBe("new")
+		expect(merged.instructions).toBe(parse(original).instructions)
+		expect(merged.model_providers).toMatchObject({ other: { base_url: "https://example.com" } })
+	})
+
+	it("preserves integer precision and float types in user settings", () => {
+		const original = "large = 9223372036854775807\nratio = 1.0\n"
+		const merged = mergeCodexToml(original, buildCodexToml("key", "new", "/catalog.json"))
+		expect(parse(merged, { integersAsBigInt: true })).toMatchObject({ large: 9223372036854775807n, ratio: 1.0 })
+	})
+
+	it("returns the fresh settings when existingText is empty", () => {
 		const fresh = buildCodexToml("k", "kimi-k2.6", "/catalog.json")
-		expect(mergeCodexToml("", fresh)).toBe(fresh)
+		expect(parse(mergeCodexToml("", fresh))).toEqual(parse(fresh))
 	})
 
 	it("returns the fresh TOML when existingText only contains the kimchi provider section", () => {
@@ -45,7 +96,7 @@ http_headers = { Authorization = "Bearer old-key" }
 wire_api = "responses"
 `
 		const merged = mergeCodexToml(existing, fresh)
-		expect(merged).toBe(fresh)
+		expect(parse(merged)).toEqual(parse(fresh))
 	})
 
 	it('preserves user-owned sections like [features] and [plugins."foo"]', () => {
@@ -71,7 +122,7 @@ root = "/Users/me/code"
 `
 
 		const merged = mergeCodexToml(existing, fresh)
-		expect(merged).toContain('[plugins."foo"]')
+		expect(parse(merged).plugins).toEqual({ foo: { enabled: true } })
 		expect(merged).toContain("[features]")
 		expect(merged).toContain("[projects]")
 		expect(merged).toContain("enabled = true")
@@ -110,11 +161,21 @@ wire_api = "chat"
 [[projects]]
 name = "my-project"
 path = "/Users/me/code"
+[[projects.worktrees]]
+path = "/Users/me/worktree"
+
+[[projects]]
+name = "second-project"
+path = "/Users/me/second"
 
 [features]
 multi_agent = true
 `
 		const merged = mergeCodexToml(existing, fresh)
+		expect(parse(merged).projects).toEqual([
+			{ name: "my-project", path: "/Users/me/code", worktrees: [{ path: "/Users/me/worktree" }] },
+			{ name: "second-project", path: "/Users/me/second" },
+		])
 		expect(merged).toContain("[[projects]]")
 		expect(merged).toContain('name = "my-project"')
 		expect(merged).toContain("[features]")
@@ -244,7 +305,7 @@ describe("buildModelCatalog", () => {
 	})
 
 	it("emits an empty reasoning_levels array for non-reasoning models", () => {
-		const nonReasoning: readonly import("../models.js").ModelMetadata[] = [
+		const nonReasoning: readonly ModelMetadata[] = [
 			{
 				slug: "plain-model",
 				display_name: "Plain Model",
@@ -293,7 +354,7 @@ describe("buildModelCatalog", () => {
 		// The exact model set captured in the original Slack thread. Each entry
 		// carries the specific context window and reasoning capability that the
 		// catalog must reproduce verbatim.
-		const SLACK_THREAD_MODELS: readonly import("../models.js").ModelMetadata[] = [
+		const SLACK_THREAD_MODELS: readonly ModelMetadata[] = [
 			{
 				slug: "minimax-m3",
 				display_name: "MiniMax M3",
@@ -399,6 +460,7 @@ describe("codex tool registration", () => {
 		expect(tool).toBeDefined()
 		expect(tool?.binaryName).toBe("codex")
 		expect(tool?.configPath).toBe("~/.codex/config.toml")
+		expect(tool?.interactiveWrite).toBe(true)
 	})
 
 	it("isInstalled() returns a boolean", () => {
@@ -450,5 +512,160 @@ multi_agent = true
 		const catalog = JSON.parse(readFileSync(join(configDir, "model_catalog.json"), "utf-8"))
 		expect(Array.isArray(catalog.models)).toBe(true)
 		expect(catalog.models.length).toBe(TEST_MODELS.length)
+	})
+})
+
+describe("Codex configuration safety", () => {
+	let scratchHome: string
+	let configDir: string
+	let configPath: string
+	let catalogPath: string
+	const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY")
+	const originalConfig = '# user settings\nmodel = "original-model"\napproval_policy = "on-request"\n'
+	const originalCatalog = '{"models":[{"slug":"original-model"}]}\n'
+
+	beforeEach(() => {
+		scratchHome = mkdtempSync(join(tmpdir(), "kimchi-codex-safety-"))
+		vi.stubEnv("HOME", scratchHome)
+		configDir = join(scratchHome, ".codex")
+		mkdirSync(configDir)
+		configPath = join(configDir, "config.toml")
+		catalogPath = join(configDir, "model_catalog.json")
+		writeFileSync(configPath, originalConfig)
+		writeFileSync(catalogPath, originalCatalog)
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true })
+		vi.mocked(confirm).mockResolvedValue({ kind: "next", value: true })
+		vi.spyOn(log, "warn").mockImplementation(() => {})
+		vi.spyOn(log, "info").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		if (stdinTty) Object.defineProperty(process.stdin, "isTTY", stdinTty)
+		else Reflect.deleteProperty(process.stdin, "isTTY")
+		vi.unstubAllEnvs()
+		vi.restoreAllMocks()
+		rmSync(scratchHome, { recursive: true, force: true })
+	})
+
+	it("does not prompt, rewrite files or add backups when setup is repeated unchanged", async () => {
+		await byId("codex")?.write("global", "key", TEST_MODELS)
+		const files = readdirSync(configDir)
+		const timestamp = new Date("2025-01-01T00:00:00Z")
+		utimesSync(configPath, timestamp, timestamp)
+		utimesSync(catalogPath, timestamp, timestamp)
+		vi.mocked(confirm).mockClear()
+		vi.mocked(log.warn).mockClear()
+		await byId("codex")?.write("global", "key", TEST_MODELS)
+		expect(confirm).not.toHaveBeenCalled()
+		expect(log.warn).not.toHaveBeenCalled()
+		expect(readdirSync(configDir)).toEqual(files)
+		expect(statSync(configPath).mtime).toEqual(timestamp)
+		expect(statSync(catalogPath).mtime).toEqual(timestamp)
+	})
+
+	it("still applies catalog-only changes when the Codex TOML is unchanged", async () => {
+		await byId("codex")?.write("global", "key", TEST_MODELS)
+		const configBefore = readFileSync(configPath, "utf8")
+		const timestamp = new Date("2025-01-01T00:00:00Z")
+		utimesSync(configPath, timestamp, timestamp)
+		vi.mocked(confirm).mockClear()
+		vi.mocked(log.warn).mockClear()
+		const models = TEST_MODELS.map((model) => ({ ...model, display_name: `${model.display_name} updated` }))
+		await byId("codex")?.write("global", "key", models)
+		expect(confirm).toHaveBeenCalledOnce()
+		expect(JSON.parse(readFileSync(catalogPath, "utf8"))).toEqual(buildModelCatalog(models))
+		expect(readdirSync(configDir).filter((name) => name.endsWith(".bak"))).toHaveLength(3)
+		expect(readFileSync(configPath, "utf8")).toBe(configBefore)
+		expect(statSync(configPath).mtime).toEqual(timestamp)
+		expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(catalogPath))
+		expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining(configPath))
+	})
+
+	it("does not rewrite or back up an unchanged catalog when the API key changes", async () => {
+		await byId("codex")?.write("global", "key", TEST_MODELS)
+		const catalogBefore = readFileSync(catalogPath, "utf8")
+		const timestamp = new Date("2025-01-01T00:00:00Z")
+		utimesSync(catalogPath, timestamp, timestamp)
+		vi.mocked(log.warn).mockClear()
+		await byId("codex")?.write("global", "new-key", TEST_MODELS)
+		expect(readFileSync(configPath, "utf8")).toContain("Bearer new-key")
+		expect(readdirSync(configDir).filter((name) => name.endsWith(".bak"))).toHaveLength(3)
+		expect(readFileSync(catalogPath, "utf8")).toBe(catalogBefore)
+		expect(statSync(catalogPath).mtime).toEqual(timestamp)
+		expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(configPath))
+		expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining("will be replaced"))
+	})
+
+	it("warns, defaults to No and backs up both files before applying configuration", async () => {
+		vi.mocked(confirm).mockImplementationOnce(async () => {
+			expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("default model and provider"))
+			expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(configPath))
+			expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(catalogPath))
+			expect(readFileSync(configPath, "utf8")).toBe(originalConfig)
+			expect(readFileSync(catalogPath, "utf8")).toBe(originalCatalog)
+			return { kind: "next", value: true }
+		})
+		await byId("codex")?.write("global", "new-api-secret", TEST_MODELS)
+		expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ initialValue: false }))
+		const backups = readdirSync(configDir).filter((name) => name.endsWith(".bak"))
+		expect(backups).toHaveLength(2)
+		expect(backups.map((name) => readFileSync(join(configDir, name), "utf8"))).toEqual([
+			originalConfig,
+			originalCatalog,
+		])
+		for (const name of backups) expect(statSync(join(configDir, name)).mode & 0o777).toBe(0o600)
+		expect(log.info).toHaveBeenCalledWith(expect.stringContaining("Restore:"))
+		expect(JSON.stringify([vi.mocked(log.warn).mock.calls, vi.mocked(log.info).mock.calls])).not.toContain(
+			"new-api-secret",
+		)
+		expect(parse(readFileSync(configPath, "utf8")).approval_policy).toBe("on-request")
+	})
+
+	it.each([
+		{ kind: "next", value: false },
+		{ kind: "cancel" },
+	] as const)("leaves both files untouched when confirmation is %j", async (answer) => {
+		vi.mocked(confirm).mockResolvedValue(answer)
+		await expect(byId("codex")?.write("global", "key", TEST_MODELS)).resolves.toBe("skipped")
+		expect(readFileSync(configPath, "utf8")).toBe(originalConfig)
+		expect(readFileSync(catalogPath, "utf8")).toBe(originalCatalog)
+		expect(readdirSync(configDir)).toEqual(["config.toml", "model_catalog.json"])
+	})
+
+	it("explains catalog read failures without changing config.toml", async () => {
+		rmSync(catalogPath)
+		mkdirSync(catalogPath)
+		await expect(byId("codex")?.write("global", "key", TEST_MODELS)).rejects.toThrow(
+			`Could not read Codex configuration at ${catalogPath} (EISDIR). No changes written.`,
+		)
+		expect(readFileSync(configPath, "utf8")).toBe(originalConfig)
+		expect(readdirSync(configDir)).toEqual(["config.toml", "model_catalog.json"])
+	})
+
+	it("does not write either configuration file if the second backup fails after confirmation", async () => {
+		vi.mocked(confirm).mockImplementationOnce(async () => {
+			rmSync(catalogPath)
+			mkdirSync(catalogPath)
+			return { kind: "next", value: true }
+		})
+		await expect(byId("codex")?.write("global", "key", TEST_MODELS)).rejects.toThrow(
+			`Could not read ${catalogPath} to create a backup (EISDIR). No configuration changes written.`,
+		)
+		expect(readFileSync(configPath, "utf8")).toBe(originalConfig)
+		expect(statSync(catalogPath).isDirectory()).toBe(true)
+		const backups = readdirSync(configDir).filter((name) => name.endsWith(".bak"))
+		expect(backups).toHaveLength(1)
+		expect(readFileSync(join(configDir, backups[0]), "utf8")).toBe(originalConfig)
+	})
+
+	it("rejects invalid TOML without changing files or echoing parser source excerpts", async () => {
+		const invalid = 'token = "private-api-secret" invalid'
+		writeFileSync(configPath, invalid)
+		await expect(byId("codex")?.write("global", "key", TEST_MODELS)).rejects.toThrow(
+			"Codex config is invalid TOML. No changes written.",
+		)
+		expect(readFileSync(configPath, "utf8")).toBe(invalid)
+		expect(readFileSync(catalogPath, "utf8")).toBe(originalCatalog)
+		expect(readdirSync(configDir)).toEqual(["config.toml", "model_catalog.json"])
 	})
 })
