@@ -14,12 +14,54 @@ on:
         description: "Update getkimchi/homebrew-tap after publishing the GitHub release (requires publish_github_release)"
         type: boolean
         default: false
+      approve_major:
+        description: "Approve a major or declared breaking release after reviewing its preflight summary (run on the exact tag)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  pull-requests: read
+
+concurrency:
+  # ponytail: one release at a time; GitHub keeps only one pending run. Use a queue if release throughput grows.
+  group: release-publication
+  cancel-in-progress: false
 
 jobs:
+  prepare-notes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      prerelease: ${{ steps.notes.outputs.prerelease }}
+      promote_stable: ${{ steps.notes.outputs.promote_stable }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+      - name: Prepare notes and version advice
+        id: notes
+        run: node src/ci/release-notes.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          RELEASE_APPROVE_MAJOR: ${{ github.event_name == 'workflow_dispatch' && inputs.approve_major && inputs.publish_github_release }}
+          RELEASE_NOTES_DIR: ${{ runner.temp }}/release-notes
+          KIMCHI_API_KEY: ${{ secrets.RELEASE_NOTES_API_KEY }}
+          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+          RELEASE_NOTES_PROVIDER: ${{ vars.RELEASE_NOTES_PROVIDER }}
+      - name: Save release preflight
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes/
+          overwrite: true
+
   checks:
+    needs: [prepare-notes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -237,17 +279,37 @@ jobs:
         run: pnpm run test:smoke
 
   release:
-    needs: [smoke-test]
+    needs: [smoke-test, prepare-notes]
     if: ${{ startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.publish_github_release) }}
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - name: Download prepared notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes
+
+      - name: Verify stable baseline has not changed
+        run: node src/ci/release-notes.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_VERIFY: "true"
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_NOTES_DIR: ${{ runner.temp }}/release-notes
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: kimchi_*
           merge-multiple: true
 
       - name: Generate checksums
@@ -264,11 +326,16 @@ jobs:
             artifacts/checksums.txt
             scripts/install.sh
             scripts/install.ps1
-          generate_release_notes: true
+            ${{ runner.temp }}/release-notes/CHANGELOG.md
+          body_path: ${{ runner.temp }}/release-notes/release-notes.md
+          generate_release_notes: false
+          prerelease: ${{ needs.prepare-notes.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.prepare-notes.outputs.promote_stable == 'true' && 'true' || 'false' }}
+          fail_on_unmatched_files: true
 
   homebrew:
-    needs: [release]
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && (github.event_name == 'push' || (inputs.publish_github_release && inputs.publish_homebrew)) }}
+    needs: [release, prepare-notes]
+    if: ${{ needs.prepare-notes.outputs.promote_stable == 'true' && (github.event_name == 'push' || (inputs.publish_github_release && inputs.publish_homebrew)) }}
     runs-on: ubuntu-latest
 
     steps:

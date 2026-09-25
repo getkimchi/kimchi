@@ -1,0 +1,36 @@
+name: Release preview
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# GitHub's non-publishing generate-notes endpoint requires contents: write.
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+      - name: Preview version and release notes
+        run: node src/ci/release-notes.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_NOTES_DIR: ${{ runner.temp }}/release-notes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-preview
+          path: ${{ runner.temp }}/release-notes/
+          overwrite: true
