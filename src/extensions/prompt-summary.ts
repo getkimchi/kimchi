@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
+import { getRatingSummaryHint } from "./feedback/rating-keys.js"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
@@ -175,7 +176,7 @@ export const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (messag
 	}
 
 	container.addChild(new Spacer(1))
-	container.addChild(new Text(theme.fg("dim", `- Rate response: ⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)`), 0, 0))
+	container.addChild(new Text(theme.fg("dim", getRatingSummaryHint()), 0, 0))
 
 	return container
 }

@@ -8,6 +8,8 @@ import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
+import { showRatingSelectorDialog } from "./rating-dialog.js"
+import { usesLegacyRatingPrompt } from "./rating-keys.js"
 import { type FeedbackSummaryDetails, feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
 const FEEDBACK_SUMMARY_CUSTOM_TYPE = "feedback-summary"
@@ -40,6 +42,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		routedUsedId = undefined
 		clearModelSwitchInvitation()
 		stopListeningForCtrlR()
+		stopListeningForLegacyRatingKey()
 	}
 
 	// Rating shortcuts are registered statically: they are always available once
@@ -81,6 +84,43 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		})
 	}
 
+	// Terminals without the Kitty keyboard protocol (e.g. macOS Terminal.app)
+	// have no encoding for Ctrl+<digit>: Terminal.app sends no bytes at all for
+	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to a
+	// single legacy control code:
+	//   - Ctrl+R → opens a Good/Bad picker, then the details dialog.
+	// Ctrl+R's only built-in meaning is session rename, and that lives inside
+	// the /resume selector — the main prompt editor has no binding for the key,
+	// and the Ctrl+1/Ctrl+2 rating shortcuts above fire regardless of editor
+	// content. So raw input claims Ctrl+R whenever a rating can actually
+	// happen, whether or not a draft prompt is typed, and passes the key
+	// through untouched the rest of the time.
+	//
+	// Known tradeoff: raw input runs before whatever has focus, and extensions
+	// can't tell whether a selector or overlay (e.g. /model, /help) is up. Opened
+	// right after a response, such UI loses Ctrl+R due to the rating dialog —
+	// including /resume's rename binding while a rating invitation is active.
+	let unsubscribeLegacyRatingKey: (() => void) | undefined
+	const stopListeningForLegacyRatingKey = () => {
+		unsubscribeLegacyRatingKey?.()
+		unsubscribeLegacyRatingKey = undefined
+	}
+	const listenForLegacyRatingKey = (ctx: ExtensionContext) => {
+		stopListeningForLegacyRatingKey()
+		if (!usesLegacyRatingPrompt()) return
+		unsubscribeLegacyRatingKey = ctx.ui.onTerminalInput((data: string) => {
+			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			// A model-switch invitation takes precedence — its own Ctrl+R
+			// listener (set up on model_select) handles the key.
+			if (getModelSwitchInvitation()) return undefined
+			if (state !== "inviting") return undefined
+			void handleShortcut(ctx).catch((err: unknown) => {
+				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
+			})
+			return { consume: true }
+		})
+	}
+
 	// Session replacement (/resume, /fork, /clone) fires session_shutdown then
 	// session_start. Reset on both so a stale invitation from the previous
 	// session can never leak into the new one.
@@ -101,6 +141,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
 		const routingState = getAutoRoutingState(sessionId)
 		routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
+		listenForLegacyRatingKey(ctx)
 	})
 
 	pi.on("model_select", (event, ctx: ExtensionContext) => {
@@ -202,9 +243,6 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		// Rating shortcuts carry a sentiment; if none was passed we have nothing
-		// to do (e.g. Ctrl+R without an active invitation).
-		if (sentiment === undefined) return
 		if (state !== "inviting") return
 		state = "collecting"
 		// Capture the auto-model flag for this invitation so the details dialog
@@ -215,10 +253,20 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		let keepInviting = false
 		try {
 			// Yield once so the TUI removes the previous overlay (if any) before
-			// the details dialog is mounted. Without this yield the dialog's
-			// first frame can be composited with stale overlay content.
+			// the dialog is mounted. Without this yield the dialog's first frame
+			// can be composited with stale overlay content.
 			await Promise.resolve()
-			const submitted = await handleRating(pi, ctx, sentiment, usedAutoModel, usedRoutedId)
+			let chosen = sentiment
+			// No sentiment pre-picked (legacy Ctrl+R): open the Good/Bad picker
+			// first. Esc there cancels before the details dialog even mounts.
+			if (chosen === undefined) {
+				chosen = await pickRatingSentiment(ctx)
+				if (chosen === undefined) {
+					keepInviting = true
+					return
+				}
+			}
+			const submitted = await handleRating(pi, ctx, chosen, usedAutoModel, usedRoutedId)
 			// Esc from the details dialog: keep the invitation alive so the
 			// user can rate the same turn again.
 			if (!submitted) keepInviting = true
@@ -233,6 +281,18 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				autoModelUsed = false
 			}
 		}
+	}
+}
+
+// Legacy Ctrl+R path: open the Good/Bad picker. Errors are reported via the
+// UI rather than rejecting — the caller's finally block keeps the state
+// machine consistent either way.
+async function pickRatingSentiment(ctx: ExtensionContext): Promise<FeedbackSentiment | undefined> {
+	try {
+		return await showRatingSelectorDialog(ctx)
+	} catch (err) {
+		ctx.ui.notify(`[feedback] Failed to open rating picker: ${err}`, "error")
+		return undefined
 	}
 }
 

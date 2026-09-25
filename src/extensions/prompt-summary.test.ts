@@ -1,10 +1,15 @@
 import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import promptSummaryExtension, { holdPromptSummary, promptSummaryRenderer } from "./prompt-summary.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
+
+const keyboardCapabilityMock = vi.hoisted(() => ({ kittySupport: undefined as boolean | undefined }))
+vi.mock("./terminal-compat/keyboard-capability.js", () => ({
+	getKittyKeyboardSupport: () => keyboardCapabilityMock.kittySupport,
+}))
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
 
@@ -451,5 +456,19 @@ describe("prompt summary renderer", () => {
 		expect(text).toContain("- Rate response: ⏶ Good (Ctrl+1)  ⏷ Bad (Ctrl+2)")
 		// The rating line must be fully left-aligned (no indent).
 		expect(text).not.toMatch(/^ {2}- Rate response:/m)
+	})
+
+	it("advertises the Ctrl+R rating picker when the terminal lacks the Kitty keyboard protocol", () => {
+		keyboardCapabilityMock.kittySupport = false
+		onTestFinished(() => {
+			keyboardCapabilityMock.kittySupport = undefined
+		})
+		const text = render({
+			elapsed: "3.6s",
+			orchestrator: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+			subagents: null,
+			total: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+		})
+		expect(text).toContain("- Rate response: ▲▼ (Ctrl+R)")
 	})
 })
