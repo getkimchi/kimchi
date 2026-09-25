@@ -45,8 +45,13 @@ export class CommandsPanel {
 
 	invalidate(): void {}
 
+	private get height(): number {
+		const rows = this.tui.terminal.rows
+		return Math.max(1, Math.min(rows - 4, Math.max(9, Math.floor(rows / 2))))
+	}
+
 	private get pageRows(): number {
-		return Math.max(1, this.tui.terminal.rows - 10)
+		return Math.max(1, this.height - 7)
 	}
 
 	private content(width: number): string[] {
@@ -129,14 +134,14 @@ export class CommandsPanel {
 
 	render(width: number): string[] {
 		const w = Math.max(1, width)
-		const innerWidth = Math.max(1, w - 4)
+		const innerWidth = Math.max(1, w - 2)
 		this.width = innerWidth
-		const height = Math.max(1, this.tui.terminal.rows - 2)
+		const height = this.height
 		if (w < 6 || height < 9) return [truncateToWidth("Esc back · enlarge terminal to inspect", w, "…", true)]
 		const fit = (lines: string[]) => [
-			`╭${"─".repeat(w - 2)}╮`,
-			...lines.slice(0, height - 2).map((line) => `│ ${truncateToWidth(line, innerWidth, "…", true)} │`),
-			`╰${"─".repeat(w - 2)}╯`,
+			"─".repeat(w),
+			...lines.slice(0, height - 2).map((line) => ` ${truncateToWidth(line, innerWidth, "…", true)} `),
+			"─".repeat(w),
 		]
 		const now = Date.now()
 		if (!this.detail || !this.selected) {
@@ -149,7 +154,7 @@ export class CommandsPanel {
 			const start = Math.max(0, current - count + 1)
 			for (const entry of this.entries.slice(start, start + count)) {
 				lines.push(
-					`${entry.handle === this.selected?.handle ? ">" : " "} ${bashTitle(entry)} · ${bashStatus(entry, now)}`,
+					`${entry.handle === this.selected?.handle ? "→" : " "} ${bashTitle(entry)} · ${bashStatus(entry, now)}`,
 				)
 				lines.push(`  ${safeBashText(entry.command).replace(/\s+/g, " ")} · ${bashOutputAge(entry, now)}`)
 			}
@@ -167,8 +172,7 @@ export class CommandsPanel {
 			`Command ${entry.handle} · cwd ${safeBashText(entry.cwd)}${deadline}`,
 			`${this.tab === "Script" ? "[Script]  Output" : "Script  [Output]"}${this.tab === "Output" ? ` · Follow: ${this.follow ? "on" : "off (paused view)"}` : ""}`,
 			...content.slice(offset, offset + this.pageRows),
-			`${bashOutputAge(entry, now)}${entry.omittedBytes > 0 ? " · older output omitted" : ""}`,
-			`Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length}`,
+			`Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length} · ${bashOutputAge(entry, now)}${entry.omittedBytes > 0 ? " · older output omitted" : ""}`,
 			innerWidth >= 62
 				? "Esc back · Tab switch view · PgUp/PgDn scroll · End follow latest"
 				: "Esc back · Tab · PgUp/PgDn · End",

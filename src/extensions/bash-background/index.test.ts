@@ -81,6 +81,7 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		)
 		try {
 			const opened = pi.getRegisteredCommand("commands").handler("", ctx)
+			expect(vi.mocked(ctx.ui.custom).mock.calls[0]?.[1]).toBeUndefined()
 			expect(vi.getTimerCount()).toBe(1)
 			await pi.getHandler(event)({}, ctx)
 			expect(vi.getTimerCount()).toBe(0)

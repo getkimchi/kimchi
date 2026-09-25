@@ -1,6 +1,6 @@
 # Inspect running Bash commands
 
-Run **`/commands`** while Kimchi is executing a managed Bash command. Select a command and press **Enter** to inspect it.
+Run **`/commands`** while Kimchi is executing a managed Bash command. It opens a menu in the input area beneath the conversation, like the other terminal menus. Select a command and press **Enter** to inspect it. Closing the menu restores the input.
 
 | Key | Action |
 | --- | --- |

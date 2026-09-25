@@ -61,7 +61,7 @@ Upstream history supports using extensions, but does not prove current feature d
 2. [PR #4368](https://github.com/earendil-works/pi/pull/4368) proposed backgrounding direct `!` commands, explicitly excluding agent Bash calls; it also closed unmerged.
 3. [Issue #8448](https://github.com/earendil-works/pi/issues/8448) requested per-block expansion defaults and closed as not planned. Do not assume the pinned SDK offers a supported per-row default-expansion policy.
 
-**Integration choice:** decorate the existing tools for metadata and streaming, and use an extension command/overlay for inspection. Keep process execution in the existing registry. A new general process manager or patched transcript navigation is unnecessary.
+**Integration choice:** decorate the existing tools for metadata and streaming, and use an extension command with an inline menu for inspection. The menu replaces the input beneath the conversation, following the native selector layout. Keep process execution in the existing registry. A new general process manager or patched transcript navigation is unnecessary.
 
 ## Proposed user experience
 
@@ -123,7 +123,7 @@ Use a short optional model-supplied `description` for purpose, such as “Checki
 | Registry metadata | Store command, cwd, tool-call ID, optional description, start/finish times and last-output time. Expose immutable display snapshots through a list method. | The registry already owns lifecycle and output, but cannot currently list or describe commands. Do not expose mutable controllers to the panel. |
 | Streaming | Emit throttled output snapshots while either `bash` or `bash_control` is waiting; detach observers/timers in `finally`. | A user should see output while waiting, independently of model check-in frequency. Reuse the ring buffer; do not create another accumulator. |
 | Rendering | Provide background-aware Bash/control renderers and explicitly route control through them in the existing renderer dispatch. | Label changes and tool-local renderers alone do not bypass current suppression. Persist display metadata in result details for historical rows. |
-| Inspector | Register `/commands` in the background extension. Use `ctx.ui.custom` with a list/detail component and the existing session-registry accessor. | Existing [agent conversation overlays](../../src/extensions/agents/index.ts) and [memory panel navigation](../../src/extensions/memory/memory-panel.ts) demonstrate the host patterns. |
+| Inspector | Register `/commands` in the background extension. Use non-overlay `ctx.ui.custom` with a list/detail component and the existing session-registry accessor. | The [theme selector](../../src/extensions/theme-selector.ts) uses the native input-area menu mount; closing it restores the editor. |
 | Completion | Retain the currently selected final display snapshot when the live entry is removed; save adequate command/outcome metadata in terminal results, including errors. | A command that exits while being inspected must become a final view, not disappear or show “running” forever. Resumed history must not pretend a process is live. |
 
 Start with a bounded UI refresh timer while the panel or active tool wait is mounted, for example 250 ms. Refresh can read `snapshotTail()` without controlling the process. An output subscription is another option if measurements show polling costs matter; it need not become an event-bus framework. Clear timers on exit, abort, panel close and session replacement. Update only changed content; do not append the entire transcript on each tick.

@@ -46,7 +46,7 @@ afterEach(async () => {
 	vi.useRealTimers()
 })
 describe("CommandsPanel", () => {
-	it("frames and pads every row, keeping navigation visible in short terminals", () => {
+	it("renders an open menu with room for the conversation and navigation", () => {
 		start(registry, Array.from({ length: 80 }, (_, i) => `script ${i}`).join("\n"))
 		panel = new CommandsPanel(registry, tui, vi.fn())
 		for (const [width, rows] of [
@@ -59,11 +59,12 @@ describe("CommandsPanel", () => {
 			for (const input of ["", "\r", "\t"]) {
 				panel.handleInput(input)
 				const lines = panel.render(width).map(stripTerminalSequences)
-				expect(lines[0]).toMatch(/^╭─+╮$/)
-				expect(lines.at(-1)).toMatch(/^╰─+╯$/)
+				expect(lines[0]).toMatch(/^─+$/)
+				expect(lines.at(-1)).toMatch(/^─+$/)
+				expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│]/)
 				expect(lines.join("\n")).toContain("Esc")
 				for (const line of lines) expect(visibleWidth(line)).toBe(width)
-				expect(lines.length).toBeLessThanOrEqual(rows - 2)
+				expect(lines.length).toBeLessThanOrEqual(Math.max(9, Math.floor(rows / 2)))
 			}
 			panel.handleInput("\x1b")
 		}
@@ -74,10 +75,10 @@ describe("CommandsPanel", () => {
 		view()
 		panel.handleInput("\r")
 		panel.handleInput("\x1b[6~")
-		expect(view()).toContain("Lines 9–16 of 80")
+		expect(view()).toContain("Lines 3–4 of 80")
 		tui.terminal.rows = 28
 		panel.handleInput("\x1b[6~")
-		expect(view()).toContain("Lines 27–44 of 80")
+		expect(view()).toContain("Lines 10–16 of 80")
 	})
 	it("pages up from the output tail before the first output render", () => {
 		const process = start(registry, "echo output")
@@ -87,7 +88,7 @@ describe("CommandsPanel", () => {
 		panel.handleInput("\r")
 		panel.handleInput("\t")
 		panel.handleInput("\x1b[5~")
-		expect(view()).toContain("Lines 65–72 of 80")
+		expect(view()).toContain("Lines 77–78 of 80")
 	})
 	it("explains empty session without changing process state", () => {
 		panel = new CommandsPanel(registry, tui, vi.fn())
@@ -112,6 +113,7 @@ describe("CommandsPanel", () => {
 		expect(view()).toContain("final output")
 	})
 	it("preserves full multiline script, pauses scroll position, and End follows new output", async () => {
+		tui.terminal.rows = 24
 		const command = "cat <<'EOF'\nhello 🌸 世界\nEOF"
 		const process = start(registry, command)
 		process.output(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"))
