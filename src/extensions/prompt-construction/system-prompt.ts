@@ -133,7 +133,7 @@ interface PromptParts {
 }
 
 const BASE_INSTRUCTIONS =
-	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you. Your available tools are listed under **Available Tools** below — use only those, never guess or invent tool names."
+	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you — use only those, never guess or invent tool names."
 
 const SINGLE_INTRO = BASE_INSTRUCTIONS
 
@@ -197,25 +197,20 @@ function buildSingleModelInstructions(currentModelId?: string, hasUserLoop = tru
 		: ""
 	return `## Single-Model Mode
 
-${orientation}You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
-
-Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
+${orientation}Single-model session.${modelClause} All work runs on this model — handle tasks directly yourself. Only spawn \`Agent\` subagents when the user explicitly asks; when you do, pass your own model ID in \`model\`.`
 }
 
 export const DOCUMENTS_SECTION =
 	"Use the Documents directory (see Environment) for transient working files: research notes, findings, verification reports, inter-agent handoffs. Final plans and specs go to .kimchi/plans/<slug>.md. Never write working documents to the project root or temp directories."
 
-export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate completed steps — act and move on.
-- Gather context before starting: requirements, naming conventions, frameworks and libraries in use, how to run and test. Read existing code rather than assuming.
-- Follow existing conventions; use only libraries/frameworks present in the codebase; never add dependencies without explicit instruction.
-- Deliver complete, working code — no placeholders, omissions, or TODOs.
-- Verify your work: edited files complete and correct, tests or the code run if possible.
+export const CORE_GUIDELINES = `- Be concise; act and move on without restating completed steps.
+- Gather context before starting: read existing code, follow its conventions and the project's build/test commands.
+- Use only libraries present in the codebase; never add dependencies without explicit instruction.
+- Deliver complete, working code — no placeholders or TODOs; verify with tests or a run.
 - Use absolute file paths.
 - Do NOT introduce security vulnerabilities.
-- After every tool result, ALWAYS produce text — the next tool call with explicit reasoning, or a final summary. Never re-issue the same call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
-- Bound shell commands with the bash tool's \`timeout\` parameter (default 60s) — never the GNU \`timeout\` binary (missing on macOS and Windows).
-- Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
+- If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
+- Bound shell commands with the bash tool's \`timeout\` parameter (default 60s); avoid interactive CLI flags — use \`--yes\`, \`GIT_EDITOR=true\`, or \`< /dev/null\`.
 - **Git commits**: end the message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
 /** The orient-the-user bullet, swapped for a proceed-autonomously variant in
@@ -295,7 +290,6 @@ export function buildOutputAndTruncationSection(toolNames?: ReadonlySet<string>)
 	if (hasTool(toolNames, "bash")) {
 		lines.push(
 			"- Bash: cap output with `head`/`tail`/`-n` — e.g. `git log -n 20 --oneline`, `git diff --stat`, `2>&1 | tail -100` for builds, `--log-failed` for CI logs, `tree -L 2`. Never `git status -uall` on large repos.",
-			"- GitHub/GitLab CLI: `--log-failed`, `--jq`, `| tail -N` — `gh run view --log` and `--paginate` calls are huge. `glab ci view` is a TUI — use `glab ci trace` headless. Big PR/MR diffs: list changed paths first, then targeted reads.",
 		)
 	}
 	if (hasTool(toolNames, "grep")) {
@@ -501,11 +495,10 @@ export function formatEnvironmentSection(env: EnvironmentInfo): string {
 		"",
 		`- OS: ${env.os}`,
 		`- OS version: ${env.osVersion}`,
-		`- Raw platform: ${env.rawPlatform}`,
+		`- Platform: ${env.rawPlatform}`,
 		`- CPU architecture: ${env.cpuArchitecture}`,
 		`- Shell: ${env.shell}`,
 		`- Shell family: ${shellFamily}`,
-		"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 		`- Username: ${env.username}`,
 		`- Home directory: "${env.homeDir}"`,
 		`- Working directory: "${env.cwd}"`,

@@ -46,11 +46,10 @@ describe("formatEnvironmentSection", () => {
 				"",
 				"- OS: Linux",
 				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
-				"- Raw platform: linux",
+				"- Platform: linux",
 				"- CPU architecture: x64",
 				"- Shell: /bin/bash",
 				"- Shell family: posix",
-				"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 				"- Username: testuser",
 				'- Home directory: "/home/testuser"',
 				'- Working directory: "/home/testuser/projects/myapp"',
@@ -146,15 +145,17 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("verbatim quote of your own previous assistant message")
 	})
 
-	it("caps GitLab merge request diffs before targeted reads", () => {
+	it("leaves gh/glab output-capping guidance to the bundled skills", () => {
 		const result = buildSystemPrompt({
 			tools,
 			env: testEnv,
 			mode: "single",
 		})
 
-		expect(result).toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
-		expect(result).toContain("--paginate")
+		// The gh/glab CLI bullet moved into resources/skills/{gh-cli,glab-cli}:
+		// the prompt keeps only the generic Bash cap.
+		expect(result).not.toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
+		expect(result).toContain("git diff --stat")
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
@@ -290,7 +291,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
 			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
@@ -558,7 +559,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
 			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
@@ -657,7 +658,7 @@ describe("buildSystemPrompt", () => {
 			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
 			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
 			expect(result).toContain("the bash tool's `timeout` parameter")
-			expect(result).toContain("Never run interactive commands")
+			expect(result).toContain("avoid interactive CLI flags")
 		})
 
 		it("keeps phase guidelines in subagent mode even without set_phase", () => {
@@ -734,15 +735,10 @@ describe("buildSystemPrompt", () => {
 				currentModelId: "minimax-m3",
 				mode: "single",
 			})
-			// New behavior: default is to handle work directly, do not spawn subagents.
-			expect(result).toContain("Handle tasks directly yourself.")
-			expect(result).toContain("Do not spawn subagents")
-			expect(result).toContain("only do so when the user explicitly asks for delegation")
-			// When a subagent IS spawned, default to the parent's model and only
-			// use a different model if the user explicitly instructs it.
-			expect(result).toContain("pass your own model ID")
-			expect(result).toContain("by default")
-			expect(result).toContain("only use a different model if the user explicitly instructs")
+			// New behavior: default is to handle work directly, subagents are opt-in.
+			expect(result).toContain("handle tasks directly yourself")
+			expect(result).toContain("Only spawn `Agent` subagents when the user explicitly asks")
+			expect(result).toContain("pass your own model ID in `model`")
 			// Old autonomous-delegate phrasing must be gone.
 			expect(result).not.toContain("clearly beneficial")
 			expect(result).not.toContain("MUST always pass")
@@ -791,7 +787,7 @@ describe("buildSystemPrompt", () => {
 			// The non-interactive core of the single-model section stays.
 			expect(result).toContain("## Single-Model Mode")
 			expect(result).toContain("Your model ID is `kimi-k3`")
-			expect(result).toContain("Do not spawn subagents")
+			expect(result).toContain("Only spawn `Agent` subagents when the user explicitly asks")
 		})
 
 		it("keeps task-execution sections regardless of the gate", () => {
