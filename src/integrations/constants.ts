@@ -1,33 +1,8 @@
-import { loadConfig } from "../config.js"
-import {
-	anthropicBaseUrl,
-	getRegion,
-	openAiBaseUrl,
-	REGIONS,
-	telemetryLogsUrl,
-	telemetryMetricsUrl,
-} from "../regions.js"
+import { REGIONS, telemetryLogsUrl, telemetryMetricsUrl } from "../regions.js"
 
 /** Identifiers shared by every tool integration. */
 export const PROVIDER_NAME = "kimchi"
 export const API_KEY_ENV = "KIMCHI_API_KEY"
-
-/** Endpoints follow the configured region; computed at call time. */
-export function kimchiBaseUrl(): string {
-	return openAiBaseUrl(getRegion(loadConfig().region))
-}
-
-export function kimchiAnthropicBaseUrl(): string {
-	return anthropicBaseUrl(getRegion(loadConfig().region))
-}
-
-export function kimchiTelemetryLogsUrl(): string {
-	return telemetryLogsUrl(getRegion(loadConfig().region))
-}
-
-export function kimchiTelemetryMetricsUrl(): string {
-	return telemetryMetricsUrl(getRegion(loadConfig().region))
-}
 
 /** Telemetry ingest URLs of every region, to recognise ones Kimchi wrote earlier. */
 export const ALL_TELEMETRY_URLS: ReadonlySet<string> = new Set(

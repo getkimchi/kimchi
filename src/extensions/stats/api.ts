@@ -12,11 +12,6 @@ import type {
 	GetProductivityMetricsResponse,
 } from "./types.js"
 
-/** The Cast AI stats API base follows the configured region (memoized config read). */
-function defaultBaseUrl(): string {
-	return resolveEndpoints().castApiUrl
-}
-
 interface ApiClientConfig {
 	apiKey: string
 	baseUrl?: string
@@ -28,7 +23,7 @@ export class CastAiStatsApi {
 
 	constructor(config: ApiClientConfig) {
 		this.apiKey = config.apiKey
-		this.baseUrl = config.baseUrl ?? defaultBaseUrl()
+		this.baseUrl = config.baseUrl ?? resolveEndpoints().castApiUrl
 	}
 
 	/**

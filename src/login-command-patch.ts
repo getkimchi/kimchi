@@ -14,13 +14,12 @@ import {
 	OAuthSelectorComponent,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
-import { clearApiKey, loadConfig } from "./config.js"
+import { clearApiKey, loadConfig, resolveEndpoints } from "./config.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
 	createLoginChoiceSelector,
 	createRegionSelector,
 	formatBrowserLoginMessage,
-	getKimchiDefaultEndpoint,
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
@@ -250,7 +249,7 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region?: RegionId): Pro
 		if (modeLike.showSelector) showLoginChoiceSelector(im)
 		return
 	}
-	const defaultEndpoint = region ? getRegion(region).llmBaseUrl : getKimchiDefaultEndpoint()
+	const defaultEndpoint = region ? getRegion(region).llmBaseUrl : resolveEndpoints().llmBaseUrl
 	const endpointInput = await modeLike.showExtensionInput(
 		`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`,
 		"",

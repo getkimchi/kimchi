@@ -73,27 +73,22 @@ interface RefreshBillingStatusOptions {
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
 
-/** Billing/pricing links follow the configured region (env override still wins). */
-function webAppBase(): string {
-	return resolveEndpoints().webAppUrl
-}
-
 export function communityTierMessages(): { available: string; inferenceBlocked: string } {
 	return {
-		available: `You are using Community tier. For faster performance, upgrade to Coder at ${webAppBase()}/pricing`,
-		inferenceBlocked: `You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at ${webAppBase()}/pricing.`,
+		available: `You are using Community tier. For faster performance, upgrade to Coder at ${resolveEndpoints().webAppUrl}/pricing`,
+		inferenceBlocked: `You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at ${resolveEndpoints().webAppUrl}/pricing.`,
 	}
 }
 
 export function billingExhaustedMessage(): string {
-	return `You ran out of credits. Top up at ${webAppBase()}/billing`
+	return `You ran out of credits. Top up at ${resolveEndpoints().webAppUrl}/billing`
 }
 
 // A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
 // user whose included credits were never spendable, who was therefore rate limited all along. The
 // payload cannot tell the two apart, so the wording must hold for both.
 export function billingRateLimitedMessage(): string {
-	return `You just ran out of credits, you can still use Kimchi, but in a slower rate-limited mode. Buy credits on ${webAppBase()}/billing`
+	return `You just ran out of credits, you can still use Kimchi, but in a slower rate-limited mode. Buy credits on ${resolveEndpoints().webAppUrl}/billing`
 }
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
@@ -378,7 +373,7 @@ function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarn
 			typeof status.remainingCredits === "number" ? ` (${formatCreditsAmount(status.remainingCredits)} remaining)` : ""
 		return {
 			kind: "low",
-			message: `Heads up: your credits are running low${balance}. Top up now to avoid slowdowns and rate limits: ${webAppBase()}/billing`,
+			message: `Heads up: your credits are running low${balance}. Top up now to avoid slowdowns and rate limits: ${resolveEndpoints().webAppUrl}/billing`,
 		}
 	}
 

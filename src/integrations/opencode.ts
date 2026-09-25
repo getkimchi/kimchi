@@ -2,12 +2,10 @@ import { execFileSync } from "node:child_process"
 import { readJson, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
-import { readTelemetryConfig, THIRD_PARTY_MAX_RETRIES } from "../config.js"
+import { readTelemetryConfig, resolveEndpoints, THIRD_PARTY_MAX_RETRIES } from "../config.js"
 import type { ModelMetadata } from "../models.js"
 import { fetchWithRetry } from "../utils/http.js"
 import {
-	kimchiTelemetryLogsUrl,
-	kimchiTelemetryMetricsUrl,
 	NPM_REGISTRY_BASE_URL,
 	OPENCODE_PLUGIN_ARRAY_MIN_VERSION,
 	OPENCODE_PLUGIN_PACKAGE,
@@ -136,8 +134,8 @@ export function buildUpdatedPlugins(inputs: PluginUpdateInputs): PluginUpdateRes
 	const pluginConfig: Record<string, unknown> = {}
 	if (telemetryEnabled) {
 		pluginConfig.telemetry = true
-		pluginConfig.logsEndpoint = kimchiTelemetryLogsUrl()
-		pluginConfig.metricsEndpoint = kimchiTelemetryMetricsUrl()
+		pluginConfig.logsEndpoint = resolveEndpoints().telemetryLogsUrl
+		pluginConfig.metricsEndpoint = resolveEndpoints().telemetryMetricsUrl
 	}
 
 	let existingVersion: string | null = null

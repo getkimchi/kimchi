@@ -95,3 +95,36 @@ export function telemetryLogsUrl(r: KimchiRegion): string {
 export function telemetryMetricsUrl(r: KimchiRegion): string {
 	return `${r.castApiUrl}/ai-optimizer/v1beta/metrics:ingest`
 }
+
+/** Every endpoint derived from a region. */
+export interface RegionEndpoints {
+	region: RegionId
+	webAppUrl: string
+	platformApiUrl: string
+	llmBaseUrl: string
+	openAiBaseUrl: string
+	anthropicBaseUrl: string
+	experimentalOpenAiBaseUrl: string
+	searchUrl: string
+	castApiUrl: string
+	keyValidationUrl: string
+	telemetryLogsUrl: string
+	telemetryMetricsUrl: string
+}
+
+export function regionEndpoints(r: KimchiRegion): RegionEndpoints {
+	return {
+		region: r.id,
+		webAppUrl: r.webAppUrl,
+		platformApiUrl: platformApiUrl(r),
+		llmBaseUrl: r.llmBaseUrl,
+		openAiBaseUrl: openAiBaseUrl(r),
+		anthropicBaseUrl: anthropicBaseUrl(r),
+		experimentalOpenAiBaseUrl: experimentalOpenAiBaseUrl(r),
+		searchUrl: searchUrl(r),
+		castApiUrl: r.castApiUrl,
+		keyValidationUrl: keyValidationUrl(r),
+		telemetryLogsUrl: telemetryLogsUrl(r),
+		telemetryMetricsUrl: telemetryMetricsUrl(r),
+	}
+}

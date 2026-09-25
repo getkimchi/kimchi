@@ -9,9 +9,10 @@ import {
 	getRegion,
 	isRegionId,
 	openAiBaseUrl,
-	platformApiUrl,
 	REGION_ENV,
+	type RegionEndpoints,
 	type RegionId,
+	regionEndpoints,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
 } from "./regions.js"
@@ -611,22 +612,14 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	}
 }
 
-export interface ResolvedEndpoints {
-	region: RegionId
-	webAppUrl: string
-	platformApiUrl: string
+export interface ResolvedEndpoints extends RegionEndpoints {
+	/** Config `llmEndpoint` (project wins over global), else the region's OpenAI base. */
 	llmEndpoint: string
-	castApiUrl: string
 }
 
 /**
- * Resolve every external endpoint the CLI talks to. Precedence per layer:
- *   - webAppUrl:      KIMCHI_WEB_APP_URL env → region web app
- *   - platformApiUrl: KIMCHI_REMOTE_ENDPOINT env → region platform API
- *   - llmEndpoint:    config `llmEndpoint` (project wins over global) → region LLM base
- *   - castApiUrl:     region Cast AI API
- * Dev/CI env overrides therefore keep absolute precedence over the configured
- * region, and a config with no `region` resolves to exactly today's URLs.
+ * Resolve every external endpoint the CLI talks to from the configured region.
+ * Overrides: KIMCHI_WEB_APP_URL → webAppUrl, KIMCHI_REMOTE_ENDPOINT → platformApiUrl.
  */
 // The no-options resolution feeds render-time getters (billing links,
 // login URLs) that run on every streaming render — memoize the loadConfig()
@@ -660,13 +653,12 @@ export function resolveEndpoints(options?: { configPath?: string; cwd?: string }
 		}
 		cfg = resolvedEndpointsConfigCache.cfg
 	}
-	const region = getRegion(cfg.region)
+	const endpoints = regionEndpoints(getRegion(cfg.region))
 	return {
-		region: region.id,
-		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? region.webAppUrl,
-		platformApiUrl: process.env.KIMCHI_REMOTE_ENDPOINT ?? platformApiUrl(region),
+		...endpoints,
+		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? endpoints.webAppUrl,
+		platformApiUrl: process.env.KIMCHI_REMOTE_ENDPOINT ?? endpoints.platformApiUrl,
 		llmEndpoint: cfg.llmEndpoint,
-		castApiUrl: region.castApiUrl,
 	}
 }
 

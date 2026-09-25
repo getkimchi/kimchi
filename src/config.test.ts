@@ -599,7 +599,7 @@ describe("region config", () => {
 	it("resolveEndpoints: no region resolves to exactly today's URLs", () => {
 		writeFileSync(configPath, JSON.stringify({}))
 		const resolved = resolveEndpoints({ configPath })
-		expect(resolved).toEqual({
+		expect(resolved).toMatchObject({
 			region: "us",
 			webAppUrl: "https://app.kimchi.dev",
 			platformApiUrl: "https://app.kimchi.dev/api",
@@ -611,7 +611,7 @@ describe("region config", () => {
 	it("resolveEndpoints: eu region yields eu URLs across the board", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
 		const resolved = resolveEndpoints({ configPath })
-		expect(resolved).toEqual({
+		expect(resolved).toMatchObject({
 			region: "eu",
 			webAppUrl: "https://app.eu.kimchi.dev",
 			platformApiUrl: "https://app.eu.kimchi.dev/api",

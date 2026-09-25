@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { getApiKeyMismatchWarning, getApiKeySource, loadConfig, writeApiKey } from "../../config.js"
+import { getApiKeyMismatchWarning, getApiKeySource, loadConfig, resolveEndpoints, writeApiKey } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	isTransientModelsError,
@@ -27,11 +27,6 @@ export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
-
-/** The default LLM gateway base for API-key login prompts — follows the configured region. */
-export function getKimchiDefaultEndpoint(): string {
-	return getRegion(loadConfig().region).llmBaseUrl
-}
 
 let browserLoginLinkSeq = 0
 
@@ -365,7 +360,7 @@ export async function performKimchiApiKeyLogin(
 	options: KimchiApiKeyLoginOptions,
 ): Promise<boolean> {
 	const token = options.apiKey.trim()
-	const endpoint = options.endpoint.trim() || getKimchiDefaultEndpoint()
+	const endpoint = options.endpoint.trim() || resolveEndpoints().llmBaseUrl
 	if (!token) {
 		host.showError?.("Kimchi API key is required.")
 		return false
@@ -502,7 +497,7 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 	if (!apiKey?.trim()) return "cancelled"
 	// The default endpoint shown in the prompt follows the region just picked
 	// in the selector, not only the stored config region.
-	const defaultEndpoint = options?.region ? getRegion(options.region).llmBaseUrl : getKimchiDefaultEndpoint()
+	const defaultEndpoint = options?.region ? getRegion(options.region).llmBaseUrl : resolveEndpoints().llmBaseUrl
 	const endpoint = await ctx.ui.input(`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`)
 	const trimmedEndpoint = endpoint?.trim() || defaultEndpoint
 	const ok = await performKimchiApiKeyLogin(

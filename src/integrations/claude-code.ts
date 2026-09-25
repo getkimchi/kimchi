@@ -4,14 +4,10 @@ import { log } from "@clack/prompts"
 import { readJson, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import { resolveEndpoints } from "../config.js"
 import type { ModelMetadata } from "../models.js"
 import { confirm } from "../setup-wizard/prompt.js"
-import {
-	ALL_TELEMETRY_URLS,
-	kimchiAnthropicBaseUrl,
-	kimchiTelemetryLogsUrl,
-	kimchiTelemetryMetricsUrl,
-} from "./constants.js"
+import { ALL_TELEMETRY_URLS } from "./constants.js"
 import { detectBinaryFactory, findBinary } from "./detect.js"
 import { register } from "./registry.js"
 
@@ -25,7 +21,7 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  */
 export function claudeCodeEnv(
 	apiKey: string,
-	baseUrl: string = kimchiAnthropicBaseUrl(),
+	baseUrl: string = resolveEndpoints().anthropicBaseUrl,
 	options?: { telemetryEnabled?: boolean },
 ): Record<string, string> {
 	const env: Record<string, string> = {
@@ -36,12 +32,12 @@ export function claudeCodeEnv(
 	}
 	if (options?.telemetryEnabled) {
 		env.CLAUDE_CODE_ENABLE_TELEMETRY = "1"
-		env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = kimchiTelemetryLogsUrl()
+		env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = resolveEndpoints().telemetryLogsUrl
 		env.OTEL_EXPORTER_OTLP_LOGS_HEADERS = `Authorization=Bearer ${apiKey}`
 		env.OTEL_EXPORTER_OTLP_LOGS_PROTOCOL = "http/json"
 		env.OTEL_LOGS_EXPORTER = "otlp"
 		env.OTEL_LOGS_EXPORT_INTERVAL = "15000"
-		env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = kimchiTelemetryMetricsUrl()
+		env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = resolveEndpoints().telemetryMetricsUrl
 		env.OTEL_EXPORTER_OTLP_METRICS_HEADERS = `Authorization=Bearer ${apiKey}`
 		env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL = "http/json"
 		env.OTEL_METRICS_EXPORTER = "otlp"
@@ -153,7 +149,7 @@ async function writeClaudeCode(
 	const before = structuredClone
 		? structuredClone(envBlock)
 		: (JSON.parse(JSON.stringify(envBlock)) as Record<string, unknown>)
-	injectClaudeCodeEnv(envBlock, kimchiAnthropicBaseUrl(), apiKey, options)
+	injectClaudeCodeEnv(envBlock, resolveEndpoints().anthropicBaseUrl, apiKey, options)
 	const diffs = envDiff(before, envBlock)
 
 	if (diffs.length > 0 && process.stdin?.isTTY) {

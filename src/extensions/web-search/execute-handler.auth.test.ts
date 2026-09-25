@@ -11,6 +11,7 @@ beforeEach(() => {
 	configPath = join(homeDir, ".config", "kimchi", "config.json")
 	vi.stubEnv("HOME", homeDir)
 	vi.stubEnv("KIMCHI_API_KEY", undefined)
+	vi.stubEnv("KIMCHI_REGION", undefined)
 	vi.spyOn(process, "cwd").mockReturnValue(homeDir)
 	// Reload config's launch-time state and paths for each isolated process scenario.
 	vi.resetModules()
@@ -42,11 +43,11 @@ it.each([
 	captureApiKeyFromEnvironment()
 	expect(process.env.KIMCHI_API_KEY).toBeUndefined()
 
-	const { executeWebSearch, searchEndpoint } = await import("./execute-handler.js")
+	const { executeWebSearch } = await import("./execute-handler.js")
 	await executeWebSearch({ query: "test" })
 
 	expect(fetch).toHaveBeenCalledWith(
-		searchEndpoint(),
+		"https://llm.kimchi.dev/v1/search",
 		expect.objectContaining({
 			headers: expect.objectContaining({ Authorization: `Bearer ${environmentKey ?? savedKey}` }),
 		}),

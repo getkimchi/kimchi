@@ -1,12 +1,16 @@
-import { describe, expect, it, onTestFinished, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { REGIONS, regionEndpoints } from "../regions.js"
 import { validateApiKey } from "./validator.js"
 
-// loadConfig() reads the launch-time global config path (real HOME). Mock it so
-// the developer machine's config cannot leak into the resolved endpoints.
-const loadConfigMock = vi.hoisted(() => vi.fn(() => ({ apiKey: "", region: undefined as "us" | "eu" | undefined })))
+// Keep the developer machine's config out of the resolved endpoints.
+const resolveEndpointsMock = vi.hoisted(() => vi.fn())
 vi.mock("../config.js", () => ({
-	loadConfig: loadConfigMock,
+	resolveEndpoints: resolveEndpointsMock,
 }))
+
+beforeEach(() => {
+	resolveEndpointsMock.mockReturnValue(regionEndpoints(REGIONS.us))
+})
 
 type FetchWithRetryOptions = {
 	fetchImpl?: typeof fetch
@@ -61,10 +65,7 @@ describe("validateApiKey", () => {
 	})
 
 	it("points 401 suggestions at the configured region's web app", async () => {
-		loadConfigMock.mockReturnValue({ apiKey: "", region: "eu" })
-		onTestFinished(() => {
-			loadConfigMock.mockReturnValue({ apiKey: "", region: undefined })
-		})
+		resolveEndpointsMock.mockReturnValue(regionEndpoints(REGIONS.eu))
 		const result = await validateApiKey("bad", { fetch: fakeFetch({ status: 401 }) })
 		expect(result.suggestions).toContain("Verify your API key at https://app.eu.kimchi.dev")
 	})
@@ -110,7 +111,7 @@ describe("validateApiKey", () => {
 	})
 
 	it("uses the configured region's validation endpoint", async () => {
-		loadConfigMock.mockReturnValueOnce({ apiKey: "", region: "eu" })
+		resolveEndpointsMock.mockReturnValue(regionEndpoints(REGIONS.eu))
 		const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }))
 		await validateApiKey("my-key", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
 		expect(fetchSpy).toHaveBeenCalledWith(

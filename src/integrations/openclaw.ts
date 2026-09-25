@@ -5,8 +5,9 @@ import { join } from "node:path"
 import { readJson, writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import { resolveEndpoints } from "../config.js"
 import type { ModelMetadata } from "../models.js"
-import { API_KEY_ENV, kimchiBaseUrl, PROVIDER_NAME } from "./constants.js"
+import { API_KEY_ENV, PROVIDER_NAME } from "./constants.js"
 import { findBinary } from "./detect.js"
 import { type ModelRole, resolveAllModelRoles } from "./models.js"
 import { register } from "./registry.js"
@@ -30,7 +31,7 @@ export function buildOpenClawProviderBlock(
 	models: readonly import("../models.js").ModelMetadata[],
 ): Record<string, unknown> {
 	return {
-		baseUrl: kimchiBaseUrl(),
+		baseUrl: resolveEndpoints().openAiBaseUrl,
 		apiKey: `\${${API_KEY_ENV}}`,
 		api: "openai-completions",
 		models: models.map((m) => ({

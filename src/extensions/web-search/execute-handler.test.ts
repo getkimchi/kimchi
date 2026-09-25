@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { DEFAULT_LIMIT, executeWebSearch, type SearchResponse, searchEndpoint } from "./execute-handler.js"
+import { REGIONS, regionEndpoints } from "../../regions.js"
+import { DEFAULT_LIMIT, executeWebSearch, type SearchResponse } from "./execute-handler.js"
 
-const configMock = vi.hoisted(() => ({ loadConfig: vi.fn(() => ({ apiKey: "test-key-123" })) }))
+const configMock = vi.hoisted(() => ({
+	loadConfig: vi.fn(() => ({ apiKey: "test-key-123" })),
+	resolveEndpoints: vi.fn(),
+}))
 vi.mock("../../config.js", () => configMock)
 vi.mock("../../utils/http.js", () => ({
 	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
@@ -29,6 +33,7 @@ function makeSources(count: number) {
 
 beforeEach(() => {
 	configMock.loadConfig.mockReturnValue({ apiKey: "test-key-123" })
+	configMock.resolveEndpoints.mockReturnValue(regionEndpoints(REGIONS.eu))
 })
 
 afterEach(() => {
@@ -42,7 +47,7 @@ describe("executeWebSearch", () => {
 			configMock.loadConfig.mockReturnValue({ apiKey: "" })
 
 			await expect(executeWebSearch({ query: "test" })).rejects.toThrow(
-				"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.kimchi.dev to create a key.",
+				"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.eu.kimchi.dev to create a key.",
 			)
 		})
 
@@ -112,7 +117,7 @@ describe("executeWebSearch", () => {
 
 			await executeWebSearch({ query: "test" })
 
-			expect(vi.mocked(fetch).mock.calls[0][0]).toBe(searchEndpoint())
+			expect(vi.mocked(fetch).mock.calls[0][0]).toBe("https://llm.eu.kimchi.dev/v1/search")
 		})
 	})
 

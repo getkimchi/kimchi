@@ -1,16 +1,10 @@
-import { loadConfig } from "../config.js"
-import { getRegion, keyValidationUrl } from "../regions.js"
+import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 export interface ValidateResult {
 	valid: boolean
 	error?: string
 	suggestions?: string[]
-}
-
-/** The key-validation endpoint follows the configured region. */
-export function validationEndpoint(): string {
-	return keyValidationUrl(getRegion(loadConfig().region))
 }
 
 export const REQUEST_TIMEOUT_MS = 10_000
@@ -38,13 +32,13 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			valid: false,
 			error: "API key is required",
 			suggestions: [
-				`Get your API key at ${getRegion(loadConfig().region).webAppUrl}`,
+				`Get your API key at ${resolveEndpoints().webAppUrl}`,
 				"Set it via KIMCHI_API_KEY environment variable or run 'kimchi setup'",
 			],
 		}
 	}
 
-	const endpoint = options.endpoint ?? validationEndpoint()
+	const endpoint = options.endpoint ?? resolveEndpoints().keyValidationUrl
 	const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS
 	const fetchImpl = options.fetch ?? globalThis.fetch
 
@@ -67,7 +61,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			error: "Network error: unable to reach Kimchi API",
 			suggestions: [
 				"Check your internet connection",
-				`Verify you can reach ${getRegion(loadConfig().region).castApiUrl}`,
+				`Verify you can reach ${resolveEndpoints().castApiUrl}`,
 				"Try again in a few moments",
 			],
 		}
@@ -81,7 +75,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			valid: false,
 			error: "Invalid API key",
 			suggestions: [
-				`Verify your API key at ${getRegion(loadConfig().region).webAppUrl}`,
+				`Verify your API key at ${resolveEndpoints().webAppUrl}`,
 				"Ensure the key has not been revoked",
 				"Check for typos or extra whitespace",
 			],
@@ -92,7 +86,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 			valid: false,
 			error: "API key lacks required permissions",
 			suggestions: [
-				`Verify your API key has the required scopes at ${getRegion(loadConfig().region).webAppUrl}`,
+				`Verify your API key has the required scopes at ${resolveEndpoints().webAppUrl}`,
 				"Contact support if the issue persists",
 			],
 		}

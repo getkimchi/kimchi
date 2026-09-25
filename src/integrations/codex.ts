@@ -3,8 +3,9 @@ import { dirname } from "node:path"
 import { writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import { resolveEndpoints } from "../config.js"
 import type { ModelMetadata } from "../models.js"
-import { kimchiBaseUrl, PROVIDER_NAME } from "./constants.js"
+import { PROVIDER_NAME } from "./constants.js"
 import { detectBinaryFactory } from "./detect.js"
 import { resolveModelRole } from "./models.js"
 import { register } from "./registry.js"
@@ -41,7 +42,7 @@ model_catalog_json = "${escapedCatalogPath}"
 
 [model_providers.${PROVIDER_NAME}]
 name = "Kimchi Gateway"
-base_url = "${tomlEscape(kimchiBaseUrl())}"
+base_url = "${tomlEscape(resolveEndpoints().openAiBaseUrl)}"
 http_headers = { Authorization = "Bearer ${escapedKey}" }
 wire_api = "responses"
 `
