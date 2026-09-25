@@ -80,6 +80,15 @@ export function validateServerEntry(raw: unknown): ServerEntry {
  */
 let probeChain: Promise<unknown> = Promise.resolve()
 
+/**
+ * Serialized probe execution. Queued probes wait behind the running one, whose
+ * worst case is an interactive OAuth probe: roughly
+ * timeoutMs + INTERACTIVE_AUTH_TIMEOUT_MS + timeoutMs of queue wait. A queued
+ * caller cannot cancel its wait — an accepted trade-off, since aborting a
+ * queued wait would not stop the running probe and concurrent probes would
+ * kill each other's OAuth listener anyway.
+ */
+
 function runSerializedProbe(run: () => Promise<ProbeResult>): Promise<ProbeResult> {
 	const next = probeChain.then(run, run)
 	// Keep the chain alive after a failed probe; surface the error only to

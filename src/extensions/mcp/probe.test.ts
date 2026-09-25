@@ -467,7 +467,7 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
 	})
 
-	it("never settles the interactive ui hooks so the OAuth callback race is not lost", async () => {
+	it("rejects the interactive ui hooks when the probe aborts so the OAuth flow unwinds", async () => {
 		type PromptUi = Record<"input" | "select" | "confirm", (...args: unknown[]) => Promise<unknown>>
 		let capturedUi: PromptUi | undefined
 		upstream.mcpAuth.mockImplementation(async (_args: string, ctx: unknown) => {
@@ -488,11 +488,8 @@ describe("UpstreamMcpProbe", () => {
 		const ui = capturedUi
 		expect(ui).toBeDefined()
 
-		controller.abort(new Error("aborted during consent"))
-		await expect(probe).rejects.toThrow("aborted during consent")
-
-		// Even after abort, the hooks stay pending — only the real callback (or the
-		// flow's own abortable race) may settle them.
+		// While the flow is active the hooks stay pending — only the real callback
+		// (or an abort) may settle them.
 		for (const hook of ["input", "select", "confirm"] as const) {
 			const outcome = await Promise.race([
 				ui?.[hook]("prompt").then(
@@ -502,6 +499,83 @@ describe("UpstreamMcpProbe", () => {
 				new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
 			])
 			expect(outcome).toBe("pending")
+		}
+
+		controller.abort(new Error("aborted during consent"))
+		await expect(probe).rejects.toThrow("aborted during consent")
+
+		// On abort the hooks reject, so upstream's manual-paste race loses and the
+		// flow unwinds (closing its localhost callback listener) instead of lingering.
+		for (const hook of ["input", "select", "confirm"] as const) {
+			await expect(ui?.[hook]("prompt")).rejects.toThrow("aborted during consent")
+		}
+	})
+
+	it("aborts the interactive ui hooks when the interactive auth timeout fires", async () => {
+		vi.useFakeTimers()
+		type PromptUi = Record<"input" | "select" | "confirm", (...args: unknown[]) => Promise<unknown>>
+		let capturedUi: PromptUi | undefined
+		upstream.mcpAuth.mockImplementation(async (_args: string, ctx: unknown) => {
+			capturedUi = (ctx as { ui: PromptUi }).ui
+			// Park the flow on the manual-paste prompt; it unwinds only when the
+			// hook rejects (real callback never arrives in this test).
+			await new Promise<void>((_, reject) => {
+				capturedUi?.input("paste the code").then(
+					() => {},
+					(error) => reject(error),
+				)
+			})
+		})
+		const name = "ui-hooks-timeout"
+		const url = "https://drivemcp.example.test/mcp"
+		const probe = new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+		await vi.advanceTimersByTimeAsync(1_000)
+		expect(upstream.mcpAuth).toHaveBeenCalledOnce()
+		expect(capturedUi).toBeDefined()
+
+		await vi.advanceTimersByTimeAsync(300_000)
+
+		// The timeout is swallowed into credential re-inspection → needs-auth.
+		await expect(probe).resolves.toEqual({
+			tools: [],
+			needsAuth: true,
+			error: "OAuth authentication timed out after 300 seconds",
+		})
+		// The aborted auth signal rejected the hook, unwinding the parked flow.
+		await expect(capturedUi?.input("paste the code")).rejects.toThrow(
+			/OAuth authentication timed out after 300 seconds/,
+		)
+	})
+
+	it("surfaces the interactive auth failure when the post-auth reconnect reports auth_required", async () => {
+		const name = "google-drive-reconnect-denied"
+		const url = "https://drivemcp.example.test/mcp"
+		upstream.mcpAuth.mockImplementation(async (args: string) => {
+			// Tokens got stored, but the interactive attempt was denied downstream;
+			// the handler still reports its failure reason.
+			updateMcpOAuthTokensForUrl(args.trim(), url, { accessToken: "rejected-token" })
+			throw new Error("consent denied: insufficient scope")
+		})
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params === "object" && params !== null && "connect" in params) {
+				// First connect succeeds anonymously; only the post-auth reconnect
+				// reports auth_required.
+				if (upstream.gatewayExecute.mock.calls.length === 1) {
+					return gatewayResult({ tools: [] })
+				}
+				return gatewayResult({ error: "auth_required", message: "Authorization required" })
+			}
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+		try {
+			const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+			expect(result).toEqual({ tools: [], needsAuth: true, error: "consent denied: insufficient scope" })
+		} finally {
+			warn.mockRestore()
 		}
 	})
 

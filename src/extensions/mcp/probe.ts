@@ -108,17 +108,21 @@ function executeProcess(
 	})
 }
 
-function createProbeHost(cwd: string, signal: AbortSignal | undefined): ProbeHost {
+function createProbeHost(cwd: string, signal: AbortSignal | undefined, authAbort?: AbortController): ProbeHost {
 	const handlers = new Map<string, Handler[]>()
 	const commands = new Map<string, Command>()
 	const tools = new Map<string, ToolDefinition>()
 	const activeTools = new Set<string>()
 	const eventHandlers = new Map<string, Array<(data: unknown) => void>>()
 
+	// The fake UI hooks must stay pending while the OAuth flow is active, but
+	// reject once the probe or the interactive auth window aborts — otherwise an
+	// abandoned flow would leave upstream's localhost callback listener bound.
+	const uiSignals = [signal, authAbort?.signal].filter((s): s is AbortSignal => Boolean(s))
 	const ui = {
-		select: neverSettle,
-		confirm: neverSettle,
-		input: neverSettle,
+		select: () => neverSettle(uiSignals),
+		confirm: () => neverSettle(uiSignals),
+		input: () => neverSettle(uiSignals),
 		notify: () => {},
 		onTerminalInput: () => () => {},
 		setStatus: () => {},
@@ -196,12 +200,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Never settle: upstream's OAuth flow races the localhost callback against a
+ * Never resolve: upstream's OAuth flow races the localhost callback against a
  * manual-paste prompt on `ui.input`; a resolving fake would win that race and
- * cancel the flow while the user is still on the consent page.
+ * cancel the flow while the user is still on the consent page. The promise
+ * does reject when one of the watched signals aborts so an abandoned flow
+ * unwinds (and closes its callback listener) instead of lingering forever.
  */
-function neverSettle(): Promise<never> {
-	return new Promise(() => {})
+function neverSettle(signals: AbortSignal[]): Promise<never> {
+	return new Promise((_, reject) => {
+		for (const signal of signals) {
+			if (signal.aborted) {
+				reject(signal.reason)
+				return
+			}
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+		}
+	})
 }
 
 function resultDetails(result: GatewayResult): Record<string, unknown> {
@@ -280,6 +294,9 @@ export class UpstreamMcpProbe implements McpProbe {
 			}
 		}
 		const resumeDeadline = (): void => {
+			// The post-auth phase intentionally re-arms a full fresh `timeoutMs`
+			// budget, so total wall time can reach
+			// timeoutMs + INTERACTIVE_AUTH_TIMEOUT_MS + timeoutMs.
 			if (timer === undefined && !deadline.signal.aborted) {
 				timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
 			}
@@ -326,7 +343,11 @@ export class UpstreamMcpProbe implements McpProbe {
 			!(definition.headers && Object.keys(definition.headers).length > 0) &&
 			(definition.auth === "oauth" || Boolean(definition.oauth))
 		const hasCredentials = serverUrl !== undefined && hasOAuthCredentials(name, serverUrl)
-		const host = createProbeHost(cwd, options.signal)
+		// Scoped to this interactive mcp-auth invocation: aborting it rejects the
+		// fake UI hooks, which unwinds upstream's manual-paste race (and closes the
+		// localhost callback listener) instead of abandoning the flow.
+		const authAbort = new AbortController()
+		const host = createProbeHost(cwd, options.signal, authAbort)
 		const config = {
 			mcpServers: {
 				[probeName]: { ...definition, directTools: false, lifecycle: "lazy" as const },
@@ -382,11 +403,16 @@ export class UpstreamMcpProbe implements McpProbe {
 				let authTimer: ReturnType<typeof setTimeout> | undefined
 				let authFailureMessage: string | null = null
 				const interactiveDeadline = new Promise<never>((_resolve, reject) => {
-					authTimer = setTimeout(
-						() =>
-							reject(new Error(`OAuth authentication timed out after ${INTERACTIVE_AUTH_TIMEOUT_MS / 1000} seconds`)),
-						INTERACTIVE_AUTH_TIMEOUT_MS,
-					)
+					authTimer = setTimeout(() => {
+						const timeoutError = new Error(
+							`OAuth authentication timed out after ${INTERACTIVE_AUTH_TIMEOUT_MS / 1000} seconds`,
+						)
+						// Unwind the upstream flow: the aborted auth signal rejects the fake
+						// UI hooks, which loses the manual-paste race and closes the callback
+						// listener rather than leaving it bound after this probe returns.
+						authAbort.abort(timeoutError)
+						reject(timeoutError)
+					}, INTERACTIVE_AUTH_TIMEOUT_MS)
 				})
 				try {
 					await Promise.race([
@@ -412,7 +438,9 @@ export class UpstreamMcpProbe implements McpProbe {
 				signal.throwIfAborted()
 				const reconnectDetails = resultDetails(reconnected)
 				if (reconnectDetails.error === "auth_required") {
-					return { tools: [], needsAuth: true, error: null }
+					// A denied/failed interactive attempt can still land here (e.g. tokens
+					// stored but rejected on reconnect); don't discard its reason.
+					return { tools: [], needsAuth: true, error: authFailureMessage ?? null }
 				}
 				if (reconnectDetails.error) {
 					return {
