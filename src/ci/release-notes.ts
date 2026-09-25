@@ -28,6 +28,20 @@ const compareSchema = z.object({
 	total_commits: z.number().int().nonnegative(),
 	commits: z.array(z.object({ sha: shaSchema, commit: z.object({ message: z.string() }) })),
 })
+const pageInfoSchema = z.object({ hasNextPage: z.boolean() })
+const associatedCommitSchema = z.object({
+	oid: shaSchema,
+	associatedPullRequests: z.object({
+		pageInfo: pageInfoSchema,
+		nodes: z.array(
+			pullSchema.extend({
+				merge_commit_sha: z.object({ oid: shaSchema }).nullable(),
+				base: z.string(),
+				labels: z.object({ nodes: pullSchema.shape.labels, pageInfo: pageInfoSchema }),
+			}),
+		),
+	}),
+})
 type Release = z.infer<typeof releaseSchema>
 type Pull = z.infer<typeof pullSchema>
 type Commit = z.infer<typeof compareSchema>["commits"][number]
@@ -63,7 +77,7 @@ export function stableReleases(releases: Release[]) {
 }
 
 export function classify(pull: Pick<Pull, "title" | "body" | "labels">): Impact {
-	const labels = new Set(pull.labels.map((label) => label.name))
+	const labels = new Set(pull.labels.map((label) => label.name.toLowerCase()))
 	const title = /^(\w+)(?:\([^\n]+\))?(!)?:\s/.exec(pull.title)
 	if (labels.has("breaking change") || title?.[2] || /^BREAKING[ -]CHANGE:\s*\S/m.test(pull.body ?? "")) {
 		return "major"
@@ -135,6 +149,51 @@ async function pages<T>(api: Api, path: string, schema: z.ZodType<T>): Promise<T
 	}
 }
 
+async function associatedPulls(repo: string, commits: Commit[], api: Api) {
+	const [owner, name] = repo.split("/")
+	const associations: { commit: Commit; pulls: Pull[] }[] = []
+	// Bound nested GraphQL connections; overflow keeps the complete, paginated REST path.
+	for (let offset = 0; offset < commits.length; offset += 20) {
+		const batch = commits.slice(offset, offset + 20)
+		const fields = batch.map(
+			(commit, index) => `c${index}: object(expression: "${commit.sha}") { ... on Commit {
+				oid associatedPullRequests(first: 10) { pageInfo { hasNextPage } nodes {
+					number title body merged_at: mergedAt merge_commit_sha: mergeCommit { oid }
+					base: baseRefName labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+				} }
+			} }`,
+		)
+		const response = z
+			.object({
+				errors: z.array(z.unknown()).optional(),
+				data: z.object({ repository: z.record(z.string(), z.unknown()) }).nullish(),
+			})
+			.parse(
+				await api("graphql", {
+					query: `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${fields.join("\n")} } }`,
+				}),
+			)
+		if (response.errors?.length || !response.data) throw new Error("GitHub returned incomplete PR associations")
+		for (const [index, commit] of batch.entries()) {
+			const result = associatedCommitSchema.parse(response.data.repository[`c${index}`])
+			if (result.oid !== commit.sha) throw new Error("GitHub returned PR associations for the wrong commit")
+			const connection = result.associatedPullRequests
+			const truncated =
+				connection.pageInfo.hasNextPage || connection.nodes.some((pull) => pull.labels.pageInfo.hasNextPage)
+			const pulls = truncated
+				? await pages(api, `repos/${repo}/commits/${commit.sha}/pulls`, pullSchema)
+				: connection.nodes.map((pull) => ({
+						...pull,
+						merge_commit_sha: pull.merge_commit_sha?.oid ?? null,
+						base: { ref: pull.base },
+						labels: pull.labels.nodes,
+					}))
+			associations.push({ commit, pulls })
+		}
+	}
+	return associations
+}
+
 export async function collectRelease(repo: string, sha: string, tag?: string, api: Api = githubApi) {
 	if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("Expected repository owner/name")
 	shaSchema.parse(sha)
@@ -177,8 +236,8 @@ export async function collectRelease(repo: string, sha: string, tag?: string, ap
 	const commitShas = new Set(commits.map((commit) => commit.sha))
 	const pulls = new Map<number, Pull>()
 	const direct: Commit[] = []
-	for (const commit of commits) {
-		const associated = (await pages(api, `${root}/commits/${commit.sha}/pulls`, pullSchema)).filter(
+	for (const { commit, pulls: candidates } of await associatedPulls(repo, commits, api)) {
+		const associated = candidates.filter(
 			(pull) =>
 				pull.merged_at && pull.base.ref === "master" && pull.merge_commit_sha && commitShas.has(pull.merge_commit_sha),
 		)

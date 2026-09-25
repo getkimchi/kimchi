@@ -19,7 +19,7 @@ import {
 const sha = "a".repeat(40)
 const commitSha = "b".repeat(40)
 const previous = { tag_name: "v1.1.34", body: "Old release", draft: false, prerelease: false }
-const pull = {
+const pull: Parameters<typeof versionAdvice>[1][number] = {
 	number: 1254,
 	title: "feat: create reusable skills",
 	body: null,
@@ -30,8 +30,33 @@ const pull = {
 }
 const commit = { sha: commitSha, commit: { message: "feat: create reusable skills (#1254)" } }
 
+function graphResponse(query = "", changes = [pull]) {
+	return {
+		data: {
+			repository: Object.fromEntries(
+				[...query.matchAll(/(c\d+): object\(expression: "([a-f0-9]{40})"\)/g)].map((match) => [
+					match[1],
+					{
+						oid: match[2],
+						associatedPullRequests: {
+							pageInfo: { hasNextPage: false },
+							nodes: changes.map((change) => ({
+								...change,
+								merge_commit_sha: change.merge_commit_sha ? { oid: change.merge_commit_sha } : null,
+								base: change.base.ref,
+								labels: { nodes: change.labels, pageInfo: { hasNextPage: false } },
+							})),
+						},
+					},
+				]),
+			),
+		},
+	}
+}
+
 function fixture(releases = [previous], changes = [pull], commits = [commit]) {
-	return vi.fn(async (path: string) => {
+	return vi.fn(async (path: string, body?: Record<string, string>) => {
+		if (path === "graphql") return graphResponse(body?.query, changes)
 		if (/\/commits\/v/.test(path)) return { sha }
 		if (path.includes("/releases?")) return releases
 		if (path.includes("/compare/")) return { status: "ahead", total_commits: commits.length, commits }
@@ -63,6 +88,14 @@ describe("release version advice", () => {
 		).toBe("v1.2.0")
 		expect(versionAdvice(previous.tag_name, [pull], []).suggested).toBe("v1.2.0")
 		expect(versionAdvice(previous.tag_name, [{ ...pull, title: "fix: fix login" }], []).suggested).toBe("v1.1.35")
+	})
+	it.each([
+		["Bug", "patch"],
+		["NEW FEATURE", "minor"],
+		["Documentation", "none"],
+		["Breaking Change", "major"],
+	])("classifies the %s label without depending on capitalization", (name, impact) => {
+		expect(classify({ ...pull, title: "Update behavior", labels: [{ name }] })).toBe(impact)
 	})
 	it.each([
 		{ ...pull, title: "fix!: remove a flag" },
@@ -116,7 +149,7 @@ describe("exact release range", () => {
 			"getkimchi/kimchi",
 			sha,
 			"v1.1.35",
-			fixture([previous], [{ ...pull, title: "fix!: incompatible" }]),
+			fixture([previous], [{ ...pull, title: "fix: compatibility", labels: [{ name: "Breaking Change" }] }]),
 		)
 		expect(data.requiresApproval).toBe(true)
 	})
@@ -126,7 +159,8 @@ describe("exact release range", () => {
 
 	it("rejects a tag whose target does not match the requested source SHA", async () => {
 		const baseApi = fixture()
-		const api = async (path: string) => (/\/commits\/v/.test(path) ? { sha: commitSha } : baseApi(path))
+		const api = async (path: string, body?: Record<string, string>) =>
+			/\/commits\/v/.test(path) ? { sha: commitSha } : baseApi(path, body)
 		await expect(collectRelease("getkimchi/kimchi", sha, "v1.2.0", api)).rejects.toThrow("does not point")
 	})
 
@@ -143,14 +177,17 @@ describe("exact release range", () => {
 	})
 	it("skips newer stable releases on another branch when finding the ancestor", async () => {
 		const baseApi = fixture([{ ...previous, tag_name: "v1.2.0" }, previous])
-		const api = vi.fn(async (path: string) =>
-			path.includes("/compare/v1.2.0") ? { status: "diverged", total_commits: 1, commits: [commit] } : baseApi(path),
+		const api = vi.fn(async (path: string, body?: Record<string, string>) =>
+			path.includes("/compare/v1.2.0")
+				? { status: "diverged", total_commits: 1, commits: [commit] }
+				: baseApi(path, body),
 		)
 		expect((await collectRelease("getkimchi/kimchi", sha, undefined, api)).previous).toBe("v1.1.34")
 	})
 	it("paginates commit ranges and deduplicates PRs associated with multiple commits", async () => {
 		const first = Array.from({ length: 100 }, (_, index) => ({ ...commit, sha: index.toString(16).padStart(40, "0") }))
-		const api = vi.fn(async (path: string) => {
+		const api = vi.fn(async (path: string, body?: Record<string, string>) => {
+			if (path === "graphql") return graphResponse(body?.query)
 			if (path.includes("/releases?")) return [previous]
 			if (path.includes("/compare/"))
 				return { status: "ahead", total_commits: 101, commits: path.endsWith("page=1") ? first : [commit] }
@@ -160,6 +197,44 @@ describe("exact release range", () => {
 		expect(data.changes).toEqual([pull])
 		expect(data.direct).toEqual([])
 		expect(api).toHaveBeenCalledWith(`repos/getkimchi/kimchi/compare/v1.1.34...${sha}?per_page=100&page=2`)
+		expect(api.mock.calls.filter(([path]) => path === "graphql")).toHaveLength(6)
+		expect(api.mock.calls.some(([path]) => path.includes("/pulls?"))).toBe(false)
+	})
+	it.each(["associations", "labels"])("retains breaking changes when GraphQL truncates %s", async (overflow) => {
+		const breaking = { ...pull, title: "fix!: remove old API" }
+		const baseApi = fixture()
+		const first = Array.from({ length: 100 }, (_, index) => ({ ...pull, number: index + 1 }))
+		const api = vi.fn(async (path: string, body?: Record<string, string>) => {
+			if (path === "graphql") {
+				const response = graphResponse(body?.query)
+				const connection = response.data.repository.c0.associatedPullRequests
+				if (overflow === "associations") connection.pageInfo.hasNextPage = true
+				else connection.nodes[0].labels.pageInfo.hasNextPage = true
+				return response
+			}
+			if (path.includes("/pulls?")) return path.endsWith("page=1") ? first : [breaking]
+			return baseApi(path, body)
+		})
+		const data = await collectRelease("getkimchi/kimchi", sha, "v1.1.35", api)
+		expect(data.changes).toHaveLength(101)
+		expect(data.requiresApproval).toBe(true)
+		expect(api).toHaveBeenCalledWith(`repos/getkimchi/kimchi/commits/${commitSha}/pulls?per_page=100&page=2`)
+	})
+	it.each([
+		"partial-error",
+		"missing-commit",
+		"wrong-commit",
+	])("rejects incomplete GraphQL associations: %s", async (failure) => {
+		const baseApi = fixture()
+		const api = async (path: string, body?: Record<string, string>) => {
+			if (path !== "graphql") return baseApi(path, body)
+			const response = graphResponse(body?.query)
+			if (failure === "partial-error") return { ...response, errors: [{ message: "rate limit" }] }
+			if (failure === "missing-commit") return { data: { repository: {} } }
+			response.data.repository.c0.oid = sha
+			return response
+		}
+		await expect(collectRelease("getkimchi/kimchi", sha, undefined, api)).rejects.toThrow()
 	})
 	it("fails instead of publishing a truncated commit range", async () => {
 		const api = vi.fn(async (path: string) =>
@@ -326,7 +401,17 @@ const release = ${JSON.stringify(previous)};
 const pull = ${JSON.stringify(pull)};
 if (process.env.TEST_BREAKING === 'true') pull.title = 'fix!: remove an API';
 const commit = ${JSON.stringify(commit)};
-if (path.includes('/generate-notes')) {
+if (path === 'graphql') {
+  let data = ''; process.stdin.on('data', chunk => data += chunk);
+  process.stdin.on('end', () => {
+    const request = JSON.parse(data);
+    if (!request.query.includes(commit.sha)) process.exit(4);
+    const node = {...pull, merge_commit_sha: {oid: pull.merge_commit_sha}, base: pull.base.ref,
+      labels: {nodes: pull.labels, pageInfo: {hasNextPage: false}}};
+    console.log(JSON.stringify({data: {repository: {c0: {oid: commit.sha,
+      associatedPullRequests: {nodes: [node], pageInfo: {hasNextPage: false}}}}}}));
+  });
+} else if (path.includes('/generate-notes')) {
   let data = ''; process.stdin.on('data', chunk => data += chunk);
   process.stdin.on('end', () => {
     const request = JSON.parse(data);
