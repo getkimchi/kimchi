@@ -49,7 +49,8 @@ vi.mock("../../teleport/provisioning/git-token.js", () => ({
 	resolveGitToken: vi.fn(),
 }))
 
-vi.mock("../../remote-run/sandbox-git.js", () => ({
+vi.mock("../../remote-run/sandbox-git.js", async (importActual) => ({
+	...(await importActual<typeof import("../../remote-run/sandbox-git.js")>()),
 	resolveSandboxGitConnection: vi.fn(),
 	captureBaseline: vi.fn(),
 }))
@@ -58,7 +59,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
-import { captureBaseline, resolveSandboxGitConnection } from "../../remote-run/sandbox-git.js"
+import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import type { AgentRecord } from "../personas/types.js"
@@ -1601,6 +1602,32 @@ describe("AgentManager git-intent baseline capture", () => {
 		expect(uiNotify).toHaveBeenCalledWith(expect.stringContaining("Capturing the pre-run git baseline"), "info")
 		expect(mockCaptureBaseline).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ timeoutMs: 45_000 }))
 
+		h.resolveRun(remoteResult)
+		await h.done
+	})
+
+	it("retries capture once on a ssh-layer 255 (transient proxy stall), then succeeds", async () => {
+		// Only SandboxGitError with exitCode 255 triggers the one retry — the
+		// classification is typed, not message-matched.
+		const h = await spawnControlledRemote({ gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main" } })
+		mockCaptureBaseline.mockRejectedValueOnce(new SandboxGitError(255, "kex_exchange_identification: Connection reset"))
+
+		await h.opts.onReady?.(fakeAcpClient, META)
+
+		expect(mockCaptureBaseline).toHaveBeenCalledTimes(2)
+		expect(h.record.gitWorkflow?.baseSha).toBe(SHA)
+		h.resolveRun(remoteResult)
+		await h.done
+	})
+
+	it("does not retry non-ssh-layer failures", async () => {
+		const h = await spawnControlledRemote({ gitWorkflow: { branch: "kimchi/pr-1", baseBranch: "main" } })
+		mockCaptureBaseline.mockReset().mockRejectedValue(new SandboxGitError(128, "fatal: not a git repository"))
+
+		await h.opts.onReady?.(fakeAcpClient, META)
+
+		expect(mockCaptureBaseline).toHaveBeenCalledTimes(1)
+		expect(h.record.gitWorkflow?.baseSha).toBeUndefined()
 		h.resolveRun(remoteResult)
 		await h.done
 	})

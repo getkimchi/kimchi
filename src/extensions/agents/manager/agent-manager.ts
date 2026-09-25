@@ -10,7 +10,7 @@ import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
-import { captureBaseline, resolveSandboxGitConnection } from "../../remote-run/sandbox-git.js"
+import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
@@ -276,9 +276,7 @@ export class AgentManager {
 		}
 
 		const runPromise = record.remote
-			? options.continuation
-				? this._runRemoteContinuation(record, prompt, options, ctx)
-				: this._runRemote(record, prompt, options, ctx)
+			? this._runRemote(record, prompt, options, ctx)
 			: runAgent(ctx, type, prompt, {
 					pi,
 					model: options.model,
@@ -546,6 +544,10 @@ export class AgentManager {
 		options: SpawnOptions,
 		ctx: ExtensionContext,
 	): Promise<RemoteRunResult> {
+		// Steer continuation of a kept-alive PR session hands off here — the
+		// remote dispatch is the single entry point for fresh runs and steers.
+		if (options.continuation) return this._runRemoteContinuation(record, prompt, options, ctx)
+
 		const apiKey = loadConfig().apiKey
 		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
 
@@ -651,7 +653,7 @@ export class AgentManager {
 							record.gitWorkflow.dirtyFiles = baseline.dirtyFiles
 							break
 						} catch (err) {
-							const isSshLayer = err instanceof Error && /exited with code 255/.test(err.message)
+							const isSshLayer = err instanceof SandboxGitError && err.exitCode === 255
 							if (isSshLayer && attempt === 0) continue
 							// Was console.warn — invisible. This degrades the PR review at
 							// completion (no deterministic range), so tell the user now.

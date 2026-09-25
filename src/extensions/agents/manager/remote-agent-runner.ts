@@ -159,6 +159,38 @@ const DEFAULT_TURN_SETTLE_GRACE_MS = 120_000
 const POLL_INTERVAL_MS = 15_000
 const POLL_JITTER_MS = 5_000
 
+interface TimingOptions {
+	backoffs: number[]
+	reviveDelayMs: number
+	turnSettleGraceMs: number
+	pollIntervalMs: number
+	pollJitterMs: number
+	pollDelayMs: () => number
+}
+
+/** One pacing computation for all three entry points (run/attach/continue)
+ *  so defaults and test overrides stay in sync. */
+function resolveTimingOptions(options: {
+	reconnectBackoffsMs?: number[]
+	turnSettleGraceMs?: number
+	pollIntervalMs?: number
+}): TimingOptions {
+	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
+	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
+	const reviveDelayMs = backoffs[0] ?? 2_000
+	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
+	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
+	/** One status-poll delay: fixed interval + jitter (jitter dropped for the test seam). */
+	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+	return { backoffs, reviveDelayMs, turnSettleGraceMs, pollIntervalMs, pollJitterMs, pollDelayMs }
+}
+
+/** Session meta rebuilt from fresh credentials — the persisted wsUrl/host
+ *  may be stale (connect tokens expire; hosts move across hibernations). */
+function metaFromCreds(remoteSession: RemoteSessionMeta, creds: WorkspaceCredentials): RemoteSessionMeta {
+	return { ...remoteSession, wsUrl: creds.wsUrl, host: creds.host }
+}
+
 // ---------------------------------------------------------------------------
 // Kept-alive live ACP clients — the review/steer loop
 //
@@ -869,13 +901,7 @@ export async function runRemoteAgent(
 		pollAuthRejected: false,
 	}
 
-	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
-	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
-	const reviveDelayMs = backoffs[0] ?? 2_000
-	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
-	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
-	/** One status-poll delay: fixed interval + jitter (jitter dropped for the test seam). */
-	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+	const { backoffs, reviveDelayMs, turnSettleGraceMs, pollDelayMs } = resolveTimingOptions(options)
 
 	// Immutable config for the shared recovery engine (attachRemoteAgent is
 	// the fresh-process entry point running the same engine).
@@ -1079,12 +1105,7 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 	}
 
 	const workspaceName = options.workspaceName ?? "kimchi"
-	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
-	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
-	const reviveDelayMs = backoffs[0] ?? 2_000
-	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
-	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
-	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+	const { backoffs, reviveDelayMs, turnSettleGraceMs, pollDelayMs } = resolveTimingOptions(options)
 
 	// Authenticate against the persisted workspace — creds never survive a
 	// restart (connect tokens expire), so this always starts with a fresh one.
@@ -1102,11 +1123,7 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 		responseText: "",
 		recoveryNote: undefined,
 		// The persisted wsUrl/host may be stale — re-sync to the fresh creds.
-		meta: {
-			...remoteSession,
-			wsUrl: creds.wsUrl,
-			host: creds.host,
-		},
+		meta: metaFromCreds(remoteSession, creds),
 		pollAuthRejected: false,
 	}
 	const wrappedCallbacks: AcpSessionCallbacks = {
@@ -1202,12 +1219,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 		throw new Error("continueRemoteAgent requires the persisted acpSessionId (session/load attaches by id)")
 	}
 	const workspaceName = options.workspaceName ?? "kimchi"
-	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
-	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
-	const reviveDelayMs = backoffs[0] ?? 2_000
-	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
-	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
-	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+	const { backoffs, reviveDelayMs, turnSettleGraceMs, pollDelayMs } = resolveTimingOptions(options)
 
 	const creds: WorkspaceCredentials = await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, {
 		endpoint,
@@ -1229,7 +1241,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 		acpSessionId,
 		responseText: "",
 		recoveryNote: undefined,
-		meta: { ...remoteSession, wsUrl: creds.wsUrl, host: creds.host },
+		meta: metaFromCreds(remoteSession, creds),
 		pollAuthRejected: false,
 	}
 	const wrappedCallbacks: AcpSessionCallbacks = {

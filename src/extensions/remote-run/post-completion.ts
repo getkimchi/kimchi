@@ -689,6 +689,8 @@ async function handlePrCompletion(
 				ctx.ui.notify("The browser review is already open — decide there, or pick another option here.", "info")
 				continue
 			}
+			// Track only a genuinely opened review (a re-click while open is a no-op).
+			trackRemoteExecution("review.started", promptPrefix)
 			pendingReview = startBrowserReview(pi, ctx, {
 				transcriptPath: opts.transcriptPath,
 				baseSha,
@@ -711,11 +713,17 @@ async function handlePrCompletion(
 				() => ctx.ui.input?.("What should the remote agent change?") ?? Promise.resolve(undefined),
 			)
 			if (!feedback?.trim()) continue
-			if (await doRequestChanges(feedback.trim())) return true
+			trackRemoteExecution("steer.started", promptPrefix)
+			const steered = await doRequestChanges(feedback.trim())
+			trackRemoteExecution(steered ? "steer.completed" : "steer.failed", promptPrefix)
+			if (steered) return true
 			continue
 		}
 		if (choice === PUSH_AND_PULL) {
-			if (await doPushAndPull()) return true
+			trackRemoteExecution("push.started", promptPrefix)
+			const pushed = await doPushAndPull()
+			trackRemoteExecution(pushed ? "push.completed" : "push.failed", promptPrefix)
+			if (pushed) return true
 			continue
 		}
 		if (choice === SYNC) {
@@ -744,6 +752,7 @@ async function handlePrCompletion(
 		// DONE — terminal: the kept-alive session is retired. A deletion
 		// failure only warns (server TTL is the backstop); the sandbox branch
 		// itself dies with the workspace.
+		trackRemoteExecution("done", promptPrefix)
 		await deleteKeptRemoteSession(ctx, opts.remoteSession, apiKey)
 		ctx.ui.notify(
 			`Done — the remote session was deleted. Unpushed work on ${git.branch} is discarded when the workspace expires.`,
