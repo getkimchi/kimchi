@@ -5,6 +5,13 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
+#   - Startup resource diagnostics: skill conflicts render as a single dim
+#     summary line ("N skill conflicts — the first one found is used · <key>
+#     to see the list") that expands to the full collision listing via the
+#     shared app.tools.expand toggle, instead of a
+#     full warning-colored listing on every session start. Prompt conflicts
+#     keep upstream's rendering (rare, and genuinely actionable when they
+#     happen). (Upstream candidate.)
 #   - Extension setModel accepts { persist } and threads it to AgentSession's
 #     ModelMutationOptions, restoring the persistence channel upstream made
 #     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
@@ -38,14 +45,6 @@
 # mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
 #   that routing. Do not re-add a dist hunk for it.
-# Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
-# or Kimchi no longer needs the branded behavior. For the trust hunks: remove
-# once Pi ships native trust-scan extensibility or Kimchi adopts the
-# Pi-standard configDir layout. NOTE: the entry list must stay in sync with
-# TRUST_REQUIRING_PROJECT_RESOURCES in src/project-scope-trust.ts — a unit
-# test cross-checks the two.
-# History: see patches/CHANGELOG.md.
-#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e61d276ba 100644
 --- a/dist/cli/args.js
@@ -763,10 +762,34 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f8d7bcb6e 100644
+index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1900,6 +1900,7 @@ export class InteractiveMode {
+@@ -1359,8 +1359,22 @@ export class InteractiveMode {
+         if (showDiagnostics) {
+             const skillDiagnostics = skillsResult.diagnostics;
+             if (skillDiagnostics.length > 0) {
++                // Collapsed by default: a single dim summary line instead of the
++                // full collision listing, so startup stays calm. The detail view
++                // is one keypress away via the shared expand toggle.
+                 const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+-                this.loadedResourcesContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
++                const collisionCount = skillDiagnostics.filter((d) => d.type === "collision" && d.collision).length;
++                const issueCount = skillDiagnostics.length - collisionCount;
++                const summaryParts = [];
++                if (collisionCount > 0) {
++                    summaryParts.push(`${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"} — the first one found is used`);
++                }
++                if (issueCount > 0) {
++                    summaryParts.push(`${issueCount} skill issue${issueCount === 1 ? "" : "s"}`);
++                }
++                const collapsedText = theme.fg("dim", summaryParts.join(" · ")) + theme.fg("muted", " · ") + keyHint("app.tools.expand", "to see the list");
++                const expandedText = `${theme.fg("dim", "[Skill conflicts]")}\n${warningLines}`;
++                this.loadedResourcesContainer.addChild(new ExpandableText(() => collapsedText, () => expandedText, this.getStartupExpansionState(), 0, 0));
+                 this.loadedResourcesContainer.addChild(new Spacer(1));
+             }
+             const promptDiagnostics = promptsResult.diagnostics;
+@@ -1900,6 +1914,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -774,7 +797,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1945,6 +1946,16 @@ export class InteractiveMode {
+@@ -1945,6 +1960,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -791,7 +814,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
          };
      }
      /**
-@@ -3176,7 +3187,7 @@ export class InteractiveMode {
+@@ -3176,7 +3201,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -800,7 +823,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -4036,6 +4047,34 @@ export class InteractiveMode {
+@@ -4036,6 +4061,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -835,7 +858,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4168,6 +4207,8 @@ export class InteractiveMode {
+@@ -4168,6 +4221,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -844,7 +867,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4186,10 +4227,13 @@ export class InteractiveMode {
+@@ -4186,10 +4241,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -860,7 +883,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..ae59a8dbf4b4f0d8c877497c13763b8f
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5051,7 +5095,12 @@ export class InteractiveMode {
+@@ -5051,7 +5109,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
