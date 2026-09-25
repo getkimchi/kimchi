@@ -60,6 +60,35 @@ Use the Skill tool to load a skill's full instructions when its description matc
 ${lines.join("\n")}`
 }
 
+/**
+ * Per-loader cache for the system-prompt skill-list block (LLM-3628).
+ *
+ * `appendSystemPromptOverride` in the ACP server rebuilds the system prompt
+ * on every turn; the skill-list block must not trigger a rediscovery each
+ * time, so it is cached per resource loader. Keyed Weakly by the loader so
+ * sessions are collected with their loaders and no bookkeeping is needed on
+ * disposal.
+ *
+ * `invalidateSkillListBlock` must be called whenever the loader's skill set
+ * changes outside the normal watch/refresh paths — notably a mid-session
+ * project-trust grant: the palette refresh sweep re-runs resources_discover,
+ * but without invalidation the live session's system prompt would keep the
+ * stale (pre-grant) block until the next session.
+ */
+const skillListBlockCache = new WeakMap<ResourceLoader, string | undefined>()
+
+export function cachedSkillListBlock(loader: ResourceLoader): string | undefined {
+	return skillListBlockCache.get(loader)
+}
+
+export function setCachedSkillListBlock(loader: ResourceLoader, block: string | undefined): void {
+	skillListBlockCache.set(loader, block)
+}
+
+export function invalidateSkillListBlock(loader: ResourceLoader): void {
+	skillListBlockCache.delete(loader)
+}
+
 export interface SkillCommandRewrite {
 	readonly skillName: string
 	readonly remainingText: string

@@ -9,8 +9,14 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 // Direction:
 // - pi_* methods are agent→client (the agent calls conn.extMethod on the client).
 // - probe_mcp_server, set_session_title, steering, auth_status,
-//   import_discover, import_apply, and set_onboarding_flag are client→agent
-//   inbound (the agent's extMethod() handler receives them).
+//   import_discover, import_apply, set_onboarding_flag, and set_project_trust
+//   are client→agent inbound (the agent's extMethod() handler receives them).
+//
+// project_trust_update is an agent→client extNotification (pushed after
+//   session creation and whenever a trust decision changes), following the
+//   queue_dropped precedent: not advertised in _meta (unaware clients ignore
+//   unknown ext notifications per JSON-RPC rules), sessionId carried in the
+//   payload because ext notifications are not session-scoped on the wire.
 //
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
@@ -24,11 +30,13 @@ export const AVAILABLE_EXT_METHODS = {
 	import_discover: `_${CAPABILITIES_KEY}/import_discover`,
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_apply: `_${CAPABILITIES_KEY}/import_apply`,
+	set_project_trust: `_${CAPABILITIES_KEY}/set_project_trust`,
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {
 	pi_notify: `_${CAPABILITIES_KEY}/pi_notify`,
 	queue_dropped: `_${CAPABILITIES_KEY}/queue_dropped`,
+	project_trust_update: `_${CAPABILITIES_KEY}/project_trust_update`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS
