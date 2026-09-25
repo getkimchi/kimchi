@@ -277,6 +277,16 @@ describe("PlanReviewComponent", () => {
 			expect(lines.length).toBeLessThanOrEqual(rows)
 		})
 
+		it("keeps the decision UI on screen in a very short terminal", () => {
+			const shortRows = 12
+			const { component } = createComponent(vi.fn(), { planMarkdown, terminalRows: shortRows })
+
+			const lines = component.render(80)
+
+			expect(lines.length).toBeLessThanOrEqual(shortRows)
+			expect(lines.join("\n")).toContain("> Execute the plan locally")
+		})
+
 		it("scrolls the plan window with shift+down and shift+up", () => {
 			const { component, tui } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
 			component.render(80) // establish maxScrollOffset

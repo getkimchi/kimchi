@@ -153,7 +153,7 @@ class PlanReviewComponent implements Component {
 		const rows = this.tui.terminal.rows
 		if (!rows) return Number.MAX_SAFE_INTEGER
 		const belowPlan = this.mode === "decision" ? this.options.length : PlanReviewComponent.feedbackEditorLines
-		return Math.max(4, rows - PlanReviewComponent.reservedChromeLines - belowPlan)
+		return Math.max(1, rows - PlanReviewComponent.reservedChromeLines - belowPlan)
 	}
 
 	invalidate(): void {
