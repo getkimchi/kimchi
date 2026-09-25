@@ -173,11 +173,13 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
 	})
 
+	// The declared-OAuth URL server case is deliberately absent here: with
+	// authenticate=true its first connect races the interactive consent budget
+	// instead of the 60s deadline (see the connect-time auth tests below).
 	it.each([
 		{ definition: { command: "node" }, timeoutMs: 15_000 },
 		{ definition: { url: "https://example.test/mcp" }, timeoutMs: 60_000 },
 		{ definition: { url: "https://example.test/mcp", auth: false as const }, timeoutMs: 60_000 },
-		{ definition: { url: "https://example.test/mcp", auth: "oauth" as const }, timeoutMs: 60_000 },
 	])("aborts a stalled connection after $timeoutMs ms and cleans up", async ({ definition, timeoutMs }) => {
 		vi.useFakeTimers()
 		upstream.gatewayExecute.mockImplementation(() => new Promise(() => {}))
@@ -233,6 +235,121 @@ describe("UpstreamMcpProbe", () => {
 			new UpstreamMcpProbe().probeTools(`auth-${authenticate}`, { url: "https://example.test/mcp" }, { authenticate }),
 		).resolves.toEqual({ tools: [], needsAuth: true, error: expectedError })
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+	})
+
+	it("keeps explicit auth oauth declared when custom headers are configured", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"explicit-oauth-with-headers",
+			{ url: "https://example.test/mcp", auth: "oauth", headers: { Authorization: "Basic dXNlcjpwYXNz" } },
+			{ authenticate: false },
+		)
+
+		// Upstream supportsOAuth returns true for explicit auth:"oauth" BEFORE its
+		// headers check; headers only suppress implicit auto-detection.
+		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: true, error: null })
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+	})
+
+	it("lets custom headers veto only implicit oauth auto-detection", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"implicit-oauth-with-headers",
+			{
+				url: "https://example.test/mcp",
+				oauth: { clientName: "kimchi" },
+				headers: { Authorization: "Basic dXNlcjpwYXNz" },
+			},
+			{ authenticate: false },
+		)
+
+		// An oauth block without auth:"oauth" is implicit: headers suppress it and
+		// the server stays on the connected path.
+		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+	})
+
+	it("survives a slow autoAuth consent inside the first connect that outlasts the probe deadline", async () => {
+		vi.useFakeTimers()
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "slow-auto-auth"
+		const url = "https://drivemcp.example.test/mcp"
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params === "object" && params !== null && "connect" in params) {
+				// Simulate upstream's attemptAutoAuth: the consent completes at 90s,
+				// past the 60s probe deadline but within the 300s consent budget.
+				await new Promise((resolve) => setTimeout(resolve, 90_000))
+				updateMcpOAuthTokensForUrl(name, url, { accessToken: "auto-stored-token" })
+				return gatewayResult({ tools: ["search"] })
+			}
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+
+		const probe = new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+		await vi.advanceTimersByTimeAsync(60_000)
+		// The suspended 60s deadline must not have fired mid-consent.
+		expect(upstream.sessionShutdown).not.toHaveBeenCalled()
+		await vi.advanceTimersByTimeAsync(30_000)
+
+		await expect(probe).resolves.toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+	})
+
+	it("skips mcp-auth when autoAuth during the first connect stores credentials", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "auto-auth-during-connect"
+		const url = "https://drivemcp.example.test/mcp"
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params === "object" && params !== null && "connect" in params) {
+				// 401-at-connect server: attemptAutoAuth stores tokens inside connect.
+				updateMcpOAuthTokensForUrl(name, url, { accessToken: "auto-stored-token" })
+				return gatewayResult({ tools: ["search"] })
+			}
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+
+		const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+		// Credentials exist post-connect: the redundant mcp-auth run is skipped.
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+		expect(inspectMcpOAuthTokensForUrl(name, url).status).toBe("present")
+		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+	})
+
+	it("reports needs-auth and unwinds the flow when the connect-time consent budget expires", async () => {
+		vi.useFakeTimers()
+		type PromptUi = Record<"input" | "select" | "confirm", (...args: unknown[]) => Promise<unknown>>
+		let capturedUi: PromptUi | undefined
+		upstream.gatewayExecute.mockImplementation((_toolCallId, params, _signal, _runContext, ctx: unknown) => {
+			if (typeof params === "object" && params !== null && "connect" in params) {
+				capturedUi = (ctx as { ui: PromptUi }).ui
+				// Park on the consent wait; it unwinds only when the auth signal
+				// aborts (real callback never arrives in this test).
+				return new Promise(() => {})
+			}
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+		const name = "connect-auth-timeout"
+		const url = "https://drivemcp.example.test/mcp"
+
+		const probe = new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+		await vi.advanceTimersByTimeAsync(60_000)
+		// The suspended 60s deadline must not have fired mid-consent.
+		expect(upstream.sessionShutdown).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(240_000)
+
+		await expect(probe).resolves.toEqual({
+			tools: [],
+			needsAuth: true,
+			error: "OAuth authentication timed out after 300 seconds",
+		})
+		// The aborted auth signal rejected the hook, unwinding the parked flow.
+		await expect(capturedUi?.input("consent")).rejects.toThrow(/OAuth authentication timed out after 300 seconds/)
 	})
 
 	it("reports needs-auth for a declared OAuth server without credentials even when anonymous listing succeeds", async () => {
