@@ -193,6 +193,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Start in yolo mode (run freely, no classifier - DANGER)",
 	},
+	"dangerously-skip-permissions": {
+		type: "boolean",
+		description: "Skip all permission checks (DANGER)",
+	},
 	approve: {
 		type: "boolean",
 		short: "a",
@@ -250,6 +254,7 @@ export interface SessionCliArgs {
 		plan?: boolean
 		auto?: boolean
 		yolo?: boolean
+		"dangerously-skip-permissions"?: boolean
 		approve?: boolean
 		"no-approve"?: boolean
 		"permissions-config"?: string
@@ -304,6 +309,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"plan",
 	"auto",
 	"yolo",
+	"dangerously-skip-permissions",
 	"approve",
 	"no-approve",
 	"permissions-config",

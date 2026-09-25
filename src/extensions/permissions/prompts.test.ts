@@ -1,5 +1,8 @@
+import { stripTerminalSequences } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { ERROR_FG, ORANGE_FG, RST_FG, SUCCESS_FG } from "../../ansi.js"
+import { createContext } from "../__mocks__/context.js"
+import { testTheme } from "../__mocks__/theme.js"
 import {
 	buildPermissionChoices,
 	formatRiskBadge,
@@ -99,71 +102,48 @@ describe("formatRiskBadge", () => {
 
 describe("promptForCompoundApproval", () => {
 	function fakeCtx(selectValue: string) {
-		return {
-			hasUI: true,
-			ui: {
-				select: vi.fn(async () => selectValue),
-				input: vi.fn(async () => "be more careful"),
-				notify: vi.fn(),
-				setWorkingVisible: vi.fn(),
-				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
-			},
-			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
-		} as any
+		return createContext({
+			ui: { select: vi.fn(async () => selectValue), input: vi.fn(async () => "be more careful"), theme: testTheme },
+		})
 	}
+	const command = "git status; ls -la"
 
-	const commands = [{ command: "git status" }, { command: "ls -la" }]
-
-	it("returns deny when ctx.hasUI is false", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
-		const ctx = { hasUI: false } as any
-		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
-		expect(result).toEqual({ kind: "deny" })
+	it("returns deny without a UI", async () => {
+		const ctx = createContext({ hasUI: false })
+		expect(await promptForCompoundApproval({ toolName: "bash", command, ctx })).toEqual({ kind: "deny" })
 	})
-
-	it("returns allow-all-once when user selects Run all (once)", async () => {
+	it("allows once without storing unnecessary rules for read-only commands", async () => {
 		const ctx = fakeCtx("Run all (once)")
-		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
-		expect(result).toEqual({ kind: "allow-all-once" })
-	})
-
-	it("does not store rules for a read-only compound", async () => {
-		const ctx = fakeCtx("Allow all from now on")
-		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
-		expect(result).toEqual({
-			kind: "allow-all-remember",
-			rules: [],
+		expect(await promptForCompoundApproval({ toolName: "bash", command, ctx })).toEqual({
+			kind: "allow-all-once",
 		})
+		expect(vi.mocked(ctx.ui.select).mock.calls[0][1].join("\n")).not.toContain("Allow all for")
+	})
+	it.each([
+		"cd /tmp; touch example; cat server.log | sh",
+		'for tick in 1 2; do for row in 1 2; do printf "tick %02d | row %d | live output\\n" "$tick" "$row"; done; sleep 1; done; printf "DEMO COMPLETE\\n"',
+	])("shows the original unsupported script and offers approval once: %s", async (command) => {
+		const ctx = fakeCtx("Run all (once)")
+		expect(await promptForCompoundApproval({ toolName: "bash", command, ctx })).toEqual({
+			kind: "allow-all-once",
+		})
+		const [title, choices] = vi.mocked(ctx.ui.select).mock.calls[0]
+		expect(stripTerminalSequences(title).replace(/\s/g, "")).toContain(command.replace(/\s/g, ""))
+		expect(title).toContain("needs approval each time")
+		expect(choices).toEqual(["1. Run all (once)", "2. No — tell the assistant what to do differently"])
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-	})
-
-	it("notifies and stores only scopeable rules when a segment cannot be remembered", async () => {
-		const ctx = fakeCtx("Allow all from now on")
-		const pipeline = "cat server.log | sh"
-		const result = await promptForCompoundApproval({
-			toolName: "bash",
-			commands: [{ command: "cd /tmp" }, { command: pipeline }],
-			ctx,
-		})
-		// Pipe to a non-filter program: the derived scope can never match again
-		// (matchBashRule's single-segment canonical gate), so it is dropped…
-		expect(result).toEqual({
-			kind: "allow-all-remember",
-			rules: [],
-		})
-		// …and the user is told remembering did not cover the whole compound.
-		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
-		expect(ctx.ui.notify.mock.calls[0][0]).toContain(pipeline)
+		vi.mocked(ctx.ui.select).mockResolvedValue("Allow all for this session")
+		expect(await promptForCompoundApproval({ toolName: "bash", command, ctx })).toEqual({ kind: "deny" })
 	})
 
 	it("stores every head scope and does not warn when piped stages are whitelisted output filters", async () => {
 		// `2>&1 | tail -40` is the classic LLM output-bound wrapper: tail is a
 		// pure read-only filter, so ALL segments are scopeable — remember stores
 		// the head's narrow scope and never warns.
-		const ctx = fakeCtx("Allow all from now on")
+		const ctx = fakeCtx("Allow all for this session")
 		const result = await promptForCompoundApproval({
 			toolName: "bash",
-			commands: [{ command: "cd /tmp" }, { command: "npm install 2>&1 | tail -40" }],
+			command: "cd /tmp; npm install 2>&1 | tail -40",
 			ctx,
 		})
 
@@ -176,14 +156,14 @@ describe("promptForCompoundApproval", () => {
 
 	it("returns deny-with-feedback when user selects deny and provides feedback", async () => {
 		const ctx = fakeCtx("No — tell the assistant what to do differently")
-		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		const result = await promptForCompoundApproval({ toolName: "bash", command, ctx })
 		expect(result).toEqual({ kind: "deny-with-feedback", feedback: "be more careful" })
 	})
 
 	it("returns deny when user selects deny but provides no feedback", async () => {
 		const ctx = fakeCtx("No — tell the assistant what to do differently")
 		ctx.ui.input = vi.fn(async () => "")
-		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
+		const result = await promptForCompoundApproval({ toolName: "bash", command, ctx })
 		expect(result).toEqual({ kind: "deny" })
 	})
 })

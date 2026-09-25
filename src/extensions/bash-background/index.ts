@@ -22,6 +22,7 @@
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { bashToolDescription } from "../bash-tool-guard.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
+import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
 
@@ -36,7 +37,31 @@ export { createProcessRegistry } from "./process-registry.js"
  * the two compose) and drains the process registry on `session_shutdown`.
  */
 export function bashBackgroundExtension(pi: ExtensionAPI): void {
+	let panel: CommandsPanel | undefined
+	pi.registerCommand("commands", {
+		description: "Inspect this session's managed Bash commands and live output",
+		async handler(_args, ctx) {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Command inspection is available in the terminal UI.", "info")
+				return
+			}
+			panel?.close()
+			let openedPanel: CommandsPanel | undefined
+			try {
+				await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+					openedPanel = new CommandsPanel(getSessionRegistry(), tui, () => done(), theme)
+					panel = openedPanel
+					return openedPanel
+				})
+			} finally {
+				openedPanel?.dispose()
+				if (panel === openedPanel) panel = undefined
+			}
+		},
+	})
 	pi.on("session_start", (_event: SessionStartEvent, sessionCtx) => {
+		panel?.close()
+		panel = undefined
 		// Fresh registry per session so handles from a previous session
 		// can't be reused, and so a resumed/forked session gets a clean
 		// process table.
@@ -62,6 +87,8 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
+		panel?.close()
+		panel = undefined
 		const registry = getSessionRegistry()
 		if (registry) {
 			// Unpublish BEFORE draining: shutdown() kills pending processes,

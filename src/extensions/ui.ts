@@ -493,6 +493,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				// The exit stage is handled here (not upstream) because the abort
 				// stage consumes the event, leaving upstream's lastSigintTime stale.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					if (isRawInputCaptureActive()) return undefined
 					const now = Date.now()
 					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
 					const streaming = currentCtx ? !currentCtx.isIdle() : false

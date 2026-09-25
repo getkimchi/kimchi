@@ -9,34 +9,16 @@
  * steer into the closing session. The extension must UNPUBLISH the
  * session registry before awaiting the drain.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { testTheme } from "../__mocks__/theme.js"
+import { CommandsPanel } from "./commands-panel.js"
 import bashBackgroundExtension from "./index.js"
 import type { ProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
-
-type AnyHandler = (event: unknown, ctx: ExtensionContext) => unknown
-
-function makeFakePi(): ExtensionAPI & { emit(event: string, payload: unknown, ctx?: unknown): Promise<void> } {
-	const handlers = new Map<string, AnyHandler[]>()
-	const fake = {
-		handlers,
-		on(event: string, handler: AnyHandler) {
-			const list = handlers.get(event) ?? []
-			list.push(handler)
-			handlers.set(event, list)
-		},
-		registerTool(_tool: { name: string }) {},
-		async emit(event: string, payload: unknown, ctx?: unknown) {
-			for (const h of handlers.get(event) ?? []) {
-				await h(payload, ctx as ExtensionContext)
-			}
-		},
-	}
-	return fake as unknown as ExtensionAPI & {
-		emit(event: string, payload: unknown, ctx?: unknown): Promise<void>
-	}
-}
 
 describe("bashBackgroundExtension — shutdown drain ordering", () => {
 	afterEach(() => {
@@ -45,9 +27,9 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 	})
 
 	it("unpublishes the session registry before awaiting the drain", async () => {
-		const pi = makeFakePi()
-		bashBackgroundExtension(pi)
-		await pi.emit("session_start", {}, { cwd: "/tmp" })
+		const pi = createExtensionApi()
+		bashBackgroundExtension(pi.api)
+		await pi.getHandler("session_start")({}, createContext())
 		expect(getSessionRegistry()).toBeDefined()
 
 		// Swap in a sentinel that records what the accessor returns while the
@@ -62,21 +44,77 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		} as unknown as ProcessRegistry
 		setSessionRegistry(sentinel)
 
-		await pi.emit("session_shutdown", {})
+		await pi.getHandler("session_shutdown")({}, createContext())
 
 		expect(observed.publishedDuringDrain).toBeUndefined()
 		expect(getSessionRegistry()).toBeUndefined()
 	})
 
 	it("session_start installs a fresh registry that callers can resolve", async () => {
-		const pi = makeFakePi()
-		bashBackgroundExtension(pi)
+		const pi = createExtensionApi()
+		bashBackgroundExtension(pi.api)
 
-		await pi.emit("session_start", {}, { cwd: "/tmp" })
+		await pi.getHandler("session_start")({}, createContext())
 		const first = getSessionRegistry()
 		expect(first).toBeDefined()
 
-		await pi.emit("session_shutdown", {})
+		await pi.getHandler("session_shutdown")({}, createContext())
 		expect(getSessionRegistry()).toBeUndefined()
+	})
+
+	it.each([
+		"session_start",
+		"session_shutdown",
+	])("closes the inspector on %s and clears refresh work", async (event) => {
+		vi.useFakeTimers()
+		const pi = createExtensionApi()
+		bashBackgroundExtension(pi.api)
+		const ctx = createCommandContext()
+		await pi.getHandler("session_start")({}, ctx)
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		const render = tui.render
+		const requestRender = vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const editor = new Text("original input", 0, 0)
+		const renderEditor = editor.render
+		tui.addChild(editor)
+		tui.setFocus(editor)
+		const dispose = vi.spyOn(CommandsPanel.prototype, "dispose")
+		vi.mocked(ctx.ui.custom).mockImplementation(
+			(factory) =>
+				new Promise((resolve) => {
+					void Promise.resolve(
+						factory(tui, testTheme, {} as KeybindingsManager, () => {
+							tui.clear()
+							tui.addChild(editor)
+							resolve(undefined)
+						}),
+					).then((component) => {
+						tui.clear()
+						tui.addChild(component)
+					})
+				}),
+		)
+		try {
+			const opened = pi.getRegisteredCommand("commands").handler("", ctx)
+			await Promise.resolve()
+			expect(vi.getTimerCount()).toBe(1)
+			expect(tui.render(80).join("\n")).not.toContain("original input")
+			await pi.getHandler(event)({}, ctx)
+			expect(vi.getTimerCount()).toBe(0)
+			await opened
+			expect(tui.render).toBe(render)
+			expect(editor.render).toBe(renderEditor)
+			expect(tui.render(80).join("\n")).toContain("original input")
+			expect(dispose).toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+			requestRender.mockClear()
+			await vi.advanceTimersByTimeAsync(1000)
+			expect(requestRender).not.toHaveBeenCalled()
+			expect(ctx.waitForIdle).not.toHaveBeenCalled()
+			expect(pi.sendMessage).not.toHaveBeenCalled()
+		} finally {
+			dispose.mockRestore()
+			vi.useRealTimers()
+		}
 	})
 })

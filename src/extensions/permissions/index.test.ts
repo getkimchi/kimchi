@@ -10,6 +10,7 @@ import type {
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -98,8 +99,10 @@ function cleanPermissionEnv(): void {
 
 beforeEach(cleanPermissionEnv)
 beforeEach(() => {
+	populateCliArgs([])
 	isResourceEnabledMock.mockReturnValue(false)
 })
+afterEach(() => populateCliArgs([]))
 afterEach(cleanPermissionEnv)
 afterEach(resetProjectScopeTrustForTests)
 
@@ -205,6 +208,7 @@ function createPermissionsHarness(
 	flags: Record<string, boolean | string | undefined> = {},
 	initialActiveTools: string[] = toolNames,
 ) {
+	populateCliArgs(Object.entries(flags).flatMap(([name, value]) => (value === undefined ? [] : [`--${name}=${value}`])))
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, RegisteredCommand>()
 	const registeredTools = new Map<string, { name: string; execute: unknown }>()
@@ -416,6 +420,36 @@ describe("classifier health reporting", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("permission mode CLI booleans", () => {
+	it.each([
+		"plan",
+		"auto",
+		"yolo",
+		"dangerously-skip-permissions",
+	])("--%s=false does not enable that mode", async (flag) => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "default")
+		const harness = createPermissionsHarness(["bash"], { [flag]: "false" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "default", source: "env" })
+	})
+	it.each([
+		["plan", "plan"],
+		["auto", "auto"],
+		["yolo", "yolo"],
+		["dangerously-skip-permissions", "yolo"],
+	])("--%s=true enables %s", async (flag, mode) => {
+		const harness = createPermissionsHarness(["bash"], { [flag]: "true" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode, source: "flag" })
+	})
+	it("a disabled plan flag preserves the configured launch mode", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
+		const harness = createPermissionsHarness(["bash"], { plan: "false" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "plan", source: "env" })
 	})
 })
 
@@ -2276,7 +2310,7 @@ describe("compound bash permission regressions", () => {
 	})
 
 	it("TUI default: Allow all remembers an identical compound", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2288,7 +2322,7 @@ describe("compound bash permission regressions", () => {
 
 	// Bug: Allow all stores npm *, silently approving unrelated npm subcommands.
 	it("TUI default: remembering npm install still asks before npm publish", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
+		const ctx = createMockContext(["Allow all for this session", "No — tell the assistant what to do differently"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2316,7 +2350,7 @@ describe("compound bash permission regressions", () => {
 	// made the compound's remember choice a silent no-op (stored only the cd scope).
 	it("TUI default: remembering a tail-pipelined compound approves the identical rerun silently", async () => {
 		const piped = "cd /tmp && npm install 2>&1 | tail -40"
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2330,7 +2364,7 @@ describe("compound bash permission regressions", () => {
 	// Guard pin: `sh` is NOT a whitelisted output filter — a remembered tail-
 	// pipelined compound must never widen to cover an appended shell stage.
 	it("TUI default: a shell stage after the filter tail still prompts on rerun", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
+		const ctx = createMockContext(["Allow all for this session", "No — tell the assistant what to do differently"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2426,8 +2460,13 @@ describe("handleCompoundConfirm", () => {
 	})
 
 	it("adds narrow per-segment rules to session for allow-all-remember", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
-		const event = createMockEvent()
+		const ctx = createMockContext(["Allow all for this session"])
+		const event: ToolCallEvent = {
+			type: "tool_call",
+			toolName: "bash",
+			toolCallId: "remember",
+			input: { command: "npm install; npm test" },
+		}
 
 		const result = await handleCompoundConfirm(event, {
 			ctx,
@@ -3855,7 +3894,7 @@ describe("permissions:tool_decision emissions", () => {
 	it("compound remember → compound_rule on repeat, then session_rule for a matching plain call", async () => {
 		const command = "cd /tmp && npm install"
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, ctx)
 		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
