@@ -20,7 +20,7 @@ import {
 	updateModelsConfig,
 } from "../../models.js"
 import { syncPiAuth } from "../../pi-auth.js"
-import { REGIONS, type RegionId } from "../../regions.js"
+import { REGIONS, type RegionId, selectableRegions } from "../../regions.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
@@ -119,7 +119,7 @@ export function createRegionSelector(options: {
 	onBack: () => void
 }): ExtensionSelectorComponent {
 	const current = REGIONS[options.currentRegion]
-	const regions = [current, ...Object.values(REGIONS).filter((region) => region !== current)]
+	const regions = [current, ...selectableRegions().filter((region) => region.id !== current.id)]
 	const labels = regions.map((region) => (region === current ? `${region.label} \u2014 current` : region.label))
 	return new ExtensionSelectorComponent(
 		REGION_SELECTOR_TITLE,
@@ -127,6 +127,15 @@ export function createRegionSelector(options: {
 		(option) => options.onSelect(regions[labels.indexOf(option)]?.id ?? current.id),
 		options.onBack,
 	)
+}
+
+/**
+ * Whether the region selector presents an actual choice. Callers skip the
+ * selector UI when false and use the configured region directly (e.g. `eu`
+ * experimental-gated and the configured region already the default).
+ */
+export function regionChoiceRequired(currentRegion: RegionId): boolean {
+	return selectableRegions().some((region) => region.id !== currentRegion)
 }
 
 export function createLoginChoiceSelector(options: {

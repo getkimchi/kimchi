@@ -114,6 +114,7 @@ import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } fro
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
+import { setExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
@@ -501,6 +502,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
 
 		beforeEach(() => {
+			// EU companion methods are gated behind experimental features; these
+			// capability tests cover the ungated (flag-on) behaviour.
+			setExperimentalFeaturesEnabled(true)
 			// Clean up and create temp agent dir
 			try {
 				rmSync(tempAgentDir, { recursive: true, force: true })
@@ -509,6 +513,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 
 		afterEach(() => {
+			setExperimentalFeaturesEnabled(false)
 			try {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
@@ -639,6 +644,18 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			for (const method of response.authMethods ?? []) {
 				expect("type" in method).toBe(false)
 			}
+		})
+
+		it("omits the EU companion method when EU is experimental-gated", async () => {
+			setExperimentalFeaturesEnabled(false)
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us"])
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {

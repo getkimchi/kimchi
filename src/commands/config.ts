@@ -1,6 +1,6 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
-import { isRegionId, REGION_ENV, REGIONS } from "../regions.js"
+import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -123,7 +123,7 @@ function handleRegion(args: string[]): number {
 		console.log(`Region: ${current.id} — ${current.label}`)
 	}
 	console.log(
-		`Available regions: ${Object.values(REGIONS)
+		`Available regions: ${selectableRegions()
 			.map((r) => `${r.id} (${r.label})`)
 			.join(", ")}`,
 	)

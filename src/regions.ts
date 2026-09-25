@@ -2,9 +2,11 @@
  * Region registry: single source of truth for the supported regions and every
  * external endpoint the CLI talks to.
  *
- * Dependency-free by design (no imports from config.ts) so config, cli-auth,
- * and login flows can all import it without import cycles.
+ * Import-light by design (only the dependency-free experimental-flag module)
+ * so config, cli-auth, and login flows can all import it without import cycles.
  */
+
+import { isExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 
 interface RegionDefinition {
 	id: string
@@ -55,6 +57,24 @@ export const REGION_ENV = "KIMCHI_REGION"
 export function isRegionId(value: unknown): value is RegionId {
 	// Object.hasOwn, not `in`: "constructor"/"__proto__" are on the prototype chain.
 	return typeof value === "string" && Object.hasOwn(REGIONS, value)
+}
+
+/**
+ * Regions offered in pickers and advertised to clients. `eu` is gated behind
+ * --enable-experimental-features until EU endpoints are generally available.
+ *
+ * This gate is SELECTION-ONLY by design: `REGIONS`, `isRegionId`, and
+ * `endpointsForRegion` always resolve `eu`, so a stored `region: "eu"` config
+ * or `KIMCHI_REGION=eu` keeps working when the flag is off. Evaluated per call
+ * (not at module load) because cli.ts sets the flag after imports evaluate.
+ *
+ * To release EU: make this return Object.values(REGIONS) unconditionally
+ * (single-file change; no call sites to revert).
+ */
+export function selectableRegions(): KimchiRegion[] {
+	const regions = Object.values(REGIONS)
+	if (isExperimentalFeaturesEnabled()) return regions
+	return regions.filter((region) => region.id === DEFAULT_REGION)
 }
 
 /** Platform API base (`/v1/me`, teleport, agents, sandbox). */

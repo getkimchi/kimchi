@@ -23,6 +23,7 @@ import {
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
+	regionChoiceRequired,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -183,14 +184,16 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
  */
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
-	if (!modeLike.showSelector) {
-		await startKimchiBrowserLogin(im, loadConfig().region)
+	const currentRegion = loadConfig().region
+	// Skip the selector when gating leaves no choice (e.g. EU experimental-off).
+	if (!modeLike.showSelector || !regionChoiceRequired(currentRegion)) {
+		await startKimchiBrowserLogin(im, currentRegion)
 		return
 	}
 
 	modeLike.showSelector((done) => {
 		const selector = createRegionSelector({
-			currentRegion: loadConfig().region,
+			currentRegion,
 			onSelect: (region) => {
 				done()
 				void startKimchiBrowserLogin(im, region)
@@ -206,26 +209,28 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
-	// Mirror the account login: region first (when selector support exists),
-	// then the key/endpoint inputs. Esc returns to the auth-method selector.
-	if (modeLike.showSelector) {
-		modeLike.showSelector((done) => {
-			const selector = createRegionSelector({
-				currentRegion: loadConfig().region,
-				onSelect: (region) => {
-					done()
-					void runKimchiApiKeyLogin(im, region)
-				},
-				onBack: () => {
-					done()
-					showLoginChoiceSelector(im)
-				},
-			})
-			return { component: selector, focus: selector }
-		})
+	// Mirror the account login: region first when selector support exists and
+	// gating leaves an actual choice, then the key/endpoint inputs.
+	const currentRegion = loadConfig().region
+	if (!modeLike.showSelector || !regionChoiceRequired(currentRegion)) {
+		await runKimchiApiKeyLogin(im, currentRegion)
 		return
 	}
-	await runKimchiApiKeyLogin(im, loadConfig().region)
+
+	modeLike.showSelector((done) => {
+		const selector = createRegionSelector({
+			currentRegion,
+			onSelect: (region) => {
+				done()
+				void runKimchiApiKeyLogin(im, region)
+			},
+			onBack: () => {
+				done()
+				showLoginChoiceSelector(im)
+			},
+		})
+		return { component: selector, focus: selector }
+	})
 }
 
 async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Promise<void> {

@@ -109,7 +109,7 @@ import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
-import { isRegionId, type KimchiRegion, REGIONS, type RegionId } from "../../regions.js"
+import { isRegionId, type KimchiRegion, type RegionId, selectableRegions } from "../../regions.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
@@ -396,7 +396,7 @@ export class KimchiAcpAgent implements Agent {
 				description: "Authenticate via browser to Kimchi",
 			},
 			// Region-pinned companions for clients that can pick a region.
-			...Object.values(REGIONS).map(regionAuthMethod),
+			...selectableRegions().map(regionAuthMethod),
 		]
 		if (request.clientCapabilities?.auth?.terminal === true) {
 			authMethods.push({

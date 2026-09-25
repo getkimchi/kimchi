@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { withExperimentalFeatures } from "./extensions/experimental.js"
 import {
 	anthropicBaseUrl,
 	experimentalOpenAiBaseUrl,
@@ -8,6 +9,7 @@ import {
 	platformApiUrl,
 	REGIONS,
 	searchUrl,
+	selectableRegions,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
 } from "./regions.js"
@@ -98,5 +100,27 @@ describe("isRegionId", () => {
 		expect(isRegionId("toString")).toBe(false)
 		expect(isRegionId("__proto__")).toBe(false)
 		expect(isRegionId("hasOwnProperty")).toBe(false)
+	})
+})
+
+describe("selectableRegions", () => {
+	it("lists every region when experimental features are enabled", async () => {
+		await withExperimentalFeatures(true, () => {
+			expect(selectableRegions().map((r) => r.id)).toEqual(["us", "eu"])
+		})
+	})
+
+	it("lists only the default region when experimental features are off", async () => {
+		await withExperimentalFeatures(false, () => {
+			expect(selectableRegions()).toEqual([REGIONS.us])
+		})
+	})
+
+	it("keeps the EU id and endpoints resolvable while gated (stored config keeps working)", async () => {
+		await withExperimentalFeatures(false, () => {
+			expect(isRegionId("eu")).toBe(true)
+			expect(REGIONS.eu.llmBaseUrl).toBe("https://llm.eu.kimchi.dev")
+			expect(selectableRegions().some((r) => r.id === "eu")).toBe(false)
+		})
 	})
 })

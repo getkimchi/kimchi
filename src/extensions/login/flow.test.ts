@@ -1,8 +1,9 @@
 import { initTheme, LoginDialogComponent } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { createRegionSelector, SwappableAuthComponent } from "./flow.js"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
+import { createRegionSelector, regionChoiceRequired, SwappableAuthComponent } from "./flow.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -13,6 +14,11 @@ function createTui(): TUI {
 }
 
 describe("createRegionSelector", () => {
+	// EU is gated behind --enable-experimental-features; these tests cover the
+	// ungated (flag-on) behaviour.
+	beforeEach(() => setExperimentalFeaturesEnabled(true))
+	afterEach(() => setExperimentalFeaturesEnabled(false))
+
 	function optionsOf(selector: unknown): string[] {
 		return (selector as { options: string[] }).options
 	}
@@ -56,6 +62,39 @@ describe("createRegionSelector", () => {
 		selector.handleInput("\x1b")
 		expect(onBack).toHaveBeenCalledOnce()
 		expect(onSelect).not.toHaveBeenCalled()
+	})
+
+	it("hides EU when experimental features are off", () => {
+		setExperimentalFeaturesEnabled(false)
+
+		const us = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(us)).toEqual(["United States \u2014 current"])
+	})
+
+	it("still lists the configured EU region first when experimental features are off", () => {
+		setExperimentalFeaturesEnabled(false)
+
+		const eu = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States"])
+	})
+})
+
+describe("regionChoiceRequired", () => {
+	beforeEach(() => setExperimentalFeaturesEnabled(true))
+	afterEach(() => setExperimentalFeaturesEnabled(false))
+
+	it("is true when multiple regions are selectable", () => {
+		expect(regionChoiceRequired("us")).toBe(true)
+	})
+
+	it("is false when EU is experimental-gated and the configured region is the default", () => {
+		setExperimentalFeaturesEnabled(false)
+		expect(regionChoiceRequired("us")).toBe(false)
+	})
+
+	it("is true when EU is experimental-gated but already configured (user can switch back)", () => {
+		setExperimentalFeaturesEnabled(false)
+		expect(regionChoiceRequired("eu")).toBe(true)
 	})
 })
 

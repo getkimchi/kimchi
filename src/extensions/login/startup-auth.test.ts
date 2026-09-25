@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { REGIONS, type RegionId, regionEndpoints } from "../../regions.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
 
 const authMock = vi.hoisted(() => ({
 	authenticateViaBrowser: vi.fn(),
@@ -163,6 +164,9 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+	// EU region selection is gated behind experimental features; most gate
+	// tests exercise the ungated (flag-on) behaviour.
+	setExperimentalFeaturesEnabled(true)
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-startup-auth-test")
 	authMock.authenticateViaBrowser.mockReset()
 	authMock.authenticateViaBrowser.mockResolvedValue({ token: "kimchi-token" })
@@ -183,6 +187,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	setExperimentalFeaturesEnabled(false)
 	vi.unstubAllEnvs()
 })
 
@@ -607,6 +612,23 @@ describe("startup auth gate", () => {
 			expect.objectContaining({ webAppUrl: "https://app.eu.kimchi.dev" }),
 		)
 		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, { region: "eu" })
+	})
+
+	it("skips the region pick and logs in with the configured region when EU is experimental-gated", async () => {
+		setExperimentalFeaturesEnabled(false)
+		const harness = createHarness()
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\n") // Kimchi account — no region prompt follows
+		await harness.waitForCustomPrompts(2)
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledWith(
+			expect.objectContaining({ webAppUrl: "https://app.kimchi.dev" }),
+		)
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, { region: "us" })
+		expect(harness.state.authenticated).toBe(true)
 	})
 
 	it("Back on the region selector returns to the auth-method selector", async () => {

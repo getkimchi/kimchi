@@ -3,6 +3,7 @@ import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 import * as configModule from "./config.js"
+import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
 import * as piAuthModule from "./pi-auth.js"
@@ -24,6 +25,9 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+	// EU region selection is gated behind experimental features; these login
+	// tests exercise the ungated (flag-on) behaviour unless stated otherwise.
+	setExperimentalFeaturesEnabled(true)
 	vi.stubEnv("KIMCHI_API_KEY", undefined)
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	// Auth tests should be independent of the developer machine's real config.
@@ -40,6 +44,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	setExperimentalFeaturesEnabled(false)
 	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
 	vi.mocked(getModels).mockReturnValue([])
@@ -350,6 +355,27 @@ it("returns to the auth-method selector when Esc is pressed on the region select
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	expect(authSpy).toHaveBeenCalledOnce()
+})
+
+it("skips the region selector and logs in with the configured region when EU is experimental-gated", async () => {
+	setExperimentalFeaturesEnabled(false)
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "us-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	// Auth-method selector: "Use a Kimchi account" — no region selector follows.
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(authSpy)
+	await flushAsyncLogin()
+
+	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://app.kimchi.dev")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("us-token", undefined, { region: "us" })
 })
 
 it("falls back to browser login in the configured region without a selector UI", async () => {

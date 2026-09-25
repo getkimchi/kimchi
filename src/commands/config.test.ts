@@ -20,6 +20,7 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 }))
 
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { withExperimentalFeatures } from "../extensions/experimental.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runConfig } from "./config.js"
 
@@ -162,13 +163,24 @@ describe("kimchi config region", () => {
 	})
 
 	it("prints the current region and the available regions", async () => {
+		await withExperimentalFeatures(true, async () => {
+			vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
+
+			const exit = await runConfig(["region"])
+
+			expect(exit).toBe(0)
+			expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: us — United States")
+			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States), eu (Europe)")
+		})
+	})
+
+	it("lists only the default region when EU is experimental-gated", async () => {
 		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
 		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: us — United States")
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States), eu (Europe)")
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States)")
 	})
 
 	it("notes the KIMCHI_REGION env override when it is in effect", async () => {
