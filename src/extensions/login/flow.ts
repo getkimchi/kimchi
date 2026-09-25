@@ -20,7 +20,7 @@ import {
 	updateModelsConfig,
 } from "../../models.js"
 import { syncPiAuth } from "../../pi-auth.js"
-import { DEFAULT_REGION, type KimchiRegion, REGIONS, type RegionId } from "../../regions.js"
+import { REGIONS, type RegionId } from "../../regions.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
@@ -109,13 +109,8 @@ interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike
 
 export const REGION_SELECTOR_TITLE = "Select region:"
 
-function regionOptionLabel(region: KimchiRegion, current: RegionId): string {
-	const base = region.id === DEFAULT_REGION ? `${region.label} (default)` : region.label
-	return region.id === current ? `${base} \u2014 current` : base
-}
-
 /**
- * Region selector shown before a Kimchi login, marking the current region.
+ * Region selector shown before a Kimchi login, listing the current region first.
  * Esc returns to the auth-method selector.
  */
 export function createRegionSelector(options: {
@@ -123,15 +118,13 @@ export function createRegionSelector(options: {
 	onSelect: (region: RegionId) => void
 	onBack: () => void
 }): ExtensionSelectorComponent {
-	const regions = Object.values(REGIONS)
-	const labels = regions.map((region) => regionOptionLabel(region, options.currentRegion))
+	const current = REGIONS[options.currentRegion]
+	const regions = [current, ...Object.values(REGIONS).filter((region) => region !== current)]
+	const labels = regions.map((region) => (region === current ? `${region.label} \u2014 current` : region.label))
 	return new ExtensionSelectorComponent(
 		REGION_SELECTOR_TITLE,
 		labels,
-		(option) => {
-			const selected = regions[labels.indexOf(option)]
-			options.onSelect(selected?.id ?? DEFAULT_REGION)
-		},
+		(option) => options.onSelect(regions[labels.indexOf(option)]?.id ?? current.id),
 		options.onBack,
 	)
 }

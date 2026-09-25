@@ -52,9 +52,9 @@ test("login via Kimchi account offers a region selector and persists the chosen 
 			terminal.submit("")
 			trace.step("auth-method selector confirmed")
 
-			// Region selector: US is the default, Europe one row down.
+			// Region selector: the current region (US) first, Europe one row down.
 			await waitForText(terminal, "Select region:", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "United States (default)", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "United States \u2014 current", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Europe", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("region selector visible")
 			terminal.keyDown(1)
