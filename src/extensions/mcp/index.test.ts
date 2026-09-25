@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -93,6 +93,8 @@ vi.mock("../permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
 }))
 
+import { resetConsoleWarnRelayForTests } from "../console-warn-relay.js"
+
 vi.mock("./oauth-migration.js", () => ({
 	migrateLegacyOAuthCredentials: vi.fn(() => ({
 		migratedServerNames: [],
@@ -133,6 +135,9 @@ async function start(
 }
 
 describe("upstream MCP adapter facade", () => {
+	afterEach(() => {
+		resetConsoleWarnRelayForTests()
+	})
 	beforeEach(() => {
 		upstream.api = undefined
 		upstream.options = undefined
@@ -568,6 +573,41 @@ describe("upstream MCP adapter facade", () => {
 		harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
 
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
+	})
+
+	it("reroutes upstream MCP console.warn output to the UI instead of the terminal", async () => {
+		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
+		upstream.sessionStart.mockImplementation(() => {
+			console.warn(
+				"MCP: 105 direct tools resolved. Each direct tool adds prompt context; README guidance recommends targeted sets of 5-20 tools and using the proxy or an explicit string[] when 75+ direct tools would be registered. Set settings.warnOnLargeDirectTools to false to hide this advisory.",
+			)
+			console.warn('[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)')
+		})
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = await start(harness)
+
+		expect(sink).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("MCP: 105 direct tools resolved"), "warning")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			'[mcp] Tool "get_once" promoted to read-only via name convention (no annotations)',
+			"warning",
+		)
+		sink.mockRestore()
+	})
+
+	it("reroutes non-MCP console.warn output to the UI as well", async () => {
+		const sink = vi.spyOn(console, "warn").mockImplementation(() => {})
+		upstream.sessionStart.mockImplementation(() => {
+			console.warn("something else entirely")
+		})
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = await start(harness)
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith("something else entirely", "warning")
+		expect(sink).not.toHaveBeenCalled()
+		sink.mockRestore()
 	})
 
 	it("surfaces compatibility warnings when the session starts", async () => {
