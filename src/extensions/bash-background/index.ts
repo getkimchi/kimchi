@@ -55,7 +55,16 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 						return openedPanel
 					},
 					// Cover the input area without growing/shrinking the transcript's scrollback.
-					{ overlay: true, overlayOptions: { width: "100%", anchor: "bottom-left", margin: { bottom: 1 } } },
+					{
+						overlay: true,
+						overlayOptions: {
+							width: "100%",
+							get row() {
+								return openedPanel?.overlayRow ?? 0
+							},
+							margin: { bottom: 1 },
+						},
+					},
 				)
 			} finally {
 				openedPanel?.dispose()

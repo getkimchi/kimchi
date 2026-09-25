@@ -10,7 +10,7 @@
  * session registry before awaiting the drain.
  */
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
-import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui"
+import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -73,6 +73,10 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		const tui = new TuiMainScreen(new ProcessTerminal())
 		const render = tui.render
 		const requestRender = vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const editor = new Text("original input", 0, 0)
+		const renderEditor = editor.render
+		tui.addChild(editor)
+		tui.setFocus(editor)
 		const dispose = vi.spyOn(CommandsPanel.prototype, "dispose")
 		vi.mocked(ctx.ui.custom).mockImplementation(
 			(factory) =>
@@ -82,15 +86,18 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		)
 		try {
 			const opened = pi.getRegisteredCommand("commands").handler("", ctx)
-			expect(vi.mocked(ctx.ui.custom).mock.calls[0]?.[1]).toEqual({
+			expect(vi.mocked(ctx.ui.custom).mock.calls[0]?.[1]).toMatchObject({
 				overlay: true,
-				overlayOptions: { width: "100%", anchor: "bottom-left", margin: { bottom: 1 } },
+				overlayOptions: { width: "100%", margin: { bottom: 1 } },
 			})
 			expect(vi.getTimerCount()).toBe(1)
+			expect(tui.render(80).join("\n")).not.toContain("original input")
 			await pi.getHandler(event)({}, ctx)
 			expect(vi.getTimerCount()).toBe(0)
 			await opened
 			expect(tui.render).toBe(render)
+			expect(editor.render).toBe(renderEditor)
+			expect(tui.render(80).join("\n")).toContain("original input")
 			expect(dispose).toHaveBeenCalled()
 			expect(vi.getTimerCount()).toBe(0)
 			requestRender.mockClear()

@@ -1,5 +1,13 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { matchesKey, TuiMainScreen, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import {
+	CURSOR_MARKER,
+	matchesKey,
+	TuiAltScreen,
+	TuiMainScreen,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui"
 import { claimRawInputCapture } from "../shared-input.js"
 import { bashOutputAge, bashStatus, bashStatusColor, bashTitle, safeBashText } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
@@ -20,6 +28,7 @@ export class CommandsPanel {
 	private disposed = false
 	private readonly releaseInput = claimRawInputCapture()
 	private restoreRender: (() => void) | undefined
+	private editorRow: number | undefined
 
 	constructor(
 		private readonly registry: ProcessRegistry | undefined,
@@ -27,14 +36,27 @@ export class CommandsPanel {
 		private readonly done: () => void,
 		private readonly theme: Theme,
 	) {
-		if (tui instanceof TuiMainScreen) {
+		if (tui instanceof TuiMainScreen || tui instanceof TuiAltScreen) {
 			const render = tui.render
+			const editor = tui.getFocusedComponent()
+			const renderEditor = editor?.render
+			if (editor && renderEditor) {
+				// Keep the editor's footprint, but let the menu replace its visible input.
+				editor.render = (width) => renderEditor.call(editor, width).map((_, i) => (i === 0 ? CURSOR_MARKER : ""))
+			}
 			// Pi's overlay compositor ignores blank rows retained after a transcript shrink.
 			// Keep that existing viewport while open; never replay it into scrollback.
 			tui.render = (width) => {
 				const lines = render.call(tui, width)
-				const state = tui.captureRenderState()
-				if (state.previousWidth === width && state.previousHeight === tui.terminal.rows) {
+				const state = tui instanceof TuiMainScreen ? tui.captureRenderState() : undefined
+				const sameSize = state?.previousWidth === width && state.previousHeight === tui.terminal.rows
+				const viewportTop = sameSize ? state.previousViewportTop : Math.max(0, lines.length - tui.terminal.rows)
+				const marker = lines.findIndex((line) => line.includes(CURSOR_MARKER))
+				if (marker >= 0) {
+					this.editorRow = Math.max(0, marker - viewportTop)
+					lines[marker] = lines[marker].replace(CURSOR_MARKER, "")
+				}
+				if (sameSize) {
 					const height = state.previousViewportTop + tui.terminal.rows
 					while (lines.length < height) lines.push("")
 				}
@@ -42,6 +64,7 @@ export class CommandsPanel {
 			}
 			this.restoreRender = () => {
 				tui.render = render
+				if (editor && renderEditor) editor.render = renderEditor
 			}
 		}
 		this.refresh()
@@ -68,6 +91,10 @@ export class CommandsPanel {
 	}
 
 	invalidate(): void {}
+
+	get overlayRow(): number {
+		return Math.max(0, Math.min(this.editorRow ?? this.tui.terminal.rows, this.tui.terminal.rows - this.height - 1))
+	}
 
 	private get height(): number {
 		const rows = this.tui.terminal.rows

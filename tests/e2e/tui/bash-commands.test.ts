@@ -7,6 +7,73 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
+test("commands replaces the input in a tall terminal without leaving a second editor", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-commands-tall",
+			extraArgs: ["--plan=false"],
+			env: { KIMCHI_PERMISSIONS: "default" },
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000 }],
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "tall",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({
+									command: "printf 'TALL_READY\\n'; while [ ! -f finish ]; do sleep 0.05; done",
+									timeout: 90,
+									checkin_interval: 60,
+								}),
+							},
+						},
+					],
+				},
+				{ stream: ["Tall terminal complete."] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.resize(216, 80)
+			await waitForText(terminal, "default →", { full: false })
+			terminal.submit("Run the tall terminal check")
+			await waitForText(terminal, "Allow the assistant to run this?", { full: false })
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, /^\s*▍ TALL_READY$/m, { full: false })
+			const inputRow = () =>
+				viewText(terminal)
+					.split("\n")
+					.findIndex((line) => line.includes(PROMPT_READY))
+			const originalInput = inputRow()
+			const menuTop = () => {
+				const lines = viewText(terminal).split("\n")
+				const hint = lines.findIndex((line) => /Esc (back|close)/.test(line))
+				return lines.slice(0, hint).findLastIndex((line) => /^─+$/.test(line))
+			}
+			trace.step("short conversation leaves spare rows below the input")
+			terminal.submit("/commands")
+			await waitForText(terminal, "Enter inspect", { full: false })
+			expect(inputRow()).toBe(-1)
+			expect(menuTop()).toBe(originalInput - 1)
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "[Script]", { full: false })
+			expect(inputRow()).toBe(-1)
+			expect(menuTop()).toBe(originalInput - 1)
+			trace.step("list and detail replace the input with no gap or second editor")
+			terminal.keyEscape()
+			await waitForText(terminal, "Enter inspect", { full: false })
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			expect(inputRow()).toBe(originalInput)
+			expect(fullText(terminal).match(/Run the tall terminal check/g)).toHaveLength(1)
+			writeFileSync(join(fixture.workDir, "finish"), "")
+			await waitForText(terminal, "Tall terminal complete.", { full: false })
+			trace.step("closing restores the original input position and preserves history")
+		},
+	)
+})
+
 test("inspect a running Bash command without interrupting it or asking the model", async ({ terminal }) => {
 	const command = [
 		"cat initial.txt",
