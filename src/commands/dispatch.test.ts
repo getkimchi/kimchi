@@ -1,11 +1,19 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { dispatchSubcommand } from "./dispatch.js"
 
 describe("dispatchSubcommand", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
 	let errSpy: ReturnType<typeof vi.spyOn>
+	let agentDir: string
 
+	// Isolate package-command discovery from the real machine state — this
+	// machine genuinely has packages installed.
 	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "kimchi-dispatch-test-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 	})
@@ -13,6 +21,8 @@ describe("dispatchSubcommand", () => {
 	afterEach(() => {
 		logSpy.mockRestore()
 		errSpy.mockRestore()
+		vi.unstubAllEnvs()
+		rmSync(agentDir, { recursive: true, force: true })
 	})
 
 	it("runs the version subcommand and returns its exit code", async () => {
@@ -98,5 +108,44 @@ describe("dispatchSubcommand", () => {
 		expect(result).toEqual({ kind: "handled", exitCode: 1 })
 		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
 		expect(messages).toContain("Usage: kimchi config")
+	})
+
+	// ---------------------------------------------------------------- package commands
+
+	function installFakePackage(name: string, commands: Record<string, string>): void {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [`npm:${name}`] }))
+		const pkgRoot = join(agentDir, "npm", "node_modules", name)
+		mkdirSync(join(pkgRoot, "dist"), { recursive: true })
+		writeFileSync(join(pkgRoot, "package.json"), JSON.stringify({ name, type: "module", kimchi: { commands } }))
+		for (const relPath of new Set(Object.values(commands))) {
+			writeFileSync(
+				join(pkgRoot, relPath),
+				'export async function run(args) {\n\tconsole.log("package ran: " + args.join(" "))\n\treturn 7\n}\n',
+			)
+		}
+	}
+
+	it("runs a package-provided subcommand and returns its exit code", async () => {
+		installFakePackage("@fake/dispatch", { hello: "./dist/hello.js" })
+
+		const result = await dispatchSubcommand(["hello", "world"])
+
+		expect(result).toEqual({ kind: "handled", exitCode: 7 })
+		expect(logSpy).toHaveBeenCalledWith("package ran: world")
+	})
+
+	it("never lets a package shadow built-in or pi commands", async () => {
+		installFakePackage("@fake/shadow", {
+			version: "./dist/shadow.js", // kimchi built-in
+			install: "./dist/shadow.js", // pi installer
+			hello: "./dist/hello.js", // allowed
+		})
+
+		// The kimchi built-in runs — not the package's module.
+		expect(await dispatchSubcommand(["version"])).toEqual({ kind: "handled", exitCode: 0 })
+		expect(logSpy.mock.calls.flat().join(" ")).not.toContain("package ran")
+
+		// pi's installer is not intercepted — dispatch falls through.
+		expect(await dispatchSubcommand(["install"])).toEqual({ kind: "fallthrough" })
 	})
 })
