@@ -1,5 +1,6 @@
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { resolveEndpoints } from "./config.js"
 import { isKimchiProvider } from "./kimchi-provider.js"
 import { buildModelsConfig, discoverModelsConfig, isTransientModelsError, type ModelMetadata } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
@@ -24,7 +25,7 @@ export async function discoverEnvironmentModels(
 	}
 	const root = providers["kimchi-dev"]
 	if (options.experimental) {
-		providers["kimchi-experimental"] = { ...root, baseUrl: "https://llm.kimchi.dev/experimental/openai/v1" }
+		providers["kimchi-experimental"] = { ...root, baseUrl: resolveEndpoints().experimentalOpenAiBaseUrl }
 	}
 	// The kimchi-dev catalog comes straight from the backend — including routed
 	// virtual models like `auto`. Register exactly what was fetched.

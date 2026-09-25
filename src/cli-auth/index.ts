@@ -8,7 +8,7 @@
 
 import type { ChildProcess } from "node:child_process"
 import open from "open"
-import { envConfig } from "../config.js"
+import { resolveEndpoints } from "../config.js"
 import { generateState, startCallbackServer } from "./callback-server.js"
 
 export interface BrowserAuthOptions {
@@ -44,7 +44,8 @@ export interface BrowserAuthResult {
 }
 
 export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): Promise<BrowserAuthResult> {
-	const webAppUrl = options.webAppUrl ?? envConfig.KIMCHI_WEB_APP_URL
+	// Default follows the configured region; KIMCHI_WEB_APP_URL keeps top precedence.
+	const webAppUrl = options.webAppUrl ?? resolveEndpoints().webAppUrl
 	const state = generateState()
 	const log = options.onMessage ?? console.log
 

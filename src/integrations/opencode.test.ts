@@ -2,7 +2,7 @@ import type { execFileSync as ExecFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import {
 	buildUpdatedPlugins,
@@ -125,6 +125,16 @@ describe("buildUpdatedPlugins", () => {
 		expect(cfg.telemetry).toBe(true)
 		expect(cfg.logsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/logs:ingest")
 		expect(cfg.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+	it("points telemetry endpoints at the configured region", () => {
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		onTestFinished(() => {
+			vi.unstubAllEnvs()
+		})
+		const r = buildUpdatedPlugins({ plugins: [], telemetryEnabled: true, latestVersion: "1.14.0" })
+		const [_pkg, cfg] = r.plugins[0] as [string, Record<string, unknown>]
+		expect(cfg.logsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 	it("strips the bare-package form (no version pin) like the versioned form", () => {
 		const existing = [[KIMCHI, { stale: true }]]

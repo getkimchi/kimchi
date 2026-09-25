@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { claudeCodeEnv, injectClaudeCodeEnv } from "./claude-code.js"
 import { byId } from "./registry.js"
@@ -57,6 +57,16 @@ describe("claudeCodeEnv", () => {
 		expect(env.OTEL_METRIC_EXPORT_INTERVAL).toBe("15000")
 		expect(env.OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE).toBe("cumulative")
 		expect(env.OTEL_LOG_TOOL_DETAILS).toBe("1")
+	})
+
+	it("points OTEL endpoints at the configured region", () => {
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		onTestFinished(() => {
+			vi.unstubAllEnvs()
+		})
+		const env = claudeCodeEnv("my-key", undefined, { telemetryEnabled: true })
+		expect(env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 
 	it("does not include OTEL env vars when telemetryEnabled is false", () => {
@@ -161,6 +171,20 @@ describe("injectClaudeCodeEnv", () => {
 		expect(env.OTEL_EXPORTER_OTLP_LOGS_HEADERS).toBe("X-Api-Key=custom")
 		expect(env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).toBeUndefined()
 		expect(env.OTEL_EXPORTER_OTLP_METRICS_HEADERS).toBe("Authorization=Basic base64")
+	})
+
+	it("removes a Cast AI endpoint from another region when telemetryEnabled is false", () => {
+		const env: Record<string, unknown> = {
+			OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest",
+			OTEL_EXPORTER_OTLP_LOGS_HEADERS: "Authorization=Bearer old-key",
+			OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			OTEL_EXPORTER_OTLP_METRICS_HEADERS: "Authorization=Bearer old-key",
+		}
+		injectClaudeCodeEnv(env, "https://b", "k", { telemetryEnabled: false })
+		expect(env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).toBeUndefined()
+		expect(env.OTEL_EXPORTER_OTLP_LOGS_HEADERS).toBeUndefined()
+		expect(env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).toBeUndefined()
+		expect(env.OTEL_EXPORTER_OTLP_METRICS_HEADERS).toBeUndefined()
 	})
 
 	it("preserves all non-endpoint OTEL vars when telemetryEnabled is false", () => {
