@@ -545,13 +545,12 @@ export const NON_DURABLE_FACT_PATTERNS: RegExp[] = [
 	/\bas of today\b/i, // stale-by-construction stamp ("As of today (2025-05-26)" in a 2026 capture)
 	/\bpr #?\d+\b/i, // PR status/content ("PR #1255 status: tui-e2e still queued")
 	/\bmr !\d+\b/i, // MR status ("MR !53 ... first to touch openapi.yaml")
-	/\b(gitlab )?pipeline\b/i, // CI state ("pages:test pipeline in CI is failing")
-	/\bwip\b/i, // uncommitted work ("I have uncommitted WIP in my working tree")
-	/\buncommitted\b/i,
+	/\b(gitlab )?pipeline\b.*\b(ci|failing|failed|pass(ed|ing))\b/i, // CI state ("pages:test pipeline in CI is failing") — requires CI/run context so durable mentions of e.g. a billing pipeline survive
+	/\buncommitted\b/i, // uncommitted work ("I have uncommitted WIP in my working tree")
 	/\b(queued|still running|still queued)\b/i, // run statuses
 	/\bagents? configured\b/i, // env inspection ("I have 0 agents configured")
 	/\b\d+ variables? (currently )?injected\b/i, // env inspection (".env with 0 variables currently injected")
-	/\bnot installed\b/i, // env inspection ("I have js-debug not installed")
+	/\bi have\b.*\bnot installed\b/i, // env inspection ("I have js-debug not installed") — the "I have" framing is the volatile inspection; a durable stance ("js-debug is intentionally not installed") or landscape fact ("Docker is not installed on my work laptop") survives
 	/\bthinking:\w+\b/i, // editor inspection ("a thinking:max setting in my editor")
 	/\bfailing to (load|work)\b/i, // debug state ("lapack ... failing to load due to an FFI error")
 	/^bash\(/i, // raw tool-output fragment ("Bash(npm run *)")

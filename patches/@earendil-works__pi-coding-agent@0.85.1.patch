@@ -5,14 +5,6 @@
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
-#   - User-message pre-render: prompt() emits message_start for the user
-#     message BEFORE before_agent_start hooks run (memory retrieval and other
-#     context assembly can take 1s+), so the submitted prompt renders while
-#     hooks process instead of after. The agent loop's later message_start for
-#     the same object is suppressed in _handleAgentEvent (after extension
-#     dispatch, before listener dispatch) so the chat never renders it twice;
-#     persistence stays on message_end. (Upstream candidate: an official
-#     early-render affordance for slow before_agent_start hooks.)
 #   - Extension setModel accepts { persist } and threads it to AgentSession's
 #     ModelMutationOptions, restoring the persistence channel upstream made
 #     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
@@ -49,9 +41,7 @@
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
 # or Kimchi no longer needs the branded behavior. For the trust hunks: remove
 # once Pi ships native trust-scan extensibility or Kimchi adopts the
-# Pi-standard configDir layout. For the user-message pre-render: remove once
-# Pi ships an official early-render affordance for slow before_agent_start
-# hooks. NOTE: the entry list must stay in sync with
+# Pi-standard configDir layout. NOTE: the entry list must stay in sync with
 # TRUST_REQUIRING_PROJECT_RESOURCES in src/project-scope-trust.ts — a unit
 # test cross-checks the two.
 # History: see patches/CHANGELOG.md.
@@ -69,36 +59,10 @@ index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d2892792688 100644
+index 66e874efd252470d00d3cdaad2e2b4b6121de15b..904f51ac130b695e5c0f5180528fdc78ec2a547d 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -82,6 +82,9 @@ export class AgentSession {
-     // Event subscription state
-     _unsubscribeAgent;
-     _eventListeners = [];
-+    // kimchi-dev: user messages rendered before before_agent_start hooks ran —
-+    // the loop's later message_start for them is suppressed (see prompt()).
-+    _preRenderedUserMessages = new WeakSet();
-     _isAgentRunActive = false;
-     _idleWaitPromise;
-     _resolveIdleWait;
-@@ -382,6 +385,15 @@ export class AgentSession {
-         }
-         // Emit to extensions first
-         await this._emitExtensionEvent(event);
-+        // kimchi-dev: a pre-rendered user message (see prompt()) was already dispatched
-+        // to listeners before before_agent_start ran; this loop-emitted copy must not
-+        // be dispatched again or the chat renders it twice. Extensions still saw their
-+        // message_start above, at the normal point in the run.
-+        if (event.type === "message_start" &&
-+            event.message?.role === "user" &&
-+            this._preRenderedUserMessages.has(event.message)) {
-+            return;
-+        }
-         // Notify all listeners
-         this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
-         // Handle session persistence
-@@ -901,16 +913,26 @@ export class AgentSession {
+@@ -901,11 +901,12 @@ export class AgentSession {
              if (currentImages) {
                  userContent.push(...currentImages);
              }
@@ -113,21 +77,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d28
              // Inject any pending "nextTurn" messages as context alongside the user message
              for (const msg of this._pendingNextTurnMessages) {
                  messages.push(msg);
-             }
-             this._pendingNextTurnMessages = [];
-+            // kimchi-dev: render the user message before before_agent_start hooks run.
-+            // Hooks can take seconds (memory retrieval, context assembly); showing the
-+            // submitted prompt immediately while they work keeps submission feeling
-+            // instant. The agent loop later re-emits message_start with this same
-+            // object; _handleAgentEvent suppresses the duplicate listener dispatch.
-+            // Persistence is unchanged — it still happens on the loop's message_end,
-+            // after the hooks have had their chance to shape the turn.
-+            this._preRenderedUserMessages.add(userMessage);
-+            this._emit({ type: "message_start", message: userMessage });
-             // Emit before_agent_start extension event
-             const result = await this._extensionRunner.emitBeforeAgentStart(expandedText, currentImages, this._baseSystemPrompt, this._baseSystemPromptOptions);
-             // Add all custom messages from extensions
-@@ -1118,7 +1140,37 @@ export class AgentSession {
+@@ -1118,7 +1119,37 @@ export class AgentSession {
              }
          }
          else if (options?.triggerTurn) {
@@ -166,7 +116,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d28
          }
          else if (this.isStreaming) {
              // Appending now would put the message between an assistant tool call and its
-@@ -1471,7 +1523,7 @@ export class AgentSession {
+@@ -1471,7 +1502,7 @@ export class AgentSession {
       *
       * @param customInstructions Optional instructions for the compaction summary
       */
@@ -175,7 +125,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d28
          await this.abort();
          this._compactionAbortController = new AbortController();
          this._emit({ type: "compaction_start", reason: "manual" });
-@@ -1483,14 +1535,21 @@ export class AgentSession {
+@@ -1483,14 +1514,21 @@ export class AgentSession {
              const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -199,7 +149,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d28
              }
              let extensionCompaction;
              if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -1941,7 +2000,8 @@ export class AgentSession {
+@@ -1941,7 +1979,8 @@ export class AgentSession {
          };
          this._resourceLoader.extendResources(extensionPaths);
          this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
@@ -209,7 +159,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d28
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -2047,10 +2107,10 @@ export class AgentSession {
+@@ -2047,10 +2086,10 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -222,7 +172,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..0a3569040a0763b744d9378f44c50d28
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
-@@ -2076,7 +2136,7 @@ export class AgentSession {
+@@ -2076,7 +2115,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {

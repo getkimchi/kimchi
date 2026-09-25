@@ -356,6 +356,86 @@ describe("memory extension", () => {
 		expect(driftQuery?.length).toBeLessThanOrEqual(TURN_RECALL_QUERY_MAX_CHARS)
 	})
 
+	it("a long prompt cannot push the response tail out of the drift query", async () => {
+		const longResponse = `HEAD_MARKER${"x".repeat(2000)}TAIL_MARKER`
+		const assistantEntry = {
+			type: "message",
+			id: "e1",
+			parentId: null,
+			timestamp: Date.now(),
+			message: { role: "assistant", content: [{ type: "text", text: longResponse }] },
+		} as unknown as SessionEntry
+		const ctx = createContext({
+			sessionManager: { getEntries: () => [assistantEntry] },
+		})
+		const search = vi.fn(async (query: string) => [{ memory: `fact for ${query.length}`, score: 0.6 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("first prompt"), fakeCtx)
+		// A prompt longer than the total cap (e.g. a stack trace or spec
+		// paste) — the old post-join slice let it push the response tail out
+		// entirely; each half is capped separately now, so both contribute.
+		const longPrompt = `PROMPT_HEAD${"y".repeat(TURN_RECALL_QUERY_MAX_CHARS)}PROMPT_TAIL`
+		await start(startEvent(longPrompt), ctx)
+		const driftQuery = search.mock.calls[1]?.[0]
+		expect(typeof driftQuery).toBe("string")
+		expect(driftQuery).toContain("PROMPT_HEAD")
+		expect(driftQuery).not.toContain("PROMPT_TAIL")
+		expect(driftQuery).toContain("TAIL_MARKER")
+		expect(driftQuery).not.toContain("HEAD_MARKER")
+		expect(driftQuery?.length).toBeLessThanOrEqual(TURN_RECALL_QUERY_MAX_CHARS)
+	})
+
+	it("shows the recall indicator while retrieval runs and clears it after", async () => {
+		const ctx = createContext()
+		const setDuringSearch: Array<unknown> = []
+		const search = vi.fn(async () => {
+			// What was on screen while the search was in flight?
+			setDuringSearch.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
+			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
+		})
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		// The indicator was on screen during the retrieval, and the turn
+		// ended with it cleared — nothing left behind.
+		expect(setDuringSearch).toEqual([["memory-recall", ["Recalling memory…"]]])
+		const recallCalls = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
+		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
+	})
+
+	it("clears the recall indicator even when retrieval fails", async () => {
+		const ctx = createContext()
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "user prefers pnpm over npm", score: 0.7 }])
+			.mockRejectedValueOnce(new Error("gateway down"))
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		// Turn 2 drifts into uncovered territory and the search throws — the
+		// finally guard must still clear the indicator.
+		await start(startEvent("what do I bake?"), ctx)
+		const recallCalls = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
+		expect(recallCalls.some((call) => call[1] !== undefined)).toBe(true)
+		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
+	})
+
+	it("never touches the widget API without a UI (headless / ACP)", async () => {
+		const ctx = createContext({ hasUI: false })
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		// Retrieval still ran — the indicator is purely a TUI affordance.
+		expect(search).toHaveBeenCalled()
+		expect(vi.mocked(ctx.ui.setWidget).mock.calls.every((call) => call[0] !== "memory-recall")).toBe(true)
+	})
+
 	it("gate skips retrieval when the conversation stays covered", async () => {
 		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
 		const { sendMessage, start } = await setup(

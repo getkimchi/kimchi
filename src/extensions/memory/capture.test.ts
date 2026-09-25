@@ -489,6 +489,12 @@ describe("isDurableFact (the non-durable gate)", () => {
 		expect(
 			isDurableFact("My devkit project serves bundles kimchi:@anthropic-ai/claude-code and kimchi:@openai/codex"),
 		).toBe(true)
+		// Durable facts that share vocabulary with the dropped session-state
+		// categories — the patterns require volatile context, not the bare word.
+		expect(isDurableFact("I maintain the billing ETL pipeline at work")).toBe(true)
+		expect(isDurableFact("I squash WIP commits before opening a merge request")).toBe(true)
+		expect(isDurableFact("I use Podman; Docker is not installed on my work laptop")).toBe(true)
+		expect(isDurableFact("js-debug is intentionally not installed")).toBe(true)
 	})
 
 	it("drops session state by category — each case is a real store entry from the audit", () => {
