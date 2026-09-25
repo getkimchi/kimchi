@@ -86,14 +86,14 @@ describe("help — rating shortcuts", () => {
 		expect(text).toMatch(/Ctrl\+2\s+Rate response as Bad/)
 	})
 
-	it("lists Ctrl+G/Ctrl+B when the terminal lacks the Kitty keyboard protocol", async () => {
+	it("lists the Ctrl+R rating picker when the terminal lacks the Kitty keyboard protocol", async () => {
 		keyboardCapabilityMock.kittySupport = false
 		onTestFinished(() => {
 			keyboardCapabilityMock.kittySupport = undefined
 		})
 		const text = await renderHelp()
-		expect(text).toMatch(/Ctrl\+G\s+Rate response as Good/)
-		expect(text).toMatch(/Ctrl\+B\s+Rate response as Bad/)
+		expect(text).toMatch(/Ctrl\+R\s+Rate response \(Good\/Bad picker\)/)
 		expect(text).not.toContain("Ctrl+1")
+		expect(text).not.toContain("Ctrl+2")
 	})
 })

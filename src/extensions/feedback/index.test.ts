@@ -39,6 +39,7 @@ const feedbackMock = vi.hoisted(() => ({ trackFeedback: vi.fn() }))
 const trackModelSwitchFeedbackMock = vi.hoisted(() => vi.fn())
 const dialogMock = vi.hoisted(() => ({ show: vi.fn() }))
 const modelSwitchDialogMock = vi.hoisted(() => ({ show: vi.fn() }))
+const ratingDialogMock = vi.hoisted(() => ({ show: vi.fn() }))
 
 vi.mock("../telemetry/index.js", () => ({
 	trackFeedback: feedbackMock.trackFeedback,
@@ -52,6 +53,10 @@ vi.mock("./dialog.js", () => ({
 
 vi.mock("./model-switch-dialog.js", () => ({
 	showModelSwitchDialog: modelSwitchDialogMock.show,
+}))
+
+vi.mock("./rating-dialog.js", () => ({
+	showRatingSelectorDialog: ratingDialogMock.show,
 }))
 
 const keyboardCapabilityMock = vi.hoisted(() => ({ kittySupport: undefined as boolean | undefined }))
@@ -690,18 +695,21 @@ describe("feedbackExtension failure handling", () => {
 	})
 })
 
-describe("feedbackExtension legacy-terminal rating keys", () => {
-	const CTRL_G = "\x07"
-	const CTRL_B = "\x02"
+describe("feedbackExtension legacy-terminal rating picker", () => {
+	const CTRL_R = "\x12"
 
 	async function press(ctx: ExtensionContext, data: string): Promise<void> {
 		sendTerminalInput(ctx, data)
 		await new Promise((resolve) => setTimeout(resolve, 0))
 	}
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		feedbackMock.trackFeedback.mockReset()
 		dialogMock.show.mockReset()
+		ratingDialogMock.show.mockReset()
+		modelSwitchDialogMock.show.mockReset()
+		const invitationState = await import("./invitation-state.js")
+		invitationState.clearModelSwitchInvitation()
 		keyboardCapabilityMock.kittySupport = false
 	})
 
@@ -709,64 +717,112 @@ describe("feedbackExtension legacy-terminal rating keys", () => {
 		keyboardCapabilityMock.kittySupport = undefined
 	})
 
-	it("Ctrl+G rates Good and Ctrl+B rates Bad when the terminal lacks the Kitty keyboard protocol", async () => {
+	it("Ctrl+R opens the rating picker, then the details dialog for the picked sentiment", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
+		ratingDialogMock.show.mockResolvedValueOnce("positive")
 		dialogMock.show.mockResolvedValueOnce(undefined)
-		await press(ctx, CTRL_G)
+		await press(ctx, CTRL_R)
+		expect(ratingDialogMock.show).toHaveBeenCalledTimes(1)
 		expect(dialogMock.show).toHaveBeenLastCalledWith(ctx, { sentiment: "positive", autoModelUsed: false })
 
-		dialogMock.show.mockResolvedValueOnce(undefined)
-		await press(ctx, CTRL_B)
+		getHandler("agent_settled")({}, ctx)
+		ratingDialogMock.show.mockResolvedValueOnce("negative")
+		dialogMock.show.mockResolvedValueOnce({ reason: "Too slow" })
+		await press(ctx, CTRL_R)
 		expect(dialogMock.show).toHaveBeenLastCalledWith(ctx, { sentiment: "negative", autoModelUsed: false })
+		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith({
+			sentiment: "negative",
+			reason: "Too slow",
+			reasonType: "predefined",
+			autoModelUsed: false,
+		})
 	})
 
-	it("does not claim Ctrl+G/Ctrl+B when the terminal supports the Kitty keyboard protocol", async () => {
+	it("Escape in the picker cancels without opening the details dialog", async () => {
+		const { api, ctx, getHandler, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		ratingDialogMock.show.mockResolvedValueOnce(undefined)
+		await press(ctx, CTRL_R)
+
+		expect(ratingDialogMock.show).toHaveBeenCalledTimes(1)
+		expect(dialogMock.show).not.toHaveBeenCalled()
+		expect(getAppendedEntries("feedback-summary")).toHaveLength(0)
+
+		// The invitation stays alive — pressing Ctrl+R again reopens the picker.
+		ratingDialogMock.show.mockResolvedValueOnce("positive")
+		dialogMock.show.mockResolvedValueOnce(undefined)
+		await press(ctx, CTRL_R)
+		expect(ratingDialogMock.show).toHaveBeenCalledTimes(2)
+		expect(dialogMock.show).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not claim Ctrl+R when the terminal supports the Kitty keyboard protocol", async () => {
 		keyboardCapabilityMock.kittySupport = true
 		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
 		expect(ctx.ui.onTerminalInput).not.toHaveBeenCalled()
-		await press(ctx, CTRL_G)
-		expect(dialogMock.show).not.toHaveBeenCalled()
+		await press(ctx, CTRL_R)
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("passes Ctrl+G/Ctrl+B through before agent_settled and after the next turn starts", async () => {
+	it("passes Ctrl+R through before agent_settled and after the next turn starts", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
 
-		await press(ctx, CTRL_G)
+		await press(ctx, CTRL_R)
 		getHandler("agent_settled")({}, ctx)
 		getHandler("turn_start")({}, ctx)
-		await press(ctx, CTRL_B)
+		await press(ctx, CTRL_R)
 
-		expect(dialogMock.show).not.toHaveBeenCalled()
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("stops listening for Ctrl+G/Ctrl+B on session replacement", async () => {
+	it("stops listening for Ctrl+R on session replacement", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
 		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
-		await press(ctx, CTRL_G)
-		await press(ctx, CTRL_B)
+		await press(ctx, CTRL_R)
 
-		expect(dialogMock.show).not.toHaveBeenCalled()
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("passes Ctrl+G/Ctrl+B through while the prompt editor has text", async () => {
+	it("passes Ctrl+R through while the prompt editor has text", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		vi.mocked(ctx.ui.getEditorText).mockReturnValue("draft prompt")
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
-		await press(ctx, CTRL_B)
-		await press(ctx, CTRL_G)
+		await press(ctx, CTRL_R)
 
-		expect(dialogMock.show).not.toHaveBeenCalled()
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
+	})
+
+	it("yields Ctrl+R to the model-switch invitation while one is active", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		await getHandler("model_select")(
+			{
+				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+				model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+			},
+			ctx,
+		)
+
+		modelSwitchDialogMock.show.mockResolvedValueOnce({ reason: "faster" })
+		await press(ctx, CTRL_R)
+
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
+		expect(modelSwitchDialogMock.show).toHaveBeenCalledWith(ctx, { modelName: "Concrete" })
 	})
 })

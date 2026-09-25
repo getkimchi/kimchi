@@ -458,7 +458,7 @@ describe("prompt summary renderer", () => {
 		expect(text).not.toMatch(/^ {2}- Rate response:/m)
 	})
 
-	it("advertises Ctrl+G/Ctrl+B when the terminal lacks the Kitty keyboard protocol", () => {
+	it("advertises the Ctrl+R rating picker when the terminal lacks the Kitty keyboard protocol", () => {
 		keyboardCapabilityMock.kittySupport = false
 		onTestFinished(() => {
 			keyboardCapabilityMock.kittySupport = undefined
@@ -469,6 +469,6 @@ describe("prompt summary renderer", () => {
 			subagents: null,
 			total: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
 		})
-		expect(text).toContain("- Rate response: ⏶ Good (Ctrl+G)  ⏷ Bad (Ctrl+B)")
+		expect(text).toContain("- Rate response: ▲▼ (Ctrl+R)")
 	})
 })
