@@ -1,6 +1,6 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
-import type { OverlayHandle, TUI } from "@earendil-works/pi-tui"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { Markdown, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 
 vi.mock("../remote-run/runner.js", () => ({
 	isRemoteRunEnabled: vi.fn(() => false),
@@ -112,15 +112,15 @@ describe("PlanReviewComponent", () => {
 	it("cycles the selected decision option with arrow keys", () => {
 		const { component, tui } = createComponent()
 
-		component.handleInput?.("\x1b[B")
+		component.handleInput("\x1b[B")
 		expect(component.render(80).join("\n")).toContain(
 			"> Start execution in auto mode (run all stages without stopping)",
 		)
 
-		component.handleInput?.("\x1b[B")
+		component.handleInput("\x1b[B")
 		expect(component.render(80).join("\n")).toContain("> Let me say something")
 
-		component.handleInput?.("\x1b[A")
+		component.handleInput("\x1b[A")
 		expect(component.render(80).join("\n")).toContain(
 			"> Start execution in auto mode (run all stages without stopping)",
 		)
@@ -130,7 +130,7 @@ describe("PlanReviewComponent", () => {
 	it("submits start from the default decision option", () => {
 		const { component, done } = createComponent()
 
-		component.handleInput?.("\r")
+		component.handleInput("\r")
 
 		expect(done).toHaveBeenCalledWith({ kind: "start" })
 	})
@@ -138,8 +138,8 @@ describe("PlanReviewComponent", () => {
 	it("submits auto start from the second decision option", () => {
 		const { component, done } = createComponent()
 
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\r")
+		component.handleInput("\x1b[B")
+		component.handleInput("\r")
 
 		expect(done).toHaveBeenCalledWith({ kind: "start_auto" })
 	})
@@ -147,9 +147,9 @@ describe("PlanReviewComponent", () => {
 	it("switches to feedback mode when the third decision option is submitted", () => {
 		const { component } = createComponent()
 
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\r")
+		component.handleInput("\x1b[B")
+		component.handleInput("\x1b[B")
+		component.handleInput("\r")
 
 		expect(component.render(80).join("\n")).toContain("Your direction:")
 	})
@@ -157,7 +157,7 @@ describe("PlanReviewComponent", () => {
 	it("cancels from decision mode on escape", () => {
 		const { component, done } = createComponent()
 
-		component.handleInput?.("\x1b")
+		component.handleInput("\x1b")
 
 		expect(done).toHaveBeenCalledWith({ kind: "cancelled", reason: "decision_cancelled" })
 	})
@@ -165,10 +165,10 @@ describe("PlanReviewComponent", () => {
 	it("treats empty feedback submit as cancellation", () => {
 		const { component, done } = createComponent()
 
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\r")
-		component.handleInput?.("\r")
+		component.handleInput("\x1b[B")
+		component.handleInput("\x1b[B")
+		component.handleInput("\r")
+		component.handleInput("\r")
 
 		expect(done).toHaveBeenCalledWith({ kind: "cancelled", reason: "empty_feedback" })
 	})
@@ -176,10 +176,10 @@ describe("PlanReviewComponent", () => {
 	it("cancels from feedback mode on escape", () => {
 		const { component, done } = createComponent()
 
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\x1b[B")
-		component.handleInput?.("\r")
-		component.handleInput?.("\x1b")
+		component.handleInput("\x1b[B")
+		component.handleInput("\x1b[B")
+		component.handleInput("\r")
+		component.handleInput("\x1b")
 
 		expect(done).toHaveBeenCalledWith({ kind: "cancelled", reason: "feedback_cancelled" })
 	})
@@ -202,9 +202,9 @@ describe("PlanReviewComponent", () => {
 		it("submits start_cloud from the third decision option", () => {
 			const { component, done } = createComponent()
 
-			component.handleInput?.("\x1b[B") // auto mode
-			component.handleInput?.("\x1b[B") // cloud
-			component.handleInput?.("\r")
+			component.handleInput("\x1b[B") // auto mode
+			component.handleInput("\x1b[B") // cloud
+			component.handleInput("\r")
 
 			expect(done).toHaveBeenCalledWith({ kind: "start_cloud" })
 		})
@@ -212,9 +212,9 @@ describe("PlanReviewComponent", () => {
 		it("keeps feedback as the last option when cloud is enabled", () => {
 			const { component } = createComponent()
 
-			component.handleInput?.("\x1b[B") // auto
-			component.handleInput?.("\x1b[B") // cloud
-			component.handleInput?.("\x1b[B") // feedback
+			component.handleInput("\x1b[B") // auto
+			component.handleInput("\x1b[B") // cloud
+			component.handleInput("\x1b[B") // feedback
 
 			expect(component.render(80).join("\n")).toContain("> Let me say something")
 		})
@@ -227,6 +227,16 @@ describe("PlanReviewComponent", () => {
 		expect(lines).not.toContain("Execute the plan in a remote workspace")
 	})
 
+	it("invalidates the cached plan markdown on theme change", () => {
+		const invalidate = vi.spyOn(Markdown.prototype, "invalidate")
+		onTestFinished(() => invalidate.mockRestore())
+		const { component } = createComponent()
+
+		component.invalidate()
+
+		expect(invalidate).toHaveBeenCalled()
+	})
+
 	describe("fullscreen scrolling", () => {
 		// rows=40, no cloud option → cap = 40 - 9 - 3 = 28 visible plan lines.
 		// Each markdown heading renders as 2 lines (heading + blank), so 60
@@ -234,12 +244,21 @@ describe("PlanReviewComponent", () => {
 		const planMarkdown = longPlan(60)
 		const rows = 40
 
-		function createComponentWithFakeBounds(opts: Parameters<typeof createComponent>[1]) {
-			const result = createComponent(vi.fn(), opts)
-			result.component.bindOverlayHandle({
-				getBounds: () => ({ row: 4, col: 6, width: 80, height: 36 }),
-			} as OverlayHandle)
-			return result
+		function wheel(wheelDelta: number): TuiMouseEvent {
+			return {
+				type: "wheel",
+				button: "none",
+				x: 10,
+				y: 5,
+				screenX: 20,
+				screenY: 10,
+				width: 80,
+				height: 36,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				wheelDelta,
+			}
 		}
 
 		it("caps the plan window to the terminal height and keeps the decision UI at the bottom", () => {
@@ -262,14 +281,14 @@ describe("PlanReviewComponent", () => {
 			const { component, tui } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
 			component.render(80) // establish maxScrollOffset
 
-			component.handleInput?.("\x1b[b") // shift+down
+			component.handleInput("\x1b[b") // shift+down
 			let joined = component.render(80).join("\n")
 			expect(joined).toContain("2-29 of 119")
 			expect(joined).not.toContain("section 0")
 			expect(joined).toContain("section 14")
 			expect(tui.requestRender).toHaveBeenCalled()
 
-			component.handleInput?.("\x1b[a") // shift+up
+			component.handleInput("\x1b[a") // shift+up
 			joined = component.render(80).join("\n")
 			expect(joined).toContain("1-28 of 119")
 			expect(joined).toContain("section 0")
@@ -279,7 +298,7 @@ describe("PlanReviewComponent", () => {
 			const { component } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
 			component.render(80)
 
-			for (let i = 0; i < 100; i++) component.handleInput?.("\x1b[b")
+			for (let i = 0; i < 100; i++) component.handleInput("\x1b[b")
 			const joined = component.render(80).join("\n")
 			// 119 - 28 = 91 max offset
 			expect(joined).toContain("92-119 of 119")
@@ -292,89 +311,52 @@ describe("PlanReviewComponent", () => {
 			const { component, tui } = createComponent(vi.fn(), { planMarkdown: longPlan(5), terminalRows: rows })
 			component.render(80)
 
-			component.handleInput?.("\x1b[b")
+			component.handleInput("\x1b[b")
 			expect(tui.requestRender).not.toHaveBeenCalled()
 			const joined = component.render(80).join("\n")
 			expect(joined).not.toContain("scroll plan")
 		})
 
-		it("scrolls the plan window with the mouse wheel inside the overlay bounds", () => {
-			const { component, tui } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
-			component.bindOverlayHandle({
-				hide: () => {},
-				setHidden: () => {},
-				isHidden: () => false,
-				focus: () => {},
-				unfocus: () => {},
-				isFocused: () => true,
-				getBounds: () => ({ row: 4, col: 6, width: 80, height: 36 }),
-			} as OverlayHandle)
+		it("scrolls the plan window with the mouse wheel", () => {
+			const { component } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
 			component.render(80)
 
-			// wheel-down, pointer at col 20 / row 10 → inside bounds
-			component.handleInput?.("\x1b[<65;20;10M")
-			let joined = component.render(80).join("\n")
-			expect(joined).toContain("4-31 of 119") // 3 lines per notch
-			expect(tui.requestRender).toHaveBeenCalled()
-
-			// wheel-up back to the top
-			component.handleInput?.("\x1b[<64;20;10M")
-			joined = component.render(80).join("\n")
-			expect(joined).toContain("1-28 of 119")
-		})
-
-		it("handles multiple wheel events batched into a single input chunk", () => {
-			// Regression: pi-tui's parseWheelEvent only matches a chunk that is
-			// exactly one wheel sequence, so rapid wheel gestures that coalesce
-			// several events per stdin read must be handled by the component.
-			const { component } = createComponentWithFakeBounds({ planMarkdown, terminalRows: rows })
-			component.render(80)
-
-			component.handleInput?.("\x1b[<65;20;10M\x1b[<65;20;10M\x1b[<65;20;10M")
-			expect(component.render(80).join("\n")).toContain("10-37 of 119") // 3 notches x 3 lines
-		})
-
-		it("handles legacy X10 wheel encoding", () => {
-			const { component } = createComponentWithFakeBounds({ planMarkdown, terminalRows: rows })
-			component.render(80)
-
-			// X10: \x1b[M + bytes (button 65+32, col 20+33, row 10+33)
-			component.handleInput?.(`\x1b[M${String.fromCharCode(32 + 65, 53, 43)}`)
+			expect(component.handleMouse(wheel(3))).toEqual({ handled: true, render: true })
 			expect(component.render(80).join("\n")).toContain("4-31 of 119")
-		})
 
-		it("ignores wheel events outside the overlay bounds so the transcript keeps working", () => {
-			const { component, tui } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
-			component.bindOverlayHandle({
-				getBounds: () => ({ row: 4, col: 6, width: 80, height: 10 }),
-			} as OverlayHandle)
-			component.render(80)
-
-			// row 39 is below the overlay (rows 4..13); col 1 is left of it
-			component.handleInput?.("\x1b[<65;20;39M")
-			component.handleInput?.("\x1b[<65;1;10M")
-			expect(tui.requestRender).not.toHaveBeenCalled()
+			expect(component.handleMouse(wheel(-3))).toEqual({ handled: true, render: true })
 			expect(component.render(80).join("\n")).toContain("1-28 of 119")
 		})
 
-		it("does not scroll on wheel input before any overlay bounds are known", () => {
-			const { component, tui } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
-			component.render(80)
-
-			component.handleInput?.("\x1b[<65;20;10M")
-			expect(tui.requestRender).not.toHaveBeenCalled()
-		})
-
-		it("keeps plan sections out of reach while typing feedback", () => {
+		it("consumes wheel events at the scroll limit without requesting a render", () => {
 			const { component } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
 			component.render(80)
-			component.handleInput?.("\x1b[b") // shift+down while in decision mode
-			component.handleInput?.("\x1b[B") // auto
-			component.handleInput?.("\x1b[B") // feedback
-			component.handleInput?.("\r")
 
-			const joined = component.render(80).join("\n")
+			expect(component.handleMouse(wheel(-3))).toEqual({ handled: true, render: false })
+			expect(component.render(80).join("\n")).toContain("1-28 of 119")
+		})
+
+		it("ignores non-wheel mouse events", () => {
+			const { component } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
+			component.render(80)
+
+			expect(component.handleMouse({ ...wheel(0), type: "click", button: "left" })).toBeUndefined()
+		})
+
+		it("shrinks the plan window to make room for the feedback editor", () => {
+			const { component } = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
+			component.render(80)
+			component.handleInput("\x1b[B") // auto
+			component.handleInput("\x1b[B") // feedback
+			component.handleInput("\r")
+
+			const lines = component.render(80)
+			const joined = lines.join("\n")
 			expect(joined).toContain("Your direction:")
+			// cap = 40 - 9 - 8 = 23 plan lines → sections 0..11 visible
+			expect(joined).toContain("section 11")
+			expect(joined).not.toContain("section 12")
+			expect(lines.length).toBeLessThanOrEqual(rows)
 		})
 	})
 })
