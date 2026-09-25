@@ -102,7 +102,7 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
@@ -136,7 +136,13 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
-import { buildProjectTrustUpdate, notifyProjectTrustUpdate, parseProjectTrustDecision } from "./trust-updates.js"
+import {
+	buildProjectTrustUpdate,
+	isPathWithin,
+	notifyProjectTrustUpdate,
+	parentTrustPath,
+	parseProjectTrustDecision,
+} from "./trust-updates.js"
 import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.js"
 import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
 import { asString, extractImages, truncate } from "./utils.js"
@@ -1777,6 +1783,11 @@ export class KimchiAcpAgent implements Agent {
 	 *
 	 * - "trust" / "deny_persist" persist via pi's ProjectTrustStore (canonical
 	 *   keying is the store's job — the /var vs /private/var trap lives there).
+	 * - "trust_parent" mirrors the TUI's "Trust parent folder" option exactly:
+	 *   it persists { [parent]: true, [cwd]: null } (one level up — the same
+	 *   single-level semantics pi's getProjectTrustOptions offers) and the
+	 *   clearing write keeps the parent's grant the nearest entry for the cwd.
+	 *   Sessions under that parent are refreshed and notified too.
 	 * - "trust_session" opens the gate for this connection only — the mirror
 	 *   of "deny": skills load live, but nothing is stored and the next
 	 *   session asks again.
@@ -1805,29 +1816,72 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
 		}
 		const decision = parseProjectTrustDecision(params.decision)
-		const trusted = decision === "trust" || decision === "trust_session"
+		const trusted = decision === "trust" || decision === "trust_session" || decision === "trust_parent"
 		const cwd = record.cwd
 
-		// Only "trust" (grant) and "deny_persist" (stored refusal) touch the
-		// trust store; "trust_session" and "deny" stay in-memory for this
-		// connection, leaving any stored decision to govern new sessions.
-		if (decision === "trust" || decision === "deny_persist") {
-			new ProjectTrustStore(this.agentDir).set(cwd, trusted)
+		// The directory whose stored decision governs the requesting session —
+		// the cwd for every decision except trust_parent, which grants the
+		// parent. Also the subtree of live sessions that must be notified and
+		// refreshed: trust is per-directory, not per-session, and the gate
+		// lookup walks ancestors, so a parent grant covers sibling sessions
+		// under it too.
+		let affectedRoot = cwd
+		if (decision === "trust_parent") {
+			const parent = parentTrustPath(cwd)
+			if (parent === undefined) {
+				throw RequestError.invalidParams(undefined, "session cwd is at the filesystem root; no parent to trust")
+			}
+			// Same update shape pi's "Trust parent folder" option writes
+			// (getProjectTrustOptions): grant the parent, clear any decision
+			// pinned on the cwd so the parent's is the nearest entry.
+			new ProjectTrustStore(this.agentDir).setMany([
+				{ path: parent, decision: true },
+				{ path: cwd, decision: null },
+			])
+			setProjectScopeTrusted(parent, true)
+			affectedRoot = parent
+		} else if (decision === "trust") {
+			new ProjectTrustStore(this.agentDir).set(cwd, true)
+			setProjectScopeTrusted(cwd, true)
+		} else if (decision === "deny_persist") {
+			new ProjectTrustStore(this.agentDir).set(cwd, false)
+			setProjectScopeTrusted(cwd, false)
+		} else {
+			// "trust_session" / "deny": in-memory only for this connection.
+			setProjectScopeTrusted(cwd, trusted)
 		}
-		setProjectScopeTrusted(cwd, trusted)
 
-		// Trust is per-project, not per-session: notify and refresh every live
-		// session on this cwd — grant AND revoke alike. The palette must never
-		// advertise skills the gate will now refuse to load, and every connected
-		// client showing trust state needs the fresh push, not just the
-		// requester. `commandsRefresher.request()` is load-bearing either way: a
-		// trust decision is not a filesystem event, so the watcher cannot fire on
-		// its own. The sweep's reloadSkillCommandsMap invalidates each session's
-		// cached system-prompt block after its loader reload, so the next prompt
-		// rebuild matches the new gate state.
+		// Session start pins a fail-closed decision on the session cwd when the
+		// project is undecided — and the ancestor-walking lookup would find that
+		// pin BEFORE the decision just recorded on affectedRoot, shadowing it
+		// (the in-memory analogue of why pi's "Trust parent folder" clears the
+		// cwd's store entry with `decision: null`). On grants, clear every live
+		// session's fail-closed pin strictly beneath the affected root so the
+		// walk resolves through the new decision, matching store inheritance.
+		// On revoke, pins below the root either mirror a deeper stored decision
+		// (nearest-wins — still correct) or are fail-closed artifacts (already
+		// consistent with the closed gate), so nothing is cleared.
+		if (trusted) {
+			for (const other of this.sessions.values()) {
+				if (other.cwd !== affectedRoot && isPathWithin(other.cwd, affectedRoot)) {
+					clearProjectScopeTrust(other.cwd)
+				}
+			}
+		}
+
+		// Notify and refresh every live session under the affected root —
+		// grant AND revoke alike. The palette must never advertise skills the
+		// gate will now refuse to load, and every connected client showing trust
+		// state needs the fresh push, not just the requester. Each session's own
+		// cwd decides its gate state (ancestor walk), so sibling sessions under a
+		// newly-trusted parent flip to trusted. `commandsRefresher.request()` is
+		// load-bearing: a trust decision is not a filesystem event, so the
+		// watcher cannot fire on its own. The sweep's reloadSkillCommandsMap
+		// invalidates each session's cached system-prompt block after its loader
+		// reload, so the next prompt rebuild matches the new gate state.
 		for (const [id, other] of this.sessions) {
-			if (other.cwd !== cwd) continue
-			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, cwd))
+			if (!isPathWithin(other.cwd, affectedRoot)) continue
+			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, other.cwd))
 		}
 		if (trusted) {
 			// The watcher's root set must be re-derived on grant: while

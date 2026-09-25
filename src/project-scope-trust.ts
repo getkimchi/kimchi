@@ -73,6 +73,15 @@ export function setProjectScopeTrusted(cwd: string, trusted: boolean): void {
 }
 
 /**
+ * Remove a session cwd's recorded decision (the in-memory mirror of pi's
+ * `decision: null` clearing write). Used when an ancestor's trust grant must
+ * become the nearest decision for cws pinned fail-closed at session start.
+ */
+export function clearProjectScopeTrust(cwd: string): void {
+	projectScopeTrustByCwd.delete(resolve(cwd))
+}
+
+/**
  * Whether project-scoped resources under `cwd` (default: the process cwd) may
  * take effect. Returns the nearest recorded decision for cwd or one of its
  * ancestors; no recorded decision means untrusted.
