@@ -28,7 +28,7 @@ describe("resolveHasUserLoop", () => {
 		expect(resolveHasUserLoop({ ...base, stdoutIsTTY: false })).toBe(false)
 	})
 
-	it("treats a container-like invocation (no TTY, task arg) as userless", () => {
+	it("treats a container-like invocation (no TTYs) as userless", () => {
 		expect(resolveHasUserLoop({ stdinIsTTY: false, stdoutIsTTY: false, acpMode: false })).toBe(false)
 	})
 })

@@ -790,6 +790,16 @@ describe("buildSystemPrompt", () => {
 			expect(gated).toContain("## Environment")
 		})
 
+		it("keeps the phase payload in userless sessions when the phase tool is present", () => {
+			const result = buildSystemPrompt({
+				tools: [...tools, { name: "set_phase", description: "Set the current work phase" }],
+				env: testEnv,
+				mode: "single",
+				hasUserLoop: false,
+			})
+			expect(result).toContain("## Phase Management")
+		})
+
 		it("is significantly smaller in userless sessions", () => {
 			const interactive = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
 			const headless = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })

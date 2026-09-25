@@ -17,7 +17,7 @@
  * instead of scanning raw argv.
  */
 
-import { type CliMode, getParsedCliArgs, PROTOCOL_MODES } from "../../cli-args.js"
+import { getParsedCliArgs, isProtocolCliMode } from "../../cli-args.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 
 export interface UserLoopInputs {
@@ -34,7 +34,7 @@ export function resolveHasUserLoop(inputs: UserLoopInputs): boolean {
 	if (inputs.acpMode) return true
 	if (!inputs.stdinIsTTY || !inputs.stdoutIsTTY) return false
 	if (inputs.print === true) return false
-	if (inputs.mode !== undefined && PROTOCOL_MODES.has(inputs.mode as CliMode)) return false
+	if (isProtocolCliMode(inputs.mode)) return false
 	return true
 }
 

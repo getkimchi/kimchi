@@ -1,24 +1,9 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
 
 test.use(TUI_TEST_CONFIG)
-
-function chatRequests(fixture: { fake: { requests: { url: string; body: unknown }[] } }) {
-	return fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-}
-
-function systemPromptOf(request: { body: unknown }): string {
-	const body = request.body as { messages?: { role: string; content: unknown }[] }
-	const system = body.messages?.find((message) => message.role === "system")
-	if (typeof system?.content === "string") return system.content
-	if (Array.isArray(system?.content)) {
-		return system.content
-			.map((part) => (typeof part === "object" && part !== null && "text" in part ? String(part.text) : ""))
-			.join("\n")
-	}
-	return ""
-}
 
 test("gh-cli/glab-cli ship as cataloged bundled skills, not eager prompt bodies", async ({ terminal }) => {
 	await runKimchiSession(
