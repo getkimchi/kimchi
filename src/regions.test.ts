@@ -20,6 +20,12 @@ describe("REGIONS", () => {
 		expect(Object.keys(REGIONS).sort()).toEqual(["eu", "us"])
 	})
 
+	it("keys each entry by its own id", () => {
+		for (const [key, region] of Object.entries(REGIONS)) {
+			expect(region.id).toBe(key)
+		}
+	})
+
 	it("us registry entry matches today's hardcoded production hosts", () => {
 		expect(us.webAppUrl).toBe("https://app.kimchi.dev")
 		expect(us.llmBaseUrl).toBe("https://llm.kimchi.dev")

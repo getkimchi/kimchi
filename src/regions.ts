@@ -1,15 +1,13 @@
 /**
- * Region registry: single source of truth for every external endpoint the CLI
- * talks to, derived from a region id ("us" | "eu").
+ * Region registry: single source of truth for the supported regions and every
+ * external endpoint the CLI talks to.
  *
  * Dependency-free by design (no imports from config.ts) so config, cli-auth,
  * and login flows can all import it without import cycles.
  */
 
-export type RegionId = "us" | "eu"
-
-export interface KimchiRegion {
-	id: RegionId
+interface RegionDefinition {
+	id: string
 	label: string
 	/** Base URL of the Kimchi web app (login pages, billing links, platform API). */
 	webAppUrl: string
@@ -19,7 +17,8 @@ export interface KimchiRegion {
 	castApiUrl: string
 }
 
-export const REGIONS: Record<RegionId, KimchiRegion> = {
+/** Supported regions; the keys define RegionId. */
+export const REGIONS = {
 	us: {
 		id: "us",
 		label: "United States",
@@ -34,6 +33,12 @@ export const REGIONS: Record<RegionId, KimchiRegion> = {
 		llmBaseUrl: "https://llm.eu.kimchi.dev",
 		castApiUrl: "https://api.eu.cast.ai",
 	},
+} as const satisfies Record<string, RegionDefinition>
+
+export type RegionId = keyof typeof REGIONS
+
+export interface KimchiRegion extends RegionDefinition {
+	id: RegionId
 }
 
 export const DEFAULT_REGION: RegionId = "us"
