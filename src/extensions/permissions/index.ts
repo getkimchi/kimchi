@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
@@ -544,10 +545,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		session.addMany(parseRules(loaded.allowBySource.cli, "allow", "cli"))
 		session.addMany(parseRules(loaded.denyBySource.cli, "deny", "cli"))
 
-		if (pi.getFlag("plan")) cliMode = "plan"
-		else if (pi.getFlag("auto")) cliMode = "auto"
+		const modeFlags = getParsedCliArgs().options
+		if (modeFlags.plan) cliMode = "plan"
+		else if (modeFlags.auto) cliMode = "auto"
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
-		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
+		else if (modeFlags.yolo || modeFlags[DANGEROUS_BYPASS_FLAG]) cliMode = "yolo"
 
 		const current = getInitialPermissionMode(ctx.sessionManager)
 		let next = current

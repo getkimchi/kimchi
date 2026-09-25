@@ -46,7 +46,7 @@ export class CommandsPanel {
 	invalidate(): void {}
 
 	private get pageRows(): number {
-		return Math.max(1, this.tui.terminal.rows - 8)
+		return Math.max(1, this.tui.terminal.rows - 10)
 	}
 
 	private content(width: number): string[] {
@@ -129,9 +129,15 @@ export class CommandsPanel {
 
 	render(width: number): string[] {
 		const w = Math.max(1, width)
-		this.width = w
+		const innerWidth = Math.max(1, w - 4)
+		this.width = innerWidth
 		const height = Math.max(1, this.tui.terminal.rows - 2)
-		const fit = (lines: string[]) => lines.slice(0, height).map((line) => truncateToWidth(line, w, "…"))
+		if (w < 6 || height < 9) return [truncateToWidth("Esc back · enlarge terminal to inspect", w, "…", true)]
+		const fit = (lines: string[]) => [
+			`╭${"─".repeat(w - 2)}╮`,
+			...lines.slice(0, height - 2).map((line) => `│ ${truncateToWidth(line, innerWidth, "…", true)} │`),
+			`╰${"─".repeat(w - 2)}╯`,
+		]
 		const now = Date.now()
 		if (!this.detail || !this.selected) {
 			const lines = [
@@ -139,7 +145,7 @@ export class CommandsPanel {
 			]
 			if (!this.entries.length) lines.push("No managed Bash commands running in this session")
 			const current = this.entries.findIndex((entry) => entry.handle === this.selected?.handle)
-			const count = Math.max(1, Math.floor((height - 2) / 2))
+			const count = Math.max(1, Math.floor((height - 4) / 2))
 			const start = Math.max(0, current - count + 1)
 			for (const entry of this.entries.slice(start, start + count)) {
 				lines.push(
@@ -147,11 +153,11 @@ export class CommandsPanel {
 				)
 				lines.push(`  ${safeBashText(entry.command).replace(/\s+/g, " ")} · ${bashOutputAge(entry, now)}`)
 			}
-			lines.push("↑↓ select · Enter inspect · Esc close")
+			lines.push("Esc close · ↑↓ select · Enter inspect")
 			return fit(lines)
 		}
 		const entry = this.selected
-		const content = this.content(w)
+		const content = this.content(innerWidth)
 		const maxOffset = Math.max(0, content.length - this.pageRows)
 		const offset = this.tab === "Output" && this.follow ? maxOffset : Math.min(this.offset, maxOffset)
 		const deadline =
@@ -163,7 +169,9 @@ export class CommandsPanel {
 			...content.slice(offset, offset + this.pageRows),
 			`${bashOutputAge(entry, now)}${entry.omittedBytes > 0 ? " · older output omitted" : ""}`,
 			`Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length}`,
-			"Tab switch view · PgUp/PgDn scroll · End follow latest · Esc back",
+			innerWidth >= 62
+				? "Esc back · Tab switch view · PgUp/PgDn scroll · End follow latest"
+				: "Esc back · Tab · PgUp/PgDn · End",
 		])
 	}
 }

@@ -10,6 +10,7 @@ import type {
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -98,8 +99,10 @@ function cleanPermissionEnv(): void {
 
 beforeEach(cleanPermissionEnv)
 beforeEach(() => {
+	populateCliArgs([])
 	isResourceEnabledMock.mockReturnValue(false)
 })
+afterEach(() => populateCliArgs([]))
 afterEach(cleanPermissionEnv)
 afterEach(resetProjectScopeTrustForTests)
 
@@ -205,6 +208,7 @@ function createPermissionsHarness(
 	flags: Record<string, boolean | string | undefined> = {},
 	initialActiveTools: string[] = toolNames,
 ) {
+	populateCliArgs(Object.entries(flags).flatMap(([name, value]) => (value === undefined ? [] : [`--${name}=${value}`])))
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, RegisteredCommand>()
 	const registeredTools = new Map<string, { name: string; execute: unknown }>()
@@ -416,6 +420,36 @@ describe("classifier health reporting", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("permission mode CLI booleans", () => {
+	it.each([
+		"plan",
+		"auto",
+		"yolo",
+		"dangerously-skip-permissions",
+	])("--%s=false does not enable that mode", async (flag) => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "default")
+		const harness = createPermissionsHarness(["bash"], { [flag]: "false" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "default", source: "env" })
+	})
+	it.each([
+		["plan", "plan"],
+		["auto", "auto"],
+		["yolo", "yolo"],
+		["dangerously-skip-permissions", "yolo"],
+	])("--%s=true enables %s", async (flag, mode) => {
+		const harness = createPermissionsHarness(["bash"], { [flag]: "true" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode, source: "flag" })
+	})
+	it("a disabled plan flag preserves the configured launch mode", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
+		const harness = createPermissionsHarness(["bash"], { plan: "false" })
+		await harness.fire("session_start", {}, createMockContext())
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "plan", source: "env" })
 	})
 })
 

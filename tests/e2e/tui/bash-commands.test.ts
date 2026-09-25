@@ -27,6 +27,8 @@ test("inspect a running Bash command without interrupting it or asking the model
 		terminal,
 		{
 			artifactName: "bash-commands",
+			extraArgs: ["--plan=false"],
+			env: { KIMCHI_PERMISSIONS: "default" },
 			seedHome: (_home, workDir) => {
 				for (const [file, text] of Object.entries({
 					"initial.txt": "output-before-checkin",
@@ -64,7 +66,10 @@ test("inspect a running Bash command without interrupting it or asking the model
 		async (fixture, trace) => {
 			const requests = () => fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
 			const signal = (name: string) => writeFileSync(join(fixture.workDir, name), "")
+			expect(viewText(terminal)).toContain("default →")
 			terminal.submit("Run the streaming command")
+			await waitForText(terminal, "Allow the assistant to run this?", { full: false })
+			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "output-before-checkin", { full: false, timeoutMs: 7_000 })
 			expect(requests()).toHaveLength(1)
 			trace.step("initial output visible before the default fifteen-second checkin")
@@ -80,7 +85,10 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "[Script]", { full: false })
 			for (const line of command.split("\n")) expect(viewText(terminal)).toContain(line)
-			trace.step("inspector shows the exact submitted multiline script")
+			expect(viewText(terminal)).toContain("╭─")
+			expect(viewText(terminal)).toContain("╰─")
+			expect(viewText(terminal)).toContain("Esc back")
+			trace.step("inspector frames the exact submitted multiline script")
 
 			terminal.keyPress(Key.Tab)
 			await waitForText(terminal, "[Output]", { full: false })

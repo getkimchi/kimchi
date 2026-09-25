@@ -46,16 +46,38 @@ afterEach(async () => {
 	vi.useRealTimers()
 })
 describe("CommandsPanel", () => {
+	it("frames and pads every row, keeping navigation visible in short terminals", () => {
+		start(registry, Array.from({ length: 80 }, (_, i) => `script ${i}`).join("\n"))
+		panel = new CommandsPanel(registry, tui, vi.fn())
+		for (const [width, rows] of [
+			[135, 45],
+			[90, 30],
+			[72, 24],
+			[40, 16],
+		]) {
+			tui.terminal.rows = rows
+			for (const input of ["", "\r", "\t"]) {
+				panel.handleInput(input)
+				const lines = panel.render(width).map(stripTerminalSequences)
+				expect(lines[0]).toMatch(/^╭─+╮$/)
+				expect(lines.at(-1)).toMatch(/^╰─+╯$/)
+				expect(lines.join("\n")).toContain("Esc")
+				for (const line of lines) expect(visibleWidth(line)).toBe(width)
+				expect(lines.length).toBeLessThanOrEqual(rows - 2)
+			}
+			panel.handleInput("\x1b")
+		}
+	})
 	it("uses current page geometry before the first detail render and after resize", () => {
 		start(registry, Array.from({ length: 80 }, (_, i) => `script ${i}`).join("\n"))
 		panel = new CommandsPanel(registry, tui, vi.fn())
 		view()
 		panel.handleInput("\r")
 		panel.handleInput("\x1b[6~")
-		expect(view()).toContain("Lines 11–20 of 80")
+		expect(view()).toContain("Lines 9–16 of 80")
 		tui.terminal.rows = 28
 		panel.handleInput("\x1b[6~")
-		expect(view()).toContain("Lines 31–50 of 80")
+		expect(view()).toContain("Lines 27–44 of 80")
 	})
 	it("pages up from the output tail before the first output render", () => {
 		const process = start(registry, "echo output")
@@ -65,7 +87,7 @@ describe("CommandsPanel", () => {
 		panel.handleInput("\r")
 		panel.handleInput("\t")
 		panel.handleInput("\x1b[5~")
-		expect(view()).toContain("Lines 61–70 of 80")
+		expect(view()).toContain("Lines 65–72 of 80")
 	})
 	it("explains empty session without changing process state", () => {
 		panel = new CommandsPanel(registry, tui, vi.fn())
@@ -95,7 +117,7 @@ describe("CommandsPanel", () => {
 		process.output(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"))
 		panel = new CommandsPanel(registry, tui, vi.fn())
 		panel.handleInput("\r")
-		expect(view()).toContain(command)
+		for (const line of command.split("\n")) expect(view()).toContain(line)
 		panel.handleInput("\t")
 		expect(view()).toContain("line 29")
 		panel.handleInput("\x1b[5~")
