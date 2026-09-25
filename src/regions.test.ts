@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
 	anthropicBaseUrl,
-	DEFAULT_REGION,
 	experimentalOpenAiBaseUrl,
 	isRegionId,
 	keyValidationUrl,
