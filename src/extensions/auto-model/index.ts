@@ -106,6 +106,13 @@ function hasPersistedDefault(): boolean {
 	return !!getSettingsManager()?.getDefaultModel()
 }
 
+/** Whether the saved default itself is a routed virtual model (provider + auto* id). */
+function persistedDefaultIsRoutedAuto(): boolean {
+	const manager = getSettingsManager()
+	if (!manager) return false
+	return isAutoRoutedModel({ provider: manager.getDefaultProvider() ?? "", id: manager.getDefaultModel() ?? "" })
+}
+
 /**
  * Whether the session's persisted entries show the user's latest selection is
  * a routed virtual model. `model_change` entries match by the `auto*` prefix
@@ -210,13 +217,15 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 			// An explicit CLI `--model` over a routed-virtual default or session is
 			// user-initiated: persist it as the default (0.84.1 semantics — upstream
-			// 0.85.1 made setModel session-only by default). When the choice is
-			// concrete, stop tracking the previous virtual pick.
+			// 0.85.1 made setModel session-only by default). On a fresh startup the
+			// CLI choice has already replaced the saved default in ctx.model, so the
+			// persisted default is checked too. When the choice is concrete, stop
+			// tracking the previous virtual pick.
 			if (
 				requestedModel &&
 				requestedModel !== MULTI_MODEL_ID &&
 				ctx.model &&
-				(isAutoRoutedModel(ctx.model) || sessionSelectsRoutedAuto(entries))
+				(isAutoRoutedModel(ctx.model) || sessionSelectsRoutedAuto(entries) || persistedDefaultIsRoutedAuto())
 			) {
 				setMultiModelEnabled(sessionId, false)
 				await pi.setModel(ctx.model, { persist: true })
@@ -270,7 +279,11 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 						? ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 						: undefined
 				if (installed) {
-					await pi.setModel(installed)
+					// Persist: upstream 0.85.1 made setModel session-only by default, and
+					// the marker + notice below claim a permanent change. Without persist
+					// the saved default is never updated and the next launch reverts to
+					// the previous model with the install permanently suppressed.
+					await pi.setModel(installed, { persist: true })
 					writeAutoDefaultApplied(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 					setMultiModelEnabled(sessionId, false)
 					// This replaces a model the user may have been using for a while.

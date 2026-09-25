@@ -33,6 +33,7 @@ vi.mock(import("../../config.js"), async (importOriginal) => ({
 // shared settings-watcher; stub it per test.
 const settingsStubs = vi.hoisted(() => ({
 	getDefaultModel: vi.fn<() => string | undefined>(() => undefined),
+	getDefaultProvider: vi.fn<() => string | undefined>(() => undefined),
 }))
 vi.mock("../../settings-watcher.js", () => ({
 	getSettingsManager: () => settingsStubs,
@@ -372,7 +373,7 @@ describe("catalog-driven Auto default (main session)", () => {
 
 		await start()
 
-		expect(setModel).toHaveBeenCalledWith(auto())
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 		expect(autoDefaultStubs.applied).toBe(true)
 	})
 
@@ -407,7 +408,7 @@ describe("catalog-driven Auto default (main session)", () => {
 
 		await start()
 
-		expect(setModel).toHaveBeenCalledWith(auto())
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
 	it.each([
@@ -506,6 +507,30 @@ describe("main-session CLI model selection", () => {
 		const c = createContext({
 			model: target,
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => entries },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(target, { persist: true })
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+	})
+
+	it("records an explicit concrete CLI override of a saved Auto default on fresh startup", async () => {
+		// Fresh startup: no session entries yet and ctx.model is already the CLI
+		// choice, so the saved default itself is what makes this an override of
+		// Auto — and it must persist.
+		populateCliArgs(["--model", "kimi-k2.5"])
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const target = model("kimi-k2.5")
+		const extension = createExtensionApi()
+		const setModel = vi.fn(async () => true)
+		Object.assign(extension.api, { setModel })
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: target,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
 		})
 
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)

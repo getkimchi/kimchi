@@ -39,8 +39,8 @@ concrete model, serves the request, and reports the pick in the response
 
 The interface keeps showing the auto model as your selection before and after
 routing. Once a pick is known, surfaces that have room for it render
-`auto (<routed model>)` — the status line, prompt summary, and ACP model
-lists included. Surfaces resolve the pick through the shared per-session
+`auto (<routed model>)` — the prompt summary and ACP model lists included.
+Surfaces resolve the pick through the shared per-session
 routing state (`state.ts`), keyed by the requested id.
 
 ## Failures

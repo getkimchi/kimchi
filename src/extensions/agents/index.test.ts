@@ -578,7 +578,7 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(text).not.toContain("not allowed in multi-model mode")
 	})
 
-	it("marks an Auto child as requiring vision when forwarding parent image paths", async () => {
+	it("forwards parent image context to an Auto child's prompt", async () => {
 		vi.mocked(sessionHasImages).mockReturnValue(true)
 		const pi = makeMockPi()
 		agentsExtension(pi)
@@ -633,7 +633,9 @@ describe("Agent tool multi-mode model guard", () => {
 			ctx,
 			"General-Purpose",
 			expect.stringContaining("Context images from parent session: /tmp/reference.png"),
-			expect.objectContaining({}),
+			// Spawn options carry no model-dependent flags anymore; this test's
+			// subject is the forwarded prompt above.
+			expect.anything(),
 		)
 	})
 })
