@@ -795,15 +795,20 @@ describe("feedbackExtension legacy-terminal rating picker", () => {
 		expect(ratingDialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("passes Ctrl+R through while the prompt editor has text", async () => {
+	it("claims Ctrl+R while the prompt editor has text", async () => {
+		// Ctrl+R's only built-in meaning is session rename inside the /resume
+		// selector; the main prompt editor has no binding for it, so a typed
+		// draft must not block the rating picker (mirroring Ctrl+1/Ctrl+2,
+		// which fire regardless of editor content).
 		const { api, ctx, getHandler } = makeApi()
 		vi.mocked(ctx.ui.getEditorText).mockReturnValue("draft prompt")
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
+		ratingDialogMock.show.mockResolvedValueOnce(undefined)
 		await press(ctx, CTRL_R)
 
-		expect(ratingDialogMock.show).not.toHaveBeenCalled()
+		expect(ratingDialogMock.show).toHaveBeenCalledTimes(1)
 	})
 
 	it("yields Ctrl+R to the model-switch invitation while one is active", async () => {

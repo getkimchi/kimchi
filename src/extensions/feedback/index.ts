@@ -89,14 +89,17 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to a
 	// single legacy control code:
 	//   - Ctrl+R → opens a Good/Bad picker, then the details dialog.
-	// Ctrl+R is the built-in `app.session.rename` binding, so it is claimed
-	// through raw input only while a rating can actually happen and the prompt
-	// editor is empty; otherwise the key passes through untouched. (Session
-	// rename is still reachable from the /resume selector.)
+	// Ctrl+R's only built-in meaning is session rename, and that lives inside
+	// the /resume selector — the main prompt editor has no binding for the key,
+	// and the Ctrl+1/Ctrl+2 rating shortcuts above fire regardless of editor
+	// content. So raw input claims Ctrl+R whenever a rating can actually
+	// happen, whether or not a draft prompt is typed, and passes the key
+	// through untouched the rest of the time.
 	//
 	// Known tradeoff: raw input runs before whatever has focus, and extensions
 	// can't tell whether a selector or overlay (e.g. /model, /help) is up. Opened
-	// right after a response, such UI loses Ctrl+R due to the rating dialog.
+	// right after a response, such UI loses Ctrl+R due to the rating dialog —
+	// including /resume's rename binding while a rating invitation is active.
 	let unsubscribeLegacyRatingKey: (() => void) | undefined
 	const stopListeningForLegacyRatingKey = () => {
 		unsubscribeLegacyRatingKey?.()
@@ -110,7 +113,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// A model-switch invitation takes precedence — its own Ctrl+R
 			// listener (set up on model_select) handles the key.
 			if (getModelSwitchInvitation()) return undefined
-			if (state !== "inviting" || ctx.ui.getEditorText().length > 0) return undefined
+			if (state !== "inviting") return undefined
 			void handleShortcut(ctx).catch((err: unknown) => {
 				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
 			})
