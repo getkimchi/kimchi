@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { claimRawInputCapture } from "../shared-input.js"
 import { bashOutputAge, bashStatus, bashStatusColor, bashTitle, safeBashText } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
@@ -61,7 +61,7 @@ export class CommandsPanel {
 			this.tab === "Script"
 				? (this.selected?.command ?? "")
 				: (this.pausedOutput ?? this.selected?.output) || "No output yet"
-		return wrapTextWithAnsi(safeBashText(text), width)
+		return wrapTextWithAnsi(safeBashText(this.tab === "Output" ? text.replace(/\r?\n$/, "") : text), width)
 	}
 
 	private refresh(): void {
@@ -143,12 +143,18 @@ export class CommandsPanel {
 		this.width = innerWidth
 		const height = this.height
 		if (w < 6 || height < 9) return [truncateToWidth(hint("Esc", "back · enlarge terminal to inspect"), w, "…", true)]
-		const fit = (lines: string[]) => [
+		const fit = (lines: string[], footer: string[]) => [
 			theme.fg("accent", "─".repeat(w)),
-			...lines.slice(0, height - 2).map((line) => ` ${truncateToWidth(line, innerWidth, "…", true)} `),
+			...Array.from({ length: height - 2 - footer.length }, (_, i) => lines[i] ?? "")
+				.concat(footer)
+				.map((line) => ` ${truncateToWidth(line, innerWidth, "…", true)} `),
 			theme.fg("accent", "─".repeat(w)),
 		]
 		const now = Date.now()
+		const withStatus = (title: string, entry: ProcessDisplaySnapshot) => {
+			const status = theme.fg(bashStatusColor(entry), bashStatus(entry, now))
+			return `${truncateToWidth(title, Math.max(0, innerWidth - visibleWidth(status) - 3), "…")}${separator}${status}`
+		}
 		if (!this.detail || !this.selected) {
 			const lines = [
 				`${theme.bold(theme.fg("accent", "Commands"))}${separator}${theme.fg("text", "this session")}${separator}${theme.fg("accent", `${this.entries.filter((entry) => entry.state === "running").length} running`)}`,
@@ -160,15 +166,12 @@ export class CommandsPanel {
 			for (const entry of this.entries.slice(start, start + count)) {
 				const selected = entry.handle === this.selected?.handle
 				const title = theme.fg(selected ? "accent" : "text", `${selected ? "→" : " "} ${bashTitle(entry)}`)
-				lines.push(
-					`${selected ? theme.bold(title) : title}${separator}${theme.fg(bashStatusColor(entry), bashStatus(entry, now))}`,
-				)
+				lines.push(withStatus(selected ? theme.bold(title) : title, entry))
 				lines.push(
 					`  ${theme.fg("mdCode", safeBashText(entry.command).replace(/\s+/g, " "))}${separator}${theme.fg("text", bashOutputAge(entry, now))}`,
 				)
 			}
-			lines.push([hint("Esc", "close"), hint("↑↓", "select"), hint("Enter", "inspect")].join(separator))
-			return fit(lines)
+			return fit(lines, [[hint("Esc", "close"), hint("↑↓", "select"), hint("Enter", "inspect")].join(separator)])
 		}
 		const entry = this.selected
 		const content = this.content(innerWidth)
@@ -180,22 +183,26 @@ export class CommandsPanel {
 			label === this.tab
 				? theme.bg("selectedBg", theme.bold(theme.fg("accent", `[${label}]`)))
 				: theme.fg("text", label)
-		return fit([
-			`${theme.bold(theme.fg("text", bashTitle(entry)))}${separator}${theme.fg(bashStatusColor(entry), bashStatus(entry, now))}`,
-			theme.fg("text", `Command ${entry.handle} · cwd ${safeBashText(entry.cwd)}${deadline}`),
-			`${tab("Script")}  ${tab("Output")}${this.tab === "Output" ? `${separator}${theme.fg(this.follow ? "success" : "warning", `Follow: ${this.follow ? "on" : "off (paused view)"}`)}` : ""}`,
-			...content
-				.slice(offset, offset + this.pageRows)
-				.map((line) => theme.fg(this.tab === "Script" ? "mdCode" : "toolOutput", line)),
-			`${theme.fg("text", `Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length}`)}${separator}${theme.fg("text", bashOutputAge(entry, now))}${entry.omittedBytes > 0 ? separator + theme.fg("warning", "older output omitted") : ""}`,
-			innerWidth >= 62
-				? [
-						hint("Esc", "back"),
-						hint("Tab", "switch view"),
-						hint("PgUp/PgDn", "scroll"),
-						hint("End", "follow latest"),
-					].join(separator)
-				: [hint("Esc", "back"), hint("Tab"), hint("PgUp/PgDn"), hint("End")].join(separator),
-		])
+		return fit(
+			[
+				withStatus(theme.bold(theme.fg("text", bashTitle(entry))), entry),
+				theme.fg("text", `Command ${entry.handle} · cwd ${safeBashText(entry.cwd)}${deadline}`),
+				`${tab("Script")}  ${tab("Output")}${this.tab === "Output" ? `${separator}${theme.fg(this.follow ? "success" : "warning", `Follow: ${this.follow ? "on" : "off (paused view)"}`)}` : ""}`,
+				...content
+					.slice(offset, offset + this.pageRows)
+					.map((line) => theme.fg(this.tab === "Script" ? "mdCode" : "toolOutput", line)),
+			],
+			[
+				`${this.tab === "Output" && entry.omittedBytes > 0 ? theme.fg("warning", "older output omitted") + separator : ""}${theme.fg("text", `Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length}`)}${separator}${theme.fg("text", bashOutputAge(entry, now))}`,
+				innerWidth >= 62
+					? [
+							hint("Esc", "back"),
+							hint("Tab", "switch view"),
+							hint("PgUp/PgDn", "scroll"),
+							hint("End", "follow latest"),
+						].join(separator)
+					: [hint("Esc", "back"), hint("Tab"), hint("PgUp/PgDn"), hint("End")].join(separator),
+			],
+		)
 	}
 }

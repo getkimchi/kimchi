@@ -2310,7 +2310,7 @@ describe("compound bash permission regressions", () => {
 	})
 
 	it("TUI default: Allow all remembers an identical compound", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2322,7 +2322,7 @@ describe("compound bash permission regressions", () => {
 
 	// Bug: Allow all stores npm *, silently approving unrelated npm subcommands.
 	it("TUI default: remembering npm install still asks before npm publish", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
+		const ctx = createMockContext(["Allow all for this session", "No — tell the assistant what to do differently"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2350,7 +2350,7 @@ describe("compound bash permission regressions", () => {
 	// made the compound's remember choice a silent no-op (stored only the cd scope).
 	it("TUI default: remembering a tail-pipelined compound approves the identical rerun silently", async () => {
 		const piped = "cd /tmp && npm install 2>&1 | tail -40"
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2364,7 +2364,7 @@ describe("compound bash permission regressions", () => {
 	// Guard pin: `sh` is NOT a whitelisted output filter — a remembered tail-
 	// pipelined compound must never widen to cover an appended shell stage.
 	it("TUI default: a shell stage after the filter tail still prompts on rerun", async () => {
-		const ctx = createMockContext(["Allow all from now on", "No — tell the assistant what to do differently"])
+		const ctx = createMockContext(["Allow all for this session", "No — tell the assistant what to do differently"])
 		const harness = createPermissionsHarness(["bash"])
 		await harness.fire("session_start", {}, ctx)
 
@@ -2460,8 +2460,13 @@ describe("handleCompoundConfirm", () => {
 	})
 
 	it("adds narrow per-segment rules to session for allow-all-remember", async () => {
-		const ctx = createMockContext(["Allow all from now on"])
-		const event = createMockEvent()
+		const ctx = createMockContext(["Allow all for this session"])
+		const event: ToolCallEvent = {
+			type: "tool_call",
+			toolName: "bash",
+			toolCallId: "remember",
+			input: { command: "npm install; npm test" },
+		}
 
 		const result = await handleCompoundConfirm(event, {
 			ctx,
@@ -3889,7 +3894,7 @@ describe("permissions:tool_decision emissions", () => {
 	it("compound remember → compound_rule on repeat, then session_rule for a matching plain call", async () => {
 		const command = "cd /tmp && npm install"
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createMockContext(["Allow all from now on"])
+		const ctx = createMockContext(["Allow all for this session"])
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, ctx)
 		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })

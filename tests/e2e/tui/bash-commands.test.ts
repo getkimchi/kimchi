@@ -66,8 +66,15 @@ test("inspect a running Bash command without interrupting it or asking the model
 		async (fixture, trace) => {
 			const requests = () => fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
 			const signal = (name: string) => writeFileSync(join(fixture.workDir, name), "")
+			const menuPosition = () => {
+				const lines = viewText(terminal).split("\n")
+				return [
+					lines.findIndex((line) => /\[Script\]|Script {2}\[Output\]/.test(line)),
+					lines.findIndex((line) => line.includes("Esc back")),
+				]
+			}
 			const menuOutput = () => viewText(terminal).split("Script  [Output]")[1]?.split("Esc back")[0] ?? ""
-			expect(viewText(terminal)).toContain("default →")
+			await waitForText(terminal, "default →", { full: false })
 			terminal.submit("Run the streaming command")
 			await waitForText(terminal, "Allow the assistant to run this?", { full: false })
 			terminal.keyPress(Key.Enter)
@@ -76,8 +83,6 @@ test("inspect a running Bash command without interrupting it or asking the model
 			trace.step("initial output visible before the default fifteen-second checkin")
 
 			await waitForText(terminal, /[Ss]till running/, { full: false, timeoutMs: 20_000 })
-			signal("more")
-			await waitForText(terminal, "output-during-control-wait", { full: false })
 			expect(requests()).toHaveLength(2)
 			trace.step("same command streams output during the control wait")
 
@@ -87,15 +92,20 @@ test("inspect a running Bash command without interrupting it or asking the model
 			await waitForText(terminal, "[Script]", { full: false })
 			for (const line of command.split("\n")) expect(viewText(terminal)).toContain(line)
 			expect(viewText(terminal)).not.toMatch(/[╭╮╰╯]/)
-			const chatOutput = viewText(terminal).indexOf("output-during-control-wait")
+			const chatOutput = viewText(terminal).indexOf("output-before-checkin")
 			expect(chatOutput).toBeGreaterThanOrEqual(0)
 			expect(chatOutput).toBeLessThan(viewText(terminal).indexOf("[Script]"))
 			expect(viewText(terminal)).toContain("Esc back")
 			trace.step("open menu shows the script below the running command output")
 
+			const scriptPosition = menuPosition()
 			terminal.keyPress(Key.Tab)
 			await waitForText(terminal, "[Output]", { full: false })
+			expect(menuPosition()).toEqual(scriptPosition)
+			signal("more")
 			await waitForText(terminal, "output-during-control-wait", { full: false })
+			expect(menuPosition()).toEqual(scriptPosition)
+			trace.step("tabs and footer stay fixed as short output grows beyond the viewport")
 			terminal.keyPress(Key.PageUp)
 			await waitForText(terminal, "Follow: off", { full: false })
 			expect(menuOutput()).not.toContain("output-during-control-wait")

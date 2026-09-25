@@ -1,6 +1,6 @@
 # Inspect running Bash commands
 
-Run **`/commands`** while Kimchi is executing a managed Bash command. It opens a menu in the input area beneath the conversation, like the other terminal menus. Select a command and press **Enter** to inspect it. Closing the menu restores the input.
+Run **`/commands`** while Kimchi is executing a managed Bash command. It opens a menu in the input area beneath the conversation, like the other terminal menus. Select a command and press **Enter** to inspect it. Closing the menu restores the input. The menu keeps the same height when you switch views or output grows; its tabs and navigation stay in place.
 
 | Key | Action |
 | --- | --- |
@@ -21,6 +21,8 @@ The conversation also shows the command, its optional purpose, elapsed time and 
 Opening and closing the inspector does not stop the command, extend its deadline or ask the model another question. A selected command's final output remains readable if it exits while the inspector is open. Escape closes the inspector; it does not cancel the running command.
 
 This view covers managed Bash commands in the current session. Direct `!` shell commands, daemons, commands in worker sessions and unrelated operating-system processes have separate lifecycles. Managed Bash commands stop when the session shuts down.
+
+Compound command approval shows the original script, including quoting. **Allow all for this session** appears only when every required permission can be remembered. Scripts that cannot be safely represented by reusable rules explain that they need approval each time and offer **Run all (once)**.
 
 ## For tool authors
 

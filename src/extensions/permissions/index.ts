@@ -74,7 +74,6 @@ import {
 	type ApprovalOutcome,
 	buildPermissionChoices,
 	type CompoundApprovalOutcome,
-	type CompoundSubcommand,
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
@@ -1441,13 +1440,9 @@ export async function handleCompoundConfirm(
 				return applyApprovalOutcome(outcome, opts.session)
 			}
 
-			const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
-				command: cmd,
-			}))
-
 			const outcome = await promptForCompoundApproval({
 				toolName: event.toolName,
-				commands: compoundSubs,
+				command: "command" in event.input ? String(event.input.command) : "",
 				ctx: opts.ctx,
 				signal: abort.signal,
 			})

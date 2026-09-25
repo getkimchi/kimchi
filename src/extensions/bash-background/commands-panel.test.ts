@@ -65,9 +65,44 @@ describe("CommandsPanel", () => {
 				expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│]/)
 				expect(lines.join("\n")).toContain("Esc")
 				for (const line of lines) expect(visibleWidth(line)).toBe(width)
-				expect(lines.length).toBeLessThanOrEqual(Math.max(9, Math.floor(rows / 2)))
+				expect(lines.length).toBe(Math.max(9, Math.floor(rows / 2)))
 			}
 			panel.handleInput("\x1b")
+		}
+	})
+	it("pins the tabs and footer as output grows and removes the final newline's phantom row", async () => {
+		tui.terminal.rows = 30
+		const process = start(registry, "printf short")
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		panel.handleInput("\r")
+		const positions = () => {
+			const lines = panel.render(80).map(stripTerminalSequences)
+			return [
+				lines.length,
+				lines.findIndex((line) => line.includes("Script")),
+				lines.findIndex((line) => line.includes("Lines ")),
+				lines.findIndex((line) => line.includes("Esc back")),
+			]
+		}
+		const script = positions()
+		panel.handleInput("\t")
+		process.output("one\ntwo\n")
+		await vi.advanceTimersByTimeAsync(250)
+		expect(positions()).toEqual(script)
+		expect(view()).toContain("Lines 1–2 of 2")
+		process.output("many lines\n".repeat(1000))
+		await vi.advanceTimersByTimeAsync(250)
+		expect(positions()).toEqual(script)
+		expect(panel.render(45).map(stripTerminalSequences).join("\n")).toContain("older output omitted")
+	})
+	it("keeps status visible when a command title is wider than the menu", async () => {
+		const process = start(registry, "a".repeat(120))
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		await process.finish()
+		await vi.advanceTimersByTimeAsync(250)
+		for (const input of ["", "\r"]) {
+			panel.handleInput(input)
+			expect(panel.render(45).map(stripTerminalSequences).join("\n")).toContain("Exited 0")
 		}
 	})
 	it("uses current page geometry before the first detail render and after resize", () => {
