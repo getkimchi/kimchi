@@ -1,4 +1,9 @@
-import { type BashToolDetails, createBashToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent"
+import {
+	type BashToolDetails,
+	createBashToolDefinition,
+	type ThemeColor,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { ProcessDisplaySnapshot } from "./process-registry.js"
 
@@ -28,6 +33,13 @@ export function bashOutputAge(snapshot: ProcessDisplaySnapshot, now = snapshot.o
 		: `Last output ${Math.max(0, Math.floor((now - snapshot.lastOutputAt) / 1000))}s ago`
 }
 
+export function bashStatusColor(snapshot: ProcessDisplaySnapshot): ThemeColor {
+	if (snapshot.state === "running") return "accent"
+	if (snapshot.reason) return "warning"
+	if (snapshot.exitCode === 0) return "success"
+	return snapshot.exitCode === null ? "warning" : "error"
+}
+
 export function bashTitle(snapshot: ProcessDisplaySnapshot): string {
 	return safeBashText(snapshot.description || snapshot.command)
 		.replace(/\s+/g, " ")
@@ -42,15 +54,22 @@ function stringArg(args: unknown, key: string): string {
 
 let upstreamBash: ReturnType<typeof createBashToolDefinition> | undefined
 
-export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, _theme, ctx) => ({
+export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, theme, ctx) => ({
 	invalidate() {},
 	render(width) {
 		const purpose = safeBashText(stringArg(args, "description")).replace(/\s+/g, " ")
 		const command = safeBashText(stringArg(args, "command"))
 		const handle = stringArg(args, "handle") ? `Command ${safeBashText(stringArg(args, "handle"))}` : ""
-		const lines = [`Bash${purpose ? ` · ${purpose}` : ""}${handle ? ` · ${handle}` : ""}`]
+		const lines = [
+			theme.bold(theme.fg("toolTitle", `Bash${purpose ? ` · ${purpose}` : ""}`)) +
+				theme.fg("text", handle ? ` · ${handle}` : ""),
+		]
 		if (command)
-			lines.push(...(ctx.expanded ? wrapTextWithAnsi(command, Math.max(1, width)) : [command.replace(/\s+/g, " ")]))
+			lines.push(
+				...(ctx.expanded ? wrapTextWithAnsi(command, Math.max(1, width)) : [command.replace(/\s+/g, " ")]).map((line) =>
+					theme.fg("mdCode", line),
+				),
+			)
 		return lines.map((line) => truncateToWidth(line, Math.max(1, width), "…"))
 	},
 })
@@ -93,15 +112,25 @@ export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (re
 			const status = captured
 				? bashStatus(display).replace("Running", "Still running at check-in")
 				: bashStatus(display)
-			const lines = [`${bashTitle(display)} · ${status}`, `Command ${display.handle}`]
+			const lines = [
+				`${theme.bold(theme.fg("toolTitle", bashTitle(display)))} · ${theme.fg(bashStatusColor(display), status)}`,
+				theme.fg("text", `Command ${display.handle}`),
+			]
 			if (stringArg(ctx.args, "handle"))
-				lines.push(...wrapTextWithAnsi(safeBashText(display.command), w).slice(0, options.expanded ? undefined : 1))
+				lines.push(
+					...wrapTextWithAnsi(safeBashText(display.command), w)
+						.slice(0, options.expanded ? undefined : 1)
+						.map((line) => theme.fg("mdCode", line)),
+				)
 			if (terminal && complete) return [...lines.map((line) => truncateToWidth(line, w, "…")), ...complete.render(w)]
 			const output = wrapTextWithAnsi(safeBashText(display.output).trimEnd() || "No output yet", w)
 			const tail = output.slice(-(options.expanded ? 20 : 3))
-			lines.push(...tail)
-			if (display.omittedBytes > 0 || output.length > tail.length) lines.push("Older output omitted")
-			lines.push(`${bashOutputAge(display)} · ${captured ? "Snapshot at check-in · " : ""}/commands to inspect`)
+			lines.push(...tail.map((line) => theme.fg("toolOutput", line)))
+			if (display.omittedBytes > 0 || output.length > tail.length)
+				lines.push(theme.fg("warning", "Older output omitted"))
+			lines.push(
+				`${theme.fg("text", bashOutputAge(display))} · ${captured ? theme.fg("warning", "Snapshot at check-in · ") : ""}${theme.bold(theme.fg("accent", "/commands"))}${theme.fg("text", " to inspect")}`,
+			)
 			return lines.map((line) => truncateToWidth(line, w, "…"))
 		},
 	}

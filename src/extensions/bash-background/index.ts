@@ -48,8 +48,8 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 			panel?.close()
 			let openedPanel: CommandsPanel | undefined
 			try {
-				await ctx.ui.custom<void>((tui, _theme, _keys, done) => {
-					openedPanel = new CommandsPanel(getSessionRegistry(), tui, () => done())
+				await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+					openedPanel = new CommandsPanel(getSessionRegistry(), tui, () => done(), theme)
 					panel = openedPanel
 					return openedPanel
 				})

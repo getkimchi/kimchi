@@ -1,6 +1,7 @@
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { claimRawInputCapture } from "../shared-input.js"
-import { bashOutputAge, bashStatus, bashTitle, safeBashText } from "./bash-display.js"
+import { bashOutputAge, bashStatus, bashStatusColor, bashTitle, safeBashText } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
 
 export class CommandsPanel {
@@ -21,6 +22,7 @@ export class CommandsPanel {
 		private readonly registry: ProcessRegistry | undefined,
 		private readonly tui: { requestRender(): void; terminal: { rows: number } },
 		private readonly done: () => void,
+		private readonly theme: Theme,
 	) {
 		this.refresh()
 		this.timer = setInterval(() => {
@@ -133,32 +135,39 @@ export class CommandsPanel {
 	}
 
 	render(width: number): string[] {
+		const theme = this.theme
+		const separator = theme.fg("dim", " · ")
+		const hint = (key: string, label = "") => theme.fg("accent", key) + theme.fg("text", label ? ` ${label}` : "")
 		const w = Math.max(1, width)
 		const innerWidth = Math.max(1, w - 2)
 		this.width = innerWidth
 		const height = this.height
-		if (w < 6 || height < 9) return [truncateToWidth("Esc back · enlarge terminal to inspect", w, "…", true)]
+		if (w < 6 || height < 9) return [truncateToWidth(hint("Esc", "back · enlarge terminal to inspect"), w, "…", true)]
 		const fit = (lines: string[]) => [
-			"─".repeat(w),
+			theme.fg("accent", "─".repeat(w)),
 			...lines.slice(0, height - 2).map((line) => ` ${truncateToWidth(line, innerWidth, "…", true)} `),
-			"─".repeat(w),
+			theme.fg("accent", "─".repeat(w)),
 		]
 		const now = Date.now()
 		if (!this.detail || !this.selected) {
 			const lines = [
-				`Commands · this session · ${this.entries.filter((entry) => entry.state === "running").length} running`,
+				`${theme.bold(theme.fg("accent", "Commands"))}${separator}${theme.fg("text", "this session")}${separator}${theme.fg("accent", `${this.entries.filter((entry) => entry.state === "running").length} running`)}`,
 			]
-			if (!this.entries.length) lines.push("No managed Bash commands running in this session")
+			if (!this.entries.length) lines.push(theme.fg("text", "No managed Bash commands running in this session"))
 			const current = this.entries.findIndex((entry) => entry.handle === this.selected?.handle)
 			const count = Math.max(1, Math.floor((height - 4) / 2))
 			const start = Math.max(0, current - count + 1)
 			for (const entry of this.entries.slice(start, start + count)) {
+				const selected = entry.handle === this.selected?.handle
+				const title = theme.fg(selected ? "accent" : "text", `${selected ? "→" : " "} ${bashTitle(entry)}`)
 				lines.push(
-					`${entry.handle === this.selected?.handle ? "→" : " "} ${bashTitle(entry)} · ${bashStatus(entry, now)}`,
+					`${selected ? theme.bold(title) : title}${separator}${theme.fg(bashStatusColor(entry), bashStatus(entry, now))}`,
 				)
-				lines.push(`  ${safeBashText(entry.command).replace(/\s+/g, " ")} · ${bashOutputAge(entry, now)}`)
+				lines.push(
+					`  ${theme.fg("mdCode", safeBashText(entry.command).replace(/\s+/g, " "))}${separator}${theme.fg("text", bashOutputAge(entry, now))}`,
+				)
 			}
-			lines.push("Esc close · ↑↓ select · Enter inspect")
+			lines.push([hint("Esc", "close"), hint("↑↓", "select"), hint("Enter", "inspect")].join(separator))
 			return fit(lines)
 		}
 		const entry = this.selected
@@ -167,15 +176,26 @@ export class CommandsPanel {
 		const offset = this.tab === "Output" && this.follow ? maxOffset : Math.min(this.offset, maxOffset)
 		const deadline =
 			entry.state === "running" ? ` · auto-stop in ${Math.max(0, Math.ceil((entry.deadlineMs - now) / 1000))}s` : ""
+		const tab = (label: "Script" | "Output") =>
+			label === this.tab
+				? theme.bg("selectedBg", theme.bold(theme.fg("accent", `[${label}]`)))
+				: theme.fg("text", label)
 		return fit([
-			`${bashTitle(entry)} · ${bashStatus(entry, now)}`,
-			`Command ${entry.handle} · cwd ${safeBashText(entry.cwd)}${deadline}`,
-			`${this.tab === "Script" ? "[Script]  Output" : "Script  [Output]"}${this.tab === "Output" ? ` · Follow: ${this.follow ? "on" : "off (paused view)"}` : ""}`,
-			...content.slice(offset, offset + this.pageRows),
-			`Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length} · ${bashOutputAge(entry, now)}${entry.omittedBytes > 0 ? " · older output omitted" : ""}`,
+			`${theme.bold(theme.fg("text", bashTitle(entry)))}${separator}${theme.fg(bashStatusColor(entry), bashStatus(entry, now))}`,
+			theme.fg("text", `Command ${entry.handle} · cwd ${safeBashText(entry.cwd)}${deadline}`),
+			`${tab("Script")}  ${tab("Output")}${this.tab === "Output" ? `${separator}${theme.fg(this.follow ? "success" : "warning", `Follow: ${this.follow ? "on" : "off (paused view)"}`)}` : ""}`,
+			...content
+				.slice(offset, offset + this.pageRows)
+				.map((line) => theme.fg(this.tab === "Script" ? "mdCode" : "toolOutput", line)),
+			`${theme.fg("text", `Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length}`)}${separator}${theme.fg("text", bashOutputAge(entry, now))}${entry.omittedBytes > 0 ? separator + theme.fg("warning", "older output omitted") : ""}`,
 			innerWidth >= 62
-				? "Esc back · Tab switch view · PgUp/PgDn scroll · End follow latest"
-				: "Esc back · Tab · PgUp/PgDn · End",
+				? [
+						hint("Esc", "back"),
+						hint("Tab", "switch view"),
+						hint("PgUp/PgDn", "scroll"),
+						hint("End", "follow latest"),
+					].join(separator)
+				: [hint("Esc", "back"), hint("Tab"), hint("PgUp/PgDn"), hint("End")].join(separator),
 		])
 	}
 }

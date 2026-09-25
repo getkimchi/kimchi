@@ -1,6 +1,7 @@
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { testTheme } from "../__mocks__/theme.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
@@ -48,7 +49,7 @@ afterEach(async () => {
 describe("CommandsPanel", () => {
 	it("renders an open menu with room for the conversation and navigation", () => {
 		start(registry, Array.from({ length: 80 }, (_, i) => `script ${i}`).join("\n"))
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		for (const [width, rows] of [
 			[135, 45],
 			[90, 30],
@@ -71,7 +72,7 @@ describe("CommandsPanel", () => {
 	})
 	it("uses current page geometry before the first detail render and after resize", () => {
 		start(registry, Array.from({ length: 80 }, (_, i) => `script ${i}`).join("\n"))
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		view()
 		panel.handleInput("\r")
 		panel.handleInput("\x1b[6~")
@@ -83,7 +84,7 @@ describe("CommandsPanel", () => {
 	it("pages up from the output tail before the first output render", () => {
 		const process = start(registry, "echo output")
 		process.output(Array.from({ length: 80 }, (_, i) => `line ${i}`).join("\n"))
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		view()
 		panel.handleInput("\r")
 		panel.handleInput("\t")
@@ -91,13 +92,13 @@ describe("CommandsPanel", () => {
 		expect(view()).toContain("Lines 77–78 of 80")
 	})
 	it("explains empty session without changing process state", () => {
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		expect(view()).toContain("No managed Bash commands running in this session")
 	})
 	it("keeps selected identity while another command disappears and retains its terminal result", async () => {
 		const first = start(registry, "echo first"),
 			second = start(registry, "echo second")
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		panel.handleInput("\x1b[B")
 		await first.finish()
 		await registry.remove(first.handle)
@@ -117,7 +118,7 @@ describe("CommandsPanel", () => {
 		const command = "cat <<'EOF'\nhello 🌸 世界\nEOF"
 		const process = start(registry, command)
 		process.output(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"))
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		panel.handleInput("\r")
 		for (const line of command.split("\n")) expect(view()).toContain(line)
 		panel.handleInput("\t")
@@ -145,7 +146,7 @@ describe("CommandsPanel", () => {
 			}
 		})
 		const done = vi.fn()
-		panel = new CommandsPanel(registry, tui, done)
+		panel = new CommandsPanel(registry, tui, done, testTheme)
 		expect(isRawInputCaptureActive()).toBe(true)
 		panel.handleInput("\r")
 		panel.handleInput("\t")
@@ -164,7 +165,7 @@ describe("CommandsPanel", () => {
 	it("safely wraps Unicode and controls through narrow resize", () => {
 		const process = start(registry, "printf '🌸 世界'\nsecond line")
 		process.output("\x1b]52;c;secret\x07\x1b[31m🌸 世界\x1b[0m\b\0")
-		panel = new CommandsPanel(registry, tui, vi.fn())
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		panel.handleInput("\r")
 		panel.handleInput("\t")
 		for (const width of [1, 2, 7, 20, 100])

@@ -1,8 +1,9 @@
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent"
+import { initTheme } from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
+import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
-import { bashStatus, renderBashCall, renderBashResult, safeBashText } from "./bash-display.js"
+import { bashStatus, bashStatusColor, renderBashCall, renderBashResult, safeBashText } from "./bash-display.js"
 import type { ProcessDisplaySnapshot } from "./process-registry.js"
 
 const display: ProcessDisplaySnapshot = {
@@ -22,7 +23,6 @@ const display: ProcessDisplaySnapshot = {
 	omittedBytes: 0,
 }
 
-const theme = {} as Theme
 beforeAll(() => initTheme("default"))
 describe("Bash display", () => {
 	it("preserves all ordinary expanded output and its full-output path", () => {
@@ -66,14 +66,15 @@ describe("Bash display", () => {
 	})
 	it("shows same process age, purpose, actual script and recent output during control waits", () => {
 		const ctx = createToolRenderContext({ args: { handle: "c1" }, isPartial: true })
-		const rendered = renderBashResult(
+		const lines = renderBashResult(
 			{ content: [], details: { display } },
 			{ expanded: false, isPartial: true },
 			theme,
 			ctx,
-		)
-			.render(100)
-			.join("\n")
+		).render(100)
+		expect(lines.join("\n")).toContain(theme.fg("accent", "/commands"))
+		expect(lines.join("\n")).toContain(theme.fg("text", "Last output 1s ago"))
+		const rendered = lines.map(stripTerminalSequences).join("\n")
 		expect(rendered).toContain("Checking output · Running · 42s")
 		expect(rendered).toContain("cat <<'EOF'")
 		expect(rendered).toContain("fourth")
@@ -89,13 +90,16 @@ describe("Bash display", () => {
 			ctx,
 		)
 			.render(100)
+			.map(stripTerminalSequences)
 			.join("\n")
 		expect(rendered).toContain("Still running at check-in · 42s")
 		expect(rendered).toContain("Snapshot at check-in")
 	})
 	it("expansion preserves multiline script and shows a larger output tail", () => {
 		const ctx = createToolRenderContext({ args: { command: display.command }, expanded: true })
-		expect(renderBashCall(ctx.args, theme, ctx).render(100).join("\n")).toContain(display.command)
+		expect(renderBashCall(ctx.args, theme, ctx).render(100).map(stripTerminalSequences).join("\n")).toContain(
+			display.command,
+		)
 		const rendered = renderBashResult(
 			{ content: [], details: { display } },
 			{ expanded: true, isPartial: false },
@@ -103,6 +107,7 @@ describe("Bash display", () => {
 			ctx,
 		)
 			.render(100)
+			.map(stripTerminalSequences)
 			.join("\n")
 		expect(rendered).toContain("first")
 	})
@@ -121,6 +126,10 @@ describe("Bash display", () => {
 		expect(safeBashText(hostile)).toBe("🌸 世界red")
 	})
 	it("distinguishes terminal outcomes without inventing success for missing exit status", () => {
+		expect(bashStatusColor(display)).toBe("accent")
+		expect(bashStatusColor({ ...display, state: "exited", exitCode: 0 })).toBe("success")
+		expect(bashStatusColor({ ...display, state: "exited", exitCode: 7 })).toBe("error")
+		expect(bashStatusColor({ ...display, state: "stopped", reason: "deadline" })).toBe("warning")
 		expect(bashStatus({ ...display, state: "exited", exitCode: 0, finishedAt: 4000 })).toBe("Exited 0 · 3s")
 		expect(bashStatus({ ...display, state: "exited", exitCode: 7 })).toContain("Failed (exit 7)")
 		expect(bashStatus({ ...display, state: "stopped", reason: "deadline" })).toContain("Deadline reached")
