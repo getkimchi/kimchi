@@ -58,8 +58,9 @@ const BUDGET = {
 	 *  (tool descriptions live in the API payload, the phase payload is gated
 	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
 	systemPrompt: 2050,
-	/** Sum of name + description chars across resources/skills frontmatter. */
-	skillsCatalog: 80,
+	/** Sum of name + description chars across resources/skills frontmatter,
+	 * including the bundled create-skill authoring workflow (~97 tokens). */
+	skillsCatalog: 105,
 	/** Total canonical system-prompt + skills surface. */
 	total: 2150,
 	/** Total canonical tool surface (26 tools after the DAP session-tool +

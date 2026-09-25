@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, loadSkillsFromDir, type ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
@@ -427,6 +427,11 @@ describe("prompt enrichment skills", () => {
 		expect(paths.length).toBeGreaterThan(0)
 		// At least one contributed path should contain a bundled skill dir.
 		expect(paths.some((p) => existsSync(join(p, "dap-debugging")) || existsSync(join(p, "improve")))).toBe(true)
+		const loaded = paths.map((path) => loadSkillsFromDir({ dir: path, source: "path" }))
+		const creator = loaded.flatMap((result) => result.skills).find((skill) => skill.name === "create-skill")
+		expect(creator).toBeDefined()
+		expect(creator?.disableModelInvocation).toBe(false)
+		expect(loaded.flatMap((result) => result.diagnostics).filter((item) => item.path === creator?.filePath)).toEqual([])
 	})
 
 	it("contributes configured native skill paths through resources_discover", async () => {

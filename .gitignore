@@ -76,3 +76,6 @@ vendor/superpowers/
 *.tfstate
 *.tfstate.*
 *.tfplan
+
+# Bundled by scripts/copy-resources.js for development and releases.
+/resources/skills/create-skill/scripts/validate-skill.mjs
