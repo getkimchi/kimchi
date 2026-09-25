@@ -1811,9 +1811,14 @@ export class KimchiAcpAgent implements Agent {
 			// refresher sweep reload each session's loader and re-advertise the
 			// palette. A trust grant is not a filesystem event, so the watcher
 			// cannot fire on its own — the explicit request() is load-bearing.
+			// The watcher's root set must be re-derived too: while untrusted, the
+			// project skills dir was never added to the watch set, so without
+			// refresh() post-grant edits to project skills would never
+			// re-advertise palettes.
 			for (const other of this.sessions.values()) {
 				if (other.cwd === cwd) invalidateSkillListBlock(other.session.resourceLoader)
 			}
+			this.skillWatcher.refresh()
 			this.commandsRefresher.request()
 		}
 

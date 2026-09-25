@@ -96,6 +96,16 @@ describe("ACP integration — project trust surfacing", () => {
 				(names) => names.includes("skill:e2e-gated-skill"),
 			)
 
+			// 4b. The watcher now watches the project root too: a NEW project
+			// skill added after the grant must re-advertise the palette without
+			// any further client action (while untrusted, the root was never in
+			// the watch set — the grant handler has to re-derive it).
+			writeTestSkill(projectSkills, "e2e-post-grant-skill", "E2E post-grant skill")
+			await waitFor(
+				() => commandNames(fixture, sessionId),
+				(names) => names.includes("skill:e2e-post-grant-skill"),
+			)
+
 			// 5. A fresh push reports trusted with nothing blocked.
 			await waitFor(
 				() => lastTrustUpdate(fixture, sessionId),
