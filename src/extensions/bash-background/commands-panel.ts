@@ -28,7 +28,6 @@ export class CommandsPanel {
 	private disposed = false
 	private readonly releaseInput = claimRawInputCapture()
 	private restoreRender: (() => void) | undefined
-	private editorRow: number | undefined
 
 	constructor(
 		private readonly registry: ProcessRegistry | undefined,
@@ -40,31 +39,24 @@ export class CommandsPanel {
 			const render = tui.render
 			const editor = tui.getFocusedComponent()
 			const renderEditor = editor?.render
-			if (editor && renderEditor) {
-				// Keep the editor's footprint, but let the menu replace its visible input.
-				editor.render = (width) => renderEditor.call(editor, width).map((_, i) => (i === 0 ? CURSOR_MARKER : ""))
-			}
-			// Pi's overlay compositor ignores blank rows retained after a transcript shrink.
-			// Keep that existing viewport while open; never replay it into scrollback.
+			// Compose over the input without Pi's overlay padding to terminal height.
+			// That padding expands output blocks even when the menu needs only a few rows.
 			tui.render = (width) => {
 				const lines = render.call(tui, width)
+				const marker = lines.findIndex((line) => line.includes(CURSOR_MARKER))
+				if (marker < 0) return lines
+				const menu = this.renderContent(width)
+				const editorHeight = editor && renderEditor ? renderEditor.call(editor, width).length : 3
+				lines.splice(marker, menu.length, ...Array<string>(editorHeight).fill(""))
 				const state = tui instanceof TuiMainScreen ? tui.captureRenderState() : undefined
 				const sameSize = state?.previousWidth === width && state.previousHeight === tui.terminal.rows
-				const viewportTop = sameSize ? state.previousViewportTop : Math.max(0, lines.length - tui.terminal.rows)
-				const marker = lines.findIndex((line) => line.includes(CURSOR_MARKER))
-				if (marker >= 0) {
-					this.editorRow = Math.max(0, marker - viewportTop)
-					lines[marker] = lines[marker].replace(CURSOR_MARKER, "")
-				}
-				if (sameSize) {
-					const height = state.previousViewportTop + tui.terminal.rows
-					while (lines.length < height) lines.push("")
-				}
+				const viewportTop = Math.max(sameSize ? state.previousViewportTop : 0, lines.length - tui.terminal.rows)
+				const row = Math.max(viewportTop, Math.min(marker, viewportTop + tui.terminal.rows - menu.length - 1))
+				for (let i = 0; i < menu.length; i++) lines[row + i] = menu[i]
 				return lines
 			}
 			this.restoreRender = () => {
 				tui.render = render
-				if (editor && renderEditor) editor.render = renderEditor
 			}
 		}
 		this.refresh()
@@ -91,10 +83,6 @@ export class CommandsPanel {
 	}
 
 	invalidate(): void {}
-
-	get overlayRow(): number {
-		return Math.max(0, Math.min(this.editorRow ?? this.tui.terminal.rows, this.tui.terminal.rows - this.height - 1))
-	}
 
 	private get height(): number {
 		const rows = this.tui.terminal.rows
@@ -194,6 +182,12 @@ export class CommandsPanel {
 	}
 
 	render(width: number): string[] {
+		const lines = this.renderContent(width)
+		if (this.restoreRender) lines[0] = CURSOR_MARKER + lines[0]
+		return lines
+	}
+
+	private renderContent(width: number): string[] {
 		const theme = this.theme
 		const separator = theme.fg("dim", " · ")
 		const hint = (key: string, label = "") => theme.fg("accent", key) + theme.fg("text", label ? ` ${label}` : "")

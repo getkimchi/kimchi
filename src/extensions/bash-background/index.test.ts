@@ -9,11 +9,12 @@
  * steer into the closing session. The extension must UNPUBLISH the
  * session registry before awaiting the drain.
  */
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { testTheme } from "../__mocks__/theme.js"
 import { CommandsPanel } from "./commands-panel.js"
 import bashBackgroundExtension from "./index.js"
 import type { ProcessRegistry } from "./process-registry.js"
@@ -81,15 +82,21 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		vi.mocked(ctx.ui.custom).mockImplementation(
 			(factory) =>
 				new Promise((resolve) => {
-					void factory(tui, {} as Theme, {} as KeybindingsManager, resolve)
+					void Promise.resolve(
+						factory(tui, testTheme, {} as KeybindingsManager, () => {
+							tui.clear()
+							tui.addChild(editor)
+							resolve(undefined)
+						}),
+					).then((component) => {
+						tui.clear()
+						tui.addChild(component)
+					})
 				}),
 		)
 		try {
 			const opened = pi.getRegisteredCommand("commands").handler("", ctx)
-			expect(vi.mocked(ctx.ui.custom).mock.calls[0]?.[1]).toMatchObject({
-				overlay: true,
-				overlayOptions: { width: "100%", margin: { bottom: 1 } },
-			})
+			await Promise.resolve()
 			expect(vi.getTimerCount()).toBe(1)
 			expect(tui.render(80).join("\n")).not.toContain("original input")
 			await pi.getHandler(event)({}, ctx)

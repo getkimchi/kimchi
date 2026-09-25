@@ -7,6 +7,50 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
+test("commands preserves the fresh session position and history", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-commands-fresh",
+			extraArgs: ["--plan=false"],
+			env: { KIMCHI_PERMISSIONS: "default" },
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			await waitForText(terminal, "default →", { full: false })
+			const baseline = viewText(terminal).split("\n")
+			const history = fullText(terminal)
+			const input = baseline.findIndex((line) => line.includes(PROMPT_READY))
+			const aboveInput = baseline.slice(0, input - 1)
+			trace.step("fresh session before any resize or model request")
+			for (let cycle = 0; cycle < 3; cycle++) {
+				terminal.submit("/commands")
+				await waitForText(terminal, "No managed Bash commands", { full: false })
+				const menuBottom = viewText(terminal)
+					.split("\n")
+					.findLastIndex((line) => /^─+$/.test(line))
+				// Blank writes below the menu expand Warp's output block despite unchanged text rows.
+				expect(terminal.getCursor().y).toBeLessThanOrEqual(menuBottom + 1)
+				expect(
+					viewText(terminal)
+						.split("\n")
+						.slice(0, input - 1),
+				).toEqual(aboveInput)
+				trace.step("opening leaves the fresh session content in place")
+				terminal.keyEscape()
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				expect(
+					viewText(terminal)
+						.split("\n")
+						.slice(0, input + 1),
+				).toEqual(baseline.slice(0, input + 1))
+				expect(fullText(terminal)).toBe(history)
+				trace.step("closing restores the fresh input at the same row")
+			}
+		},
+	)
+})
+
 test("commands replaces the input in a tall terminal without leaving a second editor", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
