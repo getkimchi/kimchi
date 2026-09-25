@@ -1,4 +1,5 @@
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { claimRawInputCapture } from "../shared-input.js"
 import { bashOutputAge, bashStatus, bashTitle, safeBashText } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
 
@@ -14,6 +15,7 @@ export class CommandsPanel {
 	private unsubscribe: (() => void) | undefined
 	private timer: ReturnType<typeof setInterval> | undefined
 	private disposed = false
+	private readonly releaseInput = claimRawInputCapture()
 
 	constructor(
 		private readonly registry: ProcessRegistry | undefined,
@@ -31,6 +33,7 @@ export class CommandsPanel {
 	dispose(): void {
 		if (this.disposed) return
 		this.disposed = true
+		this.releaseInput()
 		clearInterval(this.timer)
 		this.unsubscribe?.()
 	}

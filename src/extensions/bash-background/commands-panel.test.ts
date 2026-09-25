@@ -1,6 +1,7 @@
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { isRawInputCaptureActive } from "../shared-input.js"
 import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
 
@@ -121,11 +122,13 @@ describe("CommandsPanel", () => {
 		})
 		const done = vi.fn()
 		panel = new CommandsPanel(registry, tui, done)
+		expect(isRawInputCaptureActive()).toBe(true)
 		panel.handleInput("\r")
 		panel.handleInput("\t")
 		panel.handleInput("\x1b")
 		panel.handleInput("\x1b")
 		expect(done).toHaveBeenCalledOnce()
+		expect(isRawInputCaptureActive()).toBe(false)
 		expect(unsubscribe).toHaveBeenCalledOnce()
 		tui.requestRender.mockClear()
 		await vi.advanceTimersByTimeAsync(1000)

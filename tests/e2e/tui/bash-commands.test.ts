@@ -94,13 +94,11 @@ test("inspect a running Bash command without interrupting it or asking the model
 			await waitForText(terminal, "Follow: on", { full: false })
 			trace.step("output scrolls independently; End follows fresh output")
 
-			terminal.keyEscape()
-			await waitForText(terminal, "Enter inspect", { full: false })
-			terminal.keyEscape()
+			terminal.keyCtrlC()
 			await waitForText(terminal, "output-after-scrolling", { full: false })
 			expect(requests()).toHaveLength(2)
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
-			trace.step("closing inspection keeps the command running and makes no model request")
+			trace.step("Ctrl+C closes inspection without aborting or making a model request")
 
 			terminal.submit("/commands")
 			await waitForText(terminal, "Enter inspect", { full: false })
