@@ -11,20 +11,13 @@
  * entry below.
  */
 
-import ghCliBody from "./bodies/gh-cli.md" with { type: "text" }
 import gitHygieneBody from "./bodies/git-hygiene.md" with { type: "text" }
-import glabCliBody from "./bodies/glab-cli.md" with { type: "text" }
 import pythonEditBody from "./bodies/python-edit.md" with { type: "text" }
 import reReadBeforeEditBody from "./bodies/re-read-before-edit.md" with { type: "text" }
 import { type BehaviourSource, buildBehaviours } from "./build.js"
-import { bashInvokes, fetchesHost } from "./matchers.js"
-import { any, cli, gitRemote, gitRepo, tool } from "./triggers.js"
+import { any, gitRepo, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 
-const ghInvocation = bashInvokes("gh")
-const githubFromOtherTool = fetchesHost(/(api\.)?github\.com/)
-const glabInvocation = bashInvokes("glab")
-const gitlabFromOtherTool = fetchesHost(/(.+\.)?gitlab\.com/)
 const pythonFileEdit = any(
 	tool("edit", (i) => i.path.endsWith(".py")),
 	tool("write", (i) => i.path.endsWith(".py")),
@@ -42,30 +35,11 @@ const sources: BehaviourSource[] = [
 		triggers: { tool: pythonFileEdit },
 	},
 	{ raw: reReadBeforeEditBody, kind: "baseline" },
-	{
-		raw: ghCliBody,
-		kind: "triggered",
-		triggers: {
-			session: any(cli("gh"), gitRemote("github.com")),
-			tool: ghInvocation,
-		},
-		evals: {
-			observed: ghInvocation,
-			violated: githubFromOtherTool,
-		},
-	},
-	{
-		raw: glabCliBody,
-		kind: "triggered",
-		triggers: {
-			session: any(cli("glab"), gitRemote("gitlab.com")),
-			tool: glabInvocation,
-		},
-		evals: {
-			observed: glabInvocation,
-			violated: gitlabFromOtherTool,
-		},
-	},
 ]
+
+// gh-cli / glab-cli were moved out of the conditional prompt into bundled
+// skills (resources/skills/{gh-cli,glab-cli}/SKILL.md, bodies verbatim):
+// the CLI reference enters context only when the agent reads the skill,
+// not eagerly on every github/gitlab session.
 
 export const behaviours: readonly Behaviour[] = buildBehaviours(sources)
