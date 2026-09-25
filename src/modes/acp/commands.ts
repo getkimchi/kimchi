@@ -68,11 +68,27 @@ export interface CommandsRefresher {
 // the same window.
 export const REFRESH_DEBOUNCE_MS = 250
 
+/** Advertised-content equality: names + descriptions of the skill commands. */
+export function skillCommandsEqual(
+	a: ReadonlyMap<string, AcpSkillInfo>,
+	b: ReadonlyMap<string, AcpSkillInfo>,
+): boolean {
+	if (a.size !== b.size) return false
+	for (const [name, prev] of a) {
+		const next = b.get(name)
+		if (!next || next.description !== prev.description) return false
+	}
+	return true
+}
+
 /**
  * Re-advertise every session's palette after the skills set changes. Each
  * session reloads its own loader (keeping project-local shadowing intact),
  * then `broadcast` re-emits its available_commands_update; sessions whose
- * reload fails keep their stale palette.
+ * reload fails keep their stale palette. Sessions whose palette survived the
+ * reload unchanged are not re-broadcast: fs watchers emit deletion/rewrite
+ * bursts as several events spread over hundreds of ms, so one deliberate
+ * change can kick several sweeps — only the first has anything new to say.
  */
 export function createCommandsRefresher(opts: {
 	sessions: () => Iterable<[string, CommandsRefreshSession]>
@@ -89,14 +105,17 @@ export function createCommandsRefresher(opts: {
 		// palette from session setup) aren't reloaded redundantly.
 		for (const [sessionId, record] of Array.from(opts.sessions())) {
 			if (cancelled) return
+			let fresh: Map<string, AcpSkillInfo>
 			try {
-				record.skillCommands = await reloadSkillCommandsMap(record.session)
+				fresh = await reloadSkillCommandsMap(record.session)
 			} catch (err) {
 				const msg = `acp refresh_available_commands: reload failed for session ${sessionId}: ${String(err)}\n`
 				process.stderr.write(msg)
 				continue
 			}
 			if (cancelled) return
+			if (skillCommandsEqual(record.skillCommands, fresh)) continue
+			record.skillCommands = fresh
 			opts.broadcast(sessionId)
 		}
 	}
