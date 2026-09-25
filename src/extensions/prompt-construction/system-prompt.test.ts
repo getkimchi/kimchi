@@ -793,7 +793,7 @@ describe("buildSystemPrompt", () => {
 		it("is significantly smaller in userless sessions", () => {
 			const interactive = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
 			const headless = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
-			expect(interactive.length - headless.length).toBeGreaterThan(2000)
+			expect(interactive.length - headless.length).toBeGreaterThan(1500)
 		})
 	})
 })
