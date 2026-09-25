@@ -128,7 +128,6 @@ import {
 	buildSkillCommandPrompt,
 	buildSkillListBlock,
 	cachedSkillListBlock,
-	invalidateSkillListBlock,
 	setCachedSkillListBlock,
 	tryParseSkillCommand,
 } from "./skill-commands.js"
@@ -1779,11 +1778,17 @@ export class KimchiAcpAgent implements Agent {
 	 * - "trust" / "deny_persist" persist via pi's ProjectTrustStore (canonical
 	 *   keying is the store's job — the /var vs /private/var trap lives there).
 	 * - "deny" keeps the decision in-memory for this connection only.
-	 * - The kimchi project-scope gate is updated immediately, and on a grant
-	 *   the skill palette + system-prompt skill list refresh live (no session
-	 *   restart): the refresher sweep re-runs resources_discover per session,
-	 *   and the per-loader skill-list block cache is invalidated so the next
-	 *   prompt rebuild advertises the newly-visible skills.
+	 * - The kimchi project-scope gate is updated immediately, and the skill
+	 *   palette + system-prompt skill list refresh live on BOTH grant and
+	 *   revoke (no session restart): the refresher sweep re-runs
+	 *   resources_discover per session, and the per-loader skill-list block
+	 *   cache is invalidated so the next prompt rebuild advertises (or
+	 *   drops) the project skills.
+	 * - "deny" does NOT override an existing persisted grant for the cwd: it
+	 *   is meaningful only for a previously-undecided project, keeping this
+	 *   connection untrusted while the stored decision (if any) keeps
+	 *   governing new sessions. To override a stored grant, the client must
+	 *   send "deny_persist".
 	 * - Other gated categories (project config, .pi settings) keep applying on
 	 *   the next session; the returned `blocked` list tells the client what.
 	 */
@@ -1805,25 +1810,30 @@ export class KimchiAcpAgent implements Agent {
 		}
 		setProjectScopeTrusted(cwd, trusted)
 
-		if (trusted) {
-			// Invalidate the system-prompt skill block for every live session on
-			// this cwd (trust is per-project, not per-session), then let the
-			// refresher sweep reload each session's loader and re-advertise the
-			// palette. A trust grant is not a filesystem event, so the watcher
-			// cannot fire on its own — the explicit request() is load-bearing.
-			// The watcher's root set must be re-derived too: while untrusted, the
-			// project skills dir was never added to the watch set, so without
-			// refresh() post-grant edits to project skills would never
-			// re-advertise palettes.
-			for (const other of this.sessions.values()) {
-				if (other.cwd === cwd) invalidateSkillListBlock(other.session.resourceLoader)
-			}
-			this.skillWatcher.refresh()
-			this.commandsRefresher.request()
+		// Trust is per-project, not per-session: notify and refresh every live
+		// session on this cwd — grant AND revoke alike. The palette must never
+		// advertise skills the gate will now refuse to load, and every connected
+		// client showing trust state needs the fresh push, not just the
+		// requester. `commandsRefresher.request()` is load-bearing either way: a
+		// trust decision is not a filesystem event, so the watcher cannot fire on
+		// its own. The sweep's reloadSkillCommandsMap invalidates each session's
+		// cached system-prompt block after its loader reload, so the next prompt
+		// rebuild matches the new gate state.
+		for (const [id, other] of this.sessions) {
+			if (other.cwd !== cwd) continue
+			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, cwd))
 		}
+		if (trusted) {
+			// The watcher's root set must be re-derived on grant: while
+			// untrusted, the project skills dir was never added to the watch set,
+			// so without refresh() post-grant edits to project skills would never
+			// re-advertise palettes. (Roots only grow; revoke keeps watching —
+			// see skill-watcher's roots-never-removed note.)
+			this.skillWatcher.refresh()
+		}
+		this.commandsRefresher.request()
 
 		const update = buildProjectTrustUpdate(sessionId, cwd)
-		notifyProjectTrustUpdate(this.conn, update)
 		return { trusted: update.trusted, blocked: [...update.blocked] }
 	}
 

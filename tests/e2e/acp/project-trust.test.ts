@@ -116,6 +116,31 @@ describe("ACP integration — project trust surfacing", () => {
 			const trustPath = join(fixture.homeDir, ".config", "kimchi", "harness", "trust.json")
 			expect(existsSync(trustPath)).toBe(true)
 			expect(readFileSync(trustPath, "utf-8")).toContain(fixture.workDir)
+
+			// 7. Revocation sweeps too: deny_persist must drop the project skill
+			// from the live palette (not just stop advertising new ones) and
+			// store the denied decision.
+			const denyResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, {
+				sessionId,
+				decision: "deny_persist",
+			})
+			expect(denyResult).toEqual({ trusted: false, blocked: ["skills"] })
+			await waitFor(
+				() => commandNames(fixture, sessionId),
+				(names) => !names.includes("skill:e2e-gated-skill"),
+			)
+			const stored = JSON.parse(readFileSync(trustPath, "utf-8")) as Record<string, unknown>
+			expect(Object.values(stored)).toContain(false)
+
+			// 8. A new session on the denied project comes up untrusted, with the
+			// project skill gated again.
+			const secondSession = await newSession(fixture, fixture.workDir)
+			const second = await waitFor(
+				() => lastTrustUpdate(fixture, secondSession),
+				(u) => u !== undefined,
+			)
+			expect(second?.trusted).toBe(false)
+			expect(second?.blocked).toContain("skills")
 		},
 		STARTUP_TIMEOUT_MS + WAIT_MS,
 	)
@@ -138,6 +163,12 @@ describe("ACP integration — project trust surfacing", () => {
 			// State unchanged: still untrusted, no decision persisted.
 			expect(lastTrustUpdate(fixture, sessionId)?.trusted).toBe(false)
 			const trustPath = join(fixture.homeDir, ".config", "kimchi", "harness", "trust.json")
+			expect(existsSync(trustPath)).toBe(false)
+
+			// A plain deny is in-memory only: the session is refused, but nothing
+			// is written to the trust store.
+			const denyResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, { sessionId, decision: "deny" })
+			expect(denyResult).toEqual({ trusted: false, blocked: ["skills"] })
 			expect(existsSync(trustPath)).toBe(false)
 		},
 		STARTUP_TIMEOUT_MS + WAIT_MS,
