@@ -23,6 +23,13 @@ behind the same project-trust check the CLI runs for pi's own settings:
   `~/.config/kimchi/harness/agent/trust.json` (pi's trust store), so you are
   asked once per project, with the same options pi offers (Trust, Trust parent
   folder, session-only, Do not trust).
+- **Don't hand-edit `trust.json`.** The store canonicalizes keys on write
+  (realpaths — `/var` vs `/private/var` on macOS) and the lookup normalizes
+  query paths (trailing slashes are stripped), so a hand-written key with a
+  trailing slash or a non-canonical path silently never matches — the entry
+  is dead at every depth. Prefer the ACP
+  `_kimchi.dev/set_path_trust` ext method (Studio / other clients) or the
+  trust prompt itself; both write through the normalizing store API.
 
 ## What triggers the prompt
 

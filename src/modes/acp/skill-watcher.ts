@@ -14,6 +14,8 @@ export interface SkillWatcher {
 	addSession(session: SkillWatchSession): void
 	/** Deregister a session; roots shared with other cwds stay watched. */
 	removeSession(session: SkillWatchSession): void
+	/** Re-derive watched roots for every registered session (trust grant). */
+	refresh(): void
 	/** Close all watches (connection shutdown). */
 	close(): void
 }
@@ -105,6 +107,19 @@ export function createSkillWatcher(opts: {
 			if (refs === 0) {
 				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
 			}
+		},
+		/**
+		 * Re-derive watched roots for every registered session. Called after
+		 * a mid-session trust grant (LLM-3628): while a project was untrusted,
+		 * its skill root was filtered out of the resolver output and never
+		 * entered `watched` — and the on-change self-heal cannot fire, because
+		 * the change event would have to come from a dir that is already
+		 * watched. Without this, post-grant edits to project skills would
+		 * never re-advertise palettes.
+		 */
+		refresh(): void {
+			if (closed) return
+			refreshRoots()
 		},
 		removeSession(session: SkillWatchSession): void {
 			const refs = sessions.get(session.cwd) ?? 0
