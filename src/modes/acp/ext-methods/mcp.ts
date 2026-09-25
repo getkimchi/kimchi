@@ -74,10 +74,35 @@ export function validateServerEntry(raw: unknown): ServerEntry {
 }
 
 /**
+ * FIFO mutex for `_kimchi.dev/probe_mcp_server`: concurrent probes kill each
+ * other's OAuth listener via the adapter's module-level runtime globals — a
+ * second session_start stops the previous owner mid-browser-consent.
+ */
+let probeChain: Promise<unknown> = Promise.resolve()
+
+/**
+ * Serialized probe execution. Queued probes wait behind the running one, whose
+ * worst case is an interactive OAuth probe: roughly
+ * timeoutMs + INTERACTIVE_AUTH_TIMEOUT_MS + timeoutMs of queue wait. A queued
+ * caller cannot cancel its wait — an accepted trade-off, since aborting a
+ * queued wait would not stop the running probe and concurrent probes would
+ * kill each other's OAuth listener anyway.
+ */
+
+function runSerializedProbe(run: () => Promise<ProbeResult>): Promise<ProbeResult> {
+	const next = probeChain.then(run, run)
+	// Keep the chain alive after a failed probe; surface the error only to
+	// this call's caller.
+	probeChain = next.catch(() => {})
+	return next
+}
+
+/**
  * Handler for the `_kimchi.dev/probe_mcp_server` ACP extension method.
  *
  * Validates the incoming ServerEntry and delegates to the shared probe, which
  * owns the total discovery deadline, OAuth migration, and connection cleanup.
+ * Executions are serialized (see {@link runSerializedProbe}).
  *
  * This extMethod executes external binaries (stdio servers) or makes network
  * requests (HTTP servers) based on the ServerEntry provided by the client.
@@ -91,5 +116,5 @@ export async function handleProbeMcpServer(
 	}
 	const server = validateServerEntry(params.server)
 	const serverName = (params.serverName as string | undefined) ?? "probe"
-	return mcpProbe.probeTools(serverName, server, { authenticate: params.skipAuth !== true })
+	return runSerializedProbe(() => mcpProbe.probeTools(serverName, server, { authenticate: params.skipAuth !== true }))
 }

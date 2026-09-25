@@ -51,6 +51,14 @@ interface ProbeHost {
 const probeToolCapture = new AsyncLocalStorage<Map<string, ProbeTool>>()
 let probeToolCaptureInstalled = false
 
+/** Generous budget for an interactive browser OAuth consent inside a probe. */
+const INTERACTIVE_AUTH_TIMEOUT_MS = 300_000
+
+interface DeadlineControl {
+	suspendDeadline: () => void
+	resumeDeadline: () => void
+}
+
 function installProbeToolMetadataCapture(): void {
 	if (probeToolCaptureInstalled) return
 	probeToolCaptureInstalled = true
@@ -100,17 +108,21 @@ function executeProcess(
 	})
 }
 
-function createProbeHost(cwd: string, signal: AbortSignal | undefined): ProbeHost {
+function createProbeHost(cwd: string, signal: AbortSignal | undefined, authAbort?: AbortController): ProbeHost {
 	const handlers = new Map<string, Handler[]>()
 	const commands = new Map<string, Command>()
 	const tools = new Map<string, ToolDefinition>()
 	const activeTools = new Set<string>()
 	const eventHandlers = new Map<string, Array<(data: unknown) => void>>()
 
+	// The fake UI hooks must stay pending while the OAuth flow is active, but
+	// reject once the probe or the interactive auth window aborts — otherwise an
+	// abandoned flow would leave upstream's localhost callback listener bound.
+	const uiSignals = [signal, authAbort?.signal].filter((s): s is AbortSignal => Boolean(s))
 	const ui = {
-		select: async () => undefined,
-		confirm: async () => false,
-		input: async () => undefined,
+		select: () => neverSettle(uiSignals),
+		confirm: () => neverSettle(uiSignals),
+		input: () => neverSettle(uiSignals),
 		notify: () => {},
 		onTerminalInput: () => () => {},
 		setStatus: () => {},
@@ -187,6 +199,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/**
+ * Never resolve: upstream's OAuth flow races the localhost callback against a
+ * manual-paste prompt on `ui.input`; a resolving fake would win that race and
+ * cancel the flow while the user is still on the consent page. The promise
+ * does reject when one of the watched signals aborts so an abandoned flow
+ * unwinds (and closes its callback listener) instead of lingering forever.
+ */
+function neverSettle(signals: AbortSignal[]): Promise<never> {
+	return new Promise((_, reject) => {
+		for (const signal of signals) {
+			if (signal.aborted) {
+				reject(signal.reason)
+				return
+			}
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+		}
+	})
+}
+
+/**
+ * Races an interactive OAuth flow (consent in the browser) against a generous
+ * budget. When the budget expires the auth signal is aborted FIRST so the fake
+ * UI hooks reject and upstream's consent flow unwinds (closing its localhost
+ * callback listener) instead of lingering after the probe returns.
+ */
+function createInteractiveAuthWindow(authAbort: AbortController): {
+	deadline: Promise<never>
+	cancel: () => void
+	timeoutError: Error
+} {
+	const timeoutError = new Error(`OAuth authentication timed out after ${INTERACTIVE_AUTH_TIMEOUT_MS / 1000} seconds`)
+	let authTimer: ReturnType<typeof setTimeout> | undefined
+	const deadline = new Promise<never>((_resolve, reject) => {
+		authTimer = setTimeout(() => {
+			authAbort.abort(timeoutError)
+			reject(timeoutError)
+		}, INTERACTIVE_AUTH_TIMEOUT_MS)
+	})
+	return { deadline, cancel: () => clearTimeout(authTimer), timeoutError }
+}
+
 function resultDetails(result: GatewayResult): Record<string, unknown> {
 	return isRecord(result.details) ? result.details : {}
 }
@@ -196,6 +249,17 @@ function resultMessage(result: GatewayResult): string {
 		.filter((item): item is { type: "text"; text: string } => item.type === "text")
 		.map((item) => item.text)
 		.join("\n")
+}
+
+function hasOAuthCredentials(serverName: string, serverUrl: string): boolean {
+	try {
+		return inspectMcpOAuthTokensForUrl(serverName, serverUrl).status === "present"
+	} catch {
+		// Credential inspection is best-effort for OAuth detection; treat an
+		// unreadable store as "no credentials" so declared-OAuth servers still
+		// surface the auth requirement instead of a false "connected".
+		return false
+	}
 }
 
 function resolveProbeName(name: string, definition: ServerEntry): string {
@@ -239,11 +303,33 @@ export class UpstreamMcpProbe implements McpProbe {
 		const timeoutMs = definition.url ? 60_000 : 15_000
 		const timeoutMessage = `Probe timed out after ${timeoutMs / 1000} seconds`
 		const deadline = new AbortController()
-		const timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
+		let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+			() => deadline.abort(new Error(timeoutMessage)),
+			timeoutMs,
+		)
+		// Interactive OAuth can legitimately outlast the probe deadline (the user
+		// must find the browser and consent), so the auth phase suspends/resumes it.
+		const suspendDeadline = (): void => {
+			if (timer !== undefined) {
+				clearTimeout(timer)
+				timer = undefined
+			}
+		}
+		const resumeDeadline = (): void => {
+			// The post-auth phase intentionally re-arms a full fresh `timeoutMs`
+			// budget, so total wall time can reach
+			// timeoutMs + INTERACTIVE_AUTH_TIMEOUT_MS + timeoutMs.
+			if (timer === undefined && !deadline.signal.aborted) {
+				timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
+			}
+		}
 		const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal
 		try {
 			return await probeToolCapture.run(capturedTools, () =>
-				this.probeToolsWithMetadata(name, definition, { ...options, signal }, capturedTools),
+				this.probeToolsWithMetadata(name, definition, { ...options, signal }, capturedTools, {
+					suspendDeadline,
+					resumeDeadline,
+				}),
 			)
 		} catch (error) {
 			if (deadline.signal.aborted && !options.signal?.aborted) {
@@ -251,7 +337,7 @@ export class UpstreamMcpProbe implements McpProbe {
 			}
 			throw error
 		} finally {
-			clearTimeout(timer)
+			suspendDeadline()
 		}
 	}
 
@@ -260,6 +346,7 @@ export class UpstreamMcpProbe implements McpProbe {
 		definition: ServerEntry,
 		options: McpProbeOptions & { signal: AbortSignal },
 		capturedTools: Map<string, ProbeTool>,
+		deadline: DeadlineControl,
 	): Promise<ProbeResult> {
 		const cwd = options.cwd ?? process.cwd()
 		if (definition.url) {
@@ -268,7 +355,23 @@ export class UpstreamMcpProbe implements McpProbe {
 		}
 		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name
-		const host = createProbeHost(cwd, options.signal)
+		// Mirrors the adapter's supportsOAuth gate and its return ordering
+		// (pi-mcp-adapter/mcp-auth-flow.ts): URL servers only (stdio cannot run
+		// the browser flow) and an explicit `oauth: false` disables it; an
+		// explicit `auth: "oauth"` wins BEFORE the custom-headers check — headers
+		// only veto the implicit oauth auto-detection, never a declared one.
+		const serverUrl = definition.url
+		const declaresOAuth =
+			serverUrl !== undefined &&
+			definition.oauth !== false &&
+			(definition.auth === "oauth" ||
+				(!(definition.headers && Object.keys(definition.headers).length > 0) && Boolean(definition.oauth)))
+		const hasCredentials = serverUrl !== undefined && hasOAuthCredentials(name, serverUrl)
+		// Scoped to this interactive mcp-auth invocation: aborting it rejects the
+		// fake UI hooks, which unwinds upstream's manual-paste race (and closes the
+		// localhost callback listener) instead of abandoning the flow.
+		const authAbort = new AbortController()
+		const host = createProbeHost(cwd, options.signal, authAbort)
 		const config = {
 			mcpServers: {
 				[probeName]: { ...definition, directTools: false, lifecycle: "lazy" as const },
@@ -295,7 +398,34 @@ export class UpstreamMcpProbe implements McpProbe {
 			createMcpAdapter({ config })(host.api)
 			await Promise.race([emitHandlers(host, "session_start"), aborted])
 			signal.throwIfAborted()
-			const connected = await Promise.race([executeGateway(host, { connect: probeName }), aborted])
+			// For servers that 401 at connect, upstream's attemptAutoAuth opens the
+			// consent browser INSIDE this first connect. That must not run under the
+			// 60s probe deadline (a slow consent would surface as "Probe timed out
+			// after 60 seconds" with needsAuth: false), so suspend it and race the
+			// connect against the interactive consent budget instead.
+			const connectAuthWindow =
+				options.authenticate === true && declaresOAuth ? createInteractiveAuthWindow(authAbort) : null
+			if (connectAuthWindow) deadline.suspendDeadline()
+			let connected: GatewayResult
+			try {
+				connected = await Promise.race(
+					connectAuthWindow
+						? [executeGateway(host, { connect: probeName }), connectAuthWindow.deadline, aborted]
+						: [executeGateway(host, { connect: probeName }), aborted],
+				)
+			} catch (error) {
+				if (connectAuthWindow && error === connectAuthWindow.timeoutError) {
+					// The auth signal is already aborted, so upstream's flow has unwound;
+					// report the expiry as a needs-auth result.
+					return { tools: [], needsAuth: true, error: connectAuthWindow.timeoutError.message }
+				}
+				throw error
+			} finally {
+				if (connectAuthWindow) {
+					connectAuthWindow.cancel()
+					deadline.resumeDeadline()
+				}
+			}
 			signal.throwIfAborted()
 			const details = resultDetails(connected)
 			if (details.error === "auth_required") {
@@ -307,6 +437,61 @@ export class UpstreamMcpProbe implements McpProbe {
 			}
 			if (details.error) {
 				return { tools: [], needsAuth: false, error: String(details.message ?? resultMessage(connected)) }
+			}
+
+			// Anonymous tools/list (e.g. Google's hosted MCP endpoints) means a successful
+			// connect doesn't imply auth: declared-OAuth servers without credentials must
+			// report needs-auth, driving the TUI's /mcp-auth flow when authenticate=true.
+			if (declaresOAuth && serverUrl && !hasCredentials) {
+				// Never drive OAuth under a throwaway name — the finally-block logout
+				// would discard the just-consented credentials.
+				if (options.authenticate !== true || throwaway) {
+					return { tools: [...capturedTools.values()], needsAuth: true, error: null }
+				}
+				// The first connect may already have auto-authenticated (401-at-connect
+				// servers store tokens inside attemptAutoAuth); re-inspect so a successful
+				// autoAuth doesn't redundantly re-run mcp-auth. Credentials are keyed by
+				// server name; the throwaway guard above keeps durable credentials safe.
+				if (!hasOAuthCredentials(probeName, serverUrl)) {
+					deadline.suspendDeadline()
+					const authWindow = createInteractiveAuthWindow(authAbort)
+					let authFailureMessage: string | null = null
+					try {
+						await Promise.race([
+							host.commands.get("mcp-auth")?.handler(probeName, host.context as Parameters<Command["handler"]>[1]),
+							authWindow.deadline,
+							aborted,
+						])
+					} catch (authError) {
+						signal.throwIfAborted()
+						// Failures are re-detected via credential inspection below, but must not
+						// stay silent: surface the reason on the result for diagnosis.
+						authFailureMessage = authError instanceof Error ? authError.message : String(authError)
+						console.warn(`MCP probe: interactive OAuth for "${probeName}" failed: ${authFailureMessage}`)
+					} finally {
+						authWindow.cancel()
+						deadline.resumeDeadline()
+					}
+					signal.throwIfAborted()
+					if (!hasOAuthCredentials(probeName, serverUrl)) {
+						return { tools: [], needsAuth: true, error: authFailureMessage }
+					}
+					const reconnected = await Promise.race([executeGateway(host, { connect: probeName }), aborted])
+					signal.throwIfAborted()
+					const reconnectDetails = resultDetails(reconnected)
+					if (reconnectDetails.error === "auth_required") {
+						// A denied/failed interactive attempt can still land here (e.g. tokens
+						// stored but rejected on reconnect); don't discard its reason.
+						return { tools: [], needsAuth: true, error: authFailureMessage ?? null }
+					}
+					if (reconnectDetails.error) {
+						return {
+							tools: [],
+							needsAuth: false,
+							error: String(reconnectDetails.message ?? resultMessage(reconnected)),
+						}
+					}
+				}
 			}
 
 			// The gateway catalog is filtered, renames tools, and adds resource tools.
