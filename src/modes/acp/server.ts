@@ -63,7 +63,13 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, loadConfig as loadKimchiConfig, writeApiKey } from "../../config.js"
+import {
+	clearApiKey,
+	endpointsForRegion,
+	loadConfig as loadKimchiConfig,
+	resolveEndpoints,
+	writeApiKey,
+} from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
@@ -103,6 +109,7 @@ import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { isRegionId, type KimchiRegion, type RegionId, selectableRegions } from "../../regions.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
@@ -140,6 +147,29 @@ import { asString, extractImages, truncate } from "./utils.js"
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
+
+/**
+ * Region-pinned Agent Auth methods (`kimchi-agent-<regionId>`). Advertised in
+ * addition to `kimchi-agent` — the advertised list doubles as the capability
+ * signal: new Studio versions show a region picker only when these methods
+ * exist, while old Studio ignores them and keeps calling `kimchi-agent`.
+ */
+function regionAuthMethod(region: KimchiRegion): AuthMethod {
+	return {
+		id: `${KIMCHI_AGENT_AUTH_METHOD_ID}-${region.id}`,
+		name: `Kimchi Login (${region.id.toUpperCase()})`,
+		description: `Authenticate via browser to Kimchi (${region.label} region)`,
+	}
+}
+
+/** Region an Agent Auth method logs in to; undefined for an unknown method. */
+function authMethodRegion(methodId: string): RegionId | undefined {
+	if (methodId === KIMCHI_AGENT_AUTH_METHOD_ID) return resolveEndpoints().region
+	const prefix = `${KIMCHI_AGENT_AUTH_METHOD_ID}-`
+	if (!methodId.startsWith(prefix)) return undefined
+	const suffix = methodId.slice(prefix.length)
+	return isRegionId(suffix) ? suffix : undefined
+}
 
 /** Copy shown on the OAuth callback success page when the flow was launched by
  * an ACP client (e.g. Studio's in-app login) rather than `kimchi login`. It
@@ -365,6 +395,8 @@ export class KimchiAcpAgent implements Agent {
 				name: "Kimchi Login",
 				description: "Authenticate via browser to Kimchi",
 			},
+			// Region-pinned companions for clients that can pick a region.
+			...selectableRegions().map(regionAuthMethod),
 		]
 		if (request.clientCapabilities?.auth?.terminal === true) {
 			authMethods.push({
@@ -435,11 +467,13 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
-		// Only the Agent Auth method ("kimchi-agent") is handled here. Terminal
-		// Auth ("kimchi-terminal") is resolved out-of-band: the client launches
-		// `kimchi login` as a separate process, so this method is never called
-		// for it.
-		if (params.methodId !== "kimchi-agent") {
+		// Agent Auth ("kimchi-agent") follows the configured region; the pinned
+		// "kimchi-agent-<regionId>" companions authenticate against that region
+		// regardless of config. Terminal Auth ("kimchi-terminal") is resolved
+		// out-of-band: the client launches `kimchi login` as a separate process,
+		// so this method is never called for it.
+		const region = authMethodRegion(params.methodId)
+		if (region === undefined) {
 			throw RequestError.invalidParams(undefined, `unknown auth method: ${params.methodId}`)
 		}
 
@@ -449,7 +483,10 @@ export class KimchiAcpAgent implements Agent {
 		// ACP client, so it stays neutral instead of the terminal CLI wording.
 		let token: string
 		try {
-			;({ token } = await authenticateViaBrowser({ successMessage: ACP_SUCCESS_MESSAGE }))
+			;({ token } = await authenticateViaBrowser({
+				webAppUrl: endpointsForRegion(region).webAppUrl,
+				successMessage: ACP_SUCCESS_MESSAGE,
+			}))
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error)
 			throw RequestError.internalError(undefined, `Browser authentication failed: ${detail}`)
@@ -459,8 +496,8 @@ export class KimchiAcpAgent implements Agent {
 		}
 
 		// Persist the key so new sessions pick it up via the login extension's
-		// session_start handler (which reads loadConfig().apiKey).
-		writeApiKey(token)
+		// session_start handler (which reads loadConfig().apiKey), with its region.
+		writeApiKey(token, undefined, { region })
 		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
 		clearCredentialStale(KIMCHI_PROVIDER_ID)
 

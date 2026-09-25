@@ -1,5 +1,5 @@
+import { resolveEndpoints } from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
-import { BASE_URL } from "../constants.js"
 
 /**
  * Build the OpenCode provider config block for the kimchi provider.
@@ -15,7 +15,7 @@ export function openCodeProviderConfig(apiKey: string, models: readonly ModelMet
 		npm: "@ai-sdk/openai-compatible",
 		name: "Kimchi",
 		options: {
-			baseURL: BASE_URL,
+			baseURL: resolveEndpoints().openAiBaseUrl,
 			litellmProxy: true,
 			apiKey,
 		},

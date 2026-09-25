@@ -1,5 +1,16 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { REGIONS, regionEndpoints } from "../regions.js"
 import { validateApiKey } from "./validator.js"
+
+// Keep the developer machine's config out of the resolved endpoints.
+const resolveEndpointsMock = vi.hoisted(() => vi.fn())
+vi.mock("../config.js", () => ({
+	resolveEndpoints: resolveEndpointsMock,
+}))
+
+beforeEach(() => {
+	resolveEndpointsMock.mockReturnValue(regionEndpoints(REGIONS.us))
+})
 
 type FetchWithRetryOptions = {
 	fetchImpl?: typeof fetch
@@ -53,6 +64,12 @@ describe("validateApiKey", () => {
 		expect(result.suggestions).toEqual(expect.arrayContaining([expect.stringMatching(/app\.kimchi\.dev/)]))
 	})
 
+	it("points 401 suggestions at the configured region's web app", async () => {
+		resolveEndpointsMock.mockReturnValue(regionEndpoints(REGIONS.eu))
+		const result = await validateApiKey("bad", { fetch: fakeFetch({ status: 401 }) })
+		expect(result.suggestions).toContain("Verify your API key at https://app.eu.kimchi.dev")
+	})
+
 	it("returns scope error on 403", async () => {
 		const result = await validateApiKey("k", { fetch: fakeFetch({ status: 403 }) })
 		expect(result.valid).toBe(false)
@@ -87,6 +104,18 @@ describe("validateApiKey", () => {
 		await validateApiKey("my-key", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
 		expect(fetchSpy).toHaveBeenCalledWith(
 			"https://api.cast.ai/v1/llm/openai/supported-providers",
+			expect.objectContaining({
+				headers: expect.objectContaining({ Authorization: "Bearer my-key" }),
+			}),
+		)
+	})
+
+	it("uses the configured region's validation endpoint", async () => {
+		resolveEndpointsMock.mockReturnValue(regionEndpoints(REGIONS.eu))
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }))
+		await validateApiKey("my-key", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
+		expect(fetchSpy).toHaveBeenCalledWith(
+			"https://api.eu.cast.ai/v1/llm/openai/supported-providers",
 			expect.objectContaining({
 				headers: expect.objectContaining({ Authorization: "Bearer my-key" }),
 			}),

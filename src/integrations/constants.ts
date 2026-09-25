@@ -1,8 +1,13 @@
-/** Endpoints and identifiers shared by every tool integration. */
+import { REGIONS, telemetryLogsUrl, telemetryMetricsUrl } from "../regions.js"
+
+/** Identifiers shared by every tool integration. */
 export const PROVIDER_NAME = "kimchi"
 export const API_KEY_ENV = "KIMCHI_API_KEY"
-export const BASE_URL = "https://llm.kimchi.dev/openai/v1"
-export const ANTHROPIC_BASE_URL = "https://llm.kimchi.dev/anthropic"
+
+/** Telemetry ingest URLs of every region, to recognise ones Kimchi wrote earlier. */
+export const ALL_TELEMETRY_URLS: ReadonlySet<string> = new Set(
+	Object.values(REGIONS).flatMap((r) => [telemetryLogsUrl(r), telemetryMetricsUrl(r)]),
+)
 
 export const NPM_REGISTRY_BASE_URL = "https://registry.npmjs.org"
 export const OPENCODE_PLUGIN_PACKAGE = "@kimchi-dev/opencode-kimchi"

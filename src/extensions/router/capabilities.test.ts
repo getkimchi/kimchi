@@ -76,7 +76,7 @@ describe("syncAutoCapabilities", () => {
 		const ok = await syncAutoCapabilities(pi, virtual, target)
 		expect(ok).toBe(true)
 		expect(pi.setModel).toHaveBeenCalledTimes(1)
-		const applied = vi.mocked(pi.setModel).mock.calls[0]![0] as Model<Api>
+		const applied = vi.mocked(pi.setModel).mock.calls[0]?.[0] as Model<Api>
 		expect(applied.id).toBe("auto-beta")
 		expect(applied.contextWindow).toBe(128_000)
 		expect(applied.maxTokens).toBe(4096)

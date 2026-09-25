@@ -1,9 +1,10 @@
+import { resolveEndpoints } from "../../config.js"
 import type { AuthenticateOptions } from "./types.js"
 import { RemoteAuthError, RemoteNetworkError, RemoteQuotaError } from "./types.js"
 
 export function resolveEndpoint(options?: AuthenticateOptions): string {
-	const fromEnv = process.env.KIMCHI_REMOTE_ENDPOINT
-	return options?.endpoint ?? fromEnv ?? "https://app.kimchi.dev/api"
+	// ResolveEndpoints honours KIMCHI_REMOTE_ENDPOINT, then the configured region.
+	return options?.endpoint ?? resolveEndpoints().platformApiUrl
 }
 
 export async function fetchWithTimeout(

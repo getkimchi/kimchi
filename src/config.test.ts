@@ -20,6 +20,7 @@ import {
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
+	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeAutoDefaultApplied,
@@ -491,6 +492,158 @@ describe("writeApiKey", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.apiKey).toBe("new-browser-token")
 		expect(raw.llmEndpoint).toBeUndefined()
+	})
+
+	it("persists region and drops any stored llmEndpoint when a region is chosen", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-token", configPath, { region: "eu" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-token")
+		expect(raw.region).toBe("eu")
+		expect(raw.llmEndpoint).toBeUndefined()
+	})
+
+	it("keeps llmEndpoint behavior when only a custom endpoint is given", () => {
+		writeApiKey("token", configPath, { llmEndpoint: "https://custom.example" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.llmEndpoint).toBe("https://custom.example")
+		expect(raw.region).toBeUndefined()
+	})
+})
+
+describe("region config", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-region-test-"))
+		configPath = join(tempDir, "config.json")
+		vi.stubEnv("KIMCHI_API_KEY", "")
+		// Stub (not raw `delete`) so vi.unstubAllEnvs() restores any values the
+		// developer machine had set — deletion would leak into later tests.
+		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
+		vi.stubEnv("KIMCHI_REGION", undefined)
+		resetProjectScopeTrustForTests()
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("defaults to us with today's URLs when no region is configured", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("us")
+		expect(cfg.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
+	})
+
+	it("resolves the eu LLM endpoint with no llmEndpoint stored", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://llm.eu.kimchi.dev/openai/v1")
+		expect(cfg.customLlmEndpoint).toBeUndefined()
+	})
+
+	it("treats an unknown region value as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "moon" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("us")
+		expect(cfg.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
+	})
+
+	it("pre-existing llmEndpoint wins over region (backward compat)", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu", llmEndpoint: "https://custom.example/v1" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://custom.example/v1")
+		expect(cfg.customLlmEndpoint).toBe("https://custom.example/v1")
+	})
+
+	it("KIMCHI_REGION env overrides the config-file region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "us" }))
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://llm.eu.kimchi.dev/openai/v1")
+	})
+
+	it("treats an unknown KIMCHI_REGION value as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		vi.stubEnv("KIMCHI_REGION", "moon")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+	})
+
+	it("writeApiKey without a region option leaves the stored region untouched", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		writeApiKey("token", configPath)
+		expect(loadConfig({ configPath }).region).toBe("eu")
+	})
+
+	it("resolveEndpoints: env overrides win over the configured region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu", apiKey: "k" }))
+		vi.stubEnv("KIMCHI_WEB_APP_URL", "https://app.dev.kimchi.dev")
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", "https://app.dev.kimchi.dev/api")
+		const resolved = resolveEndpoints({ configPath })
+		expect(resolved.webAppUrl).toBe("https://app.dev.kimchi.dev")
+		expect(resolved.platformApiUrl).toBe("https://app.dev.kimchi.dev/api")
+		// Non-env endpoints still follow the region
+		expect(resolved.castApiUrl).toBe("https://api.eu.cast.ai")
+	})
+
+	it("resolveEndpoints: no region resolves to exactly today's URLs", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const resolved = resolveEndpoints({ configPath })
+		expect(resolved).toMatchObject({
+			region: "us",
+			webAppUrl: "https://app.kimchi.dev",
+			platformApiUrl: "https://app.kimchi.dev/api",
+			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+			castApiUrl: "https://api.cast.ai",
+		})
+	})
+
+	it("resolveEndpoints: eu region yields eu URLs across the board", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		const resolved = resolveEndpoints({ configPath })
+		expect(resolved).toMatchObject({
+			region: "eu",
+			webAppUrl: "https://app.eu.kimchi.dev",
+			platformApiUrl: "https://app.eu.kimchi.dev/api",
+			llmEndpoint: "https://llm.eu.kimchi.dev/openai/v1",
+			castApiUrl: "https://api.eu.cast.ai",
+		})
+	})
+
+	it("resolveEndpoints: configured llmEndpoint wins over region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu", llmEndpoint: "https://custom.example/v1" }))
+		expect(resolveEndpoints({ configPath }).llmEndpoint).toBe("https://custom.example/v1")
+	})
+
+	it("telemetry defaults follow the configured region; explicit telemetry.* still wins", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		let cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+
+		writeFileSync(
+			configPath,
+			JSON.stringify({ region: "eu", telemetry: { endpoint: "https://custom.example/logs:ingest" } }),
+		)
+		cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://custom.example/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("telemetry defaults honour the KIMCHI_REGION env override like loadConfig", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		const cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 })
 

@@ -3,6 +3,7 @@ import { dirname } from "node:path"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_PI_NAME } from "./extensions/router/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -13,12 +14,11 @@ import { getVersion } from "./utils.js"
 // compat flags (adaptive thinking, strict tools) and effort-level maps.
 const ANTHROPIC_MODELS_BY_ID = ANTHROPIC_MODELS as Record<string, Model<"anthropic-messages">>
 
-const KIMCHI_API = "https://llm.kimchi.dev"
 const FETCH_TIMEOUT_MS = 20000
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
-	if (!trimmed) return KIMCHI_API
+	if (!trimmed) return resolveEndpoints().llmBaseUrl
 	// A scheme-less value like "example.com" produces an invalid request URL that the HTTP
 	// layer silently drops (falling back to the gateway), so default it to https://.
 	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
@@ -406,7 +406,7 @@ export function injectExperimentalProvider(modelsJsonPath: string, apiKey: strin
 	if (!kimchiDev) return
 	const experimental = {
 		...(kimchiDev as Record<string, unknown>),
-		baseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
+		baseUrl: resolveEndpoints().experimentalOpenAiBaseUrl,
 		apiKey,
 	}
 	config.providers = { ...config.providers, "kimchi-experimental": experimental }

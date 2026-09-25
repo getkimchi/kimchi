@@ -1,5 +1,6 @@
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { resolveEndpoints } from "./config.js"
 import { AUTO_MODEL_ID } from "./extensions/router/constants.js"
 import { isKimchiProvider } from "./kimchi-provider.js"
 import {
@@ -31,7 +32,7 @@ export async function discoverEnvironmentModels(
 	}
 	const root = providers["kimchi-dev"]
 	if (options.experimental) {
-		providers["kimchi-experimental"] = { ...root, baseUrl: "https://llm.kimchi.dev/experimental/openai/v1" }
+		providers["kimchi-experimental"] = { ...root, baseUrl: resolveEndpoints().experimentalOpenAiBaseUrl }
 	}
 	// Only append the harness virtual `auto` when the fetched catalog does not
 	// already advertise one; a backend-owned `auto` wins, otherwise this would
