@@ -1,6 +1,6 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
-import { DEFAULT_REGION, isRegionId, REGION_ENV, REGIONS } from "../regions.js"
+import { isRegionId, REGION_ENV, REGIONS } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -122,11 +122,11 @@ function handleRegion(args: string[]): number {
 		if (envVal) console.warn(`Ignoring invalid ${REGION_ENV}=${envVal} (expected us|eu)`)
 		console.log(`Region: ${current.id} — ${current.label}`)
 	}
-	console.log(`Available regions: ${Object.values(REGIONS).map(formatRegionChoice).join(", ")}`)
+	console.log(
+		`Available regions: ${Object.values(REGIONS)
+			.map((r) => `${r.id} (${r.label})`)
+			.join(", ")}`,
+	)
 	console.log('To switch regions, run "kimchi login" again.')
 	return 0
-}
-
-function formatRegionChoice(r: (typeof REGIONS)[keyof typeof REGIONS]): string {
-	return r.id === DEFAULT_REGION ? `${r.id} (${r.label}, default)` : `${r.id} (${r.label})`
 }
