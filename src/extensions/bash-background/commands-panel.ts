@@ -6,6 +6,7 @@ import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry
 
 export class CommandsPanel {
 	private entries: readonly ProcessDisplaySnapshot[] = []
+	private readonly openingEntries: readonly ProcessDisplaySnapshot[]
 	private selected: ProcessDisplaySnapshot | undefined
 	private detail = false
 	private tab: "Script" | "Output" = "Script"
@@ -25,6 +26,7 @@ export class CommandsPanel {
 		private readonly theme: Theme,
 	) {
 		this.refresh()
+		this.openingEntries = this.entries
 		this.timer = setInterval(() => {
 			this.refresh()
 			this.tui.requestRender()
@@ -49,7 +51,18 @@ export class CommandsPanel {
 
 	private get height(): number {
 		const rows = this.tui.terminal.rows
-		return Math.max(1, Math.min(rows - 4, Math.max(9, Math.floor(rows / 2))))
+		// Size from the opening snapshots, so streaming and tab switches cannot move the menu.
+		const contentRows = this.openingEntries.reduce(
+			(height, entry) =>
+				Math.max(
+					height,
+					wrapTextWithAnsi(safeBashText(entry.command), this.width).length,
+					wrapTextWithAnsi(safeBashText(entry.output.replace(/\r?\n$/, "")), this.width).length,
+				),
+			0,
+		)
+		const preferred = Math.max(9, 4 + this.openingEntries.length * 2, 7 + contentRows)
+		return Math.max(1, Math.min(rows - 4, Math.max(9, Math.floor(rows / 2)), preferred))
 	}
 
 	private get pageRows(): number {

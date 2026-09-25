@@ -70,6 +70,36 @@ describe("CommandsPanel", () => {
 			panel.handleInput("\x1b")
 		}
 	})
+	it("sizes from opening content and command count, and recalculates when reopened", async () => {
+		tui.terminal.rows = 60
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(9)
+		panel.dispose()
+		const process = start(registry, "printf short")
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(9)
+		process.output("line\n".repeat(12))
+		await vi.advanceTimersByTimeAsync(250)
+		expect(panel.render(100)).toHaveLength(9)
+		panel.dispose()
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(19)
+		process.output("line\n".repeat(100))
+		await vi.advanceTimersByTimeAsync(250)
+		expect(panel.render(100)).toHaveLength(19)
+		panel.dispose()
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(30)
+	})
+	it("gives a longer command list room while keeping selection stable", () => {
+		tui.terminal.rows = 60
+		for (let i = 0; i < 6; i++) start(registry, `echo ${i}`)
+		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(16)
+		panel.handleInput("\x1b[B")
+		panel.handleInput("\r")
+		expect(panel.render(100)).toHaveLength(16)
+	})
 	it("pins the tabs and footer as output grows and removes the final newline's phantom row", async () => {
 		tui.terminal.rows = 30
 		const process = start(registry, "printf short")
