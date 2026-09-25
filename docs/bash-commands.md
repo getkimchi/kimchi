@@ -1,6 +1,6 @@
 # Inspect running Bash commands
 
-Run **`/commands`** while Kimchi is executing a managed Bash command. It opens a menu in the input area beneath the conversation, like the other terminal menus. Select a command and press **Enter** to inspect it. Closing the menu restores the input. The command list stays compact, based only on its entry count. Entering a command sizes its detail view from the script/output available then, up to half the terminal height (minimum nine rows when space permits). Detail height stays fixed during streaming and tab changes; entering it again recalculates. Returning to the list or closing restores the smaller view without leaving the editor displaced.
+Run **`/commands`** while Kimchi is executing a managed Bash command. It opens a full-width menu at the bottom of the terminal, with the conversation visible above. Select a command and press **Enter** to inspect it. Closing restores the underlying view without moving the editor or replaying conversation history. The command list stays compact, based only on its entry count. Entering a command sizes its detail view from the script/output available then, up to half the terminal height (minimum nine rows when space permits). Detail height stays fixed during streaming and tab changes; entering it again recalculates.
 
 | Key | Action |
 | --- | --- |

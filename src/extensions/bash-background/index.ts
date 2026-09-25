@@ -48,11 +48,15 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 			panel?.close()
 			let openedPanel: CommandsPanel | undefined
 			try {
-				await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-					openedPanel = new CommandsPanel(getSessionRegistry(), tui, () => done(), theme)
-					panel = openedPanel
-					return openedPanel
-				})
+				await ctx.ui.custom<void>(
+					(tui, theme, _keys, done) => {
+						openedPanel = new CommandsPanel(getSessionRegistry(), tui, () => done(), theme)
+						panel = openedPanel
+						return openedPanel
+					},
+					// Cover the input area without growing/shrinking the transcript's scrollback.
+					{ overlay: true, overlayOptions: { width: "100%", anchor: "bottom-left", margin: { bottom: 1 } } },
+				)
 			} finally {
 				openedPanel?.dispose()
 				if (panel === openedPanel) panel = undefined

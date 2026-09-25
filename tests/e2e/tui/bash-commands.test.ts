@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
-import { viewText, waitForText } from "./support/assertions.js"
+import { fullText, viewText, waitForText } from "./support/assertions.js"
 import type { FakeToolCall } from "./support/fake-openai-server.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -122,6 +122,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyCtrlC()
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			expect(editorRow()).toBe(TUI_TEST_CONFIG.rows - 1)
+			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
 			await waitForText(terminal, "output-after-scrolling", { full: false })
 			expect(requests()).toHaveLength(2)
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
@@ -142,6 +143,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			await waitForText(terminal, "Enter inspect", { full: false })
 			terminal.keyEscape()
 			await waitForText(terminal, "Inspection complete.", { full: false })
+			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
 			expect(requests()).toHaveLength(3)
 		},
 	)

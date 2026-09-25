@@ -71,8 +71,8 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		const ctx = createCommandContext()
 		await pi.getHandler("session_start")({}, ctx)
 		const tui = new TuiMainScreen(new ProcessTerminal())
+		const render = tui.render
 		const requestRender = vi.spyOn(tui, "requestRender").mockImplementation(() => {})
-		vi.spyOn(tui, "renderNow").mockImplementation(() => {})
 		const dispose = vi.spyOn(CommandsPanel.prototype, "dispose")
 		vi.mocked(ctx.ui.custom).mockImplementation(
 			(factory) =>
@@ -82,11 +82,15 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		)
 		try {
 			const opened = pi.getRegisteredCommand("commands").handler("", ctx)
-			expect(vi.mocked(ctx.ui.custom).mock.calls[0]?.[1]).toBeUndefined()
+			expect(vi.mocked(ctx.ui.custom).mock.calls[0]?.[1]).toEqual({
+				overlay: true,
+				overlayOptions: { width: "100%", anchor: "bottom-left", margin: { bottom: 1 } },
+			})
 			expect(vi.getTimerCount()).toBe(1)
 			await pi.getHandler(event)({}, ctx)
 			expect(vi.getTimerCount()).toBe(0)
 			await opened
+			expect(tui.render).toBe(render)
 			expect(dispose).toHaveBeenCalled()
 			expect(vi.getTimerCount()).toBe(0)
 			requestRender.mockClear()

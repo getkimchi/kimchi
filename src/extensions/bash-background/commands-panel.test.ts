@@ -33,14 +33,13 @@ function start(registry: ProcessRegistry, command: string) {
 
 let registry: ProcessRegistry
 let panel: CommandsPanel
-const tui = { requestRender: vi.fn(), renderNow: vi.fn(), terminal: { rows: 18 } }
+const tui = { requestRender: vi.fn(), terminal: { rows: 18 } }
 const view = () => panel.render(100).map(stripTerminalSequences).join("\n")
 beforeEach(() => {
 	vi.useFakeTimers()
 	registry = createProcessRegistry()
 	tui.terminal.rows = 18
 	tui.requestRender.mockClear()
-	tui.renderNow.mockClear()
 })
 afterEach(async () => {
 	panel?.dispose()
@@ -98,21 +97,16 @@ describe("CommandsPanel", () => {
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		expect(panel.render(100)).toHaveLength(16)
 	})
-	it("redraws after collapse and editor restoration without clearing shell scrollback", () => {
+	it("returns to the list before closing through the host", () => {
 		start(registry, "sleep 60")
 		const done = vi.fn()
-		const setting = process.env.PI_TUI_NO_CLEAR_SCROLLBACK
 		panel = new CommandsPanel(registry, tui, done, testTheme)
-		tui.renderNow.mockImplementation(() => expect(process.env.PI_TUI_NO_CLEAR_SCROLLBACK).toBe("1"))
 		panel.handleInput("\r")
 		panel.handleInput("\x1b")
-		expect(tui.renderNow).toHaveBeenCalledWith(true)
+		expect(view()).toContain("Enter inspect")
 		expect(done).not.toHaveBeenCalled()
 		panel.handleInput("\x1b")
 		expect(done).toHaveBeenCalledOnce()
-		expect(done.mock.invocationCallOrder[0]).toBeLessThan(tui.renderNow.mock.invocationCallOrder[1])
-		expect(process.env.PI_TUI_NO_CLEAR_SCROLLBACK).toBe(setting)
-		tui.renderNow.mockReset()
 	})
 	it("pins the tabs and footer as output grows and removes the final newline's phantom row", async () => {
 		tui.terminal.rows = 30

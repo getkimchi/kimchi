@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { matchesKey, TuiMainScreen, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { claimRawInputCapture } from "../shared-input.js"
 import { bashOutputAge, bashStatus, bashStatusColor, bashTitle, safeBashText } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
@@ -19,13 +19,31 @@ export class CommandsPanel {
 	private timer: ReturnType<typeof setInterval> | undefined
 	private disposed = false
 	private readonly releaseInput = claimRawInputCapture()
+	private restoreRender: (() => void) | undefined
 
 	constructor(
 		private readonly registry: ProcessRegistry | undefined,
-		private readonly tui: { requestRender(): void; renderNow(force?: boolean): void; terminal: { rows: number } },
+		private readonly tui: { requestRender(): void; terminal: { rows: number } },
 		private readonly done: () => void,
 		private readonly theme: Theme,
 	) {
+		if (tui instanceof TuiMainScreen) {
+			const render = tui.render
+			// Pi's overlay compositor ignores blank rows retained after a transcript shrink.
+			// Keep that existing viewport while open; never replay it into scrollback.
+			tui.render = (width) => {
+				const lines = render.call(tui, width)
+				const state = tui.captureRenderState()
+				if (state.previousWidth === width && state.previousHeight === tui.terminal.rows) {
+					const height = state.previousViewportTop + tui.terminal.rows
+					while (lines.length < height) lines.push("")
+				}
+				return lines
+			}
+			this.restoreRender = () => {
+				tui.render = render
+			}
+		}
 		this.refresh()
 		this.listRows = Math.max(6, 4 + this.entries.length * 2)
 		this.timer = setInterval(() => {
@@ -39,6 +57,7 @@ export class CommandsPanel {
 		if (this.disposed) return
 		this.disposed = true
 		this.releaseInput()
+		this.restoreRender?.()
 		clearInterval(this.timer)
 		this.unsubscribe?.()
 	}
@@ -46,23 +65,9 @@ export class CommandsPanel {
 	close(): void {
 		this.dispose()
 		this.done()
-		this.redraw()
 	}
 
 	invalidate(): void {}
-
-	private redraw(): void {
-		// The main-screen renderer keeps the expanded viewport after a differential shrink.
-		// Repaint synchronously after restoring the smaller view, preserving shell scrollback.
-		const previous = process.env.PI_TUI_NO_CLEAR_SCROLLBACK
-		process.env.PI_TUI_NO_CLEAR_SCROLLBACK = "1"
-		try {
-			this.tui.renderNow(true)
-		} finally {
-			if (previous === undefined) delete process.env.PI_TUI_NO_CLEAR_SCROLLBACK
-			else process.env.PI_TUI_NO_CLEAR_SCROLLBACK = previous
-		}
-	}
 
 	private get height(): number {
 		const rows = this.tui.terminal.rows
@@ -117,7 +122,6 @@ export class CommandsPanel {
 		if (matchesKey(data, "escape") || matchesKey(data, "q")) {
 			if (this.detail) {
 				this.detail = false
-				this.redraw()
 			} else this.close()
 		} else if (matchesKey(data, "ctrl+c")) {
 			this.close()
