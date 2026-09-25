@@ -2,7 +2,12 @@ import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
-import { type AcpSkillInfo, buildSkillAvailableCommands, discoverAcpSkillCommands } from "./skill-commands.js"
+import {
+	type AcpSkillInfo,
+	buildSkillAvailableCommands,
+	discoverAcpSkillCommands,
+	invalidateSkillListBlock,
+} from "./skill-commands.js"
 
 export const CAPABILITIES_KEY = "kimchi.dev"
 
@@ -46,6 +51,13 @@ export async function reloadSkillCommandsMap(session: AgentSession): Promise<Map
 		throw new TypeError("AgentSession.extendResourcesFromExtensions missing (upstream pi rename?)")
 	}
 	await (refreshable.extendResourcesFromExtensions as (reason: "reload") => Promise<void>).call(session, "reload")
+	// The loader's skill set is now fresh: drop any cached system-prompt
+	// skill-list block HERE — after the reload, not before requesting it — so
+	// a prompt rebuild that raced the reload cannot permanently re-cache
+	// stale content (nothing later would invalidate it: trust decisions are
+	// not filesystem events the watcher can observe). This also keeps
+	// watcher-driven skill uploads from leaving a stale block behind.
+	invalidateSkillListBlock(session.resourceLoader)
 	return discoverSkillCommandsMap(session)
 }
 
