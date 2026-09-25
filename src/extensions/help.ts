@@ -1,14 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import { truncateLinesToWidth } from "../truncate-lines.js"
-import { getRatingKeyLabels } from "./feedback/rating-keys.js"
+import { getRatingHelpEntries } from "./feedback/rating-keys.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
 
 // Built per invocation: the rating keys depend on the terminal keyboard probe.
 function buildHelpRows(): HelpRow[] {
-	const ratingKeys = getRatingKeyLabels()
+	const ratingEntries = getRatingHelpEntries()
 	return [
 		{ kind: "heading", text: "Keyboard Shortcuts" },
 		{ kind: "entry", key: "Enter", desc: "Submit prompt" },
@@ -18,8 +18,7 @@ function buildHelpRows(): HelpRow[] {
 		{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
 		{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
 		{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
-		{ kind: "entry", key: ratingKeys.good, desc: "Rate response as Good" },
-		{ kind: "entry", key: ratingKeys.bad, desc: "Rate response as Bad" },
+		...ratingEntries.map((entry) => ({ kind: "entry" as const, key: entry.key, desc: entry.desc })),
 
 		{ kind: "spacer" },
 		{ kind: "heading", text: "Slash Commands" },
