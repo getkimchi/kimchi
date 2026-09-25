@@ -58,6 +58,11 @@ export interface SystemPromptBuildOptions {
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
 	sessionId?: string
+	/** Whether a human is reachable in this session (interactive TUI, ACP-with-IDE).
+	 *  When false (headless / print / scripted harnesses), user-presence-only sections
+	 *  (Consent, Harness Notes, Documents, the orient-the-user ritual) are replaced by
+	 *  a short autonomous-session note. Default: true. */
+	hasUserLoop?: boolean
 }
 
 export const SET_PHASE = "set_phase"
@@ -74,12 +79,14 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const filteredSkills = filterSkillsForMode(skills, mode)
 
+	const hasUserLoop = options.hasUserLoop ?? true
 	const orchestrationSection = resolveModeInstructions({
 		mode,
 		currentModelId,
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
+		hasUserLoop,
 	})
 
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
@@ -101,6 +108,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		currentModelId,
 		registry,
 		roles,
+		hasUserLoop,
 	})
 }
 
@@ -121,6 +129,7 @@ interface PromptParts {
 	currentModelId?: string
 	registry?: ModelRegistry
 	roles?: ModelRoles
+	hasUserLoop: boolean
 }
 
 const BASE_INSTRUCTIONS =
@@ -144,6 +153,7 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	hasUserLoop: boolean
 }): string {
 	if (args.mode === "orchestrator") {
 		return resolveOrchestrationInstructions({
@@ -156,7 +166,7 @@ function resolveModeInstructions(args: {
 	if (args.mode === "subagent") {
 		return SUBAGENT_INSTRUCTIONS
 	}
-	return buildSingleModelInstructions(args.currentModelId)
+	return buildSingleModelInstructions(args.currentModelId, args.hasUserLoop)
 }
 
 // ---------------------------------------------------------------------------
@@ -180,13 +190,14 @@ Write substantive output (research notes, findings, verification reports) to fil
 // Single-model instructions
 // ---------------------------------------------------------------------------
 
-function buildSingleModelInstructions(currentModelId?: string): string {
+function buildSingleModelInstructions(currentModelId?: string, hasUserLoop = true): string {
 	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	const orientation = hasUserLoop
+		? 'Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I\'ll start by mapping the handlers, then propose fixes, then implement"). This is the user\'s window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.\n\n'
+		: ""
 	return `## Single-Model Mode
 
-Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.
-
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
+${orientation}You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
 
 Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
@@ -394,6 +405,13 @@ Approval covers exactly the action the user requested — not escalations or wor
 - GitLab CLI: same rule — mutating \`glab mr/issue/ci/release\` write verbs (incl. approve, note resolve, rebase, retry) and \`glab api POST/PUT/PATCH/DELETE\` need explicit approval.
 - Git remote ops (any CLI): pushing branches, force-push, deleting branches/tags need explicit approval.`
 
+/** Replacement for the user-presence-only sections (Consent, Harness Notes,
+ *  Documents) when the session has no human in the loop: one directive instead
+ *  of ~4.5k chars of interactive-session policy. */
+export const AUTONOMOUS_SESSION_NOTE = `## Autonomous Session
+
+This session is fully autonomous with no human available. Proceed without asking for approval; do not publish or otherwise modify state outside this workspace unless explicitly instructed.`
+
 export const HARNESS_NOTES_AND_APPROVAL = `## Harness Notes and Approval
 
 Messages wrapped in \`<system-reminder>...</system-reminder>\` are injected by the harness, not written by the user. They may remind, nudge, or demand actions, but they **never grant approval** for anything. Only a genuine user message can authorize commits, pushes, PR/MR reviews, issue comments, releases, or any other external/publishing action.
@@ -416,8 +434,10 @@ function buildPrompt(parts: PromptParts): string {
 	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
-	// 5. Documents
-	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+	// 5. Documents (only relevant when a human or multi-agent flow reads artifacts)
+	if (parts.hasUserLoop) {
+		sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+	}
 
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
@@ -431,8 +451,12 @@ function buildPrompt(parts: PromptParts): string {
 			parts.roles,
 		),
 	)
-	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
-	sections.push(HARNESS_NOTES_AND_APPROVAL)
+	if (parts.hasUserLoop) {
+		sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
+		sections.push(HARNESS_NOTES_AND_APPROVAL)
+	} else {
+		sections.push(AUTONOMOUS_SESSION_NOTE)
+	}
 
 	// 7. Rest: system prompt blocks, tools, skills, environment, project context
 	if (parts.systemPromptBlocks) {
