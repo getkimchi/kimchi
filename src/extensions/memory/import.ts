@@ -6,15 +6,22 @@
  * embeddings as organic capture, so the schema stays compatible by
  * construction. The benchmark's oracle-capture arm uses this to load
  * ground-truth facts directly, isolating retrieval quality from capture
- * quality. Facts import verbatim: no extraction, no supersede pass.
+ * quality.
  *
- * Usage: kimchi memory-import --facts <file.jsonl> [--scope personal|project] [--cwd <dir>]
+ * By default imported facts pass the same capture quality gates as organic
+ * capture: the durability filter and the session-export PII redactor
+ * (non-durable or secret-bearing facts are skipped/redacted). `--verbatim`
+ * restores the original byte-for-byte import — the oracle contract.
+ *
+ * Usage: kimchi memory-import --facts <file.jsonl> [--scope personal|project] [--cwd <dir>] [--verbatim]
  *
  * JSONL format: one JSON object per line, each with a non-empty "fact"
  * string. Extra fields are ignored. Blank lines are skipped.
  */
 import { readFileSync } from "node:fs"
+import { redactText } from "../pii-redaction/redactor.js"
 import { createMemoryBackend, projectDbPath } from "./backend.js"
+import { isDurableFact } from "./capture-worker.js"
 import { digestDbPath, MEMORY_USER_ID } from "./config.js"
 import { resolveProjectScope } from "./scope.js"
 
@@ -25,6 +32,10 @@ export interface ImportFact {
 export interface ImportOptions {
 	scope: "personal" | "project"
 	cwd: string
+	/** Import byte-for-byte (the benchmark oracle contract): skip the
+	 * durability filter and credential redaction. Default: filtered like
+	 * organic capture. */
+	verbatim?: boolean
 }
 
 /**
@@ -46,6 +57,7 @@ export function parseImportArgs(argv: string[]): ParsedImportArgs {
 	let factsFile: string | undefined
 	let scope: "personal" | "project" = "personal"
 	let cwd: string | undefined
+	let verbatim = false
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]
 		if (arg === "--facts") {
@@ -58,11 +70,13 @@ export function parseImportArgs(argv: string[]): ParsedImportArgs {
 			scope = value
 		} else if (arg === "--cwd") {
 			cwd = argv[++i]
+		} else if (arg === "--verbatim") {
+			verbatim = true
 		} else {
 			throw new Error(`unknown argument: ${JSON.stringify(arg)}`)
 		}
 	}
-	return { factsFile, scope, cwd: cwd ?? process.cwd() }
+	return { factsFile, scope, cwd: cwd ?? process.cwd(), verbatim }
 }
 
 export function parseFactsJsonl(content: string): ImportFact[] {
@@ -100,10 +114,20 @@ export async function importFacts(
 	createBackend: (dbPath: string) => Promise<ImportBackend> = defaultImportBackend,
 ): Promise<number> {
 	const backend = await createBackend(importDbPath(options))
+	let added = 0
 	for (const { fact } of facts) {
-		await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+		// Same quality gates as organic capture, unless --verbatim (the
+		// oracle contract must stay byte-identical).
+		if (options.verbatim) {
+			await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+		} else {
+			const cleaned = await redactText(fact)
+			if (!isDurableFact(cleaned)) continue
+			await backend.add(cleaned, { userId: MEMORY_USER_ID, infer: false })
+		}
+		added += 1
 	}
-	return facts.length
+	return added
 }
 
 export async function runImportMain(argv: string[]): Promise<number> {
@@ -117,6 +141,9 @@ export async function runImportMain(argv: string[]): Promise<number> {
 			return 1
 		}
 		const added = await importFacts(facts, options)
+		if (added < facts.length) {
+			console.info(`[memory-import] skipped ${facts.length - added} fact(s) — non-durable or redacted`)
+		}
 		console.log(`[memory-import] imported ${added} fact(s) into the ${options.scope} store`)
 		return 0
 	} catch (err: unknown) {

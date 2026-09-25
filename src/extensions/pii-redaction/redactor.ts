@@ -72,6 +72,16 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// OAuth tokens (Google ya29.*, Azure)
 	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
 	{ name: "OAUTH_TOKEN", regex: /ya29\.[A-Za-z0-9_\-]{16,}/g },
+	// OpenAI-style API keys (sk-, sk-proj-, sk-ant-, sk-conv-) — the bulkhead
+	// secret engine's key guard misses the newer prefixed formats (verified:
+	// sk-proj-… passes through untouched, and exported such a key once).
+	{ name: "OPENAI_API_KEY", regex: /\bsk-[A-Za-z0-9_-]{10,}\b/g },
+	// GitHub tokens outside a KEY=value assignment — bulkhead only catches
+	// them behind "TOKEN=". Covers personal/oauth/user-to-server/
+	// server-to-server/refresh prefixes (ghp_, gho_, ghu_, ghs_, ghr_) and
+	// fine-grained PATs.
+	{ name: "GITHUB_TOKEN", regex: /\bgh[pousr]_[A-Za-z0-9]{10,}\b/g },
+	{ name: "GITHUB_TOKEN", regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
 	// Local auth/config paths — redact user home directory paths that reveal
 	// the OS user and expose config/credential file locations.
 	{

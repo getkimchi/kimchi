@@ -18,6 +18,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
 import { type KimchiConfig, loadConfig } from "../../config.js"
+import type { SharedEmbedder } from "./embedder.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
 export const MEMORY_EMBEDDING_MODEL = "bge-m3"
@@ -242,6 +243,12 @@ export interface MemoryBackendOptions {
 	embedder?: Partial<MemoryEndpointConfig>
 	/** Extraction LLM override — tests point this at a local stub. */
 	llm?: Partial<MemoryEndpointConfig>
+	/**
+	 * A shared deduping embedder (embedder.ts) — several backends created with
+	 * the same instance embed each query once instead of once per store. Wins
+	 * over the endpoint config when set.
+	 */
+	sharedEmbedder?: SharedEmbedder
 }
 
 function resolveEndpoint(
@@ -265,15 +272,20 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
 	const llm = resolveEndpoint(options.llm, gateway, config.memoryExtraction?.model ?? EXTRACTION_MODEL)
 	return {
-		embedder: {
-			provider: "openai",
-			config: {
-				model: embedder.model,
-				baseURL: embedder.baseURL,
-				apiKey: embedder.apiKey,
-				embeddingDims: embedder.dims,
-			},
-		},
+		// A shared embedder rides in through the langchain provider — mem0's
+		// LangchainEmbedder delegates to any embedQuery/embedDocuments object,
+		// letting several stores share one deduping gateway client.
+		embedder: options.sharedEmbedder
+			? { provider: "langchain", config: { model: options.sharedEmbedder } }
+			: {
+					provider: "openai",
+					config: {
+						model: embedder.model,
+						baseURL: embedder.baseURL,
+						apiKey: embedder.apiKey,
+						embeddingDims: embedder.dims,
+					},
+				},
 		llm: {
 			provider: "openai",
 			config: {

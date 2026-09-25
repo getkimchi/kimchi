@@ -21,13 +21,14 @@
  *   - In-session management: the `/memory` command (same grammar as the
  *     `kimchi memory` CLI subcommand — admin.ts) lists, searches, deletes,
  *     and resets. Deletion is user-only; the model never gets a write tool.
- *   - Progressive recall (turns 2+): each new user prompt plus the last
- *     assistant response (the model may drive the conversation) is a drift
- *     signal; a free lexical-coverage gate decides when a retrieval is
- *     worth an embedding call, and only NEW facts (deduped via the delivery
- *     ledger) deliver as hidden steer messages — conversation-tail appends,
- *     so the prefix stays byte-stable. Bounded by a per-session evaluation
- *     cap. Compaction resets everything: the prefix breaks anyway.
+ *   - Progressive recall (turns 2+): each new user prompt plus the tail of
+ *     the last assistant response (the model may drive the conversation) is
+ *     a drift signal; a free lexical-coverage gate decides when a retrieval
+ *     is worth an embedding call, and only NEW facts (deduped via the
+ *     delivery ledger) deliver as hidden steer messages — conversation-tail
+ *     appends, so the prefix stays byte-stable. One shared deduping embedder
+ *     serves both stores, so each lookup embeds its query once. Compaction
+ *     resets everything: the prefix breaks anyway.
  *
  * Failures degrade to no-memory: store/search errors log once and leave
  * the session untouched. Memory must never break a session.
@@ -46,7 +47,12 @@ import {
 	runAdminCommand,
 } from "./admin.js"
 import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
-import { DIGEST_SCORE_THRESHOLD, MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_MAX_EVALUATIONS } from "./config.js"
+import {
+	DIGEST_SCORE_THRESHOLD,
+	MEMORY_SEARCH_TIMEOUT_MS,
+	TURN_RECALL_QUERY_MAX_CHARS,
+	TURN_RECALL_RESPONSE_CHARS,
+} from "./config.js"
 import {
 	buildMemoryDigest,
 	buildTurnRecall,
@@ -117,6 +123,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  */
 const MEMORY_VIEW_KEY = "memory-view"
 const MEMORY_VIEW_MAX_LINES = 10
+/**
+ * Widget slot for the recall progress line. A separate key from
+ * MEMORY_VIEW_KEY so the indicator and the /memory view can never clear
+ * each other. Shown while memory retrieval runs inside before_agent_start —
+ * the submitted prompt does not render until those hooks finish, so without
+ * an indicator the TUI looks frozen for the lookup's duration.
+ */
+const MEMORY_RECALL_KEY = "memory-recall"
+const MEMORY_RECALL_TEXT = "Recalling memory…"
 
 /**
  * The interactive browser behind /memory list and /memory search: fetches
@@ -222,10 +237,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		let searcher: MemorySearcher | undefined
 		let searcherFailed = false
 		// Progressive-recall state: the delivery ledger (facts already in
-		// context this session), the evaluation budget, and a failure flag.
+		// context this session) and a failure flag.
 		const deliveredKeys = new Set<string>()
 		const deliveredFacts: string[] = []
-		let turnEvaluations = 0
 		let recallFailed = false
 		// Lever 3: mid-session incremental capture — the runtime mark makes
 		// batches non-overlapping; the worker's hash ledger dedupes restarts.
@@ -247,6 +261,18 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// (slash commands don't fire agent turns, so it survives between
 			// management invocations).
 			if (ctx.hasUI) ctx.ui.setWidget(MEMORY_VIEW_KEY, undefined)
+		}
+
+		// Show the recall progress line for the duration of `work`, and always
+		// clear it — a failed or timed-out search must not leave it behind.
+		const withRecallIndicator = async <T>(ctx: ExtensionContext, work: () => Promise<T>): Promise<T> => {
+			if (!ctx.hasUI) return work()
+			ctx.ui.setWidget(MEMORY_RECALL_KEY, [MEMORY_RECALL_TEXT])
+			try {
+				return await work()
+			} finally {
+				ctx.ui.setWidget(MEMORY_RECALL_KEY, undefined)
+			}
 		}
 
 		const getSearcher = async (): Promise<MemorySearcher | undefined> => {
@@ -332,7 +358,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
 			if (digest === undefined) {
-				digest = await withTimeout(computeDigest(event.prompt), MEMORY_SEARCH_TIMEOUT_MS, "digest computation")
+				digest = await withRecallIndicator(ctx, () =>
+					withTimeout(computeDigest(event.prompt), MEMORY_SEARCH_TIMEOUT_MS, "digest computation"),
+				)
 				if (digest) {
 					// Seed the ledger: the digest's facts are already in context.
 					for (const fact of digest.facts) {
@@ -347,24 +375,30 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
 			}
 
-			// Turns 2+: progressive recall, only on drift, bounded by the cap.
-			if (turnEvaluations < TURN_RECALL_MAX_EVALUATIONS && !recallFailed) {
+			// Turns 2+: progressive recall on drift — every user message is
+			// fresh signal, so there is no per-session evaluation cap; a hard
+			// retrieval failure is the only valve.
+			if (!recallFailed) {
 				// The drift signal is the recent conversation — the new prompt
-				// plus the last assistant response (the model may drive the
-				// conversation somewhere the delivered facts don't cover).
-				const recent = `${event.prompt}\n${lastAssistantText(ctx)}`
+				// plus the tail of the last assistant response (the model may
+				// drive the conversation somewhere the delivered facts don't
+				// cover). Bounded, with each half capped separately: the tail cap
+				// keeps code-heavy responses out of the embedding payload, and the
+				// prompt head gets whatever remains of the total cap — a long
+				// prompt (stack trace, spec paste) must never push the tail out.
+				const responseTail = lastAssistantText(ctx).slice(-TURN_RECALL_RESPONSE_CHARS)
+				const promptHead = event.prompt.slice(0, TURN_RECALL_QUERY_MAX_CHARS - responseTail.length - 1)
+				const recent = `${promptHead}\n${responseTail}`
 				if (isCovered(recent, deliveredFacts)) {
 					console.info("[memory] turn recall skipped: conversation covered by delivered facts")
 				} else {
-					turnEvaluations += 1
 					try {
-						const s = await getSearcher()
-						if (s) {
-							const hits = await withTimeout(
-								s.search(recent.slice(0, 2000)),
-								MEMORY_SEARCH_TIMEOUT_MS,
-								"turn recall search",
-							)
+						const hits = await withRecallIndicator(ctx, async () => {
+							const s = await getSearcher()
+							if (!s) return undefined
+							return withTimeout(s.search(recent), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
+						})
+						if (hits !== undefined) {
 							const recall = hits ? buildTurnRecall(hits, deliveredKeys) : undefined
 							if (recall) {
 								for (const fact of recall.facts) {
@@ -408,11 +442,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// The prefix breaks at compaction anyway — recompute the digest
 			// against the post-compaction state on the next agent start, and
 			// reset the delivery ledger: earlier recall steers may have been
-			// compacted away, so re-delivery is allowed and the budget refreshes.
+			// compacted away, so re-delivery is allowed.
 			digest = undefined
 			deliveredKeys.clear()
 			deliveredFacts.length = 0
-			turnEvaluations = 0
 			// Post-compaction entries restructure — re-derive the incremental mark
 			// from zero; the worker's ledger dedupes the re-passed messages.
 			incrementalState = createIncrementalCaptureState()

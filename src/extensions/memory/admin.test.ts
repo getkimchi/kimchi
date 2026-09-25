@@ -127,6 +127,8 @@ describe("parseAdminArgs", () => {
 			["list", "--scope", "personal", "--project", "owner/name"],
 			["search", "q", "--project", "owner/name"],
 			["reset", "--project", "owner/name"],
+			["delete", "some-id", "--project", "owner/name"],
+			["--project", "owner/name"],
 		]
 		for (const args of cases) {
 			const parsed = parseAdminArgs(args, { cwd: NO_REPO_CWD })

@@ -7,6 +7,7 @@ import {
 	buildMemoryConfig,
 	createMemoryBackend,
 	defaultMemoryDir,
+	disableMem0Telemetry,
 	EXTRACTION_MODEL,
 	historyDbPath,
 	MEMORY_EMBEDDING_DIMS,
@@ -16,6 +17,7 @@ import {
 	resolveExtractionModel,
 	tagEmbeddingRequests,
 } from "./backend.js"
+import type { SharedEmbedder } from "./embedder.js"
 
 function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 	return {
@@ -75,6 +77,43 @@ describe("buildMemoryConfig", () => {
 		// LLM untouched — still gateway-wired.
 		expect(config.llm.config.baseURL).toBe("https://gateway.test/openai/v1")
 		expect(config.llm.config.apiKey).toBe("test-key")
+	})
+
+	it("a shared embedder rides in through the langchain provider", () => {
+		const shared: SharedEmbedder = {
+			embedQuery: async () => [1, 2, 3],
+			embedDocuments: async (texts) => texts.map(() => [1, 2, 3]),
+		}
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db", sharedEmbedder: shared }, testConfig())
+		// mem0's LangchainEmbedder delegates to any embedQuery/embedDocuments
+		// object passed as config.model — the seam that lets several stores
+		// share one deduping gateway client.
+		expect(config.embedder.provider).toBe("langchain")
+		expect(config.embedder.config.model).toBe(shared)
+		// The store schema still needs the resolved dimension.
+		expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
+	})
+
+	it("mem0 itself accepts the langchain-provider config around a shared embedder", async () => {
+		const shared: SharedEmbedder = {
+			embedQuery: async (text) => [text.length],
+			embedDocuments: async (texts) => texts.map((t) => [t.length]),
+		}
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db", sharedEmbedder: shared }, testConfig())
+		// The remaining untested hops, exercised against the real mem0 module
+		// (importable under Node; only `new Memory(...)` needs Bun/SQLite, and
+		// the full search path was live-verified via kimchi-tmux): the config
+		// shape must survive mem0's zod validation, and EmbedderFactory must
+		// construct a LangchainEmbedder that delegates to the plain object —
+		// a rejection in either place would only surface at runtime in Bun,
+		// degrading the whole memory feature to searcherFailed.
+		disableMem0Telemetry()
+		const { MemoryConfigSchema, EmbedderFactory } = await import("mem0ai/oss")
+		const parsed = MemoryConfigSchema.parse(config)
+		expect(parsed.embedder.provider).toBe("langchain")
+		const embedder = EmbedderFactory.create(parsed.embedder.provider, parsed.embedder.config)
+		await expect(embedder.embed("probe")).resolves.toEqual([5])
+		await expect(embedder.embedBatch(["ab", "cde"])).resolves.toEqual([[2], [3]])
 	})
 
 	it("sets the embedding dimension the store schema requires", () => {
