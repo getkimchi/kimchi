@@ -52,21 +52,37 @@ test("commands replaces the input in a tall terminal without leaving a second ed
 				return lines.slice(0, hint).findLastIndex((line) => /^─+$/.test(line))
 			}
 			trace.step("short conversation leaves spare rows below the input")
-			terminal.submit("/commands")
-			await waitForText(terminal, "Enter inspect", { full: false })
-			expect(inputRow()).toBe(-1)
-			expect(menuTop()).toBe(originalInput - 1)
-			terminal.keyPress(Key.Enter)
-			await waitForText(terminal, "[Script]", { full: false })
-			expect(inputRow()).toBe(-1)
-			expect(menuTop()).toBe(originalInput - 1)
-			trace.step("list and detail replace the input with no gap or second editor")
-			terminal.keyEscape()
-			await waitForText(terminal, "Enter inspect", { full: false })
-			terminal.keyEscape()
-			await waitForText(terminal, PROMPT_READY, { full: false })
-			expect(inputRow()).toBe(originalInput)
-			expect(fullText(terminal).match(/Run the tall terminal check/g)).toHaveLength(1)
+			for (let cycle = 0; cycle < 3; cycle++) {
+				terminal.submit("/commands")
+				await waitForText(terminal, "Enter inspect", { full: false })
+				expect(inputRow()).toBe(-1)
+				expect(menuTop()).toBe(originalInput - 1)
+				terminal.keyPress(Key.Enter)
+				await waitForText(terminal, "[Script]", { full: false })
+				expect(inputRow()).toBe(-1)
+				expect(menuTop()).toBe(originalInput - 1)
+				if (cycle === 1) {
+					for (const [columns, rows] of [
+						[45, 16],
+						[216, 80],
+					]) {
+						terminal.resize(columns, rows)
+						await waitForText(terminal, new RegExp(`^─{${columns}}$`, "m"), { full: false })
+						await waitForText(terminal, "[Script]", { full: false })
+						expect(inputRow()).toBe(-1)
+						expect(viewText(terminal)).toContain("Esc back")
+					}
+					expect(menuTop()).toBe(originalInput - 1)
+					trace.step("resizing the open detail view keeps one menu and restores its input anchor")
+				}
+				terminal.keyEscape()
+				await waitForText(terminal, "Enter inspect", { full: false })
+				terminal.keyEscape()
+				await waitForText(terminal, PROMPT_READY, { full: false })
+				expect(inputRow()).toBe(originalInput)
+				expect(fullText(terminal).match(/Run the tall terminal check/g)).toHaveLength(1)
+				trace.step(`open/close cycle ${cycle + 1} restores one editor without duplicating history`)
+			}
 			writeFileSync(join(fixture.workDir, "finish"), "")
 			await waitForText(terminal, "Tall terminal complete.", { full: false })
 			trace.step("closing restores the original input position and preserves history")
