@@ -31,6 +31,8 @@ export const AVAILABLE_EXT_METHODS = {
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_apply: `_${CAPABILITIES_KEY}/import_apply`,
 	set_project_trust: `_${CAPABILITIES_KEY}/set_project_trust`,
+	get_path_trust: `_${CAPABILITIES_KEY}/get_path_trust`,
+	set_path_trust: `_${CAPABILITIES_KEY}/set_path_trust`,
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {
