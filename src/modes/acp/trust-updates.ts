@@ -17,7 +17,7 @@
 // session lookup, persistence, and the palette/prompt refresh sweep.
 
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { type AgentSideConnection, RequestError } from "@agentclientprotocol/sdk"
 
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
@@ -27,7 +27,7 @@ import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 export type BlockedTrustCategory = "skills" | "project_config" | "pi_settings"
 
 /** Trust-survey decisions. Mirrored from the TUI prompt's options. */
-export type ProjectTrustDecision = "trust" | "trust_session" | "deny" | "deny_persist"
+export type ProjectTrustDecision = "trust" | "trust_session" | "trust_parent" | "deny" | "deny_persist"
 
 /** Push payload delivered as the `_kimchi.dev/project_trust_update` extNotification. */
 export interface ProjectTrustUpdate {
@@ -101,12 +101,41 @@ export function notifyProjectTrustUpdate(conn: AgentSideConnection, update: Proj
 /**
  * Validate the `decision` param of `_kimchi.dev/set_project_trust`.
  *
- * @throws RequestError.invalidParams for anything but the four known values.
+ * @throws RequestError.invalidParams for anything but the five known values.
  */
 export function parseProjectTrustDecision(raw: unknown): ProjectTrustDecision {
-	if (raw === "trust" || raw === "trust_session" || raw === "deny" || raw === "deny_persist") return raw
+	if (
+		raw === "trust" ||
+		raw === "trust_session" ||
+		raw === "trust_parent" ||
+		raw === "deny" ||
+		raw === "deny_persist"
+	) {
+		return raw
+	}
 	throw RequestError.invalidParams(
 		undefined,
-		`decision must be one of "trust", "trust_session", "deny", "deny_persist" (got ${JSON.stringify(raw)})`,
+		`decision must be one of "trust", "trust_session", "trust_parent", "deny", "deny_persist" (got ${JSON.stringify(raw)})`,
 	)
+}
+
+/**
+ * The directory a `trust_parent` decision grants: literally one level up,
+ * mirroring pi's `getProjectTrustParentPath` (the TUI's "Trust parent
+ * folder" option is single-level by design). Undefined at the filesystem
+ * root, where no parent exists.
+ */
+export function parentTrustPath(cwd: string): string | undefined {
+	const parent = dirname(resolve(cwd))
+	return parent === resolve(cwd) ? undefined : parent
+}
+
+/** True when `child` is `ancestor` itself or lives somewhere beneath it. */
+export function isPathWithin(child: string, ancestor: string): boolean {
+	const rel = relative(resolve(ancestor), resolve(child))
+	if (rel === "") return true
+	// Windows cross-drive relatives come back absolute (e.g. `D:\x`) — a
+	// different drive is by definition outside the ancestor.
+	if (isAbsolute(rel)) return false
+	return rel !== ".." && !rel.startsWith(`..${sep}`)
 }

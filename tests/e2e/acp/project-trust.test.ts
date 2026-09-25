@@ -7,7 +7,7 @@
 // `_kimchi.dev/set_project_trust`, refresh the palette live — no session
 // restart — while persisting the decision to trust.json.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, describe, expect, it } from "vitest"
@@ -189,6 +189,54 @@ describe("ACP integration — project trust surfacing", () => {
 				(u) => u !== undefined,
 			)
 			expect(followUp?.trusted).toBe(false)
+
+			// trust_parent mirrors the TUI's "Trust parent folder" option: the
+			// grant lands on the parent, the cwd's own entry is cleared, and
+			// sibling sessions under the parent inherit it.
+			const nestedA = join(fixture.workDir, "packages", "a")
+			mkdirSync(nestedA, { recursive: true })
+			const nestedB = join(fixture.workDir, "packages", "b")
+			mkdirSync(nestedB, { recursive: true })
+			const sessionA = await newSession(fixture, nestedA)
+			const untrustedA = await waitFor(
+				() => lastTrustUpdate(fixture, sessionA),
+				(u) => u !== undefined,
+			)
+			expect(untrustedA?.trusted).toBe(false)
+
+			const parentResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, {
+				sessionId: sessionA,
+				decision: "trust_parent",
+			})
+			expect(parentResult).toEqual({ trusted: true, blocked: [] })
+			await waitFor(
+				() => lastTrustUpdate(fixture, sessionA),
+				(u) => u?.trusted === true,
+			)
+
+			// The store got the TUI shape: parent granted, cwd entry cleared.
+			// Keys are canonicalized realpaths (the /var vs /private/var trap).
+			// The store got the TUI shape: parent granted, cwd entry cleared.
+			// Keys are canonicalized realpaths (the /var vs /private/var trap),
+			// and the parent is literally one level up from the session cwd
+			// (packages/a -> packages), mirroring pi's single-level option.
+			const storedParent = JSON.parse(readFileSync(trustPath, "utf-8")) as Record<string, boolean>
+			expect(storedParent[realpathSync(join(fixture.workDir, "packages"))]).toBe(true)
+			expect(storedParent[realpathSync(nestedA)]).toBeUndefined()
+
+			// A sibling session under the parent comes up trusted with the
+			// project skill visible — the one-decision-per-worktree payoff.
+			const sessionB = await newSession(fixture, nestedB)
+			const trustedB = await waitFor(
+				() => lastTrustUpdate(fixture, sessionB),
+				(u) => u !== undefined,
+			)
+			expect(trustedB?.trusted).toBe(true)
+			expect(trustedB?.blocked).toEqual([])
+			await waitFor(
+				() => commandNames(fixture, sessionB),
+				(names) => names.includes("skill:e2e-invalid-skill"),
+			)
 		},
 		STARTUP_TIMEOUT_MS + WAIT_MS,
 	)

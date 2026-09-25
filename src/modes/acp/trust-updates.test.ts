@@ -8,7 +8,13 @@ import { join } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
-import { buildProjectTrustUpdate, computeBlockedTrustCategories, parseProjectTrustDecision } from "./trust-updates.js"
+import {
+	buildProjectTrustUpdate,
+	computeBlockedTrustCategories,
+	isPathWithin,
+	parentTrustPath,
+	parseProjectTrustDecision,
+} from "./trust-updates.js"
 
 describe("computeBlockedTrustCategories", () => {
 	let dir: string
@@ -90,9 +96,10 @@ describe("buildProjectTrustUpdate", () => {
 })
 
 describe("parseProjectTrustDecision", () => {
-	it("accepts the four decisions", () => {
+	it("accepts the five decisions", () => {
 		expect(parseProjectTrustDecision("trust")).toBe("trust")
 		expect(parseProjectTrustDecision("trust_session")).toBe("trust_session")
+		expect(parseProjectTrustDecision("trust_parent")).toBe("trust_parent")
 		expect(parseProjectTrustDecision("deny")).toBe("deny")
 		expect(parseProjectTrustDecision("deny_persist")).toBe("deny_persist")
 	})
@@ -101,5 +108,30 @@ describe("parseProjectTrustDecision", () => {
 		for (const bad of [undefined, null, "", "Trust", "allow", 42, { decision: "trust" }]) {
 			expect(() => parseProjectTrustDecision(bad)).toThrow(RequestError)
 		}
+	})
+})
+
+describe("parentTrustPath", () => {
+	it("returns the parent directory", () => {
+		expect(parentTrustPath("/repo/packages/a")).toBe("/repo/packages")
+	})
+
+	it("returns undefined at the filesystem root", () => {
+		expect(parentTrustPath("/")).toBeUndefined()
+	})
+})
+
+describe("isPathWithin", () => {
+	it("matches the ancestor itself", () => {
+		expect(isPathWithin("/repo", "/repo")).toBe(true)
+	})
+
+	it("matches descendants at any depth", () => {
+		expect(isPathWithin("/repo/packages/a/src", "/repo")).toBe(true)
+	})
+
+	it("rejects siblings and unrelated paths (no prefix collision)", () => {
+		expect(isPathWithin("/repo-other", "/repo")).toBe(false)
+		expect(isPathWithin("/elsewhere/x", "/repo")).toBe(false)
 	})
 })
