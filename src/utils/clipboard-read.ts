@@ -20,6 +20,12 @@ import { readImageFileFromDisk } from "./image-utils.js"
  * Returns `null` if no image is on the clipboard or it cannot be read.
  */
 export async function readClipboardImage(): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
+	// Hermetic TUI tests cannot populate the host OS clipboard used by the
+	// compiled child process. The shared fixture may point this explicit E2E-only
+	// seam at an image inside its isolated workdir.
+	const e2eImagePath = process.env.KIMCHI_TUI_E2E_CLIPBOARD_IMAGE
+	if (e2eImagePath) return readImageFileFromDisk(e2eImagePath)
+
 	// 1. Local implementation handles all normal cases (screenshots, image bytes, etc.)
 	const upstream = await readClipboardImagePlatform()
 	if (upstream) return upstream

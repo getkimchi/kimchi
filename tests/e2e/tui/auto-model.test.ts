@@ -136,9 +136,10 @@ test("/model autocomplete shows and selects Auto for an entitled account without
 				timeoutMs: INPUT_TIMEOUT_MS,
 				full: false,
 			})
-			// Upstream 0.85.1 added a "✓ current model" marker column: the row renders
-			// as "→   auto [kimchi-dev]" (cursor, marker column, then the label).
-			expect(viewText(terminal)).toMatch(/→\s+auto \[kimchi-dev\]/)
+			// The selector renders a capability table: the row shows the cursor,
+			// the current-model marker column, then MODEL | PROVIDER | CONTEXT | IMG
+			// columns (no bracketed provider anymore).
+			expect(viewText(terminal)).toMatch(/→\s+auto\s+kimchi-dev\s+\S*k\s+✓/)
 			trace.step("Auto highlighted")
 
 			terminal.submit("")

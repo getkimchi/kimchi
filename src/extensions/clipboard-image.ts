@@ -2,14 +2,26 @@ import { execFile } from "node:child_process"
 import { extname, join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { getAvailableModels } from "../startup-context.js"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { IMAGE_EXT_TO_MIME } from "../utils/image-utils.js"
 import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
-import { isAutoModel } from "./router/constants.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
+import {
+	clearRetained as clearRetainedSubmission,
+	consumePathSuppression,
+	getPathSuppression,
+	getRetainedSubmission,
+	getVisionGateSessionGeneration,
+	mergeRetainedSubmission,
+	type PathAttachment,
+	registerVisionGateSideEffects,
+	resetVisionGateState,
+	runVisionGate,
+	visionGateOnAgentEnd,
+} from "./vision-gate.js"
+import { modelSupportsImages, needsVisionSwitch } from "./vision-support.js"
 
 let pendingImages: ImageContent[] = []
 let currentCtx: ExtensionContext | null = null
@@ -25,14 +37,6 @@ let isCheckingFinder = false
 // capture the generation at launch and bail out if it no longer matches,
 // preventing stale Finder checks from corrupting a newer session's state.
 let sessionGeneration = 0
-
-function modelSupportsImages(model: ExtensionContext["model"]): boolean {
-	if (!model) return false
-	if (isAutoModel(model)) return true
-	const models = getAvailableModels()
-	const meta = models.find((m) => m.slug === model.id)
-	return meta?.input_modalities.includes("image") ?? false
-}
 
 function isImageFormat(format: string): boolean {
 	// Match common image MIME types and macOS UTI identifiers
@@ -75,14 +79,6 @@ function checkClipboard(): void {
 	if (isCheckingFinder) return
 
 	try {
-		if (!modelSupportsImages(currentCtx.model)) {
-			if (clipboardHasImage) {
-				clipboardHasImage = false
-				updateIndicator()
-			}
-			return
-		}
-
 		const { clipboard: native } = getNativeClipboard()
 		if (!native) {
 			if (clipboardHasImage) {
@@ -162,14 +158,8 @@ setPasteImageHandler(() => {
 })
 
 async function handlePaste(): Promise<void> {
-	const model = currentCtx?.model
-	if (!modelSupportsImages(model)) {
-		currentCtx?.ui?.notify(`${model?.id ?? "Current model"} does not support images`, "warning")
-		return
-	}
-
 	const { clipboard: native, error } = getNativeClipboard()
-	if (!native) {
+	if (!native && !process.env.KIMCHI_TUI_E2E_CLIPBOARD_IMAGE) {
 		const detail = error ? `: ${error}` : ""
 		currentCtx?.ui?.notify(`Clipboard image support is not available${detail}`, "warning")
 		return
@@ -196,6 +186,15 @@ async function handlePaste(): Promise<void> {
 	}
 	pendingImages.push(imageContent)
 	updateIndicator()
+	// Paste is accepted regardless of the current model's capabilities — the
+	// submit-time vision gate is the single choke point. A one-shot hint
+	// tells the user a switch will be offered at send time.
+	if (needsVisionSwitch(currentCtx?.model)) {
+		currentCtx?.ui.notify(
+			`⚠ ${currentCtx?.model?.id ?? "Current model"} is text-only — you'll be able to change to a vision model when sending`,
+			"warning",
+		)
+	}
 }
 
 function updateIndicator(): void {
@@ -213,6 +212,13 @@ function updateIndicator(): void {
 }
 
 export default function clipboardImageExtension(pi: ExtensionAPI): void {
+	registerVisionGateSideEffects({
+		clearPendingAttachments: () => {
+			pendingImages = []
+			updateIndicator()
+		},
+	})
+
 	pi.on("session_start", (_event, ctx) => {
 		if (clipboardPollId !== null) {
 			clearInterval(clipboardPollId)
@@ -223,6 +229,9 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx
 		pendingImages = []
 		imageCounter = 0
+		// Reset the vision gate's retained state, suppressions, deferred latch,
+		// and dialog ownership so a replacement session starts clean.
+		resetVisionGateState()
 		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
 		setImageCacheDir(dir)
@@ -245,45 +254,97 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// from the dying session is treated as stale when its callback lands.
 		sessionGeneration++
 		currentCtx = null
+		resetVisionGateState()
 	})
 
-	pi.on("input", (event) => {
+	pi.on("agent_end", (_event, ctx) => {
+		// Deferred vision-gate dialog for streaming-intercepted submissions.
+		visionGateOnAgentEnd(pi, ctx)
+	})
+
+	pi.on("input", async (event, ctx) => {
+		const isInteractiveTui = ctx.mode === "tui" && event.source === "interactive"
 		const incoming = event.images ?? []
+
+		// Deferred-Remove suppression: hide the removed paths while the exact
+		// restored draft is retried. Consume it only once that input is accepted;
+		// a cancelled gate attempt must leave it armed.
+		const gateGeneration = getVisionGateSessionGeneration()
+		const suppressedPaths = isInteractiveTui ? getPathSuppression(event.text, gateGeneration) : null
+
 		// Local image file paths in the submitted text (typed, pasted, or dropped)
-		// are attached like pasted images. Extraction is intentionally
-		// unconditional: distinguishing paste from typing would require sniffing
-		// raw terminal input, which is unreliable — the UI starts accepting input
-		// before extensions initialize, so early pastes are never observed. The
-		// disk guards keep prose false positives rare (existing file, supported
-		// extension, readable, under the size cap). Vision-less models keep the
-		// text untouched so the read tool remains the fallback (and errors loudly
-		// there). Path images are appended after pasted/attached ones so existing
+		// are attached like pasted images. Within the interactive TUI boundary
+		// extraction is intentionally unconditional — the submit-time vision gate
+		// below is the only vision check for those submissions, so typed paths
+		// reach the gate instead of being silently dropped. Outside the boundary
+		// extraction stays vision-gated (existing behavior: vision-less models
+		// keep the text untouched so the read tool remains the fallback).
+		// Path images are appended after pasted/attached ones so existing
 		// marker numbering is unchanged.
-		const fromPaths: ImageContent[] = modelSupportsImages(currentCtx?.model)
-			? extractTypedImagePaths(event.text, currentCtx?.cwd ?? process.cwd()).map((match) => ({
-					type: "image" as const,
-					data: Buffer.from(match.image.bytes).toString("base64"),
-					mimeType: match.image.mimeType,
-				}))
-			: []
-		const totalImages = incoming.length + pendingImages.length + fromPaths.length
+		const extractPaths = isInteractiveTui || modelSupportsImages(ctx.model)
+		const freshMatches = extractPaths ? extractTypedImagePaths(event.text, ctx.cwd ?? process.cwd()) : []
+		const pathMatches: PathAttachment[] = (
+			suppressedPaths ? freshMatches.filter((m) => !suppressedPaths.has(m.resolvedPath)) : freshMatches
+		).map((match) => ({
+			resolvedPath: match.resolvedPath,
+			image: {
+				type: "image" as const,
+				data: Buffer.from(match.image.bytes).toString("base64"),
+				mimeType: match.image.mimeType,
+			},
+		}))
 
-		if (totalImages === 0) return
+		// Gather every attachment source before any marker/registry mutation.
+		// Retention merges a prior cancelled/intercepted submission: same draft
+		// reuses retained attachments (no duplicate paths); a changed draft
+		// refreshes path attachments while explicit incoming/pasted survive.
+		const record = mergeRetainedSubmission({
+			text: event.text,
+			incoming,
+			pending: pendingImages,
+			pathMatches,
+			retained: isInteractiveTui ? getRetainedSubmission() : null,
+			generation: gateGeneration,
+		})
 
-		const images = [...incoming, ...pendingImages, ...fromPaths]
+		const totalImages = record.incoming.length + record.pasted.length + record.paths.size
+		if (totalImages === 0) {
+			if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
+			return
+		}
+
+		if (isInteractiveTui && needsVisionSwitch(ctx.model)) {
+			const outcome = await runVisionGate({ pi, ctx, event, record })
+			if (outcome.kind === "handled") return { action: "handled" as const }
+			if (outcome.kind === "remove") {
+				if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
+				// Original trimmed text, no images, no markers, no registry or
+				// counter mutation. An empty text consumes the submission.
+				const trimmed = event.text.trim()
+				return trimmed ? { action: "transform" as const, text: trimmed, images: [] } : { action: "handled" as const }
+			}
+			// proceed: checked switch succeeded — submit on the new model below.
+		}
+		if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
+
+		// Accepted submission: commit markers/registry/counter from the merged
+		// record, transferring retained attachments into the transform exactly
+		// once, then clear the retained record.
+		const images = [...record.incoming, ...record.pasted, ...record.paths.values()]
 		pendingImages = []
 		updateIndicator()
 
 		const startIndex = imageCounter + 1
-		imageCounter += totalImages
+		imageCounter += images.length
 		// Persist each image to disk and register under its [Image #N] id.
 		images.forEach((image, i) => {
 			const id = startIndex + i
 			addImage(id, image)
 		})
-		const prefix = buildImageMarkerPrefix(startIndex, totalImages)
+		const prefix = buildImageMarkerPrefix(startIndex, images.length)
 		const trimmed = event.text.trimStart()
 		const text = trimmed ? `${prefix} ${trimmed}` : prefix
+		clearRetainedSubmission()
 
 		return { action: "transform" as const, text, images }
 	})

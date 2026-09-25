@@ -72,6 +72,8 @@ export function createContext(
 			setStatus: vi.fn(),
 			setWidget: vi.fn(),
 			setWorkingVisible: vi.fn(),
+			setEditorText: vi.fn(),
+			getEditorText: vi.fn(() => ""),
 			// Real contract: returns an unsubscribe function. Handlers are kept
 			// on `__terminalInputHandlers` so tests can dispatch raw key data
 			// via `sendTerminalInput()`.

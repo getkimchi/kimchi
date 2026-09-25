@@ -34,6 +34,18 @@ describe("readClipboardImage", () => {
 		vi.clearAllMocks()
 		Object.defineProperty(process, "platform", { value: "darwin", configurable: true })
 		vi.stubEnv("TERMUX_VERSION", "")
+		vi.stubEnv("KIMCHI_TUI_E2E_CLIPBOARD_IMAGE", "")
+	})
+
+	it("reads the fixture image from the explicit TUI E2E clipboard seam", async () => {
+		vi.stubEnv("KIMCHI_TUI_E2E_CLIPBOARD_IMAGE", "/tmp/fixture.png")
+		mockReadImageFileFromDisk.mockReturnValue({ bytes: new Uint8Array([0x89, 0x50]), mimeType: "image/png" })
+
+		const result = await readClipboardImage()
+
+		expect(result).toEqual({ bytes: new Uint8Array([0x89, 0x50]), mimeType: "image/png" })
+		expect(mockReadImageFileFromDisk).toHaveBeenCalledWith("/tmp/fixture.png")
+		expect(mockReadClipboardImage).not.toHaveBeenCalled()
 	})
 
 	it("returns upstream result when upstream has an image and skips native fallback", async () => {
