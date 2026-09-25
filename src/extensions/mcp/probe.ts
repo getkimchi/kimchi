@@ -51,6 +51,14 @@ interface ProbeHost {
 const probeToolCapture = new AsyncLocalStorage<Map<string, ProbeTool>>()
 let probeToolCaptureInstalled = false
 
+/** Generous budget for an interactive browser OAuth consent inside a probe. */
+const INTERACTIVE_AUTH_TIMEOUT_MS = 300_000
+
+interface DeadlineControl {
+	suspendDeadline: () => void
+	resumeDeadline: () => void
+}
+
 function installProbeToolMetadataCapture(): void {
 	if (probeToolCaptureInstalled) return
 	probeToolCaptureInstalled = true
@@ -108,9 +116,9 @@ function createProbeHost(cwd: string, signal: AbortSignal | undefined): ProbeHos
 	const eventHandlers = new Map<string, Array<(data: unknown) => void>>()
 
 	const ui = {
-		select: async () => undefined,
-		confirm: async () => false,
-		input: async () => undefined,
+		select: neverSettle,
+		confirm: neverSettle,
+		input: neverSettle,
 		notify: () => {},
 		onTerminalInput: () => () => {},
 		setStatus: () => {},
@@ -187,6 +195,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/**
+ * Never settle: upstream's OAuth flow races the localhost callback against a
+ * manual-paste prompt on `ui.input`; a resolving fake would win that race and
+ * cancel the flow while the user is still on the consent page.
+ */
+function neverSettle(): Promise<never> {
+	return new Promise(() => {})
+}
+
 function resultDetails(result: GatewayResult): Record<string, unknown> {
 	return isRecord(result.details) ? result.details : {}
 }
@@ -196,6 +213,17 @@ function resultMessage(result: GatewayResult): string {
 		.filter((item): item is { type: "text"; text: string } => item.type === "text")
 		.map((item) => item.text)
 		.join("\n")
+}
+
+function hasOAuthCredentials(serverName: string, serverUrl: string): boolean {
+	try {
+		return inspectMcpOAuthTokensForUrl(serverName, serverUrl).status === "present"
+	} catch {
+		// Credential inspection is best-effort for OAuth detection; treat an
+		// unreadable store as "no credentials" so declared-OAuth servers still
+		// surface the auth requirement instead of a false "connected".
+		return false
+	}
 }
 
 function resolveProbeName(name: string, definition: ServerEntry): string {
@@ -239,11 +267,30 @@ export class UpstreamMcpProbe implements McpProbe {
 		const timeoutMs = definition.url ? 60_000 : 15_000
 		const timeoutMessage = `Probe timed out after ${timeoutMs / 1000} seconds`
 		const deadline = new AbortController()
-		const timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
+		let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+			() => deadline.abort(new Error(timeoutMessage)),
+			timeoutMs,
+		)
+		// Interactive OAuth can legitimately outlast the probe deadline (the user
+		// must find the browser and consent), so the auth phase suspends/resumes it.
+		const suspendDeadline = (): void => {
+			if (timer !== undefined) {
+				clearTimeout(timer)
+				timer = undefined
+			}
+		}
+		const resumeDeadline = (): void => {
+			if (timer === undefined && !deadline.signal.aborted) {
+				timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
+			}
+		}
 		const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal
 		try {
 			return await probeToolCapture.run(capturedTools, () =>
-				this.probeToolsWithMetadata(name, definition, { ...options, signal }, capturedTools),
+				this.probeToolsWithMetadata(name, definition, { ...options, signal }, capturedTools, {
+					suspendDeadline,
+					resumeDeadline,
+				}),
 			)
 		} catch (error) {
 			if (deadline.signal.aborted && !options.signal?.aborted) {
@@ -251,7 +298,7 @@ export class UpstreamMcpProbe implements McpProbe {
 			}
 			throw error
 		} finally {
-			clearTimeout(timer)
+			suspendDeadline()
 		}
 	}
 
@@ -260,6 +307,7 @@ export class UpstreamMcpProbe implements McpProbe {
 		definition: ServerEntry,
 		options: McpProbeOptions & { signal: AbortSignal },
 		capturedTools: Map<string, ProbeTool>,
+		deadline: DeadlineControl,
 	): Promise<ProbeResult> {
 		const cwd = options.cwd ?? process.cwd()
 		if (definition.url) {
@@ -268,6 +316,16 @@ export class UpstreamMcpProbe implements McpProbe {
 		}
 		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name
+		// Mirrors the adapter's supportsOAuth gate (pi-mcp-adapter/mcp-auth-flow.ts):
+		// URL servers only (stdio cannot run the browser flow); an explicit
+		// `oauth: false` or custom `headers` disables it despite `auth: "oauth"`.
+		const serverUrl = definition.url
+		const declaresOAuth =
+			serverUrl !== undefined &&
+			definition.oauth !== false &&
+			!(definition.headers && Object.keys(definition.headers).length > 0) &&
+			(definition.auth === "oauth" || Boolean(definition.oauth))
+		const hasCredentials = serverUrl !== undefined && hasOAuthCredentials(name, serverUrl)
 		const host = createProbeHost(cwd, options.signal)
 		const config = {
 			mcpServers: {
@@ -307,6 +365,62 @@ export class UpstreamMcpProbe implements McpProbe {
 			}
 			if (details.error) {
 				return { tools: [], needsAuth: false, error: String(details.message ?? resultMessage(connected)) }
+			}
+
+			// Anonymous tools/list (e.g. Google's hosted MCP endpoints) means a successful
+			// connect doesn't imply auth: declared-OAuth servers without credentials must
+			// report needs-auth, driving the TUI's /mcp-auth flow when authenticate=true.
+			if (declaresOAuth && serverUrl && !hasCredentials) {
+				// Never drive OAuth under a throwaway name — the finally-block logout
+				// would discard the just-consented credentials.
+				if (options.authenticate !== true || throwaway) {
+					return { tools: [...capturedTools.values()], needsAuth: true, error: null }
+				}
+				// Credentials are keyed by server name, so authenticate under the probe's
+				// name; the throwaway guard above keeps durable credentials safe.
+				deadline.suspendDeadline()
+				let authTimer: ReturnType<typeof setTimeout> | undefined
+				let authFailureMessage: string | null = null
+				const interactiveDeadline = new Promise<never>((_resolve, reject) => {
+					authTimer = setTimeout(
+						() =>
+							reject(new Error(`OAuth authentication timed out after ${INTERACTIVE_AUTH_TIMEOUT_MS / 1000} seconds`)),
+						INTERACTIVE_AUTH_TIMEOUT_MS,
+					)
+				})
+				try {
+					await Promise.race([
+						host.commands.get("mcp-auth")?.handler(probeName, host.context as Parameters<Command["handler"]>[1]),
+						interactiveDeadline,
+						aborted,
+					])
+				} catch (authError) {
+					signal.throwIfAborted()
+					// Failures are re-detected via credential inspection below, but must not
+					// stay silent: surface the reason on the result for diagnosis.
+					authFailureMessage = authError instanceof Error ? authError.message : String(authError)
+					console.warn(`MCP probe: interactive OAuth for "${probeName}" failed: ${authFailureMessage}`)
+				} finally {
+					clearTimeout(authTimer)
+					deadline.resumeDeadline()
+				}
+				signal.throwIfAborted()
+				if (!hasOAuthCredentials(probeName, serverUrl)) {
+					return { tools: [], needsAuth: true, error: authFailureMessage }
+				}
+				const reconnected = await Promise.race([executeGateway(host, { connect: probeName }), aborted])
+				signal.throwIfAborted()
+				const reconnectDetails = resultDetails(reconnected)
+				if (reconnectDetails.error === "auth_required") {
+					return { tools: [], needsAuth: true, error: null }
+				}
+				if (reconnectDetails.error) {
+					return {
+						tools: [],
+						needsAuth: false,
+						error: String(reconnectDetails.message ?? resultMessage(reconnected)),
+					}
+				}
 			}
 
 			// The gateway catalog is filtered, renames tools, and adds resource tools.
