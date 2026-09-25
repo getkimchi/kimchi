@@ -19,6 +19,7 @@
 import { existsSync } from "node:fs"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { type AgentSideConnection, RequestError } from "@agentclientprotocol/sdk"
+import type { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
@@ -117,6 +118,76 @@ export function parseProjectTrustDecision(raw: unknown): ProjectTrustDecision {
 		undefined,
 		`decision must be one of "trust", "trust_session", "trust_parent", "deny", "deny_persist" (got ${JSON.stringify(raw)})`,
 	)
+}
+
+/**
+ * Validate the `decision` param of `_kimchi.dev/set_path_trust`.
+ *
+ * Persisted semantics only: session-scoped decisions
+ * (trust_session/trust_parent/deny_persist) belong to the session-bound
+ * method; this one writes the store for an arbitrary path.
+ *
+ * @throws RequestError.invalidParams for anything but "trust"/"deny".
+ */
+export function parsePathTrustDecision(raw: unknown): "trust" | "deny" {
+	if (raw === "trust" || raw === "deny") return raw
+	throw RequestError.invalidParams(undefined, `decision must be "trust" or "deny" (got ${JSON.stringify(raw)})`)
+}
+
+/** Resolved trust state of a path — the response of get/set_path_trust. */
+export interface PathTrustInfo {
+	/** Whether any store entry (this path or an ancestor) decides the state. */
+	readonly decided: boolean
+	/** The resolved decision; undecided paths are fail-closed (false). */
+	readonly trusted: boolean
+	/** Coarse categories gated while untrusted (empty when trusted). */
+	readonly blocked: readonly BlockedTrustCategory[]
+	/** Canonicalized path of the nearest deciding entry; null when undecided. */
+	readonly decisionSource: string | null
+}
+
+/**
+ * Resolve a path's trust state through the store's nearest-wins ancestor
+ * walk — the same resolution a session cwd would get. Clients never need to
+ * reimplement the walk (or its canonicalization rules — the trailing-slash
+ * and /var-vs-/private/var hand-edit traps both live here, behind the API).
+ */
+export function buildPathTrustInfo(store: ProjectTrustStore, path: string): PathTrustInfo {
+	const entry = store.getEntry(path)
+	const trusted = entry?.decision === true
+	return {
+		decided: entry !== null,
+		trusted,
+		blocked: trusted ? [] : computeBlockedTrustCategories(path),
+		decisionSource: entry?.path ?? null,
+	}
+}
+
+/**
+ * Validate the `path` param of the sessionless trust methods: non-empty
+ * absolute path. Relative paths are rejected — they would silently resolve
+ * against the agent process's cwd, which no client can predict.
+ *
+ * @throws RequestError.invalidParams when missing or relative.
+ */
+export function requireAbsolutePath(raw: unknown): string {
+	if (typeof raw !== "string" || raw.length === 0) {
+		throw RequestError.invalidParams(undefined, "path must be a non-empty absolute path string")
+	}
+	if (!isAbsolute(raw)) {
+		throw RequestError.invalidParams(undefined, `path must be absolute (got ${JSON.stringify(raw)})`)
+	}
+	return raw
+}
+
+/** The wire form of {@link PathTrustInfo} — plain JSON-RPC result record. */
+export function pathTrustResponse(info: PathTrustInfo): Record<string, unknown> {
+	return {
+		decided: info.decided,
+		trusted: info.trusted,
+		blocked: [...info.blocked],
+		decisionSource: info.decisionSource,
+	}
 }
 
 /**

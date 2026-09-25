@@ -2,17 +2,20 @@
 // coarse blocked-category computation, push payload shape, and the
 // set_project_trust decision parsing contract.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import {
+	buildPathTrustInfo,
 	buildProjectTrustUpdate,
 	computeBlockedTrustCategories,
 	isPathWithin,
 	parentTrustPath,
+	parsePathTrustDecision,
 	parseProjectTrustDecision,
 } from "./trust-updates.js"
 
@@ -133,5 +136,80 @@ describe("isPathWithin", () => {
 	it("rejects siblings and unrelated paths (no prefix collision)", () => {
 		expect(isPathWithin("/repo-other", "/repo")).toBe(false)
 		expect(isPathWithin("/elsewhere/x", "/repo")).toBe(false)
+	})
+})
+
+describe("parsePathTrustDecision", () => {
+	it("accepts the persisted decisions", () => {
+		expect(parsePathTrustDecision("trust")).toBe("trust")
+		expect(parsePathTrustDecision("deny")).toBe("deny")
+	})
+
+	it("rejects session-scoped decisions and garbage", () => {
+		for (const bad of [undefined, null, "", "trust_session", "trust_parent", "deny_persist", "remove", 42]) {
+			expect(() => parsePathTrustDecision(bad)).toThrow(RequestError)
+		}
+	})
+})
+
+describe("buildPathTrustInfo", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "path-trust-store-"))
+	})
+
+	afterEach(() => {
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("reports undecided with blocked categories and null source", () => {
+		const dir = mkdtempSync(join(tmpdir(), "path-trust-dir-"))
+		try {
+			mkdirSync(join(dir, ".kimchi", "skills"), { recursive: true })
+			const store = new ProjectTrustStore(agentDir)
+			expect(buildPathTrustInfo(store, dir)).toEqual({
+				decided: false,
+				trusted: false,
+				blocked: ["skills"],
+				decisionSource: null,
+			})
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("reports a stored grant with the canonicalized source", () => {
+		const dir = mkdtempSync(join(tmpdir(), "path-trust-dir-"))
+		try {
+			const store = new ProjectTrustStore(agentDir)
+			store.set(dir, true)
+			expect(buildPathTrustInfo(store, dir)).toEqual({
+				decided: true,
+				trusted: true,
+				blocked: [],
+				decisionSource: realpathSync(dir),
+			})
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("inherits an ancestor entry and reports the ancestor as source", () => {
+		const dir = mkdtempSync(join(tmpdir(), "path-trust-dir-"))
+		try {
+			const store = new ProjectTrustStore(agentDir)
+			store.set(dir, false) // stored refusal on the ancestor
+			const nested = join(dir, "a", "b")
+			mkdirSync(nested, { recursive: true })
+			expect(buildPathTrustInfo(store, nested)).toEqual({
+				decided: true,
+				trusted: false,
+				blocked: [],
+				decisionSource: realpathSync(dir),
+			})
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
 	})
 })

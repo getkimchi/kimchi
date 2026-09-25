@@ -137,11 +137,15 @@ import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
+	buildPathTrustInfo,
 	buildProjectTrustUpdate,
 	isPathWithin,
 	notifyProjectTrustUpdate,
 	parentTrustPath,
+	parsePathTrustDecision,
 	parseProjectTrustDecision,
+	pathTrustResponse,
+	requireAbsolutePath,
 } from "./trust-updates.js"
 import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.js"
 import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
@@ -1052,6 +1056,17 @@ export class KimchiAcpAgent implements Agent {
 				// decision, opens the kimchi project-scope gate, and (on grant)
 				// live-refreshes skills. See handleSetProjectTrust.
 				return this.handleSetProjectTrust(params)
+			case AVAILABLE_EXT_METHODS.get_path_trust:
+				// Sessionless read (LLM-3628): resolved trust state for an
+				// arbitrary path, incl. ancestor inheritance and the canonicalized
+				// deciding entry. See handleGetPathTrust.
+				return this.handleGetPathTrust(params)
+			case AVAILABLE_EXT_METHODS.set_path_trust:
+				// Sessionless write (LLM-3628): persist a trust/deny decision for
+				// any path (root and home included — deliberate power-user
+				// capability), then live-refresh affected sessions. See
+				// handleSetPathTrust.
+				return this.handleSetPathTrust(params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
@@ -1895,6 +1910,66 @@ export class KimchiAcpAgent implements Agent {
 
 		const update = buildProjectTrustUpdate(sessionId, cwd)
 		return { trusted: update.trusted, blocked: [...update.blocked] }
+	}
+
+	/**
+	 * `_kimchi.dev/get_path_trust` — sessionless resolved trust state for an
+	 * arbitrary path (LLM-3628). Runs the store's nearest-wins ancestor walk,
+	 * so an inherited ancestor grant reads as trusted with the ancestor as
+	 * `decisionSource`; undecided paths report decided:false (fail-closed).
+	 * Clients should prefer this over reading trust.json by hand — the store's
+	 * canonicalized keys make hand-editing fragile (trailing slashes and
+	 * /var-vs-/private/var paths silently never match).
+	 */
+	private handleGetPathTrust(params: Record<string, unknown>): Record<string, unknown> {
+		const path = requireAbsolutePath(params.path)
+		return pathTrustResponse(buildPathTrustInfo(new ProjectTrustStore(this.agentDir), path))
+	}
+
+	/**
+	 * `_kimchi.dev/set_path_trust` — sessionless write for an arbitrary path
+	 * (LLM-3628). Persists trust/deny through ProjectTrustStore (which
+	 * canonicalizes the key — the supported write path for this file), then
+	 * live-refreshes every session under the path: gate update, fail-closed
+	 * pin clearing beneath on grant, watcher root re-derivation, refresher
+	 * sweep, and a project_trust_update push per affected session. Any path is
+	 * accepted, home and filesystem root included — a deliberate power-user
+	 * capability; callers own the blast radius.
+	 *
+	 * Known v1 limitation: no "remove" — a written entry can be flipped but
+	 * not forgotten (hand-editing trust.json is the only escape, and fragile).
+	 */
+	private handleSetPathTrust(params: Record<string, unknown>): Record<string, unknown> {
+		const path = requireAbsolutePath(params.path)
+		const decision = parsePathTrustDecision(params.decision)
+		const trusted = decision === "trust"
+
+		const store = new ProjectTrustStore(this.agentDir)
+		store.set(path, trusted)
+		setProjectScopeTrusted(path, trusted)
+
+		// Re-resolve every live session under the written path FROM THE STORE.
+		// A session pinned at start (from the store state then) can shadow the
+		// new entry: its own pin is nearer in the ancestor walk than the path
+		// just written, so a later revoke at the root would be invisible to it
+		// — and a blind clear would equally break a deeper stored grant. Setting
+		// each pin to the store's current nearest-wins resolution for that
+		// session's cwd (or clearing it when undecided, so the walk falls
+		// through to the written entry) mirrors store semantics exactly.
+		for (const other of this.sessions.values()) {
+			if (!isPathWithin(other.cwd, path)) continue
+			const entry = store.getEntry(other.cwd)
+			if (entry === null) clearProjectScopeTrust(other.cwd)
+			else setProjectScopeTrusted(other.cwd, entry.decision)
+		}
+		if (trusted) this.skillWatcher.refresh()
+		this.commandsRefresher.request()
+		for (const [id, other] of this.sessions) {
+			if (!isPathWithin(other.cwd, path)) continue
+			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, other.cwd))
+		}
+
+		return pathTrustResponse(buildPathTrustInfo(store, path))
 	}
 
 	private emitUsageUpdate(session: AgentSession, lifetime: TurnUsage): void {
