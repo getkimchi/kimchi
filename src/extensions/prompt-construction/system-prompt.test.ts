@@ -790,6 +790,25 @@ describe("buildSystemPrompt", () => {
 			expect(gated).toContain("## Environment")
 		})
 
+		it("keeps Documents for userless orchestrator sessions and swaps the orient bullet", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", hasUserLoop: false })
+			// Multi-agent handoff artifacts still need the section even without a user.
+			expect(result).toContain("## Documents")
+			expect(result).not.toContain("Orient the user per Orchestration")
+			expect(result).toContain("Proceed autonomously per Orchestration")
+		})
+
+		it("keeps Documents for userless subagent sessions", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "subagent", hasUserLoop: false })
+			expect(result).toContain("## Documents")
+		})
+
+		it("keeps the orient bullet in interactive orchestrator sessions", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", hasUserLoop: true })
+			expect(result).toContain("Orient the user per Orchestration")
+			expect(result).not.toContain("Proceed autonomously per Orchestration")
+		})
+
 		it("keeps the phase payload in userless sessions when the phase tool is present", () => {
 			const result = buildSystemPrompt({
 				tools: [...tools, { name: "set_phase", description: "Set the current work phase" }],

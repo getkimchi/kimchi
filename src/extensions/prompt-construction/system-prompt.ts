@@ -203,7 +203,7 @@ Do not spawn subagents with the \`Agent\` tool by default — only do so when th
 }
 
 export const DOCUMENTS_SECTION =
-	"Use the Documents directory (see Environment) for transient working files: research notes, findings, verification reports, inter-agent handoffs. Final plans and specs go to .kimchi/plans/<slug>.md — never the project or temp directories."
+	"Use the Documents directory (see Environment) for transient working files: research notes, findings, verification reports, inter-agent handoffs. Final plans and specs go to .kimchi/plans/<slug>.md. Never write working documents to the project root or temp directories."
 
 export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate completed steps — act and move on.
 - Gather context before starting: requirements, naming conventions, frameworks and libraries in use, how to run and test. Read existing code rather than assuming.
@@ -218,23 +218,36 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate c
 - Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
 - **Git commits**: end the message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
-const ORCHESTRATOR_GUIDELINES = `- Be concise. Do not restate completed steps — act and move on.
+/** The orient-the-user bullet, swapped for a proceed-autonomously variant in
+ *  userless orchestrator sessions so it never contradicts
+ *  AUTONOMOUS_SESSION_NOTE ("no human available"). */
+const ORCHESTRATOR_ORIENTATION_BULLETS = {
+	userLoop:
+		"- Orient the user per Orchestration before starting — use the phased pipeline, not ad-hoc exploration or inline implementation.",
+	autonomous:
+		"- Proceed autonomously per Orchestration — use the phased pipeline, not ad-hoc exploration or inline implementation. No human is available to orient; do not pause for confirmation.",
+} as const
+
+function buildOrchestratorGuidelines(hasUserLoop: boolean): string {
+	return `- Be concise. Do not restate completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
-- Orient the user per Orchestration before starting — use the phased pipeline, not ad-hoc exploration or inline implementation.
+${hasUserLoop ? ORCHESTRATOR_ORIENTATION_BULLETS.userLoop : ORCHESTRATOR_ORIENTATION_BULLETS.autonomous}
 - Follow existing conventions; use only libraries/frameworks present in the codebase; never add dependencies without explicit instruction.
 - Use absolute file paths.
 - Do NOT introduce security vulnerabilities.
 - After every tool result, ALWAYS produce text — the next tool call with explicit reasoning, or a final summary. Never re-issue the same call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.
 - Summarize from delegated artifacts (spec, review, verification files); do not re-verify implementation yourself unless Orchestration assigns it to you.`
+}
 
 function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
 	if (!skills || mode !== "orchestrator") return skills
 	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
 }
 
-function resolveCoreGuidelines(mode: PromptMode): string {
-	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
+function resolveCoreGuidelines(mode: PromptMode, hasUserLoop: boolean): string {
+	if (mode !== "orchestrator") return CORE_GUIDELINES
+	return buildOrchestratorGuidelines(hasUserLoop)
 }
 
 export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate. Claims must rest on data concretely obtained this session. Do not over-escalate minor issues or blame the user for request phrasing.
@@ -417,11 +430,13 @@ function buildPrompt(parts: PromptParts): string {
 	}
 
 	// 4. Guidelines
-	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
+	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode, parts.hasUserLoop)}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
-	// 5. Documents (only relevant when a human or multi-agent flow reads artifacts)
-	if (parts.hasUserLoop) {
+	// 5. Documents (a human reads artifacts in interactive sessions; multi-agent
+	//    flows write handoffs there even without a user loop — keep the section
+	//    for orchestrator/subagent so subagent result contracts stay grounded)
+	if (parts.hasUserLoop || parts.mode === "orchestrator" || parts.mode === "subagent") {
 		sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 	}
 
