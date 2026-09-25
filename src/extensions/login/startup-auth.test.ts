@@ -1,6 +1,7 @@
 import { initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { REGIONS, type RegionId, regionEndpoints } from "../../regions.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 
@@ -13,6 +14,7 @@ const configMock = vi.hoisted(() => ({
 	getApiKeySource: vi.fn(() => "config"),
 	getApiKeyMismatchWarning: vi.fn(),
 	writeApiKey: vi.fn(),
+	endpointsForRegion: vi.fn(),
 }))
 
 const modelsMock = vi.hoisted(() => ({
@@ -165,8 +167,9 @@ beforeEach(() => {
 	authMock.authenticateViaBrowser.mockReset()
 	authMock.authenticateViaBrowser.mockResolvedValue({ token: "kimchi-token" })
 	let savedConfigKey = ""
+	configMock.endpointsForRegion.mockImplementation((region: RegionId) => regionEndpoints(REGIONS[region]))
 	configMock.loadConfig.mockReset()
-	configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey }))
+	configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey, region: "us" }))
 	configMock.writeApiKey.mockReset()
 	configMock.writeApiKey.mockImplementation((key: string) => {
 		savedConfigKey = key
@@ -214,14 +217,14 @@ describe("shouldShowStartupAuthGate", () => {
 describe("startup auth gate", () => {
 	it("checks the environment runtime without persisting its key", async () => {
 		configMock.getApiKeySource.mockReturnValue("environment")
-		configMock.loadConfig.mockReturnValue({ apiKey: "environment-key" })
+		configMock.loadConfig.mockReturnValue({ apiKey: "environment-key", region: "us" })
 		const registry = createModelRegistry([createModel("environment-model", "kimchi-dev")])
 		expect(await hasUsableAuth(createContext({ modelRegistry: registry }))).toBe(true)
 		expect(piAuthMock.syncPiAuth).not.toHaveBeenCalled()
 	})
 
 	it.each(["custom", "kimchi-dev/openai"])("syncs the saved key while checking %s authentication", async (provider) => {
-		configMock.loadConfig.mockReturnValue({ apiKey: "rejected-key" })
+		configMock.loadConfig.mockReturnValue({ apiKey: "rejected-key", region: "us" })
 		const registry = { ...createModelRegistry([createModel("test-model", provider)]), refresh: vi.fn() }
 		const ctx = createContext({ modelRegistry: registry })
 
@@ -328,7 +331,7 @@ describe("startup auth gate", () => {
 		const previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-startup-auth-test"
 		let savedConfigKey = ""
-		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey }))
+		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey, region: "us" }))
 		configMock.writeApiKey.mockImplementation((key: string) => {
 			savedConfigKey = key
 		})
@@ -371,7 +374,7 @@ describe("startup auth gate", () => {
 		const previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-startup-auth-test"
 		let savedConfigKey = ""
-		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey }))
+		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey, region: "us" }))
 		configMock.writeApiKey.mockImplementation((key: string) => {
 			savedConfigKey = key
 		})
@@ -449,7 +452,7 @@ describe("startup auth gate", () => {
 	})
 
 	it("does not show the selector when auth is already usable", async () => {
-		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token" })
+		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token", region: "us" })
 		const harness = createHarness({ availableInitially: true })
 
 		await harness.start()
@@ -473,7 +476,7 @@ describe("startup auth gate", () => {
 	})
 
 	it("synchronizes a saved config key into Pi auth before checking available models", async () => {
-		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token" })
+		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token", region: "us" })
 		const harness = createHarness()
 
 		await harness.start()

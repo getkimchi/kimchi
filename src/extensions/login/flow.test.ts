@@ -17,9 +17,9 @@ describe("createRegionSelector", () => {
 		return (selector as { options: string[] }).options
 	}
 
-	it("lists US first as the default and Europe second", () => {
-		const selector = createRegionSelector({ onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(selector)).toEqual(["United States (default)", "Europe"])
+	it("lists US first as the default and Europe second, marking the current region", () => {
+		const selector = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
+		expect(optionsOf(selector)).toEqual(["United States (default) \u2014 current", "Europe"])
 	})
 
 	it("indicates the currently configured region in its label", () => {
@@ -29,11 +29,11 @@ describe("createRegionSelector", () => {
 
 	it("maps the selected option to its region id", () => {
 		const onSelect = vi.fn()
-		const selector = createRegionSelector({ onSelect, onBack: vi.fn() })
+		const selector = createRegionSelector({ currentRegion: "us", onSelect, onBack: vi.fn() })
 		selector.handleInput("\n")
 		expect(onSelect).toHaveBeenCalledWith("us")
 
-		const second = createRegionSelector({ onSelect, onBack: vi.fn() })
+		const second = createRegionSelector({ currentRegion: "us", onSelect, onBack: vi.fn() })
 		second.handleInput("j")
 		second.handleInput("\n")
 		expect(onSelect).toHaveBeenCalledWith("eu")
@@ -42,7 +42,7 @@ describe("createRegionSelector", () => {
 	it("invokes onBack on Esc without selecting", () => {
 		const onSelect = vi.fn()
 		const onBack = vi.fn()
-		const selector = createRegionSelector({ onSelect, onBack })
+		const selector = createRegionSelector({ currentRegion: "us", onSelect, onBack })
 		selector.handleInput("\x1b")
 		expect(onBack).toHaveBeenCalledOnce()
 		expect(onSelect).not.toHaveBeenCalled()

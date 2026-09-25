@@ -27,7 +27,9 @@ beforeEach(() => {
 	vi.stubEnv("KIMCHI_API_KEY", undefined)
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	// Auth tests should be independent of the developer machine's real config.
-	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)
+	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "", region: "us" } as ReturnType<
+		typeof configModule.loadConfig
+	>)
 	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
 	vi.spyOn(configModule, "clearApiKey").mockImplementation(() => {})
 	vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({ models: [] })
@@ -188,6 +190,7 @@ it("intercepts the user-facing /login command and runs Kimchi browser auth", asy
 it("does not reuse a saved Kimchi key for explicit /login", async () => {
 	vi.mocked(configModule.loadConfig).mockReturnValue({
 		apiKey: "stale-saved-token",
+		region: "us",
 	} as ReturnType<typeof configModule.loadConfig>)
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "fresh-token" })
@@ -324,24 +327,6 @@ it("shows the region selector after account login and runs EU browser auth when 
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 })
 
-it("does not mark the implicit default region as current in the region selector", async () => {
-	vi.mocked(configModule.loadConfig).mockReturnValue({
-		apiKey: "",
-		region: "us",
-	} as ReturnType<typeof configModule.loadConfig>)
-
-	const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
-	fakeIm.selectorComponent.handleInput("\n")
-	await flushAsyncLogin()
-
-	const rendered = fakeIm.selectorComponent.render(120).join("\n")
-	expect(rendered).toContain("United States (default)")
-	expect(rendered).not.toContain("current")
-})
-
 it("returns to the auth-method selector when Esc is pressed on the region selector", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser")
@@ -367,7 +352,12 @@ it("returns to the auth-method selector when Esc is pressed on the region select
 	expect(authSpy).toHaveBeenCalledOnce()
 })
 
-it("falls back to browser login without a selector UI", async () => {
+it("falls back to browser login in the configured region without a selector UI", async () => {
+	vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+	vi.mocked(configModule.loadConfig).mockReturnValue({
+		apiKey: "",
+		region: "eu",
+	} as ReturnType<typeof configModule.loadConfig>)
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token" })
 
@@ -382,9 +372,8 @@ it("falls back to browser login without a selector UI", async () => {
 	await waitForMockCall(authSpy)
 	await flushAsyncLogin()
 
-	// No explicit region was selected, so the default resolution path stays untouched.
-	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBeUndefined()
-	expect(configModule.writeApiKey).toHaveBeenCalledWith("test-token", undefined, {})
+	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://app.eu.kimchi.dev")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("test-token", undefined, { region: "eu" })
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
 })
 

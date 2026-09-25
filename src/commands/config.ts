@@ -1,6 +1,6 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
-import { DEFAULT_REGION, getRegion, isRegionId, REGION_ENV, REGIONS } from "../regions.js"
+import { DEFAULT_REGION, isRegionId, REGION_ENV, REGIONS } from "../regions.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -102,11 +102,8 @@ function printUsage(): void {
 }
 
 /**
- * `kimchi config region` — show the endpoint region (or the default when none
- * is configured). Region is chosen at login: it is persisted alongside the API
- * key, and a key only works against the region it was issued for, so there is
- * deliberately no set verb here — switching regions means running `kimchi
- * login` again (headless setups can set KIMCHI_REGION).
+ * `kimchi config region` — show the endpoint region. It is chosen at login and
+ * tied to the API key, so there is no set verb (headless setups can set KIMCHI_REGION).
  */
 function handleRegion(args: string[]): number {
 	if (args.length > 0) {
@@ -117,14 +114,13 @@ function handleRegion(args: string[]): number {
 	}
 
 	const cfg = loadConfig()
-	const current = getRegion(cfg.region)
+	const current = REGIONS[cfg.region]
 	const envVal = process.env[REGION_ENV]
 	if (isRegionId(envVal)) {
 		console.log(`Region: ${current.id} — ${current.label} (from ${REGION_ENV}=${envVal}, overrides config)`)
 	} else {
 		if (envVal) console.warn(`Ignoring invalid ${REGION_ENV}=${envVal} (expected us|eu)`)
-		const suffix = cfg.explicitRegion ? "" : " (default)"
-		console.log(`Region: ${current.id} — ${current.label}${suffix}`)
+		console.log(`Region: ${current.id} — ${current.label}`)
 	}
 	console.log(`Available regions: ${Object.values(REGIONS).map(formatRegionChoice).join(", ")}`)
 	console.log('To switch regions, run "kimchi login" again.')

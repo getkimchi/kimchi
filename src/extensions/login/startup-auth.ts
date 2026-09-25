@@ -141,7 +141,7 @@ async function promptAuthChoice(ctx: ExtensionContext): Promise<"kimchi" | "api-
 async function promptRegionChoice(ctx: ExtensionContext): Promise<RegionId | undefined> {
 	return ctx.ui.custom<RegionId | undefined>((_tui, _theme, _keybindings, done) => {
 		const selector = createRegionSelector({
-			currentRegion: loadConfig().explicitRegion,
+			currentRegion: loadConfig().region,
 			onSelect: (region) => done(region),
 			onBack: () => done(undefined),
 		})

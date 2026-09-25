@@ -21,6 +21,7 @@ function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 	return {
 		apiKey: "test-key",
 		agentConfigDir: "/agent-config-dir",
+		region: "us",
 		llmEndpoint: "https://gateway.test/openai/v1",
 		customLlmEndpoint: undefined,
 		maxToolResultChars: 10_000,

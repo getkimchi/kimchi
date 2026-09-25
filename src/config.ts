@@ -6,10 +6,10 @@ import { writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
 	DEFAULT_REGION,
-	getRegion,
 	isRegionId,
 	openAiBaseUrl,
 	REGION_ENV,
+	REGIONS,
 	type RegionEndpoints,
 	type RegionId,
 	regionEndpoints,
@@ -190,11 +190,8 @@ export type MigrationState = "done" | "skip-forever"
 export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
-	/** Configured region (global config only); DEFAULT_REGION when unset or invalid.
-	 *  Optional so partial test fixtures stay assignable; loadConfig always populates it. */
-	region?: RegionId
-	/** Region set via KIMCHI_REGION or login; undefined when the default applies. */
-	explicitRegion?: RegionId
+	/** KIMCHI_REGION → global config → DEFAULT_REGION; unknown values count as unset. */
+	region: RegionId
 	llmEndpoint: string
 	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
 	customLlmEndpoint: string | undefined
@@ -450,11 +447,10 @@ function parsePreferencesConfig(value: unknown): PreferencesConfig | undefined {
 	}
 }
 
-/** Region set via KIMCHI_REGION or the global config; unknown values count as unset. */
-function configuredRegion(fileRegion: unknown): RegionId | undefined {
+function effectiveRegion(fileRegion: unknown): RegionId {
 	const envRegion = process.env[REGION_ENV]
 	if (isRegionId(envRegion)) return envRegion
-	return isRegionId(fileRegion) ? fileRegion : undefined
+	return isRegionId(fileRegion) ? fileRegion : DEFAULT_REGION
 }
 
 /**
@@ -511,7 +507,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
 	// Explicit telemetry.* config wins over the region defaults.
-	const region = getRegion(configuredRegion(fileRegion))
+	const region = REGIONS[effectiveRegion(fileRegion)]
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -590,14 +586,13 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	}
 
 	// Region is account-level, so only the global config may set it.
-	const explicitRegion = configuredRegion(globalExtras.region)
+	const region = effectiveRegion(globalExtras.region)
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		region: explicitRegion ?? DEFAULT_REGION,
-		explicitRegion,
-		llmEndpoint: extras.llmEndpoint ?? openAiBaseUrl(getRegion(explicitRegion)),
+		region,
+		llmEndpoint: extras.llmEndpoint ?? openAiBaseUrl(REGIONS[region]),
 		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
@@ -653,12 +648,16 @@ export function resolveEndpoints(options?: { configPath?: string; cwd?: string }
 		}
 		cfg = resolvedEndpointsConfigCache.cfg
 	}
-	const endpoints = regionEndpoints(getRegion(cfg.region))
+	return { ...endpointsForRegion(cfg.region), llmEndpoint: cfg.llmEndpoint }
+}
+
+/** Endpoints of a given region, with the same env overrides as resolveEndpoints(). */
+export function endpointsForRegion(region: RegionId): RegionEndpoints {
+	const endpoints = regionEndpoints(REGIONS[region])
 	return {
 		...endpoints,
 		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? endpoints.webAppUrl,
 		platformApiUrl: process.env.KIMCHI_REMOTE_ENDPOINT ?? endpoints.platformApiUrl,
-		llmEndpoint: cfg.llmEndpoint,
 	}
 }
 
@@ -889,9 +888,7 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
-		if (isRegionId(options.region)) {
-			raw.region = options.region
-		}
+		if (options.region) raw.region = options.region
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
 			raw.llmEndpoint = llmEndpoint

@@ -3,7 +3,6 @@ import {
 	anthropicBaseUrl,
 	DEFAULT_REGION,
 	experimentalOpenAiBaseUrl,
-	getRegion,
 	isRegionId,
 	keyValidationUrl,
 	openAiBaseUrl,
@@ -90,24 +89,9 @@ describe("isRegionId", () => {
 	})
 
 	it("rejects Object.prototype keys — only own REGIONS properties count", () => {
-		// `"constructor" in REGIONS` is true via the prototype chain; passing
-		// validation on it would make getRegion hand back Object.prototype
-		// members instead of a KimchiRegion.
 		expect(isRegionId("constructor")).toBe(false)
 		expect(isRegionId("toString")).toBe(false)
 		expect(isRegionId("__proto__")).toBe(false)
 		expect(isRegionId("hasOwnProperty")).toBe(false)
-	})
-})
-
-describe("getRegion", () => {
-	it("returns the region for known ids", () => {
-		expect(getRegion("us")).toBe(us)
-		expect(getRegion("eu")).toBe(eu)
-	})
-
-	it("falls back to the default region for unknown input", () => {
-		expect(getRegion("moon")).toBe(REGIONS[DEFAULT_REGION])
-		expect(getRegion(undefined)).toBe(REGIONS[DEFAULT_REGION])
 	})
 })

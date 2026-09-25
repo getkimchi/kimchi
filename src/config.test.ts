@@ -536,7 +536,6 @@ describe("region config", () => {
 		writeFileSync(configPath, JSON.stringify({}))
 		const cfg = loadConfig({ configPath })
 		expect(cfg.region).toBe("us")
-		expect(cfg.explicitRegion).toBeUndefined()
 		expect(cfg.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
 	})
 
@@ -544,7 +543,6 @@ describe("region config", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
 		const cfg = loadConfig({ configPath })
 		expect(cfg.region).toBe("eu")
-		expect(cfg.explicitRegion).toBe("eu")
 		expect(cfg.llmEndpoint).toBe("https://llm.eu.kimchi.dev/openai/v1")
 		expect(cfg.customLlmEndpoint).toBeUndefined()
 	})

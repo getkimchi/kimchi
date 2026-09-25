@@ -161,13 +161,13 @@ describe("kimchi config region", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("prints the default region when none is configured", async () => {
+	it("prints the default region as us when none is configured", async () => {
 		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
 		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: us — United States (default)")
+		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: us — United States")
 		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toContain("Available regions:")
 		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toContain("eu")
 	})
@@ -177,7 +177,6 @@ describe("kimchi config region", () => {
 		vi.mocked(loadConfig).mockReturnValue({
 			apiKey: "",
 			region: "eu",
-			explicitRegion: "eu",
 		} as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
@@ -192,7 +191,6 @@ describe("kimchi config region", () => {
 		vi.mocked(loadConfig).mockReturnValue({
 			apiKey: "",
 			region: "eu",
-			explicitRegion: "eu",
 		} as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
@@ -206,7 +204,6 @@ describe("kimchi config region", () => {
 		vi.mocked(loadConfig).mockReturnValue({
 			apiKey: "",
 			region: "eu",
-			explicitRegion: "eu",
 		} as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])

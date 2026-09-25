@@ -14,7 +14,7 @@ import {
 	OAuthSelectorComponent,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
-import { clearApiKey, loadConfig, resolveEndpoints } from "./config.js"
+import { clearApiKey, endpointsForRegion, loadConfig } from "./config.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
 	createLoginChoiceSelector,
@@ -26,7 +26,7 @@ import {
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
-import { getRegion, type RegionId } from "./regions.js"
+import type { RegionId } from "./regions.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice
@@ -147,7 +147,7 @@ async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<A
 	return visibleAuthProviders(await originalGetLogoutProviderOptions.call(this))
 }
 
-async function startKimchiBrowserLogin(im: InteractiveMode, region?: RegionId): Promise<void> {
+async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): Promise<void> {
 	const modeLike = im as unknown as { showStatus?: (msg: string) => void; session: SessionLike }
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
@@ -184,13 +184,13 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region?: RegionId): 
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
 	if (!modeLike.showSelector) {
-		await startKimchiBrowserLogin(im)
+		await startKimchiBrowserLogin(im, loadConfig().region)
 		return
 	}
 
 	modeLike.showSelector((done) => {
 		const selector = createRegionSelector({
-			currentRegion: loadConfig().explicitRegion,
+			currentRegion: loadConfig().region,
 			onSelect: (region) => {
 				done()
 				void startKimchiBrowserLogin(im, region)
@@ -211,7 +211,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	if (modeLike.showSelector) {
 		modeLike.showSelector((done) => {
 			const selector = createRegionSelector({
-				currentRegion: loadConfig().explicitRegion,
+				currentRegion: loadConfig().region,
 				onSelect: (region) => {
 					done()
 					void runKimchiApiKeyLogin(im, region)
@@ -225,10 +225,10 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 		})
 		return
 	}
-	await runKimchiApiKeyLogin(im)
+	await runKimchiApiKeyLogin(im, loadConfig().region)
 }
 
-async function runKimchiApiKeyLogin(im: InteractiveMode, region?: RegionId): Promise<void> {
+async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
@@ -249,7 +249,7 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region?: RegionId): Pro
 		if (modeLike.showSelector) showLoginChoiceSelector(im)
 		return
 	}
-	const defaultEndpoint = region ? getRegion(region).llmBaseUrl : resolveEndpoints().llmBaseUrl
+	const defaultEndpoint = endpointsForRegion(region).llmBaseUrl
 	const endpointInput = await modeLike.showExtensionInput(
 		`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`,
 		"",

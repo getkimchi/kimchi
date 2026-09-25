@@ -48,14 +48,8 @@ export const DEFAULT_REGION: RegionId = "us"
 export const REGION_ENV = "KIMCHI_REGION"
 
 export function isRegionId(value: unknown): value is RegionId {
-	// Object.hasOwn, not `value in REGIONS`: the `in` operator walks the
-	// prototype chain, so "constructor"/"toString"/"__proto__" would pass and
-	// getRegion would return Object.prototype members instead of a KimchiRegion.
+	// Object.hasOwn, not `in`: "constructor"/"__proto__" are on the prototype chain.
 	return typeof value === "string" && Object.hasOwn(REGIONS, value)
-}
-
-export function getRegion(id: unknown): KimchiRegion {
-	return isRegionId(id) ? REGIONS[id] : REGIONS[DEFAULT_REGION]
 }
 
 /** Platform API base (`/v1/me`, teleport, agents, sandbox). */

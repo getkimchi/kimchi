@@ -25,7 +25,7 @@ import type {
 	Skill,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 
 // Mock the browser auth flow so authenticate() can be tested without
@@ -765,6 +765,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sessionFactory: async () => asSession(fake),
 			})
 
+			vi.stubEnv("KIMCHI_REGION", "us")
+			vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
 			const result = await testAgent.authenticate({ methodId: "kimchi-agent" })
 
 			expect(result).toEqual({})
@@ -772,11 +777,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// The callback page copy is per-context: ACP-initiated logins (Studio's
 			// in-app flow) must not show the terminal `kimchi login` CLI wording.
 			expect(authenticateViaBrowser).toHaveBeenCalledWith({
-				webAppUrl: undefined,
+				webAppUrl: "https://app.kimchi.dev",
 				successMessage: ACP_SUCCESS_MESSAGE,
 			})
 			expect(ACP_SUCCESS_MESSAGE).not.toContain("CLI")
-			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token", undefined, {})
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token", undefined, { region: "us" })
 			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_test-token")
 		})
 
@@ -984,6 +989,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			return {
 				apiKey,
 				agentConfigDir: tempAgentDir,
+				region: "us",
 				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 				customLlmEndpoint: undefined,
 				maxToolResultChars: 12000,
