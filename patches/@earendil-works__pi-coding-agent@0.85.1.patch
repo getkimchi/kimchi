@@ -6,9 +6,9 @@
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
 #   - Startup resource diagnostics: skill conflicts render as a single dim
-#     summary line ("N skill conflicts — the first one found is used · <key>
-#     to see the list") that expands to the full collision listing via the
-#     shared app.tools.expand toggle, instead of a
+#     summary line ("[N skill conflicts] Some skills were found in multiple
+#     directories. <key> to see the full list.") that expands to the full
+#     collision listing via the shared app.tools.expand toggle, instead of a
 #     full warning-colored listing on every session start. Prompt conflicts
 #     keep upstream's rendering (rare, and genuinely actionable when they
 #     happen). (Upstream candidate.)
@@ -765,7 +765,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1359,8 +1359,22 @@ export class InteractiveMode {
+@@ -1359,8 +1359,21 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -776,14 +776,13 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
 -                this.loadedResourcesContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
 +                const collisionCount = skillDiagnostics.filter((d) => d.type === "collision" && d.collision).length;
 +                const issueCount = skillDiagnostics.length - collisionCount;
-+                const summaryParts = [];
++                let summaryText;
 +                if (collisionCount > 0) {
-+                    summaryParts.push(`${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"} — the first one found is used`);
++                    summaryText = `[${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"}] Some skills were found in multiple directories.` + (issueCount > 0 ? ` Also: ${issueCount} skill issue${issueCount === 1 ? "" : "s"}.` : "");
++                } else {
++                    summaryText = `[${issueCount} skill issue${issueCount === 1 ? "" : "s"}] Some skills need attention.`;
 +                }
-+                if (issueCount > 0) {
-+                    summaryParts.push(`${issueCount} skill issue${issueCount === 1 ? "" : "s"}`);
-+                }
-+                const collapsedText = theme.fg("dim", summaryParts.join(" · ")) + theme.fg("muted", " · ") + keyHint("app.tools.expand", "to see the list");
++                const collapsedText = theme.fg("dim", summaryText) + " " + keyHint("app.tools.expand", "to see the full list.");
 +                const expandedText = `${theme.fg("dim", "[Skill conflicts]")}\n${warningLines}`;
 +                this.loadedResourcesContainer.addChild(new ExpandableText(() => collapsedText, () => expandedText, this.getStartupExpansionState(), 0, 0));
                  this.loadedResourcesContainer.addChild(new Spacer(1));

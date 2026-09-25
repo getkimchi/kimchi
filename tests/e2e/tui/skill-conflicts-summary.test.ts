@@ -41,10 +41,10 @@ test("skill conflicts render as a calm one-line summary that expands via ctrl+o"
 		async () => {
 			await waitForText(terminal, PROMPT_READY, { full: true })
 
-			// Collapsed: a single dim summary naming the count and the tie-break
-			// rule. The full collision listing must NOT be rendered.
-			await waitForText(terminal, "1 skill conflict", { full: true })
-			await waitForText(terminal, "the first one found is used", { full: true })
+			// Collapsed: a single dim summary explaining the conflicts. The full
+			// collision listing must NOT be rendered.
+			await waitForText(terminal, "[1 skill conflict]", { full: true })
+			await waitForText(terminal, "Some skills were found in multiple directories.", { full: true })
 			expect(fullText(terminal)).not.toContain("[Skill conflicts]")
 
 			// ctrl+o (app.tools.expand) expands to the full detail: header plus
