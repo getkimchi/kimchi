@@ -108,12 +108,14 @@ vi.mock("./ext-methods/import-apply.js", () => ({
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import type { Model } from "@earendil-works/pi-ai"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../../extensions/auto-model/state.js"
 import { setExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
@@ -5145,6 +5147,142 @@ describe("newSession model state", () => {
 			code: -32000,
 		})
 		expect(fake.disposed).toBe(true)
+	})
+
+	// A backend-owned routed virtual model arrives as a plain catalog entry on
+	// the kimchi-dev provider (runtime api inherited from the provider — no
+	// kimchi-auto override). It must get the routed row treatment (description +
+	// resolved-pick suffix) exactly like v1 auto did, and auto-beta too.
+	function routedVirtualSession(sessionId: string, modelId: string): FakeAgentSession {
+		const fake = new FakeAgentSession(sessionId)
+		fake.model = {
+			provider: "kimchi-dev",
+			id: modelId,
+			name: modelId === "auto" ? "Auto" : "Auto Beta",
+			input: ["text"],
+			contextWindow: 128_000,
+		}
+		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k3")
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "auto", name: "Auto" },
+				{ provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" },
+				{ provider: "kimchi-dev", id: "kimi-k3", name: "Kimi K3" },
+			],
+		}
+		return fake
+	}
+
+	function modelSelectOptions(res: { configOptions?: Array<{ id: string; type: string }> | null }): Array<{
+		value: string
+		name: string
+		description?: string
+	}> {
+		const modelOption = res.configOptions?.find((opt) => opt.id === "model")
+		expect(modelOption?.type).toBe("select")
+		return (modelOption as unknown as { options: Array<{ value: string; name: string; description?: string }> }).options
+	}
+
+	it("labels a catalog-style backend auto with the routed description", async () => {
+		const sessionId = "session-routed-auto"
+		const fake = routedVirtualSession(sessionId, "auto")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
+			value: "kimchi-dev/auto",
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
+		// The description threads through the models surface as well.
+		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/auto")).toEqual({
+			modelId: "kimchi-dev/auto",
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
+	})
+
+	it("appends the resolved pick to the auto row name for the owning session", async () => {
+		const sessionId = "session-routed-auto-resolved"
+		const fake = routedVirtualSession(sessionId, "auto")
+		setAutoRoutingState(sessionId, {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "kimi-k3", name: "Kimi K3" } as Model<string>,
+			requestedId: "auto",
+		})
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		try {
+			const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const options = modelSelectOptions(res)
+			expect(options.find((o) => o.value === "kimchi-dev/auto")?.name).toBe("Auto (kimi-k3)")
+			// A different virtual row with no resolved pick keeps its base name.
+			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")).toEqual({
+				value: "kimchi-dev/auto-beta",
+				name: "Auto Beta",
+				description: "Picks the best model for your tasks automatically.",
+			})
+		} finally {
+			clearAutoRoutingState(sessionId)
+		}
+	})
+
+	it("appends the resolved pick to the auto-beta row too", async () => {
+		const sessionId = "session-routed-beta-resolved"
+		const fake = routedVirtualSession(sessionId, "auto-beta")
+		setAutoRoutingState(sessionId, {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "glm-5.3-flash", name: "GLM 5.3 Flash" } as Model<string>,
+			requestedId: "auto-beta",
+		})
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		try {
+			const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const options = modelSelectOptions(res)
+			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")?.name).toBe("Auto Beta (glm-5.3-flash)")
+			// The auto row is not the resolved one — base name only.
+			expect(options.find((o) => o.value === "kimchi-dev/auto")?.name).toBe("Auto")
+		} finally {
+			clearAutoRoutingState(sessionId)
+		}
+	})
+
+	it("leaves concrete model rows untouched", async () => {
+		const sessionId = "session-routed-concrete"
+		const fake = routedVirtualSession(sessionId, "kimi-k3")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/kimi-k3")).toEqual({
+			value: "kimchi-dev/kimi-k3",
+			name: "Kimi K3",
+		})
 	})
 
 	it("returns configOptions in newSession response", async () => {

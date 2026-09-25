@@ -1,14 +1,51 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { MessageEndEvent, MessageUpdateEvent, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import type {
+	ExtensionFactory,
+	MessageEndEvent,
+	MessageUpdateEvent,
+	SessionEntry,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { clearAutoRoutingState, getAutoRoutingState } from "../router/state.js"
+
+// The Auto-default gate performs a network lookup; default it to a
+// non-entitled account so existing tests never hit the network, and override
+// per test in the default-install describe below.
+vi.mock("./auto-default-gate.js", () => ({
+	shouldDefaultToAuto: vi.fn(async () => false),
+}))
+
+// The marker lives in settings.json; keep it in memory so each test starts
+// with "not yet applied" and can assert whether it was written.
+const autoDefaultStubs = vi.hoisted(() => ({ applied: false }))
+vi.mock(import("../../config.js"), async (importOriginal) => ({
+	...(await importOriginal()),
+	readAutoDefaultApplied: () => autoDefaultStubs.applied,
+	writeAutoDefaultApplied: () => {
+		autoDefaultStubs.applied = true
+	},
+}))
+
+// The fresh-session default gate reads the persisted default model through the
+// shared settings-watcher; stub it per test.
+const settingsStubs = vi.hoisted(() => ({
+	getDefaultModel: vi.fn<() => string | undefined>(() => undefined),
+	getDefaultProvider: vi.fn<() => string | undefined>(() => undefined),
+}))
+vi.mock("../../settings-watcher.js", () => ({
+	getSettingsManager: () => settingsStubs,
+}))
+
+import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
 	ROUTED_MODEL_RESOLUTION_ENTRY,
 } from "./index.js"
+import { clearAutoRoutingState, getAutoRoutingState } from "./state.js"
 
 const SESSION_ID = "session-1"
 
@@ -236,9 +273,8 @@ describe("auto-model extension", () => {
 		)
 		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
 
-		// Re-selecting auto-beta and resolving to the same pick re-syncs again
-		// (the dedup guard no longer short-circuits it). The notice re-appends
-		// because the per-session dedup was reset on the switch.
+		// Re-selecting auto-beta resets the per-session dedup, so the same pick
+		// re-syncs capabilities and re-appends the notice.
 		onMessageEnd(messageEnd({ model: "auto-beta", responseModel: "kimi-k3" }), c as never)
 		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: { id: "kimi-k3" } })
 		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(2)
@@ -287,10 +323,9 @@ describe("auto-model extension", () => {
 		expect(rendered?.render(120).join("\n").trimEnd()).toBe("auto-beta picked kimi-k3.")
 	})
 
-	it("does not affect v1 'auto' semantics (concrete responses passthrough)", () => {
-		// Attribute-level independence: v1 writes its own state keyed by session;
-		// this extension only reacts to backend-routed responseModel. A concrete
-		// kimchi-dev response (no responseModel) leaves routing state unresolved.
+	it("leaves concrete responses passthrough (no routing state)", () => {
+		// A concrete kimchi-dev response (no responseModel) leaves routing state
+		// unresolved.
 		const { getHandler } = setup()
 		const c = ctx({ modelRegistry: { find: () => model("kimi-k3") } })
 		getHandler<MessageEndEvent>("message_end")(messageEnd({ model: "kimi-k3" }), c as never)
@@ -299,8 +334,224 @@ describe("auto-model extension", () => {
 })
 
 describe("createAutoModelRoutingExtension", () => {
-	it("is idempotent and the default export is wired like v1's factory outcome", () => {
+	it("is idempotent and the default export is wired", () => {
 		expect(() => createAutoModelRoutingExtension()).not.toThrow()
 		expect(autoModelExtension).toBeDefined()
+	})
+})
+
+describe("catalog-driven Auto default (main session)", () => {
+	beforeEach(() => {
+		vi.mocked(shouldDefaultToAuto).mockClear()
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(true)
+		autoDefaultStubs.applied = false
+		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+	})
+
+	function auto(): Model<Api> {
+		return model("auto", { name: "Auto" })
+	}
+
+	function runSessionStart(extension: ExtensionFactory, ctxOverride: Parameters<typeof createContext>[0] = {}) {
+		const { api, getHandler, setModel } = createExtensionApi()
+		extension(api)
+		const c = createContext({
+			model: model("kimi-k2.6"),
+			modelRegistry: { find: () => auto() },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			...ctxOverride,
+		})
+		return {
+			setModel,
+			start: () => getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c),
+		}
+	}
+
+	it("installs Auto as the default for an entitled account when the catalog advertises it", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
+		const { setModel, start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+		expect(autoDefaultStubs.applied).toBe(true)
+	})
+
+	it("notifies on the install", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("kimi-k2.6"),
+			modelRegistry: { find: () => auto() },
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(c.ui.notify).toHaveBeenCalledWith("Auto is now the default model.", "info")
+	})
+
+	it("leaves a switched-away install alone once the default has been applied", async () => {
+		autoDefaultStubs.applied = true
+		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
+		const { setModel, start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+	})
+
+	it("treats a persisted Auto default as restorable, not a fresh install", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		const { setModel, start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
+	it.each([
+		"startup",
+		"new",
+	] as const)("leaves a fresh %s session on its existing model for a non-entitled account", async () => {
+		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
+		const { setModel, start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+	})
+
+	it("does not install when the catalog does not advertise auto", async () => {
+		const { setModel, start } = runSessionStart(autoModelExtension, {
+			modelRegistry: { find: () => undefined },
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+		expect(autoDefaultStubs.applied).toBe(false)
+	})
+
+	it("does not consult the gate when the launch choice is explicit", async () => {
+		populateCliArgs(["--model", "concrete"])
+		const { setModel, start } = runSessionStart(autoModelExtension)
+
+		await start()
+
+		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
+		expect(setModel).not.toHaveBeenCalled()
+	})
+})
+
+describe("main-session CLI model selection", () => {
+	beforeEach(() => {
+		autoDefaultStubs.applied = false
+	})
+
+	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
+		populateCliArgs(["--model", "kimchi-dev/auto"])
+		const extension = createExtensionApi()
+		const setModel = vi.fn(async () => true)
+		Object.assign(extension.api, { setModel })
+		autoModelExtension(extension.api)
+		const autoModel = model("auto", { name: "Auto" })
+		const c = createContext({
+			model: autoModel,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => autoModel },
+		})
+		const start = extension.getHandler<SessionStartEvent>("session_start")
+
+		await start({ type: "session_start", reason: "startup" }, c)
+		await start({ type: "session_start", reason: "reload" }, c)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(autoModel, { persist: true })
+	})
+
+	it("does not persist an ordinary concrete CLI selection", async () => {
+		populateCliArgs(["--model", "kimi-k2.5"])
+		const extension = createExtensionApi()
+		const setModel = vi.fn(async () => true)
+		Object.assign(extension.api, { setModel })
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: model("kimi-k2.5"),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(setModel).not.toHaveBeenCalled()
+	})
+
+	it("records an explicit concrete CLI override of a saved Auto session", async () => {
+		populateCliArgs(["--model", "kimi-k2.5"])
+		const target = model("kimi-k2.5")
+		const extension = createExtensionApi()
+		const setModel = vi.fn(async () => true)
+		Object.assign(extension.api, { setModel })
+		autoModelExtension(extension.api)
+		const entries: SessionEntry[] = [
+			{
+				type: "model_change",
+				id: crypto.randomUUID(),
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				provider: "kimchi-dev",
+				modelId: "auto",
+			},
+		]
+		const c = createContext({
+			model: target,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => entries },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(target, { persist: true })
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+	})
+
+	it("records an explicit concrete CLI override of a saved Auto default on fresh startup", async () => {
+		// Fresh startup: no session entries yet and ctx.model is already the CLI
+		// choice, so the saved default itself is what makes this an override of
+		// Auto — and it must persist.
+		populateCliArgs(["--model", "kimi-k2.5"])
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const target = model("kimi-k2.5")
+		const extension = createExtensionApi()
+		const setModel = vi.fn(async () => true)
+		Object.assign(extension.api, { setModel })
+		autoModelExtension(extension.api)
+		const c = createContext({
+			model: target,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(target, { persist: true })
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+	})
+
+	it("leaves child model selection to the agent runner", async () => {
+		const extension = createExtensionApi()
+		createAutoModelRoutingExtension()(extension.api)
+		const setModel = vi.fn(async () => true)
+		Object.assign(extension.api, { setModel })
+		const c = createContext({
+			model: model("kimi-k2.5"),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, c)
+
+		expect(setModel).not.toHaveBeenCalled()
 	})
 })

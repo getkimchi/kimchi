@@ -62,7 +62,6 @@ export interface AcpMcpFixture extends AcpFixture {
 export interface AcpFixtureOptions {
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
-	routerResponses?: unknown[]
 	/** Email served by the fake `/v1/me`; an @cast.ai address opts into Auto-by-default. Null serves 404. */
 	userEmail?: string | null
 	providerId?: string
@@ -236,7 +235,6 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		responses,
 		models,
 		modelInput,
-		routerResponses,
 		userEmail,
 		providerId = "fake",
 		defaultProvider,
@@ -249,9 +247,9 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const configuredModels = models
 		? resolveModels(models)
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
-	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, routerResponses, userEmail })
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
+	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, userEmail })
 
 	let proc: ChildProcess | null = null
 	let mcp: McpFixture | undefined

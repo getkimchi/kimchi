@@ -1,17 +1,15 @@
 /**
- * Gates Auto to @cast.ai accounts (internal dogfooding) and the
- * `--enable-experimental-features` launch flag.
+ * Entitlement gate for installing Auto as the saved default: cast.ai accounts
+ * only (internal dogfooding).
  *
  * `getMe` is awaited at startup (<=3s); on timeout or failure the gate reports
- * false, leaving the install on whatever default it already had.
+ * false, leaving the install on whatever default it already had. There is no
+ * launch flag and no client-side visibility filter — whether an auto model
+ * appears at all is decided by the backend catalog.
  *
- * Entitlement only says the account is in the audience. Whether Auto is
- * actually installed as the saved default is decided once per install by the
- * `autoDefaultApplied` marker in settings.json (see router/index.ts), so a
- * model chosen afterwards is never overwritten. Entitlement also makes Auto
- * visible: for everyone else it stays in the catalogue for session restoration
- * but is hidden from discovery surfaces (see model-discovery.ts) unless
- * experimental features are enabled.
+ * Entitlement only decides the default install. Whether it happens is decided
+ * once per install by the `autoDefaultApplied` marker in settings.json (see
+ * auto-model/index.ts), so a model chosen afterwards is never overwritten.
  */
 
 import { getMe } from "../../api/me.js"
@@ -34,22 +32,6 @@ export function _resetAutoDefaultGateCache(): void {
 /** @internal — exposed for testing only: seed the cached entitlement without a network lookup. */
 export function _setAutoDefaultGateCache(value: boolean | undefined): void {
 	cachedIsCastAiUser = value
-}
-
-/**
- * Sync read of the cached entitlement, for call sites that cannot await
- * (model-picker discovery filter, role lists).
- *
- * Reports false until the lookup resolves, deliberately collapsing "not
- * entitled" and "not known yet": these call sites render, so the alternative is
- * blocking them on the network. `cli.ts` starts the lookup pre-main to shrink
- * that window, but it is not closed — `session_start` only awaits
- * `shouldDefaultToAuto()` when it is about to install the default, so a resumed
- * session can reach a picker while the lookup is still in flight and briefly
- * omit Auto. It appears on reopen, once the cache is warm.
- */
-export function isAutoEntitledUser(): boolean {
-	return cachedIsCastAiUser ?? false
 }
 
 /** Start the identity lookup without blocking the caller; result is cached for later reads. */

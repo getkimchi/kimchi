@@ -13,7 +13,6 @@ import {
 	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
-	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
@@ -54,6 +53,8 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
+import { warmAutoDefaultGate } from "./extensions/auto-model/auto-default-gate.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
@@ -123,9 +124,6 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
-import { installAutoModelAdapters } from "./extensions/router/adapters.js"
-import { shouldDefaultToAuto, warmAutoDefaultGate } from "./extensions/router/auto-default-gate.js"
-import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -162,7 +160,6 @@ import {
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import {
-	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	readExperimentalModels,
@@ -360,8 +357,8 @@ try {
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
 		// Kick off the /v1/me identity lookup now (result cached process-wide) so
-		// the Auto-discovery filter and the fresh-session default gate never wait
-		// on the network in render paths.
+		// the fresh-session Auto-default gate never waits on the network in render
+		// paths.
 		warmAutoDefaultGate()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
@@ -453,7 +450,6 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
-				injectAutoModel(modelsJsonPath)
 				// Auto-discover a local Ollama server and merge its models into the
 				// registry. Probe is silent on failure — startup is never blocked.
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
@@ -484,7 +480,6 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
-				injectAutoModel(modelsJsonPath)
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
@@ -596,9 +591,6 @@ try {
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
-		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs()) && !(await shouldDefaultToAuto())) {
-			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
-		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
@@ -740,10 +732,9 @@ try {
 				{ id: "extensions.ferment", factory: fermentExtension },
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
-			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
-			autoModelExtension,
-			// Backend-routed virtual models (`auto-beta`, future backend-owned `auto`)
-			// learn + display the concrete pick and re-sync capabilities.
+			// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
+			// the concrete pick, re-sync capabilities, and (main session) install the
+			// catalog-driven Auto default.
 			autoModelRoutingExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, configuredSkillPaths) },

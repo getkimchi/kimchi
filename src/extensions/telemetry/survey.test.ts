@@ -53,6 +53,7 @@ describe("survey telemetry", () => {
 
 	it("emits survey_shown with the survey id", async () => {
 		const ctx = new TelemetryContext(makeConfig())
+		ctx.currentModel = "kimi-k3"
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY })
 
@@ -65,12 +66,17 @@ describe("survey telemetry", () => {
 		expect(attrMap["session.id"]).toBe(ctx.telemetryId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
+		// The common-attr inject stamps the session's selected model on every
+		// survey event; for a routed session this is the virtual id and
+		// routing_model (from extraAttrs) names the concrete pick.
+		expect(attrMap.model).toBe("kimi-k3")
 
 		await ctx.drain()
 	})
 
 	it("emits survey_answered with the abstract survey response fields", async () => {
 		const ctx = new TelemetryContext(makeConfig())
+		ctx.currentModel = "auto"
 
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "mostly_worked" })
 
@@ -84,6 +90,7 @@ describe("survey telemetry", () => {
 		expect(attrMap.question_id).toBe("34f7caf5-7631-42f1-b6ed-d2a42ddde1cd")
 		expect(attrMap.answer_value).toBe("Mostly worked")
 		expect(attrMap.survey_completed).toBe("true")
+		expect(attrMap.model).toBe("auto")
 
 		await ctx.drain()
 	})
@@ -153,13 +160,13 @@ describe("survey telemetry", () => {
 			survey: TEST_SURVEY,
 			submissionId: "submission-1",
 			answerId: "worked_great",
-			extraAttrs: { turn_index: 0, auto_model_used: true, reason_type: "freeform" },
+			extraAttrs: { turn_index: 0, routing_model: "glm-5.3", reason_type: "freeform" },
 		})
 
 		const attrMap = attrs(ctx.logBuffer[0])
 		// turn_index 0 is a valid value and must be present.
 		expect(attrMap.turn_index).toBe("0")
-		expect(attrMap.auto_model_used).toBe("true")
+		expect(attrMap.routing_model).toBe("glm-5.3")
 		expect(attrMap.reason_type).toBe("freeform")
 
 		await ctx.drain()

@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
 import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
@@ -15,7 +16,6 @@ import { setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
-import { resolveEffectiveModel } from "./router/state.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false

@@ -1,11 +1,11 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
+import { formatRoutedModelLabel, resolveEffectiveModel } from "./auto-model/state.js"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
-import { formatRoutedModelLabel, resolveEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {

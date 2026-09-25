@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import type { TelemetryConfig } from "../../config.js"
 import { clampReason, MAX_REASON_LENGTH, trackFeedback, trackModelSwitchFeedback } from "./feedback.js"
 import * as telemetryIndex from "./index.js"
 import { _getTelemetryCtx, _isTelemetryEnabled } from "./index.js"
+import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
+import type { LogRecord } from "./transport.js"
 
 vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
@@ -27,12 +30,44 @@ function enableTelemetry(traceAttrs: Record<string, string> | null = TEST_TRACE)
 	return ctx
 }
 
+function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
+	return {
+		enabled: false,
+		endpoint: "https://test.example.com/logs",
+		metricsEndpoint: "https://test.example.com/metrics",
+		headers: { Authorization: "Bearer test" },
+		apiKey: "",
+		...overrides,
+	}
+}
+
+function attrs(record: LogRecord): Record<string, string> {
+	return Object.fromEntries(
+		record.attributes.map((attr) => [
+			attr.key,
+			"stringValue" in attr.value
+				? attr.value.stringValue
+				: String("intValue" in attr.value ? attr.value.intValue : attr.value.doubleValue),
+		]),
+	)
+}
+
+/** Real emit path (common attrs incl. `model` injected) with a chosen selected model. */
+function enableRealTelemetry(currentModel: string): TelemetryContext {
+	const ctx = new TelemetryContext(makeConfig())
+	ctx.currentModel = currentModel
+	vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
+	vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(ctx as never)
+	return ctx
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const isUUID = expect.stringMatching(UUID_RE)
 
 describe("post-turn feedback telemetry", () => {
 	afterEach(() => {
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 
@@ -45,7 +80,6 @@ describe("post-turn feedback telemetry", () => {
 				sentiment: "positive",
 				reason: "Solved my task",
 				reasonType: "predefined",
-				autoModelUsed: false,
 			}),
 		).not.toThrow()
 		expect(() =>
@@ -58,7 +92,7 @@ describe("post-turn feedback telemetry", () => {
 		vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(false)
 		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue({ emit } as never)
 
-		trackFeedback({ sentiment: "positive", reason: "x", reasonType: "predefined", autoModelUsed: false })
+		trackFeedback({ sentiment: "positive", reason: "x", reasonType: "predefined" })
 
 		trackModelSwitchFeedback({ reason: "x", modelName: "Claude", modelId: "claude-sonnet" })
 
@@ -69,7 +103,7 @@ describe("post-turn feedback telemetry", () => {
 		it("emits one survey_answered with both questions when a reason is provided", () => {
 			const ctx = enableTelemetry()
 
-			trackFeedback({ sentiment: "negative", reason: "Too slow", reasonType: "predefined", autoModelUsed: true })
+			trackFeedback({ sentiment: "negative", reason: "Too slow", reasonType: "predefined" })
 
 			expect(_isTelemetryEnabled()).toBe(true)
 			expect(ctx.emit).toHaveBeenCalledTimes(1)
@@ -82,7 +116,6 @@ describe("post-turn feedback telemetry", () => {
 				answer_value_2: "Too slow",
 				survey_completed: true,
 				...TEST_TRACE,
-				auto_model_used: true,
 				reason_type: "predefined",
 			})
 		})
@@ -94,20 +127,47 @@ describe("post-turn feedback telemetry", () => {
 				sentiment: "positive",
 				reason: "",
 				reasonType: "predefined",
-				autoModelUsed: true,
 				routingModelId: "glm-5.3",
 			})
 
-			expect(ctx.emit).toHaveBeenCalledWith(
-				"survey_answered",
-				expect.objectContaining({ auto_model_used: true, routing_model: "glm-5.3" }),
-			)
+			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", expect.objectContaining({ routing_model: "glm-5.3" }))
+		})
+
+		it("reports the selected virtual id as model for an auto pick", () => {
+			// `model` is the user's selection (the virtual id — the harness keeps
+			// requesting it); routing_model names the concrete pick.
+			const ctx = enableRealTelemetry("auto")
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", routingModelId: "glm-5.3" })
+
+			const attrMap = attrs(ctx.logBuffer[0])
+			expect(attrMap.model).toBe("auto")
+			expect(attrMap.routing_model).toBe("glm-5.3")
+		})
+
+		it("reports the selected virtual id as model for an auto-beta pick", () => {
+			const ctx = enableRealTelemetry("auto-beta")
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", routingModelId: "kimi-k3" })
+
+			const attrMap = attrs(ctx.logBuffer[0])
+			expect(attrMap.model).toBe("auto-beta")
+			expect(attrMap.routing_model).toBe("kimi-k3")
+		})
+
+		it("reports the concrete model as model for a non-routed pick", () => {
+			const ctx = enableRealTelemetry("kimi-k3")
+
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
+
+			const attrMap = attrs(ctx.logBuffer[0])
+			expect(attrMap.model).toBe("kimi-k3")
 		})
 
 		it("omits routing_model when a routed model was not used", () => {
 			const ctx = enableTelemetry()
 
-			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
 
 			const attrs = ctx.emit.mock.calls[0][1] as Record<string, unknown>
 			expect(attrs).not.toHaveProperty("routing_model")
@@ -116,7 +176,7 @@ describe("post-turn feedback telemetry", () => {
 		it("maps positive sentiment to the exact PostHog choice label 'Good'", () => {
 			const ctx = enableTelemetry()
 
-			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
 
 			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", expect.objectContaining({ answer_value: "Good" }))
 		})
@@ -124,7 +184,7 @@ describe("post-turn feedback telemetry", () => {
 		it("omits the second question entirely when the reason is empty", () => {
 			const ctx = enableTelemetry()
 
-			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
 
 			const attrs = ctx.emit.mock.calls[0][1] as Record<string, unknown>
 			expect(attrs).not.toHaveProperty("question_id_2")
@@ -134,7 +194,7 @@ describe("post-turn feedback telemetry", () => {
 		it("omits the request trace attrs when no provider request has happened yet", () => {
 			const ctx = enableTelemetry(null)
 
-			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
 
 			const attrs = ctx.emit.mock.calls[0][1] as Record<string, unknown>
 			expect(attrs).not.toHaveProperty("request.trace_id")
@@ -149,7 +209,6 @@ describe("post-turn feedback telemetry", () => {
 				sentiment: "negative",
 				reason: "broke on /Users/me/secret-project",
 				reasonType: "freeform",
-				autoModelUsed: false,
 			})
 
 			expect(ctx.emit).toHaveBeenCalledWith(
@@ -165,9 +224,9 @@ describe("post-turn feedback telemetry", () => {
 		it("mints a unique survey_submission_id per call", () => {
 			const ctx = enableTelemetry()
 
-			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
 
-			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined", autoModelUsed: false })
+			trackFeedback({ sentiment: "positive", reason: "", reasonType: "predefined" })
 
 			const ids = ctx.emit.mock.calls.map((c) => (c[1] as Record<string, unknown>).survey_submission_id)
 			expect(ids[0]).toMatch(UUID_RE)
@@ -236,7 +295,6 @@ describe("free-form reason size limits on emitted events", () => {
 			sentiment: "negative",
 			reason: "p".repeat(100_000),
 			reasonType: "freeform",
-			autoModelUsed: false,
 		})
 
 		const attrs = ctx.emit.mock.calls[0]?.[1] as Record<string, unknown>
@@ -257,7 +315,7 @@ describe("free-form reason size limits on emitted events", () => {
 	it("leaves a normal reason unflagged", () => {
 		const ctx = enableTelemetry()
 
-		trackFeedback({ sentiment: "positive", reason: "worked well", reasonType: "freeform", autoModelUsed: false })
+		trackFeedback({ sentiment: "positive", reason: "worked well", reasonType: "freeform" })
 
 		const attrs = ctx.emit.mock.calls[0]?.[1] as Record<string, unknown>
 		expect(attrs.answer_value_2).toBe("worked well")

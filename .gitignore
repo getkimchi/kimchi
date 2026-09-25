@@ -79,3 +79,6 @@ vendor/superpowers/
 
 # Bundled by scripts/copy-resources.js for development and releases.
 /resources/skills/create-skill/scripts/validate-skill.mjs
+
+# E2E failure artifacts (written by the test fixtures on failure)
+*.fail.*.log

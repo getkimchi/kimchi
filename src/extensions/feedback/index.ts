@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
+import { isAutoRoutedModel } from "../auto-model/constants.js"
+import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
-import { isAutoModel } from "../router/constants.js"
-import { getAutoRoutingState, isRoutedModel } from "../router/state.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
@@ -95,7 +95,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
 		state = "inviting"
 		const sessionId = ctx.sessionManager.getSessionId()
-		autoModelUsed = isAutoModel(ctx.model) || isRoutedModel(ctx.model, sessionId)
+		autoModelUsed = isAutoRoutedModel(ctx.model)
 		// Capture the concrete pick the router served, so `routing_model` reports
 		// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
 		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
@@ -107,15 +107,12 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// Only react in TUI mode — headless modes can't show a dialog.
 		if (ctx.mode !== "tui" || !ctx.hasUI) return
 		// Only react when the previous model was auto or a routed virtual model.
-		if (
-			!event.previousModel ||
-			(!isAutoModel(event.previousModel) && !isRoutedModel(event.previousModel, ctx.sessionManager.getSessionId()))
-		) {
+		if (!event.previousModel || !isAutoRoutedModel(event.previousModel)) {
 			return
 		}
 		// Only react when the new model is a concrete model — skip auto/multi-model.
 		const newModel = event.model
-		if (isAutoModel(newModel)) return
+		if (isAutoRoutedModel(newModel)) return
 		if (newModel.id === MULTI_MODEL_ID) return
 
 		const modelId = newModel.id
@@ -265,7 +262,6 @@ async function handleRating(
 			sentiment,
 			reason,
 			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
-			autoModelUsed,
 			routingModelId: autoModelUsed ? routedUsedId : undefined,
 		})
 	} catch (err) {

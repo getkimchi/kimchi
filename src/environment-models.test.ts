@@ -66,13 +66,13 @@ it("discovers with the override and leaves the saved model cache byte-identical"
 		expect.stringContaining("/metadata"),
 		expect.objectContaining({ headers: { Authorization: "Bearer environment-key" } }),
 	)
-	expect(discovered.providers["kimchi-dev"].models?.map((model) => model.id)).toEqual(["environment-model", "auto"])
+	expect(discovered.providers["kimchi-dev"].models?.map((model) => model.id)).toEqual(["environment-model"])
 	expect(discovered.providers["kimchi-experimental"].models?.map((model) => model.id)).toEqual(["environment-model"])
 	expect(readFileSync(modelsPath, "utf-8")).toBe(original)
 	expect(existsSync(authPath)).toBe(false)
 })
 
-it("collision guard: does not synthesize a second auto when the fetched catalog advertises one", async () => {
+it("passes a backend-advertised auto through untouched (backend owns the catalog)", async () => {
 	const original = JSON.stringify({ providers: providersFor("saved-model") })
 	writeFileSync(modelsPath, original)
 	const backendAuto: ModelMetadata = {

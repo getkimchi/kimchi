@@ -1,9 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai"
 
 export const AUTO_MODEL_PROVIDER = "kimchi-dev"
-export const AUTO_MODEL_ID = "auto"
-export const AUTO_MODEL_REF = `${AUTO_MODEL_PROVIDER}/${AUTO_MODEL_ID}`
-export const AUTO_MODEL_API = "kimchi-auto"
 
 /** Display name for the Auto router. */
 export const AUTO_MODEL_NAME = "Auto"
@@ -25,8 +22,18 @@ export const AUTO_MODEL_DESCRIPTION = "Picks the best model for your tasks autom
  */
 export const AUTO_MODEL_PI_NAME = `${AUTO_MODEL_NAME} — ${AUTO_MODEL_DESCRIPTION}`
 
-export function isAutoModel<T extends Pick<Model<string>, "provider" | "id">>(
+/**
+ * Whether the model is a routed virtual model, by the `auto*` naming
+ * convention: any `kimchi-dev` model whose id starts with `auto` is
+ * backend-routed (`auto` today, `auto-beta`, future variants) — the backend
+ * picks and serves a concrete model per request and reports the pick in the
+ * response `model` field.
+ *
+ * Concrete `kimchi-dev` models never start with `auto`; the `auto*` id
+ * namespace belongs to backend routing.
+ */
+export function isAutoRoutedModel<T extends Pick<Model<string>, "provider" | "id">>(
 	model: T | undefined,
-): model is T & { provider: typeof AUTO_MODEL_PROVIDER; id: typeof AUTO_MODEL_ID } {
-	return model?.provider === AUTO_MODEL_PROVIDER && model.id === AUTO_MODEL_ID
+): model is T & { provider: typeof AUTO_MODEL_PROVIDER; id: `auto${string}` } {
+	return model?.provider === AUTO_MODEL_PROVIDER && model.id.startsWith("auto")
 }

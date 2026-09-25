@@ -4,10 +4,10 @@ import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/auto-model/state.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
-import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/router/state.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
 import {
@@ -886,7 +886,7 @@ describe("status line pinning", () => {
 	})
 
 	it("keeps the plain Auto label even after routing resolves", () => {
-		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6"), requestedId: "auto" })
 
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
@@ -896,7 +896,7 @@ describe("status line pinning", () => {
 
 	it("keeps the multi-model label unchanged when the active model is Auto", () => {
 		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
-		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6"), requestedId: "auto" })
 
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
@@ -1296,7 +1296,11 @@ describe("StatusLine narrow-terminal width invariant", () => {
 		withPinned(["agents", "credits", "budget"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
 			setTestBilling()
-			setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: concreteModel("kimi-k2.6"),
+				requestedId: "auto",
+			})
 			const ctx = createMockContext({
 				percent: 87,
 				modelId: "auto",
