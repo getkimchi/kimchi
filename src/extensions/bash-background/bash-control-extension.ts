@@ -139,8 +139,10 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// finished without emitting a resolved result (throwIfTerminal path).
 	let claimedExits = new Map<string, string>()
 	let disposed = false
+	const terminalDetails = new Map<string, Record<string, unknown>>()
 
 	pi.on("session_start", () => {
+		terminalDetails.clear()
 		pendingHandles = new Set()
 		activeControlCalls = new Map()
 		claimedExits = new Map()
@@ -213,10 +215,23 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			})
 	}
 
+	// Pi discards details when execute throws. Terminal updates precede tool_result,
+	// whose supported return value preserves metadata in history without changing isError.
+	pi.on("tool_execution_update", (event) => {
+		if (event.toolName !== "bash" && event.toolName !== BASH_CONTROL_TOOL_NAME) return
+		const details: unknown = event.partialResult?.details
+		if (!details || typeof details !== "object") return
+		const value = details as Record<string, unknown>
+		if (value.exited === true && value.display) terminalDetails.set(event.toolCallId, value)
+	})
+
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "bash" && event.toolName !== BASH_CONTROL_TOOL_NAME) return
-		const details = readDetails(event.details)
-		if (!details.handle) return
+		const saved = terminalDetails.get(event.toolCallId)
+		terminalDetails.delete(event.toolCallId)
+		const restored = event.isError && saved ? { details: saved } : undefined
+		const details = readDetails(restored?.details ?? event.details)
+		if (!details.handle) return restored
 		// A background handle exists: the model needs bash_control from this turn
 		// on. Reveal in the same handler that closes the gate, so the tool is
 		// visible before any gate block reason can name it.
@@ -242,6 +257,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// checkin:false + exited:false is ambiguous (transient error that
 		// never observed the process state) — keep the gate closed rather
 		// than risk opening it while the process still runs.
+		return restored
 	})
 
 	pi.on("tool_execution_start", (event) => {
@@ -252,6 +268,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	})
 
 	pi.on("tool_execution_end", (event) => {
+		terminalDetails.delete(event.toolCallId)
 		const handle = activeControlCalls.get(event.toolCallId)
 		if (handle === undefined) return
 		activeControlCalls.delete(event.toolCallId)
@@ -286,6 +303,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 
 	pi.on("session_shutdown", () => {
 		disposed = true
+		terminalDetails.clear()
 		pendingHandles.clear()
 		activeControlCalls.clear()
 		claimedExits.clear()

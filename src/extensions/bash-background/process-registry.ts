@@ -47,6 +47,8 @@ export const DEFAULT_TAIL_BYTES = 8192
 export type ProcessState = "running" | "stopped" | "exited"
 
 export interface SpawnOptions {
+	toolCallId?: string
+	description?: string
 	/** Checkin cadence in seconds (informational; the tool arms the timer). */
 	intervalSeconds: number
 	/** Absolute wall-clock deadline in ms (Date.now() + ...). */
@@ -66,6 +68,26 @@ export interface TailSnapshot {
 	exitCode: number | null
 	/** Set when the process was killed (`"stop"` | `"deadline"` | `"aborted"`). */
 	reason: string | null
+}
+
+/** Detached, immutable display data. Reading it never changes process ownership. */
+export interface ProcessDisplaySnapshot {
+	readonly handle: string
+	readonly command: string
+	readonly cwd: string
+	readonly toolCallId?: string
+	readonly description?: string
+	readonly startedAt: number
+	readonly observedAt: number
+	readonly finishedAt?: number
+	readonly lastOutputAt?: number
+	readonly deadlineMs: number
+	readonly state: ProcessState
+	readonly exitCode: number | null
+	readonly reason: string | null
+	readonly output: string
+	readonly outputBytes: number
+	readonly omittedBytes: number
 }
 
 /** Full output snapshot for final results (mirrors upstream OutputSnapshot). */
@@ -258,6 +280,14 @@ class OutputAccumulator {
 
 export interface ProcessEntry {
 	readonly handle: string
+	readonly command: string
+	readonly cwd: string
+	readonly toolCallId?: string
+	readonly description?: string
+	readonly startedAt: number
+	finishedAt?: number
+	lastOutputAt?: number
+	totalOutputBytes: number
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
@@ -278,10 +308,8 @@ export interface ProcessEntry {
  * over-sized chunk). `snapshot(maxBytes)` returns the last `maxBytes`
  * bytes as a UTF-8 string.
  *
- * Note: byte-level truncation can split a multi-byte UTF-8 sequence at the
- * head of the window. This is acceptable for a command-output tail window
- * (overwhelmingly ASCII) and matches the granularity of upstream bash
- * truncation.
+ * Snapshot boundaries exclude partial UTF-8 characters, including a trailing
+ * sequence whose remaining bytes have not arrived yet.
  */
 export class OutputRingBuffer {
 	private chunks: Buffer[] = []
@@ -327,7 +355,10 @@ export class OutputRingBuffer {
 			chunk.copy(result, remaining - take, chunk.length - take, chunk.length)
 			remaining -= take
 		}
-		return { text: result.toString("utf8"), bytes: limit }
+		let start = 0
+		while (start < result.length && (result[start] & 0xc0) === 0x80) start++
+		const text = new TextDecoder().decode(result.subarray(start), { stream: true })
+		return { text, bytes: Math.min(result.length - start, Buffer.byteLength(text)) }
 	}
 
 	clear(): void {
@@ -351,6 +382,10 @@ export interface ProcessRegistry {
 	): string
 	/** Tail-window snapshot of accumulated output + current state. */
 	snapshotTail(handle: string, maxBytes?: number): TailSnapshot
+	displaySnapshot(handle: string, maxBytes?: number): ProcessDisplaySnapshot | undefined
+	listDisplaySnapshots(maxBytes?: number): readonly ProcessDisplaySnapshot[]
+	/** Initial + settled terminal snapshots; removal/shutdown detach observers. */
+	observeDisplay(handle: string, listener: (snapshot: ProcessDisplaySnapshot) => void, maxBytes?: number): () => void
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
 	finalSnapshot(handle: string): FinalSnapshot | undefined
 	/** Kill a running process and await abort settlement. `reason` defaults to "stop". */
@@ -374,6 +409,7 @@ export interface ProcessRegistry {
 export function createProcessRegistry(): ProcessRegistry {
 	const entries = new Map<string, ProcessEntry>()
 	const spillPaths = new Set<string>()
+	const displayObservers = new Map<string, Set<() => void>>()
 
 	function clearDeadlineTimer(entry: ProcessEntry): void {
 		if (entry.deadlineTimer) {
@@ -430,6 +466,12 @@ export function createProcessRegistry(): ProcessRegistry {
 
 		const entry: ProcessEntry = {
 			handle,
+			command,
+			cwd,
+			toolCallId: opts.toolCallId,
+			description: opts.description,
+			startedAt: Date.now(),
+			totalOutputBytes: 0,
 			state: "running",
 			exitCode: null,
 			reason: null,
@@ -446,6 +488,8 @@ export function createProcessRegistry(): ProcessRegistry {
 
 		const rawExec = ops.exec(command, cwd, {
 			onData: (data: Buffer) => {
+				if (data.length > 0) entry.lastOutputAt = Date.now()
+				entry.totalOutputBytes += data.length
 				buffer.append(data)
 				accumulator.append(data)
 			},
@@ -475,6 +519,8 @@ export function createProcessRegistry(): ProcessRegistry {
 			.finally(() => {
 				clearDeadlineTimer(entry)
 				accumulator.finish()
+				entry.finishedAt = Date.now()
+				notifyDisplay(handle)
 			})
 
 		entry.execPromise = execPromise
@@ -490,6 +536,73 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 		const { text, bytes } = entry.buffer.snapshot(maxBytes)
 		return { text, bytes, state: entry.state, exitCode: entry.exitCode, reason: entry.reason }
+	}
+
+	function displaySnapshot(handle: string, maxBytes = DEFAULT_TAIL_BYTES): ProcessDisplaySnapshot | undefined {
+		const entry = entries.get(handle)
+		if (!entry) return undefined
+		const { text, bytes } = entry.buffer.snapshot(maxBytes)
+		return Object.freeze({
+			handle,
+			command: entry.command,
+			cwd: entry.cwd,
+			toolCallId: entry.toolCallId,
+			description: entry.description,
+			startedAt: entry.startedAt,
+			observedAt: Date.now(),
+			finishedAt: entry.finishedAt,
+			lastOutputAt: entry.lastOutputAt,
+			deadlineMs: entry.deadlineMs,
+			state: entry.state,
+			exitCode: entry.exitCode,
+			reason: entry.reason,
+			output: text,
+			outputBytes: bytes,
+			omittedBytes: Math.max(0, entry.totalOutputBytes - bytes),
+		})
+	}
+
+	function listDisplaySnapshots(maxBytes = DEFAULT_TAIL_BYTES): readonly ProcessDisplaySnapshot[] {
+		return Object.freeze(
+			[...entries.keys()].flatMap((handle) => {
+				const snapshot = displaySnapshot(handle, maxBytes)
+				return snapshot ? [snapshot] : []
+			}),
+		)
+	}
+
+	function notifyDisplay(handle: string): void {
+		for (const notify of displayObservers.get(handle) ?? []) {
+			try {
+				notify()
+			} catch {
+				// A disposed/broken view must never change process settlement or removal.
+				displayObservers.get(handle)?.delete(notify)
+			}
+		}
+	}
+
+	function observeDisplay(
+		handle: string,
+		listener: (snapshot: ProcessDisplaySnapshot) => void,
+		maxBytes = DEFAULT_TAIL_BYTES,
+	): () => void {
+		const notify = () => {
+			const snapshot = displaySnapshot(handle, maxBytes)
+			if (snapshot) listener(snapshot)
+		}
+		if (!entries.has(handle)) return () => {}
+		let listeners = displayObservers.get(handle)
+		if (!listeners) {
+			listeners = new Set()
+			displayObservers.set(handle, listeners)
+		}
+		listeners.add(notify)
+		notify()
+		return () => {
+			listeners.delete(notify)
+			if (listeners.size === 0) displayObservers.delete(handle)
+		}
 	}
 
 	async function kill(handle: string, reason = "stop"): Promise<void> {
@@ -554,6 +667,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		if (!entry) return
 		await kill(handle)
 		await closeOutput(entry)
+		notifyDisplay(handle)
+		displayObservers.delete(handle)
 		entries.delete(handle)
 	}
 
@@ -561,6 +676,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		const activeEntries = [...entries.values()]
 		await Promise.all(activeEntries.map((entry) => kill(entry.handle)))
 		await Promise.all(activeEntries.map(closeOutput))
+		for (const entry of activeEntries) notifyDisplay(entry.handle)
+		displayObservers.clear()
 		entries.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
@@ -568,6 +685,9 @@ export function createProcessRegistry(): ProcessRegistry {
 
 	return {
 		spawn,
+		displaySnapshot,
+		listDisplaySnapshots,
+		observeDisplay,
 		snapshotTail,
 		finalSnapshot,
 		kill,

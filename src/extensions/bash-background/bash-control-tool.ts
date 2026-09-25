@@ -18,9 +18,11 @@
  * The tool reads the session registry via `getSessionRegistry()` so it
  * shares one process table with the background `bash` tool.
  */
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
+import type { BashToolDetails, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { renderBashCall, renderBashResult } from "./bash-display.js"
 import { awaitCheckin } from "./checkin.js"
+import type { ProcessDisplaySnapshot } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
@@ -49,7 +51,8 @@ const bashControlSchema = Type.Object({
 export type BashControlInput = Static<typeof bashControlSchema>
 
 /** Details returned by bash_control. */
-export interface BashControlDetails {
+export interface BashControlDetails extends BashToolDetails {
+	display?: ProcessDisplaySnapshot
 	/** The handle that was controlled. */
 	handle: string
 	/** Whether the process has exited. */
@@ -88,7 +91,7 @@ export function createBashControlToolDefinition(
 		_toolCallId: string,
 		params: BashControlInput,
 		signal: AbortSignal | undefined,
-		_onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
+		onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
 	): Promise<{
 		content: { type: "text"; text: string }[]
 		details: BashControlDetails
@@ -147,6 +150,7 @@ export function createBashControlToolDefinition(
 			await registry.kill(handle)
 			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
+			const display = registry.displaySnapshot(handle)
 			const finalExitCode = snapshot.exitCode
 			await registry.remove(handle).catch(() => {})
 			const stoppedOutput = final?.content ?? snapshot.text
@@ -167,6 +171,7 @@ export function createBashControlToolDefinition(
 					exitCode: finalExitCode,
 					action: "stop",
 					reason: snapshot.reason ?? "stop",
+					display,
 					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
 				},
 			}
@@ -176,10 +181,26 @@ export function createBashControlToolDefinition(
 		// If the process already exited (e.g. between the previous checkin and
 		// this call), return the final output immediately.
 		if (entry.state !== "running") {
+			await registry.whenExited(handle)
 			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
-			await registry.remove(handle).catch(() => {})
+			const display = registry.displaySnapshot(handle)
 			const fullOutput = final?.content ?? snapshot.text
+			onUpdate?.({
+				content: [{ type: "text", text: fullOutput }],
+				details: {
+					handle,
+					action,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					reason: snapshot.reason,
+					display,
+					...(final?.truncation?.truncated
+						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+						: {}),
+				},
+			})
+			await registry.remove(handle).catch(() => {})
 			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
 			return {
 				content: [{ type: "text", text: fullOutput }],
@@ -189,6 +210,10 @@ export function createBashControlToolDefinition(
 					exitCode: snapshot.exitCode,
 					action: "continue",
 					reason: snapshot.reason,
+					display,
+					...(final?.truncation?.truncated
+						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+						: {}),
 				},
 			}
 		}
@@ -217,15 +242,49 @@ export function createBashControlToolDefinition(
 		const intervalSeconds = entry.intervalSeconds
 		let snapshot: ReturnType<typeof registry.snapshotTail>
 		try {
-			snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+			snapshot = await awaitCheckin(
+				registry,
+				handle,
+				intervalSeconds,
+				onUpdate
+					? (display) =>
+							onUpdate({
+								content: [{ type: "text", text: display.output }],
+								details: {
+									handle,
+									action,
+									exited: display.state !== "running",
+									exitCode: display.exitCode,
+									checkin: display.state === "running",
+									reason: display.reason,
+									display,
+								},
+							})
+					: undefined,
+			)
 		} finally {
 			signal?.removeEventListener("abort", onAbort)
 		}
 		const exited = snapshot.state !== "running"
+		const display = registry.displaySnapshot(handle)
 		if (exited) {
 			const final = registry.finalSnapshot(handle)
-			await registry.remove(handle).catch(() => {})
 			const fullOutput = final?.content ?? snapshot.text
+			onUpdate?.({
+				content: [{ type: "text", text: fullOutput }],
+				details: {
+					handle,
+					action,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					reason: snapshot.reason,
+					display,
+					...(final?.truncation?.truncated
+						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+						: {}),
+				},
+			})
+			await registry.remove(handle).catch(() => {})
 			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
 			return {
 				content: [{ type: "text", text: fullOutput }],
@@ -235,6 +294,10 @@ export function createBashControlToolDefinition(
 					exitCode: snapshot.exitCode,
 					action: "continue",
 					reason: snapshot.reason,
+					display,
+					...(final?.truncation?.truncated
+						? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+						: {}),
 				},
 			}
 		}
@@ -251,6 +314,7 @@ export function createBashControlToolDefinition(
 				action: "continue",
 				checkin: true,
 				reason: null,
+				display,
 			},
 		}
 	}
@@ -260,6 +324,8 @@ export function createBashControlToolDefinition(
 		label: "bash_control",
 		description: BASH_CONTROL_TOOL_DESCRIPTION,
 		parameters: bashControlSchema,
+		renderCall: renderBashCall,
+		renderResult: renderBashResult,
 		execute: execute as ToolDefinition<typeof bashControlSchema, BashControlDetails>["execute"],
 	}
 }
