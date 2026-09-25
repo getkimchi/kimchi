@@ -1,19 +1,21 @@
 ---
 name: glab-cli
-description: Use the GitLab CLI (`glab`) for merge request review (as reviewer or author), pipeline/job troubleshooting, and general GitLab operations. Use when interacting with MRs, reviews, comments, approvals, CI pipelines, jobs, issues, or releases on GitLab — including reading discussions, posting notes, fetching pipeline logs, or triaging job failures.
+description: Use the GitLab CLI (`glab`) for MRs, reviews, approvals, issues, releases, and CI pipelines — reading discussions, posting notes, fetching job traces, triaging failures. Prefer `glab` over web URLs.
 ---
 
 # glab CLI
 
 `glab` is the canonical CLI for GitLab. Prefer it over scraping web URLs or guessing API paths. Discover flags with `glab <cmd> --help` rather than enumerating here.
 
-See `## Output & Truncation` and `## Consent & Irreversible Actions` for general rules.
-
 Auth: `glab auth status`. If logged out, ask the user to run `glab auth login`.
 
 Project: inferred from cwd. Pass `-R OWNER/REPO` (or `GROUP/SUBGROUP/REPO`) when outside.
 
 Terminology: **MR** = merge request, **note** = comment, **discussion** = thread, **pipeline** = CI run, **job** = CI step.
+
+Consent: posting notes/approving, merging, releasing, and any `glab api` write are external actions — explicit user approval first; read-only `glab` commands are fine.
+
+Output: pipeline/job traces and `--paginate` on large result sets are huge — cap with `| tail -N`, `--jq` filters, or per-page fetches. For big MR diffs, list changed paths first (diffs endpoint `--jq '.[].new_path'`), then read targeted files.
 
 ## MR review — non-obvious bits
 

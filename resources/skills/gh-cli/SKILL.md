@@ -1,17 +1,19 @@
 ---
 name: gh-cli
-description: Use the GitHub CLI (`gh`) for pull request review (as reviewer or author), workflow run troubleshooting, and general GitHub operations. Use when interacting with PRs, reviews, comments, CI checks, GitHub Actions runs, issues, or releases — including reading inline review comments, posting reviews, fetching CI logs, or triaging failures.
+description: Use the GitHub CLI (`gh`) for PRs, reviews, issues, releases, and Actions/CI runs — reading review threads, posting reviews, fetching failed run logs, triaging checks. Prefer `gh` over web URLs.
 ---
 
 # gh CLI
 
 `gh` is the canonical interface for GitHub. Prefer it over scraping web URLs or guessing API paths. Discover flags with `gh <cmd> --help` rather than enumerating here.
 
-See `## Output & Truncation` and `## Consent & Irreversible Actions` for general rules.
-
 Auth: `gh auth status`. If logged out, ask the user to run `gh auth login`.
 
 Repo: inferred from cwd. Pass `-R OWNER/REPO` when outside the repo.
+
+Consent: posting reviews/comments, merging, releasing, and any `gh api` write are external actions — explicit user approval first; read-only `gh` commands are fine.
+
+Output: `gh run view --log` and `--paginate` on large result sets are huge — default to `--log-failed`, cap with `--jq`/`--limit`, and pipe through `tail -N`. For big PR diffs, list changed paths first (`gh pr diff <N> --name-only`), then read targeted files.
 
 ## PR review — non-obvious bits
 
@@ -41,7 +43,7 @@ Reply to a specific inline thread:
 gh api repos/OWNER/REPO/pulls/123/comments/COMMENT_ID/replies -f body="fixed in abc1234"
 ```
 
-Top-level review verbs: `gh pr review <N> --approve|--request-changes|--comment -b "…"` (see consent section before posting).
+Top-level review verbs: `gh pr review <N> --approve|--request-changes|--comment -b "…"` — posting a review is an external action; get explicit user approval first.
 
 ## Workflow runs
 

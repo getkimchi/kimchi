@@ -46,11 +46,10 @@ describe("formatEnvironmentSection", () => {
 				"",
 				"- OS: Linux",
 				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
-				"- Raw platform: linux",
+				"- Platform: linux",
 				"- CPU architecture: x64",
 				"- Shell: /bin/bash",
 				"- Shell family: posix",
-				"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 				"- Username: testuser",
 				'- Home directory: "/home/testuser"',
 				'- Working directory: "/home/testuser/projects/myapp"',
@@ -146,15 +145,17 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("verbatim quote of your own previous assistant message")
 	})
 
-	it("caps GitLab merge request diffs before targeted reads", () => {
+	it("leaves gh/glab output-capping guidance to the bundled skills", () => {
 		const result = buildSystemPrompt({
 			tools,
 			env: testEnv,
 			mode: "single",
 		})
 
-		expect(result).toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
-		expect(result).toContain("--paginate")
+		// The gh/glab CLI bullet moved into resources/skills/{gh-cli,glab-cli}:
+		// the prompt keeps only the generic Bash cap.
+		expect(result).not.toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
+		expect(result).toContain("git diff --stat")
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
@@ -250,9 +251,20 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("available_skills")
-			expect(result).toContain("deploy")
+			expect(result).toContain("## Skills")
+			expect(result).toContain("**deploy**")
 			expect(result).toContain("Deploy the app to production")
+			expect(result).toContain("SKILL.md")
+			// Codex-style markdown catalog: name + description, no XML tags.
+			expect(result).not.toContain("<available_skills>")
+		})
+
+		it("truncates over-budget skill descriptions at a word boundary", () => {
+			const long = "A very long description. ".repeat(20)
+			const skills = [createSkill({ name: "verbose", description: long })]
+			const result = buildSystemPrompt({ tools, env: testEnv, skills, mode: "single" })
+			expect(result).toContain("…")
+			expect(result).not.toContain(long.trim())
 		})
 
 		it("excludes skills with disableModelInvocation", () => {
@@ -279,7 +291,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
 			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
@@ -534,7 +546,7 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "subagent",
 			})
-			expect(result).toContain("available_skills")
+			expect(result).toContain("## Skills")
 			expect(result).toContain("deploy")
 		})
 
@@ -547,7 +559,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
 			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
@@ -646,7 +658,7 @@ describe("buildSystemPrompt", () => {
 			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
 			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
 			expect(result).toContain("the bash tool's `timeout` parameter")
-			expect(result).toContain("Never run interactive commands")
+			expect(result).toContain("avoid interactive CLI flags")
 		})
 
 		it("keeps phase guidelines in subagent mode even without set_phase", () => {
@@ -723,19 +735,101 @@ describe("buildSystemPrompt", () => {
 				currentModelId: "minimax-m3",
 				mode: "single",
 			})
-			// New behavior: default is to handle work directly, do not spawn subagents.
-			expect(result).toContain("Handle tasks directly yourself.")
-			expect(result).toContain("Do not spawn subagents")
-			expect(result).toContain("only do so when the user explicitly asks for delegation")
-			// When a subagent IS spawned, default to the parent's model and only
-			// use a different model if the user explicitly instructs it.
-			expect(result).toContain("pass your own model ID")
-			expect(result).toContain("by default")
-			expect(result).toContain("only use a different model if the user explicitly instructs")
+			// New behavior: default is to handle work directly, subagents are opt-in.
+			expect(result).toContain("handle tasks directly yourself")
+			expect(result).toContain("Only spawn `Agent` subagents when the user explicitly asks")
+			expect(result).toContain("pass your own model ID in `model`")
 			// Old autonomous-delegate phrasing must be gone.
 			expect(result).not.toContain("clearly beneficial")
 			expect(result).not.toContain("MUST always pass")
 			expect(result).not.toContain("never delegate to a different model")
+		})
+	})
+
+	describe("hasUserLoop gating", () => {
+		it("defaults to user-present behavior when hasUserLoop is omitted", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+			expect(result).toContain("## Consent & Irreversible Actions")
+			expect(result).toContain("## Harness Notes and Approval")
+			expect(result).toContain("## Documents")
+			expect(result).toContain("orients the user")
+			expect(result).not.toContain("## Autonomous Session")
+		})
+
+		it("keeps interactive sections when hasUserLoop is true", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
+			expect(result).toContain("## Consent & Irreversible Actions")
+			expect(result).toContain("## Harness Notes and Approval")
+			expect(result).toContain("## Documents")
+			expect(result).not.toContain("## Autonomous Session")
+		})
+
+		it("replaces user-presence-only sections in userless sessions", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			expect(result).not.toContain("## Consent & Irreversible Actions")
+			expect(result).not.toContain("## Harness Notes and Approval")
+			expect(result).not.toContain("## Documents")
+			expect(result).toContain("## Autonomous Session")
+			expect(result).toContain("fully autonomous with no human available")
+			expect(result).toContain("Proceed without asking for approval")
+		})
+
+		it("drops the orient-the-user ritual in userless single-model sessions", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "single",
+				hasUserLoop: false,
+				currentModelId: "kimi-k3",
+			})
+			expect(result).not.toContain("orients the user")
+			expect(result).not.toContain("user's window to interrupt")
+			// The non-interactive core of the single-model section stays.
+			expect(result).toContain("## Single-Model Mode")
+			expect(result).toContain("Your model ID is `kimi-k3`")
+			expect(result).toContain("Only spawn `Agent` subagents when the user explicitly asks")
+		})
+
+		it("keeps task-execution sections regardless of the gate", () => {
+			const gated = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			expect(gated).toContain("## Guidelines")
+			expect(gated).toContain("## Tool Selection")
+			expect(gated).toContain("## Environment")
+		})
+
+		it("keeps Documents for userless orchestrator sessions and swaps the orient bullet", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", hasUserLoop: false })
+			// Multi-agent handoff artifacts still need the section even without a user.
+			expect(result).toContain("## Documents")
+			expect(result).not.toContain("Orient the user per Orchestration")
+			expect(result).toContain("Proceed autonomously per Orchestration")
+		})
+
+		it("keeps Documents for userless subagent sessions", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "subagent", hasUserLoop: false })
+			expect(result).toContain("## Documents")
+		})
+
+		it("keeps the orient bullet in interactive orchestrator sessions", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", hasUserLoop: true })
+			expect(result).toContain("Orient the user per Orchestration")
+			expect(result).not.toContain("Proceed autonomously per Orchestration")
+		})
+
+		it("keeps the phase payload in userless sessions when the phase tool is present", () => {
+			const result = buildSystemPrompt({
+				tools: [...tools, { name: "set_phase", description: "Set the current work phase" }],
+				env: testEnv,
+				mode: "single",
+				hasUserLoop: false,
+			})
+			expect(result).toContain("## Phase Management")
+		})
+
+		it("is significantly smaller in userless sessions", () => {
+			const interactive = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
+			const headless = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			expect(interactive.length - headless.length).toBeGreaterThan(1500)
 		})
 	})
 })
