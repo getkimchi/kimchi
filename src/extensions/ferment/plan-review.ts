@@ -5,7 +5,15 @@ import {
 	type KeybindingsManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent"
-import { Container, Key, Markdown, matchesKey, type OverlayHandle, type TUI } from "@earendil-works/pi-tui"
+import {
+	type Component,
+	Key,
+	Markdown,
+	matchesKey,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@earendil-works/pi-tui"
 import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import { withWorkingHidden } from "./prompt-ui.js"
 
@@ -68,44 +76,33 @@ export async function promptPlanReview(
 ): Promise<PlanReviewOutcome | undefined> {
 	if (ctx.mode !== "tui") return undefined
 	const ui = ctx.ui
-	let component: PlanReviewComponent | undefined
 	return withWorkingHidden(
 		ui,
 		() =>
 			ui.custom?.<PlanReviewOutcome>(
-				(tui, theme, keybindings, done) => {
-					component = createPlanReviewComponent(
-						tui,
-						theme,
-						keybindings,
-						opts.planMarkdown,
-						done,
-						opts.onDismissRegister,
-					)
-					return component
-				},
+				(tui, theme, keybindings, done) =>
+					createPlanReviewComponent(tui, theme, keybindings, opts.planMarkdown, done, opts.onDismissRegister),
 				{
-					// Overlay mode so the fullscreen viewport defers keyboard and
-					// mouse-wheel input to the dialog instead of scrolling the chat
-					// transcript behind it. The component self-caps its height, so no
-					// maxHeight is needed here.
+					// Overlay mode so the fullscreen viewport defers keyboard input
+					// and routes mouse-wheel events over the dialog to handleMouse
+					// instead of scrolling the chat transcript behind it. The
+					// component self-caps its height, so no maxHeight is needed here.
 					overlay: true,
 					overlayOptions: { width: "95%" },
-					onHandle: (handle) => component?.bindOverlayHandle(handle),
 				},
 			) ?? Promise.resolve(undefined),
 	)
 }
 
-class PlanReviewComponent extends Container {
+class PlanReviewComponent implements Component {
 	private static readonly rail = " ▍ "
 	/** Lines reserved around the markdown window: frame (2) + title (1) +
 	 *  spacer (1) + prompt (1) + spacer (1) + hint (1) + positioning slack (2).
 	 *  Deliberately conservative so the overlay never exceeds the terminal
 	 *  height; the decision options count is added on top. */
 	private static readonly reservedChromeLines = 9
-	/** Lines scrolled per mouse-wheel notch. */
-	private static readonly wheelScrollLines = 3
+	/** Lines reserved for the feedback editor (in place of the decision options). */
+	private static readonly feedbackEditorLines = 8
 
 	private readonly markdown: Markdown
 	private readonly done: (result: PlanReviewOutcome) => void
@@ -122,15 +119,6 @@ class PlanReviewComponent extends Container {
 	/** Max valid scrollOffset measured during the last render — lets key
 	 *  handling clamp without re-measuring the markdown. */
 	private maxScrollOffset = 0
-	/** Overlay handle, bound after the overlay is shown. Used to hit-test
-	 *  wheel events: the fullscreen renderer forwards ALL wheel input to the
-	 *  focused overlay, so events outside our bounds must be ignored (they
-	 *  belong to the transcript behind us). */
-	private overlayHandle: OverlayHandle | undefined
-
-	bindOverlayHandle(handle: OverlayHandle): void {
-		this.overlayHandle = handle
-	}
 
 	constructor(
 		tui: TUI,
@@ -140,7 +128,6 @@ class PlanReviewComponent extends Container {
 		done: (result: PlanReviewOutcome) => void,
 		onDismissRegister?: (dismiss: () => void) => void,
 	) {
-		super()
 		this.tui = tui
 		this.theme = theme
 		this.keybindings = keybindings
@@ -157,22 +144,24 @@ class PlanReviewComponent extends Container {
 		})
 	}
 
-	/** Cap for the markdown window. In fullscreen (alternate buffer) mode the
-	 *  dialog replaces the editor dock; the renderer hard-clips content taller
-	 *  than the terminal and there is no scrollback, so the component manages
-	 *  its own visible window instead. In inline mode the cap avoids flooding
-	 *  the scrollback as well. Without a known terminal height (tests), no cap
-	 *  is applied. */
+	/** Cap for the markdown window. The overlay is clipped to the terminal
+	 *  height and in fullscreen (alternate buffer) mode there is no scrollback,
+	 *  so the component manages its own visible window instead. In inline mode
+	 *  the cap avoids flooding the scrollback as well. Without a known terminal
+	 *  height (tests), no cap is applied. */
 	private maxVisibleMarkdownLines(): number {
 		const rows = this.tui.terminal.rows
-		if (!rows || rows <= 0) return Number.MAX_SAFE_INTEGER
-		return Math.max(
-			4,
-			rows - PlanReviewComponent.reservedChromeLines - (this.mode === "decision" ? this.options.length : 8),
-		)
+		if (!rows) return Number.MAX_SAFE_INTEGER
+		const belowPlan = this.mode === "decision" ? this.options.length : PlanReviewComponent.feedbackEditorLines
+		return Math.max(4, rows - PlanReviewComponent.reservedChromeLines - belowPlan)
 	}
 
-	override render(width: number): string[] {
+	invalidate(): void {
+		this.markdown.invalidate()
+		this.editor?.invalidate()
+	}
+
+	render(width: number): string[] {
 		const contentWidth = Math.max(0, width - PlanReviewComponent.rail.length)
 		const markdownLines = this.markdown.render(contentWidth)
 		const visibleCount = this.maxVisibleMarkdownLines()
@@ -206,73 +195,28 @@ class PlanReviewComponent extends Container {
 		return this.theme.fg("muted", "↑/↓ select · enter confirm · esc cancel")
 	}
 
-	private scrollByLines(delta: number): void {
+	/** Moves the plan window; returns whether the offset changed. */
+	private scrollByLines(delta: number): boolean {
 		const next = Math.max(0, Math.min(this.scrollOffset + delta, this.maxScrollOffset))
-		if (next === this.scrollOffset) return
+		if (next === this.scrollOffset) return false
 		this.scrollOffset = next
-		this.tui.requestRender()
+		return true
 	}
 
-	/** Count wheel notches in an input chunk. Returns the net notches
-	 *  (positive = scroll down) when the chunk contains wheel events whose
-	 *  pointer is inside the overlay bounds, undefined otherwise.
-	 *
-	 *  Handles SGR (\x1b[<b;x;yM or ..m) and legacy X10 (\x1b[M + 3 bytes)
-	 *  encodings, and — unlike pi-tui's parseWheelEvent — multiple events
-	 *  batched into a single stdin chunk, which is how fast wheel spins and
-	 *  trackpad momentum arrive. Coordinates are 1-based, bounds 0-based, so
-	 *  both become 0-based here. */
-	private countWheelTicks(data: string): number | undefined {
-		const bounds = this.overlayHandle?.getBounds()
-		if (!bounds) return undefined
-		let ticks = 0
-		let i = 0
-		while (i < data.length) {
-			if (data.charCodeAt(i) !== 0x1b) {
-				i++
-				continue
-			}
-			if (data.startsWith("\x1b[M", i) && i + 6 <= data.length) {
-				// X10: button, x, y as single bytes (coords offset by 33)
-				const button = data.charCodeAt(i + 3) - 32
-				ticks += this.wheelTick(button, data.charCodeAt(i + 4) - 33, data.charCodeAt(i + 5) - 33, bounds)
-				i += 6
-				continue
-			}
-			if (data.startsWith("\x1b[", i)) {
-				const match = /^<?(\d+);(\d+);(\d+)[Mm]/.exec(data.slice(i + 2))
-				if (match) {
-					ticks += this.wheelTick(Number(match[1]), Number(match[2]) - 1, Number(match[3]) - 1, bounds)
-					i += 2 + match[0].length
-					continue
-				}
-			}
-			i++
-		}
-		return ticks === 0 ? undefined : ticks
+	private scrollAndRender(delta: number): void {
+		if (this.scrollByLines(delta)) this.tui.requestRender()
 	}
 
-	private wheelTick(
-		button: number,
-		x: number,
-		y: number,
-		bounds: { row: number; col: number; width: number; height: number },
-	): number {
-		const isWheel = (button & 64) === 64 && (button & 3) <= 1
-		const inside = x >= bounds.col && x < bounds.col + bounds.width && y >= bounds.row && y < bounds.row + bounds.height
-		return !isWheel || !inside ? 0 : (button & 1) === 1 ? 1 : -1
+	/** Mouse wheel over the overlay. pi-tui hit-tests overlay bounds, splits
+	 *  batched stdin into single events, and converts notches to lines (honoring
+	 *  the user's wheel-scroll setting), so wheel input outside the dialog never
+	 *  reaches here. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "wheel" || !event.wheelDelta) return undefined
+		return { handled: true, render: this.scrollByLines(event.wheelDelta) }
 	}
 
 	handleInput(data: string): void {
-		// Mouse wheel. In overlay mode the fullscreen renderer defers wheel
-		// input to the focused component, which receives the raw escape
-		// sequences. Only react when the pointer is inside our overlay bounds.
-		const wheelTicks = this.countWheelTicks(data)
-		if (wheelTicks !== undefined) {
-			this.scrollByLines(wheelTicks * PlanReviewComponent.wheelScrollLines)
-			return
-		}
-
 		if (this.mode === "feedback") {
 			this.ensureEditor()
 			this.editor?.handleInput(data)
@@ -283,27 +227,27 @@ class PlanReviewComponent extends Container {
 		// also reach the component in overlay mode (the fullscreen viewport
 		// defers input to the focused overlay).
 		if (matchesKey(data, "shift+up")) {
-			this.scrollByLines(-1)
+			this.scrollAndRender(-1)
 			return
 		}
 		if (matchesKey(data, "shift+down")) {
-			this.scrollByLines(1)
+			this.scrollAndRender(1)
 			return
 		}
 		if (matchesKey(data, Key.pageUp)) {
-			this.scrollByLines(-this.maxVisibleMarkdownLines())
+			this.scrollAndRender(-this.maxVisibleMarkdownLines())
 			return
 		}
 		if (matchesKey(data, Key.pageDown)) {
-			this.scrollByLines(this.maxVisibleMarkdownLines())
+			this.scrollAndRender(this.maxVisibleMarkdownLines())
 			return
 		}
 		if (matchesKey(data, Key.home)) {
-			this.scrollByLines(-this.maxScrollOffset)
+			this.scrollAndRender(-this.maxScrollOffset)
 			return
 		}
 		if (matchesKey(data, Key.end)) {
-			this.scrollByLines(this.maxScrollOffset)
+			this.scrollAndRender(this.maxScrollOffset)
 			return
 		}
 
