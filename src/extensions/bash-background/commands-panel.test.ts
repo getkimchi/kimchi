@@ -33,13 +33,14 @@ function start(registry: ProcessRegistry, command: string) {
 
 let registry: ProcessRegistry
 let panel: CommandsPanel
-const tui = { requestRender: vi.fn(), terminal: { rows: 18 } }
+const tui = { requestRender: vi.fn(), renderNow: vi.fn(), terminal: { rows: 18 } }
 const view = () => panel.render(100).map(stripTerminalSequences).join("\n")
 beforeEach(() => {
 	vi.useFakeTimers()
 	registry = createProcessRegistry()
 	tui.terminal.rows = 18
 	tui.requestRender.mockClear()
+	tui.renderNow.mockClear()
 })
 afterEach(async () => {
 	panel?.dispose()
@@ -65,40 +66,53 @@ describe("CommandsPanel", () => {
 				expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│]/)
 				expect(lines.join("\n")).toContain("Esc")
 				for (const line of lines) expect(visibleWidth(line)).toBe(width)
-				expect(lines.length).toBe(Math.max(9, Math.floor(rows / 2)))
+				expect(lines.length).toBe(input === "" ? 6 : Math.max(9, Math.floor(rows / 2)))
 			}
 			panel.handleInput("\x1b")
 		}
 	})
-	it("sizes from opening content and command count, and recalculates when reopened", async () => {
+	it("keeps the list compact and sizes detail from its content when entered", async () => {
 		tui.terminal.rows = 60
-		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
-		expect(panel.render(100)).toHaveLength(9)
-		panel.dispose()
 		const process = start(registry, "printf short")
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		expect(panel.render(100)).toHaveLength(6)
+		panel.handleInput("\r")
 		expect(panel.render(100)).toHaveLength(9)
 		process.output("line\n".repeat(12))
 		await vi.advanceTimersByTimeAsync(250)
 		expect(panel.render(100)).toHaveLength(9)
-		panel.dispose()
-		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		panel.handleInput("\x1b")
+		expect(panel.render(100)).toHaveLength(6)
+		panel.handleInput("\r")
 		expect(panel.render(100)).toHaveLength(19)
 		process.output("line\n".repeat(100))
 		await vi.advanceTimersByTimeAsync(250)
 		expect(panel.render(100)).toHaveLength(19)
-		panel.dispose()
-		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
+		panel.handleInput("\x1b")
+		panel.handleInput("\r")
 		expect(panel.render(100)).toHaveLength(30)
 	})
-	it("gives a longer command list room while keeping selection stable", () => {
+	it("sizes the list by command count without reserving space for hidden output", () => {
 		tui.terminal.rows = 60
-		for (let i = 0; i < 6; i++) start(registry, `echo ${i}`)
+		for (let i = 0; i < 6; i++) start(registry, `echo ${i}`).output("line\n".repeat(100))
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		expect(panel.render(100)).toHaveLength(16)
-		panel.handleInput("\x1b[B")
+	})
+	it("redraws after collapse and editor restoration without clearing shell scrollback", () => {
+		start(registry, "sleep 60")
+		const done = vi.fn()
+		const setting = process.env.PI_TUI_NO_CLEAR_SCROLLBACK
+		panel = new CommandsPanel(registry, tui, done, testTheme)
+		tui.renderNow.mockImplementation(() => expect(process.env.PI_TUI_NO_CLEAR_SCROLLBACK).toBe("1"))
 		panel.handleInput("\r")
-		expect(panel.render(100)).toHaveLength(16)
+		panel.handleInput("\x1b")
+		expect(tui.renderNow).toHaveBeenCalledWith(true)
+		expect(done).not.toHaveBeenCalled()
+		panel.handleInput("\x1b")
+		expect(done).toHaveBeenCalledOnce()
+		expect(done.mock.invocationCallOrder[0]).toBeLessThan(tui.renderNow.mock.invocationCallOrder[1])
+		expect(process.env.PI_TUI_NO_CLEAR_SCROLLBACK).toBe(setting)
+		tui.renderNow.mockReset()
 	})
 	it("pins the tabs and footer as output grows and removes the final newline's phantom row", async () => {
 		tui.terminal.rows = 30

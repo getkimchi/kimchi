@@ -72,6 +72,7 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		await pi.getHandler("session_start")({}, ctx)
 		const tui = new TuiMainScreen(new ProcessTerminal())
 		const requestRender = vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		vi.spyOn(tui, "renderNow").mockImplementation(() => {})
 		const dispose = vi.spyOn(CommandsPanel.prototype, "dispose")
 		vi.mocked(ctx.ui.custom).mockImplementation(
 			(factory) =>

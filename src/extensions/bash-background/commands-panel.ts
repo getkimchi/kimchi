@@ -6,7 +6,8 @@ import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry
 
 export class CommandsPanel {
 	private entries: readonly ProcessDisplaySnapshot[] = []
-	private readonly openingEntries: readonly ProcessDisplaySnapshot[]
+	private readonly listRows: number
+	private detailEntry: ProcessDisplaySnapshot | undefined
 	private selected: ProcessDisplaySnapshot | undefined
 	private detail = false
 	private tab: "Script" | "Output" = "Script"
@@ -21,12 +22,12 @@ export class CommandsPanel {
 
 	constructor(
 		private readonly registry: ProcessRegistry | undefined,
-		private readonly tui: { requestRender(): void; terminal: { rows: number } },
+		private readonly tui: { requestRender(): void; renderNow(force?: boolean): void; terminal: { rows: number } },
 		private readonly done: () => void,
 		private readonly theme: Theme,
 	) {
 		this.refresh()
-		this.openingEntries = this.entries
+		this.listRows = Math.max(6, 4 + this.entries.length * 2)
 		this.timer = setInterval(() => {
 			this.refresh()
 			this.tui.requestRender()
@@ -45,24 +46,35 @@ export class CommandsPanel {
 	close(): void {
 		this.dispose()
 		this.done()
+		this.redraw()
 	}
 
 	invalidate(): void {}
 
+	private redraw(): void {
+		// The main-screen renderer keeps the expanded viewport after a differential shrink.
+		// Repaint synchronously after restoring the smaller view, preserving shell scrollback.
+		const previous = process.env.PI_TUI_NO_CLEAR_SCROLLBACK
+		process.env.PI_TUI_NO_CLEAR_SCROLLBACK = "1"
+		try {
+			this.tui.renderNow(true)
+		} finally {
+			if (previous === undefined) delete process.env.PI_TUI_NO_CLEAR_SCROLLBACK
+			else process.env.PI_TUI_NO_CLEAR_SCROLLBACK = previous
+		}
+	}
+
 	private get height(): number {
 		const rows = this.tui.terminal.rows
-		// Size from the opening snapshots, so streaming and tab switches cannot move the menu.
-		const contentRows = this.openingEntries.reduce(
-			(height, entry) =>
-				Math.max(
-					height,
-					wrapTextWithAnsi(safeBashText(entry.command), this.width).length,
-					wrapTextWithAnsi(safeBashText(entry.output.replace(/\r?\n$/, "")), this.width).length,
-				),
-			0,
+		const limit = Math.max(1, Math.min(rows - 4, Math.max(9, Math.floor(rows / 2))))
+		if (!this.detail) return Math.min(limit, this.listRows)
+		// Freeze detail sizing on entry; tabs and streaming must not move the viewport.
+		const entry = this.detailEntry
+		const contentRows = Math.max(
+			wrapTextWithAnsi(safeBashText(entry?.command ?? ""), this.width).length,
+			wrapTextWithAnsi(safeBashText((entry?.output ?? "").replace(/\r?\n$/, "")), this.width).length,
 		)
-		const preferred = Math.max(9, 4 + this.openingEntries.length * 2, 7 + contentRows)
-		return Math.max(1, Math.min(rows - 4, Math.max(9, Math.floor(rows / 2)), preferred))
+		return Math.min(limit, Math.max(9, 7 + contentRows))
 	}
 
 	private get pageRows(): number {
@@ -103,8 +115,10 @@ export class CommandsPanel {
 		const maxOffset = this.detail ? Math.max(0, this.content(this.width).length - this.pageRows) : 0
 		const offset = this.tab === "Output" && this.follow ? maxOffset : Math.min(this.offset, maxOffset)
 		if (matchesKey(data, "escape") || matchesKey(data, "q")) {
-			if (this.detail) this.detail = false
-			else this.close()
+			if (this.detail) {
+				this.detail = false
+				this.redraw()
+			} else this.close()
 		} else if (matchesKey(data, "ctrl+c")) {
 			this.close()
 		} else if (!this.detail) {
@@ -114,6 +128,7 @@ export class CommandsPanel {
 			if (direction && next) this.select(next)
 			if (matchesKey(data, "enter") && this.selected) {
 				this.detail = true
+				this.detailEntry = this.selected
 				this.tab = "Script"
 				this.offset = 0
 			}
@@ -155,7 +170,8 @@ export class CommandsPanel {
 		const innerWidth = Math.max(1, w - 2)
 		this.width = innerWidth
 		const height = this.height
-		if (w < 6 || height < 9) return [truncateToWidth(hint("Esc", "back · enlarge terminal to inspect"), w, "…", true)]
+		if (w < 6 || height < (this.detail ? 9 : 6))
+			return [truncateToWidth(hint("Esc", "back · enlarge terminal to inspect"), w, "…", true)]
 		const fit = (lines: string[], footer: string[]) => [
 			theme.fg("accent", "─".repeat(w)),
 			...Array.from({ length: height - 2 - footer.length }, (_, i) => lines[i] ?? "")

@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { viewText, waitForText } from "./support/assertions.js"
 import type { FakeToolCall } from "./support/fake-openai-server.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -73,6 +73,10 @@ test("inspect a running Bash command without interrupting it or asking the model
 					lines.findIndex((line) => line.includes("Esc back")),
 				]
 			}
+			const editorRow = () =>
+				viewText(terminal)
+					.split("\n")
+					.findIndex((line) => line.includes("default →"))
 			const menuOutput = () => viewText(terminal).split("Script  [Output]")[1]?.split("Esc back")[0] ?? ""
 			await waitForText(terminal, "default →", { full: false })
 			terminal.submit("Run the streaming command")
@@ -116,6 +120,8 @@ test("inspect a running Bash command without interrupting it or asking the model
 			trace.step("output scrolls independently; End follows fresh output")
 
 			terminal.keyCtrlC()
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			expect(editorRow()).toBe(TUI_TEST_CONFIG.rows - 1)
 			await waitForText(terminal, "output-after-scrolling", { full: false })
 			expect(requests()).toHaveLength(2)
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
