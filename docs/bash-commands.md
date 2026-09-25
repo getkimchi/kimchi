@@ -9,7 +9,8 @@ Run **`/commands`** while Kimchi is executing a managed Bash command. Select a c
 | Tab | Switch between Script and Output |
 | Page Up / Page Down | Scroll the script or output |
 | End | Follow the latest output |
-| Escape | Return to the list, then close |
+| Escape / q | Return to the list, then close |
+| Ctrl+C | Close the inspector without cancelling the command |
 
 **Script** shows the submitted command, including multiline scripts and heredocs. If the command invokes a file, such as `bash script.sh`, the view shows that invocation; it does not snapshot the file's contents.
 

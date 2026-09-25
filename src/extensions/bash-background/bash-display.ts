@@ -40,7 +40,7 @@ function stringArg(args: unknown, key: string): string {
 	return typeof value === "string" ? value : ""
 }
 
-const upstreamBash = createBashToolDefinition(process.cwd())
+let upstreamBash: ReturnType<typeof createBashToolDefinition> | undefined
 
 export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, _theme, ctx) => ({
 	invalidate() {},
@@ -56,6 +56,7 @@ export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, 
 })
 
 export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
+	upstreamBash ??= createBashToolDefinition(process.cwd())
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display
 	const terminal = display && display.state !== "running"

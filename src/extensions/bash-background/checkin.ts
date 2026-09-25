@@ -14,8 +14,9 @@ export async function awaitCheckin(
 	onUpdate?: (snapshot: ProcessDisplaySnapshot) => void,
 ): Promise<TailSnapshot> {
 	const emitUpdate = () => {
+		if (!onUpdate) return
 		const snapshot = registry.displaySnapshot(handle)
-		if (snapshot) onUpdate?.(snapshot)
+		if (snapshot) onUpdate(snapshot)
 	}
 	emitUpdate()
 	// Fast path: check if entry already shows exited.

@@ -45,6 +45,27 @@ afterEach(async () => {
 	vi.useRealTimers()
 })
 describe("CommandsPanel", () => {
+	it("uses current page geometry before the first detail render and after resize", () => {
+		start(registry, Array.from({ length: 80 }, (_, i) => `script ${i}`).join("\n"))
+		panel = new CommandsPanel(registry, tui, vi.fn())
+		view()
+		panel.handleInput("\r")
+		panel.handleInput("\x1b[6~")
+		expect(view()).toContain("Lines 11–20 of 80")
+		tui.terminal.rows = 28
+		panel.handleInput("\x1b[6~")
+		expect(view()).toContain("Lines 31–50 of 80")
+	})
+	it("pages up from the output tail before the first output render", () => {
+		const process = start(registry, "echo output")
+		process.output(Array.from({ length: 80 }, (_, i) => `line ${i}`).join("\n"))
+		panel = new CommandsPanel(registry, tui, vi.fn())
+		view()
+		panel.handleInput("\r")
+		panel.handleInput("\t")
+		panel.handleInput("\x1b[5~")
+		expect(view()).toContain("Lines 61–70 of 80")
+	})
 	it("explains empty session without changing process state", () => {
 		panel = new CommandsPanel(registry, tui, vi.fn())
 		expect(view()).toContain("No managed Bash commands running in this session")

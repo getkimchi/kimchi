@@ -457,9 +457,27 @@ describe("display snapshots", () => {
 		const ring = new OutputRingBuffer(16)
 		const bytes = Buffer.from("🙂")
 		ring.append(bytes.subarray(0, 2))
-		expect(ring.snapshot().text).toBe("")
+		expect(ring.snapshot()).toEqual({ text: "", bytes: 2 })
 		ring.append(bytes.subarray(2))
 		expect(ring.snapshot()).toEqual({ text: "🙂", bytes: 4 })
+	})
+	it("counts raw bytes independently of UTF-8 replacement and pending characters", () => {
+		const ring = new OutputRingBuffer(16)
+		ring.append(Buffer.from([0xff, 0xf0, 0x9f, 0x99]))
+		expect(ring.snapshot()).toEqual({ text: "�", bytes: 4 })
+		ring.append(Buffer.from([0x82]))
+		expect(ring.snapshot()).toEqual({ text: "�🙂", bytes: 5 })
+	})
+	it("does not report an incomplete trailing character as omitted output", async () => {
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "echo unicode", "/work", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		ops.emit(Buffer.from([0xf0, 0x9f]))
+		expect(registry.displaySnapshot(handle)).toMatchObject({ output: "", outputBytes: 2, omittedBytes: 0 })
+		await registry.shutdown()
 	})
 
 	it("unsubscribes observers and settles timestamps only after output flush", async () => {

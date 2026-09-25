@@ -62,7 +62,7 @@ export interface SpawnOptions {
 export interface TailSnapshot {
 	/** UTF-8 decode of the last `bytes` of output. */
 	text: string
-	/** Number of bytes in the snapshot. */
+	/** Raw bytes retained after skipping leading UTF-8 fragments, including an incomplete trailing character. */
 	bytes: number
 	state: ProcessState
 	exitCode: number | null
@@ -86,7 +86,9 @@ export interface ProcessDisplaySnapshot {
 	readonly exitCode: number | null
 	readonly reason: string | null
 	readonly output: string
+	/** Raw tail bytes; includes an incomplete trailing character awaiting more output. */
 	readonly outputBytes: number
+	/** Source bytes before the retained tail, including skipped leading UTF-8 fragments. */
 	readonly omittedBytes: number
 }
 
@@ -358,7 +360,7 @@ export class OutputRingBuffer {
 		let start = 0
 		while (start < result.length && (result[start] & 0xc0) === 0x80) start++
 		const text = new TextDecoder().decode(result.subarray(start), { stream: true })
-		return { text, bytes: Math.min(result.length - start, Buffer.byteLength(text)) }
+		return { text, bytes: result.length - start }
 	}
 
 	clear(): void {

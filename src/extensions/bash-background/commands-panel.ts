@@ -10,8 +10,7 @@ export class CommandsPanel {
 	private offset = 0
 	private follow = true
 	private pausedOutput: string | undefined
-	private pageRows = 10
-	private outputRows = 0
+	private width = 80
 	private unsubscribe: (() => void) | undefined
 	private timer: ReturnType<typeof setInterval> | undefined
 	private disposed = false
@@ -43,6 +42,18 @@ export class CommandsPanel {
 
 	invalidate(): void {}
 
+	private get pageRows(): number {
+		return Math.max(1, this.tui.terminal.rows - 8)
+	}
+
+	private content(width: number): string[] {
+		const text =
+			this.tab === "Script"
+				? (this.selected?.command ?? "")
+				: (this.pausedOutput ?? this.selected?.output) || "No output yet"
+		return wrapTextWithAnsi(safeBashText(text), width)
+	}
+
 	private refresh(): void {
 		this.entries = this.registry?.listDisplaySnapshots() ?? []
 		if (!this.selected && this.entries[0]) this.select(this.entries[0])
@@ -66,6 +77,8 @@ export class CommandsPanel {
 
 	handleInput(data: string): void {
 		if (this.disposed) return
+		const maxOffset = this.detail ? Math.max(0, this.content(this.width).length - this.pageRows) : 0
+		const offset = this.tab === "Output" && this.follow ? maxOffset : Math.min(this.offset, maxOffset)
 		if (matchesKey(data, "escape") || matchesKey(data, "q")) {
 			if (this.detail) this.detail = false
 			else this.close()
@@ -89,7 +102,7 @@ export class CommandsPanel {
 		} else if (matchesKey(data, "end")) {
 			this.follow = true
 			this.pausedOutput = undefined
-			this.offset = Math.max(0, this.outputRows - this.pageRows)
+			this.offset = maxOffset
 		} else {
 			const delta = matchesKey(data, "pageUp")
 				? -this.pageRows
@@ -105,9 +118,7 @@ export class CommandsPanel {
 					this.pausedOutput = this.selected?.output
 					this.follow = false
 				}
-				this.offset = matchesKey(data, "home")
-					? 0
-					: Math.max(0, Math.min(this.outputRows - this.pageRows, this.offset + delta))
+				this.offset = matchesKey(data, "home") ? 0 : Math.max(0, Math.min(maxOffset, offset + delta))
 			}
 		}
 		this.tui.requestRender()
@@ -115,6 +126,7 @@ export class CommandsPanel {
 
 	render(width: number): string[] {
 		const w = Math.max(1, width)
+		this.width = w
 		const height = Math.max(1, this.tui.terminal.rows - 2)
 		const fit = (lines: string[]) => lines.slice(0, height).map((line) => truncateToWidth(line, w, "…"))
 		const now = Date.now()
@@ -136,21 +148,18 @@ export class CommandsPanel {
 			return fit(lines)
 		}
 		const entry = this.selected
-		const text = this.tab === "Script" ? entry.command : (this.pausedOutput ?? entry.output) || "No output yet"
-		const content = wrapTextWithAnsi(safeBashText(text), w)
-		this.pageRows = Math.max(1, height - 6)
-		this.outputRows = content.length
-		if (this.tab === "Output" && this.follow) this.offset = Math.max(0, content.length - this.pageRows)
-		this.offset = Math.max(0, Math.min(this.offset, content.length - this.pageRows))
+		const content = this.content(w)
+		const maxOffset = Math.max(0, content.length - this.pageRows)
+		const offset = this.tab === "Output" && this.follow ? maxOffset : Math.min(this.offset, maxOffset)
 		const deadline =
 			entry.state === "running" ? ` · auto-stop in ${Math.max(0, Math.ceil((entry.deadlineMs - now) / 1000))}s` : ""
 		return fit([
 			`${bashTitle(entry)} · ${bashStatus(entry, now)}`,
 			`Command ${entry.handle} · cwd ${safeBashText(entry.cwd)}${deadline}`,
 			`${this.tab === "Script" ? "[Script]  Output" : "Script  [Output]"}${this.tab === "Output" ? ` · Follow: ${this.follow ? "on" : "off (paused view)"}` : ""}`,
-			...content.slice(this.offset, this.offset + this.pageRows),
+			...content.slice(offset, offset + this.pageRows),
 			`${bashOutputAge(entry, now)}${entry.omittedBytes > 0 ? " · older output omitted" : ""}`,
-			`Lines ${this.offset + 1}–${Math.min(content.length, this.offset + this.pageRows)} of ${content.length}`,
+			`Lines ${offset + 1}–${Math.min(content.length, offset + this.pageRows)} of ${content.length}`,
 			"Tab switch view · PgUp/PgDn scroll · End follow latest · Esc back",
 		])
 	}

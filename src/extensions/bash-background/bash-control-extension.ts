@@ -215,7 +215,8 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			})
 	}
 
-	// Pi discards details when execute throws. Terminal updates precede tool_result,
+	// Pi 0.85.1 awaits update events before afterToolCall on both success and throw.
+	// Throws discard details; terminal updates therefore precede tool_result,
 	// whose supported return value preserves metadata in history without changing isError.
 	pi.on("tool_execution_update", (event) => {
 		if (event.toolName !== "bash" && event.toolName !== BASH_CONTROL_TOOL_NAME) return
