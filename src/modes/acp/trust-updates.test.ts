@@ -90,8 +90,9 @@ describe("buildProjectTrustUpdate", () => {
 })
 
 describe("parseProjectTrustDecision", () => {
-	it("accepts the tri-state values", () => {
+	it("accepts the four decisions", () => {
 		expect(parseProjectTrustDecision("trust")).toBe("trust")
+		expect(parseProjectTrustDecision("trust_session")).toBe("trust_session")
 		expect(parseProjectTrustDecision("deny")).toBe("deny")
 		expect(parseProjectTrustDecision("deny_persist")).toBe("deny_persist")
 	})
