@@ -23,8 +23,8 @@ function model(overrides: Partial<Model<Api>> = {}): Model<Api> {
 
 describe("hasTargetCapabilities", () => {
 	// The comparison uses reference equality on reasoning/thinkingLevelMap and
-	// value equality on contextWindow/maxTokens, matching the original v1
-	// helper. Share the same object references when expecting a match.
+	// value equality on contextWindow/maxTokens. Share the same object
+	// references when expecting a match.
 	it("is true when all four capabilities match", () => {
 		const identical = model()
 		expect(hasTargetCapabilities(identical, identical)).toBe(true)
@@ -76,10 +76,10 @@ describe("syncAutoCapabilities", () => {
 		const ok = await syncAutoCapabilities(pi, virtual, target)
 		expect(ok).toBe(true)
 		expect(pi.setModel).toHaveBeenCalledTimes(1)
-		const applied = vi.mocked(pi.setModel).mock.calls[0]![0] as Model<Api>
-		expect(applied.id).toBe("auto-beta")
-		expect(applied.contextWindow).toBe(128_000)
-		expect(applied.maxTokens).toBe(4096)
+		const applied = vi.mocked(pi.setModel).mock.calls.at(0)?.[0] as Model<Api> | undefined
+		expect(applied?.id).toBe("auto-beta")
+		expect(applied?.contextWindow).toBe(128_000)
+		expect(applied?.maxTokens).toBe(4096)
 	})
 
 	it("returns false when setModel fails", async () => {

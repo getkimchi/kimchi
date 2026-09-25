@@ -92,16 +92,15 @@ describe("handleToolDecision", () => {
 		}
 	})
 
-	it("reports model=auto when the user-facing selection is the Auto router", async () => {
-		// In Auto sessions currentModel follows the router's concrete pick (from
-		// assistant messages); the accept-rate record must report the user's
-		// selection instead, or an Auto pick is indistinguishable from a manual
-		// selection of the same model.
+	it("reports the requested virtual id for a routed-virtual session", async () => {
+		// Under backend routing the assistant message keeps the requested virtual
+		// id in `message.model` (the concrete pick lives in `responseModel`), so
+		// `currentModel` IS the user's selection — `auto` or `auto-beta` — and the
+		// accept-rate record reports it verbatim.
 		const ctx = new TelemetryContext(makeConfig())
-		ctx.currentModel = "kimi-k2.6"
-		ctx.selectedModelIsAuto = true
+		ctx.currentModel = "auto-beta"
 		handleToolDecision(ctx, {
-			toolCallId: "tc-auto",
+			toolCallId: "tc-routed",
 			toolName: "bash",
 			decision: "accept",
 			sourceDetail: "allow_once",
@@ -115,7 +114,7 @@ describe("handleToolDecision", () => {
 			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
 			expect(event).toBeDefined()
 		})
-		expect(event?.attrs.model).toBe("auto")
+		expect(event?.attrs.model).toBe("auto-beta")
 	})
 
 	it("reports the concrete model for manual selections", async () => {

@@ -11,13 +11,10 @@ import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
-import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
-import { isAutoEntitledUser } from "../router/auto-default-gate.js"
-import { AUTO_MODEL_REF } from "../router/constants.js"
 import {
 	deleteModelMetadata,
 	getModelMetadata,
@@ -50,7 +47,9 @@ export function modelRefTags(
 	apiSlugs: ReadonlySet<string>,
 	deprecatedSlugs: ReadonlySet<string>,
 ): string[] {
-	if (ref === AUTO_MODEL_REF) return []
+	// Routed virtual models (kimchi-dev ids starting with `auto`) are neither
+	// concrete catalog slugs nor deprecated — no tags.
+	if (/^kimchi-dev\/auto/.test(ref)) return []
 	const slug = modelIdFromRef(ref)
 	if (!apiSlugs.has(slug)) return ["unavailable"]
 	if (deprecatedSlugs.has(slug)) return ["deprecated"]
@@ -346,10 +345,9 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			const roles = { ...getModelRoles() }
 
 			const apiModels = getAvailableModels()
+			// Backend-owned visibility: routed virtual models appear here exactly
+			// when the backend catalog advertises them to this account.
 			const availableModelRefs = [...new Set(apiModels.map((m) => `kimchi-dev/${m.slug}`))]
-			if ((isExperimentalFeaturesEnabled() || isAutoEntitledUser()) && !availableModelRefs.includes(AUTO_MODEL_REF)) {
-				availableModelRefs.push(AUTO_MODEL_REF)
-			}
 
 			for (const key of ROLE_KEYS) {
 				for (const ref of normalizeRoleModels(roles[key])) {

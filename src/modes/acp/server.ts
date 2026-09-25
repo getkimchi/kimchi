@@ -65,6 +65,12 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig as loadKimchiConfig, writeApiKey } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import {
+	AUTO_MODEL_DESCRIPTION,
+	AUTO_MODEL_PROVIDER,
+	isAutoRoutedModel,
+} from "../../extensions/auto-model/constants.js"
+import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
@@ -90,13 +96,6 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
-import {
-	AUTO_MODEL_DESCRIPTION,
-	AUTO_MODEL_NAME,
-	AUTO_MODEL_REF,
-	isAutoModel,
-} from "../../extensions/router/constants.js"
-import { getAutoRoutingState } from "../../extensions/router/state.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
@@ -1156,10 +1155,9 @@ export class KimchiAcpAgent implements Agent {
 				// message's assignment.
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
-				// The Auto router resolves during `before_agent_start`, so by the
-				// first assistant message its pick is known and the model option's
-				// name has become `Auto (<id>)`. Push it once per change so clients
-				// showing the selected model reflect what Auto actually chose.
+				// A resolved pick may already be known here (e.g. restored from the
+				// last session), so push the resolved label once per change so clients
+				// showing the selected model reflect what the auto model chose.
 				this.publishModelOptionIfChanged(sessionId, entry)
 				return
 			}
@@ -1251,6 +1249,10 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) return
 				const msg = event.message
 				if (msg.role !== "assistant") return
+				// The pick is learned from this message (responseModel), after
+				// message_start — push the resolved label here too. Idempotent: the
+				// lastModelOptionName seed makes this a no-op unless the label changed.
+				this.publishModelOptionIfChanged(sessionId, entry)
 				// Terminal-error tracking for the finalize path: only the LAST
 				// assistant message's stopReason decides the turn outcome.
 				// StopReason (pi-ai): error → record; aborted → leave (finalization
@@ -1876,17 +1878,27 @@ function getSessionModelRegistry(
 }
 
 /**
- * The Auto router's select option.
+ * A routed virtual model's select option.
  *
- * Auto is the one model whose row is not a plain name: it carries a
- * description, and once the router has picked a concrete model for this
- * session the name becomes `Auto (glm-5.3)` — mirroring the status bar, so a
- * client showing only the selected model still says what Auto resolved to.
+ * Routed virtual models (`auto`, `auto-beta`) are the rows that are not plain
+ * names: they carry a description, and once the backend has picked a concrete
+ * model for this session the name becomes `Auto (glm-5.3)` — mirroring the
+ * status bar, so a client showing only the selected model still says what the
+ * virtual model resolved to. The base name comes from the catalog descriptor
+ * (backend display name); the description is the harness's one-liner for what
+ * a routed virtual model does.
  */
-function autoModelOption(sessionId: string): SessionConfigSelectOption {
+function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
+	const baseName = model.name ?? model.id
 	const state = getAutoRoutingState(sessionId)
-	const name = state.status === "resolved" ? `${AUTO_MODEL_NAME} (${state.model.id})` : AUTO_MODEL_NAME
-	return { value: AUTO_MODEL_REF, name, description: AUTO_MODEL_DESCRIPTION }
+	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
+		return {
+			value: refFromModel(model),
+			name: `${baseName} (${state.model.id})`,
+			description: AUTO_MODEL_DESCRIPTION,
+		}
+	}
+	return { value: refFromModel(model), name: baseName, description: AUTO_MODEL_DESCRIPTION }
 }
 
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
@@ -1909,7 +1921,9 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		},
 		...modelRegistry
 			.getAvailable()
-			.map((m) => (isAutoModel(m) ? autoModelOption(session.sessionId) : { value: refFromModel(m), name: m.name }))
+			.map((m) =>
+				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
+			)
 			.sort((a, b) => a.value.localeCompare(b.value)),
 	]
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
@@ -1926,15 +1940,20 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 }
 
 /**
- * The Auto entry's own name within a built option list, or undefined when the
- * session has no Auto model. The `model` option's `name` is the static section
- * title ("Model") and never changes, so the Auto row is what we track to decide
- * whether a re-publish is worth sending.
+ * The routed virtual rows' composite name within a built option list, or
+ * undefined when the catalog has none. The `model` option's `name` is the
+ * static section title ("Model") and never changes, so the virtual rows are
+ * what we track to decide whether a re-publish is worth sending — any of them
+ * resolving a pick (e.g. `Auto` → `Auto (glm-5.3)`) changes the composite.
  */
 function autoOptionName(configOptions: SessionConfigOption[]): string | undefined {
 	const modelOption = configOptions.find((opt) => opt.id === "model")
 	if (modelOption?.type !== "select") return undefined
-	return (modelOption.options as SessionConfigSelectOption[]).find((opt) => opt.value === AUTO_MODEL_REF)?.name
+	const autoNames = (modelOption.options as SessionConfigSelectOption[])
+		.filter((opt) => opt.value.startsWith(`${AUTO_MODEL_PROVIDER}/auto`))
+		.map((opt) => opt.name)
+		.sort()
+	return autoNames.length > 0 ? autoNames.join(" · ") : undefined
 }
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {

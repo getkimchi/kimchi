@@ -1,14 +1,7 @@
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
-import { AUTO_MODEL_ID } from "./extensions/router/constants.js"
 import { isKimchiProvider } from "./kimchi-provider.js"
-import {
-	autoModelConfig,
-	buildModelsConfig,
-	discoverModelsConfig,
-	isTransientModelsError,
-	type ModelMetadata,
-} from "./models.js"
+import { buildModelsConfig, discoverModelsConfig, isTransientModelsError, type ModelMetadata } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
 
 export async function discoverEnvironmentModels(
@@ -33,14 +26,9 @@ export async function discoverEnvironmentModels(
 	if (options.experimental) {
 		providers["kimchi-experimental"] = { ...root, baseUrl: "https://llm.kimchi.dev/experimental/openai/v1" }
 	}
-	// Only append the harness virtual `auto` when the fetched catalog does not
-	// already advertise one; a backend-owned `auto` wins, otherwise this would
-	// create a duplicate `kimchi-dev/auto` provider entry.
-	const hasFetchedAuto = (root.models ?? []).some((model) => model.id === AUTO_MODEL_ID)
-	providers["kimchi-dev"] = {
-		...root,
-		models: hasFetchedAuto ? root.models : [...(root.models ?? []), autoModelConfig(models)],
-	}
+	// The kimchi-dev catalog comes straight from the backend — including routed
+	// virtual models like `auto`. Register exactly what was fetched.
+	providers["kimchi-dev"] = { ...root, models: root.models ?? [] }
 	const ollama = await discoverOllamaProvider(resolveOllamaHost())
 	providers.ollama = ollama
 	return {
