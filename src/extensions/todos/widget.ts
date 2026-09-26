@@ -21,6 +21,7 @@ const TODO_SYMBOL: Record<TodoStatus, string> = {
 	in_progress: "▶",
 	blocked: "!",
 	completed: "✓",
+	cancelled: "×",
 }
 
 interface TodoWidgetState {
@@ -53,7 +54,8 @@ export function summarizeTodoCounts(counts: TodoCounts): string {
 	if (counts.total === 0) return "No todos"
 	const active = counts.pending + counts.inProgress + counts.blocked
 	const blocked = counts.blocked > 0 ? ` · ${counts.blocked} blocked` : ""
-	return `${counts.completed}/${counts.total} done · ${active} active${blocked}`
+	const cancelled = counts.total - counts.completed - active
+	return `${counts.completed}/${counts.total} done · ${active} active${blocked}${cancelled > 0 ? ` · ${cancelled} cancelled` : ""}`
 }
 
 function hasActiveTodos(counts: TodoCounts): boolean {
@@ -72,6 +74,8 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
+	if (todo.status === "cancelled")
+		return ` ${index}.  ${theme.fg("dim", `${symbol} ${todo.content} (cancelled)${todo.note ? ` — ${todo.note}` : ""}`)}`
 
 	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
@@ -123,7 +127,7 @@ function selectTodoWindow(todos: TodoItem[]): {
 	hiddenBefore: number
 	hiddenAfter: number
 } {
-	const firstActiveIndex = todos.findIndex((todo) => todo.status !== "completed")
+	const firstActiveIndex = todos.findIndex((todo) => todo.status !== "completed" && todo.status !== "cancelled")
 	const startIndex =
 		firstActiveIndex === -1
 			? Math.max(0, todos.length - TODO_WIDGET_ROLL_THRESHOLD)
@@ -144,7 +148,7 @@ function selectTodoWindow(todos: TodoItem[]): {
 }
 
 function todoWindowBeforeText(hiddenBefore: number): string | undefined {
-	return hiddenBefore > 0 ? `… ${hiddenBefore} completed` : undefined
+	return hiddenBefore > 0 ? `… ${hiddenBefore} closed` : undefined
 }
 
 function todoWindowAfterText(hiddenAfter: number): string | undefined {

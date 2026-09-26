@@ -13,7 +13,7 @@ import {
 import { FERMENT_TODO_GUIDANCE, renderFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "./state-markdown.js"
-import { __resetTodoStore, applyWriteTodos, bumpToolCallsSinceTodoWrite } from "./store.js"
+import { __resetTodoStore, applyWriteTodos } from "./store.js"
 import type { TodoStatus } from "./types.js"
 
 const TEST_SESSION_ID = "test-session"
@@ -23,17 +23,6 @@ const TEST_SESSION_ID = "test-session"
 /** Write a single global todo with the given content and status. */
 function writeTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
 	applyWriteTodos({ todos: [{ content, status }] }, sessionId)
-}
-
-/** Write a single global todo, then bump the staleness counter N times. */
-function writeTodoAndBump(
-	content: string,
-	status: TodoStatus,
-	bumps: number,
-	sessionId: string = TEST_SESSION_ID,
-): void {
-	writeTodo(content, status, sessionId)
-	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(sessionId)
 }
 
 /** Create a todo list then write it a second time to mark it as "updated" (not create-and-forget). */
@@ -133,11 +122,12 @@ describe("todo prompt block", () => {
 		expect(block).toContain("start short (2-3 items)")
 		expect(block).toContain("Skip it for single-step answers")
 		expect(block).toContain("Do not leave TODO placeholders in code")
-		expect(block).toContain("always pair todo updates with the next work tool call")
-		expect(block).toContain("natural breakpoint")
-		expect(block).toContain("staleness warning")
+		expect(block).toContain("pair todo updates with work tool calls when possible")
+		expect(block).toContain("At wrap-up, status-only updates are appropriate")
+		expect(block).not.toContain("staleness warning")
 		expect(block).toContain("never authorize")
 		expect(block).toContain("explicit user approval")
+		expect(block).toContain("Before ending a turn that declares the work complete")
 		expect(block).not.toContain("before your final response")
 	})
 
@@ -316,17 +306,8 @@ describe("state markdown purity (cache-safety contract)", () => {
 		__resetTodoStore()
 	})
 
-	it("renders byte-identical output across staleness counter changes", () => {
-		writeTodo("work", "in_progress")
-		const baseline = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-
-		for (let i = 0; i < 30; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
-
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBe(baseline)
-	})
-
 	it("contains no staleness or create-and-forget warnings at any counter value", () => {
-		writeTodoAndBump("work", "in_progress", 30)
+		writeTodo("work", "in_progress")
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).toContain("work")

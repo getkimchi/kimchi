@@ -5,6 +5,8 @@ import type { TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 function statusGlyph(status: TodoStatus): string {
 	switch (status) {
+		case "cancelled":
+			return "×"
 		case "completed":
 			return "✓"
 		case "in_progress":
@@ -19,7 +21,7 @@ function statusGlyph(status: TodoStatus): string {
 }
 
 function formatTodoLine(todo: TodoItem): string {
-	return `- ${statusGlyph(todo.status)} ${todo.content}`
+	return `- ${statusGlyph(todo.status)} ${todo.content}${todo.status === "cancelled" ? ` (cancelled)${todo.note ? ` — ${todo.note}` : ""}` : ""}`
 }
 
 /** Render a compact progress summary, e.g. "1/3 done · 2 active · 1 blocked". */
@@ -31,6 +33,8 @@ function formatProgressSummary(todos: TodoItem[]): string {
 	const blocked = todos.filter((t) => t.status === "blocked").length
 	const parts = [`${completed}/${total} done`, `${active} active`]
 	if (blocked > 0) parts.push(`${blocked} blocked`)
+	const cancelled = todos.filter((todo) => todo.status === "cancelled").length
+	if (cancelled > 0) parts.push(`${cancelled} cancelled`)
 	return parts.join(" · ")
 }
 
@@ -39,9 +43,7 @@ function formatProgressSummary(todos: TodoItem[]): string {
  *
  *  This is a PURE function of the todo store: no counters, no time. Persisted
  *  todo-state blocks are cached by prefix, so two renders of the same store
- *  must be byte-identical. Staleness/stall pressure is delivered separately
- *  as bounded one-shot steers — see staleness-steers.ts (todo writes) and
- *  ferment/todo-sync.ts (step stall).
+ *  must be byte-identical. Todo bookkeeping is reconciled separately after the run settles.
  *
  *  The renderer lives outside any registrar file so the static import guard
  *  in the cache-stability contract test can be strict (zero allowlisted

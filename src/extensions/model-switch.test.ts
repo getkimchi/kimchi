@@ -166,8 +166,13 @@ describe("modelSwitchExtension", () => {
 		const { tool } = createHarness()
 		expect(tool.name).toBe("set_model")
 		expect(tool.label).toBe("Switch Model")
-		expect(tool.description).toContain("provider/id format")
+		expect(tool.description).toContain("provider/modelId")
 		expect(tool.description).toContain("pi.setModel")
+		// The description must not teach concrete model IDs: stale examples get
+		// used verbatim by models (session 01a0cd6c picked the old kimi-k2.6
+		// example for an Agent call that then failed "Model not found").
+		expect(tool.description).not.toContain("kimi-k2.6")
+		expect(tool.description).toContain("list of available models")
 		expect(tool.parameters).toBeDefined()
 	})
 

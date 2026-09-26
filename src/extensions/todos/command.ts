@@ -21,6 +21,7 @@ type TodoAction =
 	| "done"
 	| "pending"
 	| "start"
+	| "cancel"
 	| "block"
 	| "toggle"
 	| "delete"
@@ -43,6 +44,7 @@ const COMMAND_COMPLETIONS = [
 	"undone",
 	"start",
 	"block",
+	"cancel",
 	"toggle",
 	"rm",
 	"remove",
@@ -98,6 +100,7 @@ function parseTodoArgs(args: string): TodoUiLine {
 		["undone", "pending"],
 		["start", "start"],
 		["block", "block"],
+		["cancel", "cancel"],
 		["toggle", "toggle"],
 		["rm", "delete"],
 		["remove", "delete"],
@@ -121,6 +124,7 @@ function notifyUsage(theme: Theme): string[] {
 		`  /${TODOS_COMMAND} pending <n>         Mark an item pending`,
 		`  /${TODOS_COMMAND} start <n>           Mark an item in progress`,
 		`  /${TODOS_COMMAND} block <n>           Mark an item blocked`,
+		`  /${TODOS_COMMAND} cancel <n>          Cancel an obsolete item`,
 		`  /${TODOS_COMMAND} rm <n>              Remove an item`,
 		`  /${TODOS_COMMAND} clear              Clear global todos`,
 	]
@@ -131,6 +135,7 @@ function targetStatus(action: TodoAction, currentStatus: TodoStatus): TodoStatus
 	if (action === "pending") return "pending"
 	if (action === "start") return "in_progress"
 	if (action === "block") return "blocked"
+	if (action === "cancel") return "cancelled"
 	if (action === "toggle") return currentStatus === "completed" ? "pending" : "completed"
 	return undefined
 }

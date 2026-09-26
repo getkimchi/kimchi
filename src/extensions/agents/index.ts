@@ -152,7 +152,7 @@ export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. If the model is not found, the tool returns the list of available models — pick from it. In multi-model mode, only role-configured models may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }

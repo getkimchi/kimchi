@@ -167,7 +167,7 @@ function completesCurrentTodoList(
 		return getTodoScopeKey(explicit.scope ?? resolveTodoScope()) === currentScopeKey
 	}
 	if (calls.every((call) => call.name === MARK_TODO_TOOL_NAME)) {
-		const completedIds = new Set<number>()
+		const closedIds = new Set<number>()
 		const todoIds = new Set(todoState.todos.map((todo) => todo.id))
 		for (const call of calls) {
 			const args = argumentsFor(call)
@@ -176,12 +176,14 @@ function completesCurrentTodoList(
 				!targetsCurrentScope(args) ||
 				typeof args.id !== "number" ||
 				!todoIds.has(args.id) ||
-				args.status !== "completed"
+				(args.status !== "completed" && args.status !== "cancelled")
 			)
 				return false
-			completedIds.add(args.id)
+			closedIds.add(args.id)
 		}
-		return todoState.todos.every((todo) => todo.status === "completed" || completedIds.has(todo.id))
+		return todoState.todos.every(
+			(todo) => todo.status === "completed" || todo.status === "cancelled" || closedIds.has(todo.id),
+		)
 	}
 	if (calls.length !== 1 || calls[0].name !== UPDATE_TODOS_TOOL_NAME) return false
 	const args = argumentsFor(calls[0])
@@ -192,7 +194,10 @@ function completesCurrentTodoList(
 			args.todos.length > 0 &&
 			args.todos.every(
 				(todo) =>
-					isRecord(todo) && typeof todo.content === "string" && todo.content.trim() && todo.status === "completed",
+					isRecord(todo) &&
+					typeof todo.content === "string" &&
+					todo.content.trim() &&
+					(todo.status === "completed" || todo.status === "cancelled"),
 			),
 	)
 }
@@ -1776,7 +1781,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (currentTodoState?.total && event.input.status === currentTodoState.settledStatus) return
 		return {
 			block: true,
-			reason: `Before ending the objective, keep a visible tactical todo list for this revision and settle every item as completed or genuinely blocked. Then call ${UPDATE_FERMENT_V2_TOOL_NAME} with the matching status without clearing the list.`,
+			reason: `Before ending the objective, keep a visible tactical todo list for this revision and settle every item as completed, superseded with a cancellation reason, or genuinely blocked. Then call ${UPDATE_FERMENT_V2_TOOL_NAME} with the matching status without clearing the list.`,
 		}
 	})
 
@@ -2419,7 +2424,7 @@ function assistantTurnTokens(event: TurnEndEvent): number {
 function todoResultState(
 	result: unknown,
 	expectedScopeKey: string,
-): Pick<FermentV2TodoState, "todos" | "total" | "blocked" | "completed"> | undefined {
+): Pick<FermentV2TodoState, "todos" | "total" | "blocked" | "completed" | "cancelled"> | undefined {
 	if (!isRecord(result) || !isWriteTodosDetails(result.details)) return undefined
 	const details = result.details
 	try {

@@ -102,6 +102,25 @@ describe("todo widget helpers", () => {
 		])
 	})
 
+	it("keeps cancelled items and reasons visible without counting them as done or active", () => {
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "Old model run", status: "cancelled", note: "Replaced by auto" },
+					{ content: "Comparison", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		expect(__test_summarizeTodos(TEST_SESSION_ID)).toBe("1/2 done · 0 active · 1 cancelled")
+		expect(__test_buildTodoLines(theme, TEST_SESSION_ID)).toContain(
+			"  1.  × Old model run (cancelled) — Replaced by auto",
+		)
+		const ctx = createUiContext(TEST_SESSION_ID, vi.fn())
+		syncTodoWidget(ctx)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
+	})
+
 	it("renders command positions instead of stored todo ids", () => {
 		applyWriteTodos(
 			{
@@ -182,7 +201,7 @@ describe("todo widget helpers", () => {
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
 		expect(lines).toContain("9/11 done · 2 active")
-		expect(lines.indexOf("… 7 completed")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+		expect(lines.indexOf("… 7 closed")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
 		expect(lines).toContain("  8.  ✓ task 8")
 		expect(lines).toContain("  9.  ✓ task 9")
 		expect(lines).toContain(" 10.  ▶ task 10")
@@ -211,7 +230,7 @@ describe("todo widget helpers", () => {
 		expect(lines).toContain("  1.  ✓ task 1")
 		expect(lines).toContain(" 10.  ▶ task 10")
 		expect(lines).toContain(" 11.  ○ task 11")
-		expect(lines).not.toContain("… 9 completed")
+		expect(lines).not.toContain("… 9 closed")
 	})
 
 	it("indicates hidden todos before and after the visible window", () => {
@@ -232,13 +251,13 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
-		expect(lines).toContain("… 7 completed")
+		expect(lines).toContain("… 7 closed")
 		expect(lines).toContain("  8.  ✓ task 8")
 		expect(lines).toContain("  9.  ✓ task 9")
 		expect(lines).toContain(" 10.  ○ task 10")
 		expect(lines).toContain(" 14.  ○ task 14")
 		expect(lines).toContain("… 5 more")
-		expect(lines.indexOf("… 7 completed")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+		expect(lines.indexOf("… 7 closed")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
 		expect(lines.indexOf("… 5 more")).toBeGreaterThan(lines.indexOf(" 14.  ○ task 14"))
 	})
 
@@ -285,7 +304,7 @@ describe("todo widget helpers", () => {
 		const instance = component({ requestRender: vi.fn() }, theme)
 		const lines = instance.render(120)
 		expect(lines).toContain("19/19 done · 0 active")
-		expect(lines).toContain("… 10 completed")
+		expect(lines).toContain("… 10 closed")
 		expect(lines).toContain(" 11.  ✓ task 11")
 		expect(lines).toContain(" 19.  ✓ task 19")
 		expect(lines).not.toContain("… 9 more")

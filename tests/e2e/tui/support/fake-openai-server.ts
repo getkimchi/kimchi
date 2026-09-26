@@ -565,6 +565,12 @@ function pickResponseScript(
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
+	// Bookkeeping requests do not consume scripted user turns. Tests can reserve
+	// an explicit matching response when exercising reconciliation itself.
+	if (JSON.stringify(request.body).includes("Reconcile todo bookkeeping against a finished conversation.")) {
+		const index = mainQueue.findIndex((script) => script.match?.(request))
+		return index >= 0 ? mainQueue.splice(index, 1)[0] : { stream: ['{"updates":[]}'] }
+	}
 	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request)
 	const primary = useSubagent ? subagentQueue : mainQueue
 	const fallback = useSubagent ? mainQueue : subagentQueue

@@ -1,36 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { markHarnessSteer } from "../steer-marker.js"
 
-/**
- * One-shot staleness steering.
- *
- * Staleness pressure used to be rendered inside the todo state block on every
- * request. That made the block content depend on volatile counters, which is
- * fine for a transient injection but breaks the persist-on-change model: the
- * persisted block must be a pure function of the todo store so it stays
- * byte-identical between real writes and can sit in the stable cache prefix.
- *
- * This module delivers the same pressure as bounded, persistent one-shot
- * steers: when a per-session counter crosses a threshold, a single hidden
- * message is sent (persisting in history at that point), and no more steers
- * fire until the epoch resets on the next relevant todo write.
- */
-
-export const TODO_STALENESS_CUSTOM_TYPE = "todo-staleness"
-
-/** Thresholds (post-increment count of non-todo tool calls) at which a
- *  staleness steer fires. Mirrors the old per-request indicator ranges. */
-export const TODO_STALENESS_THRESHOLDS = [9, 17, 25] as const
-
-/** Graduated staleness wording — the old `stalenessIndicator` text, moved out
- *  of the rendered block. */
-export function stalenessIndicator(changes: number): string | undefined {
-	if (changes <= 8) return undefined
-	if (changes <= 16) return `${changes} changes since last update — refresh the list at the next natural breakpoint`
-	if (changes <= 24) return `⚠ ${changes} changes since last update — update at the next natural breakpoint`
-	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint`
-}
-
 /** Send a hidden persistent steer message (lands in session history at the
  *  current chronological position, so it joins the stable cache prefix). */
 export function sendHiddenSteer(

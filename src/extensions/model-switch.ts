@@ -64,11 +64,11 @@ export default function modelSwitchExtension(
 		name: "set_model",
 		label: "Switch Model",
 		description:
-			'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
+			'Change the active AI model to a different one. Provide the model in "provider/modelId" format; partial model IDs are accepted when unambiguous. If the model is not found, the tool returns the list of available models — pick from it. Uses pi.setModel() internally.',
 		parameters: Type.Object({
 			model: Type.String({
 				description:
-					'Target model identifier in "provider/modelId" format (e.g. "kimchi-dev/kimi-k2.6", "anthropic/claude-sonnet-4-20250514").',
+					'Target model identifier in "provider/modelId" format. Partial model IDs are accepted when unambiguous. If the model is not found, the tool returns the list of available models — pick from it.',
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

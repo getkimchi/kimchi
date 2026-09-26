@@ -30,6 +30,17 @@ describe("ACP plan mapping", () => {
 		])
 	})
 
+	it("labels cancelled work explicitly when mapping to ACP's closed status", () => {
+		expect(buildPlanEntries([{ id: 1, content: "Old plan", status: "cancelled", note: "Replaced" }])).toEqual([
+			{
+				content: "Old plan (cancelled) — Replaced",
+				priority: "medium",
+				status: "completed",
+				_meta: { "kimchi.dev": { todoStatus: "cancelled", note: "Replaced" } },
+			},
+		])
+	})
+
 	it("falls back to content and omits an absent blocked note", () => {
 		expect(
 			buildPlanEntries([

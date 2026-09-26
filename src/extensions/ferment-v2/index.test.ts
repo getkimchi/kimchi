@@ -572,6 +572,27 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()?.name).toBe("Changed plan")
 	})
 
+	it("accepts a cancelled predecessor and completed replacement without bypassing evaluation", async () => {
+		await harness.command("Compare results using an available model")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
+		await modelTodoResult(harness, [
+			{ id: 1, content: "Run unavailable model", status: "cancelled", note: "Decision: replaced by auto" },
+			{ id: 2, content: "Run auto and compare", status: "completed", note: "Evidence: comparison delivered" },
+		])
+		expect(
+			await harness.fire("tool_call", {
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
+				toolCallId: "end",
+				input: { status: "complete" },
+			}),
+		).toBeUndefined()
+		await settleFermentV2(harness, "continue")
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()?.status).toBe("complete")
+	})
+
 	it.each([
 		"# Manual plan\n<approved_plan>\nDo work.\n</approved_plan>",
 		"Read the approved plan at /tmp/manual.md",
@@ -1000,13 +1021,29 @@ describe("Ferment V2 extension", () => {
 	it.each([
 		{
 			toolName: MARK_TODO_TOOL_NAME,
+			status: "completed" as const,
 			arguments: { id: 1, status: "completed" },
 		},
 		{
 			toolName: UPDATE_TODOS_TOOL_NAME,
+			status: "completed" as const,
 			arguments: { todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }] },
 		},
-	])("validates before exposing prose emitted with the $toolName write that completes the list", async (todoCall) => {
+		{
+			toolName: MARK_TODO_TOOL_NAME,
+			status: "cancelled" as const,
+			arguments: { id: 1, status: "cancelled", note: "Superseded by verified replacement" },
+		},
+		{
+			toolName: UPDATE_TODOS_TOOL_NAME,
+			status: "cancelled" as const,
+			arguments: {
+				todos: [
+					{ id: 1, content: "Finish the Ferment V2", status: "cancelled", note: "Superseded by verified replacement" },
+				],
+			},
+		},
+	])("validates before exposing prose emitted with the $toolName $status write that settles the list", async (todoCall) => {
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
@@ -1034,7 +1071,7 @@ describe("Ferment V2 extension", () => {
 		expect(candidateEnded.message.content).toEqual([candidate.content[1]])
 		harness.setBranch([...harness.branch, messageEntry(candidateEnded.message, null)])
 
-		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "completed" }], {
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: todoCall.status }], {
 			toolName: todoCall.toolName,
 		})
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
@@ -1297,7 +1334,7 @@ describe("Ferment V2 extension", () => {
 			status: "active",
 			lastEvaluation: { verdict: "met" },
 		})
-		expect(harness.sendMessage.mock.lastCall?.[0].content).toContain("Keep a visible, fully completed Todo list")
+		expect(harness.sendMessage.mock.lastCall?.[0].content).toContain("Keep a visible, fully settled Todo list")
 
 		harness.sendMessage.mockClear()
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })

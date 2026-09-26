@@ -73,6 +73,16 @@ describe("AGENT_MODEL_PARAMETER_DESCRIPTION", () => {
 		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).not.toContain("Your Team")
 		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).not.toContain("orchestration mode")
 	})
+
+	it("documents the model-not-found recovery path up front", () => {
+		// In session 01a0cd6c the model guessed a model name it had seen in a
+		// stale tool-description example and only self-corrected because the
+		// Agent error returned the available list — teach that path in the
+		// parameter description so the guess is unnecessary.
+		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).toContain(
+			"If the model is not found, the tool returns the list of available models",
+		)
+	})
 })
 
 // ---- Integration: session_shutdown nudge race ----

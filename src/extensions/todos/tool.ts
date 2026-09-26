@@ -22,6 +22,7 @@ const TODO_STATUS_PARAMETER = Type.Union([
 	Type.Literal("in_progress"),
 	Type.Literal("blocked"),
 	Type.Literal("completed"),
+	Type.Literal("cancelled"),
 ])
 
 const SCOPE_DESCRIPTION =
@@ -336,7 +337,7 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 		name: MARK_TODO_TOOL_NAME,
 		label: "Mark Todo",
 		description:
-			"Mark one todo as pending, in_progress, blocked, or completed by id. This is the primary tool for routine progress updates — use it to mark the current item completed and the next one in_progress as you work. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo status change.",
+			"Mark one todo as pending, in_progress, blocked, completed, or cancelled by id. Cancel only obsolete or superseded work; include the reason in note. This is the primary tool for routine progress updates — use it to mark the current item completed and the next one in_progress as you work. Pair status updates with work tool calls when possible; status-only updates are appropriate when finishing work.",
 		promptSnippet: "Mark one todo's progress by id",
 		parameters: MARK_TODO_PARAMETERS,
 		executionMode: "parallel",
