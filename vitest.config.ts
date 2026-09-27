@@ -27,6 +27,9 @@ export default defineConfig({
 			// cannot trip over them.
 			"tests/e2e/**",
 		],
+		// Per-file isolated home: os.homedir() reads USERPROFILE on Windows and
+		// ignores HOME, so per-test HOME stubs alone don't protect the real profile.
+		setupFiles: ["./tests/setup/isolated-home.ts"],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
 			// numbers across developer machines and CI regardless of system locale.
