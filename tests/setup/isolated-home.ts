@@ -22,9 +22,11 @@ process.env.XDG_DATA_HOME = join(testHome, ".local", "share")
 process.env.XDG_CACHE_HOME = join(testHome, ".cache")
 
 afterAll(() => {
-	// Retry through transient Windows EBUSY; a rare leftover is for the OS
-	// temp reaper, not a failed suite.
+	// Retry through transient Windows EBUSY; a leftover only costs temp space,
+	// so warn instead of failing the suite.
 	try {
 		rmSync(testHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-	} catch {}
+	} catch (error) {
+		console.warn(`[isolated-home] could not remove ${testHome}: ${error instanceof Error ? error.message : error}`)
+	}
 })

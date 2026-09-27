@@ -29,6 +29,7 @@ export default defineConfig({
 		],
 		// Per-file isolated home: os.homedir() reads USERPROFILE on Windows and
 		// ignores HOME, so per-test HOME stubs alone don't protect the real profile.
+		// Relies on the default isolate: true, which reruns the setup for each file.
 		setupFiles: ["./tests/setup/isolated-home.ts"],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
