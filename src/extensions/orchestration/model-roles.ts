@@ -377,7 +377,7 @@ export function getOrchestratorModelRef(sessionId: string | null): string {
 
 export function getOrchestratorModel(
 	sessionId: string,
-	modelRegistry: ModelRegistry,
+	modelRegistry: Pick<ModelRegistry, "getAvailable">,
 ): { model: Model<Api> | undefined; modelId: string; modelRef: string } {
 	const orchRef = getOrchestratorModelRef(sessionId)
 	const orchId = modelIdFromRef(orchRef)

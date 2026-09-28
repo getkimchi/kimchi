@@ -9,7 +9,10 @@ export function refFromModel(model: Model<Api>): string {
 }
 
 /** Resolve the exact canonical ref without assuming providers or model IDs contain no slashes. */
-export function findModelByRef(modelRegistry: ModelRegistry, ref: string): Model<Api> | undefined {
+export function findModelByRef(
+	modelRegistry: Pick<ModelRegistry, "getAvailable">,
+	ref: string,
+): Model<Api> | undefined {
 	return modelRegistry.getAvailable().find((model) => refFromModel(model) === ref)
 }
 
@@ -17,7 +20,7 @@ export function findModelByRef(modelRegistry: ModelRegistry, ref: string): Model
  * Sorted canonical refs of every available model — the shared "list what
  * exists" half of every model-not-found error message.
  */
-export function availableModelRefs(modelRegistry: ModelRegistry): string[] {
+export function availableModelRefs(modelRegistry: Pick<ModelRegistry, "getAvailable">): string[] {
 	return modelRegistry
 		.getAvailable()
 		.map((m) => refFromModel(m))

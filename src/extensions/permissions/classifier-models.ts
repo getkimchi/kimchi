@@ -16,7 +16,7 @@ export function resolveClassifierCandidates(registry: Pick<ModelRegistry, "getAv
 	const candidates: Model<Api>[] = []
 	const missingRefs: string[] = []
 	for (const ref of DEFAULT_CLASSIFIER_CANDIDATE_REFS) {
-		const model = findModelByRef(registry as ModelRegistry, ref)
+		const model = findModelByRef(registry, ref)
 		if (model) candidates.push(model)
 		else missingRefs.push(ref)
 	}

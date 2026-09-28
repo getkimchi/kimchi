@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { createModel } from "../__mocks__/model-registry.js"
 import { availableModelRefs, findModelByRef, modelIdFromRef, splitModelRef } from "./ref-utils.js"
 
 describe("splitModelRef", () => {
@@ -38,17 +39,11 @@ describe("modelIdFromRef", () => {
 
 describe("availableModelRefs", () => {
 	const registry = {
-		getAvailable: () => [
-			{ provider: "kimchi-dev/anthropic", id: "claude-opus-4-6" },
-			{ provider: "kimchi-dev", id: "kimi-k3" },
-		],
+		getAvailable: () => [createModel("claude-opus-4-6", "kimchi-dev/anthropic"), createModel("kimi-k3", "kimchi-dev")],
 	}
 
 	it("returns sorted canonical refs of every available model", () => {
-		expect(availableModelRefs(registry as never)).toEqual([
-			"kimchi-dev/anthropic/claude-opus-4-6",
-			"kimchi-dev/kimi-k3",
-		])
+		expect(availableModelRefs(registry)).toEqual(["kimchi-dev/anthropic/claude-opus-4-6", "kimchi-dev/kimi-k3"])
 	})
 })
 
@@ -56,11 +51,11 @@ describe("findModelByRef", () => {
 	it("matches a sub-provider ref exactly, where splitModelRef cannot", () => {
 		const registry = {
 			getAvailable: () => [
-				{ provider: "kimchi-dev/anthropic", id: "claude-opus-4-6" },
-				{ provider: "kimchi-dev", id: "kimi-k3" },
+				createModel("claude-opus-4-6", "kimchi-dev/anthropic"),
+				createModel("kimi-k3", "kimchi-dev"),
 			],
 		}
-		expect(findModelByRef(registry as never, "kimchi-dev/anthropic/claude-opus-4-6")?.id).toBe("claude-opus-4-6")
-		expect(findModelByRef(registry as never, "kimchi-dev/anthropic/claude-opus-4-5")).toBeUndefined()
+		expect(findModelByRef(registry, "kimchi-dev/anthropic/claude-opus-4-6")?.id).toBe("claude-opus-4-6")
+		expect(findModelByRef(registry, "kimchi-dev/anthropic/claude-opus-4-5")).toBeUndefined()
 	})
 })

@@ -657,7 +657,7 @@ describe("getOrchestratorModel", () => {
 		const registry = createModelRegistry([
 			{ ...createModel("claude-opus-4-6", "kimchi-dev/anthropic"), name: "Opus 4.6" },
 		])
-		const { model, modelRef } = getOrchestratorModel("no-such-session", registry as never)
+		const { model, modelRef } = getOrchestratorModel("no-such-session", registry)
 
 		expect(modelRef).toBe(SUB_PROVIDER_REF)
 		expect(model && refFromModel(model)).toBe(SUB_PROVIDER_REF)
