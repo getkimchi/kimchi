@@ -5,12 +5,7 @@ import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.mode
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
-import {
-	AUTO_MODEL_API,
-	AUTO_MODEL_DESCRIPTION,
-	AUTO_MODEL_ID,
-	AUTO_MODEL_PI_NAME,
-} from "./extensions/router/constants.js"
+import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
@@ -211,29 +206,6 @@ export interface PiModelConfig {
 	description?: string
 }
 
-export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
-	const rootModels = models.filter((model) => model.provider === "ai-enabler")
-	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
-	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
-	return {
-		id: AUTO_MODEL_ID,
-		// Name carries the description because Pi's `Model` has no field for it;
-		// surfaces with a real description slot (ACP) use the constants separately.
-		name: AUTO_MODEL_PI_NAME,
-		api: AUTO_MODEL_API,
-		provider: "ai-enabler",
-		// Auto is virtual, but Pi reads this capability to expose the session's
-		// reasoning control. The Auto provider applies that preference only when
-		// the resolved concrete model supports it.
-		reasoning: true,
-		thinkingLevelMap: { off: "none", max: "max" },
-		input: ["text", "image"],
-		contextWindow,
-		maxTokens,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	}
-}
-
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// Anthropic models are routed through the native `/v1/messages` API. Inherit
 	// the upstream catalog's compat flags (adaptive thinking, strict tools) and
@@ -372,7 +344,7 @@ export function __clearModelDescriptionsForTest(): void {
 
 /** Register every model description found in models.json provider blocks.
  * Shared with the environment models path (KIMCHI_API_KEY sessions), which
- * bypasses updateModelsConfig/injectAutoModel and must still populate the
+ * bypasses updateModelsConfig and must still populate the
  * /model selector's description registry. */
 export function registerDescriptionsFromProviders(
 	providers: Record<string, { models?: Array<{ id: string; description?: string }> }>,
@@ -384,6 +356,16 @@ export function registerDescriptionsFromProviders(
 			else modelDescriptionRegistry().delete(key)
 		}
 	}
+}
+
+/** Fill the selector's Auto fallback description when the current catalog
+ * has none. The backend owns the `auto` entry, but not every catalog ships a
+ * description for it — the /model table should never render a bare Auto row.
+ * Mirrors the ACP surface's render-time fallback (nameDescription ??
+ * AUTO_MODEL_DESCRIPTION) for the registry-fed TUI table. */
+export function registerAutoDescriptionFallback(): void {
+	const autoKey = `${AUTO_MODEL_PROVIDER}/auto`
+	if (!getModelDescription(autoKey)) registerModelDescription(autoKey, AUTO_MODEL_DESCRIPTION)
 }
 
 function extractModelsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): ModelMetadata[] {
@@ -404,12 +386,13 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		// Restore the description registry from the persisted cache so the
 		// /model selector keeps descriptions across offline restarts.
 		registerDescriptionsFromProviders(providers)
+		registerAutoDescriptionFallback()
 		const result: ModelMetadata[] = []
 		for (const [name, provider] of Object.entries(providers)) {
 			if (!name.startsWith("kimchi-dev")) continue
 			const models = (provider as { models?: PiModelConfig[] }).models
 			if (!Array.isArray(models) || models.length === 0) continue
-			result.push(...models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata))
+			result.push(...models.map(modelToMetadata))
 		}
 		if (result.length === 0) return undefined
 		return result
@@ -479,35 +462,6 @@ export function injectExperimentalProvider(modelsJsonPath: string, apiKey: strin
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 
-/**
- * Upsert the virtual kimchi-dev/auto model after the managed provider refresh.
- * It is always present so saved sessions/defaults remain restorable; the
- * experimental flag only controls whether Pi exposes it in discovery lists.
- */
-export function injectAutoModel(modelsJsonPath: string): void {
-	if (!existsSync(modelsJsonPath)) return
-	let config: { providers?: Record<string, { models?: PiModelConfig[] }> }
-	try {
-		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-	} catch {
-		return
-	}
-	const kimchiDev = config.providers?.["kimchi-dev"]
-	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
-	// Refresh descriptions from disk before filling in missing Auto text.
-	registerDescriptionsFromProviders(config.providers ?? {})
-	// Only synthesize the harness virtual `auto` when the catalog does not
-	// already advertise a `kimchi-dev/auto` entry; a backend-owned `auto` then
-	// wins and this normalization leaves it untouched.
-	if (!kimchiDev.models.some((model) => model.id === AUTO_MODEL_ID)) {
-		const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
-		kimchiDev.models = [...kimchiDev.models, autoModelConfig(concreteMetadata)]
-	}
-	const autoKey = `kimchi-dev/${AUTO_MODEL_ID}`
-	if (!getModelDescription(autoKey)) registerModelDescription(autoKey, AUTO_MODEL_DESCRIPTION)
-	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
-}
-
 export function readExperimentalModels(modelsJsonPath: string): ModelMetadata[] {
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
@@ -543,6 +497,7 @@ export async function updateModelsConfig(
 		// Populate the selector's description registry from the freshly written
 		// blocks (the fetch path — endpoint descriptions land here first).
 		registerDescriptionsFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
+		registerAutoDescriptionFallback()
 	}
 	return {
 		models: result.models,

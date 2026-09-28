@@ -4,8 +4,8 @@ import { join } from "node:path"
 import { ModelRegistry, ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { discoverEnvironmentModels, withEnvironmentModels } from "./environment-models.js"
+import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { syncKimchiAuth } from "./extensions/login/flow.js"
-import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_ID } from "./extensions/router/constants.js"
 import {
 	__clearModelDescriptionsForTest,
 	buildModelsConfig,
@@ -74,13 +74,13 @@ it("discovers with the override and leaves the saved model cache byte-identical"
 		expect.stringContaining("/metadata"),
 		expect.objectContaining({ headers: { Authorization: "Bearer environment-key" } }),
 	)
-	expect(discovered.providers["kimchi-dev"].models?.map((model) => model.id)).toEqual(["environment-model", "auto"])
+	expect(discovered.providers["kimchi-dev"].models?.map((model) => model.id)).toEqual(["environment-model"])
 	expect(discovered.providers["kimchi-experimental"].models?.map((model) => model.id)).toEqual(["environment-model"])
 	expect(readFileSync(modelsPath, "utf-8")).toBe(original)
 	expect(existsSync(authPath)).toBe(false)
 })
 
-it("collision guard: does not synthesize a second auto when the fetched catalog advertises one", async () => {
+it("passes a backend-advertised auto through untouched (backend owns the catalog)", async () => {
 	const original = JSON.stringify({ providers: providersFor("saved-model") })
 	writeFileSync(modelsPath, original)
 	const backendAuto: ModelMetadata = {
@@ -284,7 +284,7 @@ describe("model description registry (KIMCHI_API_KEY sessions)", () => {
 		expect(getModelDescription("kimchi-dev/glm-5.3")).toBe("Flagship general model.")
 		// A backend-owned auto keeps its endpoint description — the fallback
 		// must not override it.
-		expect(getModelDescription(`kimchi-dev/${AUTO_MODEL_ID}`)).toBe("Automatically selects the best available model.")
+		expect(getModelDescription(`${AUTO_MODEL_PROVIDER}/auto`)).toBe("Automatically selects the best available model.")
 		expect(getModelDescription("kimchi-dev/auto-beta")).toBe("Routes to the newest models before general availability.")
 		// The environment path serves the session from memory; it must not
 		// write the shared on-disk cache.
@@ -295,7 +295,7 @@ describe("model description registry (KIMCHI_API_KEY sessions)", () => {
 		const fetchMock = vi.fn(async (url: string | URL | Request) =>
 			Response.json(
 				String(url).includes("/metadata")
-					? { models: [described("glm-5.3", "Flagship general model.")] }
+					? { models: [described("glm-5.3", "Flagship general model."), described("auto")] }
 					: { models: [] },
 			),
 		)
@@ -303,8 +303,9 @@ describe("model description registry (KIMCHI_API_KEY sessions)", () => {
 
 		await discoverEnvironmentModels(modelsPath, "environment-key", { experimental: false })
 
-		// The synthesized virtual auto still gets a description.
-		expect(getModelDescription(`kimchi-dev/${AUTO_MODEL_ID}`)).toBe(AUTO_MODEL_DESCRIPTION)
+		// A backend-advertised auto without a description still gets the
+		// harness fallback text — the /model row is never bare.
+		expect(getModelDescription(`${AUTO_MODEL_PROVIDER}/auto`)).toBe(AUTO_MODEL_DESCRIPTION)
 		expect(getModelDescription("kimchi-dev/glm-5.3")).toBe("Flagship general model.")
 	})
 
@@ -315,10 +316,11 @@ describe("model description registry (KIMCHI_API_KEY sessions)", () => {
 
 		const discovered = await discoverEnvironmentModels(modelsPath, "environment-key", { experimental: false })
 
-		// Discovery degraded to the built-in config, but the appended virtual
-		// auto is still described for the selector.
-		expect(getModelDescription(`kimchi-dev/${AUTO_MODEL_ID}`)).toBe(AUTO_MODEL_DESCRIPTION)
-		expect((discovered.providers["kimchi-dev"]?.models ?? []).map((model) => model.id)).toContain(AUTO_MODEL_ID)
+		// Discovery degraded to an empty catalog — the backend owns the
+		// catalog and nothing is synthesized client-side — but the Auto
+		// fallback description is still registered for the selector.
+		expect(getModelDescription(`${AUTO_MODEL_PROVIDER}/auto`)).toBe(AUTO_MODEL_DESCRIPTION)
+		expect(discovered.providers["kimchi-dev"]?.models ?? []).toEqual([])
 	})
 })
 

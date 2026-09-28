@@ -38,7 +38,6 @@ import {
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
 import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
-import { isAutoModel } from "../router/constants.js"
 import { resetTelemetryFermentV2Context, setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { handleToolDecision } from "./handlers/permissions.js"
@@ -924,7 +923,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 		pi.on("model_select", async (event) => {
 			telemetryCtx.currentModel = event.model.id
-			telemetryCtx.selectedModelIsAuto = isAutoModel(event.model)
 		})
 		pi.on("session_compact", async (_event, ctx) => {
 			handleSessionCompact(telemetryCtx, ctx)

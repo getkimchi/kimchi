@@ -2,6 +2,7 @@ import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./auto-model/state.js"
 import createModelGuardExtension, {
 	__resetImagesDetectedForTest,
 	__setLatestMessagesForTest,
@@ -13,7 +14,6 @@ import modelSwitchExtension, {
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
 import { getMultiModelEnabled, resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type RegisteredTool = {
 	name: string
@@ -1185,7 +1185,11 @@ describe("modelSwitchExtension", () => {
 				contextWindow: 1_000_000,
 			}
 			clearAutoRoutingState("test-session")
-			setAutoRoutingState("test-session", { status: "resolved", model: { ...resolvedTarget } as Model<string> })
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: { ...resolvedTarget } as Model<string>,
+				requestedId: "auto",
+			})
 			try {
 				const { pi, trigger } = createHarnessWithTrigger()
 				modelSwitchExtension(pi)

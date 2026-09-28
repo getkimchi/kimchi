@@ -79,7 +79,7 @@ const VISION_SMALL: FakeModel = {
 }
 
 /** Backend-owned Auto entry (ai-enabler group → kimchi-dev block), like the
- *  production metadata endpoint serves; injectAutoModel's description fallback
+ *  production metadata endpoint serves; the registry's description fallback
  *  covers it. */
 const AUTO_MODEL: FakeModel = {
 	slug: "auto",
@@ -304,8 +304,8 @@ test("/model renders MODEL, PROVIDER, CONTEXT, VISION, and DESCRIPTION columns",
 			expect(text).toContain("✓")
 			expect(text).toContain("✗")
 			expect(text).toContain("Comfortable vision model for everyday work.")
-			// The backend-owned auto row gets injectAutoModel's fallback
-			// description (the endpoint itself sends none).
+			// The backend-owned auto row gets the registry's fallback description
+			// (the endpoint itself sends none).
 			expect(text).toContain("Picks the best model for your tasks automatically.")
 			trace.step("context, VISION, and DESCRIPTION values rendered")
 

@@ -27,6 +27,14 @@ describe("modelSupportsImages", () => {
 		expect(modelSupportsImages(makeModel({ input: ["text"] }))).toBe(false)
 	})
 
+	it("accepts images on backend-routed virtual models regardless of the descriptor", () => {
+		// The backend picks a concrete model per request; the descriptor's
+		// modalities do not reflect the routed pool (the clipboard path relies
+		// on this — see auto-model/constants' isAutoRoutedModel).
+		expect(modelSupportsImages(makeModel({ provider: "kimchi-dev", id: "auto", input: ["text"] }))).toBe(true)
+		expect(modelSupportsImages(makeModel({ provider: "kimchi-dev", id: "auto-beta", input: ["text"] }))).toBe(true)
+	})
+
 	it("agrees with the model descriptor, not the catalog slug", () => {
 		// Provider/id collisions must not matter: the capability comes from the
 		// model object itself, not a metadata lookup by slug.
@@ -49,11 +57,12 @@ describe("needsVisionSwitch", () => {
 		expect(needsVisionSwitch(makeModel({ input: ["text", "image"] }))).toBe(false)
 	})
 
-	it("bypasses the Auto model explicitly", () => {
-		// Auto advertises image input but the router is not image-aware — the
-		// gate must not fire for it.
-		const auto = makeModel({ provider: "kimchi-dev", id: "auto", input: ["text", "image"] })
-		expect(needsVisionSwitch(auto)).toBe(false)
+	it("bypasses backend-routed virtual models explicitly", () => {
+		// The backend resolves a concrete model per request and accepts image
+		// input — the gate must not fire for the whole `auto*` namespace,
+		// whatever the descriptor claims.
+		expect(needsVisionSwitch(makeModel({ provider: "kimchi-dev", id: "auto", input: ["text"] }))).toBe(false)
+		expect(needsVisionSwitch(makeModel({ provider: "kimchi-dev", id: "auto-beta", input: ["text"] }))).toBe(false)
 	})
 
 	it("handles missing models", () => {
@@ -73,9 +82,12 @@ describe("visionModelCandidates", () => {
 		expect(visionModelCandidates(available).map((m) => m.id)).toEqual(["vision-a", "vision-b"])
 	})
 
-	it("excludes Auto even though it advertises image input", () => {
+	it("excludes backend-routed virtual models even though they accept images", () => {
+		// Switching to Auto cannot guarantee a vision-capable concrete pick, so
+		// the dialog never offers the `auto*` namespace as a target.
 		const available = [
 			makeModel({ provider: "kimchi-dev", id: "auto", input: ["text", "image"] }),
+			makeModel({ provider: "kimchi-dev", id: "auto-beta", input: ["text", "image"] }),
 			makeModel({ id: "vision-a", input: ["text", "image"] }),
 		]
 		expect(visionModelCandidates(available).map((m) => m.id)).toEqual(["vision-a"])

@@ -35,6 +35,7 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
@@ -64,7 +65,6 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
-import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
