@@ -63,8 +63,21 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, loadConfig as loadKimchiConfig, writeApiKey } from "../../config.js"
+import {
+	clearApiKey,
+	endpointsForRegion,
+	loadConfig as loadKimchiConfig,
+	resolveEndpoints,
+	writeApiKey,
+} from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import {
+	AUTO_MODEL_DESCRIPTION,
+	AUTO_MODEL_PROVIDER,
+	isAutoRoutedModel,
+	splitModelDisplayName,
+} from "../../extensions/auto-model/constants.js"
+import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
@@ -90,19 +103,13 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
-import {
-	AUTO_MODEL_DESCRIPTION,
-	AUTO_MODEL_NAME,
-	AUTO_MODEL_REF,
-	isAutoModel,
-} from "../../extensions/router/constants.js"
-import { getAutoRoutingState } from "../../extensions/router/state.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { isRegionId, type KimchiRegion, type RegionId, selectableRegions } from "../../regions.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
@@ -140,6 +147,29 @@ import { asString, extractImages, truncate } from "./utils.js"
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
+
+/**
+ * Region-pinned Agent Auth methods (`kimchi-agent-<regionId>`). Advertised in
+ * addition to `kimchi-agent` — the advertised list doubles as the capability
+ * signal: new Studio versions show a region picker only when these methods
+ * exist, while old Studio ignores them and keeps calling `kimchi-agent`.
+ */
+function regionAuthMethod(region: KimchiRegion): AuthMethod {
+	return {
+		id: `${KIMCHI_AGENT_AUTH_METHOD_ID}-${region.id}`,
+		name: `Kimchi Login (${region.id.toUpperCase()})`,
+		description: `Authenticate via browser to Kimchi (${region.label} region)`,
+	}
+}
+
+/** Region an Agent Auth method logs in to; undefined for an unknown method. */
+function authMethodRegion(methodId: string): RegionId | undefined {
+	if (methodId === KIMCHI_AGENT_AUTH_METHOD_ID) return resolveEndpoints().region
+	const prefix = `${KIMCHI_AGENT_AUTH_METHOD_ID}-`
+	if (!methodId.startsWith(prefix)) return undefined
+	const suffix = methodId.slice(prefix.length)
+	return isRegionId(suffix) ? suffix : undefined
+}
 
 /** Copy shown on the OAuth callback success page when the flow was launched by
  * an ACP client (e.g. Studio's in-app login) rather than `kimchi login`. It
@@ -365,6 +395,8 @@ export class KimchiAcpAgent implements Agent {
 				name: "Kimchi Login",
 				description: "Authenticate via browser to Kimchi",
 			},
+			// Region-pinned companions for clients that can pick a region.
+			...selectableRegions().map(regionAuthMethod),
 		]
 		if (request.clientCapabilities?.auth?.terminal === true) {
 			authMethods.push({
@@ -435,11 +467,13 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
-		// Only the Agent Auth method ("kimchi-agent") is handled here. Terminal
-		// Auth ("kimchi-terminal") is resolved out-of-band: the client launches
-		// `kimchi login` as a separate process, so this method is never called
-		// for it.
-		if (params.methodId !== "kimchi-agent") {
+		// Agent Auth ("kimchi-agent") follows the configured region; the pinned
+		// "kimchi-agent-<regionId>" companions authenticate against that region
+		// regardless of config. Terminal Auth ("kimchi-terminal") is resolved
+		// out-of-band: the client launches `kimchi login` as a separate process,
+		// so this method is never called for it.
+		const region = authMethodRegion(params.methodId)
+		if (region === undefined) {
 			throw RequestError.invalidParams(undefined, `unknown auth method: ${params.methodId}`)
 		}
 
@@ -449,7 +483,10 @@ export class KimchiAcpAgent implements Agent {
 		// ACP client, so it stays neutral instead of the terminal CLI wording.
 		let token: string
 		try {
-			;({ token } = await authenticateViaBrowser({ successMessage: ACP_SUCCESS_MESSAGE }))
+			;({ token } = await authenticateViaBrowser({
+				webAppUrl: endpointsForRegion(region).webAppUrl,
+				successMessage: ACP_SUCCESS_MESSAGE,
+			}))
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error)
 			throw RequestError.internalError(undefined, `Browser authentication failed: ${detail}`)
@@ -459,8 +496,8 @@ export class KimchiAcpAgent implements Agent {
 		}
 
 		// Persist the key so new sessions pick it up via the login extension's
-		// session_start handler (which reads loadConfig().apiKey).
-		writeApiKey(token)
+		// session_start handler (which reads loadConfig().apiKey), with its region.
+		writeApiKey(token, undefined, { region })
 		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
 		clearCredentialStale(KIMCHI_PROVIDER_ID)
 
@@ -1156,10 +1193,9 @@ export class KimchiAcpAgent implements Agent {
 				// message's assignment.
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
-				// The Auto router resolves during `before_agent_start`, so by the
-				// first assistant message its pick is known and the model option's
-				// name has become `Auto (<id>)`. Push it once per change so clients
-				// showing the selected model reflect what Auto actually chose.
+				// A resolved pick may already be known here (e.g. restored from the
+				// last session), so push the resolved label once per change so clients
+				// showing the selected model reflect what the auto model chose.
 				this.publishModelOptionIfChanged(sessionId, entry)
 				return
 			}
@@ -1251,6 +1287,10 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) return
 				const msg = event.message
 				if (msg.role !== "assistant") return
+				// The pick is learned from this message (responseModel), after
+				// message_start — push the resolved label here too. Idempotent: the
+				// lastModelOptionName seed makes this a no-op unless the label changed.
+				this.publishModelOptionIfChanged(sessionId, entry)
 				// Terminal-error tracking for the finalize path: only the LAST
 				// assistant message's stopReason decides the turn outcome.
 				// StopReason (pi-ai): error → record; aborted → leave (finalization
@@ -1876,17 +1916,30 @@ function getSessionModelRegistry(
 }
 
 /**
- * The Auto router's select option.
+ * A routed virtual model's select option.
  *
- * Auto is the one model whose row is not a plain name: it carries a
- * description, and once the router has picked a concrete model for this
- * session the name becomes `Auto (glm-5.3)` — mirroring the status bar, so a
- * client showing only the selected model still says what Auto resolved to.
+ * Routed virtual models (`auto`, `auto-beta`) are the rows that are not plain
+ * names: they carry a description, and once the backend has picked a concrete
+ * model for this session the name becomes `Auto (glm-5.3)` — mirroring the
+ * status bar, so a client showing only the selected model still says what the
+ * virtual model resolved to. The base name comes from the catalog descriptor
+ * (backend display name); the description is the harness's one-liner for what
+ * a routed virtual model does.
  */
-function autoModelOption(sessionId: string): SessionConfigSelectOption {
+function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
+	// The backend may ship the description inside the display name; ACP has a
+	// dedicated description field, so the pair is split apart here.
+	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
+	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
 	const state = getAutoRoutingState(sessionId)
-	const name = state.status === "resolved" ? `${AUTO_MODEL_NAME} (${state.model.id})` : AUTO_MODEL_NAME
-	return { value: AUTO_MODEL_REF, name, description: AUTO_MODEL_DESCRIPTION }
+	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
+		return {
+			value: refFromModel(model),
+			name: `${baseName} (${state.model.id})`,
+			description,
+		}
+	}
+	return { value: refFromModel(model), name: baseName, description }
 }
 
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
@@ -1909,7 +1962,9 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		},
 		...modelRegistry
 			.getAvailable()
-			.map((m) => (isAutoModel(m) ? autoModelOption(session.sessionId) : { value: refFromModel(m), name: m.name }))
+			.map((m) =>
+				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
+			)
 			.sort((a, b) => a.value.localeCompare(b.value)),
 	]
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
@@ -1926,15 +1981,20 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 }
 
 /**
- * The Auto entry's own name within a built option list, or undefined when the
- * session has no Auto model. The `model` option's `name` is the static section
- * title ("Model") and never changes, so the Auto row is what we track to decide
- * whether a re-publish is worth sending.
+ * The routed virtual rows' composite name within a built option list, or
+ * undefined when the catalog has none. The `model` option's `name` is the
+ * static section title ("Model") and never changes, so the virtual rows are
+ * what we track to decide whether a re-publish is worth sending — any of them
+ * resolving a pick (e.g. `Auto` → `Auto (glm-5.3)`) changes the composite.
  */
 function autoOptionName(configOptions: SessionConfigOption[]): string | undefined {
 	const modelOption = configOptions.find((opt) => opt.id === "model")
 	if (modelOption?.type !== "select") return undefined
-	return (modelOption.options as SessionConfigSelectOption[]).find((opt) => opt.value === AUTO_MODEL_REF)?.name
+	const autoNames = (modelOption.options as SessionConfigSelectOption[])
+		.filter((opt) => opt.value.startsWith(`${AUTO_MODEL_PROVIDER}/auto`))
+		.map((opt) => opt.name)
+		.sort()
+	return autoNames.length > 0 ? autoNames.join(" · ") : undefined
 }
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {

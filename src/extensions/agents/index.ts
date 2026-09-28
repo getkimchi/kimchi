@@ -39,7 +39,6 @@ import {
 } from "../orchestration/model-roles.js"
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
-import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
@@ -1770,7 +1769,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// extract image paths from read tool calls and prepend them to the prompt.
 				const modelInput = (model as { input?: string[] } | undefined)?.input
 				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
-				const requiresVision = imagePaths.length > 0 && isAutoModel(model)
 				const effectivePrompt =
 					imagePaths.length > 0
 						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
@@ -1834,7 +1832,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
-							requiresVision,
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
 							taskRef,
@@ -1982,7 +1979,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
-						requiresVision,
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,

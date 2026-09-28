@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const {
 	AUTOMATIC_REFRESH_MIN_INTERVAL_MS,
-	BILLING_EXHAUSTED_MESSAGE,
-	BILLING_RATE_LIMITED_MESSAGE,
-	COMMUNITY_TIER_MESSAGES,
+	billingExhaustedMessage,
+	billingRateLimitedMessage,
+	communityTierMessages,
 	budgetEndpointFromLlmEndpoint,
 	configureBillingCreditsApi,
 	creditsEndpointFromLlmEndpoint,
@@ -72,7 +72,7 @@ describe("billing status", () => {
 		expect(getBillingWarnings()).toEqual([
 			{
 				kind: "community-inference-blocked",
-				message: COMMUNITY_TIER_MESSAGES.inferenceBlocked,
+				message: communityTierMessages().inferenceBlocked,
 			},
 		])
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
@@ -98,7 +98,7 @@ describe("billing status", () => {
 			restrictedMode: false,
 			remainingCredits: 0,
 		})
-		expect(getBillingWarnings()[0]).toEqual({ kind: "rate-limited", message: BILLING_RATE_LIMITED_MESSAGE })
+		expect(getBillingWarnings()[0]).toEqual({ kind: "rate-limited", message: billingRateLimitedMessage() })
 		expect(getCommunityTierHeaderNotice()).toBeUndefined()
 	})
 
@@ -149,7 +149,7 @@ describe("billing status", () => {
 			remaining: "12",
 		})
 
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.available)
+		expect(getCommunityTierHeaderNotice()).toBe(communityTierMessages().available)
 		expect(getBillingWarnings()[0]).toBeUndefined()
 	})
 
@@ -169,7 +169,7 @@ describe("billing status", () => {
 			creditStatus: "ok",
 			remainingCredits: 2,
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.available)
+		expect(getCommunityTierHeaderNotice()).toBe(communityTierMessages().available)
 		expect(getBillingWarnings()[0]).toBeUndefined()
 		expect(getBillingStatusLine()).toEqual({ amount: "$2.00" })
 	})
@@ -308,7 +308,7 @@ describe("billing status", () => {
 
 		expect(getBillingWarnings()[0]).toEqual({
 			kind: "exhausted",
-			message: BILLING_EXHAUSTED_MESSAGE,
+			message: billingExhaustedMessage(),
 		})
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
 	})
@@ -842,7 +842,7 @@ describe("billing status", () => {
 			has_credits: true,
 			remaining: "3",
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.available)
+		expect(getCommunityTierHeaderNotice()).toBe(communityTierMessages().available)
 
 		observeCreditsPayload({
 			serverless: true,

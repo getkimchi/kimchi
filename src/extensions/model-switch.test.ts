@@ -2,6 +2,7 @@ import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./auto-model/state.js"
 import createModelGuardExtension, {
 	__resetImagesDetectedForTest,
 	__setLatestMessagesForTest,
@@ -13,7 +14,6 @@ import modelSwitchExtension, {
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
 import { getMultiModelEnabled, resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type RegisteredTool = {
 	name: string
@@ -1185,7 +1185,11 @@ describe("modelSwitchExtension", () => {
 				contextWindow: 1_000_000,
 			}
 			clearAutoRoutingState("test-session")
-			setAutoRoutingState("test-session", { status: "resolved", model: { ...resolvedTarget } as Model<string> })
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: { ...resolvedTarget } as Model<string>,
+				requestedId: "auto",
+			})
 			try {
 				const { pi, trigger } = createHarnessWithTrigger()
 				modelSwitchExtension(pi)
@@ -1208,6 +1212,56 @@ describe("modelSwitchExtension", () => {
 
 				// 200K fits the 1M effective window: no revert, no setModel call.
 				expect(setModel).not.toHaveBeenCalled()
+			} finally {
+				clearAutoRoutingState("test-session")
+			}
+		})
+
+		it("does not revert a backend-routed virtual model when the resolved target fits the context", async () => {
+			// Backend-routed flow: auto-beta advertises a 1M descriptor; the routed
+			// concrete target is 128K. 200K of context fits the advertised 1M but
+			// not the effective 128K window, so the guard must validate against the
+			// resolved (effective) target via the id-agnostic resolver and revert.
+			const autoBetaDescriptor = {
+				id: "auto-beta",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+				contextWindow: 1_048_576,
+			}
+			const resolvedTarget = {
+				id: "kimi-k3",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 128_000,
+			}
+			clearAutoRoutingState("test-session")
+			setAutoRoutingState("test-session", {
+				status: "resolved",
+				model: { ...resolvedTarget } as Model<string>,
+				requestedId: "auto-beta",
+			})
+			try {
+				const { pi, trigger } = createHarnessWithTrigger()
+				modelSwitchExtension(pi)
+				const setModel = pi.setModel as ReturnType<typeof vi.fn>
+				await trigger(
+					"model_select",
+					{
+						type: "model_select",
+						model: autoBetaDescriptor,
+						previousModel: {
+							id: "kimi-k2.6",
+							provider: "kimchi-dev",
+							input: ["text", "image"],
+							contextWindow: 200_000,
+						},
+						source: "set",
+					},
+					createContext({ tokens: 200_000 }),
+				)
+
+				// 200K exceeds the 128K actual routed window → must revert.
+				expect(setModel).toHaveBeenCalled()
 			} finally {
 				clearAutoRoutingState("test-session")
 			}

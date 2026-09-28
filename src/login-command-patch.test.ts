@@ -3,6 +3,7 @@ import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 import * as configModule from "./config.js"
+import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
 import * as piAuthModule from "./pi-auth.js"
@@ -24,10 +25,15 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+	// EU region selection is gated behind experimental features; these login
+	// tests exercise the ungated (flag-on) behaviour unless stated otherwise.
+	setExperimentalFeaturesEnabled(true)
 	vi.stubEnv("KIMCHI_API_KEY", undefined)
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	// Auth tests should be independent of the developer machine's real config.
-	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)
+	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "", region: "us" } as ReturnType<
+		typeof configModule.loadConfig
+	>)
 	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
 	vi.spyOn(configModule, "clearApiKey").mockImplementation(() => {})
 	vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({ models: [] })
@@ -38,6 +44,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	setExperimentalFeaturesEnabled(false)
 	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
 	vi.mocked(getModels).mockReturnValue([])
@@ -126,12 +133,20 @@ function waitForMockCall(spy: { mock: { calls: unknown[][] } }, timeout = 1000):
 }
 
 async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
+	// Account login leads to the region selector; confirm the default (US).
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 }
 
-async function selectApiKeyLoginOption(fakeIm: FakeIm): Promise<void> {
+async function selectApiKeyLoginOption(fakeIm: FakeIm, regionOffset = 0): Promise<void> {
 	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	// API-key login leads to the region selector (same as account login);
+	// confirm the region (default US unless regionOffset moves the cursor).
+	for (let i = 0; i < regionOffset; i += 1) fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 }
@@ -162,7 +177,7 @@ it("intercepts the user-facing /login command and runs Kimchi browser auth", asy
 	await patched.call(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
-	expect(fakeIm.showSelector).toHaveBeenCalledOnce()
+	expect(fakeIm.showSelector).toHaveBeenCalledTimes(2)
 	expect(authSpy).toHaveBeenCalledOnce()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
 	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
@@ -180,6 +195,7 @@ it("intercepts the user-facing /login command and runs Kimchi browser auth", asy
 it("does not reuse a saved Kimchi key for explicit /login", async () => {
 	vi.mocked(configModule.loadConfig).mockReturnValue({
 		apiKey: "stale-saved-token",
+		region: "us",
 	} as ReturnType<typeof configModule.loadConfig>)
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "fresh-token" })
@@ -196,7 +212,7 @@ it("does not reuse a saved Kimchi key for explicit /login", async () => {
 	expect(authSpy).toHaveBeenCalledOnce()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
 	expect(fakeIm.showStatus).not.toHaveBeenCalledWith("Refreshing Kimchi models with existing login...")
-	expect(configModule.writeApiKey).toHaveBeenCalledWith("fresh-token")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("fresh-token", undefined, { region: "us" })
 	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/auth.json",
 		"/tmp/kimchi-api-login-test/models.json",
@@ -289,6 +305,104 @@ it("shows error when browser auth fails", async () => {
 	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
 })
 
+it("shows the region selector after account login and runs EU browser auth when Europe is chosen", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "eu-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	// First selector: auth methods. Choose "Use a Kimchi account".
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	// Second selector: regions. Navigate down to Europe and confirm.
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(authSpy)
+	await flushAsyncLogin()
+
+	const authOptions = authSpy.mock.calls[0]?.[0]
+	expect(authOptions?.webAppUrl).toBe("https://app.eu.kimchi.dev")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("eu-token", undefined, { region: "eu" })
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
+})
+
+it("returns to the auth-method selector when Esc is pressed on the region selector", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser")
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	// Region selector now showing; Esc back out.
+	fakeIm.selectorComponent.handleInput("\x1b")
+	await flushAsyncLogin()
+
+	expect(authSpy).not.toHaveBeenCalled()
+	// Back on the auth-method selector: choosing account again shows the region selector once more.
+	expect(fakeIm.selectorComponent.handleInput).toBeDefined()
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	expect(authSpy).toHaveBeenCalledOnce()
+})
+
+it("skips the region selector and logs in with the configured region when EU is experimental-gated", async () => {
+	setExperimentalFeaturesEnabled(false)
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "us-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	// Auth-method selector: "Use a Kimchi account" — no region selector follows.
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(authSpy)
+	await flushAsyncLogin()
+
+	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://app.kimchi.dev")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("us-token", undefined, { region: "us" })
+})
+
+it("falls back to browser login in the configured region without a selector UI", async () => {
+	vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+	vi.mocked(configModule.loadConfig).mockReturnValue({
+		apiKey: "",
+		region: "eu",
+	} as ReturnType<typeof configModule.loadConfig>)
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showSelector = undefined
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await waitForMockCall(authSpy)
+	await flushAsyncLogin()
+
+	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://app.eu.kimchi.dev")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("test-token", undefined, { region: "eu" })
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" }, { persist: true })
+})
+
 it("prompts for Kimchi API key and endpoint with the default endpoint", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 
@@ -313,6 +427,7 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.kimchi.dev...")
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
+		region: "us",
 	})
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/models.json",
@@ -356,6 +471,7 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-456", undefined, {
 		llmEndpoint: "https://custom.example/",
+		region: "us",
 	})
 	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/auth.json",
@@ -366,6 +482,56 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 		{ id: "custom-model", provider: "kimchi-dev" },
 		{ persist: true },
 	)
+})
+
+it("selecting Europe for API-key login defaults the endpoint to the EU gateway", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("eu-key-789").mockResolvedValueOnce("")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 1) // Europe region
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
+		2,
+		"Kimchi endpoint (press Enter to use https://llm.eu.kimchi.dev):",
+		"",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("eu-key-789", undefined, {
+		llmEndpoint: "https://llm.eu.kimchi.dev",
+		region: "eu",
+	})
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-api-login-test/models.json", "eu-key-789", {
+		allowCachedFallback: false,
+		endpoint: "https://llm.eu.kimchi.dev",
+	})
+})
+
+it("Esc on the API-key region selector returns to the auth-method selector", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	fakeIm.selectorComponent.handleInput("j") // API key option
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	// Region selector is up; Esc goes back to the auth-method selector.
+	fakeIm.selectorComponent.handleInput("\x1b")
+	await flushAsyncLogin()
+
+	expect(fakeIm.showSelector).toHaveBeenCalledTimes(3)
+	expect(fakeIm.showExtensionInput).not.toHaveBeenCalled()
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 })
 
 it("does not persist API-key login when model discovery rejects an invalid key", async () => {
@@ -445,6 +611,7 @@ it("keeps the validated API key persisted when registry refresh rejects", async 
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
+		region: "us",
 	})
 })
 
@@ -473,6 +640,7 @@ it("keeps the validated API key persisted when no Kimchi models become available
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
+		region: "us",
 	})
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })

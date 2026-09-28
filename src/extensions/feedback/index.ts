@@ -1,12 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
+import { isAutoRoutedModel } from "../auto-model/constants.js"
+import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
-import { isAutoModel } from "../router/constants.js"
 import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
 import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
+import { showRatingSelectorDialog } from "./rating-dialog.js"
+import { usesLegacyRatingPrompt } from "./rating-keys.js"
 import { type FeedbackSummaryDetails, feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
 const FEEDBACK_SUMMARY_CUSTOM_TYPE = "feedback-summary"
@@ -27,12 +30,19 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 
 	let state: FeedbackState = "idle"
 	let autoModelUsed = false
+	// The concrete model a routed virtual model resolved to for the settled turn
+	// (`auto-beta` → `glm-5.3`). Captured alongside `autoModelUsed` so telemetry
+	// can report the actual pick rather than re-deriving it from whatever model
+	// happens to be selected when the rating dialog submits.
+	let routedUsedId: string | undefined
 
 	const reset = () => {
 		state = "idle"
 		autoModelUsed = false
+		routedUsedId = undefined
 		clearModelSwitchInvitation()
 		stopListeningForCtrlR()
+		stopListeningForLegacyRatingKey()
 	}
 
 	// Rating shortcuts are registered statically: they are always available once
@@ -74,6 +84,43 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		})
 	}
 
+	// Terminals without the Kitty keyboard protocol (e.g. macOS Terminal.app)
+	// have no encoding for Ctrl+<digit>: Terminal.app sends no bytes at all for
+	// Ctrl+1, so the rating shortcuts above can never fire there. Fall back to a
+	// single legacy control code:
+	//   - Ctrl+R → opens a Good/Bad picker, then the details dialog.
+	// Ctrl+R's only built-in meaning is session rename, and that lives inside
+	// the /resume selector — the main prompt editor has no binding for the key,
+	// and the Ctrl+1/Ctrl+2 rating shortcuts above fire regardless of editor
+	// content. So raw input claims Ctrl+R whenever a rating can actually
+	// happen, whether or not a draft prompt is typed, and passes the key
+	// through untouched the rest of the time.
+	//
+	// Known tradeoff: raw input runs before whatever has focus, and extensions
+	// can't tell whether a selector or overlay (e.g. /model, /help) is up. Opened
+	// right after a response, such UI loses Ctrl+R due to the rating dialog —
+	// including /resume's rename binding while a rating invitation is active.
+	let unsubscribeLegacyRatingKey: (() => void) | undefined
+	const stopListeningForLegacyRatingKey = () => {
+		unsubscribeLegacyRatingKey?.()
+		unsubscribeLegacyRatingKey = undefined
+	}
+	const listenForLegacyRatingKey = (ctx: ExtensionContext) => {
+		stopListeningForLegacyRatingKey()
+		if (!usesLegacyRatingPrompt()) return
+		unsubscribeLegacyRatingKey = ctx.ui.onTerminalInput((data: string) => {
+			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			// A model-switch invitation takes precedence — its own Ctrl+R
+			// listener (set up on model_select) handles the key.
+			if (getModelSwitchInvitation()) return undefined
+			if (state !== "inviting") return undefined
+			void handleShortcut(ctx).catch((err: unknown) => {
+				ctx.ui.notify(`[feedback] Feedback shortcut failed: ${err}`, "error")
+			})
+			return { consume: true }
+		})
+	}
+
 	// Session replacement (/resume, /fork, /clone) fires session_shutdown then
 	// session_start. Reset on both so a stale invitation from the previous
 	// session can never leak into the new one.
@@ -87,17 +134,26 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// can prompt on a response that is about to be superseded.
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
 		state = "inviting"
-		autoModelUsed = isAutoModel(ctx.model)
+		const sessionId = ctx.sessionManager.getSessionId()
+		autoModelUsed = isAutoRoutedModel(ctx.model)
+		// Capture the concrete pick the router served, so `routing_model` reports
+		// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
+		// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
+		const routingState = getAutoRoutingState(sessionId)
+		routedUsedId = routingState.status === "resolved" ? routingState.model.id : undefined
+		listenForLegacyRatingKey(ctx)
 	})
 
 	pi.on("model_select", (event, ctx: ExtensionContext) => {
 		// Only react in TUI mode — headless modes can't show a dialog.
 		if (ctx.mode !== "tui" || !ctx.hasUI) return
-		// Only react when the previous model was auto.
-		if (!event.previousModel || !isAutoModel(event.previousModel)) return
+		// Only react when the previous model was auto or a routed virtual model.
+		if (!event.previousModel || !isAutoRoutedModel(event.previousModel)) {
+			return
+		}
 		// Only react when the new model is a concrete model — skip auto/multi-model.
 		const newModel = event.model
-		if (isAutoModel(newModel)) return
+		if (isAutoRoutedModel(newModel)) return
 		if (newModel.id === MULTI_MODEL_ID) return
 
 		const modelId = newModel.id
@@ -184,22 +240,30 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		// Rating shortcuts carry a sentiment; if none was passed we have nothing
-		// to do (e.g. Ctrl+R without an active invitation).
-		if (sentiment === undefined) return
 		if (state !== "inviting") return
 		state = "collecting"
 		// Capture the auto-model flag for this invitation so the details dialog
 		// sees the same value, even if `autoModelUsed` is reset by a concurrent
 		// lifecycle event.
 		const usedAutoModel = autoModelUsed
+		const usedRoutedId = routedUsedId
 		let keepInviting = false
 		try {
 			// Yield once so the TUI removes the previous overlay (if any) before
-			// the details dialog is mounted. Without this yield the dialog's
-			// first frame can be composited with stale overlay content.
+			// the dialog is mounted. Without this yield the dialog's first frame
+			// can be composited with stale overlay content.
 			await Promise.resolve()
-			const submitted = await handleRating(pi, ctx, sentiment, usedAutoModel)
+			let chosen = sentiment
+			// No sentiment pre-picked (legacy Ctrl+R): open the Good/Bad picker
+			// first. Esc there cancels before the details dialog even mounts.
+			if (chosen === undefined) {
+				chosen = await pickRatingSentiment(ctx)
+				if (chosen === undefined) {
+					keepInviting = true
+					return
+				}
+			}
+			const submitted = await handleRating(pi, ctx, chosen, usedAutoModel, usedRoutedId)
 			// Esc from the details dialog: keep the invitation alive so the
 			// user can rate the same turn again.
 			if (!submitted) keepInviting = true
@@ -217,11 +281,24 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	}
 }
 
+// Legacy Ctrl+R path: open the Good/Bad picker. Errors are reported via the
+// UI rather than rejecting — the caller's finally block keeps the state
+// machine consistent either way.
+async function pickRatingSentiment(ctx: ExtensionContext): Promise<FeedbackSentiment | undefined> {
+	try {
+		return await showRatingSelectorDialog(ctx)
+	} catch (err) {
+		ctx.ui.notify(`[feedback] Failed to open rating picker: ${err}`, "error")
+		return undefined
+	}
+}
+
 async function handleRating(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	sentiment: FeedbackSentiment,
 	autoModelUsed: boolean,
+	routedUsedId: string | undefined,
 ): Promise<boolean> {
 	let result: { reason: string } | undefined
 	try {
@@ -245,7 +322,7 @@ async function handleRating(
 			sentiment,
 			reason,
 			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
-			autoModelUsed,
+			routingModelId: autoModelUsed ? routedUsedId : undefined,
 		})
 	} catch (err) {
 		ctx.ui.notify(`[feedback] Failed to record rating: ${err}`, "error")

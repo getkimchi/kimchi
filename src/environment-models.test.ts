@@ -7,6 +7,20 @@ import { discoverEnvironmentModels, withEnvironmentModels } from "./environment-
 import { syncKimchiAuth } from "./extensions/login/flow.js"
 import { buildModelsConfig, type ModelMetadata } from "./models.js"
 
+// loadConfig() reads the launch-time global config (real HOME). Pin it without
+// a region so the experimental provider base URL resolves the US gateway
+// regardless of the developer machine's config.
+vi.mock("./config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./config.js")>()
+	return {
+		...actual,
+		loadConfig: () =>
+			({ apiKey: process.env.KIMCHI_API_KEY ?? "", region: undefined }) as unknown as ReturnType<
+				typeof actual.loadConfig
+			>,
+	}
+})
+
 let dir: string
 let modelsPath: string
 let authPath: string
@@ -52,10 +66,31 @@ it("discovers with the override and leaves the saved model cache byte-identical"
 		expect.stringContaining("/metadata"),
 		expect.objectContaining({ headers: { Authorization: "Bearer environment-key" } }),
 	)
-	expect(discovered.providers["kimchi-dev"].models?.map((model) => model.id)).toEqual(["environment-model", "auto"])
+	expect(discovered.providers["kimchi-dev"].models?.map((model) => model.id)).toEqual(["environment-model"])
 	expect(discovered.providers["kimchi-experimental"].models?.map((model) => model.id)).toEqual(["environment-model"])
 	expect(readFileSync(modelsPath, "utf-8")).toBe(original)
 	expect(existsSync(authPath)).toBe(false)
+})
+
+it("passes a backend-advertised auto through untouched (backend owns the catalog)", async () => {
+	const original = JSON.stringify({ providers: providersFor("saved-model") })
+	writeFileSync(modelsPath, original)
+	const backendAuto: ModelMetadata = {
+		slug: "auto",
+		display_name: "Auto (backend encoded)",
+		provider: "ai-enabler",
+		reasoning: true,
+		input_modalities: ["text"],
+		is_serverless: true,
+		limits: { context_window: 1048576, max_output_tokens: 16384 },
+	}
+	const fetchMock = vi.fn(async () => Response.json({ models: [backendAuto] }))
+	vi.stubGlobal("fetch", fetchMock)
+
+	const discovered = await discoverEnvironmentModels(modelsPath, "environment-key", { experimental: false })
+
+	const ids = discovered.providers["kimchi-dev"].models?.map((model) => model.id)
+	expect(ids?.filter((id) => id === "auto")).toHaveLength(1)
 })
 
 it("isolates simultaneous runtime keys and catalogs, then restores the config account on a normal launch", async () => {

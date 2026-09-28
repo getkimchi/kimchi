@@ -25,7 +25,7 @@ import type {
 	Skill,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { setProjectScopeTrusted } from "../../project-scope-trust.js"
 
 // Mock the browser auth flow so authenticate() can be tested without
@@ -108,12 +108,15 @@ vi.mock("./ext-methods/import-apply.js", () => ({
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import type { Model } from "@earendil-works/pi-ai"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../../extensions/auto-model/state.js"
+import { setExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
@@ -501,6 +504,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
 
 		beforeEach(() => {
+			// EU companion methods are gated behind experimental features; these
+			// capability tests cover the ungated (flag-on) behaviour.
+			setExperimentalFeaturesEnabled(true)
 			// Clean up and create temp agent dir
 			try {
 				rmSync(tempAgentDir, { recursive: true, force: true })
@@ -509,6 +515,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 
 		afterEach(() => {
+			setExperimentalFeaturesEnabled(false)
 			try {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
@@ -609,7 +616,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(1)
+			expect(response.authMethods).toHaveLength(3)
 			expect(response.authMethods?.[0]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
@@ -619,6 +626,38 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// `type` field, so we verify absence rather than equality.
 			const method = response.authMethods?.[0]
 			expect("type" in (method ?? {})).toBe(false)
+		})
+
+		// Region-pinned methods double as the capability signal: new Studio shows
+		// a region picker only when these are advertised; old Studio ignores them.
+		it("advertises a region-pinned companion method per region", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			const ids = response.authMethods?.map((m) => m.id)
+			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
+			expect(response.authMethods?.[1]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
+			expect(response.authMethods?.[2]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
+			// Agent Auth leaves `type` absent, like the plain method.
+			for (const method of response.authMethods ?? []) {
+				expect("type" in method).toBe(false)
+			}
+		})
+
+		it("omits the EU companion method when EU is experimental-gated", async () => {
+			setExperimentalFeaturesEnabled(false)
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us"])
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {
@@ -632,7 +671,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: true } },
 			})
-			expect(response.authMethods).toHaveLength(2)
+			expect(response.authMethods).toHaveLength(4)
 			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
 			expect(terminalMethod).toMatchObject({
 				id: "kimchi-terminal",
@@ -651,7 +690,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			// No clientCapabilities at all
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(1)
+			expect(response.authMethods).toHaveLength(3)
 			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 
 			// clientCapabilities present but auth.terminal is false/omitted
@@ -659,7 +698,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: false } },
 			})
-			expect(response2.authMethods).toHaveLength(1)
+			expect(response2.authMethods).toHaveLength(3)
 			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 		})
 
@@ -745,16 +784,62 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sessionFactory: async () => asSession(fake),
 			})
 
+			vi.stubEnv("KIMCHI_REGION", "us")
+			vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
 			const result = await testAgent.authenticate({ methodId: "kimchi-agent" })
 
 			expect(result).toEqual({})
 			expect(authenticateViaBrowser).toHaveBeenCalledOnce()
 			// The callback page copy is per-context: ACP-initiated logins (Studio's
 			// in-app flow) must not show the terminal `kimchi login` CLI wording.
-			expect(authenticateViaBrowser).toHaveBeenCalledWith({ successMessage: ACP_SUCCESS_MESSAGE })
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://app.kimchi.dev",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
 			expect(ACP_SUCCESS_MESSAGE).not.toContain("CLI")
-			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token")
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token", undefined, { region: "us" })
 			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_test-token")
+		})
+
+		it("authenticates against the EU region with kimchi-agent-eu and persists the region", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_eu-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent-eu" })
+
+			expect(result).toEqual({})
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://app.eu.kimchi.dev",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_eu-token", undefined, { region: "eu" })
+			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_eu-token")
+		})
+
+		it("authenticates against the US region with kimchi-agent-us and persists the region", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_us-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent-us" })
+
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://app.kimchi.dev",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_us-token", undefined, { region: "us" })
 		})
 
 		it("throws invalidParams for unknown methodId", async () => {
@@ -765,6 +850,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			await expect(testAgent.authenticate({ methodId: "unknown" })).rejects.toThrow(/unknown auth method/)
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		})
+
+		it("throws invalidParams for an unknown region suffix", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent-moon" })).rejects.toThrow(/unknown auth method/)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 		})
 
@@ -912,6 +1008,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			return {
 				apiKey,
 				agentConfigDir: tempAgentDir,
+				region: "us",
 				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 				customLlmEndpoint: undefined,
 				maxToolResultChars: 12000,
@@ -5050,6 +5147,174 @@ describe("newSession model state", () => {
 			code: -32000,
 		})
 		expect(fake.disposed).toBe(true)
+	})
+
+	// A backend-owned routed virtual model arrives as a plain catalog entry on
+	// the kimchi-dev provider (runtime api inherited from the provider — no
+	// kimchi-auto override). It must get the routed row treatment (description +
+	// resolved-pick suffix) exactly like v1 auto did, and auto-beta too.
+	function routedVirtualSession(sessionId: string, modelId: string): FakeAgentSession {
+		const fake = new FakeAgentSession(sessionId)
+		fake.model = {
+			provider: "kimchi-dev",
+			id: modelId,
+			name: modelId === "auto" ? "Auto" : "Auto Beta",
+			input: ["text"],
+			contextWindow: 128_000,
+		}
+		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k3")
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "auto", name: "Auto" },
+				{ provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" },
+				{ provider: "kimchi-dev", id: "kimi-k3", name: "Kimi K3" },
+			],
+		}
+		return fake
+	}
+
+	function modelSelectOptions(res: { configOptions?: Array<{ id: string; type: string }> | null }): Array<{
+		value: string
+		name: string
+		description?: string
+	}> {
+		const modelOption = res.configOptions?.find((opt) => opt.id === "model")
+		expect(modelOption?.type).toBe("select")
+		return (modelOption as unknown as { options: Array<{ value: string; name: string; description?: string }> }).options
+	}
+
+	it("labels a catalog-style backend auto with the routed description", async () => {
+		const sessionId = "session-routed-auto"
+		const fake = routedVirtualSession(sessionId, "auto")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
+			value: "kimchi-dev/auto",
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
+		// The description threads through the models surface as well.
+		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/auto")).toEqual({
+			modelId: "kimchi-dev/auto",
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
+	})
+
+	it("splits a backend display name that carries its description", async () => {
+		const sessionId = "session-routed-auto-named"
+		const fake = routedVirtualSession(sessionId, "auto")
+		const compositeName = "Auto — Picks the best model for your tasks automatically."
+		fake.model = {
+			provider: "kimchi-dev",
+			id: "auto",
+			name: compositeName,
+			input: ["text"],
+			contextWindow: 128_000,
+		}
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [{ provider: "kimchi-dev", id: "auto", name: compositeName }],
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
+			value: "kimchi-dev/auto",
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
+	})
+
+	it("appends the resolved pick to the auto row name for the owning session", async () => {
+		const sessionId = "session-routed-auto-resolved"
+		const fake = routedVirtualSession(sessionId, "auto")
+		setAutoRoutingState(sessionId, {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "kimi-k3", name: "Kimi K3" } as Model<string>,
+			requestedId: "auto",
+		})
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		try {
+			const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const options = modelSelectOptions(res)
+			expect(options.find((o) => o.value === "kimchi-dev/auto")?.name).toBe("Auto (kimi-k3)")
+			// A different virtual row with no resolved pick keeps its base name.
+			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")).toEqual({
+				value: "kimchi-dev/auto-beta",
+				name: "Auto Beta",
+				description: "Picks the best model for your tasks automatically.",
+			})
+		} finally {
+			clearAutoRoutingState(sessionId)
+		}
+	})
+
+	it("appends the resolved pick to the auto-beta row too", async () => {
+		const sessionId = "session-routed-beta-resolved"
+		const fake = routedVirtualSession(sessionId, "auto-beta")
+		setAutoRoutingState(sessionId, {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "glm-5.3-flash", name: "GLM 5.3 Flash" } as Model<string>,
+			requestedId: "auto-beta",
+		})
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		try {
+			const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const options = modelSelectOptions(res)
+			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")?.name).toBe("Auto Beta (glm-5.3-flash)")
+			// The auto row is not the resolved one — base name only.
+			expect(options.find((o) => o.value === "kimchi-dev/auto")?.name).toBe("Auto")
+		} finally {
+			clearAutoRoutingState(sessionId)
+		}
+	})
+
+	it("leaves concrete model rows untouched", async () => {
+		const sessionId = "session-routed-concrete"
+		const fake = routedVirtualSession(sessionId, "kimi-k3")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/kimi-k3")).toEqual({
+			value: "kimchi-dev/kimi-k3",
+			name: "Kimi K3",
+		})
 	})
 
 	it("returns configOptions in newSession response", async () => {

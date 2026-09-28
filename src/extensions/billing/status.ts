@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util"
-import { loadConfig } from "../../config.js"
+import { loadConfig, resolveEndpoints } from "../../config.js"
 
 export type BillingPlan = "community" | "coder" | "teams" | "enterprise"
 export type BillingCreditStatus = "ok" | "low" | "exhausted"
@@ -72,17 +72,24 @@ interface RefreshBillingStatusOptions {
 }
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
-export const COMMUNITY_TIER_MESSAGES = {
-	available: "You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
-	inferenceBlocked:
-		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at https://app.kimchi.dev/pricing.",
-} as const
-export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
+
+export function communityTierMessages(): { available: string; inferenceBlocked: string } {
+	return {
+		available: `You are using Community tier. For faster performance, upgrade to Coder at ${resolveEndpoints().webAppUrl}/pricing`,
+		inferenceBlocked: `You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at ${resolveEndpoints().webAppUrl}/pricing.`,
+	}
+}
+
+export function billingExhaustedMessage(): string {
+	return `You ran out of credits. Top up at ${resolveEndpoints().webAppUrl}/billing`
+}
+
 // A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
 // user whose included credits were never spendable, who was therefore rate limited all along. The
 // payload cannot tell the two apart, so the wording must hold for both.
-export const BILLING_RATE_LIMITED_MESSAGE =
-	"You just ran out of credits, you can still use Kimchi, but in a slower rate-limited mode. Buy credits on https://app.kimchi.dev/billing"
+export function billingRateLimitedMessage(): string {
+	return `You just ran out of credits, you can still use Kimchi, but in a slower rate-limited mode. Buy credits on ${resolveEndpoints().webAppUrl}/billing`
+}
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
 const TIER_FIELDS = ["tier", "tier_name", "tierName"] as const
@@ -321,7 +328,7 @@ export function getCommunityTierHeaderNotice(
 	// paid subscriber can also be reported as Community, so an upsell here would tell them to upgrade
 	// to the plan they already pay for.
 	if (isCreditsExhausted(status)) return undefined
-	return COMMUNITY_TIER_MESSAGES.available
+	return communityTierMessages().available
 }
 
 export function getBillingWarnings(status: BillingStatus | undefined = currentBillingStatus): BillingWarning[] {
@@ -337,18 +344,18 @@ function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarn
 	// not because they ran out of credits. Show the BYO/upgrade warning instead of the
 	// generic top-up warning, which would give them the wrong action.
 	if (isCommunityInferenceBlocked(status)) {
-		return { kind: "community-inference-blocked", message: COMMUNITY_TIER_MESSAGES.inferenceBlocked }
+		return { kind: "community-inference-blocked", message: communityTierMessages().inferenceBlocked }
 	}
 
 	// Server-declared: it named the balance spent, or has_credits=false says it is refusing
 	// requests outright. Never soften an explicit statement with an inference.
 	if (status.creditStatus === "exhausted" || status.restrictedMode === true) {
-		return { kind: "exhausted", message: BILLING_EXHAUSTED_MESSAGE }
+		return { kind: "exhausted", message: billingExhaustedMessage() }
 	}
 
 	// Inferred from the balance alone — all a demoted subscriber's payload carries.
 	if (typeof status.remainingCredits === "number" && status.remainingCredits <= 0) {
-		return { kind: "rate-limited", message: BILLING_RATE_LIMITED_MESSAGE }
+		return { kind: "rate-limited", message: billingRateLimitedMessage() }
 	}
 
 	if (!isPaidPlan(status)) return undefined
@@ -366,7 +373,7 @@ function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarn
 			typeof status.remainingCredits === "number" ? ` (${formatCreditsAmount(status.remainingCredits)} remaining)` : ""
 		return {
 			kind: "low",
-			message: `Heads up: your credits are running low${balance}. Top up now to avoid slowdowns and rate limits: https://app.kimchi.dev/billing`,
+			message: `Heads up: your credits are running low${balance}. Top up now to avoid slowdowns and rate limits: ${resolveEndpoints().webAppUrl}/billing`,
 		}
 	}
 

@@ -3,8 +3,8 @@ import { dirname } from "node:path"
 import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
-import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_PI_NAME } from "./extensions/router/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
 import { getVersion } from "./utils.js"
@@ -13,12 +13,11 @@ import { getVersion } from "./utils.js"
 // compat flags (adaptive thinking, strict tools) and effort-level maps.
 const ANTHROPIC_MODELS_BY_ID = ANTHROPIC_MODELS as Record<string, Model<"anthropic-messages">>
 
-const KIMCHI_API = "https://llm.kimchi.dev"
 const FETCH_TIMEOUT_MS = 20000
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
-	if (!trimmed) return KIMCHI_API
+	if (!trimmed) return resolveEndpoints().llmBaseUrl
 	// A scheme-less value like "example.com" produces an invalid request URL that the HTTP
 	// layer silently drops (falling back to the gateway), so default it to https://.
 	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
@@ -199,29 +198,6 @@ export interface PiModelConfig {
 	headers?: Record<string, string>
 }
 
-export function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
-	const rootModels = models.filter((model) => model.provider === "ai-enabler")
-	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
-	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
-	return {
-		id: AUTO_MODEL_ID,
-		// Name carries the description because Pi's `Model` has no field for it;
-		// surfaces with a real description slot (ACP) use the constants separately.
-		name: AUTO_MODEL_PI_NAME,
-		api: AUTO_MODEL_API,
-		provider: "ai-enabler",
-		// Auto is virtual, but Pi reads this capability to expose the session's
-		// reasoning control. The Auto provider applies that preference only when
-		// the resolved concrete model supports it.
-		reasoning: true,
-		thinkingLevelMap: { off: "none", max: "max" },
-		input: ["text", "image"],
-		contextWindow,
-		maxTokens,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	}
-}
-
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// Anthropic models are routed through the native `/v1/messages` API. Inherit
 	// the upstream catalog's compat flags (adaptive thinking, strict tools) and
@@ -343,7 +319,7 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 			if (!name.startsWith("kimchi-dev")) continue
 			const models = (provider as { models?: PiModelConfig[] }).models
 			if (!Array.isArray(models) || models.length === 0) continue
-			result.push(...models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata))
+			result.push(...models.map(modelToMetadata))
 		}
 		if (result.length === 0) return undefined
 		return result
@@ -406,33 +382,10 @@ export function injectExperimentalProvider(modelsJsonPath: string, apiKey: strin
 	if (!kimchiDev) return
 	const experimental = {
 		...(kimchiDev as Record<string, unknown>),
-		baseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
+		baseUrl: resolveEndpoints().experimentalOpenAiBaseUrl,
 		apiKey,
 	}
 	config.providers = { ...config.providers, "kimchi-experimental": experimental }
-	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
-}
-
-/**
- * Upsert the virtual kimchi-dev/auto model after the managed provider refresh.
- * It is always present so saved sessions/defaults remain restorable; the
- * experimental flag only controls whether Pi exposes it in discovery lists.
- */
-export function injectAutoModel(modelsJsonPath: string): void {
-	if (!existsSync(modelsJsonPath)) return
-	let config: { providers?: Record<string, { models?: PiModelConfig[] }> }
-	try {
-		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-	} catch {
-		return
-	}
-	const kimchiDev = config.providers?.["kimchi-dev"]
-	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
-	const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
-	kimchiDev.models = [
-		...kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID),
-		autoModelConfig(concreteMetadata),
-	]
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 

@@ -83,6 +83,13 @@ export interface FakeResponseScript {
 	 * Without this, the session has no usage data and compaction gates
 	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
 	usage?: { prompt_tokens: number; completion_tokens: number }
+	/**
+	 * Concrete model id reported in the response `model` field instead of the
+	 * requested id — simulates a backend-routed virtual model (auto-beta) that
+	 * stamps the real pick. When set, the SSE chunk/body `model` differs from
+	 * the request's `model`, so pi-ai populates `AssistantMessage.responseModel`.
+	 */
+	responseModel?: string
 	/** Hold this response open — no headers, no body — until the promise
 	 * resolves. Test-controlled gate for asserting mid-request process state
 	 * (e.g. a CLI must stay alive and unfinished while a compaction
@@ -107,19 +114,8 @@ interface StartFakeOpenAiServerOptions {
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
-	/** JSON bodies returned by successive `/v1/route` calls. An empty queue returns 503. */
-	routerResponses?: unknown[]
-	/** Keep this one-based router request open until the client disconnects. Used to verify cancellation. */
-	stallRouterRequestNumber?: number
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
-	/**
-	 * Email returned by `/v1/me`. Drives the Auto-by-default gate: an @cast.ai
-	 * address opts fresh sessions into Auto. Defaults to an internal address so
-	 * Auto-default scenarios work without opting in; pass an external address to
-	 * exercise the gated-off path, or null to serve 404 (identity unresolvable).
-	 */
-	userEmail?: string | null
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -167,8 +163,6 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 	}
 	const creditsQueue = [...(options.creditsResponses ?? [])]
 	const budgetQueue = [...(options.budgetResponses ?? [])]
-	const routerQueue = [...(options.routerResponses ?? [])]
-	let routerRequestCount = 0
 	let lastCreditsResponse: unknown
 	let lastBudgetResponse: unknown
 
@@ -197,17 +191,6 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				writeJson(res, 401, { error: "Invalid API key" })
 				return
 			}
-			if (req.method === "POST" && req.url?.startsWith("/v1/route")) {
-				routerRequestCount += 1
-				const response = routerQueue.shift()
-				if (options.stallRouterRequestNumber === routerRequestCount) {
-					await new Promise<void>((resolve) => res.once("close", resolve))
-					return
-				}
-				writeJson(res, response === undefined ? 503 : 200, response ?? { error: "No scripted router response" })
-				return
-			}
-
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
 				writeJson(res, 200, {
 					models: models.map((model) => ({
@@ -224,16 +207,6 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 						...model.metadata,
 					})),
 				})
-				return
-			}
-
-			if (req.method === "GET" && req.url?.startsWith("/v1/me")) {
-				const email = options.userEmail === undefined ? "fixture@cast.ai" : options.userEmail
-				if (email === null) {
-					writeJson(res, 404, { error: "Identity endpoint is not supported by this fake proxy" })
-					return
-				}
-				writeJson(res, 200, { id: "fake-user", email, name: "Fake User" })
 				return
 			}
 
@@ -324,6 +297,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
+	const responseModel = script.responseModel ?? model
 	if (request.stream === false) {
 		writeJson(
 			res,
@@ -332,7 +306,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				id: "chatcmpl_fake",
 				object: "chat.completion",
 				created: unixNow(),
-				model,
+				model: responseModel,
 				choices: [
 					{
 						index: 0,
@@ -355,7 +329,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	// Emit one chunk envelope; only `choices` varies between chunks.
 	const chunk = (choices: unknown[]) =>
-		writeSse(res, { id: "chatcmpl_fake", object: "chat.completion.chunk", created: unixNow(), model, choices })
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model: responseModel,
+			choices,
+		})
 
 	let emitted = 0
 	chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
@@ -441,7 +421,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			id: "chatcmpl_fake",
 			object: "chat.completion.chunk",
 			created: unixNow(),
-			model,
+			model: responseModel,
 			choices: [finalChunk],
 			usage: {
 				prompt_tokens: script.usage.prompt_tokens,

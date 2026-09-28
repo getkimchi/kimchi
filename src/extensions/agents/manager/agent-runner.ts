@@ -19,6 +19,9 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { isAutoRoutedModel } from "../../auto-model/constants.js"
+import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
+import { getEffectiveModel } from "../../auto-model/state.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
@@ -27,9 +30,6 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { isAutoModel } from "../../router/constants.js"
-import { createAutoModelExtension } from "../../router/index.js"
-import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -201,8 +201,6 @@ export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
-	/** The parent is forwarding image context as file paths to this child. */
-	requiresVision?: boolean
 	maxTurns?: number
 	signal?: AbortSignal
 	isolated?: boolean
@@ -470,9 +468,13 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
-	const autoExtensionFactories: InlineExtension[] = isAutoModel(model)
+	// Child sessions of a routed virtual model get the auto-model extension so
+	// pick learning and capability sync run there too, plus the system-prompt
+	// rebuild once a pick is known. No-op for concrete models (responseModel
+	// equals the requested id).
+	const autoExtensionFactories: InlineExtension[] = isAutoRoutedModel(model)
 		? [
-				createAutoModelExtension({ requiresVision: options.requiresVision }),
+				createAutoModelRoutingExtension(),
 				(pi) => {
 					pi.on("before_agent_start", (_event, childCtx) => {
 						const effectiveModel = getEffectiveModel(childCtx)

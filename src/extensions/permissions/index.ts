@@ -89,6 +89,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
+import { emitOutcomeDecision, emitToolDecision, ruleSourceDetail } from "./tool-decision-emitter.js"
 import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
@@ -1145,11 +1146,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// Re-evaluation loop: when a permission prompt is dismissed because the user
 		// changed mode via shift+tab, we re-evaluate the tool call under the new mode.
 		// Cap iterations at MODES.length to prevent infinite loops.
+		//
+		// Instrumentation contract: every allow/deny exit in this loop MUST emit a
+		// permissions:tool_decision event via emitToolDecision (the IDE diff-viewer
+		// deferral is the one documented exception). This is the per-call acceptance
+		// signal — do not add silent returns.
 		for (let attempt = 0; attempt < MODES.length; attempt++) {
 			const { mode } = getRuntimePermissionMode()
 
 			// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
 			if (mode === "yolo") {
+				emitToolDecision(pi, event, mode, "accept", "yolo_bypass")
 				return undefined
 			}
 
@@ -1157,23 +1164,30 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (toolName === "bash") {
 					const command = typeof input.command === "string" ? input.command : ""
 					if (!isReadOnlyBashCommand(command)) {
+						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
 							block: true,
 							reason: `Plan mode: bash command "${command}" is not in the read-only allowlist. Use /permissions mode default (or auto) to run writes.`,
 						}
 					}
+					emitToolDecision(pi, event, mode, "accept", "plan_readonly")
 					return undefined
 				}
 				if (!isPlanModeTool(event.toolName)) {
+					emitToolDecision(pi, event, mode, "reject", "plan_gate")
 					return {
 						block: true,
 						reason: `Plan mode: tool ${toolName} is not available. Use /permissions mode default to enable writes.`,
 					}
 				}
+				emitToolDecision(pi, event, mode, "accept", "plan_readonly")
 				return undefined
 			}
 
-			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
+			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) {
+				emitToolDecision(pi, event, mode, "accept", "builtin_safe")
+				return undefined
+			}
 
 			// IDE approval deferral: when the ide-adapter extension has an active
 			// IDE connection AND we're in default mode, write/edit approvals are
@@ -1186,7 +1200,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
 			// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.
-			if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) return undefined
+			if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) {
+				emitToolDecision(pi, event, mode, "accept", "ferment_internal")
+				return undefined
+			}
 
 			// Compound bash commands: early gate for deny/allow only.
 			// If the check returns "prompt", fall through to
@@ -1196,12 +1213,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (isCompoundCommand(command)) {
 					const compoundCheck = checkCompoundCommand(command, allRules())
 					if (compoundCheck.decision === "deny") {
+						emitToolDecision(pi, event, mode, "reject", "compound_rule")
 						return {
 							block: true,
 							reason: compoundCheck.deniedReason ?? "Subcommand denied",
 						}
 					}
 					if (compoundCheck.decision === "allow") {
+						emitToolDecision(pi, event, mode, "accept", "compound_rule")
 						return undefined
 					}
 					// "prompt" → fall through to existing flow
@@ -1210,24 +1229,35 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			const match = evaluateRules(allRules(), toolName, input)
 			if (match.decision === "deny") {
+				emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
 				return {
 					block: true,
 					reason: `Denied by rule ${formatRule(match.rule)}`,
 				}
 			}
-			if (match.decision === "allow") return undefined
+			if (match.decision === "allow") {
+				emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
+				return undefined
+			}
 
 			// In default mode, a questionnaire call means the agent wants to plan —
 			// auto-promote the session to plan mode so the rest of the conversation
 			// runs under the right tool set instead of silently approving here.
 			if (toolName === "questionnaire" && mode === "default") {
 				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" }, "questionnaire_promotion")
+				emitToolDecision(pi, event, mode, "accept", "questionnaire_promotion")
 				return undefined
 			}
-			if (isReadOnlyTool(toolName)) return undefined
+			if (isReadOnlyTool(toolName)) {
+				emitToolDecision(pi, event, mode, "accept", "readonly")
+				return undefined
+			}
 			if (toolName === "bash") {
 				const command = typeof input.command === "string" ? input.command : ""
-				if (isReadOnlyBashCommand(command)) return undefined
+				if (isReadOnlyBashCommand(command)) {
+					emitToolDecision(pi, event, mode, "accept", "readonly")
+					return undefined
+				}
 			}
 
 			// Auto mode + non-promptable default mode (headless/subagents) both go
@@ -1254,8 +1284,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 				}
 
-				if (verdict.verdict === "safe") return undefined
+				if (verdict.verdict === "safe") {
+					emitToolDecision(pi, event, mode, "accept", "classifier")
+					return undefined
+				}
 				if (!promptAvailable) {
+					emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
 					return {
 						block: true,
 						reason: `Classifier: ${verdict.reason} (no UI to confirm)`,
@@ -1269,6 +1303,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					session,
 					activeAborts: activeAbortControllers,
 					allRules,
+					permissionMode: mode,
 				})
 				if (result === "aborted") continue // mode changed, re-evaluate
 				return result
@@ -1287,6 +1322,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 							activeAborts: activeAbortControllers,
 							subcommands,
 							allRules,
+							permissionMode: mode,
 						})
 						if (result === "aborted") continue // mode changed, re-evaluate
 						return result
@@ -1299,6 +1335,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				session,
 				activeAborts: activeAbortControllers,
 				allRules,
+				permissionMode: mode,
 			})
 			if (result === "aborted") continue // mode changed, re-evaluate
 			return result
@@ -1306,6 +1343,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		// Exhausted re-evaluation attempts — fail closed.
 		console.warn("permissions: mode changed too many times during prompt, failing closed")
+		emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "mode_flap")
 		return {
 			block: true,
 			reason: "Permission mode changed too many times during prompt",
@@ -1338,6 +1376,8 @@ interface ConfirmOptions {
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
 	pi: ExtensionAPI
+	/** Permission mode the prompt is opened under (reported with the decision). */
+	permissionMode: PermissionMode
 }
 
 async function handleConfirm(
@@ -1349,7 +1389,10 @@ async function handleConfirm(
 	opts.activeAborts.add(abort)
 	try {
 		const prompter = resolvePrompter(opts.ctx)
-		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
+		if (!prompter) {
+			emitToolDecision(opts.pi, event, opts.permissionMode, "reject", "no_ui")
+			return { block: true, reason: "No UI to confirm permission" }
+		}
 
 		opts.pi.events.emit("notification", {
 			notification_type: "permission_prompt",
@@ -1386,6 +1429,7 @@ async function handleConfirm(
 						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
 						: undefined,
 			})
+			emitOutcomeDecision(opts.pi, event, opts.permissionMode, outcome.kind)
 
 			return applyApprovalOutcome(outcome, opts.session)
 		})
@@ -1404,7 +1448,10 @@ export async function handleCompoundConfirm(
 	opts.activeAborts.add(abort)
 	try {
 		const prompter = resolvePrompter(opts.ctx)
-		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
+		if (!prompter) {
+			emitToolDecision(opts.pi, event, opts.permissionMode, "reject", "no_ui")
+			return { block: true, reason: "No UI to confirm permission" }
+		}
 
 		opts.pi.events.emit("notification", {
 			notification_type: "permission_prompt",
@@ -1444,6 +1491,7 @@ export async function handleCompoundConfirm(
 							? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
 							: undefined,
 				})
+				emitOutcomeDecision(opts.pi, event, opts.permissionMode, outcome.kind)
 				return applyApprovalOutcome(outcome, opts.session)
 			}
 
@@ -1467,6 +1515,7 @@ export async function handleCompoundConfirm(
 						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
 						: undefined,
 			})
+			emitOutcomeDecision(opts.pi, event, opts.permissionMode, outcome.kind)
 
 			if (outcome.kind === "aborted") return "aborted"
 			if (outcome.kind === "allow-all-once") return undefined
@@ -1488,10 +1537,18 @@ export async function handleCompoundConfirm(
 					const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
 						command: subcommand,
 					})
+					// Create a fake bash event for this subcommand. Also used for
+					// per-segment permissions:tool_decision emissions below.
+					const subEvent: ToolCallEvent = {
+						...event,
+						input: { command: subcommand },
+					}
 					if (match.decision === "allow") {
+						emitToolDecision(opts.pi, subEvent, opts.permissionMode, "accept", ruleSourceDetail(match.rule))
 						continue
 					}
 					if (match.decision === "deny") {
+						emitToolDecision(opts.pi, subEvent, opts.permissionMode, "reject", ruleSourceDetail(match.rule))
 						return {
 							block: true,
 							reason: `Subcommand blocked by rule: ${subcommand}`,
@@ -1499,13 +1556,11 @@ export async function handleCompoundConfirm(
 					}
 					// Read-only segments, including cd/pushd/popd, need no approval
 					// or remembered rule, just as in standalone calls.
-					if (isReadOnlyBashCommand(subcommand)) continue
-
-					// Create a fake bash event for this subcommand
-					const subEvent: ToolCallEvent = {
-						...event,
-						input: { command: subcommand },
+					if (isReadOnlyBashCommand(subcommand)) {
+						emitToolDecision(opts.pi, subEvent, opts.permissionMode, "accept", "readonly")
+						continue
 					}
+
 					const result = await handleConfirm(subEvent, opts)
 					if (result === "aborted") return "aborted"
 					if (result !== undefined) {

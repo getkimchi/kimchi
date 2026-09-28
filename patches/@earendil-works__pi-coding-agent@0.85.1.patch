@@ -30,8 +30,8 @@
 # resources (config, permissions, hooks, skills, agents, memory, tags, plans,
 # ferments, MCP servers, pi-agent skills) so a cloned repo that ships them triggers the trust
 # prompt instead of being auto-trusted. The list is checked in cwd AND its
-# ancestors (matching the ancestor-walking skills/tags readers), stopping at
-# the user's home (a user resource) and the OS temp directory (not a project
+# ancestors (matching the ancestor-walking skills/tags readers), stopping at the
+# user's home (a user resource) and the OS temp directory (not a project
 # tree — a stray .kimchi/.claude created there by any tool must not gate
 # unrelated temp-dir sessions). The trust prompt and the untrusted warning
 # (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
@@ -59,10 +59,25 @@ index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d002ef6363c 100644
+index 66e874efd252470d00d3cdaad2e2b4b6121de15b..904f51ac130b695e5c0f5180528fdc78ec2a547d 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1118,7 +1118,37 @@ export class AgentSession {
+@@ -901,11 +901,12 @@ export class AgentSession {
+             if (currentImages) {
+                 userContent.push(...currentImages);
+             }
+-            messages.push({
++            const userMessage = {
+                 role: "user",
+                 content: userContent,
+                 timestamp: Date.now(),
+-            });
++            };
++            messages.push(userMessage);
+             // Inject any pending "nextTurn" messages as context alongside the user message
+             for (const msg of this._pendingNextTurnMessages) {
+                 messages.push(msg);
+@@ -1118,7 +1119,37 @@ export class AgentSession {
              }
          }
          else if (options?.triggerTurn) {
@@ -101,7 +116,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
          }
          else if (this.isStreaming) {
              // Appending now would put the message between an assistant tool call and its
-@@ -1471,7 +1501,7 @@ export class AgentSession {
+@@ -1471,7 +1502,7 @@ export class AgentSession {
       *
       * @param customInstructions Optional instructions for the compaction summary
       */
@@ -110,7 +125,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
          await this.abort();
          this._compactionAbortController = new AbortController();
          this._emit({ type: "compaction_start", reason: "manual" });
-@@ -1483,14 +1513,21 @@ export class AgentSession {
+@@ -1483,14 +1514,21 @@ export class AgentSession {
              const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -134,7 +149,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
              }
              let extensionCompaction;
              if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -1941,7 +1978,8 @@ export class AgentSession {
+@@ -1941,7 +1979,8 @@ export class AgentSession {
          };
          this._resourceLoader.extendResources(extensionPaths);
          this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
@@ -144,7 +159,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -2047,10 +2085,10 @@ export class AgentSession {
+@@ -2047,10 +2086,10 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -157,7 +172,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
-@@ -2076,7 +2114,7 @@ export class AgentSession {
+@@ -2076,7 +2115,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {
