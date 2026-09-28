@@ -203,7 +203,7 @@ function currentContextTokens(ctx: ExtensionContext): number | null {
 
 /** Switch candidates with fresh compact badges (recomputed per dialog render). */
 function computeCandidates(ctx: ExtensionContext): VisionSwitchCandidate[] {
-	const available = ctx.modelRegistry?.getAvailable() ?? []
+	const available = ctx.modelRegistry.getAvailable()
 	const tokens = currentContextTokens(ctx)
 	return visionModelCandidates(available).map((model) => ({
 		model,

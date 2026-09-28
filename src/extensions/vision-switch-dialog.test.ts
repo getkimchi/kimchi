@@ -10,6 +10,7 @@ import {
 	type ShowVisionSwitchDialogOptions,
 	showVisionSwitchDialog,
 	VisionSwitchComponent,
+	type VisionSwitchOutcome,
 } from "./vision-switch-dialog.js"
 
 beforeAll(() => {
@@ -50,6 +51,7 @@ function makeTheme(): Theme {
 
 interface Harness {
 	component: VisionSwitchComponent
+	tui: TUI
 	done: ReturnType<typeof vi.fn>
 	onSwitch: ReturnType<typeof vi.fn<ShowVisionSwitchDialogOptions["onSwitch"]>>
 	candidates: { model: Model<Api>; compactNeeded: boolean }[]
@@ -67,13 +69,14 @@ function makeHarness(options: {
 	).map((c) => ({ model: c.model, compactNeeded: c.compactNeeded ?? false }))
 	const onSwitch = options.onSwitch ? vi.fn(options.onSwitch) : vi.fn(async () => ({ ok: true as const }))
 	const done = vi.fn()
+	const tui = makeTui()
 	const component = new VisionSwitchComponent(
-		makeTui(),
+		tui,
 		makeTheme(),
 		{ currentModelId: "text-only", getCandidates: () => candidates, onSwitch },
 		done,
 	)
-	return { component, done, onSwitch, candidates }
+	return { component, tui, done, onSwitch, candidates }
 }
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: test-only helper
@@ -309,6 +312,28 @@ describe("VisionSwitchComponent input", () => {
 		component.handleInput(ENTER) // alpha, fitting
 		await vi.waitFor(() => expect(onSwitch).toHaveBeenCalled())
 		expect(renderText(component)).toContain("No API key available for other/beta.")
+		expect(done).not.toHaveBeenCalled()
+	})
+
+	it.each(["failure", "exception"])("repaints an asynchronous switch %s without another keypress", async (kind) => {
+		let finishSwitch = () => {}
+		const { component, tui, done } = makeHarness({
+			onSwitch: () =>
+				new Promise<VisionSwitchOutcome>((resolve, reject) => {
+					finishSwitch = () => {
+						if (kind === "exception") reject(new Error("Switch failed asynchronously"))
+						else resolve({ ok: false, error: "Switch failed asynchronously" })
+					}
+				}),
+		})
+		component.handleInput(ENTER)
+		expect(renderText(component)).toContain("Switching…")
+		vi.mocked(tui.requestRender).mockClear()
+
+		finishSwitch()
+		await vi.waitFor(() => expect(tui.requestRender).toHaveBeenCalled())
+		expect(renderText(component)).toContain("Switch failed asynchronously")
+		expect(renderText(component)).not.toContain("Switching…")
 		expect(done).not.toHaveBeenCalled()
 	})
 

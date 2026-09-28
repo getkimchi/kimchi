@@ -73,6 +73,7 @@ export async function showVisionSwitchDialog(
 type DialogMode = "list" | "confirm" | "busy" | "error"
 
 export class VisionSwitchComponent extends Container {
+	private readonly tui: TUI
 	private readonly theme: Theme
 	private readonly options: ShowVisionSwitchDialogOptions
 	private readonly done: (result: VisionDialogResult) => void
@@ -84,13 +85,14 @@ export class VisionSwitchComponent extends Container {
 	private confirmCandidate: VisionSwitchCandidate | null = null
 
 	constructor(
-		_tui: TUI,
+		tui: TUI,
 		theme: Theme,
 		options: ShowVisionSwitchDialogOptions,
 		done: (result: VisionDialogResult) => void,
 		registerClose?: (close: () => void) => void,
 	) {
 		super()
+		this.tui = tui
 		this.theme = theme
 		this.options = options
 		this.done = done
@@ -108,6 +110,7 @@ export class VisionSwitchComponent extends Container {
 
 	private requestRender(): void {
 		this.invalidate()
+		this.tui.requestRender()
 	}
 
 	private moveSelection(delta: number): void {

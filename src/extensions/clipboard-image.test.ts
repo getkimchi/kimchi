@@ -646,6 +646,30 @@ describe("clipboard-image extension", () => {
 			}
 		})
 
+		it("sending an image-free edited draft discards cancelled path attachments", async () => {
+			const tmp = mkdtempSync(join(tmpdir(), "gate-discard-"))
+			try {
+				const imagePath = join(tmp, "photo.png")
+				writeFileSync(imagePath, Buffer.from([1]))
+				const { pi, ctx, custom, resolveDialog } = startGateSession()
+				const originalText = `see ${imagePath}`
+				const cancelled = callInput(pi, ctx, { text: originalText, source: "interactive" })
+				resolveDialog(0, { kind: "cancel" })
+				await expect(cancelled).resolves.toEqual({ action: "handled" })
+
+				await expect(callInput(pi, ctx, { text: "plain message", source: "interactive" })).resolves.toBeUndefined()
+				rmSync(imagePath)
+				const retried = callInput(pi, ctx, { text: originalText, source: "interactive" })
+				// Resolve an unexpected dialog too, so a regression cannot hang the test.
+				if (custom.mock.calls.length > 1) resolveDialog(1, { kind: "cancel" })
+				await expect(retried).resolves.toBeUndefined()
+				expect(custom).toHaveBeenCalledTimes(1)
+				expect(mockAddImage).not.toHaveBeenCalled()
+			} finally {
+				rmSync(tmp, { recursive: true, force: true })
+			}
+		})
+
 		it("never opens the gate outside the interactive TUI boundary", async () => {
 			const { pi, ctx, custom, resolveDialog } = startGateSession({ model: TEXT_MODEL, mode: "print" })
 

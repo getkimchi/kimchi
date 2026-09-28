@@ -312,6 +312,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 		const totalImages = record.incoming.length + record.pasted.length + record.paths.size
 		if (totalImages === 0) {
+			if (isInteractiveTui) clearRetainedSubmission()
 			if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
 			return
 		}

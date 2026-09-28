@@ -11,7 +11,7 @@
  * then drives Ctrl+V through the real editor and extension path.
  */
 
-import { readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
@@ -273,6 +273,45 @@ test("gate Cancel restores the draft and resubmitting reopens the dialog", async
 			expect(requestModel(final)).toBe("vision-basic")
 			expect(requestHasImage(final)).toBe(true)
 			expect(JSON.stringify(final.body)).toContain("[Image #1]")
+		},
+	)
+})
+
+test("sending an edited draft without the image discards the cancelled attachment", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "vision-gate-discard-cancelled",
+			models: MODELS,
+			initialModel: "text-basic",
+			responses: [
+				{ stream: ["Ack plain draft."], usage: { prompt_tokens: 60, completion_tokens: 4 } },
+				{ stream: ["Ack missing image."], usage: { prompt_tokens: 80, completion_tokens: 4 } },
+			],
+			seedHome: seedScenario(),
+		},
+		async (fixture, trace) => {
+			terminal.submit("look at photo.png")
+			await waitForText(terminal, GATE_TITLE, { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.keyEscape()
+			await waitForText(terminal, "look at photo.png", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("image submission cancelled and draft restored")
+
+			terminal.keyPress("u", { ctrl: true })
+			terminal.submit("plain draft")
+			await waitForText(terminal, "Ack plain draft.", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("edited draft sent without the image")
+
+			rmSync(join(fixture.workDir, "photo.png"))
+			terminal.submit("look at photo.png")
+			await waitForText(terminal, "Ack missing image.", { timeoutMs: STREAM_TIMEOUT_MS })
+			const requests = await waitForChatRequest(fixture, 2)
+			expect(requests).toHaveLength(2)
+			for (const request of requests) {
+				expect(requestModel(request)).toBe("text-basic")
+				expect(requestHasImage(request)).toBe(false)
+			}
+			trace.step("original text sent without reviving the cancelled image")
 		},
 	)
 })
