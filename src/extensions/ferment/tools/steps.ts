@@ -512,7 +512,7 @@ export async function completeStep(
 	services: StepHandlerServices = defaultStepHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager))
+	runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager), ctx)
 
 	const f = runtime.getStorage().get(params.ferment_id)
 	if (!f) return toolErr("Ferment not found.")

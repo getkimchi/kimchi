@@ -96,6 +96,16 @@ function cleanPermissionEnv(): void {
 	unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 }
 
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(() => {
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
+
 beforeEach(cleanPermissionEnv)
 beforeEach(() => {
 	isResourceEnabledMock.mockReturnValue(false)
@@ -411,7 +421,11 @@ describe("classifier health reporting", () => {
 			await harness.fire("session_start", {}, ctx)
 			vi.mocked(ctx.ui.notify).mockClear()
 			expect(await harness.fire("tool_call", event, ctx)).toBeUndefined()
-			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({ timeoutMs: 8000, maxTotalMs: budget ?? 25000 })
+			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({
+				context: ctx,
+				timeoutMs: 8000,
+				maxTotalMs: budget ?? 25000,
+			})
 			expect(ctx.ui.notify).not.toHaveBeenCalled()
 		} finally {
 			rmSync(dir, { recursive: true, force: true })

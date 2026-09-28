@@ -6,6 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import dapExtension from "../../dap.js"
 import { AUTO_MODEL_ID, AUTO_MODEL_PI_NAME, AUTO_MODEL_PROVIDER } from "../../router/constants.js"
 
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "agent-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(() => {
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
+
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
 		DefaultResourceLoader: vi.fn().mockImplementation(() => ({
@@ -20,7 +30,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		},
 		createAgentSession: vi.fn(),
 		defineTool: vi.fn((tool) => tool),
-		getAgentDir: vi.fn().mockReturnValue("/fake-agent-dir"),
+		getAgentDir: vi.fn(() => process.env.PI_CODING_AGENT_DIR),
 	}
 })
 
@@ -365,7 +375,7 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(3)
+		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
@@ -442,7 +452,7 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg?.extensionFactories).toHaveLength(4)
+		expect(ctorArg?.extensionFactories).toHaveLength(6)
 		expect(ctorArg?.extensionFactories).toContain(dapExtension)
 		// The debug tool names must flow into the child session's tool allowlist so the
 		// SDK activates them once the dap extension registers them on session_start.
@@ -481,6 +491,7 @@ describe("runAgent — telemetry extension", () => {
 		const toolCallHandlers: Array<(event: unknown) => void> = []
 		for (const factory of workerFactories) {
 			runInlineExtension(factory, {
+				registerCommand: vi.fn(),
 				on: (event: string, handler: (event: unknown) => void) => {
 					if (event === "tool_call") toolCallHandlers.push(handler)
 				},
@@ -521,8 +532,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(4)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(3)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(6)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(5)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -538,7 +549,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[3]
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[5]
 				const registerTool = vi.fn()
 				runInlineExtension(factory, { registerTool } as unknown as ExtensionAPI)
 				const tool = registerTool.mock.calls[0]?.[0]

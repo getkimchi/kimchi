@@ -1,9 +1,9 @@
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
@@ -148,6 +148,16 @@ const passingFermentGates = () => [
 		evidence: "phase-1 step-1 used 'smoke'",
 	},
 ]
+
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(() => {
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
 
 beforeEach(() => {
 	vi.restoreAllMocks()

@@ -23,7 +23,7 @@
  *
  *      The description override is delivered via `pi.registerTool()` on
  *      `session_start`, re-registering the bash tool with an overridden
- *      `description` but the same `execute`/`renderCall`/`renderResult`.
+ *      `description` and commit-tracked execution, preserving upstream rendering.
  *      This writes into the real tool-definition registry, which every
  *      later `pi.getAllTools()` call reads from — unlike mutating a
  *      `pi.getAllTools()` result in place, which returns a fresh,
@@ -69,7 +69,6 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
-import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../resources/store.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
@@ -81,6 +80,7 @@ import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
 import { markHarnessSteer } from "./steer-marker.js"
+import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
@@ -701,7 +701,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		// factory-load time) so `cwd` tracks the actual resolved session
 		// cwd across resumes/forks, and so a fresh bash tool object is
 		// registered even if a previous session already registered one.
-		pi.registerTool(applyDescriptionOverride(createBashToolDefinition(sessionCtx.cwd)))
+		pi.registerTool(applyDescriptionOverride(createCommitTrackingBashTool(sessionCtx)))
 	})
 
 	pi.on("turn_start", () => {

@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 
 // All mock functions must be vi.hoisted
 const { completeMock, mockNotify, mockRegisterCommand } = vi.hoisted(() => ({
@@ -14,6 +18,7 @@ vi.mock("@earendil-works/pi-ai/compat", async () => {
 
 // Mock the ExtensionAPI interface
 const createMockCtx = (overrides: Record<string, unknown> = {}) => ({
+	...createContext(),
 	model: overrides.model ?? { provider: "kimchi-dev", id: "test-model", input: ["text", "image"] },
 	modelRegistry: overrides.modelRegistry ?? {
 		getAvailable: () => [{ provider: "kimchi-dev", id: "vision-model", input: ["text", "image"] }],
@@ -54,9 +59,16 @@ import { getLatestMessages, markImagesAsStripped, sessionHasImages } from "./mod
 import stripImagesExtension from "./strip-images.js"
 
 describe("strip-images extension", () => {
+	let attributionDir: string
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		rmSync(attributionDir, { recursive: true, force: true })
+	})
 	let mockPi: ReturnType<typeof createMockPi>
 
 	beforeEach(() => {
+		attributionDir = mkdtempSync(join(tmpdir(), "strip-attribution-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 		vi.clearAllMocks()
 		completeMock.mockReset()
 		mockNotify.mockClear()

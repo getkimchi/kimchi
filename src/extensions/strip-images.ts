@@ -12,6 +12,8 @@ import {
 import { isAutoModel } from "./router/constants.js"
 import { getEffectiveModel } from "./router/state.js"
 
+import { getWorkId, recordProviderRequest } from "./work-attribution.js"
+
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
 /**
@@ -87,6 +89,9 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 				return
 			}
 
+			const sessionId = ctx.sessionManager.getSessionId()
+			const workContext = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
+			const workId = getWorkId(workContext)
 			// Get API key and headers
 			const auth = await ctx.modelRegistry?.getApiKeyAndHeaders(visionModel)
 			if (!auth?.ok || !auth?.apiKey) {
@@ -123,7 +128,10 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 						},
 						{
 							apiKey: auth.apiKey,
-							headers: auth.headers,
+							headers: {
+								...auth.headers,
+								"X-Request-Id": recordProviderRequest(workContext, visionModel, workId).requestId,
+							},
 							signal: AbortSignal.timeout(45_000),
 							maxTokens: 200,
 						},

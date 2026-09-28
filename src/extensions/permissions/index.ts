@@ -52,6 +52,7 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
@@ -727,7 +728,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
 			let planPath: string | undefined
 			try {
-				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
+				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId: getWorkId(ctx) })
+				appendWorkRecord(ctx, { type: "plan", path: planPath })
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
@@ -1214,6 +1216,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
 					{
+						context: ctx,
 						timeoutMs: loaded.config.classifierTimeoutMs,
 						maxTotalMs: loaded.config.classifierMaxTotalMs,
 					},

@@ -147,7 +147,7 @@ describe("registerFermentEvents", () => {
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
 
-		await sessionStart({}, { hasUI: false })
+		await sessionStart({}, createContext({ hasUI: false }))
 
 		expect(runtime.clearAllStepStarts).toHaveBeenCalled()
 		expect(runtime.clearAllScopingGates).toHaveBeenCalled()
@@ -184,7 +184,7 @@ describe("registerFermentEvents", () => {
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
 
-		await sessionStart({}, { hasUI: false })
+		await sessionStart({}, createContext({ hasUI: false }))
 
 		expect(runtime.setActive).toHaveBeenCalledWith(undefined)
 		expect(pi.getAllTools).not.toHaveBeenCalled()
@@ -237,7 +237,7 @@ describe("registerFermentEvents", () => {
 			if (!input) throw new Error("input handler was not registered")
 			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-			await sessionStart({}, { hasUI: false })
+			await sessionStart({}, createContext({ hasUI: false }))
 			await input({ text: "Fix the benchmark task", source: "interactive" }, {})
 
 			expect(runtime.getActive()).toBeDefined()
@@ -281,7 +281,7 @@ describe("registerFermentEvents", () => {
 			if (!sessionStart) throw new Error("session_start handler was not registered")
 			if (!input) throw new Error("input handler was not registered")
 
-			await sessionStart({}, { hasUI: false })
+			await sessionStart({}, createContext({ hasUI: false }))
 			await input({ text: "Fix the benchmark task", source: "interactive" }, {})
 
 			expect(runtime.getContinuationPolicy()).toBe("automated")
@@ -509,7 +509,7 @@ describe("registerFermentEvents", () => {
 
 		handler({ model: ctx.model, previousModel: undefined }, ctx)
 
-		expect(captureJudgeContext).toHaveBeenCalledWith(ctx.model, ctx.modelRegistry)
+		expect(captureJudgeContext).toHaveBeenCalledWith(ctx.model, ctx.modelRegistry, false, ctx)
 	})
 
 	it("transitions profile from planning to implementation when activate_ferment_phase succeeds", async () => {
@@ -1531,7 +1531,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
-		await sessionStart({}, { hasUI: false })
+		await sessionStart({}, createContext({ hasUI: false }))
 
 		expect(storage.get(id)?.status).toBe("paused")
 		expect(pi.events.emit).toHaveBeenCalledWith(FERMENT_EVENTS.STALLED, expect.objectContaining({ fermentId: id }))
@@ -1550,7 +1550,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
 		const notify = vi.fn()
-		await sessionStart({}, { hasUI: true, ui: { notify } })
+		await sessionStart({}, createContext({ hasUI: true, ui: { notify } }))
 
 		expect(storage.get(id)?.status).toBe("paused")
 		expect(notify).toHaveBeenCalledWith(

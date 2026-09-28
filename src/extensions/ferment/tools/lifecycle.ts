@@ -1,3 +1,4 @@
+import { appendWorkRecord, getWorkId } from "../../work-attribution.js"
 /**
  * Ferment lifecycle tools: list, scope, update fields, complete.
  *
@@ -1178,7 +1179,9 @@ ${renderGateGuidance("scope_ferment")}`,
 					cwd: ctx.cwd,
 					name: fermentPlanFileName(ferment.name, fermentId),
 					planText: planEntry,
+					workId: getWorkId(ctx),
 				})
+				appendWorkRecord(ctx, { type: "plan", path: planPath })
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")

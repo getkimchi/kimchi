@@ -288,6 +288,7 @@ export async function completePhase(
 		ctx ? getEffectiveModel(ctx) : undefined,
 		ctx?.modelRegistry,
 		getMultiModelEnabled(ctx?.sessionManager ?? null),
+		ctx,
 	)
 
 	// Step 1: resolve the phase (host concern — fuzzy lookup).

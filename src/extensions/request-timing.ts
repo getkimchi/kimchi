@@ -14,9 +14,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getActiveRequest } from "./work-attribution.js"
 
 /** Shape of the `data` field on a `request_diagnostics` custom entry. */
 export interface RequestDiagnosticsData {
+	requestId?: string
+	workId?: string
 	/** ISO timestamp when the request was sent */
 	requestStartedAt: string
 	/** ISO timestamp when the response was received */
@@ -71,6 +74,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 	let lastRequestTime: number | undefined
 	let retryCount = 0
 	let pendingDiagnostics: RequestDiagnosticsData | undefined
+	let identity: { requestId: string; workId: string } | undefined
 
 	const flushPendingDiagnostics = (error?: string) => {
 		if (!pendingDiagnostics) return
@@ -87,9 +91,15 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		retryCount = 0
 	})
 
-	pi.on("before_provider_request", async () => {
+	pi.on("before_provider_headers", async (_event, ctx) => {
 		flushPendingDiagnostics()
 		lastRequestTime = Date.now()
+		identity = getActiveRequest(ctx)
+	})
+
+	pi.on("before_provider_request", async () => {
+		flushPendingDiagnostics()
+		lastRequestTime ??= Date.now()
 	})
 
 	pi.on("after_provider_response", async (event) => {
@@ -108,6 +118,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		}
 
 		pendingDiagnostics = {
+			...identity,
 			requestStartedAt: new Date(lastRequestTime).toISOString(),
 			requestCompletedAt: new Date(completedAt).toISOString(),
 			durationMs,

@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { getWorkId, recordProviderRequest, type WorkContext } from "../work-attribution.js"
 import { DEFAULT_CONFIG } from "./constants.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierFailureCode, ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
@@ -17,6 +18,7 @@ export interface ClassifyInput {
 }
 
 export interface ClassifierOptions {
+	context: WorkContext
 	timeoutMs: number
 	maxTotalMs?: number
 }
@@ -31,6 +33,14 @@ export async function classifyToolCall(
 	const deadline = performance.now() + (options.maxTotalMs ?? DEFAULT_CONFIG.classifierMaxTotalMs)
 	if (signal?.aborted) return unavailable("classifier aborted", "aborted")
 	if (!candidates.length) return unavailable("no model available for classifier", "no_candidates")
+	const sessionId = options.context.sessionManager.getSessionId()
+	const context = { cwd: options.context.cwd, sessionManager: { getSessionId: () => sessionId } }
+	let workId: string
+	try {
+		workId = getWorkId(context)
+	} catch {
+		return unavailable("classifier attribution unavailable", "provider_error")
+	}
 	let lastResult = unavailable("classifier budget exhausted", "budget_exhausted")
 	const skips: string[] = []
 
@@ -71,6 +81,7 @@ export async function classifyToolCall(
 				model,
 				authResult.value,
 				call,
+				{ context, workId },
 				Math.min(candidateDeadline, performance.now() + options.timeoutMs),
 				signal,
 			)
@@ -135,6 +146,7 @@ async function runClassifier(
 	model: Model<Api>,
 	auth: CandidateAuth,
 	call: ClassifyInput,
+	attribution: { context: WorkContext; workId: string },
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
@@ -154,7 +166,10 @@ async function runClassifier(
 				},
 				{
 					apiKey: auth.apiKey,
-					headers: auth.headers,
+					headers: {
+						...auth.headers,
+						"X-Request-Id": recordProviderRequest(attribution.context, model, attribution.workId).requestId,
+					},
 					signal: attemptSignal,
 					onPayload: (payload: unknown) => {
 						if (payload && typeof payload === "object") {

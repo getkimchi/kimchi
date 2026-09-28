@@ -55,6 +55,16 @@ const usage = {
 	costUsd: 0.33,
 }
 
+let attributionDir: string
+beforeEach(() => {
+	attributionDir = mkdtempSync(join(tmpdir(), "evaluator-attribution-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+})
+afterEach(() => {
+	vi.unstubAllEnvs()
+	rmSync(attributionDir, { recursive: true, force: true })
+})
+
 let savedRedactionEnv: string | undefined
 
 describe("Ferment V2 evaluator", () => {

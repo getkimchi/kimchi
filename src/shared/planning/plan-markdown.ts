@@ -104,6 +104,8 @@ export interface SavePlanMarkdownOptions {
 	readonly name: string
 	/** Markdown content to persist (written verbatim). */
 	readonly planText: string
+	/** Attribution identity of the planning work. */
+	readonly workId?: string
 }
 
 /**
@@ -116,6 +118,12 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): string {
 	const plansDir = resolve(opts.cwd, PLAN_DIR)
 	mkdirSync(plansDir, { recursive: true })
 	const filePath = resolve(plansDir, `${slugifyPlanName(opts.name)}.md`)
-	writeFileSync(filePath, opts.planText, "utf-8")
+	if (opts.workId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(opts.workId)) {
+		throw new Error("Invalid work UUID")
+	}
+	const content = opts.workId
+		? `<!-- kimchi-work-id: ${opts.workId} -->\n${opts.planText.replace(/<!-- kimchi-work-id: [^\r\n]* -->\n?/g, "")}`
+		: opts.planText
+	writeFileSync(filePath, content, "utf-8")
 	return filePath
 }
