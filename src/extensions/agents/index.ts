@@ -24,7 +24,6 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { getParsedCliArgs } from "../../cli-args.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -1332,25 +1331,11 @@ export default function (pi: ExtensionAPI) {
 		if (process.env[PARENT_SESSION_ID_ENV_KEY]) return
 		const resumable = findResumableRemoteRuns(ctx.sessionManager)
 		// Explicit continuation intent and no resumable remote runs: name the
-		// outcome instead of a silent boot. Fires on any boot path -- including
-		// pi-level -c discovery failing (a fresh session boots with reason
-		// "startup", never "resume") -- so resume-chain defects surface in
-		// terminal output instead of opaque timeouts.
+		// outcome instead of a silent boot. reason "resume" covers every resume
+		// mechanism (-c / --resume / --session load an existing session); a fresh
+		// boot fires "startup".
 		if (resumable.length === 0 && ctx.hasUI) {
-			// Parsed CLI state reflects explicit continuation intent (-c / --resume
-			// / -s). Guarded: getParsedCliArgs reads process-global CLI state that
-			// may be missing in embeddings (ACP/server boot) — a throw here must
-			// never surface as an unhandled rejection in the session_start flow.
-			let continueRequested = event.reason === "resume"
-			if (!continueRequested) {
-				try {
-					const cli = getParsedCliArgs().options
-					continueRequested = Boolean(cli.continue ?? cli.resume ?? cli.session)
-				} catch {
-					// CLI args unavailable — treat as a plain boot (no intent signal).
-				}
-			}
-			if (continueRequested) {
+			if (event.reason === "resume") {
 				ctx.ui.notify?.("Continued session — no in-progress remote runs to resume")
 			}
 		}
