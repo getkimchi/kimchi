@@ -132,6 +132,62 @@ test("logs into an HTTP MCP server with OAuth authorization code and PKCE", asyn
 	)
 })
 
+test("completes a pre-registered https redirect OAuth flow through the loopback callback", async ({ terminal }) => {
+	const echo = gatewayMcpCall("echo", { message: "oauth-remote-redirect" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-remote-redirect",
+			mcp: {
+				transport: "oauth",
+				oauth: { redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-remote-redirect" }] },
+							{ message: "oauth-remote-redirect" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The remote redirect OAuth flow completed without pasting a URL.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			await fixture.mcp.waitForEvent("oauth_authorized", {
+				where: { redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
+				description: "authorization issued for the pre-registered https redirect URI",
+			})
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed after the loopback callback, not a pasted URL",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("https redirect flow completed through the local callback server without manual paste")
+
+			const registered = await fixture.mcp.waitForEvent("oauth_client_registered", {
+				description: "dynamic client registration carried the https redirect URI",
+			})
+			expect(registered.redirectUris).toEqual(["https://app.kimchi.dev/mcp-oauth/callback-v2"])
+			const browserCompleted = await fixture.mcp.waitForEvent("oauth_browser_completed", {
+				description: "fixture browser followed the bounced redirect to the loopback callback",
+			})
+			expect(browserCompleted.status).toBe(200)
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The remote redirect OAuth flow completed without pasting a URL.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-remote-redirect" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-remote-redirect")
+			trace.step("authenticated MCP call after remote redirect flow verified")
+		},
+	)
+})
+
 test("automatically authenticates and retries an OAuth-protected MCP call", async ({ terminal }) => {
 	const echo = gatewayMcpCall("echo", { message: "oauth-auto-auth" })
 	await runMcpKimchiSession(

@@ -324,7 +324,16 @@ async function runHttpFixture() {
 				const callback = new URL(redirectUri)
 				callback.searchParams.set("code", code)
 				callback.searchParams.set("state", state)
-				response.writeHead(302, { location: callback.toString() })
+				// Remote https redirect URIs are pre-registered with providers that reject
+				// loopback redirects and served by a hosted bounce endpoint (for example
+				// /mcp-oauth/callback-v2) that terminates on the default loopback callback.
+				// Emulate that final hop so tests exercise the client's loopback listener
+				// without real TLS or external hosts.
+				const location =
+					callback.protocol === "https:"
+						? `http://localhost:${process.env.MCP_OAUTH_CALLBACK_PORT ?? "19876"}/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`
+						: callback.toString()
+				response.writeHead(302, { location })
 				response.end()
 				return
 			}
