@@ -28,5 +28,7 @@ export function createModelRegistry(models: Model<Api>[] = []) {
 			headers: {},
 		}),
 		hasConfiguredAuth: vi.fn<ModelRegistry["hasConfiguredAuth"]>(() => true),
-	}
+		// Test fakes only stub the members production code reaches in unit tests.
+		// The single cast lives here so call sites never need one.
+	} as unknown as ModelRegistry
 }

@@ -9,7 +9,7 @@ export const DEFAULT_CLASSIFIER_CANDIDATE_REFS = [
 ] as const
 
 /** The only classifier seam that knows the catalog's model preferences. */
-export function resolveClassifierCandidates(registry: Pick<ModelRegistry, "getAvailable">): {
+export function resolveClassifierCandidates(registry: ModelRegistry): {
 	candidates: Model<Api>[]
 	missingRefs: string[]
 } {
