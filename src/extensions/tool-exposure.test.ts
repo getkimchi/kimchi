@@ -55,12 +55,11 @@ vi.mock("./multi-model.js", async (importOriginal) => {
 // spec). The metadata cache is also stubbed: with zero servers the factory
 // would otherwise purge and rewrite the developer machine's real cache file.
 //
-// useProgrammaticConfig: true is load-bearing: without it mcp/index.ts calls
-// createMcpAdapter({}), which falls back to its own config discovery and — on
-// machines whose agent dir (PI_CODING_AGENT_DIR) contains a real mcp.json —
-// eagerly registers ambient directTools (e.g. atlassian_*) into the surface
-// under spec. Marking the mocked config programmatic makes the adapter use
-// exactly the servers below, regardless of host state.
+// Without useProgrammaticConfig: true, mcp/index.ts passes empty options to
+// createMcpAdapter, which then reads the real MCP config from disk (the agent
+// dir set by PI_CODING_AGENT_DIR) and registers its tools (atlassian_*) into
+// the tool surface under test. The flag makes the adapter use only the
+// servers mocked above.
 // =============================================================================
 
 const mcpConfigState = vi.hoisted(() => ({
