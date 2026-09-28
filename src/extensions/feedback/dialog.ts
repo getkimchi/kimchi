@@ -1,7 +1,7 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
 import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
-import { createDialogChrome } from "./dialog-chrome.js"
+import { createModalChrome } from "../modal-chrome.js"
 import { FeedbackEditor } from "./editor.js"
 
 export type FeedbackSentiment = "positive" | "negative"
@@ -186,7 +186,7 @@ export class FeedbackDetailsComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder, contentWidth } = createDialogChrome(
+		const { emptyRow, contentRow, measuredRow, topBorder, bottomBorder, contentWidth } = createModalChrome(
 			this.theme,
 			width,
 		)

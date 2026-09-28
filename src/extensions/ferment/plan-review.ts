@@ -14,6 +14,7 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui"
+import { createModalChrome } from "../modal-chrome.js"
 import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import { withWorkingHidden } from "./prompt-ui.js"
 
@@ -100,11 +101,11 @@ export async function promptPlanReview(
 }
 
 class PlanReviewComponent implements Component {
-	private static readonly rail = " ▍ "
-	/** Lines reserved around the markdown window: frame (2) + title (1) +
-	 *  spacer (1) + prompt (1) + spacer (1) + hint (1) + positioning slack (2).
-	 *  Deliberately conservative so the overlay never exceeds the terminal
-	 *  height; the decision options count is added on top. */
+	/** Lines reserved around the markdown window: frame (2, title drawn in
+	 *  the top border) + spacer (1) + prompt (1) + spacer (1) + hint (1) +
+	 *  positioning slack (3). Deliberately conservative so the overlay never
+	 *  exceeds the terminal height; the decision options count is added on
+	 *  top. */
 	private static readonly reservedChromeLines = 9
 	/** Lines reserved for the feedback editor (in place of the decision options). */
 	private static readonly feedbackEditorLines = 8
@@ -125,8 +126,9 @@ class PlanReviewComponent implements Component {
 	 *  handling clamp without re-measuring the markdown. */
 	private maxScrollOffset = 0
 	/** Where the feedback editor sat in the last render (component-local
-	 *  rows), so mouse events over it can be forwarded with local coords. */
-	private editorBounds = { top: 0, height: 0 }
+	 *  rows and columns), so mouse events over it can be forwarded with
+	 *  local coords. */
+	private editorBounds = { top: 0, height: 0, left: 0, width: 0 }
 
 	constructor(
 		tui: TUI,
@@ -170,7 +172,8 @@ class PlanReviewComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const contentWidth = Math.max(0, width - PlanReviewComponent.rail.length)
+		const chrome = createModalChrome(this.theme, width)
+		const contentWidth = chrome.contentWidth
 		const markdownLines = this.markdown.render(contentWidth)
 		const visibleCount = this.maxVisibleMarkdownLines()
 		this.maxScrollOffset = Math.max(0, markdownLines.length - visibleCount)
@@ -178,22 +181,31 @@ class PlanReviewComponent implements Component {
 		const visibleMarkdown = markdownLines.slice(this.scrollOffset, this.scrollOffset + visibleCount)
 		const lastVisible = Math.min(markdownLines.length, this.scrollOffset + visibleCount)
 
-		const lines: string[] = [this.theme.fg("toolTitle", this.theme.bold("Plan review")), ...visibleMarkdown, ""]
+		const body: string[] = [...visibleMarkdown, ""]
 		if (this.mode === "feedback") {
 			this.ensureEditor()
 			const editorLines = this.editor?.render(contentWidth) ?? []
-			// +1 for the top frame rule prepended by withFrame.
-			this.editorBounds = { top: lines.length + 1, height: editorLines.length }
-			lines.push(...editorLines, "")
+			// +1 for the frame's top border prepended below.
+			this.editorBounds = {
+				top: body.length + 1,
+				height: editorLines.length,
+				left: chrome.contentLeft,
+				width: contentWidth,
+			}
+			body.push(...editorLines, "")
 		} else {
-			lines.push(
+			body.push(
 				this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")),
 				...this.renderDecisionOptions(),
 				"",
 				this.renderHint(markdownLines.length, lastVisible),
 			)
 		}
-		return this.withFrame(lines, width)
+		return [
+			chrome.topBorder("Plan review"),
+			...body.map((line) => (line === "" ? chrome.emptyRow : chrome.measuredRow(line))),
+			chrome.bottomBorder,
+		]
 	}
 
 	private renderHint(totalLines: number, lastVisible: number): string {
@@ -233,12 +245,11 @@ class PlanReviewComponent implements Component {
 
 	private dispatchToEditor(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.mode !== "feedback" || !this.editor) return undefined
-		const railWidth = PlanReviewComponent.rail.length
-		const { top, height } = this.editorBounds
-		const x = event.x - railWidth
+		const { top, height, left, width } = this.editorBounds
+		const x = event.x - left
 		const y = event.y - top
 		if (x < 0 || y < 0 || y >= height) return undefined
-		const result = this.editor.handleMouse({ ...event, x, y, width: event.width - railWidth, height })
+		const result = this.editor.handleMouse({ ...event, x, y, width, height })
 		if (!result) return undefined
 		// Drop the editor's dispatch target/focusTarget so pi-tui attributes focus
 		// and drag capture to this component: it already forwards every key to
@@ -315,12 +326,6 @@ class PlanReviewComponent implements Component {
 			const styledLabel = selected ? this.theme.fg("accent", label) : this.theme.fg("text", label)
 			return `${marker}${styledLabel}`
 		})
-	}
-
-	private withFrame(lines: string[], width: number): string[] {
-		const rule = this.theme.fg("borderMuted", "─".repeat(Math.max(0, width)))
-		const rail = this.theme.fg("muted", PlanReviewComponent.rail)
-		return [rule, ...lines.map((line) => `${rail}${line}`), rule]
 	}
 
 	private ensureEditor(): void {

@@ -361,10 +361,10 @@ describe("PlanReviewComponent", () => {
 		})
 
 		describe("in feedback mode", () => {
-			// Feedback cap = 40 - 9 - 8 = 23 plan lines. Frame rule (row 0) +
-			// title (row 1) + 23 plan rows + spacer puts the editor at row 26;
-			// the " ▍ " rail shifts editor-local x by 3.
-			const editorRow = 26
+			// Feedback cap = 40 - 9 - 8 = 23 plan lines. The modal frame's top
+			// border is row 0, so 23 plan rows + spacer put the editor at row
+			// 25; the frame's border + padding shifts editor-local x by 3.
+			const editorRow = 25
 
 			function enterFeedbackMode() {
 				const created = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
@@ -385,7 +385,7 @@ describe("PlanReviewComponent", () => {
 				const result = component.handleMouse({ ...wheel(0), type: "click", button: "left", y: editorRow })
 
 				expect(result).toEqual({ handled: true, focus: true })
-				expect(editor.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 7, y: 0, width: 77, height: 1 }))
+				expect(editor.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 7, y: 0, width: 74, height: 1 }))
 			})
 
 			it("drops the editor's dispatch target so focus stays on the dialog", () => {
@@ -393,7 +393,7 @@ describe("PlanReviewComponent", () => {
 				editor.handleMouse.mockReturnValue({
 					handled: true,
 					focus: true,
-					target: { component: editor, originX: 0, originY: 0, width: 77, height: 1 },
+					target: { component: editor, originX: 0, originY: 0, width: 74, height: 1 },
 					focusTarget: editor,
 				} as TuiMouseEventResult)
 
