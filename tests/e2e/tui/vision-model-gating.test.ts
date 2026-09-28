@@ -27,6 +27,7 @@ const TEXT_MODEL: FakeModel = {
 	input: ["text"],
 	contextWindow: 64_000,
 	maxTokens: 4_096,
+	description: "Cheap everyday workhorse without vision.",
 }
 
 /** Comfortable vision model — the usual switch target. */
@@ -36,6 +37,7 @@ const VISION_MODEL: FakeModel = {
 	input: ["text", "image"],
 	contextWindow: 200_000,
 	maxTokens: 4_096,
+	description: "Comfortable vision model for everyday work.",
 }
 
 /** Small vision model whose safe window a primed context exceeds. */
@@ -45,9 +47,22 @@ const VISION_SMALL: FakeModel = {
 	input: ["text", "image"],
 	contextWindow: 8_192,
 	maxTokens: 4_096,
+	description: "Small window — needs compaction for big contexts.",
 }
 
-const MODELS = [TEXT_MODEL, VISION_MODEL, VISION_SMALL]
+/** Backend-owned Auto entry (ai-enabler group → kimchi-dev block), like the
+ *  production metadata endpoint serves; injectAutoModel's description fallback
+ *  covers it. */
+const AUTO_MODEL: FakeModel = {
+	slug: "auto",
+	displayName: "Auto (Kimchi Router)",
+	provider: "ai-enabler",
+	input: ["text", "image"],
+	contextWindow: 128_000,
+	maxTokens: 16_384,
+}
+
+const MODELS = [TEXT_MODEL, VISION_MODEL, VISION_SMALL, AUTO_MODEL]
 
 const GATE_TITLE = "Switch to a vision model"
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -123,6 +138,9 @@ test("pasted image on a text-only model opens the switch dialog and submits on t
 		async (fixture, trace) => {
 			terminal.keyPress("v", { ctrl: true })
 			await waitForText(terminal, "📎 1 image", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// The text-only hint rides the indicator (self-clearing on model switch),
+			// not a permanent chat warning.
+			await waitForText(terminal, "· ⚠ text-only", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("image pasted while the text-only model is active")
 
 			terminal.submit("what is in this image?")
@@ -228,7 +246,7 @@ test("gate Cancel restores the draft and resubmitting reopens the dialog", async
 	)
 })
 
-test("/model renders MODEL, PROVIDER, CONTEXT, and IMG columns", async ({ terminal }) => {
+test("/model renders MODEL, PROVIDER, CONTEXT, VISION, and DESCRIPTION columns", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -244,16 +262,21 @@ test("/model renders MODEL, PROVIDER, CONTEXT, and IMG columns", async ({ termin
 			await waitForText(terminal, "MODEL", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "PROVIDER", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "CONTEXT", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "IMG", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "VISION", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "DESCRIPTION", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("table header visible")
 
-			// Humanized context + capability markers for both kinds of models.
+			// Humanized context + capability markers + endpoint descriptions.
 			const text = view()
 			expect(text).toContain("200k")
 			expect(text).toContain("64k")
 			expect(text).toContain("✓")
 			expect(text).toContain("✗")
-			trace.step("context and IMG values rendered")
+			expect(text).toContain("Comfortable vision model for everyday work.")
+			// The backend-owned auto row gets injectAutoModel's fallback
+			// description (the endpoint itself sends none).
+			expect(text).toContain("Picks the best model for your tasks automatically.")
+			trace.step("context, VISION, and DESCRIPTION values rendered")
 
 			terminal.keyEscape()
 			await waitForText(terminal, "ask anything or type / for commands", {

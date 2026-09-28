@@ -91,17 +91,21 @@ const DOWN = "\x1b[B"
 const CTRL_R = "\x12"
 
 describe("VisionSwitchComponent render", () => {
-	it("renders the header, candidate rows, and footer actions", () => {
+	it("renders the inline selector layout: rules, title, header, rows, and hint", () => {
 		const { component } = makeHarness({})
 		const text = renderText(component)
+		// Inline (permission-prompt style) chrome: border rules top and bottom.
+		const lines = text.split("\n")
+		expect(lines[0]).toMatch(/^─+$/)
+		expect(lines[lines.length - 1]).toMatch(/^─+$/)
+		expect(text).toContain("Switch to a vision model")
 		expect(text).toContain("text-only")
 		expect(text).toContain("alpha")
 		expect(text).toContain("[kimchi-dev]")
 		expect(text).toContain("200k")
 		expect(text).toContain("beta")
 		expect(text).toContain("· ⚠ compact")
-		expect(text).toContain("[Ctrl+R] remove image(s)")
-		expect(text).toContain("[Esc] cancel")
+		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)")
 	})
 
 	it("does not show the compact badge on fitting rows", () => {
@@ -125,8 +129,7 @@ describe("VisionSwitchComponent render", () => {
 		const { component, done } = makeHarness({ candidates: [] })
 		const text = renderText(component)
 		expect(text).toContain("No vision models available")
-		expect(text).toContain("[Ctrl+R] remove image(s)")
-		expect(text).toContain("[Esc] cancel")
+		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)")
 		// Both actions remain functional.
 		component.handleInput(CTRL_R)
 		expect(done).toHaveBeenCalledWith({ kind: "remove" })
@@ -266,7 +269,7 @@ describe("VisionSwitchComponent input", () => {
 })
 
 describe("showVisionSwitchDialog", () => {
-	it("opens as a centered overlay and registers a close handle", async () => {
+	it("opens inline in the editor region (no overlay) and registers a close handle", async () => {
 		const custom = vi.fn().mockResolvedValue({ kind: "cancel" })
 		const ctx = createContext({ ui: { custom } })
 		let registered: (() => void) | undefined
@@ -282,10 +285,9 @@ describe("showVisionSwitchDialog", () => {
 
 		expect(result).toEqual({ kind: "cancel" })
 		expect(custom).toHaveBeenCalledTimes(1)
-		expect(custom.mock.calls[0]?.[1]).toMatchObject({
-			overlay: true,
-			overlayOptions: { anchor: "center", width: "70%", maxHeight: "40%" },
-		})
+		// No overlay options: the component renders in the editor region like
+		// the /model and permission selectors, not as a centered popup.
+		expect(custom.mock.calls[0]?.[1]).toBeUndefined()
 		// The factory registers the close handle with the component's done.
 		const factory = custom.mock.calls[0]?.[0] as (
 			tui: TUI,

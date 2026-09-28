@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { readModelDeprecations } from "./model-deprecation.js"
 import {
+	__clearModelDescriptionsForTest,
+	getModelDescription,
 	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -1303,5 +1305,171 @@ describe("readExperimentalModels", () => {
 		const result = readExperimentalModels(modelsJsonPath)
 		expect(result).toHaveLength(1)
 		expect(result[0].slug).toBe("kimi-k2.5")
+	})
+})
+
+describe("model description registry (/model table DESCRIPTION column)", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-model-desc-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		__clearModelDescriptionsForTest()
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		__clearModelDescriptionsForTest()
+	})
+
+	it("persists endpoint descriptions into models.json and registers them for the selector", async () => {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{ ...(KIMI as Record<string, unknown>), description: "Flagship vision model." },
+					{ ...(GLM as Record<string, unknown>) }, // no description
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const kimi = config.providers["kimchi-dev"].models.find((m: { id: string }) => m.id === "kimi-k2.5")
+		const glm = config.providers["kimchi-dev"].models.find((m: { id: string }) => m.id === "glm-5-fp8")
+		expect(kimi.description).toBe("Flagship vision model.")
+		expect(glm.description).toBeUndefined()
+
+		// Registry keyed by provider block + id — what the selector row sees.
+		expect(getModelDescription("kimchi-dev/kimi-k2.5")).toBe("Flagship vision model.")
+		expect(getModelDescription("kimchi-dev/glm-5-fp8")).toBeUndefined()
+	})
+
+	it("restores descriptions from the on-disk cache when offline (no API key)", async () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						apiKey: "$KIMCHI_API_KEY",
+						api: "openai-completions",
+						models: [
+							{
+								id: "kimi-k2.5",
+								name: "Kimi K2.5",
+								provider: "ai-enabler",
+								reasoning: true,
+								input: ["text", "image"],
+								contextWindow: 262144,
+								maxTokens: 32768,
+								description: "Cached description.",
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		)
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+
+		expect(getModelDescription("kimchi-dev/kimi-k2.5")).toBe("Cached description.")
+		// modelToMetadata round-trips the description for the startup context.
+		const model = (result.models as Array<{ slug: string; description?: string }>).find((m) => m.slug === "kimi-k2.5")
+		expect(model?.description).toBe("Cached description.")
+	})
+
+	it("injectAutoModel registers the Auto description as a fallback", () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						models: [
+							{
+								id: "kimi-k2.5",
+								name: "Kimi K2.5",
+								provider: "ai-enabler",
+								reasoning: true,
+								input: ["text", "image"],
+								contextWindow: 262144,
+								maxTokens: 32768,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		)
+
+		injectAutoModel(modelsJsonPath)
+
+		expect(getModelDescription("kimchi-dev/auto")).toBe("Picks the best model for your tasks automatically.")
+	})
+
+	it("a backend-owned auto without a description still gets the fallback constant", async () => {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{
+						slug: "auto",
+						display_name: "Auto (Kimchi Router)",
+						provider: "ai-enabler",
+						reasoning: true,
+						input_modalities: ["text", "image"],
+						is_serverless: true,
+						limits: { context_window: 1_000_000, max_output_tokens: 16_384 },
+					},
+					{
+						slug: "glm-5.3",
+						display_name: "GLM 5.3",
+						provider: "ai-enabler",
+						reasoning: true,
+						input_modalities: ["text"],
+						is_serverless: true,
+						limits: { context_window: 1_000_000, max_output_tokens: 16_384 },
+					},
+				],
+			}),
+		} as Response)
+
+		// cli.ts order: updateModelsConfig first, then injectAutoModel.
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		injectAutoModel(modelsJsonPath)
+		vi.restoreAllMocks()
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const autos = config.providers["kimchi-dev"].models.filter((m: { id: string }) => m.id === "auto")
+		expect(autos).toHaveLength(1)
+		// The selector reads exactly this key.
+		expect(getModelDescription("kimchi-dev/auto")).toBe("Picks the best model for your tasks automatically.")
+	})
+
+	it("an endpoint-provided auto description wins over the fallback constant", async () => {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				models: [
+					{ ...(KIMI as Record<string, unknown>), slug: "auto", description: "Backend router with vision routing." },
+				],
+			}),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		// injectAutoModel runs after the fetch in cli.ts; its fallback must not
+		// override the endpoint-provided description (first write wins).
+		injectAutoModel(modelsJsonPath)
+		vi.restoreAllMocks()
+
+		expect(getModelDescription("kimchi-dev/auto")).toBe("Backend router with vision routing.")
 	})
 })

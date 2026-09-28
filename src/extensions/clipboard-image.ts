@@ -187,14 +187,9 @@ async function handlePaste(): Promise<void> {
 	pendingImages.push(imageContent)
 	updateIndicator()
 	// Paste is accepted regardless of the current model's capabilities — the
-	// submit-time vision gate is the single choke point. A one-shot hint
-	// tells the user a switch will be offered at send time.
-	if (needsVisionSwitch(currentCtx?.model)) {
-		currentCtx?.ui.notify(
-			`⚠ ${currentCtx?.model?.id ?? "Current model"} is text-only — you'll be able to change to a vision model when sending`,
-			"warning",
-		)
-	}
+	// submit-time vision gate is the single choke point. The text-only hint
+	// rides the pending-image indicator (not a chat warning, which cannot be
+	// retracted once the model switches): it clears itself on model_select.
 }
 
 function updateIndicator(): void {
@@ -203,7 +198,8 @@ function updateIndicator(): void {
 		const totalRawBytes = pendingImages.reduce((sum, img) => sum + Math.floor((img.data.length * 3) / 4), 0)
 		const kb = Math.max(1, Math.round(totalRawBytes / 1024))
 		const label = count === 1 ? "image" : "images"
-		setPendingImageIndicator(`📎 ${count} ${label} (${kb} KB)`)
+		const visionHint = needsVisionSwitch(currentCtx?.model) ? " · ⚠ text-only" : ""
+		setPendingImageIndicator(`📎 ${count} ${label} (${kb} KB)${visionHint}`)
 	} else if (clipboardHasImage) {
 		setPendingImageIndicator("Image in clipboard · ctrl+v to paste")
 	} else {
@@ -260,6 +256,13 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 	pi.on("agent_end", (_event, ctx) => {
 		// Deferred vision-gate dialog for streaming-intercepted submissions.
 		visionGateOnAgentEnd(pi, ctx)
+	})
+
+	pi.on("model_select", () => {
+		// The pending-image indicator carries a model-dependent `· ⚠ text-only`
+		// segment; refresh it when the model changes (e.g. the vision gate's
+		// switch) so the hint clears itself instead of lingering.
+		updateIndicator()
 	})
 
 	pi.on("input", async (event, ctx) => {

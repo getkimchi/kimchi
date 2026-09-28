@@ -1,6 +1,6 @@
 /**
  * Rendered-behavior tests for the /model selector capability table patch
- * (MODEL | PROVIDER | CONTEXT | IMG columns).
+ * (MODEL | PROVIDER | CONTEXT | VISION | DESCRIPTION columns).
  *
  * The tests exercise the INSTALLED, patched selector component — the package's
  * exports map covers neither deep dist paths, so the component is imported
@@ -75,7 +75,9 @@ function makeSelector(options: {
 	}
 	const tui = {
 		requestRender: () => {},
-		terminal: { cols: options.cols ?? 120, rows: 40 },
+		// pi-tui's Terminal exposes `columns` (the patched selector's fallback
+		// chain mirrors this).
+		terminal: { columns: options.cols ?? 120, rows: 40 },
 	}
 	const scopedModels = (options.scopedModels ?? []).map((model) => ({ model }))
 	// The sessionId parameter is a kimchi-patch addition the package's .d.ts
@@ -100,18 +102,20 @@ function makeSelector(options: {
 }
 
 function modelRows(lines: string[]): string[] {
-	// Candidate rows carry a ✓/✗ IMG cell; the header labels MODEL.
-	return lines.filter((l) => /[✓✗]\s*(· default)?\s*$/.test(l.trimEnd()))
+	// Candidate rows carry a ✓/✗ VISION cell, optionally followed by the
+	// DESCRIPTION column (two-space separator + content).
+	return lines.filter((l) => /[✓✗](\u0020\u0020.*)?$/.test(l.trimEnd()))
 }
 
 describe("/model selector capability table (installed patch)", () => {
-	it("renders MODEL | PROVIDER | CONTEXT | IMG header and per-row values", () => {
+	it("renders MODEL | PROVIDER | CONTEXT | VISION header and per-row values", () => {
 		const { renderPlain } = makeSelector({})
 		const lines = renderPlain(100)
 		const header = lines.find((l) => l.includes("MODEL") && l.includes("PROVIDER"))
 		expect(header).toBeDefined()
 		expect(header).toContain("CONTEXT")
-		expect(header).toContain("IMG")
+		expect(header).toContain("VISION")
+		expect(header).toContain("DESCRIPTION")
 
 		const rows = modelRows(lines)
 		expect(rows).toHaveLength(3)
@@ -120,26 +124,47 @@ describe("/model selector capability table (installed patch)", () => {
 		expect(rows.some((r) => r.includes("anthropic"))).toBe(true)
 	})
 
-	it("humanizes context windows right-aligned (200k, 128k, 1M)", () => {
-		const { renderPlain } = makeSelector({})
-		const rows = modelRows(renderPlain(100))
-		const contextValues = rows.map((r) => r.trimEnd().match(/\b(200k|128k|1M)\b/)?.[1])
-		expect(contextValues).toContain("200k")
-		expect(contextValues).toContain("128k")
-		expect(contextValues).toContain("1M")
-		// Right-aligned: every row (badge-stripped) ends at the same column,
-		// so the IMG cell and the context column line up across rows.
-		const lengths = new Set(rows.map((r) => r.replace(/ · default$/, "").trimEnd().length))
-		expect(lengths.size).toBe(1)
+	it("humanizes context windows left-aligned (200k, 128k, 1M)", () => {
+		withDescriptions(
+			{
+				"kimchi-dev/kimi-k2.6": "Flagship vision model.",
+				"kimchi-dev/glm-5.3": "Balanced everyday model.",
+				"anthropic/claude-sonnet-4-20250514": "Frontier general model.",
+			},
+			() => {
+				const { renderPlain } = makeSelector({})
+				const rows = modelRows(renderPlain(120))
+				const contextValues = rows.map((r) => r.trimEnd().match(/\b(200k|128k|1M)\b/)?.[1])
+				expect(contextValues).toContain("200k")
+				expect(contextValues).toContain("128k")
+				expect(contextValues).toContain("1M")
+				// Aligned: every description starts at the same column, so the
+				// context/VISION/description columns line up across rows (the ✓ next to
+				// the cursor is the current-model marker, not the VISION cell).
+				const descs = ["Flagship vision model.", "Balanced everyday model.", "Frontier general model."]
+				const descStarts = new Set(rows.map((r) => descs.map((d) => r.indexOf(d)).find((i) => i >= 0)))
+				expect(descStarts.size).toBe(1)
+			},
+		)
 	})
 
 	it("shows ✓ for vision models and ✗ for text-only models", () => {
-		const { renderPlain } = makeSelector({})
-		const rows = modelRows(renderPlain(100))
-		const glmRow = rows.find((r) => r.includes("glm-5.3"))
-		const kimiRow = rows.find((r) => r.includes("kimi-k2.6"))
-		expect(glmRow?.trimEnd().endsWith("✗")).toBe(true)
-		expect(kimiRow?.trimEnd().endsWith("✓")).toBe(true)
+		withDescriptions(
+			{
+				"kimchi-dev/kimi-k2.6": "Flagship vision model.",
+				"kimchi-dev/glm-5.3": "Balanced everyday model.",
+				"anthropic/claude-sonnet-4-20250514": "Frontier general model.",
+			},
+			() => {
+				const { renderPlain } = makeSelector({})
+				const rows = modelRows(renderPlain(120))
+				const glmRow = rows.find((r) => r.includes("glm-5.3"))
+				const kimiRow = rows.find((r) => r.includes("kimi-k2.6"))
+				// The VISION cell sits between the context and description columns.
+				expect(glmRow).toMatch(/✗ {7}Balanced/)
+				expect(kimiRow).toMatch(/✓ {7}Flagship/)
+			},
+		)
 	})
 
 	it("colors the ✗ marker in the warn color", () => {
@@ -169,43 +194,92 @@ describe("/model selector capability table (installed patch)", () => {
 	type PatchedProcess = NodeJS.Process & {
 		__kimchiOrchestratorRef?: Map<string, string>
 		__kimchiMultiModelEnabled?: Map<string, boolean>
+		__kimchiModelDescriptions?: Map<string, string>
 	}
 	const patchedProcess = process as PatchedProcess
+
+	/** Sets the description registry around a test body, restoring it after. */
+	function withDescriptions(entries: Record<string, string>, body: () => void): void {
+		patchedProcess.__kimchiModelDescriptions = new Map(Object.entries(entries))
+		try {
+			body()
+		} finally {
+			patchedProcess.__kimchiModelDescriptions = undefined
+		}
+	}
 
 	it("the virtual multi-model row inherits its orchestrator's context/vision stats", () => {
 		patchedProcess.__kimchiOrchestratorRef = new Map([["mm-session", "kimchi-dev/kimi-k2.6"]])
 		patchedProcess.__kimchiMultiModelEnabled = new Map([["mm-session", false]])
 		try {
-			const { renderPlain } = makeSelector({ sessionId: "mm-session" })
-			const rows = modelRows(renderPlain(100))
-			const multiRow = rows.find((r) => r.includes("multi-model"))
-			expect(multiRow).toBeDefined()
-			expect(multiRow).toContain("orchestration")
-			// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓.
-			expect(multiRow?.trimEnd().endsWith("✓")).toBe(true)
-			expect(multiRow).toContain("200k")
+			withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
+				const { renderPlain } = makeSelector({ sessionId: "mm-session" })
+				const rows = modelRows(renderPlain(120))
+				const multiRow = rows.find((r) => r.includes("multi-model"))
+				expect(multiRow).toBeDefined()
+				expect(multiRow).toContain("orchestration")
+				// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓, its description.
+				expect(multiRow).toMatch(/✓ {7}Flagship/)
+				expect(multiRow).toContain("200k")
+			})
 		} finally {
 			patchedProcess.__kimchiOrchestratorRef = undefined
 			patchedProcess.__kimchiMultiModelEnabled = undefined
 		}
 	})
 
-	it("truncates the provider column first and the model id last on narrow terminals", () => {
-		const { renderPlain } = makeSelector({ cols: 50 })
-		const rows = modelRows(renderPlain(100))
-		const claudeRow = rows.find((r) => r.includes("claude-sonnet"))
-		expect(claudeRow).toBeDefined()
-		// Provider truncated (anthropic → anthrop…), model id kept whole.
-		expect(claudeRow).toContain("anthrop…")
-		expect(claudeRow).toContain("claude-sonnet-4-20250514")
-		expect(claudeRow).toContain("1M")
+	it("truncates the description column first on narrow terminals", () => {
+		withDescriptions(
+			{
+				"anthropic/claude-sonnet-4-20250514": "Frontier general model for hard problems.",
+				"kimchi-dev/kimi-k2.6": "Flagship vision model.",
+				"kimchi-dev/glm-5.3": "Balanced everyday model.",
+			},
+			() => {
+				const { renderPlain } = makeSelector({ cols: 50 })
+				const rows = modelRows(renderPlain(100))
+				const claudeRow = rows.find((r) => r.includes("claude-sonnet"))
+				expect(claudeRow).toBeDefined()
+				// The description column hides entirely; provider truncates next
+				// (anthropic → anthrop…); the model id is kept whole.
+				expect(claudeRow).not.toContain("Frontier")
+				expect(claudeRow).toContain("an…")
+				expect(claudeRow).toContain("claude-sonnet-4-20250514")
+				expect(claudeRow).toContain("1M")
+			},
+		)
 	})
 
-	it("keeps the default badge on the default model row", () => {
-		const { renderPlain } = makeSelector({ defaultModel: { provider: "kimchi-dev", id: "kimi-k2.6" } })
-		const rows = modelRows(renderPlain(100))
-		const defaultRow = rows.find((r) => r.includes("· default"))
-		expect(defaultRow).toContain("kimi-k2.6")
+	it("DESCRIPTION combines the default annotation with the model description", () => {
+		// Default + description → "Default for new sessions. <desc>";
+		// description only (not default) → "<desc>".
+		withDescriptions(
+			{
+				"kimchi-dev/kimi-k2.6": "Flagship vision model.",
+				"kimchi-dev/glm-5.3": "Balanced everyday model.",
+				"anthropic/claude-sonnet-4-20250514": "Frontier general model.",
+			},
+			() => {
+				const { renderPlain } = makeSelector({ defaultModel: { provider: "kimchi-dev", id: "kimi-k2.6" } })
+				const rows = modelRows(renderPlain(120))
+				const kimiRow = rows.find((r) => r.includes("kimi-k2.6"))
+				const glmRow = rows.find((r) => r.includes("glm-5.3"))
+				expect(kimiRow).toContain("Default for new sessions. Flagship vision model.")
+				expect(glmRow).toContain("Balanced everyday model.")
+				expect(glmRow).not.toContain("Default for new sessions.")
+			},
+		)
+
+		// Default without description → the annotation alone; neither → empty.
+		withDescriptions({}, () => {
+			const { renderPlain } = makeSelector({ defaultModel: { provider: "kimchi-dev", id: "kimi-k2.6" } })
+			const rows = modelRows(renderPlain(120))
+			const kimiRow = rows.find((r) => r.includes("kimi-k2.6"))
+			const glmRow = rows.find((r) => r.includes("glm-5.3"))
+			expect(kimiRow).toContain("Default for new sessions.")
+			expect(kimiRow).not.toContain("Default for new sessions. .")
+			expect(glmRow).not.toContain("Default for new sessions.")
+		})
 	})
 
 	it("still renders the footer-only empty state when nothing matches", () => {
@@ -229,6 +303,9 @@ describe("/model selector capability table (installed patch)", () => {
 		expect(updateList).toContain("formatTokens(item.model.contextWindow ?? 0)")
 		expect(updateList).toContain("'MODEL'.padEnd(modelW)")
 		expect(updateList).toContain("imgOf(item) === '✓'")
+		expect(updateList).toContain("__kimchiModelDescriptions")
+		expect(updateList).toContain("'DESCRIPTION'")
+		expect(updateList).toContain('"Default for new sessions."')
 	})
 })
 

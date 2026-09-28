@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
+import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import {
 	fullText,
 	INPUT_TIMEOUT_MS,
@@ -109,6 +110,16 @@ function agentCall(id: string, model?: string, runInBackground = false) {
 	}
 }
 
+/** Poll viewText until the pattern matches (waits for filtered/selected state). */
+async function viewMatches(terminal: Terminal, pattern: RegExp, timeoutMs = INPUT_TIMEOUT_MS): Promise<void> {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		if (pattern.test(viewText(terminal))) return
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${viewText(terminal)}`)
+}
+
 test("/model autocomplete shows and selects Auto for an entitled account without experimental features", async ({
 	terminal,
 }) => {
@@ -132,14 +143,13 @@ test("/model autocomplete shows and selects Auto for an entitled account without
 			trace.step("model autocomplete open")
 
 			terminal.write("auto")
-			await waitForText(terminal, "Picks the best model for your tasks automatically.", {
-				timeoutMs: INPUT_TIMEOUT_MS,
-				full: false,
-			})
+			// The DESCRIPTION column shows Auto's fallback description in the
+			// unfiltered list too, so waiting on that text is not enough — poll
+			// until the search filter actually selects the Auto row (cursor on it).
 			// The selector renders a capability table: the row shows the cursor,
-			// the current-model marker column, then MODEL | PROVIDER | CONTEXT | IMG
-			// columns (no bracketed provider anymore).
-			expect(viewText(terminal)).toMatch(/→\s+auto\s+kimchi-dev\s+\S*k\s+✓/)
+			// the current-model marker column, then MODEL | PROVIDER | CONTEXT |
+			// VISION | DESCRIPTION columns (no bracketed provider anymore).
+			await viewMatches(terminal, /→\s+auto\s+kimchi-dev\s+\S*k\s+✓/)
 			trace.step("Auto highlighted")
 
 			terminal.submit("")

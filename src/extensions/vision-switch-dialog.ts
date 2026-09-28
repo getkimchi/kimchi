@@ -2,7 +2,6 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
-import { createDialogChrome } from "./feedback/dialog-chrome.js"
 import { humanizeContextWindow } from "./vision-support.js"
 
 /** Outcome the gate acts on. `cancel` keeps every attachment source retained. */
@@ -43,10 +42,12 @@ const MAX_VISIBLE_CANDIDATES = 8
 const SEARCH_PLACEHOLDER = "filter models…"
 
 /**
- * Searchable vision-model switch dialog, patterned on the feedback
- * model-switch dialog and reusing its chrome. All effects (compaction,
- * model switch) are injected through `onSwitch`; the dialog only owns
- * rendering, filtering, the compact two-step confirm, and busy/error state.
+ * Searchable vision-model switch selector, rendered inline in the editor
+ * region (the permission-prompt / `/model` pattern — `ctx.ui.custom` without
+ * overlay options). The chat stays visible above; `done()` restores the
+ * editor. All effects (compaction, model switch) are injected through
+ * `onSwitch`; the selector only owns rendering, filtering, the compact
+ * two-step confirm, and busy/error state.
  */
 export async function showVisionSwitchDialog(
 	ctx: ExtensionContext,
@@ -54,7 +55,6 @@ export async function showVisionSwitchDialog(
 ): Promise<VisionDialogResult> {
 	return ctx.ui.custom<VisionDialogResult>(
 		(tui, theme, _keybindings, done) => new VisionSwitchComponent(tui, theme, options, done, options.registerClose),
-		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", maxHeight: "40%" } },
 	)
 }
 
@@ -195,34 +195,33 @@ export class VisionSwitchComponent extends Container {
 		}
 	}
 
-	/** Plain (unstyled) row text for a candidate — shared by render and tests. */
-
 	override render(width: number): string[] {
-		const { emptyRow, contentRow, topBorder, bottomBorder } = createDialogChrome(this.theme, width)
+		const dim = (s: string) => this.theme.fg("muted", s)
+		const rule = this.theme.fg("border", "─".repeat(Math.max(1, width)))
 
 		const lines: string[] = []
-		lines.push(topBorder("Switch to a vision model"))
-		lines.push(emptyRow)
+		lines.push(rule)
+		lines.push("")
+
+		lines.push(` ${this.theme.fg("accent", this.theme.bold("Switch to a vision model"))}`)
+		lines.push("")
 
 		const headerPlain = `⚠ ${this.options.currentModelId} is text-only — switch to send image(s)`
-		lines.push(contentRow(this.theme.fg("text", headerPlain), headerPlain))
-		lines.push(emptyRow)
+		lines.push(` ${this.theme.fg("warning", headerPlain)}`)
+		lines.push("")
 
 		// Search row. `❯ ` prefix; placeholder while empty.
-		const dim = (s: string) => this.theme.fg("muted", s)
 		if (this.query.length > 0) {
-			const searchPlain = `❯ ${this.query}`
-			lines.push(contentRow(`${dim("❯ ")}${this.query}`, searchPlain))
+			lines.push(` ${dim("❯ ")}${this.query}`)
 		} else {
-			const searchPlain = `❯ ${SEARCH_PLACEHOLDER}`
-			lines.push(contentRow(`${dim("❯ ")}${dim(SEARCH_PLACEHOLDER)}`, searchPlain))
+			lines.push(` ${dim("❯ ")}${dim(SEARCH_PLACEHOLDER)}`)
 		}
-		lines.push(emptyRow)
+		lines.push("")
 
 		const candidates = this.filteredCandidates
 		if (candidates.length === 0) {
 			const nonePlain = this.options.getCandidates().length === 0 ? "No vision models available" : "No matching models"
-			lines.push(contentRow(dim(nonePlain), nonePlain))
+			lines.push(` ${dim(nonePlain)}`)
 		} else {
 			const maxVisible = Math.min(MAX_VISIBLE_CANDIDATES, candidates.length)
 			const startIndex = Math.max(
@@ -242,31 +241,29 @@ export class VisionSwitchComponent extends Container {
 				const idText = isSelected ? this.theme.fg("accent", id) : this.theme.fg("text", id)
 				const providerText = dim(provider)
 				const contextText = this.theme.fg("text", context)
-				const rowPlain = `${cursor}${id}  ${provider}  ${context}${candidate.compactNeeded ? " · ⚠ compact" : ""}`
-				lines.push(contentRow(`${cursor}${idText}  ${providerText}  ${contextText}${badge}`, rowPlain))
+				lines.push(` ${cursor}${idText}  ${providerText}  ${contextText}${badge}`)
 			}
 			if (startIndex > 0 || endIndex < candidates.length) {
-				const scrollPlain = `(${this.selectedIndex + 1}/${candidates.length})`
-				lines.push(contentRow(dim(`  ${scrollPlain}`), `  ${scrollPlain}`))
+				lines.push(` ${dim(`(${this.selectedIndex + 1}/${candidates.length})`)}`)
 			}
 		}
 
-		lines.push(emptyRow)
+		lines.push("")
 
 		if (this.mode === "confirm" && this.confirmCandidate) {
-			const confirmPlain = `⚠ this will compact your context — continue? [y/N]`
-			lines.push(contentRow(this.theme.fg("warning", confirmPlain), confirmPlain))
+			const confirmPlain = "⚠ this will compact your context — continue? [y/N]"
+			lines.push(` ${this.theme.fg("warning", confirmPlain)}`)
 		} else if (this.mode === "busy") {
-			const busyPlain = "Switching…"
-			lines.push(contentRow(dim(busyPlain), busyPlain))
+			lines.push(` ${dim("Switching…")}`)
 		} else if (this.mode === "error" && this.errorMessage) {
-			lines.push(contentRow(this.theme.fg("error", this.errorMessage), this.errorMessage))
+			lines.push(` ${this.theme.fg("error", this.errorMessage)}`)
 		}
 
-		const footerPlain = "[Ctrl+R] remove image(s)  [Esc] cancel"
-		lines.push(contentRow(this.theme.fg("dim", footerPlain), footerPlain))
-		lines.push(emptyRow)
-		lines.push(bottomBorder)
+		const hintPlain = "↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)"
+		lines.push("")
+		lines.push(` ${this.theme.fg("dim", hintPlain)}`)
+		lines.push("")
+		lines.push(rule)
 		return lines
 	}
 }

@@ -428,7 +428,7 @@ describe("clipboard-image extension", () => {
 	})
 
 	describe("paste", () => {
-		it("accepts the paste on a text-only model and fires the hint notify", async () => {
+		it("accepts the paste on a text-only model and shows the hint as an indicator segment, not a chat warning", async () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 			const ctx = makeMockCtx({ model: TEXT_MODEL })
@@ -442,15 +442,14 @@ describe("clipboard-image extension", () => {
 			pasteHandler?.()
 			await settle()
 
-			// Image accepted into pending (📎 indicator) + one-shot hint fired.
+			// Image accepted into pending; the text-only hint rides the 📎 indicator
+			// (a chat warning cannot be retracted once the model switches).
 			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith(expect.stringContaining("📎 1 image"))
-			expect(ctx.ui.notify).toHaveBeenCalledWith(
-				"⚠ text-only is text-only — you'll be able to change to a vision model when sending",
-				"warning",
-			)
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith(expect.stringContaining("· ⚠ text-only"))
+			expect(ctx.ui.notify).not.toHaveBeenCalled()
 		})
 
-		it("accepts the paste without the text-only hint on a vision model", async () => {
+		it("accepts the paste without the text-only segment on a vision model", async () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 			const ctx = makeMockCtx({ model: VISION_MODEL })
@@ -463,8 +462,40 @@ describe("clipboard-image extension", () => {
 
 			pasteHandler?.()
 			await settle()
-			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith(expect.stringContaining("📎 1 image"))
-			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("text-only"), "warning")
+			const calls = mockSetPendingImageIndicator.mock.calls.map((call) => call[0])
+			expect(calls).toContainEqual(expect.stringContaining("📎 1 image"))
+			expect(calls.some((text) => typeof text === "string" && text.includes("📎")))
+			const last = calls.at(-1)
+			expect(last).toContain("📎 1 image")
+			expect(last).not.toContain("text-only")
+			expect(ctx.ui.notify).not.toHaveBeenCalled()
+		})
+
+		it("model_select clears the text-only segment when the model gains vision", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			let liveModel: Model<Api> = TEXT_MODEL
+			const ctx = makeMockCtx({
+				model: undefined, // live getter below
+			})
+			Object.defineProperty(ctx, "model", { get: () => liveModel, configurable: true })
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockResolvedValue({
+				bytes: Buffer.from([1, 2, 3, 4]),
+				mimeType: "image/png",
+			})
+			pasteHandler?.()
+			await settle()
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(expect.stringContaining("· ⚠ text-only"))
+
+			// The vision gate's switch (or /model) fires model_select.
+			liveModel = VISION_MODEL
+			getHandler<unknown, void>(pi, "model_select")(void 0, ctx)
+
+			const last = mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]
+			expect(last).toContain("📎 1 image")
+			expect(last).not.toContain("text-only")
 		})
 
 		it("pasted images flow through the gate and survive cancel exactly once", async () => {
