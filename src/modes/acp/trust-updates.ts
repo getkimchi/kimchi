@@ -11,7 +11,7 @@
 //    `blocked` is a coarse category list, never per-file paths of the
 //    untrusted repo (info-leak footgun).
 // 2. The `_kimchi.dev/set_project_trust` ext method payload contract:
-//    `{ sessionId, decision: "trust" | "deny" | "deny_persist" }`.
+//    `{ sessionId, decision: "trust" | "trust_session" | "trust_parent" | "deny" | "deny_persist" }`.
 //
 // Only the pure payload logic lives here; the KimchiAcpAgent server owns the
 // session lookup, persistence, and the palette/prompt refresh sweep.

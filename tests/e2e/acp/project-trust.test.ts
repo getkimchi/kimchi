@@ -9,10 +9,9 @@
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession } from "./support/scenarios.js"
+import { commandNames, newSession, waitFor } from "./support/scenarios.js"
 
 const WAIT_MS = 20_000
 
@@ -42,27 +41,6 @@ function lastTrustUpdate(fixture: AcpFixture, sessionId: string) {
 		(n) => n.method === PROJECT_TRUST_UPDATE && (n.params as { sessionId?: string }).sessionId === sessionId,
 	)
 	return updates[updates.length - 1]?.params as { sessionId: string; trusted: boolean; blocked: string[] } | undefined
-}
-
-function commandNames(fixture: AcpFixture, sessionId: string): string[] {
-	const updates = fixture.client.sessionUpdates.filter(
-		(u) => u.sessionId === sessionId && u.update.sessionUpdate === "available_commands_update",
-	)
-	const last = updates[updates.length - 1]
-	if (last?.update.sessionUpdate !== "available_commands_update") return []
-	return last.update.availableCommands.map((c) => c.name)
-}
-
-async function waitFor<T>(probe: () => T, predicate: (v: T) => boolean, timeoutMs = WAIT_MS): Promise<T> {
-	const deadline = Date.now() + timeoutMs
-	let last: T | undefined
-	while (Date.now() < deadline) {
-		const value = probe()
-		if (predicate(value)) return value
-		last = value
-		await delay(100)
-	}
-	throw new Error(`condition not met within ${timeoutMs}ms; last value: ${JSON.stringify(last)}`)
 }
 
 describe("ACP integration — project trust surfacing", () => {

@@ -1902,7 +1902,13 @@ export class KimchiAcpAgent implements Agent {
 			new ProjectTrustStore(this.agentDir).set(cwd, false)
 			setProjectScopeTrusted(cwd, false)
 		} else {
-			// "trust_session" / "deny": in-memory only for this connection.
+			// "trust_session" / "deny": in-memory only, nothing persisted. Scope
+			// caveat: the gate pin is keyed by cwd in the process-wide map
+			// (src/project-scope-trust.ts), not by session — so a second session
+			// on the SAME cwd shares the decision, and a new session at that cwd
+			// re-pins fail-closed at start (createSessionSettings), stomping a
+			// prior trust_session grant. Session-granular pins are a known v1
+			// limitation; only different-cwd sessions are isolated.
 			setProjectScopeTrusted(cwd, trusted)
 		}
 
