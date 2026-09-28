@@ -1,6 +1,7 @@
 import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import {
 	CURSOR_MARKER,
+	type Focusable,
 	Key,
 	matchesKey,
 	type SettingItem,
@@ -19,7 +20,8 @@ type ResourceTab = ResourceKind | "all" | "experimental"
 
 const TABS: readonly ResourceTab[] = ["all", ...RESOURCE_KINDS, "experimental"]
 
-export class ResourceManagerComponent {
+export class ResourceManagerComponent implements Focusable {
+	// Pi's TUI sets this when the custom UI gains or loses focus.
 	focused = false
 	private list: SettingsList
 	private activeTab: ResourceTab

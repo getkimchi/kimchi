@@ -7,6 +7,7 @@ import {
 	checkConfigFilePermissions,
 	clearApiKey,
 	ensureFullscreenDefault,
+	ensureFullscreenExitOutputDefault,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -1305,6 +1306,21 @@ describe("ensureFullscreenDefault", () => {
 		const settings = { tuiMode }
 		expect(ensureFullscreenDefault(settings)).toBe(false)
 		expect(settings.tuiMode).toBe(tuiMode)
+	})
+})
+
+describe("ensureFullscreenExitOutputDefault", () => {
+	it("defaults fullscreen exit to a resume hint without replacing other settings", () => {
+		const settings: Record<string, unknown> = { tuiMode: "fullscreen" }
+		expect(ensureFullscreenExitOutputDefault(settings)).toBe(true)
+		expect(settings).toEqual({ tuiMode: "fullscreen", fullscreenExitOutput: "resume-hint" })
+		expect(ensureFullscreenExitOutputDefault(settings)).toBe(false)
+	})
+
+	it.each(["transcript", "resume-hint"])("preserves explicit %s exit output", (fullscreenExitOutput) => {
+		const settings = { fullscreenExitOutput }
+		expect(ensureFullscreenExitOutputDefault(settings)).toBe(false)
+		expect(settings.fullscreenExitOutput).toBe(fullscreenExitOutput)
 	})
 })
 

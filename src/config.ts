@@ -183,6 +183,13 @@ export function ensureFullscreenDefault(settings: Record<string, unknown>): bool
 	return true
 }
 
+/** Restore the shell on exit unless the user explicitly wants the transcript printed. */
+export function ensureFullscreenExitOutputDefault(settings: Record<string, unknown>): boolean {
+	if ("fullscreenExitOutput" in settings) return false
+	settings.fullscreenExitOutput = "resume-hint"
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
