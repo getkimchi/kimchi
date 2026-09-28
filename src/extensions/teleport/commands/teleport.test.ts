@@ -77,7 +77,7 @@ const {
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
 vi.mock("../../../sandbox/cloud/readiness.js", () => ({ waitForWorkspaceReady: waitReadyMock }))
 vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
-// resources.js stays real (pure validator); the loader is stubbed, but the
+// spec.js and resources.js stay real (pure validators); the loader is stubbed, but the
 // real WorkspaceFileError class stays (importOriginal) so instanceof checks
 // in production code behave as in reality.
 vi.mock("../../../sandbox/cloud/workspace-file.js", async (importOriginal) => ({
@@ -320,7 +320,7 @@ describe("runTeleport", () => {
 		await p
 	})
 
-	it("sends kimchi_workspace.yaml resources on the upsert PUT when minting a new workspace", async () => {
+	it("sends the kimchi_workspace.yaml spec on the upsert PUT when minting a new workspace", async () => {
 		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: " 500m ", memory: "1Gi" } })
 		// List is empty (default) → empty-list mint = client-minted id.
 		const { ctx } = makeCtx()
@@ -329,10 +329,29 @@ describe("runTeleport", () => {
 
 		expect(authMock).toHaveBeenCalledOnce()
 		// Outer whitespace trimmed by the real validator.
-		expect(authMock.mock.calls[0][3]).toMatchObject({ resources: { cpu: "500m", memory: "1Gi" } })
+		expect(authMock.mock.calls[0][3]).toMatchObject({ spec: { resources: { cpu: "500m", memory: "1Gi" } } })
 	})
 
-	it("does not send resources when attaching to an existing workspace — the file is never read", async () => {
+	it("passes dependencies and egressPolicy through verbatim when minting", async () => {
+		loadWorkspaceFileMock.mockReturnValue({
+			dependencies: ["jq", "node@22"],
+			egressPolicy: { denyByDefault: false, allowed: ["github.com:443"], denied: ["10.0.0.0/8"] },
+		})
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		expect(authMock.mock.calls[0][3]).toMatchObject({
+			spec: {
+				dependencies: ["jq", "node@22"],
+				egressPolicy: { denyByDefault: false, allowed: ["github.com:443"], denied: ["10.0.0.0/8"] },
+			},
+		})
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+	})
+
+	it("does not send a spec when attaching to an existing workspace — the file is never read", async () => {
 		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "500m" } })
 		listWorkspacesMock.mockResolvedValue([
 			{
@@ -349,20 +368,20 @@ describe("runTeleport", () => {
 
 		expect(authMock).toHaveBeenCalledOnce()
 		expect(loadWorkspaceFileMock).not.toHaveBeenCalled()
-		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("spec")
 	})
 
-	it("treats an unlisted explicit UUID as attach-intent — the file is never read, no resources on the PUT", async () => {
+	it("treats an unlisted explicit UUID as attach-intent — the file is never read, no spec on the PUT", async () => {
 		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "500m" } })
 		// List is empty (default): the UUID is trusted but was not minted
-		// client-side, so create-time-only resources must not ride its PUT.
+		// client-side, so a create-time-only spec must not ride its PUT.
 		const { ctx } = makeCtx()
 
 		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
 
 		expect(authMock).toHaveBeenCalledOnce()
 		expect(loadWorkspaceFileMock).not.toHaveBeenCalled()
-		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("spec")
 	})
 
 	it("a broken kimchi_workspace.yaml cannot block attaching to an existing workspace", async () => {
@@ -387,7 +406,7 @@ describe("runTeleport", () => {
 
 		expect(authMock).toHaveBeenCalledOnce()
 		expect(loadWorkspaceFileMock).not.toHaveBeenCalled()
-		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("spec")
 	})
 
 	it("refuses before the upsert PUT when minting with an invalid resource value", async () => {
@@ -396,6 +415,15 @@ describe("runTeleport", () => {
 
 		await expect(runTeleport("mysession", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("cpu"), "error")
+		expect(authMock).not.toHaveBeenCalled()
+	})
+
+	it("refuses before the upsert PUT when minting with an invalid dependency entry", async () => {
+		loadWorkspaceFileMock.mockReturnValue({ dependencies: ["no de"] })
+		const { ctx, ui } = makeCtx()
+
+		await expect(runTeleport("mysession", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("not a valid tool reference"), "error")
 		expect(authMock).not.toHaveBeenCalled()
 	})
 

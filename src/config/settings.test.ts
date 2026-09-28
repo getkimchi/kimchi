@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs"
+import { rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -25,6 +25,15 @@ vi.mock("./json.js", async (importOriginal) => {
 		readJson: (_path: string) => {
 			if (readJsonError) throw readJsonError
 			return original.readJson(testPath)
+		},
+		// Route through the REAL cache on testPath so these tests exercise
+		// the production path (stat gate + write-through invalidation). Note a
+		// bare `...original` spread would NOT work: the original readJsonCached
+		// internally binds the original readJson, which would read the real
+		// user settings file instead of testPath.
+		readJsonCached: (_path: string) => {
+			if (readJsonError) throw readJsonError
+			return original.readJsonCached(testPath)
 		},
 		writeJson: (_path: string, data: unknown) => {
 			if (writeJsonError) throw writeJsonError
@@ -146,6 +155,38 @@ describe("readConfigSettingAsync", () => {
 	it("resolves with undefined when missing", async () => {
 		seed({})
 		await expect(readConfigSettingAsync("color", isString)).resolves.toBeUndefined()
+	})
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// readConfigSetting — stat-gated cache integration
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("readConfigSetting (stat cache)", () => {
+	it("serves repeated reads and reflects writes immediately (no stale cache)", () => {
+		seed({ color: "red" })
+		expect(readConfigSetting("color", isString)).toBe("red")
+		// Second read goes through the stat-gated cache — same value.
+		expect(readConfigSetting("color", isString)).toBe("red")
+		// Our own write invalidates; the next read must see the new value.
+		writeConfigSetting("color", "blue")
+		expect(readConfigSetting("color", isString)).toBe("blue")
+	})
+
+	it("picks up an external write to the settings file (stat gate, no write-through)", () => {
+		seed({ color: "red" })
+		expect(readConfigSetting("color", isString)).toBe("red")
+		// Simulate another process editing the file: plain writeFileSync, NOT
+		// our writeJson — only the mtime/size stat gate can catch this.
+		writeFileSync(testPath, '{"color":"green"}', "utf-8")
+		expect(readConfigSetting("color", isString)).toBe("green")
+	})
+
+	it("reflects a deleted settings file", () => {
+		seed({ color: "red" })
+		expect(readConfigSetting("color", isString)).toBe("red")
+		rmSync(testPath)
+		expect(readConfigSetting("color", isString)).toBeUndefined()
 	})
 })
 

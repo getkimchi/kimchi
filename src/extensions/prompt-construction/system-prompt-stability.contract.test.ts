@@ -238,21 +238,50 @@ describe("system-prompt block cache contract (source)", () => {
 
 		expect(fermentBlock).toContain('id: "todo-guidance-ferment"')
 
-		expect(index).toContain("registerTodoContextState(pi)")
+		expect(index).toContain("registerTodoStatePersistence(pi)")
 		expect(index).toContain("registerFermentTodoPromptBlock(pi)")
 		expect(index).not.toContain("registerTodoStateBlock")
 	})
 
-	it("keeps dynamic todo state in the transient context event path only", () => {
+	it("delivers dynamic state via persist-on-change, never via tail-push", () => {
 		const contextState = readSource("src/extensions/todos/context-state.ts")
+		const lifecycleContext = readSource("src/extensions/ferment/lifecycle-context.ts")
 		const stateMarkdown = readSource("src/extensions/todos/state-markdown.ts")
+		const todosIndex = readSource("src/extensions/todos/index.ts")
 
-		expect(contextState).toContain('pi.on("context"')
-		expect(contextState).toContain("customType: TODO_STATE_CUSTOM_TYPE")
+		// Persist-on-change: state blocks are written to session history via
+		// sendMessage, so they join the growing stable prefix. The machinery is
+		// shared; each registrar wires its customType + render source into it.
+		const sharedPersistence = readSource("src/extensions/state-block-persistence.ts")
+		expect(sharedPersistence).toContain("pi.sendMessage")
+		expect(sharedPersistence).toContain("isStateBlockEntry")
+		expect(contextState).toContain("registerStateBlockPersistence")
 		expect(contextState).toContain("renderTodoStateMarkdown")
+		expect(lifecycleContext).toContain("registerStateBlockPersistence")
 
-		// The volatile renderer lives outside any registrar file so the static
+		// Tail-push ban: no writes to the message array inside a context handler.
+		// The context handlers in these files are strip-only (drop superseded
+		// copies of persisted blocks) — appending state blocks at the request
+		// tail permanently poisons the provider cache breakpoint.
+		expect(contextState).not.toContain("messages.push")
+		expect(contextState).not.toContain("event.messages.push")
+		expect(lifecycleContext).not.toContain("messages.push")
+		expect(lifecycleContext).not.toContain("event.messages.push")
+		expect(sharedPersistence).not.toContain("messages.push")
+		expect(sharedPersistence).not.toContain("event.messages.push")
+
+		// The todos index wires persistence, not transient injection.
+		expect(todosIndex).toContain("registerTodoStatePersistence(pi)")
+		expect(todosIndex).not.toContain("registerTodoContextState")
+
+		// The renderer lives outside any registrar file so the static
 		// import guard above can be strict (zero allowlisted exceptions).
 		expect(stateMarkdown).toContain("renderTodoStateMarkdown")
+
+		// The persisted block is a pure function of the store: no volatile
+		// staleness counters, no wall-clock.
+		expect(stateMarkdown).not.toContain("getToolCallsSinceTodoWrite")
+		expect(stateMarkdown).not.toContain("getTurnsSinceStepTodoWrite")
+		expect(stateMarkdown).not.toContain("Date.now(")
 	})
 })

@@ -5,14 +5,28 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
+import { readModelDeprecations } from "./model-deprecation.js"
 import {
-	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
+
+// loadConfig() reads the launch-time global config (real HOME). Pin it without
+// a region so endpoint derivation (experimental provider, metadata defaults)
+// resolves the US URLs regardless of the developer machine's config.
+vi.mock("./config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./config.js")>()
+	return {
+		...actual,
+		loadConfig: () =>
+			({ apiKey: process.env.KIMCHI_API_KEY ?? "", region: undefined }) as unknown as ReturnType<
+				typeof actual.loadConfig
+			>,
+	}
+})
 
 const KIMI: unknown = {
 	slug: "kimi-k2.5",
@@ -52,6 +66,24 @@ const OPUS_46: unknown = {
 	input_modalities: ["text", "image"],
 	is_serverless: false,
 	limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+}
+
+const CUSTOM_PROVIDER = {
+	baseUrl: "https://custom.example/v1",
+	apiKey: "custom-key",
+	api: "openai-completions",
+	authHeader: true,
+	models: [
+		{
+			id: "custom-model",
+			name: "Custom Model",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 1024,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		},
+	],
 }
 
 describe("updateModelsConfig", () => {
@@ -199,7 +231,7 @@ describe("updateModelsConfig", () => {
 		expect(model).not.toHaveProperty("thinkingLevelMap")
 	})
 
-	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
+	it("sets X-Provider-Type header at the provider level for all kimchi providers", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [SONNET_46, KIMI] }),
@@ -208,8 +240,9 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		// base kimchi-dev provider does NOT have the header
-		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBeUndefined()
+		// base kimchi-dev provider routes ai-enabler models
+		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBe("ai-enabler")
+		expect(config.providers["kimchi-dev"].headers["User-Agent"]).toMatch(/^kimchi\//)
 
 		// anthropic sub-provider has the header
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
@@ -657,6 +690,49 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
+	it("falls back to cached Kimchi models after a 401 without custom providers", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
+		await updateModelsConfig(modelsJsonPath, "saved-key")
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const result = await updateModelsConfig(modelsJsonPath, "rejected-key")
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
+		expect(isCredentialStale("rejected-key", "kimchi-dev")).toBe(true)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it.each([false, true])("preserves custom providers after a Kimchi 401 (Kimchi cache=%s)", async (withKimchiCache) => {
+		if (withKimchiCache) {
+			vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
+			await updateModelsConfig(modelsJsonPath, "saved-key")
+		}
+		const config = withKimchiCache ? JSON.parse(readFileSync(modelsJsonPath, "utf-8")) : { providers: {} }
+		config.providers.custom = CUSTOM_PROVIDER
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+
+		const result = await updateModelsConfig(modelsJsonPath, "expired-kimchi-key")
+
+		expect(result.models.map((model) => model.slug)).toContain("custom-model")
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("rejects invalid credentials during strict discovery even when custom providers exist", async () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { custom: CUSTOM_PROVIDER } }))
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
+
+		await expect(
+			updateModelsConfig(modelsJsonPath, "rejected-key", { allowCachedFallback: false }),
+		).rejects.toMatchObject({ status: 401 })
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
 	it("does not overwrite cached models.json when fetch fails", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -743,19 +819,6 @@ describe("updateModelsConfig", () => {
 		expect(fetch).not.toHaveBeenCalled()
 	})
 
-	it("does not advertise the virtual Auto model as cached concrete metadata", async () => {
-		vi.mocked(fetch).mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({ models: [KIMI] }),
-		} as Response)
-		await updateModelsConfig(modelsJsonPath, "test-key")
-		injectAutoModel(modelsJsonPath)
-
-		const result = await updateModelsConfig(modelsJsonPath, "")
-
-		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
-	})
-
 	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
 		const result = await updateModelsConfig(modelsJsonPath, "")
 
@@ -773,7 +836,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "sunset",
+			sunset_at: "2020-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -798,7 +861,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "sunset",
+			sunset_at: "2020-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -807,7 +870,9 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("All models from the API are sunset"))
+		expect(consoleWarnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("All models from the API are deprecated or sunset"),
+		)
 		expect(result.models).toHaveLength(0)
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models).toHaveLength(0)
@@ -831,7 +896,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "sunset",
+			sunset_at: "2020-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -845,7 +910,7 @@ describe("updateModelsConfig", () => {
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(before)
 	})
 
-	it("treats models without status field as active (backward compatibility)", async () => {
+	it("treats models without deprecation fields as active", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -867,7 +932,7 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "deprecated",
+			deprecated_at: "2099-01-01T00:00:00Z",
 		}
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -882,8 +947,8 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toContain("deprecated-model")
 	})
 
-	it("preserves replacement field on deprecated/sunset models in returned metadata", async () => {
-		const deprecatedWithReplacement = {
+	it("keeps announced-deprecated models, excludes past-deprecated, and persists deprecation to the sidecar", async () => {
+		const announcedModel = {
 			slug: "old-model",
 			display_name: "Old Model",
 			provider: "ai-enabler",
@@ -891,80 +956,28 @@ describe("updateModelsConfig", () => {
 			input_modalities: ["text"],
 			is_serverless: true,
 			limits: { context_window: 100_000, max_output_tokens: 4096 },
-			status: "deprecated",
-			replacement: "new-model",
+			deprecated_at: "2099-01-01T00:00:00Z",
+			replacement_model: "new-model",
 		}
+		const pastDeprecatedModel = { ...announcedModel, slug: "gone-model", deprecated_at: "2020-01-01T00:00:00Z" }
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [deprecatedWithReplacement] }),
+			json: async () => ({ models: [announcedModel, pastDeprecatedModel] }),
 		} as Response)
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
+		// Announced models stay available with their deprecation fields intact.
 		const model = result.models.find((m) => m.slug === "old-model")
-		expect(model?.status).toBe("deprecated")
-		expect(model?.replacement).toBe("new-model")
-	})
-})
+		expect(model?.deprecated_at).toBe("2099-01-01T00:00:00Z")
+		expect(model?.replacement_model).toBe("new-model")
+		// Past-deprecated models are excluded from the active list.
+		expect(result.models.some((m) => m.slug === "gone-model")).toBe(false)
 
-describe("injectAutoModel", () => {
-	let tempDir: string
-	let modelsJsonPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
-		modelsJsonPath = join(tempDir, "models.json")
-		writeFileSync(
-			modelsJsonPath,
-			JSON.stringify({
-				providers: {
-					"kimchi-dev": {
-						baseUrl: "https://llm.kimchi.dev/openai/v1",
-						api: "openai-completions",
-						models: [
-							{
-								id: "kimi-k2.5",
-								name: "Kimi K2.5",
-								provider: "ai-enabler",
-								reasoning: true,
-								input: ["text", "image"],
-								contextWindow: 262144,
-								maxTokens: 32768,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							},
-						],
-					},
-				},
-			}),
-		)
-	})
-
-	afterEach(() => rmSync(tempDir, { recursive: true, force: true }))
-
-	it("adds exactly kimchi-dev/auto with a model-level API", () => {
-		const providerIds = Object.keys(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers)
-		injectAutoModel(modelsJsonPath)
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const auto = config.providers["kimchi-dev"].models.find((model: { id: string }) => model.id === "auto")
-
-		expect(auto).toMatchObject({
-			id: "auto",
-			name: "Auto (Kimchi Router)",
-			api: "kimchi-auto",
-			reasoning: true,
-			thinkingLevelMap: { off: "none", max: "max" },
-			input: ["text", "image"],
-		})
-		expect(Object.keys(config.providers)).toEqual(providerIds)
-	})
-
-	it("upserts Auto without duplicates", () => {
-		injectAutoModel(modelsJsonPath)
-		injectAutoModel(modelsJsonPath)
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const autoModels = config.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
-
-		expect(autoModels).toHaveLength(1)
+		// Sidecar holds both entries: vanishing models keep replacement info.
+		const sidecar = readModelDeprecations(modelsJsonPath)
+		expect(sidecar.get("old-model")?.replacement_model).toBe("new-model")
+		expect(sidecar.get("gone-model")?.replacement_model).toBe("new-model")
 	})
 })
 

@@ -1,7 +1,8 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import { findNearestAncestorPath } from "../utils/find-nearest-ancestor.js"
-import { readJson } from "./json.js"
+import { readJsonCached } from "./json.js"
 
 // ─── Tag format validation ───────────────────────────────────────────────────
 
@@ -42,7 +43,9 @@ function errText(err: unknown): string {
 
 function readTagFile(path: string): string[] {
 	try {
-		const config = readJson(path) as TagsConfig
+		// Stat-gated cache: resolveDefaultTags runs on every TagManager
+		// construction; the tag files themselves change rarely.
+		const config = readJsonCached(path) as TagsConfig
 		if (!Array.isArray(config.tags)) return []
 		return config.tags.filter(isValidTag)
 	} catch (err) {
@@ -82,12 +85,16 @@ export function resolveDefaultTags(options?: { cwd?: string; homeDir?: string; e
 		{ tier: "global", tags: readTagFile(join(home, GLOBAL_TAGS_FILE_REL)) },
 	]
 
-	// Project tier — nearest-ancestor lookup from cwd. An unusable cwd
-	// (deleted, unreadable parent) must not abort resolution; fall back to
-	// no project tags rather than failing the session.
+	// Project tier — nearest-ancestor lookup from cwd, gated on project trust:
+	// an untrusted repo's .kimchi/tags.json must not spoof telemetry
+	// attribution. An unusable cwd (deleted, unreadable parent) must not abort
+	// resolution; fall back to no project tags rather than failing the session.
 	try {
-		const projectPath = findNearestAncestorPath(options?.cwd ?? process.cwd(), PROJECT_TAGS_FILE_REL)
-		if (projectPath) tiers.push({ tier: "project", tags: readTagFile(projectPath) })
+		const cwd = options?.cwd ?? process.cwd()
+		if (isProjectScopeAllowed(cwd)) {
+			const projectPath = findNearestAncestorPath(cwd, PROJECT_TAGS_FILE_REL)
+			if (projectPath) tiers.push({ tier: "project", tags: readTagFile(projectPath) })
+		}
 	} catch (err) {
 		console.warn(`[tags] project tag config discovery failed: ${errText(err)}`)
 	}

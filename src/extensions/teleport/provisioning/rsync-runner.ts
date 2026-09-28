@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname as nodePathDirname, posix } from "node:path"
+import { loadConfig } from "../../../config.js"
 
 const posixDirname = posix.dirname
 
@@ -397,7 +398,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			listMode = { kind: "exclude-from", file: excludeFile }
 		}
 
-		const env: NodeJS.ProcessEnv = { ...process.env, AUTH_TOKEN: opts.authToken }
+		const env: NodeJS.ProcessEnv = { ...process.env, KIMCHI_API_KEY: loadConfig().apiKey, AUTH_TOKEN: opts.authToken }
 
 		const proxyCommand = opts.proxyCommand ?? buildProxyCommand()
 

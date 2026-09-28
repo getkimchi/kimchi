@@ -4,10 +4,18 @@
  *
  * Tests that exercise the wired `bashToolGuardExtension` against a mock
  * ExtensionAPI (session_start/tool_call handlers) live in
- * bash-tool-guard.integration.test.ts instead.
+ * bash-tool-guard.integration.test.ts instead — except the stat-gated
+ * settings-reads suite at the bottom, which wires the extension via the
+ * shared createExtensionApi mock to count real fs reads.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import {
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { __resetJsonCacheForTest } from "../config/json.js"
+import { createContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
+import bashToolGuardExtension, {
 	applyDescriptionOverride,
 	type BashCategory,
 	type BashGuardBlockResult,
@@ -18,6 +26,23 @@ import {
 	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
 import { setExperimentalFeaturesEnabled } from "./experimental.js"
+
+// Counts real (open+read) reads of any settings.json, so the stat-gated
+// cache test can prove that consecutive tool_call events stop re-reading
+// the config file. Everything else delegates to the real fs.
+const settingsReads = vi.hoisted(() => ({ count: 0 }))
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	const realReadFileSync = actual.readFileSync
+	return {
+		...actual,
+		readFileSync: ((path: unknown, ...rest: unknown[]) => {
+			if (typeof path === "string" && path.endsWith("settings.json")) settingsReads.count++
+			return (realReadFileSync as (p: unknown, ...r: unknown[]) => unknown)(path, ...rest)
+		}) as typeof actual.readFileSync,
+	}
+})
 
 afterEach(() => {
 	// Module-level singleton — restore default so suites don't leak state.
@@ -897,5 +922,58 @@ describe("applyDescriptionOverride", () => {
 		const tool = { name: "read", description: "Read file contents" }
 		const result = applyDescriptionOverride(tool)
 		expect(result.description).toBe("Read file contents")
+	})
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// Regression: config reads during the agent loop.
+// The guard consults the resource store on every bash tool_call; with the
+// stat-gated cache that must cost one statSync, not a read+parse per event.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("bashToolGuardExtension — stat-gated settings reads", () => {
+	let dir: string
+	let previousAgentDir: string | undefined
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-guard-cache-"))
+		previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = dir
+		writeFileSync(join(dir, "settings.json"), "{}", "utf-8")
+		__resetJsonCacheForTest()
+		settingsReads.count = 0
+	})
+
+	afterEach(() => {
+		if (previousAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
+		rmSync(dir, { recursive: true, force: true })
+		__resetJsonCacheForTest()
+	})
+
+	it("consecutive tool_call events read settings.json exactly once; a change re-reads", () => {
+		const { api, getHandlers } = createExtensionApi()
+		bashToolGuardExtension(api)
+
+		const event = { toolName: "bash", input: { command: "echo hello" } }
+		const ctx = createContext()
+		const runToolCall = () => getHandlers("tool_call").map((handler) => handler(event, ctx))
+
+		// Two consecutive bash tool_calls consult the resource store; the
+		// stat-gated cache must read (open+parse) the file exactly once.
+		runToolCall()
+		runToolCall()
+		expect(settingsReads.count).toBe(1)
+
+		// Mid-session disable (the /resources freshness contract): the write
+		// changes the signature, so the next event re-reads and the early-out
+		// applies without a restart.
+		writeFileSync(
+			join(dir, "settings.json"),
+			JSON.stringify({ resources: { "extensions.bash-tool-guard": false } }),
+			"utf-8",
+		)
+		runToolCall()
+		expect(settingsReads.count).toBe(2)
 	})
 })

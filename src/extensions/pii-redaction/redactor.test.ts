@@ -240,6 +240,33 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).not.toContain("~/.ssh/id_rsa")
 		expect(result).toContain("[REDACTED-CREDENTIAL_FILE]")
 	})
+
+	it("redacts OpenAI-style API keys (sk-, sk-proj-) — the bulkhead key guard misses these", async () => {
+		const result = await redactText("Gateway key: sk-proj-AbC1234567890XyZ9876543210, old sk-abcdefghij1234567890")
+		expect(result).not.toContain("sk-proj-AbC1234567890XyZ9876543210")
+		expect(result).not.toContain("sk-abcdefghij1234567890")
+		expect(result).toContain("[REDACTED-OPENAI_API_KEY]")
+		expect(result).toContain("Gateway key:")
+	})
+
+	it("redacts standalone GitHub tokens (ghp_, github_pat_) without a KEY= prefix", async () => {
+		// Numeric-heavy tokens: the engine's CRYPTO guard eats the value and
+		// leaves the prefix — the secret part must still be gone.
+		const result = await redactText("Token ghp_1234567890abcdef1234567890abcdef12 leaked")
+		expect(result).not.toContain("1234567890abcdef1234567890abcdef12")
+		expect(result).toContain("[REDACTED-")
+
+		// Mixed-case tokens the engine misses — the custom GITHUB_TOKEN
+		// pattern replaces them whole.
+		const mixed = await redactText("Token ghp_exampleToken1234567890abcdefghijkl leaked")
+		expect(mixed).not.toContain("ghp_exampleToken1234567890abcdefghijkl")
+		expect(mixed).toContain("[REDACTED-GITHUB_TOKEN]")
+
+		// Fine-grained PATs: engine redacts the value, prefix stays.
+		const pat = await redactText("PAT github_pat_1234567890abcdef1234567890abcdef1234567890 in log")
+		expect(pat).not.toContain("1234567890abcdef1234567890abcdef1234567890")
+		expect(pat).toContain("[REDACTED-")
+	})
 })
 
 describe("redactObjectStrings — sensitive JSON fields", () => {

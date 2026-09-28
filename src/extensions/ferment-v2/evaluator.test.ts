@@ -5,6 +5,7 @@ import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
@@ -78,6 +79,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	afterEach(() => {
+		resetProjectScopeTrustForTests()
 		if (savedRedactionEnv === undefined) delete process.env.KIMCHI_REDACTION_ENABLED
 		else process.env.KIMCHI_REDACTION_ENABLED = savedRedactionEnv
 		resetRedactionConfigCache()
@@ -93,6 +95,9 @@ describe("Ferment V2 evaluator", () => {
 
 	it("evaluates managed file requirements without restoring the full text into the objective", async () => {
 		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-objective-evaluator-")))
+		// Managed objective files are project-scoped (.kimchi/plans) — trusted
+		// for this test's read path.
+		setProjectScopeTrusted(cwd, true)
 		try {
 			const path = join(cwd, ".kimchi/plans/12345678-1234-4234-8234-123456789abc-objective.md")
 			mkdirSync(join(cwd, ".kimchi/plans"), { recursive: true })
@@ -362,6 +367,11 @@ describe("Ferment V2 evaluator", () => {
 				.find((path) => path !== parentFile)
 			if (!childFile) throw new Error("expected an evaluator child session")
 			const child = SessionManager.open(childFile, sessionDir)
+			expect(child.getEntries()[0]).toMatchObject({
+				type: "custom",
+				customType: "kimchi:internal-session",
+				data: { kind: "ferment-evaluator" },
+			})
 			expect(child.getHeader()?.parentSession).toBe(parentFile)
 			expect(child.getSessionName()).toBe("Ferment V2 evaluator")
 			expect(child.getEntries()).toEqual(

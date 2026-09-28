@@ -2,7 +2,7 @@
  * Prompt builder for remote plan execution.
  *
  * Constructs the prompt sent to the remote agent when the user picks
- * "Start execution in cloud" from either the plan-mode or ferment review
+ * "Execute the plan in a remote workspace" from either the plan-mode or ferment review
  * dialog. The prompt includes:
  *
  * 1. Origin-specific instructions (plain execution vs ferment execution)

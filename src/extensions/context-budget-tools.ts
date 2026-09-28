@@ -5,8 +5,8 @@
  * needing a running harness:
  * - Upstream builtins via the exported `create*ToolDefinition` factories.
  * - Kimchi extension tool registrations by instantiating each extension factory with
- *   a permissive capture API (every method is a no-op except registerTool, which
- *   records). Registration-time registration only — tools that need a live session
+ *   a capture API that records tools and honors registered flag defaults.
+ *   Registration-time registration only — tools that need a live session
  *   (worker report tools, ferment runtime tools) cannot be measured this way and are
  *   listed as deliberate exclusions.
  *
@@ -21,6 +21,7 @@ import {
 	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
+	type ExtensionAPI,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 // Import order is load-bearing: resources/definitions.ts embeds
@@ -74,7 +75,7 @@ function entry(source: string, tool: AnyToolDef): ToolSurfaceEntry {
 
 /**
  * Deep no-op: callable object where every property access returns another deep
- * no-op, so factories touching `pi.events.emit(...)`, `pi.getFlag(...)`, etc.
+ * no-op, so factories touching `pi.events.emit(...)`, etc.
  * never throw. `then` returns undefined so awaiting one does not hang.
  */
 function createDeepNoop(): unknown {
@@ -87,7 +88,7 @@ function createDeepNoop(): unknown {
 }
 
 interface CaptureApi {
-	api: unknown
+	api: Pick<ExtensionAPI, "registerTool" | "registerFlag" | "getFlag">
 	tools: Map<string, AnyToolDef>
 	/** Invoke handlers the factory registered for an event (e.g. `session_start`,
 	 *  where several extensions register their tools). Best effort: handler
@@ -95,16 +96,23 @@ interface CaptureApi {
 	fire: (event: string) => Promise<void>
 }
 
-/** Capture pi that tolerates any call, records `registerTool`, and stores
- *  `on()` handlers so the measurement can trigger registration-time hooks. */
-function createCaptureApi(): CaptureApi {
+/** Capture a session without CLI overrides: honor registered flag defaults,
+ *  record tools, and store handlers for registration-time hooks. */
+export function createCaptureApi(): CaptureApi {
 	const tools = new Map<string, AnyToolDef>()
+	const flagValues = new Map<string, boolean | string>()
 	const handlers = new Map<string, Array<(event: unknown) => unknown>>()
 	const api = new Proxy(
-		{},
 		{
-			get: (_target, prop) => {
-				if (prop === "registerTool") return (tool: AnyToolDef) => tools.set(tool.name, tool)
+			registerTool: (tool: AnyToolDef) => tools.set(tool.name, tool),
+			registerFlag: (name: string, options: Parameters<ExtensionAPI["registerFlag"]>[1]) => {
+				if (options.default !== undefined && !flagValues.has(name)) flagValues.set(name, options.default)
+			},
+			getFlag: (name: string) => flagValues.get(name),
+		},
+		{
+			get: (target, prop) => {
+				if (prop === "registerTool" || prop === "registerFlag" || prop === "getFlag") return Reflect.get(target, prop)
 				if (prop === "on") {
 					return (event: string, handler: (payload: unknown) => unknown) => {
 						const list = handlers.get(event) ?? []
@@ -149,7 +157,7 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	// With zero configured MCP servers, the adapter registers no tools at all.
 	// context-budget.test.ts mocks this state, so this module contributes
 	// nothing to the canonical measurement.
-	{ module: "./mcp-adapter/index.js", source: "mcp-adapter" },
+	{ module: "./mcp/index.js", source: "mcp-adapter" },
 	{ module: "./tags.js", source: "tags(set_phase)" },
 	{ module: "./claude-code-skills/index.js", source: "claude-code-skills(skill)" },
 ]
@@ -192,7 +200,10 @@ async function measureExtensionTools(
 			if (typeof imported.default !== "function") throw new Error("no default factory export")
 			const { api, tools, fire } = createCaptureApi()
 			await imported.default(api)
-			await fire("session_start")
+			// The upstream MCP adapter registers its zero-server tool surface at
+			// extension load. Starting its async runtime would require a complete
+			// session context and cannot add tools for this fixture.
+			if (source !== "mcp-adapter") await fire("session_start")
 			for (const tool of tools.values()) out.set(tool.name, entry(`extension:${source}`, tool))
 		} catch (error) {
 			exclusions.push({

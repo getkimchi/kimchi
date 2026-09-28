@@ -92,14 +92,14 @@ const ROLE_KEYS: readonly (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrat
 
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
-	orchestrator: "kimchi-dev/kimi-k2.7",
-	planner: "kimchi-dev/kimi-k2.7",
-	builder: ["kimchi-dev/minimax-m3"],
-	reviewer: ["kimchi-dev/kimi-k2.7"],
-	explorer: "kimchi-dev/deepseek-v4-flash",
-	researcher: "kimchi-dev/minimax-m3",
-	judge: ["kimchi-dev/kimi-k2.7"],
-	compactor: "kimchi-dev/minimax-m3",
+	orchestrator: "kimchi-dev/kimi-k3",
+	planner: "kimchi-dev/glm-5.3",
+	builder: ["kimchi-dev/glm-5.3-flash"],
+	reviewer: ["kimchi-dev/kimi-k3"],
+	explorer: "kimchi-dev/deepseek-v4-flash-0731",
+	researcher: "kimchi-dev/deepseek-v4-flash-0731",
+	judge: ["kimchi-dev/glm-5.3"],
+	compactor: "kimchi-dev/deepseek-v4-flash-0731",
 }
 
 export interface ModelRolesWarning {
@@ -235,17 +235,28 @@ export function extractCustomConfigs(
 	return overrides ?? getModelMetadata()
 }
 
+export interface ModelRoleAvailabilityWarning {
+	role: keyof ModelRoles
+	configuredModel: string
+	/** Supplier-provided replacement for the unavailable model (slug), when
+	 * the metadata sidecar recorded one before the model disappeared. */
+	suggestedReplacement?: string
+}
+
+/** Validation result: roles whose configured model is not available in the API. */
 export interface ModelRoleValidationResult {
-	/** Roles whose configured model is not available in the API. */
-	unavailable: { role: keyof ModelRoles; configuredModel: string }[]
+	unavailable: ModelRoleAvailabilityWarning[]
 }
 
 /**
  * Validate that each role's model(s) exist in the set of available model IDs.
+ * `replacements` maps unavailable model IDs to supplier-provided replacement
+ * slugs so warnings can point users at a working alternative.
  */
 export function validateModelRoles(
 	roles: ModelRoles,
 	availableModelIds: ReadonlySet<string>,
+	replacements?: ReadonlyMap<string, string>,
 ): ModelRoleValidationResult {
 	const unavailable: ModelRoleValidationResult["unavailable"] = []
 	for (const key of ROLE_KEYS) {
@@ -253,12 +264,19 @@ export function validateModelRoles(
 		for (const ref of refs) {
 			const id = modelIdFromRef(ref)
 			if (!availableModelIds.has(id)) {
-				unavailable.push({ role: key, configuredModel: ref })
+				unavailable.push({ role: key, configuredModel: ref, suggestedReplacement: replacements?.get(id) })
 			}
 		}
 	}
-	if (roles.compactor !== undefined && !availableModelIds.has(modelIdFromRef(roles.compactor))) {
-		unavailable.push({ role: "compactor", configuredModel: roles.compactor })
+	if (roles.compactor !== undefined) {
+		const compactorId = modelIdFromRef(roles.compactor)
+		if (!availableModelIds.has(compactorId)) {
+			unavailable.push({
+				role: "compactor",
+				configuredModel: roles.compactor,
+				suggestedReplacement: replacements?.get(compactorId),
+			})
+		}
 	}
 	return { unavailable }
 }

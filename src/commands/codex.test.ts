@@ -57,7 +57,7 @@ describe("runCodex", () => {
 		errSpy.mockRestore()
 	})
 
-	it("forwards args and injects KIMCHI_API_KEY when prepareTool succeeds", async () => {
+	it("forwards args without exposing KIMCHI_API_KEY when prepareTool succeeds", async () => {
 		vi.mocked(prepareTool).mockResolvedValue(mockPrepped())
 		vi.mocked(runForeground).mockResolvedValue(0)
 
@@ -65,11 +65,7 @@ describe("runCodex", () => {
 
 		expect(exit).toBe(0)
 		expect(runForeground).toHaveBeenCalledTimes(1)
-		expect(runForeground).toHaveBeenCalledWith(
-			"codex",
-			["exec", "--", "hello"],
-			expect.objectContaining({ KIMCHI_API_KEY: "test-key" }),
-		)
+		expect(runForeground).toHaveBeenCalledWith("codex", ["exec", "--", "hello"])
 	})
 
 	it("returns the child's exit code when runForeground resolves", async () => {

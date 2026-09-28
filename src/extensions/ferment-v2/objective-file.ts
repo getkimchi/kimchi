@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { PLAN_DIR } from "../../shared/planning/plan-markdown.js"
 
 const PREFIX = "Read the Kimchi objective file at "
@@ -36,6 +37,10 @@ export function objectiveText(objective: string, cwd: string): string {
 	if (!path) return objective
 	try {
 		if (realpathSync(path) !== path) throw new Error("objective file must not redirect outside its managed path")
+		// The plans directory is project-scoped: while the project is
+		// untrusted, a shipped objective file must not steer a guided
+		// workflow — treat it as unreadable, exactly like a deleted file.
+		if (!isProjectScopeAllowed(cwd)) throw new Error("project plans are not trusted")
 		const text = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path))
 		if (!text.trim()) throw new Error("objective file is empty")
 		return text
@@ -44,9 +49,20 @@ export function objectiveText(objective: string, cwd: string): string {
 	}
 }
 
-/** Publish a new revision's complete text before its reference is journaled. */
+/**
+ * Publish a new revision's complete text before its reference is journaled.
+ *
+ * The plans directory is project-scoped: while the project is untrusted, the
+ * file is NOT written (writing would both modify a repo the user declined to
+ * trust and arm the trust prompt on the next launch via the .kimchi/plans
+ * scan entry) — the raw text is returned as the objective instead, which
+ * objectiveText/objectiveFilePath treat as a plain (non-file) objective.
+ */
 export function saveObjectiveFile(text: string, cwd: string): string {
 	if (!text.trim()) throw new Error("Ferment V2 objective cannot be empty.")
+	if (!isProjectScopeAllowed(cwd)) {
+		return text
+	}
 	let path: string | undefined
 	let created = false
 	try {

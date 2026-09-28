@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
@@ -25,7 +26,14 @@ function claudeCodeHookSources(cwd = process.cwd()): CommandHookSource[] {
 	const homeDir = homedir()
 	const projectDir = resolve(cwd)
 	const sources: CommandHookSource[] = [{ scope: "user", path: join(homeDir, ".claude", "settings.json") }]
-	if (existsSync(join(projectDir, ".claude")) && resolve(projectDir) !== resolve(homeDir)) {
+	// Project and local .claude settings are gated on project trust: an
+	// untrusted repo must not ship hooks that kimchi lists (or, once enabled,
+	// executes).
+	if (
+		existsSync(join(projectDir, ".claude")) &&
+		resolve(projectDir) !== resolve(homeDir) &&
+		isProjectScopeAllowed(cwd)
+	) {
 		sources.push(
 			{ scope: "project", path: join(projectDir, ".claude", "settings.json") },
 			{ scope: "local", path: join(projectDir, ".claude", "settings.local.json") },

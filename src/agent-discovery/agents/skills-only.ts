@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { AgentDefinition } from "../index.js"
+import type { AgentDefinition, DirCandidate } from "../index.js"
 
 /**
  * Agents whose configs kimchi doesn't migrate (no MCP server schema we
@@ -11,15 +11,17 @@ import type { AgentDefinition } from "../index.js"
  * Each entry scans the project-local dir first (these conventions are mostly
  * repo-relative, e.g. `.github/skills`, `.agents/skills`) then the global
  * `~/<dir>/skills` fallback. First existing directory wins, matching the
- * Claude Code / OpenCode discoverers.
+ * Claude Code / OpenCode discoverers. The project-relative candidate resolves
+ * against the caller's working directory per discovery call, never at module
+ * load, so a long-lived process doesn't bake in its launch-time cwd.
  */
 export function makeSkillsOnlyAgent(
 	id: string,
 	displayName: string,
 	dir: string,
-	overrides?: { skillsDirs?: string[] },
+	overrides?: { skillsDirs?: DirCandidate[] },
 ): AgentDefinition {
-	const skillsDirs = overrides?.skillsDirs ?? [join(process.cwd(), dir, "skills"), join(homedir(), dir, "skills")]
+	const skillsDirs = overrides?.skillsDirs ?? [{ projectRelative: join(dir, "skills") }, join(homedir(), dir, "skills")]
 	return {
 		id,
 		displayName,

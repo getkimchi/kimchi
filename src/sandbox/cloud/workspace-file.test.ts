@@ -155,4 +155,80 @@ describe("loadWorkspaceFile parsing", () => {
 		writeWorkspaceFile(repoRoot, "- just\n- a\n- list\n")
 		expect(() => loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })).toThrowError(WorkspaceFileError)
 	})
+
+	it("parses dependencies and egressPolicy alongside resources", () => {
+		writeWorkspaceFile(
+			repoRoot,
+			"resources:\n  cpu: 250m\ndependencies:\n  - jq\n  - node@22\negressPolicy:\n  denyByDefault: false\n  allowed:\n    - github.com:443\n    - '*.cast.ai'\n  denied:\n    - 10.0.0.0/8\n",
+		)
+		const cfg = loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })
+		expect(cfg).toEqual({
+			resources: { cpu: "250m" },
+			dependencies: ["jq", "node@22"],
+			egressPolicy: { denyByDefault: false, allowed: ["github.com:443", "*.cast.ai"], denied: ["10.0.0.0/8"] },
+		})
+	})
+
+	it("treats an empty dependencies array as absent", () => {
+		writeWorkspaceFile(repoRoot, "dependencies: []\n")
+		expect(loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })).toEqual({})
+	})
+
+	it("keeps a present-but-empty egressPolicy mapping for the resolver to reject", () => {
+		writeWorkspaceFile(repoRoot, "egressPolicy: {}\n")
+		expect(loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })).toEqual({ egressPolicy: {} })
+	})
+
+	it("throws WorkspaceFileError when dependencies is not an array", () => {
+		writeWorkspaceFile(repoRoot, "dependencies: jq\n")
+		expect(() => loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })).toThrowError(
+			/"dependencies" must be an array/,
+		)
+	})
+
+	it("throws WorkspaceFileError for a non-string dependency entry (unquoted YAML number)", () => {
+		writeWorkspaceFile(repoRoot, "dependencies:\n  - 22\n")
+		try {
+			loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })
+			expect.unreachable()
+		} catch (err) {
+			expect(err).toBeInstanceOf(WorkspaceFileError)
+			expect((err as Error).message).toContain("Quote the value")
+		}
+	})
+
+	it("throws WorkspaceFileError naming an unknown key under egressPolicy", () => {
+		writeWorkspaceFile(repoRoot, "egressPolicy:\n  allow: []\n")
+		try {
+			loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })
+			expect.unreachable()
+		} catch (err) {
+			expect(err).toBeInstanceOf(WorkspaceFileError)
+			expect((err as Error).message).toContain('"allow"')
+			expect((err as Error).message).toContain("denyByDefault, allowed, denied")
+		}
+	})
+
+	it("throws WorkspaceFileError for a non-boolean denyByDefault", () => {
+		writeWorkspaceFile(repoRoot, 'egressPolicy:\n  denyByDefault: "yes"\n')
+		expect(() => loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })).toThrowError(
+			/expected a boolean/,
+		)
+	})
+
+	it("throws WorkspaceFileError when egressPolicy.allowed is not an array", () => {
+		writeWorkspaceFile(repoRoot, "egressPolicy:\n  allowed: github.com\n")
+		expect(() => loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })).toThrowError(/must be an array/)
+	})
+
+	it("throws WorkspaceFileError for a non-string egress entry (unquoted CIDR parses as string anyway; numbers refuse)", () => {
+		writeWorkspaceFile(repoRoot, "egressPolicy:\n  denied:\n    - 443\n")
+		try {
+			loadWorkspaceFile(repoRoot, { execFile: gitExecReturning(repoRoot) })
+			expect.unreachable()
+		} catch (err) {
+			expect(err).toBeInstanceOf(WorkspaceFileError)
+			expect((err as Error).message).toContain("Quote the value")
+		}
+	})
 })

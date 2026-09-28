@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import * as clack from "@clack/prompts"
+import type { ServerEntry } from "pi-mcp-adapter/types"
 import { AGENT_DEFINITIONS, type AgentDiscovery, discoverAgent } from "./agent-discovery/index.js"
 import { buildSkillPathOptions, getAgentConfigDir } from "./config.js"
-import type { ServerEntry } from "./extensions/mcp-adapter/types.js"
 
 export type MigrationState = "done" | "skip-forever"
 
@@ -24,7 +24,7 @@ interface MergedDiscovery {
 }
 
 function mergeDiscoveries(): MergedDiscovery {
-	const agents = AGENT_DEFINITIONS.map(discoverAgent)
+	const agents = AGENT_DEFINITIONS.map((def) => discoverAgent(def, { enumerateSkills: false }))
 	// Merge MCP servers in *reverse* registry order so earlier-registered
 	// agents win on name collisions. Today: CC is registered first → CC
 	// wins, matching previous behaviour.

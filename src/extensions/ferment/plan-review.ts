@@ -24,15 +24,15 @@ export type PlanReviewOutcome =
 const pendingPlanReviews = new Map<string, PendingPlanReview>()
 
 const BASE_DECISION_OPTIONS = [
-	"Start execution",
+	"Execute the plan locally",
 	"Start execution in auto mode (run all stages without stopping)",
 	"Let me say something",
 ] as const
 
-const CLOUD_DECISION_OPTION = "Start execution in cloud"
+const CLOUD_DECISION_OPTION = "Execute the plan in a remote workspace"
 
 /** Returns the decision options for the plan review dialog, conditionally
- *  including the cloud execution option when KIMCHI_REMOTE_RUN is set. */
+ *  including the remote execution option when KIMCHI_REMOTE_RUN is set. */
 function getDecisionOptions(): string[] {
 	return isRemoteRunEnabled()
 		? [BASE_DECISION_OPTIONS[0], BASE_DECISION_OPTIONS[1], CLOUD_DECISION_OPTION, BASE_DECISION_OPTIONS[2]]

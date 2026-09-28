@@ -1,7 +1,7 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME } from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
-import type { SessionFermentV2 } from "./types.js"
+import { FERMENT_V2_STATUS, type SessionFermentV2 } from "./types.js"
 
 const TODO_CONTINUITY_RULE =
 	"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list."
@@ -25,7 +25,11 @@ export function replaceFermentV2ContextMessages(
 	lessons: readonly FermentV2Lesson[] = [],
 ): ContextEvent["messages"] | undefined {
 	const filtered = messages.filter((message) => !isFermentV2ContextMessage(message))
-	if (!fermentV2) return filtered.length === messages.length ? undefined : filtered
+	const removedContext = filtered.length !== messages.length
+	const isComplete = fermentV2?.status === FERMENT_V2_STATUS.COMPLETE
+	if (!fermentV2 || isComplete) {
+		return removedContext ? filtered : undefined
+	}
 
 	const message = {
 		role: "custom" as const,
@@ -117,7 +121,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 		2,
 	)
 	const continuation =
-		fermentV2.status === "active"
+		fermentV2.status === FERMENT_V2_STATUS.ACTIVE
 			? `Persistent objective continuation is enabled.
 
 <objective_rules>

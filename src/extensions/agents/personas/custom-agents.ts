@@ -10,9 +10,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent"
+import { isProjectScopeAllowed } from "../../../project-scope-trust.js"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js"
-import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js"
+import type { AgentConfig, ThinkingLevel } from "./types.js"
 
 /**
  * Scan for custom agent .md files from multiple locations.
@@ -26,7 +27,11 @@ export function loadCustomAgents(cwd: string): Map<string, AgentConfig> {
 		loadFromDir(pkgDir, agentsMap, "package") // lowest priority
 	}
 	loadFromDir(globalDir, agentsMap, "global") // overrides package
-	loadFromDir(projectDir, agentsMap, "project") // overrides everything
+	// Project personas override everything, so they are gated on project
+	// trust: an untrusted repo must not inject agent system prompts.
+	if (isProjectScopeAllowed(cwd)) {
+		loadFromDir(projectDir, agentsMap, "project") // overrides everything
+	}
 	return agentsMap
 }
 
@@ -73,9 +78,8 @@ function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "
 			isolated: fm.isolated != null ? fm.isolated === true : undefined,
 			includeContextFiles: fm.include_context_files != null ? fm.include_context_files === true : undefined,
 			includeCoreGuidelines: fm.include_core_guidelines != null ? fm.include_core_guidelines === true : undefined,
-			memory: parseMemory(fm.memory),
-			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
 			enabled: fm.enabled !== false,
+			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
 			source,
 		})
 	}
@@ -133,11 +137,6 @@ function csvOrArrayList(val: unknown): string[] | undefined {
 	if (typeof val === "string" && val.trim().length > 0) {
 		return parseCsvField(val)
 	}
-	return undefined
-}
-
-function parseMemory(val: unknown): MemoryScope | undefined {
-	if (val === "user" || val === "project" || val === "local") return val
 	return undefined
 }
 

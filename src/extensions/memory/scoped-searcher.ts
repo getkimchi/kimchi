@@ -1,0 +1,87 @@
+/**
+ * Scoped retrieval: search the personal store plus the current project's
+ * store, merge by score, hand the existing digest value gate a single list.
+ * Pure merge is extracted for unit testing under Node; construction is
+ * Bun-only (SQLite backends), same split as backend.ts.
+ */
+import type { Memory as Mem0Memory } from "mem0ai/oss"
+import { createMemoryBackend, type MemoryBackendOptions, normalizeMem0SearchResults, projectDbPath } from "./backend.js"
+import { digestDbPath, MEMORY_USER_ID } from "./config.js"
+import { createSharedEmbedder, type SharedEmbedder } from "./embedder.js"
+import { resolveProjectScope } from "./scope.js"
+
+export type MemoryScope = "personal" | "project"
+
+export interface ScopedSearchResult {
+	memory?: string
+	score?: number
+	/** Which store the fact came from — the tool labels provenance; the digest ignores it. */
+	scope?: MemoryScope
+}
+
+export interface ScopedSearcher {
+	search(query: string, topK?: number): Promise<ScopedSearchResult[]>
+}
+
+/** Merge two stores' results by score (descending), trimming to topK. Pure. */
+export function mergeScopedResults(
+	personal: ScopedSearchResult[],
+	project: ScopedSearchResult[],
+	topK: number,
+): ScopedSearchResult[] {
+	return [...personal, ...project].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, topK)
+}
+
+/** The narrow backend surface the searcher reads — narrower than Mem0Memory so tests can stub it. */
+export type ScopedBackend = Pick<Mem0Memory, "search">
+
+/** Test seams for createScopedSearcher — both external factories are injectable. */
+export interface ScopedSearcherDeps {
+	createSharedEmbedder?: () => Promise<SharedEmbedder>
+	createMemoryBackend?: (options: MemoryBackendOptions) => Promise<ScopedBackend>
+}
+
+async function searchOne(
+	backend: ScopedBackend,
+	tag: MemoryScope,
+	query: string,
+	topK: number,
+): Promise<ScopedSearchResult[]> {
+	const results = await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK })
+	return normalizeMem0SearchResults(results).map((r) => ({ memory: r.memory, score: r.score, scope: tag }))
+}
+
+/**
+ * Construct the scoped searcher: the personal store always, plus the project
+ * store when the cwd resolves to a repository. Both share one deduping
+ * embedder, so each query is embedded once across the stores. A
+ * project-store failure degrades to personal-only (logged once) — memory
+ * must never break a session.
+ */
+export async function createScopedSearcher(cwd: string, deps: ScopedSearcherDeps = {}): Promise<ScopedSearcher> {
+	const createEmbedder = deps.createSharedEmbedder ?? createSharedEmbedder
+	const createBackend = deps.createMemoryBackend ?? createMemoryBackend
+	const project = resolveProjectScope(cwd)
+	const embedder = await createEmbedder()
+	const personal = await createBackend({ dbPath: digestDbPath(), sharedEmbedder: embedder })
+	let projectBackend: ScopedBackend | null = null
+	if (project) {
+		try {
+			projectBackend = await createBackend({ dbPath: projectDbPath(project.id), sharedEmbedder: embedder })
+		} catch (err) {
+			console.error(
+				`[memory] project store unavailable (${project.id}), continuing personal-only:`,
+				err instanceof Error ? err.message : err,
+			)
+		}
+	}
+	return {
+		search: async (query, topK = 8) => {
+			const [personalHits, projectHits] = await Promise.all([
+				searchOne(personal, "personal", query, topK),
+				projectBackend ? searchOne(projectBackend, "project", query, topK) : Promise.resolve([]),
+			])
+			return mergeScopedResults(personalHits, projectHits, topK)
+		},
+	}
+}

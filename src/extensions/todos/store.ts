@@ -1,4 +1,5 @@
 import { isAgentWorker } from "../agent-worker-context.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { createEmptyTodosSliceState, reduceReplaceList } from "./reducer.js"
 import { getTodoScopeKey, normalizeTodoScope } from "./scope.js"
 import type { TodoCounts, TodoItem, TodoScope, TodosSliceState, WriteTodosDetails, WriteTodosParams } from "./types.js"
@@ -137,8 +138,23 @@ function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
 }
 
 function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string): void {
+	// Isolate listener failures: the store is already updated when listeners
+	// run, so an exception escaping here would surface as a bogus "Failed to
+	// write todos" tool result even though the write landed (observed: a
+	// listener leaked by a disposed session threw the stale-ctx error and the
+	// model abandoned todo updates for the rest of that session).
 	for (const listener of [...todoStoreListeners]) {
-		listener(details, sessionId)
+		try {
+			listener(details, sessionId)
+		} catch (error) {
+			console.error("Todo store listener failed:", error)
+			// A stale-ctx listener holds a disposed session's runtime and will
+			// throw on every write forever — stop calling it. Generic errors may
+			// be transient, so those listeners stay subscribed.
+			if (isStaleCtxError(error)) {
+				todoStoreListeners.delete(listener)
+			}
+		}
 	}
 }
 

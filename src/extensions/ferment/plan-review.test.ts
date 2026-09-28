@@ -185,7 +185,7 @@ describe("PlanReviewComponent", () => {
 		it("includes the cloud execution option after auto mode", () => {
 			const { component } = createComponent()
 			const lines = component.render(80).join("\n")
-			expect(lines).toContain("Start execution in cloud")
+			expect(lines).toContain("Execute the plan in a remote workspace")
 			expect(lines).toContain("Let me say something")
 		})
 
@@ -214,6 +214,6 @@ describe("PlanReviewComponent", () => {
 		vi.mocked(isRemoteRunEnabled).mockReturnValue(false)
 		const { component } = createComponent()
 		const lines = component.render(80).join("\n")
-		expect(lines).not.toContain("Start execution in cloud")
+		expect(lines).not.toContain("Execute the plan in a remote workspace")
 	})
 })

@@ -18,7 +18,10 @@ import {
 function makePi() {
 	const mock = createExtensionApi()
 	const tools: Array<{ name: string; execute: (id: string, params?: unknown) => Promise<unknown> }> = []
+	const registerTool = mock.registerTool.getMockImplementation()
+	if (!registerTool) throw new Error("Expected shared tool registry")
 	vi.mocked(mock.api.registerTool).mockImplementation((tool) => {
+		registerTool(tool)
 		tools.push({
 			name: tool.name,
 			execute: (id, params = {}) => tool.execute(id, params, undefined, undefined, createContext()),

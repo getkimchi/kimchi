@@ -34,20 +34,11 @@ import { measureCanonicalToolSurface } from "./context-budget-tools.js"
 // surface must not depend on the ambient machine's mcp.json. The metadata
 // cache is stubbed too — with zero servers the factory would otherwise purge
 // and rewrite the developer machine's real mcp-cache.json.
-vi.mock("./mcp-adapter/config.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp-adapter/config.js")>()
+vi.mock("./mcp/config.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp/config.js")>()
 	return {
 		...original,
-		loadMcpConfig: () => ({ config: { mcpServers: {} }, warnings: [] }),
-	}
-})
-vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./mcp-adapter/metadata-cache.js")>()
-	return {
-		...original,
-		loadMetadataCache: () => undefined,
-		overwriteMetadataCache: () => {},
-		flushMetadataCache: () => {},
+		loadKimchiMcpConfig: () => ({ config: { mcpServers: {} }, warnings: [] }),
 	}
 })
 
@@ -67,8 +58,9 @@ const BUDGET = {
 	 *  (tool descriptions live in the API payload, the phase payload is gated
 	 *  on set_phase, Consent/Output/Environment sections dieted; ~7% headroom). */
 	systemPrompt: 2050,
-	/** Sum of name + description chars across resources/skills frontmatter. */
-	skillsCatalog: 80,
+	/** Sum of name + description chars across resources/skills frontmatter,
+	 * including the bundled create-skill authoring workflow (~97 tokens). */
+	skillsCatalog: 105,
 	/** Total canonical system-prompt + skills surface. */
 	total: 2150,
 	/** Total canonical tool surface (27 tools — the branch's coordinator
@@ -213,6 +205,38 @@ describe("context budget", () => {
 
 	it("canonical tool surface stays within committed token budgets", async () => {
 		const { tools, exclusions } = await measureCanonicalToolSurface()
+		// Pin membership as well as size: a flag stub that silently hides a tool
+		// must fail measurement even though it would reduce the token total.
+		expect(tools.map((tool) => tool.name).sort()).toEqual(
+			[
+				"read",
+				"bash",
+				"edit",
+				"write",
+				"grep",
+				"find",
+				"ls",
+				"create_todos",
+				"update_todos",
+				"mark_todo",
+				"add_todo",
+				"clear_todos",
+				"web_search",
+				"web_fetch",
+				"questionnaire",
+				"Agent",
+				"resume_subagent",
+				"get_subagent_result",
+				"steer_subagent",
+				"set_phase",
+				"Skill",
+				"debug_launch",
+				"debug_state_at",
+				"debug_last_error",
+				"debug_trace_calls",
+				"debug_watch_change",
+			].sort(),
+		)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		const breakdown = [

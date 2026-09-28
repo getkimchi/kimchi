@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { DEFAULT_CONFIG, PERMISSION_MODES } from "./constants.js"
 import type { PermissionsConfig } from "./types.js"
 
@@ -70,12 +71,16 @@ export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; 
 	const userRead = readConfigFile(USER_CONFIG_PATH)
 	if (userRead.error) errors.push(userRead.error)
 
+	// Project and local files are gated on project trust: an untrusted repo's
+	// .kimchi/permissions.json must not relax the permission layer (allow
+	// rules, defaultMode) until the folder is trusted.
+	const projectScopeAllowed = isProjectScopeAllowed(options.cwd)
 	const projectPath = resolve(options.cwd, PROJECT_CONFIG_SUFFIX)
-	const projectRead = readConfigFile(projectPath)
+	const projectRead = projectScopeAllowed ? readConfigFile(projectPath) : { data: null }
 	if (projectRead.error) errors.push(projectRead.error)
 
 	const localPath = resolve(options.cwd, LOCAL_CONFIG_SUFFIX)
-	const localRead = readConfigFile(localPath)
+	const localRead = projectScopeAllowed ? readConfigFile(localPath) : { data: null }
 	if (localRead.error) errors.push(localRead.error)
 
 	const cliPath = options.cliConfigPath

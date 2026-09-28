@@ -80,7 +80,7 @@ export async function runTerminal(
 		"LogLevel=ERROR",
 		`${SANDBOX_USER}@${creds.host}`,
 	]
-	const env: NodeJS.ProcessEnv = { ...process.env, AUTH_TOKEN: creds.connectToken }
+	const env: NodeJS.ProcessEnv = { ...process.env, KIMCHI_API_KEY: ctx.apiKey, AUTH_TOKEN: creds.connectToken }
 
 	info(ctx, `Connecting to ${workspaceId.slice(0, 8)}…`)
 	let code = 0

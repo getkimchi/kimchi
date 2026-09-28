@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { objectiveFilePath, objectiveText, saveObjectiveFile } from "./objective-file.js"
 
 describe("managed objective files", () => {
@@ -20,6 +22,10 @@ describe("managed objective files", () => {
 		root = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-objective-file-")))
 		cwd = join(root, 'project "with spaces"')
 		mkdirSync(cwd)
+		// Objective files live in the project's .kimchi/plans — trust the root
+		// so both cwd and the alias path (a sibling) resolve as allowed.
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(root, true)
 	})
 	afterEach(() => rmSync(root, { recursive: true, force: true }))
 
@@ -77,6 +83,17 @@ describe("managed objective files", () => {
 		rmSync(path)
 		symlinkSync(other, path)
 		expect(() => objectiveText(reference, cwd)).toThrow(/Could not read Kimchi objective file/)
+	})
+
+	it("does not write a managed file while the project is untrusted — returns the raw text instead", () => {
+		resetProjectScopeTrustForTests()
+		const text = "# Untrusted objective\nRuns nowhere."
+		const returned = saveObjectiveFile(text, cwd)
+		// Raw text is returned as the objective (no file reference), and no
+		// .kimchi/plans file is created in the repo the user declined to trust.
+		expect(returned).toBe(text)
+		expect(objectiveFilePath(returned, cwd)).toBeUndefined()
+		expect(existsSync(join(cwd, ".kimchi", "plans"))).toBe(false)
 	})
 
 	it.each([

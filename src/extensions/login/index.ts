@@ -2,7 +2,7 @@ import { resolve } from "node:path"
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { loadConfig, writeApiKey } from "../../config.js"
+import { loadConfig, resolveEndpoints, writeApiKey } from "../../config.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi, updateModelsConfig, validateApiKey } from "../../models.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
@@ -25,8 +25,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		name: "Kimchi",
 		login: async (callbacks: { onPrompt: (p: { message: string; placeholder?: string }) => Promise<string> }) => {
 			const key = await callbacks.onPrompt({
-				message:
-					"You need an API key to use Kimchi's open-source models.\nTo create one:\n\n  1. Open https://app.kimchi.dev\n  2. Go to API Keys → Create API Key\n  3. Paste the key below\n\nYou'll be prompted to log in if you don't have an account.\n\nAPI Key:",
+				message: `You need an API key to use Kimchi's open-source models.\nTo create one:\n\n  1. Open ${resolveEndpoints().webAppUrl}\n  2. Go to API Keys → Create API Key\n  3. Paste the key below\n\nYou'll be prompted to log in if you don't have an account.\n\nAPI Key:`,
 				placeholder: "Enter your Kimchi API key",
 			})
 			try {

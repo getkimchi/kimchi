@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { readJson, writeJson } from "./json.js"
+import { invalidateJsonCache, readJson, readJsonCached, writeJson } from "./json.js"
 
 export type StatusLineElementId =
 	| "permissions"
@@ -102,20 +102,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
-let _config: StatusLineConfig | null = null
-
-/** Reset the in-memory config cache. Exposed for test isolation only. */
+/** Drop the cached settings read. Exposed for test isolation only. */
 export function _invalidateStatusLineConfigCache(): void {
-	_config = null
+	invalidateJsonCache(getSettingsPath())
 }
 
-export function readStatusLineConfig(): StatusLineConfig {
-	if (_config !== null) return _config
-	const settings = readJson(getSettingsPath())
-	if (!(STATUS_LINE_KEY in settings)) {
-		_config = { pinned: [...DEFAULT_STATUS_LINE_PINNED] }
-		return _config
-	}
+function parseStatusLineConfig(settings: Record<string, unknown>): StatusLineConfig {
+	if (!(STATUS_LINE_KEY in settings)) return { pinned: [...DEFAULT_STATUS_LINE_PINNED] }
 	const raw = asRecord(settings[STATUS_LINE_KEY])
 	const values = Array.isArray(raw.pinned) ? raw.pinned : []
 	const pinned: StatusLineElementId[] = []
@@ -126,16 +119,22 @@ export function readStatusLineConfig(): StatusLineConfig {
 			pinned.push(value as StatusLineElementId)
 		}
 	}
-	_config = { pinned: [...new Set(pinned)] }
-	return _config
+	return { pinned: [...new Set(pinned)] }
+}
+
+export function readStatusLineConfig(): StatusLineConfig {
+	// Stat-gated read: the status line renders on every frame, so the file
+	// is only re-read when its mtime/size signature changes — unlike the
+	// previous process-lifetime cache, external edits are now picked up too.
+	return parseStatusLineConfig(readJsonCached(getSettingsPath()))
 }
 
 export function writeStatusLineConfig(config: StatusLineConfig): void {
 	const path = getSettingsPath()
+	// Raw read: this is a read-modify-write of the shared settings file.
 	const settings = readJson(path)
 	settings[STATUS_LINE_KEY] = config
 	writeJson(path, settings)
-	_config = { pinned: [...config.pinned] }
 }
 
 export function setStatusLineElementPinned(id: StatusLineElementId, pinned: boolean): void {

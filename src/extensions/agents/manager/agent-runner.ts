@@ -19,6 +19,9 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { isAutoRoutedModel } from "../../auto-model/constants.js"
+import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
+import { getEffectiveModel } from "../../auto-model/state.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
@@ -31,29 +34,18 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { isAutoModel } from "../../router/constants.js"
-import { createAutoModelExtension } from "../../router/index.js"
-import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import todosExtension from "../../todos/index.js"
 import { TODO_TOOL_NAMES } from "../../todos/tool.js"
 import { detectEnv } from "../env.js"
-import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
 	type AgentMessageCapability,
 	createAgentMessageExtension,
 	LIST_AGENT_CONTACTS_TOOL_NAME,
 	SEND_AGENT_MESSAGE_TOOL_NAME,
 } from "../message-tool.js"
-import {
-	BUILTIN_TOOL_NAMES,
-	getAgentConfig,
-	getConfig,
-	getMemoryToolNames,
-	getReadOnlyMemoryToolNames,
-	getToolNamesForType,
-} from "../personas/agent-types.js"
+import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
@@ -221,6 +213,8 @@ export interface ToolActivity {
 	title?: string
 	/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
 	rawInput?: unknown
+	/** Structured tool result (ACP rawOutput — the pi AgentToolResult). */
+	rawOutput?: unknown
 }
 
 export interface RunOptions {
@@ -229,8 +223,6 @@ export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
-	/** The parent is forwarding image context as file paths to this child. */
-	requiresVision?: boolean
 	maxTurns?: number
 	signal?: AbortSignal
 	isolated?: boolean
@@ -471,23 +463,6 @@ ${skillLines}`
 		}
 	}
 
-	if (agentConfig?.memory) {
-		const existingNames = new Set(toolNames)
-		const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
-		const effectivelyHas = (name: string) => existingNames.has(name) && !denied?.has(name)
-		const hasWriteTools = effectivelyHas("write") || effectivelyHas("edit")
-
-		if (hasWriteTools) {
-			const extraNames = getMemoryToolNames(existingNames)
-			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames]
-			extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd)
-		} else {
-			const extraNames = getReadOnlyMemoryToolNames(existingNames)
-			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames]
-			extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd)
-		}
-	}
-
 	const disallowedSet = new Set(agentConfig?.disallowedTools)
 	if (!workerGoal) for (const name of FERMENT_V2_TOOL_NAMES) disallowedSet.add(name)
 	if (workerGoal && [...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES].some((name) => disallowedSet.has(name))) {
@@ -550,9 +525,13 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
-	const autoExtensionFactories: InlineExtension[] = isAutoModel(model)
+	// Child sessions of a routed virtual model get the auto-model extension so
+	// pick learning and capability sync run there too, plus the system-prompt
+	// rebuild once a pick is known. No-op for concrete models (responseModel
+	// equals the requested id).
+	const autoExtensionFactories: InlineExtension[] = isAutoRoutedModel(model)
 		? [
-				createAutoModelExtension({ requiresVision: options.requiresVision }),
+				createAutoModelRoutingExtension(),
 				(pi) => {
 					pi.on("before_agent_start", (_event, childCtx) => {
 						const effectiveModel = getEffectiveModel(childCtx)

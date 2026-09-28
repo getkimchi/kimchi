@@ -16,6 +16,7 @@ vi.mock("../package-resources.js", () => ({
 	getInstalledPackageResourceDirs: vi.fn(() => []),
 }))
 
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../../project-scope-trust.js"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { loadCustomAgents } from "./custom-agents.js"
 
@@ -33,6 +34,8 @@ describe("AgentConfig.tokenBudget parsing", () => {
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
 		projectDir = join(tmpdir(), `kimchi-project-token-budget-${Date.now()}`)
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(projectDir, true)
 	})
 
 	it("parses token_budget: 50000 into tokenBudget === 50000", () => {
@@ -106,6 +109,8 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 		projectDir = join(tmpRoot, "project")
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
 		mkdirSync(projectAgentsDir, { recursive: true })
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(projectDir, true)
 
 		vi.mocked(getInstalledPackageResourceDirs).mockReturnValue([packageAgentsDir])
 	})
@@ -179,6 +184,8 @@ describe("custom agents — include_context_files and include_core_guidelines pa
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
 		projectDir = join(tmpdir(), `kimchi-project-ctx-${Date.now()}`)
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(projectDir, true)
 	})
 
 	it("parses include_context_files: true and include_core_guidelines: true", () => {

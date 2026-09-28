@@ -1,0 +1,116 @@
+# Patch: Kimchi compatibility fixes for pi-ai 0.85.1
+#
+# Tracking: LLM-2564. No matching upstream issue exists yet; report these
+# changes to https://github.com/earendil-works/pi before the next upgrade.
+# Changes:
+#   - Accept JSON-encoded array/object tool arguments (including {} as an empty
+#     array) in coercePrimitiveByType.
+#   - Run coerceWithJsonSchema before Value.Convert, and wrap conversion errors
+#     with the received arguments so models can self-correct.
+#   - Drop upstream's TYPEBOX_KIND guard so coercion also applies to
+#     TypeBox-defined schemas (Kimchi's own tools are TypeBox-defined). Both the
+#     guard and its then-unused declaration are removed on purpose.
+#   - Count LiteLLM cache_creation_tokens as cache writes.
+# Careful: validateToolArguments interleaves with upstream's
+#   normalizeOptionalNulls() - keep that call first when rebasing.
+# Removal: delete each hunk when the pinned Pi release provides that behavior.
+# History: see patches/CHANGELOG.md.
+#
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index 48464f2..8132989 100644
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -1178,7 +1178,7 @@ function convertTools(tools, compat) {
+ function parseChunkUsage(rawUsage, model) {
+     const promptTokens = rawUsage.prompt_tokens || 0;
+     const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? rawUsage.cached_tokens ?? 0;
+-    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
++    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens ?? rawUsage.prompt_tokens_details?.cache_creation_tokens ?? 0;
+     // Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
+     // tokens (hits). Providers disagree on placement: OpenAI/OpenRouter use
+     // prompt_tokens_details.cached_tokens, DeepSeek uses prompt_cache_hit_tokens,
+diff --git a/dist/utils/validation.js b/dist/utils/validation.js
+index 22fbd2d..114f555 100644
+--- a/dist/utils/validation.js
++++ b/dist/utils/validation.js
+@@ -1,7 +1,6 @@
+ import { Compile } from "typebox/compile";
+ import { Value } from "typebox/value";
+ const validatorCache = new WeakMap();
+-const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
+ function getSchemaTypes(schema) {
+     if (typeof schema.type === "string") {
+         return [schema.type];
+@@ -108,6 +107,31 @@ function coercePrimitiveByType(value, type) {
+             }
+             return value;
+         }
++        case "array": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (Array.isArray(parsed))
++                        return parsed;
++                }
++                catch { }
++            }
++            if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0) {
++                return [];
++            }
++            return value;
++        }
++        case "object": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
++                        return parsed;
++                }
++                catch { }
++            }
++            return value;
++        }
+         default:
+             return value;
+     }
+@@ -278,22 +302,27 @@ export function validateToolCall(tools, toolCall) {
+  * @throws Error with formatted message if validation fails
+  */
+ export function validateToolArguments(tool, toolCall) {
+-    const args = structuredClone(toolCall.arguments);
++    let args = structuredClone(toolCall.arguments);
+     normalizeOptionalNulls(args, tool.parameters);
+-    Value.Convert(tool.parameters, args);
++    args = coerceWithJsonSchema(args, tool.parameters);
++    try {
++        Value.Convert(tool.parameters, args);
++    }
++    catch (conversionError) {
++        const cause = conversionError instanceof Error ? conversionError.message : String(conversionError);
++        throw new Error(`Validation failed for tool "${toolCall.name}": argument conversion failed: ${cause}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`);
++    }
+     const validator = getValidator(tool.parameters);
+-    if (!Object.getOwnPropertySymbols(tool.parameters).includes(TYPEBOX_KIND)) {
+-        const coerced = coerceWithJsonSchema(args, tool.parameters);
+-        if (coerced !== args) {
+-            if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
+-                for (const key of Object.keys(args)) {
+-                    delete args[key];
+-                }
+-                Object.assign(args, coerced);
+-            }
+-            else {
+-                return validator.Check(coerced) ? coerced : args;
++    const coerced = coerceWithJsonSchema(args, tool.parameters);
++    if (coerced !== args) {
++        if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
++            for (const key of Object.keys(args)) {
++                delete args[key];
+             }
++            Object.assign(args, coerced);
++        }
++        else {
++            return validator.Check(coerced) ? coerced : args;
+         }
+     }
+     if (validator.Check(args)) {

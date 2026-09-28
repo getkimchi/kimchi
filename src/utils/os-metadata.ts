@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { arch, platform } from "node:os"
+import os, { arch, platform } from "node:os"
 
 /**
  * Detect whether the current process is running under WSL (Windows Subsystem
@@ -24,6 +24,11 @@ export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
 	} catch {
 		return false
 	}
+}
+
+/** True when running on native Windows (WSL reports "Linux" and is handled by isWSL). */
+export function isWindows(): boolean {
+	return os.type() === "Windows_NT"
 }
 
 // ---------------------------------------------------------------------------

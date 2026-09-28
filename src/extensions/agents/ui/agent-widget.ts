@@ -87,12 +87,16 @@ export function formatTokens(count: number): string {
 	return `${count} token`
 }
 
+export function formatContextPercent(percent: number, theme: Theme): string {
+	const color = percent >= 85 ? "error" : percent >= 70 ? "warning" : "dim"
+	return theme.fg(color, `${Math.round(percent)}%`)
+}
+
 export function formatSessionTokens(tokens: number, percent: number | null, theme: Theme, compactions = 0): string {
 	const tokenStr = formatTokens(tokens)
 	const annot: string[] = []
 	if (percent !== null) {
-		const color = percent >= 85 ? "error" : percent >= 70 ? "warning" : "dim"
-		annot.push(theme.fg(color, `${Math.round(percent)}%`))
+		annot.push(formatContextPercent(percent, theme))
 	}
 	if (compactions > 0) {
 		annot.push(theme.fg("dim", `↻${compactions}`))
@@ -216,6 +220,7 @@ export class AgentWidget {
 			error?: string
 			abortReason?: AgentAbortReason
 			modelId?: string
+			lifetimeUsage?: LifetimeUsage
 		},
 		theme: Theme,
 	): string {
@@ -248,6 +253,10 @@ export class AgentWidget {
 		const activity = this.agentActivity.get(a.id)
 		if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns))
 		if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`)
+		// Same order as the running line: turns · tool uses · tokens · duration.
+		// Reads the manager record (activity entries are dropped on completion).
+		const tokens = getLifetimeTotal(a.lifetimeUsage)
+		if (tokens > 0) parts.push(formatTokens(tokens))
 		parts.push(duration)
 
 		const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
@@ -290,7 +299,15 @@ export class AgentWidget {
 			const toolUses = bg?.toolUses ?? a.toolUses
 			const tokens = getLifetimeTotal(bg?.lifetimeUsage)
 			const contextPercent = getSessionContextPercent(bg?.session)
-			const tokenText = tokens > 0 ? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount) : ""
+			// Combined "45.2k token (23%)" once usage flows; standalone "23%" when
+			// totals are absent (e.g. an older sandbox server that doesn't attach
+			// _meta lifetime totals but still streams usage_update used/size).
+			const tokenText =
+				tokens > 0
+					? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount)
+					: contextPercent !== null
+						? formatContextPercent(contextPercent, theme)
+						: ""
 
 			const parts: string[] = []
 			if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns))

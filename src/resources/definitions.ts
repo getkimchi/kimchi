@@ -1,9 +1,11 @@
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-timeout-constants.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
+import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
+import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
@@ -129,6 +131,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: false,
 		restartRequired: true,
 	},
+	{
+		id: MEMORY_RESOURCE_ID,
+		kind: "extensions",
+		experimental: true,
+		label: "Memory",
+		description: "Enable persistent personal memory (capture + recall across sessions; facts stored locally).",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
 ]
 
 export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]
@@ -147,6 +158,7 @@ function getDynamicResourceDefinitions(): ResourceDefinition[] {
 		dynamicResourceDefinitionsCache = [
 			...discoverBashHookResources(),
 			...discoverClaudeCodeHookResourceDefinitions(),
+			...discoverKimchiHookResourceDefinitions(),
 			...discoverPackageResources(),
 		]
 	}

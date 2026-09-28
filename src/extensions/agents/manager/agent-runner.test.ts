@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { isAgentWorker, runAsAgentWorker } from "../../agent-worker-context.js"
+import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE, FERMENT_V2_TOOL_NAMES } from "../../ferment-v2/constants.js"
 import { createFermentV2, putFermentV2Entry } from "../../ferment-v2/reducer.js"
@@ -74,14 +75,11 @@ vi.mock("../personas/agent-types.js", () => ({
 		description: "General purpose agent",
 		thinking: undefined,
 		maxTurns: undefined,
-		memory: undefined,
 		disallowedTools: undefined,
 		roles: undefined,
 		models: undefined,
 	}),
 	getToolNamesForType: vi.fn().mockReturnValue([]),
-	getMemoryToolNames: vi.fn().mockReturnValue([]),
-	getReadOnlyMemoryToolNames: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock("../personas/default-agents.js", () => ({
@@ -120,8 +118,8 @@ vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", 
 	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
-vi.mock("../../router/index.js", () => ({
-	createAutoModelExtension: vi.fn(() => () => {}),
+vi.mock("../../auto-model/index.js", () => ({
+	createAutoModelRoutingExtension: vi.fn(() => () => {}),
 }))
 
 import {
@@ -133,11 +131,11 @@ import {
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { createAutoModelExtension } from "../../router/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import type { AgentMessageCapability } from "../message-tool.js"
@@ -153,7 +151,7 @@ const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
-const mockCreateAutoModelExtension = vi.mocked(createAutoModelExtension)
+const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -174,9 +172,11 @@ const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", 
 
 const AUTO_MODEL: Model<Api> = {
 	id: "auto",
-	name: "Auto (Kimchi Router)",
-	api: "kimchi-auto",
-	provider: "kimchi-dev",
+	name: "Auto",
+	// Backend-owned `auto` inherits the provider-level runtime api — no
+	// kimchi-auto override. Routing keys on the auto* id prefix, not the api.
+	api: "openai-completions",
+	provider: AUTO_MODEL_PROVIDER,
 	baseUrl: "https://llm.kimchi.dev/openai/v1",
 	reasoning: true,
 	input: ["text", "image"],
@@ -336,7 +336,6 @@ function makeAgentConfig(
 		promptMode: "replace",
 		thinking: undefined,
 		maxTurns: undefined,
-		memory: undefined,
 		disallowedTools: undefined,
 		roles: undefined,
 		models: undefined,
@@ -526,7 +525,7 @@ describe("runAgent — telemetry extension", () => {
 				>["extensionsResult"],
 			})
 		const autoRoutingExtension: InlineExtension = () => {}
-		mockCreateAutoModelExtension.mockReturnValueOnce(autoRoutingExtension)
+		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingExtension)
 		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "concrete work", {
 			pi: pi as unknown as RunOptions["pi"],
 		})
@@ -537,29 +536,10 @@ describe("runAgent — telemetry extension", () => {
 
 		const concreteFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const autoFactories = mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories ?? []
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: undefined })
+		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledOnce()
+		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(concreteFactories).not.toContain(autoRoutingExtension)
 		expect(autoFactories).toContain(autoRoutingExtension)
-	})
-
-	it("passes forwarded-image vision requirements to the child Auto extension", async () => {
-		const session = makeFakeSession({})
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "inspect the image", {
-			pi: pi as unknown as RunOptions["pi"],
-			model: AUTO_MODEL,
-			requiresVision: true,
-		})
-
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: true })
 	})
 
 	it("adds the dap extension when the persona requests debug tools", async () => {
@@ -1190,8 +1170,6 @@ describe("runAgent — tokenBudget forwarding", () => {
 			description: "Explore agent",
 			thinking: undefined,
 			maxTurns: undefined,
-			memory: undefined,
-			disallowedTools: undefined,
 			roles: ["explore"],
 			models: undefined,
 			tokenBudget: 19_999,
@@ -1227,8 +1205,6 @@ describe("runAgent — tokenBudget forwarding", () => {
 			description: "Explore agent",
 			thinking: undefined,
 			maxTurns: undefined,
-			memory: undefined,
-			disallowedTools: undefined,
 			roles: ["explore"],
 			models: undefined,
 			tokenBudget: 100_000,

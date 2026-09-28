@@ -8,21 +8,30 @@ import {
 	clearApiKey,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	getApiKeyMismatchWarning,
+	getApiKeySource,
+	getConfiguredLegacyMcpKeys,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
+	readAutoDefaultApplied,
 	readGitToken,
 	readHideTips,
+	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
+	resolveEndpoints,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
+	writeAutoDefaultApplied,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
+	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
 } from "./config.js"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
 
 describe("loadConfig", () => {
 	let tempDir: string
@@ -31,10 +40,64 @@ describe("loadConfig", () => {
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
 		configPath = join(tempDir, "config.json")
+		vi.stubEnv("KIMCHI_API_KEY", "")
+		resetProjectScopeTrustForTests()
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("prefers the environment key without replacing the saved login", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "saved-key" }))
+		vi.stubEnv("KIMCHI_API_KEY", "environment-key")
+		expect(getApiKeySource()).toBe("environment")
+		expect(loadConfig({ configPath }).apiKey).toBe("environment-key")
+		expect(readApiKeyFromConfigFile(configPath)).toBe("saved-key")
+		vi.stubEnv("KIMCHI_API_KEY", "")
+		expect(getApiKeySource()).toBe("config")
+		expect(loadConfig({ configPath }).apiKey).toBe("saved-key")
+	})
+
+	it.each([
+		undefined,
+		"",
+		"environment-key",
+	])("strips the environment key while retaining its override (%s)", async (envKey) => {
+		vi.resetModules()
+		const config = await import("./config.js")
+		writeFileSync(configPath, JSON.stringify({ apiKey: "saved-key" }))
+		vi.stubEnv("KIMCHI_API_KEY", envKey)
+		const warning = config.getApiKeyMismatchWarning("saved-key")
+
+		expect(config.captureApiKeyFromEnvironment()).toBe(envKey || undefined)
+		expect(config.getApiKeySource()).toBe(envKey ? "environment" : "config")
+		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
+		expect(Object.hasOwn(process.env, "KIMCHI_API_KEY")).toBe(false)
+		expect(config.loadConfig({ configPath }).apiKey).toBe(envKey || "saved-key")
+		expect(config.readTelemetryConfig(configPath).headers.Authorization).toBe(`Bearer ${envKey || "saved-key"}`)
+		expect(config.getApiKeyMismatchWarning("saved-key")).toBe(warning)
+		if (envKey) expect(config.getApiKeyMismatchWarning("saved-key")).toContain("Using the environment key")
+		expect(config.readApiKeyFromConfigFile(configPath)).toBe("saved-key")
+		// Repeated initialization must not lose a key already removed from process.env.
+		expect(config.captureApiKeyFromEnvironment()).toBe(envKey || undefined)
+	})
+
+	it.each(["", "saved-key", "different-key"])("warns only for a differing nonempty environment key (%s)", (envKey) => {
+		vi.stubEnv("KIMCHI_API_KEY", envKey)
+		const warning = getApiKeyMismatchWarning("saved-key")
+		if (envKey === "different-key") {
+			expect(warning).toBe(
+				"KIMCHI_API_KEY in your environment differs from your saved key in config. Using the environment key.",
+			)
+			expect(warning).not.toContain("unset")
+			expect(warning).not.toContain("saved-key")
+			expect(warning).not.toContain(envKey)
+		} else {
+			expect(warning).toBeUndefined()
+		}
+		expect(getApiKeyMismatchWarning("")).toBeUndefined()
 	})
 
 	it("reads apiKey from config file", () => {
@@ -104,6 +167,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "project-key" }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.apiKey).toBe("project-key")
 
@@ -121,12 +185,28 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ mcpSearch: { strategy: "bm25" } }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.mcpSearch.strategy).toBe("bm25")
 		expect(config.mcpSearch.bm25K1).toBe(1.5) // inherited from global
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("reports only explicitly persisted legacy MCP keys", () => {
+		const projectDir = join(tempDir, "project")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+		writeFileSync(configPath, JSON.stringify({ mcpSearchLimit: 7, unrelated: true }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ maxToolResultChars: 42_000, mcpSearch: { strategy: "regex" } }))
+
+		expect(getConfiguredLegacyMcpKeys({ configPath, cwd: projectDir })).toEqual([
+			"mcpSearchLimit",
+			"maxToolResultChars",
+			"mcpSearch",
+		])
+		expect(getConfiguredLegacyMcpKeys({ configPath: join(tempDir, "missing.json"), cwd: tempDir })).toEqual([])
 	})
 
 	it("falls back to global when .kimchi/config.json does not exist", () => {
@@ -166,6 +246,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://project.example.com" }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.llmEndpoint).toBe("https://project.example.com")
 
@@ -183,6 +264,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", skillPaths: ["/project/path"] }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.skillPaths).toEqual(["/project/path"])
 
@@ -200,6 +282,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, "{ not valid json }")
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.apiKey).toBe("global-key")
 
@@ -217,6 +300,7 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ apiKey: "", llmEndpoint: "" }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.apiKey).toBe("global-key")
 		expect(config.llmEndpoint).toBe("https://global.example.com")
@@ -237,7 +321,9 @@ describe("loadConfig", () => {
 		writeFileSync(rootProjectPath, JSON.stringify({ apiKey: "root-project-key" }))
 		mkdirSync(subDir, { recursive: true })
 
-		// cwd is a subfolder that does NOT have .kimchi/config.json
+		// Trusted at the subfolder itself — the point of this test is that the
+		// project FILE resolution is cwd-exact and does not walk to the root.
+		setProjectScopeTrusted(subDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: subDir })
 		// Should NOT pick up rootDir/.kimchi/config.json
 		// Falls back to global only
@@ -274,8 +360,93 @@ describe("loadConfig", () => {
 		mkdirSync(dirname(projectPath), { recursive: true })
 		writeFileSync(projectPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "project" } }))
 
+		setProjectScopeTrusted(projectDir, true)
 		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
 		expect(config.onboarding.sessionModeWizardSeenAt).toBeUndefined()
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("ignores the project config entirely while the project is untrusted (fail closed)", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(
+			globalPath,
+			JSON.stringify({ apiKey: "global-key", llmEndpoint: "https://global.example.com", skillPaths: ["/global/path"] }),
+		)
+		mkdirSync(dirname(projectPath), { recursive: true })
+		// A cloned repo shipping .kimchi/config.json with an attacker-controlled
+		// endpoint and its own key must not influence the session before trust.
+		writeFileSync(
+			projectPath,
+			JSON.stringify({
+				apiKey: "project-key",
+				llmEndpoint: "https://project.example.com",
+				skillPaths: ["/project/path"],
+			}),
+		)
+
+		// No setProjectScopeTrusted call: the gate stays closed.
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("global-key")
+		expect(config.llmEndpoint).toBe("https://global.example.com")
+		expect(config.skillPaths).toEqual(["/global/path"])
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("applies the project config once the project is trusted", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(
+			globalPath,
+			JSON.stringify({ apiKey: "global-key", llmEndpoint: "https://global.example.com", skillPaths: ["/global/path"] }),
+		)
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(
+			projectPath,
+			JSON.stringify({
+				apiKey: "project-key",
+				llmEndpoint: "https://project.example.com",
+				skillPaths: ["/project/path"],
+			}),
+		)
+
+		setProjectScopeTrusted(projectDir, true)
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("project-key")
+		expect(config.llmEndpoint).toBe("https://project.example.com")
+		expect(config.skillPaths).toEqual(["/project/path"])
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("an ancestor trust decision covers a nested cwd", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const nestedDir = join(projectDir, "src", "feature")
+		const globalPath = join(globalDir, "config.json")
+		// The project file is cwd-exact (loadConfig never walks up); the trust
+		// DECISION, however, resolves ancestor-first — so a decision recorded
+		// for the project root opens the gate for a nested session cwd.
+		const projectPath = join(nestedDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "project-key" }))
+
+		setProjectScopeTrusted(projectDir, true)
+		const config = loadConfig({ configPath: globalPath, cwd: nestedDir })
+		expect(config.apiKey).toBe("project-key")
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
@@ -321,6 +492,158 @@ describe("writeApiKey", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.apiKey).toBe("new-browser-token")
 		expect(raw.llmEndpoint).toBeUndefined()
+	})
+
+	it("persists region and drops any stored llmEndpoint when a region is chosen", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-token", configPath, { region: "eu" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-token")
+		expect(raw.region).toBe("eu")
+		expect(raw.llmEndpoint).toBeUndefined()
+	})
+
+	it("keeps llmEndpoint behavior when only a custom endpoint is given", () => {
+		writeApiKey("token", configPath, { llmEndpoint: "https://custom.example" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.llmEndpoint).toBe("https://custom.example")
+		expect(raw.region).toBeUndefined()
+	})
+})
+
+describe("region config", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-region-test-"))
+		configPath = join(tempDir, "config.json")
+		vi.stubEnv("KIMCHI_API_KEY", "")
+		// Stub (not raw `delete`) so vi.unstubAllEnvs() restores any values the
+		// developer machine had set — deletion would leak into later tests.
+		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
+		vi.stubEnv("KIMCHI_REGION", undefined)
+		resetProjectScopeTrustForTests()
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("defaults to us with today's URLs when no region is configured", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("us")
+		expect(cfg.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
+	})
+
+	it("resolves the eu LLM endpoint with no llmEndpoint stored", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://llm.eu.kimchi.dev/openai/v1")
+		expect(cfg.customLlmEndpoint).toBeUndefined()
+	})
+
+	it("treats an unknown region value as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "moon" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("us")
+		expect(cfg.llmEndpoint).toBe("https://llm.kimchi.dev/openai/v1")
+	})
+
+	it("pre-existing llmEndpoint wins over region (backward compat)", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu", llmEndpoint: "https://custom.example/v1" }))
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://custom.example/v1")
+		expect(cfg.customLlmEndpoint).toBe("https://custom.example/v1")
+	})
+
+	it("KIMCHI_REGION env overrides the config-file region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "us" }))
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+		expect(cfg.llmEndpoint).toBe("https://llm.eu.kimchi.dev/openai/v1")
+	})
+
+	it("treats an unknown KIMCHI_REGION value as unset", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		vi.stubEnv("KIMCHI_REGION", "moon")
+		const cfg = loadConfig({ configPath })
+		expect(cfg.region).toBe("eu")
+	})
+
+	it("writeApiKey without a region option leaves the stored region untouched", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		writeApiKey("token", configPath)
+		expect(loadConfig({ configPath }).region).toBe("eu")
+	})
+
+	it("resolveEndpoints: env overrides win over the configured region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu", apiKey: "k" }))
+		vi.stubEnv("KIMCHI_WEB_APP_URL", "https://app.dev.kimchi.dev")
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", "https://app.dev.kimchi.dev/api")
+		const resolved = resolveEndpoints({ configPath })
+		expect(resolved.webAppUrl).toBe("https://app.dev.kimchi.dev")
+		expect(resolved.platformApiUrl).toBe("https://app.dev.kimchi.dev/api")
+		// Non-env endpoints still follow the region
+		expect(resolved.castApiUrl).toBe("https://api.eu.cast.ai")
+	})
+
+	it("resolveEndpoints: no region resolves to exactly today's URLs", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const resolved = resolveEndpoints({ configPath })
+		expect(resolved).toMatchObject({
+			region: "us",
+			webAppUrl: "https://app.kimchi.dev",
+			platformApiUrl: "https://app.kimchi.dev/api",
+			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+			castApiUrl: "https://api.cast.ai",
+		})
+	})
+
+	it("resolveEndpoints: eu region yields eu URLs across the board", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		const resolved = resolveEndpoints({ configPath })
+		expect(resolved).toMatchObject({
+			region: "eu",
+			webAppUrl: "https://app.eu.kimchi.dev",
+			platformApiUrl: "https://app.eu.kimchi.dev/api",
+			llmEndpoint: "https://llm.eu.kimchi.dev/openai/v1",
+			castApiUrl: "https://api.eu.cast.ai",
+		})
+	})
+
+	it("resolveEndpoints: configured llmEndpoint wins over region", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu", llmEndpoint: "https://custom.example/v1" }))
+		expect(resolveEndpoints({ configPath }).llmEndpoint).toBe("https://custom.example/v1")
+	})
+
+	it("telemetry defaults follow the configured region; explicit telemetry.* still wins", () => {
+		writeFileSync(configPath, JSON.stringify({ region: "eu" }))
+		let cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+
+		writeFileSync(
+			configPath,
+			JSON.stringify({ region: "eu", telemetry: { endpoint: "https://custom.example/logs:ingest" } }),
+		)
+		cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://custom.example/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("telemetry defaults honour the KIMCHI_REGION env override like loadConfig", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		vi.stubEnv("KIMCHI_REGION", "eu")
+		const cfg = readTelemetryConfig(configPath)
+		expect(cfg.endpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/logs:ingest")
+		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 })
 
@@ -542,6 +865,49 @@ describe("writeSessionModeWizardSeenAt", () => {
 			onboarding: {
 				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
 				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+			},
+		})
+	})
+})
+
+describe("readStudioOnboardingSeenAt / writeStudioOnboardingSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips onboarding.studioOnboardingSeenAt", () => {
+		expect(readStudioOnboardingSeenAt(configPath)).toBeUndefined()
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T10:00:00.000Z")
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z", otherMarker: true },
+			}),
+		)
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+				otherMarker: true,
+				studioOnboardingSeenAt: "2026-09-11T10:00:00.000Z",
 			},
 		})
 	})
@@ -769,7 +1135,7 @@ describe("permissions", () => {
 		expect(mode).toBe(0o600)
 	})
 
-	it("writeConfigObject (via writeApiKey) chmods even when pre-existing file is loose", () => {
+	it("writeApiKey tightens a loose pre-existing config.json to 0600", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "old" }), { mode: 0o644 })
 		chmodSync(configPath, 0o644)
 		expect(statSync(configPath).mode & 0o777).toBe(0o644)
@@ -923,5 +1289,183 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
+	})
+})
+
+describe("readAutoDefaultApplied / writeAutoDefaultApplied", () => {
+	let tempDir: string
+	let settingsPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		settingsPath = join(tempDir, "settings.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips the marker", () => {
+		expect(readAutoDefaultApplied(settingsPath)).toBe(false)
+
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
+		expect(readAutoDefaultApplied(settingsPath)).toBe(true)
+	})
+
+	// Regression: writing only the marker left the previous defaultModel in
+	// place, so the session came up on Auto once and fell back on the next
+	// launch — with the marker now blocking a retry.
+	it("installs the default alongside the marker", () => {
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3" }))
+
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
+
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toMatchObject({
+			defaultProvider: "kimchi-dev",
+			defaultModel: "auto",
+			autoDefaultApplied: true,
+		})
+	})
+
+	it("preserves the surrounding settings", () => {
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "kimchi-dev", defaultModel: "kimi-k3", theme: "x" }))
+
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
+
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+			defaultProvider: "kimchi-dev",
+			defaultModel: "auto",
+			theme: "x",
+			autoDefaultApplied: true,
+		})
+	})
+
+	it("writes a fresh file when settings do not exist yet", () => {
+		writeAutoDefaultApplied("kimchi-dev", "auto", settingsPath)
+
+		expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+			defaultProvider: "kimchi-dev",
+			defaultModel: "auto",
+			autoDefaultApplied: true,
+		})
+	})
+})
+
+describe("readAutoDefaultApplied error handling", () => {
+	let tempDir: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("reads a missing file as not applied", () => {
+		expect(readAutoDefaultApplied(join(tempDir, "absent.json"))).toBe(false)
+	})
+
+	it("reads malformed JSON as not applied", () => {
+		const path = join(tempDir, "settings.json")
+		writeFileSync(path, "{ not json")
+
+		expect(readAutoDefaultApplied(path)).toBe(false)
+	})
+
+	it("ignores a non-boolean marker", () => {
+		const path = join(tempDir, "settings.json")
+		writeFileSync(path, JSON.stringify({ autoDefaultApplied: "yes" }))
+
+		expect(readAutoDefaultApplied(path)).toBe(false)
+	})
+})
+
+describe("memoryEmbedding config parsing", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("parses a valid model and dims", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 } }),
+		)
+		expect(loadConfig({ configPath }).memoryEmbedding).toEqual({
+			model: "text-embedding-3-large",
+			dims: 3072,
+		})
+	})
+
+	it("parses each field independently", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { dims: 768 } }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ dims: 768 })
+
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "bge-m3" } }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ model: "bge-m3" })
+	})
+
+	it("drops invalid parts — empty model and non-integer dims leave no section", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "", dims: 12.5 } }))
+		// Both fields invalid: nothing survives the parse, so the pinned
+		// defaults apply downstream.
+		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
+	})
+
+	it("rejects non-positive-integer dims but keeps a valid model", () => {
+		for (const dims of [0, -3, 1024.5, "1024"]) {
+			writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: { model: "bge-m3", dims } }))
+			expect(loadConfig({ configPath }).memoryEmbedding).toEqual({ model: "bge-m3" })
+		}
+	})
+
+	it("ignores a non-object memoryEmbedding section", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryEmbedding: "bge-m3" }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
+	})
+
+	it("is absent without the section", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		expect(loadConfig({ configPath }).memoryEmbedding).toBeUndefined()
+	})
+})
+
+describe("memoryExtraction config parsing", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("parses a valid model", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: { model: "glm-5.3-flash" } }))
+		expect(loadConfig({ configPath }).memoryExtraction).toEqual({ model: "glm-5.3-flash" })
+	})
+
+	it("drops an empty model", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: { model: "" } }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+	})
+
+	it("ignores a non-object section and absence", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", memoryExtraction: "glm-5.3-flash" }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
+		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
 	})
 })

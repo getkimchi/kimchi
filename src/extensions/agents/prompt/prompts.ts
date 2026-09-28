@@ -19,8 +19,6 @@ export interface BudgetInfo {
 
 /** Extra sections to inject into the system prompt (memory, skills, etc.). */
 export interface PromptExtras {
-	/** Persistent memory content to inject (first 200 lines of MEMORY.md + instructions). */
-	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
 	/** Compact skill name+description list for when skills === true. */
@@ -99,9 +97,6 @@ Platform: ${env.platform}`
 	if (budgetBlock) extraSections.push(budgetBlock)
 	if (extras?.guidelinesBlock) {
 		extraSections.push(extras.guidelinesBlock)
-	}
-	if (extras?.memoryBlock) {
-		extraSections.push(extras.memoryBlock)
 	}
 	if (extras?.skillBlocks?.length) {
 		for (const skill of extras.skillBlocks) {

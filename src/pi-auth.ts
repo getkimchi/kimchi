@@ -2,17 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { lock } from "proper-lockfile"
-
-const KIMCHI_PROVIDER = "kimchi-dev"
-const KIMCHI_EXPERIMENTAL_PROVIDER = "kimchi-experimental"
-
-function isKimchiProvider(providerId: string): boolean {
-	return (
-		providerId === KIMCHI_PROVIDER ||
-		providerId.startsWith(`${KIMCHI_PROVIDER}/`) ||
-		providerId === KIMCHI_EXPERIMENTAL_PROVIDER
-	)
-}
+import { isKimchiProvider } from "./kimchi-provider.js"
 
 /** Remove all Kimchi credentials from auth.json — kimchi-dev, kimchi-dev/*, kimchi-experimental. */
 export async function clearPiAuth(authPath: string): Promise<void> {

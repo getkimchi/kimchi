@@ -11,7 +11,12 @@ import { homedir } from "node:os"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { resolveSkillRoots } from "../../../shared/skill-discovery/resolve-skill-roots.js"
-import { isUnsafeName } from "../memory/memory.js"
+
+/** Reject skill names that could traverse paths — alphanumeric, hyphens, underscores, dots, no leading dot, ≤128 chars. */
+function isUnsafeName(name: string): boolean {
+	if (!name || name.length > 128) return true
+	return !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)
+}
 
 export interface PreloadedSkill {
 	name: string

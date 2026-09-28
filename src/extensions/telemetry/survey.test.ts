@@ -53,6 +53,7 @@ describe("survey telemetry", () => {
 
 	it("emits survey_shown with the survey id", async () => {
 		const ctx = new TelemetryContext(makeConfig())
+		ctx.currentModel = "kimi-k3"
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY })
 
@@ -65,12 +66,17 @@ describe("survey telemetry", () => {
 		expect(attrMap["session.id"]).toBe(ctx.telemetryId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
+		// The common-attr inject stamps the session's selected model on every
+		// survey event; for a routed session this is the virtual id and
+		// routing_model (from extraAttrs) names the concrete pick.
+		expect(attrMap.model).toBe("kimi-k3")
 
 		await ctx.drain()
 	})
 
 	it("emits survey_answered with the abstract survey response fields", async () => {
 		const ctx = new TelemetryContext(makeConfig())
+		ctx.currentModel = "auto"
 
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "mostly_worked" })
 
@@ -84,6 +90,84 @@ describe("survey telemetry", () => {
 		expect(attrMap.question_id).toBe("34f7caf5-7631-42f1-b6ed-d2a42ddde1cd")
 		expect(attrMap.answer_value).toBe("Mostly worked")
 		expect(attrMap.survey_completed).toBe("true")
+		expect(attrMap.model).toBe("auto")
+
+		await ctx.drain()
+	})
+
+	it("emits the second question response alongside the resolved first answer", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+
+		emitSurveyAnswered(ctx, {
+			survey: TEST_SURVEY,
+			submissionId: "submission-1",
+			answerId: "worked_great",
+			secondResponse: { questionId: "q2-id", answerValue: "it nailed the refactor" },
+		})
+
+		const attrMap = attrs(ctx.logBuffer[0])
+		expect(attrMap.question_id).toBe(TEST_SURVEY.question.id)
+		expect(attrMap.answer_value).toBe("Went great")
+		expect(attrMap.question_id_2).toBe("q2-id")
+		expect(attrMap.answer_value_2).toBe("it nailed the refactor")
+		expect(attrMap.survey_completed).toBe("true")
+
+		await ctx.drain()
+	})
+
+	it("sends a raw answerValue verbatim, without an options lookup", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		const OPEN_SURVEY = {
+			id: "survey-open",
+			version: 1,
+			question: { id: "open-q", text: "Tell us why you switched" },
+			options: [],
+		} as const
+
+		emitSurveyAnswered(ctx, {
+			survey: OPEN_SURVEY,
+			submissionId: "submission-1",
+			answerValue: "too expensive for this repo",
+		})
+
+		const attrMap = attrs(ctx.logBuffer[0])
+		expect(ctx.logBuffer).toHaveLength(1)
+		expect(attrMap.question_id).toBe("open-q")
+		expect(attrMap.answer_value).toBe("too expensive for this repo")
+
+		await ctx.drain()
+	})
+
+	it("answerValue takes precedence over the answerId lookup", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+
+		emitSurveyAnswered(ctx, {
+			survey: TEST_SURVEY,
+			submissionId: "submission-1",
+			answerId: "mostly_worked",
+			answerValue: "raw override",
+		})
+
+		expect(attrs(ctx.logBuffer[0]).answer_value).toBe("raw override")
+
+		await ctx.drain()
+	})
+
+	it("spreads extraAttrs verbatim into the emitted record", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+
+		emitSurveyAnswered(ctx, {
+			survey: TEST_SURVEY,
+			submissionId: "submission-1",
+			answerId: "worked_great",
+			extraAttrs: { turn_index: 0, routing_model: "glm-5.3", reason_type: "freeform" },
+		})
+
+		const attrMap = attrs(ctx.logBuffer[0])
+		// turn_index 0 is a valid value and must be present.
+		expect(attrMap.turn_index).toBe("0")
+		expect(attrMap.routing_model).toBe("glm-5.3")
+		expect(attrMap.reason_type).toBe("freeform")
 
 		await ctx.drain()
 	})
@@ -94,6 +178,30 @@ describe("survey telemetry", () => {
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "unknown" })
 
 		expect(ctx.logBuffer).toHaveLength(0)
+
+		await ctx.drain()
+	})
+
+	it("keeps the legacy single-question answered shape unchanged", async () => {
+		// Regression: flows that don't use secondResponse/extraAttrs must emit
+		// exactly the four response attrs they always did (plus envelope attrs).
+		const ctx = new TelemetryContext(makeConfig())
+
+		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "didnt_work" })
+
+		const attrMap = attrs(ctx.logBuffer[0])
+		expect(attrMap.question_id_2).toBeUndefined()
+		expect(attrMap.answer_value_2).toBeUndefined()
+		const surveyKeys = Object.keys(attrMap).filter(
+			(k) => k.startsWith("survey_") || k.startsWith("question_") || k.startsWith("answer_"),
+		)
+		expect(surveyKeys.sort()).toEqual([
+			"answer_value",
+			"question_id",
+			"survey_completed",
+			"survey_id",
+			"survey_submission_id",
+		])
 
 		await ctx.drain()
 	})

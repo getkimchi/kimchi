@@ -1,12 +1,11 @@
 /**
  * Post-completion handler for remote plan execution.
  *
- * After the remote cloud agent finishes, shows a dropdown asking the user
- * what to do next. Options:
- * - "Review the result and continue locally" — injects result + triggers turn
- * - "Sync remote changes" — rsyncs changed files from sandbox to local
- * - "Type your own action" — injects result + triggers turn with custom action
- * - "Done" — no further action
+ * After the remote agent finishes, shows a dropdown asking the user
+ * what to do next. Options (in display order):
+ * - "Pull the changes to my machine and finish" — rsyncs changed files from sandbox to local
+ * - "Review the remote agent's results in the local session" — injects result + triggers turn
+ * - "Describe what to do next" — injects result + triggers turn with custom action
  */
 
 import { basename } from "node:path"
@@ -24,10 +23,9 @@ import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
-const REVIEW = "Continue locally with the result"
-const SYNC = "Sync changes and finish"
-const CUSTOM = "Give a custom instruction"
-const DONE = "Done"
+const REVIEW = "Review the remote agent's results in the local session"
+const SYNC = "Pull the changes to my machine and finish"
+const CUSTOM = "Describe what to do next"
 
 /** Options for handleRemoteCompletion. */
 export interface HandleRemoteCompletionOpts {
@@ -35,21 +33,22 @@ export interface HandleRemoteCompletionOpts {
 	agentId?: string
 	/** Remote session metadata — when present, sync reuses the connection directly. */
 	remoteSession?: RemoteSessionMeta
-	/** Ferment ID when the cloud agent executed a ferment plan. The ferment is
-	 *  paused during cloud execution; on completion it is completed (sync) or
-	 *  resumed (review/custom/done) so the user can continue locally. */
+	/** Ferment ID when the remote agent executed a ferment plan. The ferment is
+	 *  paused during remote execution; on completion it is completed (sync) or
+	 *  resumed (review/custom), or stays paused on dismiss, so the user can
+	 *  continue locally. */
 	fermentId?: string
 	/** Recovery note when the result was recovered after a network disconnect. */
 	recoveryNote?: string
 }
 
 /**
- * Shows a post-completion dropdown after the remote cloud agent finishes.
- * Handles the user's choice: inject result, sync changes, or do nothing.
+ * Shows a post-completion dropdown after the remote agent finishes.
+ * Handles the user's choice: inject result, sync changes, or collect a custom action.
  *
  * The remote agent's result and transcript path are ALWAYS injected into the
- * local agent's context via a steer message — even when the user picks "Sync"
- * or "Done" — so the agent always knows where to find the full transcript.
+ * local agent's context via a steer message — even when the user picks the
+ * download option — so the agent always knows where to find the full transcript.
  *
  * @param pi - Extension API
  * @param ctx - Extension context
@@ -70,19 +69,14 @@ export async function handleRemoteCompletion(
 
 	const choice = await withBlocked(pi.events, "Remote execution complete", () =>
 		withWorkingHidden(ctx.ui, () =>
-			ctx.ui.select("Remote cloud agent finished. What would you like to do next?", [REVIEW, SYNC, CUSTOM, DONE]),
+			ctx.ui.select("Remote agent run finished. What would you like to do next?", [SYNC, REVIEW, CUSTOM]),
 		),
 	)
 
-	// No selection (escape/dismiss) → treat as Done
+	// No selection (escape/dismiss) → no-op; a paused ferment stays paused
 	if (!choice) return
 
 	switch (choice) {
-		case DONE: {
-			trackRemoteExecution("done", promptPrefix)
-			completeFerment(opts?.fermentId)
-			return
-		}
 		case SYNC: {
 			trackRemoteExecution("sync.started", promptPrefix)
 			const synced = await syncRemoteChanges(ctx, opts?.remoteSession)
@@ -123,22 +117,22 @@ export interface HandleRemoteFailureOpts {
 	 *  than failing on its own — softens the steer wording and skips the
 	 *  interactive notification (the kill handler already announced the stop). */
 	stoppedByUser?: boolean
-	/** Ferment ID when the cloud agent executed a ferment plan. The ferment is
+	/** Ferment ID when the remote agent executed a ferment plan. The ferment is
 	 *  resumed (un-paused) so the user can continue locally. */
 	fermentId?: string
 }
 
 /**
- * Handles a FAILED remote cloud agent run — the counterpart of
+ * Handles a FAILED remote agent run — the counterpart of
  * handleRemoteCompletion for errored/aborted runs.
  *
  * There is no result to review or sync, so no completion dropdown is shown:
- * - The ferment paused for cloud execution (if any) is resumed — a failed
- *   cloud run must not leave it paused forever.
+ * - The ferment paused for remote execution (if any) is resumed — a failed
+ *   remote run must not leave it paused forever.
  * - Interactive sessions get an error notification.
  * - Headless sessions get a steer message instead (a notification would be
  *   invisible there): the local agent is still waiting on the completion
- *   notification promised when the cloud agent was spawned.
+ *   notification promised when the remote agent was spawned.
  */
 export function handleRemoteFailure(
 	pi: ExtensionAPI,
@@ -157,16 +151,16 @@ export function handleRemoteFailure(
 			// failed resume ("result could not be recovered") is undiagnosable
 			// from the UI alone.
 			const reason = opts?.recoveryNote?.split(". ")[0]
-			ctx.ui.notify(`Cloud agent failed: ${detail}${reason ? ` — ${reason}` : ""}`, "error")
+			ctx.ui.notify(`Remote agent failed: ${detail}${reason ? ` — ${reason}` : ""}`, "error")
 		}
 		return
 	}
 	const recoveryNote = opts?.recoveryNote ? `\n\n${opts.recoveryNote}` : ""
 	const lead = opts?.stoppedByUser
-		? `The remote cloud agent was stopped by the user before finishing the approved ${promptPrefix}.`
-		: `The remote cloud agent FAILED while executing the approved ${promptPrefix}.`
+		? `The remote agent was stopped by the user before finishing the approved ${promptPrefix}.`
+		: `The remote agent FAILED while executing the approved ${promptPrefix}.`
 	const errorLine = opts?.stoppedByUser ? "" : `\n\nError: ${detail}`
-	const steer = `${lead} The ${promptPrefix} was NOT completed — do not assume any changes were made or that a result is available.${recoveryNote}${errorLine}\n\nAsk the user how to proceed: execute the ${promptPrefix} locally, re-dispatch it to the cloud, or abandon it.`
+	const steer = `${lead} The ${promptPrefix} was NOT completed — do not assume any changes were made or that a result is available.${recoveryNote}${errorLine}\n\nAsk the user how to proceed: execute the ${promptPrefix} locally, re-dispatch it to a remote workspace, or abandon it.`
 	pi.sendMessage(
 		{
 			customType: "remote_plan_failed",
@@ -198,7 +192,7 @@ function injectRemoteResult(
 	const recoveryNote = opts?.recoveryNote ? `\n\n${opts.recoveryNote}` : ""
 	const actionSuffix = extra?.actionSuffix ?? ""
 
-	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${recoveryNote}${actionSuffix}`
+	const steer = `The approved ${promptPrefix} was executed by a remote agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${recoveryNote}${actionSuffix}`
 
 	pi.sendMessage(
 		{
@@ -279,13 +273,13 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 }
 
 /**
- * Completes the ferment after a successful cloud execution + sync.
- * The ferment was paused when the cloud agent was spawned; syncing means
+ * Completes the ferment after a successful remote execution + sync.
+ * The ferment was paused when the remote agent was spawned; syncing means
  * the user accepted the remote work, so we mark the ferment as complete.
  *
- * The ferment was never locally activated (no phase ran locally) — the cloud
+ * The ferment was never locally activated (no phase ran locally) — the remote
  * agent handled everything. So we resume (un-pause), skip all non-terminal
- * phases (they were executed in the cloud), then complete the ferment.
+ * phases (they were executed remotely), then complete the ferment.
  */
 function completeFerment(fermentId?: string): void {
 	if (!fermentId) return
@@ -294,7 +288,7 @@ function completeFerment(fermentId?: string): void {
 	const resumeOutcome = applyAndPersist(fermentId, { type: "resume" })
 	if (!resumeOutcome.ok) return
 	let ferment = resumeOutcome.ferment
-	// Skip all non-terminal phases — they were executed in the cloud.
+	// Skip all non-terminal phases — they were executed in the remote sandbox.
 	for (const phase of ferment.phases) {
 		if (!["completed", "skipped", "failed"].includes(phase.status)) {
 			const skipOutcome = applyAndPersist(fermentId, {
@@ -319,8 +313,8 @@ function completeFerment(fermentId?: string): void {
 }
 
 /**
- * Resumes the ferment so the user can continue locally after the cloud agent
- * finishes. Called for Review, Custom, and Done choices — the cloud agent's
+ * Resumes the ferment so the user can continue locally after the remote agent
+ * finishes. Called for Review and Custom choices — the remote agent's
  * work is available in the transcript, but the ferment stays open for local
  * follow-up.
  */

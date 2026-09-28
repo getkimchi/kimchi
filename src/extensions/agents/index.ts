@@ -25,6 +25,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { isAgentCommunicationEnabled, planAcpSpawn, refreshAcpAgents } from "../acp-agents/registry.js"
 import { resolveAutonomousJudgeRoute } from "../ferment/autonomy.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
@@ -39,7 +40,6 @@ import {
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
-import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -744,7 +744,7 @@ export async function spawnGraderAgent(
 		const parentSessionDir = ctx.sessionManager.getSessionDir()
 		const parentSessionFile = ctx.sessionManager.getSessionFile()
 		if (parentSessionDir && parentSessionFile) {
-			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd, AGENT_GRADER_TYPE)
 			sessionFile = prepared?.sessionFile
 			sessionDir = parentSessionDir
 		}
@@ -1989,7 +1989,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// extract image paths from read tool calls and prepend them to the prompt.
 				const modelInput = (model as { input?: string[] } | undefined)?.input
 				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
-				const requiresVision = imagePaths.length > 0 && isAutoModel(model)
 				const effectivePrompt =
 					imagePaths.length > 0
 						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
@@ -2024,7 +2023,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					try {
 						childSessionFile = acpServerName
 							? undefined
-							: prepareAgentSessionFile(parentSessionDir, ctx.sessionManager.getSessionFile(), ctx.cwd)?.sessionFile
+							: prepareAgentSessionFile(parentSessionDir, ctx.sessionManager.getSessionFile(), ctx.cwd, subagentType)
+									?.sessionFile
 					} catch (err) {
 						const detail = err instanceof Error ? err.message : String(err)
 						return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
@@ -2053,7 +2053,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 							fermentV2,
 							rootSessionId: ctx.sessionManager.getSessionId(),
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
-							requiresVision,
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
 							taskRef,
@@ -2175,7 +2174,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 				try {
 					childSessionFile = acpServerName
 						? undefined
-						: prepareAgentSessionFile(parentSessionDir, ctx.sessionManager.getSessionFile(), ctx.cwd)?.sessionFile
+						: prepareAgentSessionFile(parentSessionDir, ctx.sessionManager.getSessionFile(), ctx.cwd, subagentType)
+								?.sessionFile
 					fgOutputFile = createOutputFilePath(
 						ctx.cwd,
 						"placeholder",
@@ -2202,7 +2202,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 						fermentV2,
 						rootSessionId: ctx.sessionManager.getSessionId(),
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
-						requiresVision,
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,
@@ -2698,12 +2697,22 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 	// ---- /agents interactive menu ----
 
-	const projectAgentsDir = () => join(process.cwd(), ".kimchi", "agents")
+	const projectAgentsDir = (cwd = process.cwd()) => join(cwd, ".kimchi", "agents")
 	const personalAgentsDir = () => join(getAgentDir(), "agents")
 
-	function findAgentFile(name: string): { path: string; location: "project" | "personal" } | undefined {
-		const projectPath = join(projectAgentsDir(), `${name}.md`)
-		if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+	function findAgentFile(
+		name: string,
+		cwd = process.cwd(),
+	): { path: string; location: "project" | "personal" } | undefined {
+		// The project location is gated on project trust: an untrusted repo's
+		// shipped agent files are only reachable through explicit user action
+		// (naming the agent), but even that must not read untrusted content.
+		// The cwd parameter lets command handlers pass the session cwd instead
+		// of the server process cwd (ACP sessions can differ).
+		if (isProjectScopeAllowed(cwd)) {
+			const projectPath = join(projectAgentsDir(cwd), `${name}.md`)
+			if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+		}
 		const personalPath = join(personalAgentsDir(), `${name}.md`)
 		if (existsSync(personalPath)) return { path: personalPath, location: "personal" }
 		return undefined
@@ -2884,7 +2893,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 			return
 		}
 
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		const isDefault = cfg.isDefault === true
 		const disabled = cfg.enabled === false
 
@@ -2948,7 +2957,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 		mkdirSync(targetDir, { recursive: true })
 
 		const targetPath = join(targetDir, `${name}.md`)
@@ -2973,7 +2982,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 		if (cfg.inheritContext) fmFields.push("inherit_context: true")
 		if (cfg.runInBackground) fmFields.push("run_in_background: true")
 		if (cfg.isolated) fmFields.push("isolated: true")
-		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`)
 		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`)
 
 		const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`
@@ -2985,7 +2993,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 	}
 
 	async function disableAgent(ctx: ExtensionCommandContext, name: string) {
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		if (file) {
 			const content = readFileSync(file.path, "utf-8")
 			if (content.includes("\nenabled: false\n")) {
@@ -3006,7 +3014,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 		mkdirSync(targetDir, { recursive: true })
 
 		const targetPath = join(targetDir, `${name}.md`)
@@ -3017,7 +3025,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 	}
 
 	async function enableAgent(ctx: ExtensionCommandContext, name: string) {
-		const file = findAgentFile(name)
+		const file = findAgentFile(name, ctx.cwd)
 		if (!file) return
 
 		const content = readFileSync(file.path, "utf-8")
@@ -3042,7 +3050,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		])
 		if (!location) return
 
-		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		const targetDir = location.startsWith("Project") ? projectAgentsDir(ctx.cwd) : personalAgentsDir()
 
 		const method = await ctx.ui.select("Creation method", ["Generate with AI (recommended)", "Manual configuration"])
 		if (!method) return

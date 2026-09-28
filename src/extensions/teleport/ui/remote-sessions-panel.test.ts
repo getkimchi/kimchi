@@ -218,6 +218,32 @@ describe("RemoteSessionsPanel", () => {
 			expect(done).not.toHaveBeenCalled()
 		})
 
+		it("'s' on a workspace resolves action='sync-workspace'", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("s")
+			expect(done).toHaveBeenCalledWith({ action: "sync-workspace", node: treeNodes[0] })
+		})
+
+		it("'s' on a session resolves action='sync-session'", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("j")
+			panel.handleInput("s")
+			expect(done).toHaveBeenCalledWith({ action: "sync-session", node: treeNodes[0]?.sessions[0] })
+		})
+
+		it("'s' is a no-op when the tree is empty", () => {
+			const { panel, done } = makePanel([])
+			panel.handleInput("s")
+			expect(done).not.toHaveBeenCalled()
+		})
+
+		it("'s' is inert while details are open", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("i")
+			panel.handleInput("s")
+			expect(done).not.toHaveBeenCalled()
+		})
+
 		it("Esc / q / x resolve done with undefined", () => {
 			for (const key of ["\x1b", "q", "x"]) {
 				const { panel, done } = makePanel()

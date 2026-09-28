@@ -2,12 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { loadConfig } from "./config.js"
 
 let tmpCwd: string
 
 beforeEach(() => {
 	tmpCwd = mkdtempSync(join(tmpdir(), "kimchi-perm-test-"))
+	resetProjectScopeTrustForTests()
 })
 
 afterEach(() => {
@@ -29,6 +31,10 @@ describe("loadConfig merging", () => {
 		vi.resetModules()
 		try {
 			const isolatedConfig = await import("./config.js")
+			// resetModules re-instantiates the trust gate too — trust the cwd
+			// through the same isolated registry the config reads.
+			const isolatedTrust = await import("../../project-scope-trust.js")
+			isolatedTrust.setProjectScopeTrusted(tmpCwd, true)
 			expect(isolatedConfig.loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(17000)
 			writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 12000 }))
 			expect(isolatedConfig.loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
@@ -51,6 +57,7 @@ describe("loadConfig merging", () => {
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 12000 }))
 		const local = join(tmpCwd, ".kimchi", "permissions.local.json")
 		writeFileSync(local, JSON.stringify({ classifierMaxTotalMs: 6000 }))
+		setProjectScopeTrusted(tmpCwd, true)
 		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(6000)
 		writeFileSync(local, JSON.stringify({ allow: ["read"] }))
 		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
@@ -82,6 +89,7 @@ describe("loadConfig merging", () => {
 			}),
 		)
 
+		setProjectScopeTrusted(tmpCwd, true)
 		const { loaded, errors } = loadConfig({ cwd: tmpCwd })
 		expect(errors).toEqual([])
 		expect(loaded.config.defaultMode).toBe("plan")
@@ -101,6 +109,7 @@ describe("loadConfig merging", () => {
 			JSON.stringify({ defaultMode: "auto", allow: ["read(/etc/**)"] }),
 		)
 
+		setProjectScopeTrusted(tmpCwd, true)
 		const { loaded } = loadConfig({ cwd: tmpCwd })
 		// local overrides defaultMode
 		expect(loaded.config.defaultMode).toBe("auto")
@@ -116,6 +125,7 @@ describe("loadConfig merging", () => {
 		const overridePath = join(tmpCwd, "override.json")
 		writeFileSync(overridePath, JSON.stringify({ defaultMode: "auto", deny: ["bash"] }))
 
+		setProjectScopeTrusted(tmpCwd, true)
 		const { loaded } = loadConfig({ cwd: tmpCwd, cliConfigPath: overridePath })
 		expect(loaded.config.defaultMode).toBe("auto")
 		// project allow is NOT included because cli-override replaces.
@@ -130,6 +140,7 @@ describe("loadConfig merging", () => {
 			JSON.stringify({ defaultMode: "invalid", allow: ["bash"] }),
 		)
 
+		setProjectScopeTrusted(tmpCwd, true)
 		const { loaded, errors } = loadConfig({ cwd: tmpCwd })
 		expect(errors.length).toBeGreaterThan(0)
 		// Bad file is ignored (no project rules merged).
@@ -150,8 +161,29 @@ describe("loadConfig merging", () => {
 		mkdirSync(join(tmpCwd, ".kimchi"), { recursive: true })
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ defaultMode: "yolo" }))
 
+		setProjectScopeTrusted(tmpCwd, true)
 		const { loaded, errors } = loadConfig({ cwd: tmpCwd })
 		expect(errors).toEqual([])
 		expect(loaded.config.defaultMode).toBe("yolo")
+	})
+
+	it("ignores an untrusted repo's project and local permission files (fail closed)", () => {
+		mkdirSync(join(tmpCwd, ".kimchi"), { recursive: true })
+		writeFileSync(
+			join(tmpCwd, ".kimchi", "permissions.json"),
+			JSON.stringify({ defaultMode: "yolo", allow: ["bash(git push --force:*)"] }),
+		)
+		writeFileSync(join(tmpCwd, ".kimchi", "permissions.local.json"), JSON.stringify({ allow: ["read(/etc/**)"] }))
+
+		// No setProjectScopeTrusted call: the gate stays closed, so a cloned
+		// repo cannot disarm the permission layer with its own rules.
+		const { loaded, errors } = loadConfig({ cwd: tmpCwd })
+		expect(errors).toEqual([])
+		expect(loaded.config.defaultMode).toBe("default")
+		expect(loaded.config.allow).toEqual([])
+		expect(loaded.allowBySource.project).toEqual([])
+		expect(loaded.allowBySource.local).toEqual([])
+		expect(loaded.paths.project).toBeUndefined()
+		expect(loaded.paths.local).toBeUndefined()
 	})
 })

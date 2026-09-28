@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { asSession, BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
+import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
 import { KimchiAcpAgent } from "../server.js"
 

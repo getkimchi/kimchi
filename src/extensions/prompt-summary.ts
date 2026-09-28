@@ -1,6 +1,8 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
-import { Container, Text } from "@earendil-works/pi-tui"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
+import { Container, Spacer, Text } from "@earendil-works/pi-tui"
+import { formatRoutedModelLabel, resolveEffectiveModel } from "./auto-model/state.js"
+import { getRatingSummaryHint } from "./feedback/rating-keys.js"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId } from "./orchestration/model-roles.js"
@@ -36,6 +38,8 @@ interface PromptSummaryData {
 	subagentsByModel?: Array<{ model: string; totals: UsageTotals }>
 	total: UsageTotals
 	extras?: string[]
+	/** `auto (<routed model id>)` label for the model row — only when Auto routed. */
+	model?: string
 }
 
 const pendingExtras: string[] = []
@@ -105,7 +109,20 @@ function formatUsageRows(
 	})
 }
 
-const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
+/**
+ * Value for the model row: once a backend-routed virtual model resolves a
+ * concrete pick, show `<requested> (<routed>)` (e.g. `auto-beta (glm-5.3)`).
+ * Undefined for concrete selections and unresolved virtual sessions — those
+ * add no row.
+ */
+function resolveRoutedModelLabel(ctx: ExtensionContext): string | undefined {
+	if (!ctx.model) return undefined
+	const effective = resolveEffectiveModel(ctx.model, ctx.sessionManager.getSessionId())
+	if (!effective || effective.id === ctx.model.id) return undefined
+	return formatRoutedModelLabel(ctx.model.id, effective.id)
+}
+
+export const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _options, theme) => {
 	const data = message.details as PromptSummaryData
 	if (!data) return undefined
 
@@ -115,10 +132,11 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
 
+	let labelWidth: number
 	if (!data.subagents) {
 		// No subagents — single compact row
 		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
 		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
@@ -142,16 +160,23 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 		rows.push({ label: "total:", totals: data.total })
 
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		for (const line of formatUsageRows(rows, theme, labelWidth)) {
 			container.addChild(new Text(line, 0, 0))
 		}
 	}
 
+	if (data.model) {
+		container.addChild(new Text(INDENT + theme.fg("dim", "model".padEnd(labelWidth)) + data.model, 0, 0))
+	}
+
 	for (const extra of data.extras ?? []) {
 		container.addChild(new Text(INDENT + theme.fg("dim", "note:".padEnd(LABEL_WIDTH)) + extra, 0, 0))
 	}
+
+	container.addChild(new Spacer(1))
+	container.addChild(new Text(theme.fg("dim", getRatingSummaryHint()), 0, 0))
 
 	return container
 }
@@ -245,6 +270,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			subagentsByModel,
 			total: grandTotal,
 			extras: summaryExtras.length > 0 ? [...summaryExtras] : undefined,
+			model: resolveRoutedModelLabel(ctx),
 		}
 		pendingSummary = true
 		const version = ++summaryVersion

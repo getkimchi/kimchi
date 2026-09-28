@@ -10,6 +10,9 @@ export interface FakeModel {
 	input?: ("text" | "image")[]
 	contextWindow?: number
 	maxTokens?: number
+	/** Extra fields merged verbatim into this model's /v1/models/metadata entry
+	 * (e.g. deprecation protocol fields: deprecated_at, replacement_model). */
+	metadata?: Record<string, unknown>
 }
 
 export interface FakeToolCall {
@@ -80,6 +83,21 @@ export interface FakeResponseScript {
 	 * Without this, the session has no usage data and compaction gates
 	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
 	usage?: { prompt_tokens: number; completion_tokens: number }
+	/**
+	 * Concrete model id reported in the response `model` field instead of the
+	 * requested id — simulates a backend-routed virtual model (auto-beta) that
+	 * stamps the real pick. When set, the SSE chunk/body `model` differs from
+	 * the request's `model`, so pi-ai populates `AssistantMessage.responseModel`.
+	 */
+	responseModel?: string
+	/** Hold this response open — no headers, no body — until the promise
+	 * resolves. Test-controlled gate for asserting mid-request process state
+	 * (e.g. a CLI must stay alive and unfinished while a compaction
+	 * summarization call is in flight). The request is recorded before the
+	 * hold, so tests can wait on its arrival and then assert liveness.
+	 * This is a deterministic hold, not a stall simulation — see
+	 * `stallAfterThinking` for that. */
+	holdUntil?: Promise<unknown>
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -93,12 +111,9 @@ export interface FakeOpenAiServer {
 }
 
 interface StartFakeOpenAiServerOptions {
+	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
-	/** JSON bodies returned by successive `/v1/route` calls. An empty queue returns 503. */
-	routerResponses?: unknown[]
-	/** Keep this one-based router request open until the client disconnects. Used to verify cancellation. */
-	stallRouterRequestNumber?: number
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
 }
@@ -111,6 +126,7 @@ export const DEFAULT_MODEL: Required<FakeModel> = {
 	input: ["text"],
 	contextWindow: 8192,
 	maxTokens: 1024,
+	metadata: {},
 }
 
 /** Fill every optional field of a partial model spec from DEFAULT_MODEL. */
@@ -123,6 +139,7 @@ export function withModelDefaults(model: FakeModel): Required<FakeModel> {
 		input: model.input ?? DEFAULT_MODEL.input,
 		contextWindow: model.contextWindow ?? DEFAULT_MODEL.contextWindow,
 		maxTokens: model.maxTokens ?? DEFAULT_MODEL.maxTokens,
+		metadata: model.metadata ?? {},
 	}
 }
 
@@ -146,8 +163,6 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 	}
 	const creditsQueue = [...(options.creditsResponses ?? [])]
 	const budgetQueue = [...(options.budgetResponses ?? [])]
-	const routerQueue = [...(options.routerResponses ?? [])]
-	let routerRequestCount = 0
 	let lastCreditsResponse: unknown
 	let lastBudgetResponse: unknown
 
@@ -172,17 +187,10 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		requests.push(recorded)
 
 		try {
-			if (req.method === "POST" && req.url?.startsWith("/v1/route")) {
-				routerRequestCount += 1
-				const response = routerQueue.shift()
-				if (options.stallRouterRequestNumber === routerRequestCount) {
-					await new Promise<void>((resolve) => res.once("close", resolve))
-					return
-				}
-				writeJson(res, response === undefined ? 503 : 200, response ?? { error: "No scripted router response" })
+			if (options.rejectedApiKeys?.some((key) => req.headers.authorization === `Bearer ${key}`)) {
+				writeJson(res, 401, { error: "Invalid API key" })
 				return
 			}
-
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
 				writeJson(res, 200, {
 					models: models.map((model) => ({
@@ -196,7 +204,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 							context_window: model.contextWindow,
 							max_output_tokens: model.maxTokens,
 						},
-						status: "active",
+						...model.metadata,
 					})),
 				})
 				return
@@ -229,6 +237,12 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 					console.error(
 						`[fake-serve] sub=${isSubagentRequest(request)} served="${label(script)}" mainLeft=${mainQueue.length} subLeft=${subagentQueue.length}`,
 					)
+				}
+				if (script.holdUntil) {
+					await script.holdUntil
+					// The client may disconnect while held (cancellation, process exit).
+					// Writing afterwards would throw; there is nobody left to answer.
+					if (res.destroyed || res.writableEnded) return
 				}
 				await writeChatCompletion(res, script, body)
 				return
@@ -291,6 +305,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
+	const responseModel = script.responseModel ?? model
 	if (request.stream === false) {
 		writeJson(
 			res,
@@ -299,7 +314,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				id: "chatcmpl_fake",
 				object: "chat.completion",
 				created: unixNow(),
-				model,
+				model: responseModel,
 				choices: [
 					{
 						index: 0,
@@ -322,7 +337,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 
 	// Emit one chunk envelope; only `choices` varies between chunks.
 	const chunk = (choices: unknown[]) =>
-		writeSse(res, { id: "chatcmpl_fake", object: "chat.completion.chunk", created: unixNow(), model, choices })
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model: responseModel,
+			choices,
+		})
 
 	let emitted = 0
 	chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
@@ -410,7 +431,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			id: "chatcmpl_fake",
 			object: "chat.completion.chunk",
 			created: unixNow(),
-			model,
+			model: responseModel,
 			choices: [finalChunk],
 			usage: {
 				prompt_tokens: script.usage.prompt_tokens,

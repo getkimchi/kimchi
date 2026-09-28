@@ -12,7 +12,7 @@ describe("acpAgentsExtension experimental gating", () => {
 
 		expect(mock.getHandlers("session_start")).toHaveLength(0)
 		expect(mock.getHandlers("session_shutdown")).toHaveLength(0)
-		expect(mock.getHandlers("subagents:ready")).toHaveLength(0)
+		expect(mock.api.events.on).not.toHaveBeenCalled()
 		const registerCommand = mock.api.registerCommand as unknown as ReturnType<typeof expect>
 		expect(registerCommand).not.toHaveBeenCalled()
 	})
@@ -26,7 +26,7 @@ describe("acpAgentsExtension experimental gating", () => {
 		// Initial discovery already ran; session_start re-discovers per cwd.
 		expect(mock.getHandlers("session_start")).toHaveLength(1)
 		expect(mock.getHandlers("session_shutdown")).toHaveLength(1)
-		expect(mock.getHandlers("subagents:ready")).toHaveLength(1)
+		expect(mock.api.events.on).toHaveBeenCalledWith("subagents:ready", expect.any(Function))
 		const registerCommand = mock.api.registerCommand as unknown as ReturnType<typeof expect>
 		expect(registerCommand).toHaveBeenCalledWith(
 			"acp",

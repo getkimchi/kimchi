@@ -83,9 +83,9 @@ test("DAP degraded state: debug_launch surfaces the missing-adapter error and st
 			const view = viewText(terminal)
 			// The DAP tool rendered with its user-visible (name-derived) header.
 			expect(view).toContain("Debug Launch")
-			// The one-time degraded warning notification names the missing adapter
-			// and its install path.
-			expect(view).toContain("DAP unavailable: debug adapter(s) not installed")
+			// The degraded "DAP unavailable" notification was removed — the status
+			// footer still surfaces the missing adapter, no popup notification.
+			expect(view).not.toContain("DAP unavailable")
 			// The availability pre-check error made it back to the model as the
 			// tool result — without this, launch would have tried to spawn a
 			// missing binary (Chunk 3 regression).

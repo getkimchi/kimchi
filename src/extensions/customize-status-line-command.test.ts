@@ -23,19 +23,26 @@ import * as TAGS from "./tags.js"
 const memfs = new Map<string, string>()
 const SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
-vi.mock("../config/json.js", () => ({
-	readJson: (path: string) => {
+vi.mock("../config/json.js", () => {
+	const memfsRead = (path: string) => {
 		const raw = memfs.get(path)
 		try {
 			return raw ? JSON.parse(raw) : {}
 		} catch {
 			return {}
 		}
-	},
-	writeJson: (path: string, data: unknown) => {
-		memfs.set(path, JSON.stringify(data))
-	},
-}))
+	}
+	return {
+		readJson: memfsRead,
+		// The memfs layer has no stat — bypass the signature gate and read
+		// directly; caching semantics are covered by json.test.ts.
+		readJsonCached: memfsRead,
+		writeJson: (path: string, data: unknown) => {
+			memfs.set(path, JSON.stringify(data))
+		},
+		invalidateJsonCache: (_path: string) => {},
+	}
+})
 
 vi.mock("./shared-status-line.js", () => ({ requestSharedStatusLineRender: vi.fn() }))
 
@@ -122,7 +129,7 @@ beforeEach(() => {
 	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+	vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 })

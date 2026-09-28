@@ -133,11 +133,7 @@ test("completes a bounded slow MCP call without hanging the session", async ({ t
 	)
 })
 
-// Known product bug: the MCP gateway tool receives Pi's AbortSignal but currently ignores
-// it, so cancelling an agent turn does not send MCP notifications/cancelled to the server.
-// Fixed upstream in pi-mcp-adapter v2.11.0 by PR #159; remove test.fail once the bundled
-// adapter includes that fix.
-test.fail("propagates agent-turn cancellation to an in-flight MCP request", async ({ terminal }) => {
+test("propagates agent-turn cancellation to an in-flight MCP request", async ({ terminal }) => {
 	const slow = gatewayMcpCall("slow")
 	await runMcpKimchiSession(
 		terminal,

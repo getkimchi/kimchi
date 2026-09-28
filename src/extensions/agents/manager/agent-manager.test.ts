@@ -56,6 +56,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { AGENT_MESSAGE_LIMITS, createAgentMessage } from "../messages.js"
@@ -3613,6 +3614,7 @@ describe("AgentManager remote git credential resolution", () => {
 			cwd: "/work/myrepo",
 			mode,
 			ui: { custom: vi.fn() },
+			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
 
@@ -3661,8 +3663,12 @@ describe("AgentManager remote git credential resolution", () => {
 		)
 	})
 
-	it("forwards kimchi_workspace.yaml resources to runRemoteAgent when minting a workspace", async () => {
-		mockLoadWorkspaceFile.mockReturnValue({ resources: { cpu: " 500m ", pvcSize: "20Gi" } })
+	it("forwards the kimchi_workspace.yaml spec to runRemoteAgent when minting a workspace", async () => {
+		mockLoadWorkspaceFile.mockReturnValue({
+			resources: { cpu: " 500m ", pvcSize: "20Gi" },
+			dependencies: ["jq"],
+			egressPolicy: { denyByDefault: false },
+		})
 		manager = new AgentManager()
 
 		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
@@ -3670,12 +3676,34 @@ describe("AgentManager remote git credential resolution", () => {
 			remote: true,
 		})
 
-		// No name-matched workspace (listWorkspaces → []) → mint → resources ride.
-		// Outer whitespace trimmed by the real validator.
+		// No name-matched workspace (listWorkspaces → []) → mint → spec rides.
+		// Outer whitespace trimmed by the real validator; other sections verbatim.
 		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.any(String),
-			expect.objectContaining({ resources: { cpu: "500m", pvcSize: "20Gi" } }),
+			expect.objectContaining({
+				spec: {
+					resources: { cpu: "500m", pvcSize: "20Gi" },
+					dependencies: ["jq"],
+					egressPolicy: { denyByDefault: false },
+				},
+			}),
+		)
+		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("resources")
+	})
+
+	it("tags the remote session with the parent (local) session id for sandbox log correlation", async () => {
+		manager = new AgentManager()
+
+		await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({ tags: { [SESSION_TAG_PARENT_SESSION_ID]: "parent-test-session" } }),
 		)
 	})
 
@@ -3698,7 +3726,7 @@ describe("AgentManager remote git credential resolution", () => {
 		expect(mockRunRemoteAgent).not.toHaveBeenCalled()
 	})
 
-	it("does not forward resources when a name-matched workspace is reused", async () => {
+	it("does not forward a spec when a name-matched workspace is reused", async () => {
 		mockLoadWorkspaceFile.mockReturnValue({ resources: { cpu: "500m" } })
 		mockListWorkspaces.mockResolvedValue([
 			{ id: "ws-existing", name: "myrepo", createdAt: new Date(), lastActivityAt: new Date(), status: "active" },
@@ -3712,7 +3740,7 @@ describe("AgentManager remote git credential resolution", () => {
 
 		expect(record.status).toBe("completed")
 		expect(mockLoadWorkspaceFile).not.toHaveBeenCalled()
-		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("resources")
+		expect(mockRunRemoteAgent.mock.calls[0][2]).not.toHaveProperty("spec")
 	})
 
 	it("passes undefined gitCredential when no token is resolved (non-interactive mode)", async () => {
@@ -3789,6 +3817,7 @@ describe("AgentManager remote stopReason mapping", () => {
 			cwd: "/work/myrepo",
 			mode: "tui",
 			ui: { custom: vi.fn() },
+			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
 
@@ -3903,6 +3932,7 @@ describe("AgentManager reconnecting lifecycle", () => {
 			cwd: "/work/myrepo",
 			mode: "tui",
 			ui: { custom: vi.fn() },
+			sessionManager: { getSessionId: () => "parent-test-session" },
 		} as unknown as ExtensionContext
 	}
 

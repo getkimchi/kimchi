@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as config from "../../config.js"
-import { DEFAULT_LIMIT, executeWebSearch, SEARCH_ENDPOINT, type SearchResponse } from "./execute-handler.js"
+import { REGIONS, regionEndpoints } from "../../regions.js"
+import { DEFAULT_LIMIT, executeWebSearch, type SearchResponse } from "./execute-handler.js"
 
-vi.mock("../../config.js", () => ({ readApiKeyFromConfigFile: vi.fn() }))
+const configMock = vi.hoisted(() => ({
+	loadConfig: vi.fn(() => ({ apiKey: "test-key-123" })),
+	resolveEndpoints: vi.fn(),
+}))
+vi.mock("../../config.js", () => configMock)
 vi.mock("../../utils/http.js", () => ({
 	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
 }))
@@ -28,7 +32,8 @@ function makeSources(count: number) {
 }
 
 beforeEach(() => {
-	vi.mocked(config.readApiKeyFromConfigFile).mockReturnValue("test-key-123")
+	configMock.loadConfig.mockReturnValue({ apiKey: "test-key-123" })
+	configMock.resolveEndpoints.mockReturnValue(regionEndpoints(REGIONS.eu))
 })
 
 afterEach(() => {
@@ -38,22 +43,22 @@ afterEach(() => {
 
 describe("executeWebSearch", () => {
 	describe("API key validation", () => {
-		it("throws a human-readable error when no API key is set in config", async () => {
-			vi.mocked(config.readApiKeyFromConfigFile).mockReturnValue(undefined)
+		it("throws a human-readable error when no effective API key is configured", async () => {
+			configMock.loadConfig.mockReturnValue({ apiKey: "" })
 
 			await expect(executeWebSearch({ query: "test" })).rejects.toThrow(
-				"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.kimchi.dev to create a key.",
+				"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.eu.kimchi.dev to create a key.",
 			)
 		})
 
-		it("uses API key from config file", async () => {
-			vi.mocked(config.readApiKeyFromConfigFile).mockReturnValue("key-from-config-file")
+		it("uses the effective configuration API key", async () => {
+			configMock.loadConfig.mockReturnValue({ apiKey: "effective-key" })
 			mockFetch(200, { sources: [] })
 
 			await executeWebSearch({ query: "test" })
 
 			const headers = vi.mocked(fetch).mock.calls[0][1]?.headers as Record<string, string>
-			expect(headers.Authorization).toBe("Bearer key-from-config-file")
+			expect(headers.Authorization).toBe("Bearer effective-key")
 		})
 	})
 
@@ -112,7 +117,7 @@ describe("executeWebSearch", () => {
 
 			await executeWebSearch({ query: "test" })
 
-			expect(vi.mocked(fetch).mock.calls[0][0]).toBe(SEARCH_ENDPOINT)
+			expect(vi.mocked(fetch).mock.calls[0][0]).toBe("https://llm.eu.kimchi.dev/v1/search")
 		})
 	})
 

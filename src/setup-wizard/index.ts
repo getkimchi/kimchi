@@ -7,7 +7,8 @@ import "../integrations/gsd2.js"
 import "../integrations/openclaw.js"
 import "../integrations/opencode.js"
 
-import { cancel as clackCancel } from "@clack/prompts"
+import { cancel as clackCancel, log } from "@clack/prompts"
+import { getApiKeyMismatchWarning } from "../config.js"
 import type { WizardResult, WizardState } from "./state.js"
 import { runAuthStep } from "./steps/auth.js"
 import { runDoneStep } from "./steps/done.js"
@@ -55,6 +56,8 @@ export async function runWizard(): Promise<WizardResult> {
 	})
 
 	runWelcomeStep()
+	const warning = getApiKeyMismatchWarning()
+	if (warning) log.warn(warning)
 
 	let i = 0
 	while (i < STEPS.length) {

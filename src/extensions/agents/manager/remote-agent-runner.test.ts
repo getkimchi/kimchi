@@ -8,6 +8,12 @@ vi.mock("../../../sandbox/cloud/auth.js", () => ({
 		wsUrl: "wss://worker.example.com",
 		host: "worker.example.com",
 	}),
+	authenticateWorkspaceProbe: vi.fn().mockResolvedValue({
+		connectToken: "test-token",
+		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+	}),
 }))
 
 vi.mock("../../../sandbox/cloud/readiness.js", () => ({
@@ -86,7 +92,7 @@ vi.mock("../../../sandbox/worker/acp-client.js", async (importOriginal) => {
 })
 
 // Import after mocks are set up
-import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
+import { authenticateWorkspace, authenticateWorkspaceProbe } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import {
 	AcpSessionClient,
@@ -150,6 +156,12 @@ beforeEach(() => {
 	capturedOptions = undefined
 	// Re-establish mock implementations after clearAllMocks resets them
 	vi.mocked(authenticateWorkspace).mockResolvedValue({
+		connectToken: "test-token",
+		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+	})
+	vi.mocked(authenticateWorkspaceProbe).mockResolvedValue({
 		connectToken: "test-token",
 		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
 		wsUrl: "wss://worker.example.com",
@@ -253,7 +265,7 @@ describe("runRemoteAgent", () => {
 				agentMode: "ACP",
 				yolo: true,
 			}),
-			expect.objectContaining({ timeoutMs: 5 * 60_000 }),
+			expect.objectContaining({ timeoutMs: 10 * 60_000 }),
 		)
 
 		// 4. ACP client — cwd matches the unique session directory
@@ -395,16 +407,16 @@ describe("runRemoteAgent", () => {
 		)
 	})
 
-	it("forwards resources to authenticateWorkspace when provided", async () => {
-		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ resources: { cpu: "250m", memory: "1Gi" } }))
+	it("forwards the workspace spec to authenticateWorkspace when provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ spec: { resources: { cpu: "250m", memory: "1Gi" } } }))
 
 		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
 			endpoint: undefined,
-			resources: { cpu: "250m", memory: "1Gi" },
+			spec: { resources: { cpu: "250m", memory: "1Gi" } },
 		})
 	})
 
-	it("omits the resources key when not provided", async () => {
+	it("omits the spec key when not provided", async () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
 
 		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
@@ -426,12 +438,13 @@ describe("runRemoteAgent", () => {
 		expect(capturedOptions?.signal).toBe(controller.signal)
 	})
 
-	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification callbacks", async () => {
+	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification, onContextUsage callbacks", async () => {
 		const callbacks = {
 			onToolActivity: vi.fn(),
 			onTurnEnd: vi.fn(),
 			onAssistantUsage: vi.fn(),
 			onRawNotification: vi.fn(),
+			onContextUsage: vi.fn(),
 		}
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks }))
 
@@ -442,6 +455,7 @@ describe("runRemoteAgent", () => {
 		expect(typeof captured.onTurnEnd).toBe("function")
 		expect(typeof captured.onAssistantUsage).toBe("function")
 		expect(typeof captured.onRawNotification).toBe("function")
+		expect(typeof captured.onContextUsage).toBe("function")
 
 		// Verify forwarding
 		captured.onToolActivity({ status: "completed", toolName: "Read" })
@@ -457,6 +471,9 @@ describe("runRemoteAgent", () => {
 		const rawNotif = { update: { sessionUpdate: "tool_call" } }
 		captured.onRawNotification(rawNotif)
 		expect(callbacks.onRawNotification).toHaveBeenCalledWith(rawNotif)
+
+		captured.onContextUsage(5000, 128000)
+		expect(callbacks.onContextUsage).toHaveBeenCalledWith(5000, 128000)
 	})
 
 	it("forwards gitDetails to createSession with targetDirectory cleared so clone goes into session cwd", async () => {
@@ -496,6 +513,25 @@ describe("runRemoteAgent", () => {
 
 		const sessionReq = vi.mocked(createSession).mock.calls[0]?.[2] as unknown as Record<string, unknown>
 		expect(sessionReq.details).toBeUndefined()
+	})
+
+	it("forwards correlation tags to createSession so the worker can promote them to log fields", async () => {
+		const tags = { parent_session_id: "parent-session-123" }
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ tags }))
+
+		expect(createSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.stringMatching(/^acp-/),
+			expect.objectContaining({ agentMode: "ACP", yolo: true, tags }),
+			expect.anything(),
+		)
+	})
+
+	it("omits tags when not provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		const sessionReq = vi.mocked(createSession).mock.calls[0]?.[2] as unknown as Record<string, unknown>
+		expect(sessionReq.tags).toBeUndefined()
 	})
 
 	it("syncs local changes after createSession with unique remotePath when gitDetails + localPath are provided", async () => {
@@ -974,6 +1010,14 @@ describe("runRemoteAgent", () => {
 				"remote session no longer reachable",
 			)
 
+			// Revive readiness waits are capped per attempt (5min), unlike the initial
+			// uncapped wait (10-min default) before the first prompt.
+			const readyCalls = vi.mocked(waitForWorkspaceReady).mock.calls
+			expect(readyCalls[0][0]).not.toHaveProperty("timeoutMs")
+			for (const call of readyCalls.slice(1)) {
+				expect(call[0]).toMatchObject({ timeoutMs: 5 * 60_000 })
+			}
+
 			expect(deleteSession).not.toHaveBeenCalled()
 		})
 
@@ -1429,10 +1473,10 @@ describe("runRemoteAgent", () => {
 			await expect(session.steer("do something")).rejects.toThrow("agent temporarily unreachable")
 		})
 
-		it("throws generic 'not supported' when session is NOT reconnecting", async () => {
+		it("rejects cleanly when no client is bound yet (not reconnecting)", async () => {
 			const { RemoteAgentSession } = await import("./remote-agent-session.js")
 			const session = new RemoteAgentSession()
-			await expect(session.steer("do something")).rejects.toThrow("Steering is not supported for remote agents")
+			await expect(session.steer("do something")).rejects.toThrow("still initializing")
 		})
 	})
 
@@ -1693,5 +1737,13 @@ describe("attachRemoteAgent", () => {
 		// recovery machinery handles the real session state.
 		vi.mocked(getSession).mockRejectedValue(new Error("network down"))
 		await expect(isRemoteSessionConnected(META, "test-api-key")).resolves.toBe(false)
+
+		// The probe is side-effect-free: it must go through
+		// authenticateWorkspaceProbe, never authenticateWorkspace (which upserts
+		// and resumes — waking a hibernated workspace).
+		expect(authenticateWorkspaceProbe).toHaveBeenCalledWith(META.workspaceId, "test-api-key", {
+			endpoint: undefined,
+		})
+		expect(authenticateWorkspace).not.toHaveBeenCalled()
 	})
 })

@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { debuglog } from "node:util"
+import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 
 import type { ModelRoles, RoleModelAssignment } from "./extensions/orchestration/model-roles.js"
 import { normalizeRoleModels } from "./extensions/orchestration/model-roles.js"
@@ -354,12 +355,12 @@ export async function injectOllamaProvider(
 	options: InjectOllamaProviderOptions = {},
 ): Promise<void> {
 	try {
-		const models = await probeOllamaModels(host, options)
+		const ollamaProvider = await discoverOllamaProvider(host, options)
 
 		// Spec criterion #6: when Ollama is unreachable, the `ollama` provider
 		// must be omitted from models.json — including any pre-existing block
 		// left behind by a previous run when Ollama was online.
-		if (models.length === 0) {
+		if (ollamaProvider.models.length === 0) {
 			if (!existsSync(modelsJsonPath)) return
 			const existingProviders = readAllProviders(modelsJsonPath)
 			if (!(OLLAMA_PROVIDER_ID in existingProviders)) return
@@ -371,18 +372,6 @@ export async function injectOllamaProvider(
 		if (!existsSync(modelsJsonPath) && !options.createIfMissing) return
 
 		const existingProviders = readAllProviders(modelsJsonPath)
-		const normalizedHost = normalizeOllamaHost(host)
-		const ollamaProvider = {
-			api: "openai-completions",
-			baseUrl: `${normalizedHost}/v1`,
-			// pi-coding-agent's openai-completions provider requires a non-empty
-			// `apiKey` at runtime (`throw new Error("No API key for provider: ...")`)
-			// and its model registry refuses to register a custom provider without
-			// one ("apiKey is required when defining custom models"). Ollama itself
-			// ignores the value, so any non-empty sentinel satisfies the contract.
-			apiKey: "ollama-no-key-needed",
-			models: models.map(ollamaToModelConfig),
-		}
 
 		const merged = {
 			providers: {
@@ -399,6 +388,18 @@ export async function injectOllamaProvider(
 		// permission errors an observable trail when debugging.
 		debugOllama("injectOllamaProvider failed: %s", error instanceof Error ? error.message : String(error))
 	}
+}
+
+/** Discover the same provider for either disk persistence or session-only registration. */
+export async function discoverOllamaProvider(host: string, options: OllamaProbeOptions = {}) {
+	const models = await probeOllamaModels(host, options)
+	return {
+		api: "openai-completions",
+		baseUrl: `${normalizeOllamaHost(host)}/v1`,
+		// Pi requires a nonempty key; Ollama ignores it.
+		apiKey: "ollama-no-key-needed",
+		models: models.map(ollamaToModelConfig),
+	} satisfies ProviderConfig
 }
 
 /** Read the Ollama provider block back out of models.json and return the
@@ -429,7 +430,10 @@ export function readOllamaModelsFromConfig(modelsJsonPath: string): PiModelConfi
  *  rows for the cli.ts models array. Mirrors the role of
  *  `readExperimentalModels` from src/models.ts. */
 export function readOllamaModelMetadata(modelsJsonPath: string): ModelMetadata[] {
-	const configs = readOllamaModelsFromConfig(modelsJsonPath)
+	return ollamaModelsToMetadata(readOllamaModelsFromConfig(modelsJsonPath))
+}
+
+export function ollamaModelsToMetadata(configs: PiModelConfig[]): ModelMetadata[] {
 	return configs.map((c) => ({
 		slug: c.id,
 		display_name: c.name,
