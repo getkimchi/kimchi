@@ -42,3 +42,16 @@ export function isAutoRoutedModel<T extends Pick<Model<string>, "provider" | "id
 export function isAutoRoutedRef(ref: string): boolean {
 	return ref.startsWith(`${AUTO_MODEL_PROVIDER}/auto`)
 }
+
+/**
+ * Backend display names may carry the description after an em-dash sentinel:
+ * `"Auto — Picks the best model…"`. Surfaces with a dedicated description slot
+ * (ACP options) split the pair; surfaces that render the raw name (the /model
+ * detail line) keep it whole. Only the first " — " separates; plain hyphens in
+ * names are untouched.
+ */
+export function splitModelDisplayName(name: string): { name: string; description?: string } {
+	const sep = name.indexOf(" — ")
+	if (sep === -1) return { name }
+	return { name: name.slice(0, sep), description: name.slice(sep + 3) }
+}

@@ -75,6 +75,7 @@ import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
 	isAutoRoutedModel,
+	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
@@ -1926,16 +1927,19 @@ function getSessionModelRegistry(
  * a routed virtual model does.
  */
 function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
-	const baseName = model.name ?? model.id
+	// The backend may ship the description inside the display name; ACP has a
+	// dedicated description field, so the pair is split apart here.
+	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
+	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
 	const state = getAutoRoutingState(sessionId)
 	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
 		return {
 			value: refFromModel(model),
 			name: `${baseName} (${state.model.id})`,
-			description: AUTO_MODEL_DESCRIPTION,
+			description,
 		}
 	}
-	return { value: refFromModel(model), name: baseName, description: AUTO_MODEL_DESCRIPTION }
+	return { value: refFromModel(model), name: baseName, description }
 }
 
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {

@@ -5210,6 +5210,38 @@ describe("newSession model state", () => {
 		})
 	})
 
+	it("splits a backend display name that carries its description", async () => {
+		const sessionId = "session-routed-auto-named"
+		const fake = routedVirtualSession(sessionId, "auto")
+		const compositeName = "Auto — Picks the best model for your tasks automatically."
+		fake.model = {
+			provider: "kimchi-dev",
+			id: "auto",
+			name: compositeName,
+			input: ["text"],
+			contextWindow: 128_000,
+		}
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [{ provider: "kimchi-dev", id: "auto", name: compositeName }],
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
+			value: "kimchi-dev/auto",
+			name: "Auto",
+			description: "Picks the best model for your tasks automatically.",
+		})
+	})
+
 	it("appends the resolved pick to the auto row name for the owning session", async () => {
 		const sessionId = "session-routed-auto-resolved"
 		const fake = routedVirtualSession(sessionId, "auto")
