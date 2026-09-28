@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { resolveEndpoints } from "../config.js"
 import { formatLocalTime, formatWait, parseRateLimitRetryAt } from "../llm-gateway-error.js"
 import { RATE_LIMIT_MAX_WAIT_MS, rememberRateLimitDeadline } from "../upstream-retry-patch.js"
 import { getRawErrorMessage } from "./error-preservation.js"
@@ -11,7 +12,7 @@ export function rateLimitNotice(retryAt: number, model?: string, now: number = D
 	// here. Below it, whether a retry happens at all is settled later — upstream's countdown
 	// reports the real wait, so do not pre-announce one.
 	if (waitMs > RATE_LIMIT_MAX_WAIT_MS) {
-		return `${until} — not retrying. Switch model with /model, or top up at https://app.kimchi.dev/billing`
+		return `${until} — not retrying. Switch model with /model, or top up at ${resolveEndpoints().webAppUrl}/billing`
 	}
 	return `${until}.`
 }

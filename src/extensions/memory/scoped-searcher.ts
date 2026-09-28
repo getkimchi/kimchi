@@ -5,8 +5,9 @@
  * Bun-only (SQLite backends), same split as backend.ts.
  */
 import type { Memory as Mem0Memory } from "mem0ai/oss"
-import { createMemoryBackend, normalizeMem0SearchResults, projectDbPath } from "./backend.js"
+import { createMemoryBackend, type MemoryBackendOptions, normalizeMem0SearchResults, projectDbPath } from "./backend.js"
 import { digestDbPath, MEMORY_USER_ID } from "./config.js"
+import { createSharedEmbedder, type SharedEmbedder } from "./embedder.js"
 import { resolveProjectScope } from "./scope.js"
 
 export type MemoryScope = "personal" | "project"
@@ -31,10 +32,17 @@ export function mergeScopedResults(
 	return [...personal, ...project].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, topK)
 }
 
-type Backend = Mem0Memory
+/** The narrow backend surface the searcher reads — narrower than Mem0Memory so tests can stub it. */
+export type ScopedBackend = Pick<Mem0Memory, "search">
+
+/** Test seams for createScopedSearcher — both external factories are injectable. */
+export interface ScopedSearcherDeps {
+	createSharedEmbedder?: () => Promise<SharedEmbedder>
+	createMemoryBackend?: (options: MemoryBackendOptions) => Promise<ScopedBackend>
+}
 
 async function searchOne(
-	backend: Backend,
+	backend: ScopedBackend,
 	tag: MemoryScope,
 	query: string,
 	topK: number,
@@ -45,16 +53,21 @@ async function searchOne(
 
 /**
  * Construct the scoped searcher: the personal store always, plus the project
- * store when the cwd resolves to a repository. A project-store failure
- * degrades to personal-only (logged once) — memory must never break a session.
+ * store when the cwd resolves to a repository. Both share one deduping
+ * embedder, so each query is embedded once across the stores. A
+ * project-store failure degrades to personal-only (logged once) — memory
+ * must never break a session.
  */
-export async function createScopedSearcher(cwd: string): Promise<ScopedSearcher> {
+export async function createScopedSearcher(cwd: string, deps: ScopedSearcherDeps = {}): Promise<ScopedSearcher> {
+	const createEmbedder = deps.createSharedEmbedder ?? createSharedEmbedder
+	const createBackend = deps.createMemoryBackend ?? createMemoryBackend
 	const project = resolveProjectScope(cwd)
-	const personal = await createMemoryBackend({ dbPath: digestDbPath() })
-	let projectBackend: Backend | null = null
+	const embedder = await createEmbedder()
+	const personal = await createBackend({ dbPath: digestDbPath(), sharedEmbedder: embedder })
+	let projectBackend: ScopedBackend | null = null
 	if (project) {
 		try {
-			projectBackend = await createMemoryBackend({ dbPath: projectDbPath(project.id) })
+			projectBackend = await createBackend({ dbPath: projectDbPath(project.id), sharedEmbedder: embedder })
 		} catch (err) {
 			console.error(
 				`[memory] project store unavailable (${project.id}), continuing personal-only:`,

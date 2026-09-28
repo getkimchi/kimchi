@@ -1,4 +1,5 @@
 import { printMergedHelp } from "./help.js"
+import { findPackageCommand, runPackageCommand } from "./package-commands.js"
 import { findCommand, isKnownCommand } from "./registry.js"
 
 export type DispatchResult = { kind: "handled"; exitCode: number } | { kind: "fallthrough" }
@@ -24,6 +25,17 @@ export async function dispatchSubcommand(args: string[]): Promise<DispatchResult
 		const rest = args.slice(1)
 		const code = (await cmd.run(rest)) ?? 0
 		return { kind: "handled", exitCode: code }
+	}
+
+	// Package-provided subcommands (`kimchi install npm:…`): built-ins and
+	// reserved names always win (see package-commands.ts), and flags still
+	// fall through to pi untouched.
+	if (first !== undefined && !first.startsWith("-")) {
+		const packageCommand = findPackageCommand(first)
+		if (packageCommand) {
+			const exitCode = await runPackageCommand(packageCommand, args.slice(1))
+			return { kind: "handled", exitCode }
+		}
 	}
 
 	// Top-level --help: only when there is NO subcommand context.

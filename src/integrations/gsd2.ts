@@ -1,8 +1,9 @@
 import { readJson, writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import { resolveEndpoints } from "../config.js"
 import type { ModelMetadata } from "../models.js"
-import { BASE_URL, PROVIDER_NAME } from "./constants.js"
+import { PROVIDER_NAME } from "./constants.js"
 import { findBinary } from "./detect.js"
 import { type ModelRole, resolveAllModelRoles, resolveModelRole } from "./models.js"
 import { register } from "./registry.js"
@@ -50,7 +51,7 @@ export function buildGsd2KimchiProvider(apiKey: string, models: readonly ModelMe
 	const main = resolveModelRole(models, "main")
 	return {
 		name: "Kimchi",
-		baseUrl: BASE_URL,
+		baseUrl: resolveEndpoints().openAiBaseUrl,
 		apiKey,
 		api: "openai-completions",
 		defaultModel: main?.slug ?? models[0].slug,

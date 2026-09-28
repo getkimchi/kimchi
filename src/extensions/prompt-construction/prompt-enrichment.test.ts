@@ -1104,6 +1104,7 @@ describe("orchestrator default remap on session_start", () => {
 		vi.spyOn(config, "loadConfig").mockReturnValue({
 			apiKey: "test-key",
 			agentConfigDir: agentDir,
+			region: "us",
 			llmEndpoint: "",
 			customLlmEndpoint: undefined,
 			maxToolResultChars: 0,
@@ -1320,6 +1321,7 @@ describe("continuation nudge turn_end handler", () => {
 		vi.spyOn(config, "loadConfig").mockReturnValue({
 			apiKey: "",
 			agentConfigDir: "",
+			region: "us",
 			llmEndpoint: "",
 			customLlmEndpoint: undefined,
 			maxToolResultChars: 0,

@@ -7,6 +7,20 @@ import { discoverEnvironmentModels, withEnvironmentModels } from "./environment-
 import { syncKimchiAuth } from "./extensions/login/flow.js"
 import { buildModelsConfig, type ModelMetadata } from "./models.js"
 
+// loadConfig() reads the launch-time global config (real HOME). Pin it without
+// a region so the experimental provider base URL resolves the US gateway
+// regardless of the developer machine's config.
+vi.mock("./config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./config.js")>()
+	return {
+		...actual,
+		loadConfig: () =>
+			({ apiKey: process.env.KIMCHI_API_KEY ?? "", region: undefined }) as unknown as ReturnType<
+				typeof actual.loadConfig
+			>,
+	}
+})
+
 let dir: string
 let modelsPath: string
 let authPath: string
