@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve, sep } from "node:path"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
 
 const SKILLS_DIR_CACHE = new Map<string, SkillManager>()
@@ -148,7 +149,7 @@ export function formatPreview(content: string, maxLines = 50): string {
 	return result
 }
 
-export type SkillOrigin = "harness" | "bundled"
+export type SkillOrigin = "harness" | "bundled" | "discovered"
 
 interface SkillLocation {
 	skillDir: string
@@ -169,12 +170,16 @@ export interface SkillManagerOptions {
 /** Refuse mutations on skills that do not live under the writable harness root. */
 function readonlyGuard(loc: SkillLocation): string | null {
 	if (!loc.readOnly) return null
+	if (loc.origin === "discovered") {
+		return `Skill was discovered outside the harness skills dir (origin: ${loc.skillDir}) and is read-only. To customize it, copy it into the harness skills dir first.`
+	}
 	return `Skill is bundled with the harness (origin: ${loc.skillDir}) and is read-only. To customize it, copy it into the harness skills dir first.`
 }
 
 export class SkillManager {
 	private skillsDir: string
 	private bundledRoots: readonly string[]
+	private discoveredSkillsProvider?: () => readonly Skill[]
 
 	/**
 	 * @param skillsDir The single writable root this manager owns. Mutations
@@ -185,6 +190,18 @@ export class SkillManager {
 	constructor(skillsDir: string, options?: SkillManagerOptions) {
 		this.skillsDir = skillsDir
 		this.bundledRoots = options?.bundledRoots ?? []
+	}
+
+	/**
+	 * Session-scoped provider of skills discovered by pi's resource loader
+	 * (project .kimchi/skills, npm packages, .cursor/skills, configured
+	 * skillPaths) — everything that feeds the <available_skills> prompt block
+	 * but does not live under the manager's own roots. Consulted as the last
+	 * resolution tier in _findSkill so skill_view can load any advertised
+	 * skill, not just harness/bundled ones.
+	 */
+	setDiscoveredSkillsProvider(provider: () => readonly Skill[]): void {
+		this.discoveredSkillsProvider = provider
 	}
 
 	private _isUnderSkillsDir(skillDir: string): boolean {
@@ -198,6 +215,8 @@ export class SkillManager {
 	 * 1. Check <skillsDir>/<name>/SKILL.md directly (harness origin).
 	 * 2. Scan immediate subdirectories of skillsDir for <sub>/<name>/SKILL.md.
 	 * 3. Fall back to bundled roots, strongest (later) root first.
+	 * 4. Fall back to the session's discovered inventory (project skills,
+	 *    npm packages, .cursor/skills, configured skillPaths) — read-only.
 	 */
 	private async _findSkill(name: string): Promise<SkillLocation | null> {
 		const direct = join(this.skillsDir, name, "SKILL.md")
@@ -227,6 +246,13 @@ export class SkillManager {
 				const skillDir = join(this.bundledRoots[i], name)
 				return { skillDir, category: "", origin: "bundled", readOnly: !this._isUnderSkillsDir(skillDir) }
 			}
+		}
+
+		const discovered = this.discoveredSkillsProvider?.() ?? []
+		const hit = discovered.find((s) => s.name === name)
+		if (hit) {
+			const skillDir = dirname(hit.filePath)
+			return { skillDir, category: "", origin: "discovered", readOnly: !this._isUnderSkillsDir(skillDir) }
 		}
 
 		return null

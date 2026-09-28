@@ -270,6 +270,21 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("hidden-skill")
 		})
 
+		it("replaces the upstream read-tool skill instruction with the skill_view instruction", () => {
+			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			// The upstream block's read-tool line must be swapped for the
+			// skill_view-first line, keeping read as the documented fallback.
+			expect(result).not.toContain("Use the read tool to load a skill's file when the task matches its description.")
+			expect(result).toContain("skill_view tool (name: <skill name>)")
+			expect(result).toContain("If skill_view is not available, read the skill's file at its location instead.")
+		})
+
 		it("injects environment info", () => {
 			const result = buildSystemPrompt({
 				tools,

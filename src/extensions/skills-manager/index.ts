@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { SkillManager } from "./skill-manager.js"
 import { createSkillManageTool, createSkillViewTool } from "./tool.js"
@@ -8,6 +8,12 @@ import { UsageTracker } from "./usage.js"
 
 export interface SkillsManagerOptions {
 	skillsDir?: string
+	/** Register the skill_manage (write-side) tool. The view-side skill_view
+	 *  is always registered. skill_manage has been disabled at the CLI wiring
+	 *  point since #235 ("temporarily", May 2026) — its autonomous
+	 *  skill-creation guidance proved noisy in practice. Re-enable here only
+	 *  with a deliberate decision. */
+	registerSkillManageTool?: boolean
 }
 
 export default function skillsManagerExtension(pi: ExtensionAPI, options?: SkillsManagerOptions): void {
@@ -17,6 +23,24 @@ export default function skillsManagerExtension(pi: ExtensionAPI, options?: Skill
 	const bundled = resolveBundledSkillsDir()
 	const manager = new SkillManager(skillsDir, bundled ? { bundledRoots: [bundled] } : undefined)
 	const tracker = new UsageTracker(skillsDir)
-	pi.registerTool(createSkillManageTool(manager, tracker))
+
+	// Feed pi's resolved skill inventory (project .kimchi/skills, npm packages,
+	// .cursor/skills, configured skillPaths — everything behind the
+	// <available_skills> prompt block) into the manager as the last resolution
+	// tier, so skill_view can load any advertised skill, not just harness/
+	// bundled ones. Updated on every agent start; the closure lives with this
+	// pi instance, so in-process subagents keep their own inventories.
+	let discoveredSkills: readonly Skill[] = []
+	pi.on("before_agent_start", (event) => {
+		discoveredSkills = event.systemPromptOptions?.skills ?? []
+	})
+	pi.on("session_shutdown", () => {
+		discoveredSkills = []
+	})
+	manager.setDiscoveredSkillsProvider(() => discoveredSkills)
+
 	pi.registerTool(createSkillViewTool(manager, tracker))
+	if (options?.registerSkillManageTool !== false) {
+		pi.registerTool(createSkillManageTool(manager, tracker))
+	}
 }

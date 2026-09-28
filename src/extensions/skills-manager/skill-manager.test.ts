@@ -428,4 +428,79 @@ describe("SkillManager", () => {
 			expect(result.path).toContain(tmpDir)
 		})
 	})
+
+	describe("discovered skills (session inventory tier)", () => {
+		it("views a skill resolved through the discovered provider", async () => {
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "project-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: from project\n---\nProject body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					{
+						name: "project-skill",
+						description: "from project",
+						filePath: join(skillDir, "SKILL.md"),
+					} as never,
+				])
+				const result = await mgr.view("project-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Project body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("view fails for a discovered skill absent from the provider", async () => {
+			mgr.setDiscoveredSkillsProvider(() => [])
+			const result = await mgr.view("ghost-skill")
+			expect(result.success).toBe(false)
+			expect(result.error).toContain("not found")
+		})
+
+		it("harness and bundled skills shadow the discovered tier", async () => {
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const harnessDir = join(tmpDir, "shadowed-skill")
+				mkdirSync(harnessDir)
+				writeFileSync(join(harnessDir, "SKILL.md"), "---\ndescription: harness wins\n---\nHarness body.")
+				const discoveredSkillDir = join(discoveredDir, "shadowed-skill")
+				mkdirSync(discoveredSkillDir)
+				writeFileSync(join(discoveredSkillDir, "SKILL.md"), "---\ndescription: discovered loses\n---\nDiscovered body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					{
+						name: "shadowed-skill",
+						description: "discovered loses",
+						filePath: join(discoveredSkillDir, "SKILL.md"),
+					} as never,
+				])
+				const result = await mgr.view("shadowed-skill")
+				expect(result.success).toBe(true)
+				expect(result.content).toContain("Harness body.")
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+
+		it("mutations on a discovered skill are refused as read-only", async () => {
+			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))
+			try {
+				const skillDir = join(discoveredDir, "ro-skill")
+				mkdirSync(skillDir)
+				writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: ro\n---\nRO body.")
+				mgr.setDiscoveredSkillsProvider(() => [
+					{
+						name: "ro-skill",
+						description: "ro",
+						filePath: join(skillDir, "SKILL.md"),
+					} as never,
+				])
+				const edit = await mgr.edit("ro-skill", "---\ndescription: ro\n---\nNew body.")
+				expect(edit.success).toBe(false)
+				expect(edit.error).toMatch(/read-only/i)
+			} finally {
+				rmSync(discoveredDir, { recursive: true, force: true })
+			}
+		})
+	})
 })
