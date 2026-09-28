@@ -13,22 +13,15 @@ export function findModelByRef(modelRegistry: ModelRegistry, ref: string): Model
 	return modelRegistry.getAvailable().find((model) => refFromModel(model) === ref)
 }
 
-export type ResolvedModelRef = { model: Model<Api>; available?: undefined } | { model?: undefined; available: string[] }
-
 /**
- * Resolve a client-supplied model ref against the registry: exact
- * canonical-ref match on success; on a miss, the sorted available refs
- * for error reporting. Shared by the ACP server and model-switch, which
- * render the same resolve-or-list flow through different error surfaces.
+ * Sorted canonical refs of every available model — the shared "list what
+ * exists" half of every model-not-found error message.
  */
-export function resolveModelRef(modelRegistry: ModelRegistry, ref: string): ResolvedModelRef {
-	const target = findModelByRef(modelRegistry, ref)
-	if (target) return { model: target }
-	const available = modelRegistry
+export function availableModelRefs(modelRegistry: ModelRegistry): string[] {
+	return modelRegistry
 		.getAvailable()
 		.map((m) => refFromModel(m))
 		.sort()
-	return { available }
 }
 
 /**

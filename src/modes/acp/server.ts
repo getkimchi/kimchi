@@ -81,7 +81,12 @@ import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import { refFromModel, resolveModelRef, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import {
+	availableModelRefs,
+	findModelByRef,
+	refFromModel,
+	splitModelRef,
+} from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -742,14 +747,13 @@ export class KimchiAcpAgent implements Agent {
 				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		const resolved = resolveModelRef(modelRegistry, value)
-		if (!resolved.model) {
+		const target = findModelByRef(modelRegistry, value)
+		if (!target) {
 			throw RequestError.invalidParams(
 				undefined,
-				`model not found: "${value}". available models: multi-model, ${resolved.available.join(", ")}`,
+				`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
 			)
 		}
-		const target = resolved.model
 
 		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 		setMultiModelEnabled(sessionId, false)

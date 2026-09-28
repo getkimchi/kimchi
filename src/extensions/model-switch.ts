@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox"
 import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
-import { refFromModel, resolveModelRef, splitModelRef } from "./model-catalog/ref-utils.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -121,19 +121,18 @@ export default function modelSwitchExtension(
 				}
 			}
 
-			const resolved = resolveModelRef(ctx.modelRegistry, model)
-			if (!resolved.model) {
+			const target = findModelByRef(ctx.modelRegistry, model)
+			if (!target) {
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Model not found: ${model}\n\nAvailable models:\n${resolved.available.join("\n")}`,
+							text: `Model not found: ${model}\n\nAvailable models:\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,
 				}
 			}
-			const target = resolved.model
 
 			// When switching TO Auto, resolve the effective (routed) concrete model so
 			// the guards validate against the real window/modalities, not Auto's
