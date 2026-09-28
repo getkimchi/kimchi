@@ -68,13 +68,11 @@ async function startFerment(
 	terminal.submit("Test intent for ask-user e2e")
 	trace.step("submitted intent")
 
-	// Wait for the model's turn 1 stream to confirm propose_ferment_scoping completed.
-	await waitForText(terminal, "I'll outline the scope.", { timeoutMs: STREAM_TIMEOUT_MS })
-	trace.step("turn 1 stream received — propose_ferment_scoping completed")
-
 	// The review dialog appears directly after propose_ferment_scoping terminates
 	// the turn (the onPlanReviewRequest listener schedules it via setTimeout(0)).
-	// No suppression turn is needed — the dialog appears without agent_end.
+	// The dialog is a centered overlay that COVERS the transcript, so the turn 1
+	// stream text behind it is not visible while it is open — resolve the dialog
+	// first, then assert on the stream text.
 	await waitForText(terminal, "Proceed with this plan?", { timeoutMs: STREAM_TIMEOUT_MS })
 	await waitForText(terminal, "Start execution", { timeoutMs: INPUT_TIMEOUT_MS })
 	trace.step("plan-review dialog visible")
@@ -82,6 +80,9 @@ async function startFerment(
 	// Press Enter to accept "Start execution" (default first option in the dialog).
 	terminal.submit("")
 	trace.step("confirmed 'Start execution' (Enter on default option)")
+
+	await waitForText(terminal, "I'll outline the scope.", { timeoutMs: STREAM_TIMEOUT_MS })
+	trace.step("turn 1 stream received — propose_ferment_scoping completed")
 
 	// Wait for the model's turn 2 stream — tools are restored after confirmation,
 	// so ask_user / confirm_ferment_completion_criteria is now available.
