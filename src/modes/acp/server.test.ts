@@ -5903,7 +5903,8 @@ describe("setSessionConfigOption", () => {
 			value: "kimchi-dev/anthropic/claude-opus-4-6",
 		})
 		expect(fake.model).toMatchObject({ provider: "kimchi-dev/anthropic", id: "claude-opus-4-6" })
-		expect(res.configOptions[1].currentValue).toBe("kimchi-dev/anthropic/claude-opus-4-6")
+		const modelOption = res.configOptions.find((opt) => opt.id === "model")
+		expect(modelOption?.currentValue).toBe("kimchi-dev/anthropic/claude-opus-4-6")
 	})
 
 	it("rejects invalid permission mode value", async () => {
