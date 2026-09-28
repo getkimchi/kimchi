@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { createModel } from "../__mocks__/model-registry.js"
+import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 
 const primary = createModel("deepseek-v4-flash-0731")
@@ -28,9 +28,7 @@ describe("resolveClassifierCandidates", () => {
 			missingRefs: [primaryRef, glmRef, fallbackRef],
 		},
 	])("resolves ordered exact matches from $models", ({ models, candidates, missingRefs }) => {
-		const registry = {
-			getAvailable: () => models,
-		}
+		const registry = createModelRegistry(models)
 		expect(resolveClassifierCandidates(registry)).toEqual({ candidates, missingRefs })
 	})
 })
