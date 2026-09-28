@@ -123,6 +123,7 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
@@ -494,6 +495,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
+	})
+
+	it("publishes todos written during extension startup before the plan subscription exists", async () => {
+		const startup = new FakeAgentSession("startup-todos")
+		const updates: SessionNotification[] = []
+		const conn = makeConn()
+		conn.sessionUpdate = async (notification) => {
+			updates.push(notification)
+		}
+		startup.bindExtensionsImpl = async () => {
+			applyWriteTodos({ todos: [{ content: "Write unit tests", status: "pending" }] }, startup.sessionId)
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(startup),
+		})
+		try {
+			await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+			expect(updates.filter(({ update }) => update.sessionUpdate === "plan")).toEqual([
+				{
+					sessionId: startup.sessionId,
+					update: {
+						sessionUpdate: "plan",
+						entries: [{ content: "Write unit tests", priority: "medium", status: "pending" }],
+						_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+					},
+				},
+			])
+		} finally {
+			await localAgent.unstable_closeSession({ sessionId: startup.sessionId })
+			clearTodoStore(startup.sessionId)
+		}
 	})
 
 	// initialize() should declare image support based on cached models.json

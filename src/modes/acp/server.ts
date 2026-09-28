@@ -613,6 +613,8 @@ export class KimchiAcpAgent implements Agent {
 		})
 		tracker.start()
 		record.planTracker = tracker
+		// Startup hooks and restored sessions can populate Todos before subscription.
+		tracker.emitRestoredSnapshot()
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -824,9 +826,6 @@ export class KimchiAcpAgent implements Agent {
 			this.sessions.set(sessionId, record)
 
 			this.startPlanTracker(record, sessionId)
-			// Restoring the Todo store bypasses its listeners, so publish one
-			// current non-empty list explicitly for the resumed client.
-			record.planTracker?.emitRestoredSnapshot()
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
