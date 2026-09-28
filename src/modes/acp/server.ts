@@ -735,16 +735,15 @@ export class KimchiAcpAgent implements Agent {
 			return value
 		}
 
-		// Canonical refs are provider/id; a slash-less value can never match.
-		if (!value.includes("/")) {
+		const parsed = splitModelRef(value)
+		if (!parsed) {
 			throw RequestError.invalidParams(
 				undefined,
 				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		// Refs must match the registry's canonical refs exactly: sub-providers
-		// like kimchi-dev/anthropic put a second slash in the ref, which a
-		// first-slash split cannot round-trip (see findModelByRef).
+		// Exact canonical-ref match: robust even if a model id ever contains
+		// a slash, where last-slash splitting alone cannot disambiguate.
 		const target = findModelByRef(modelRegistry, value)
 		if (!target) {
 			const available = modelRegistry
