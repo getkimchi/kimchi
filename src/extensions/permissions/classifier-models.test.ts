@@ -29,7 +29,7 @@ describe("resolveClassifierCandidates", () => {
 		},
 	])("resolves ordered exact matches from $models", ({ models, candidates, missingRefs }) => {
 		const registry = {
-			find: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
+			getAvailable: () => models,
 		}
 		expect(resolveClassifierCandidates(registry)).toEqual({ candidates, missingRefs })
 	})

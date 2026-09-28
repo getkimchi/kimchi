@@ -26,6 +26,8 @@ vi.mock("../../config/json.js", async (importOriginal) => {
 	}
 })
 
+import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { refFromModel } from "../model-catalog/ref-utils.js"
 import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
 	applyRoleAugmentation,
@@ -33,6 +35,7 @@ import {
 	extractCustomConfigs,
 	getAllowedMultiModelRefs,
 	getModelRoles,
+	getOrchestratorModel,
 	type ModelRoles,
 	modelIdFromRef,
 	normalizeRoleModels,
@@ -643,5 +646,20 @@ describe("applyRoleAugmentation", () => {
 		const before = getModelRoles()
 		applyRoleAugmentation((roles) => ({ ...roles }))
 		expect(getModelRoles()).toEqual(before)
+	})
+})
+
+describe("getOrchestratorModel", () => {
+	it("resolves a sub-provider role ref (kimchi-dev/anthropic/...) that first-slash splitting cannot", () => {
+		const SUB_PROVIDER_REF = "kimchi-dev/anthropic/claude-opus-4-6"
+		saveModelRoles({ ...DEFAULT_MODEL_ROLES, orchestrator: SUB_PROVIDER_REF })
+
+		const registry = createModelRegistry([
+			{ ...createModel("claude-opus-4-6", "kimchi-dev/anthropic"), name: "Opus 4.6" },
+		])
+		const { model, modelRef } = getOrchestratorModel("no-such-session", registry as never)
+
+		expect(modelRef).toBe(SUB_PROVIDER_REF)
+		expect(model && refFromModel(model)).toBe(SUB_PROVIDER_REF)
 	})
 })
