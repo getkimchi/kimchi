@@ -1,6 +1,10 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
-import { Markdown, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui"
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { Markdown, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui"
+import { afterEach, beforeEach, describe, expect, it, type Mock, onTestFinished, vi } from "vitest"
+
+const editorMock = vi.hoisted(() => ({
+	last: undefined as { handleMouse: Mock<(event: TuiMouseEvent) => TuiMouseEventResult | undefined> } | undefined,
+}))
 
 vi.mock("../remote-run/runner.js", () => ({
 	isRemoteRunEnabled: vi.fn(() => false),
@@ -17,6 +21,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		ExtensionEditorComponent: class {
 			focused = false
 			private value = ""
+			handleMouse = vi.fn((_event: TuiMouseEvent): TuiMouseEventResult | undefined => undefined)
 
 			constructor(
 				_tui: TUI,
@@ -25,7 +30,9 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 				_prefill: string | undefined,
 				private readonly onSubmit: (value: string) => void,
 				private readonly onCancel: () => void,
-			) {}
+			) {
+				editorMock.last = this
+			}
 
 			render(): string[] {
 				return [this.title]
@@ -351,6 +358,72 @@ describe("PlanReviewComponent", () => {
 			component.render(80)
 
 			expect(component.handleMouse({ ...wheel(0), type: "click", button: "left" })).toBeUndefined()
+		})
+
+		describe("in feedback mode", () => {
+			// Feedback cap = 40 - 9 - 8 = 23 plan lines. Frame rule (row 0) +
+			// title (row 1) + 23 plan rows + spacer puts the editor at row 26;
+			// the " ▍ " rail shifts editor-local x by 3.
+			const editorRow = 26
+
+			function enterFeedbackMode() {
+				const created = createComponent(vi.fn(), { planMarkdown, terminalRows: rows })
+				created.component.render(80)
+				created.component.handleInput("\x1b[B") // auto
+				created.component.handleInput("\x1b[B") // feedback
+				created.component.handleInput("\r")
+				created.component.render(80)
+				const editor = editorMock.last
+				if (!editor) throw new Error("feedback editor was not created")
+				return { ...created, editor }
+			}
+
+			it("forwards clicks over the editor with editor-local coordinates", () => {
+				const { component, editor } = enterFeedbackMode()
+				editor.handleMouse.mockReturnValue({ handled: true, focus: true })
+
+				const result = component.handleMouse({ ...wheel(0), type: "click", button: "left", y: editorRow })
+
+				expect(result).toEqual({ handled: true, focus: true })
+				expect(editor.handleMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 7, y: 0, width: 77, height: 1 }))
+			})
+
+			it("drops the editor's dispatch target so focus stays on the dialog", () => {
+				const { component, editor } = enterFeedbackMode()
+				editor.handleMouse.mockReturnValue({
+					handled: true,
+					focus: true,
+					target: { component: editor, originX: 0, originY: 0, width: 77, height: 1 },
+					focusTarget: editor,
+				} as TuiMouseEventResult)
+
+				const result = component.handleMouse({ ...wheel(0), type: "click", button: "left", y: editorRow })
+
+				expect(result).toEqual({ handled: true, focus: true })
+			})
+
+			it("lets the editor consume wheel events over it without scrolling the plan", () => {
+				const { component, editor } = enterFeedbackMode()
+				editor.handleMouse.mockReturnValue({ handled: true })
+
+				expect(component.handleMouse({ ...wheel(3), y: editorRow })).toEqual({ handled: true })
+				expect(component.render(80).join("\n")).toContain("section 0")
+			})
+
+			it("scrolls the plan when the editor leaves a wheel event unhandled", () => {
+				const { component, editor } = enterFeedbackMode()
+
+				expect(component.handleMouse({ ...wheel(4), y: editorRow })).toEqual({ handled: true, render: true })
+				expect(editor.handleMouse).toHaveBeenCalledOnce()
+				expect(component.render(80).join("\n")).not.toContain("section 0")
+			})
+
+			it("scrolls the plan on wheel over the plan without involving the editor", () => {
+				const { component, editor } = enterFeedbackMode()
+
+				expect(component.handleMouse(wheel(4))).toEqual({ handled: true, render: true })
+				expect(editor.handleMouse).not.toHaveBeenCalled()
+			})
 		})
 
 		it("shrinks the plan window to make room for the feedback editor", () => {

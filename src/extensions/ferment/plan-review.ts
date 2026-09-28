@@ -124,6 +124,9 @@ class PlanReviewComponent implements Component {
 	/** Max valid scrollOffset measured during the last render — lets key
 	 *  handling clamp without re-measuring the markdown. */
 	private maxScrollOffset = 0
+	/** Where the feedback editor sat in the last render (component-local
+	 *  rows), so mouse events over it can be forwarded with local coords. */
+	private editorBounds = { top: 0, height: 0 }
 
 	constructor(
 		tui: TUI,
@@ -178,7 +181,10 @@ class PlanReviewComponent implements Component {
 		const lines: string[] = [this.theme.fg("toolTitle", this.theme.bold("Plan review")), ...visibleMarkdown, ""]
 		if (this.mode === "feedback") {
 			this.ensureEditor()
-			lines.push(...(this.editor?.render(contentWidth) ?? []), "")
+			const editorLines = this.editor?.render(contentWidth) ?? []
+			// +1 for the top frame rule prepended by withFrame.
+			this.editorBounds = { top: lines.length + 1, height: editorLines.length }
+			lines.push(...editorLines, "")
 		} else {
 			lines.push(
 				this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")),
@@ -215,10 +221,30 @@ class PlanReviewComponent implements Component {
 	/** Mouse wheel over the overlay. pi-tui hit-tests overlay bounds, splits
 	 *  batched stdin into single events, and converts notches to lines (honoring
 	 *  the user's wheel-scroll setting), so wheel input outside the dialog never
-	 *  reaches here. */
+	 *  reaches here. In feedback mode, events over the editor go to it first
+	 *  (click-to-position, autocomplete wheel); anything it leaves unhandled
+	 *  falls back to plan scrolling. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const editorResult = this.dispatchToEditor(event)
+		if (editorResult) return editorResult
 		if (event.type !== "wheel" || !event.wheelDelta) return undefined
 		return { handled: true, render: this.scrollByLines(event.wheelDelta) }
+	}
+
+	private dispatchToEditor(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.mode !== "feedback" || !this.editor) return undefined
+		const railWidth = PlanReviewComponent.rail.length
+		const { top, height } = this.editorBounds
+		const x = event.x - railWidth
+		const y = event.y - top
+		if (x < 0 || y < 0 || y >= height) return undefined
+		const result = this.editor.handleMouse({ ...event, x, y, width: event.width - railWidth, height })
+		if (!result) return undefined
+		// Drop the editor's dispatch target/focusTarget so pi-tui attributes focus
+		// and drag capture to this component: it already forwards every key to
+		// the editor and re-translates follow-up mouse events here.
+		const { handled, capture, focus, render } = result
+		return { handled, capture, focus, render }
 	}
 
 	handleInput(data: string): void {
