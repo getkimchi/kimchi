@@ -20,6 +20,34 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+test("resizing to a narrow terminal keeps the vision switch usable", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "vision-gate-narrow",
+			models: MODELS,
+			initialModel: "text-basic",
+			responses: [{ stream: ["Ack in narrow terminal."], usage: { prompt_tokens: 80, completion_tokens: 6 } }],
+			seedHome: seedScenario(),
+		},
+		async (fixture, trace) => {
+			terminal.submit("what is in photo.png")
+			await waitForText(terminal, GATE_TITLE, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.resize(50, TUI_TEST_CONFIG.rows)
+			await waitForText(terminal, GATE_TITLE, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.write("vision-b")
+			await waitForText(terminal, "vision-basic", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("vision selector usable after narrowing the terminal")
+			terminal.submit("")
+			await waitForText(terminal, "Ack in narrow terminal.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			const requests = await waitForChatRequest(fixture)
+			expect(requestModel(requests[requests.length - 1])).toBe("vision-basic")
+			expect(requestHasImage(requests[requests.length - 1])).toBe(true)
+			trace.step("image submitted after switching in the narrow terminal")
+		},
+	)
+})
+
 /** Text-only initial model; window large enough that priming never auto-compacts. */
 const TEXT_MODEL: FakeModel = {
 	slug: "text-basic",

@@ -1,9 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { Container, fuzzyFilter, Key, matchesKey } from "@earendil-works/pi-tui"
+import { Container, fuzzyFilter, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { renderModelTable } from "../model-selector-table.js"
 import { getModelDescription } from "../models.js"
-import { humanizeContextWindow } from "./vision-support.js"
 
 /** Outcome the gate acts on. `cancel` keeps every attachment source retained. */
 export type VisionDialogResult = { kind: "switch"; model: Model<Api> } | { kind: "remove" } | { kind: "cancel" }
@@ -209,34 +209,6 @@ export class VisionSwitchComponent extends Container {
 		}
 	}
 
-	/**
-	 * DESCRIPTION cell: the compact-warning annotation (this dialog's
-	 * equivalent of /model's "Default for new sessions." annotation) combined
-	 * with the endpoint-provided description from the shared registry. The
-	 * annotation renders in warning color so the compact signal stays
-	 * prominent; both parts clip independently to the column budget.
-	 */
-	private descriptionCell(candidate: VisionSwitchCandidate, showDesc: boolean, descW: number): string {
-		const annotation = candidate.compactNeeded ? "⚠ compact first" : ""
-		const clip = (s: string, w: number) => (s.length > w ? `${s.slice(0, Math.max(1, w - 1))}…` : s)
-		if (!showDesc) {
-			// Ultra-narrow terminal: the DESCRIPTION column is gone, but the
-			// compact signal still gets a minimal warning marker in its place.
-			return candidate.compactNeeded && descW >= 2 ? `  ${this.theme.fg("warning", "⚠")}` : ""
-		}
-		const description = getModelDescription(`${candidate.model.provider}/${candidate.model.id}`) ?? ""
-		if (annotation && description) {
-			const annW = Math.min(annotation.length, descW)
-			const rest = descW - annW - 3
-			const descPart =
-				rest >= 4 ? `${this.theme.fg("muted", " · ")}${this.theme.fg("muted", clip(description, rest))}` : ""
-			return `  ${this.theme.fg("warning", clip(annotation, annW))}${descPart}`
-		}
-		if (annotation) return `  ${this.theme.fg("warning", clip(annotation, descW))}`
-		if (description) return `  ${this.theme.fg("muted", clip(description, descW))}`
-		return ""
-	}
-
 	override render(width: number): string[] {
 		const dim = (s: string) => this.theme.fg("muted", s)
 		const rule = this.theme.fg("border", "─".repeat(Math.max(1, width)))
@@ -265,40 +237,20 @@ export class VisionSwitchComponent extends Container {
 			const nonePlain = this.options.getCandidates().length === 0 ? "No vision models available" : "No matching models"
 			lines.push(` ${dim(nonePlain)}`)
 		} else {
-			// /model-style capability table: MODEL | PROVIDER | CONTEXT |
-			// DESCRIPTION. Column widths come from the full filtered list so rows
-			// stay aligned while scrolling; the DESCRIPTION column takes the
-			// leftover width and gives way first on narrow terminals, then the
-			// provider column, and the model id last. The last column is clipped,
-			// never padded, so the header row cannot wrap onto a phantom blank line.
-			const contextOf = (c: VisionSwitchCandidate) => humanizeContextWindow(c.model.contextWindow)
-			const maxId = candidates.reduce((m, c) => Math.max(m, c.model.id.length), 0)
-			const maxProvider = candidates.reduce((m, c) => Math.max(m, c.model.provider.length), 0)
-			const contextW = Math.max(
-				7,
-				candidates.reduce((m, c) => Math.max(m, contextOf(c).length), 0),
+			const table = renderModelTable(
+				candidates.map((candidate, index) => ({
+					model: candidate.model,
+					id: candidate.model.id,
+					provider: candidate.model.provider,
+					selected: index === this.selectedIndex,
+					description: getModelDescription(`${candidate.model.provider}/${candidate.model.id}`) ?? "",
+					annotation: candidate.compactNeeded ? "⚠ compact first" : "",
+					warning: candidate.compactNeeded,
+				})),
+				width,
+				this.theme,
 			)
-			// Gutter: the dialog's 1-space indent plus the 2-cell selection cursor;
-			// separators: three 2-space column gaps.
-			const gutter = 3
-			const separators = 6
-			const avail = Math.max(24, width - gutter - separators - contextW)
-			let providerW = Math.min(maxProvider, Math.max(3, avail - Math.min(maxId, 24)))
-			let modelW = Math.min(maxId, Math.max(4, avail - providerW))
-			if (modelW + providerW > avail) {
-				providerW = Math.max(3, avail - modelW)
-				if (modelW + providerW > avail) modelW = Math.max(4, avail - providerW)
-			}
-			const leftover = width - gutter - separators - contextW - modelW - providerW
-			const showDesc = leftover >= 4
-			const descW = leftover
-			const padEnd = (s: string, w: number) => (s.length > w ? `${s.slice(0, Math.max(1, w - 1))}…` : s).padEnd(w)
-			const clip = (s: string, w: number) => (s.length > w ? `${s.slice(0, Math.max(1, w - 1))}…` : s)
-
-			const headerPlain =
-				`${" ".repeat(gutter)}${"MODEL".padEnd(modelW)}  ${"PROVIDER".padEnd(providerW)}  ${"CONTEXT".padEnd(contextW)}` +
-				(showDesc ? `  ${clip("DESCRIPTION", descW)}` : "")
-			lines.push(dim(headerPlain))
+			lines.push(table[0] ?? "")
 
 			const maxVisible = Math.min(MAX_VISIBLE_CANDIDATES, candidates.length)
 			const startIndex = Math.max(
@@ -306,20 +258,7 @@ export class VisionSwitchComponent extends Container {
 				Math.min(this.selectedIndex - Math.floor(maxVisible / 2), candidates.length - maxVisible),
 			)
 			const endIndex = Math.min(startIndex + maxVisible, candidates.length)
-			for (let i = startIndex; i < endIndex; i++) {
-				const candidate = candidates[i]
-				if (!candidate) continue
-				const isSelected = i === this.selectedIndex
-				const cursor = isSelected ? this.theme.fg("accent", "→ ") : "  "
-				const idText = isSelected
-					? this.theme.fg("accent", padEnd(candidate.model.id, modelW))
-					: this.theme.fg("text", padEnd(candidate.model.id, modelW))
-				const providerText = dim(padEnd(candidate.model.provider, providerW))
-				const contextText = this.theme.fg("text", padEnd(contextOf(candidate), contextW))
-				lines.push(
-					` ${cursor}${idText}  ${providerText}  ${contextText}${this.descriptionCell(candidate, showDesc, descW)}`,
-				)
-			}
+			lines.push(...table.slice(startIndex + 1, endIndex + 1))
 			if (startIndex > 0 || endIndex < candidates.length) {
 				lines.push(` ${dim(`(${this.selectedIndex + 1}/${candidates.length})`)}`)
 			}
@@ -347,6 +286,6 @@ export class VisionSwitchComponent extends Container {
 		lines.push(` ${this.theme.fg("dim", hintPlain)}`)
 		lines.push("")
 		lines.push(rule)
-		return lines
+		return lines.map((line) => truncateToWidth(line, width, ""))
 	}
 }

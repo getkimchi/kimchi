@@ -17,11 +17,14 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { initTheme } from "@earendil-works/pi-coding-agent"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import { ModelSelectorComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/model-selector.js"
+import { installModelTableRenderer, renderModelTable } from "./model-selector-table.js"
 
 beforeAll(() => {
 	initTheme("default")
+	installModelTableRenderer()
 })
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: test-only helper
@@ -108,6 +111,26 @@ function modelRows(lines: string[]): string[] {
 }
 
 describe("/model selector capability table (installed patch)", () => {
+	it("budgets Unicode identifiers and descriptions by terminal cells", () => {
+		const rows = [
+			{
+				model: KIMI,
+				id: "視覚モデル".repeat(20),
+				provider: "提供者".repeat(20),
+				selected: true,
+				description: "画像認識モデル".repeat(20),
+				warning: true,
+				annotation: "⚠ compact first",
+			},
+		]
+		for (const width of [8, 20, 34, 50, 80, 120]) {
+			for (const vision of [false, true]) {
+				const lines = renderModelTable(rows, width, { fg: (_color, text) => text }, vision)
+				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				if (width >= 20) expect(lines[1]).toContain("⚠")
+			}
+		}
+	})
 	it("renders MODEL | PROVIDER | CONTEXT | VISION header and per-row values", () => {
 		const { renderPlain } = makeSelector({})
 		const lines = renderPlain(100)
@@ -299,12 +322,8 @@ describe("/model selector capability table (installed patch)", () => {
 		)
 		const source = readFileSync(distFile, "utf-8")
 		const updateList = source.slice(source.indexOf("updateList() {"), source.indexOf("handleSelect(model) {"))
-		expect(source).toContain('import { formatTokens } from "./footer.js"')
-		expect(updateList).toContain("formatTokens(item.model.contextWindow ?? 0)")
-		expect(updateList).toContain("'MODEL'.padEnd(modelW)")
-		expect(updateList).toContain("imgOf(item) === '✓'")
+		expect(updateList).toContain("__kimchiRenderModelTable")
 		expect(updateList).toContain("__kimchiModelDescriptions")
-		expect(updateList).toContain("'DESCRIPTION'")
 		expect(updateList).toContain('"Default for new sessions."')
 	})
 })

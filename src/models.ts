@@ -343,8 +343,8 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 // global (`__kimchiModelDescriptions`) — the same channel the patched selector
 // uses for the orchestrator ref, since a dist component cannot import kimchi
 // modules. Keyed by "<provider block>/<model id>" — exactly what the selector
-// row sees. Endpoint-provided descriptions are registered first, so the Auto
-// fallback constant never overrides real data.
+// row sees. Fresh metadata replaces cached descriptions; Auto fallback text
+// is inserted only when the current catalog has no description.
 
 type ModelDescriptionRegistry = Map<string, string>
 
@@ -356,11 +356,9 @@ function modelDescriptionRegistry(): ModelDescriptionRegistry {
 	return globals.__kimchiModelDescriptions
 }
 
-/** Register a model description for the /model selector. First write wins, so
- *  endpoint data takes precedence over fallback constants. */
+/** Register authoritative metadata, replacing earlier cache or fallback text. */
 export function registerModelDescription(key: string, description: string): void {
-	const registry = modelDescriptionRegistry()
-	if (!registry.has(key)) registry.set(key, description)
+	modelDescriptionRegistry().set(key, description)
 }
 
 export function getModelDescription(key: string): string | undefined {
@@ -372,11 +370,18 @@ export function __clearModelDescriptionsForTest(): void {
 	modelDescriptionRegistry().clear()
 }
 
-/** Register every model description found in models.json provider blocks. */
-function registerDescriptionsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): void {
+/** Register every model description found in models.json provider blocks.
+ * Shared with the environment models path (KIMCHI_API_KEY sessions), which
+ * bypasses updateModelsConfig/injectAutoModel and must still populate the
+ * /model selector's description registry. */
+export function registerDescriptionsFromProviders(
+	providers: Record<string, { models?: Array<{ id: string; description?: string }> }>,
+): void {
 	for (const [block, provider] of Object.entries(providers)) {
 		for (const model of provider?.models ?? []) {
-			if (model?.description) registerModelDescription(`${block}/${model.id}`, model.description)
+			const key = `${block}/${model.id}`
+			if (model.description) registerModelDescription(key, model.description)
+			else modelDescriptionRegistry().delete(key)
 		}
 	}
 }
@@ -489,8 +494,7 @@ export function injectAutoModel(modelsJsonPath: string): void {
 	}
 	const kimchiDev = config.providers?.["kimchi-dev"]
 	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
-	// Restore descriptions for everything already on disk first, so the
-	// fallback below cannot override an endpoint-provided one.
+	// Refresh descriptions from disk before filling in missing Auto text.
 	registerDescriptionsFromProviders(config.providers ?? {})
 	// Only synthesize the harness virtual `auto` when the catalog does not
 	// already advertise a `kimchi-dev/auto` entry; a backend-owned `auto` then
@@ -499,9 +503,8 @@ export function injectAutoModel(modelsJsonPath: string): void {
 		const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
 		kimchiDev.models = [...kimchiDev.models, autoModelConfig(concreteMetadata)]
 	}
-	// The Auto row's description falls back to the constant (first-write-wins:
-	// an endpoint-provided description for a backend-owned auto takes over).
-	registerModelDescription(`kimchi-dev/${AUTO_MODEL_ID}`, AUTO_MODEL_DESCRIPTION)
+	const autoKey = `kimchi-dev/${AUTO_MODEL_ID}`
+	if (!getModelDescription(autoKey)) registerModelDescription(autoKey, AUTO_MODEL_DESCRIPTION)
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 
@@ -574,8 +577,11 @@ export async function discoverModelsConfig(
 		if (isAuthRejectedMessage(message)) {
 			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
 		}
+		// Environment-account discovery must not populate UI metadata from the
+		// saved account when cached fallback is explicitly disabled.
+		if (options.allowCachedFallback === false) throw err
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
-		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
+		if (cached.length === 0 && otherModels.length === 0) throw err
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return {
 			models: sortModels([...cached, ...otherModels]),

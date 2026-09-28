@@ -1337,6 +1337,29 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 		__clearModelDescriptionsForTest()
 	})
 
+	it("replaces fallback and stale descriptions on refresh and removes withdrawn descriptions", async () => {
+		const metadata = (description?: string) => ({
+			slug: "auto",
+			display_name: "Auto",
+			provider: "ai-enabler",
+			reasoning: true,
+			input_modalities: ["text", "image"],
+			is_serverless: true,
+			limits: { context_window: 262144, max_output_tokens: 32768 },
+			description,
+		})
+		const fetchMock = vi.fn()
+		vi.stubGlobal("fetch", fetchMock)
+		for (const description of [undefined, "New backend description.", "Updated backend description.", undefined]) {
+			fetchMock.mockResolvedValueOnce(Response.json({ models: [metadata(description)] }))
+			await updateModelsConfig(modelsJsonPath, "test-key")
+			injectAutoModel(modelsJsonPath)
+			expect(getModelDescription("kimchi-dev/auto")).toBe(
+				description ?? "Picks the best model for your tasks automatically.",
+			)
+		}
+	})
+
 	it("persists endpoint descriptions into models.json and registers them for the selector", async () => {
 		vi.stubGlobal("fetch", vi.fn())
 		vi.mocked(fetch).mockResolvedValueOnce({
@@ -1480,7 +1503,7 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
 		// injectAutoModel runs after the fetch in cli.ts; its fallback must not
-		// override the endpoint-provided description (first write wins).
+		// override the endpoint-provided description.
 		injectAutoModel(modelsJsonPath)
 		vi.restoreAllMocks()
 

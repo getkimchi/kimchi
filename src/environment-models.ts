@@ -1,14 +1,17 @@
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
-import { AUTO_MODEL_ID } from "./extensions/router/constants.js"
+import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_ID } from "./extensions/router/constants.js"
 import { isKimchiProvider } from "./kimchi-provider.js"
 import {
 	autoModelConfig,
 	buildModelsConfig,
 	discoverModelsConfig,
+	getModelDescription,
 	isTransientModelsError,
 	type ModelMetadata,
+	registerDescriptionsFromProviders,
+	registerModelDescription,
 } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
 
@@ -44,6 +47,14 @@ export async function discoverEnvironmentModels(
 	}
 	const ollama = await discoverOllamaProvider(resolveOllamaHost())
 	providers.ollama = ollama
+	// This path replaces updateModelsConfig/injectAutoModel, which normally
+	// fill the /model selector's description registry on the config-account
+	// path — without this, KIMCHI_API_KEY sessions render the DESCRIPTION
+	// column empty. Fresh endpoint data replaces older descriptions; the Auto fallback
+	// mirrors injectAutoModel so a backend-owned auto keeps its description.
+	registerDescriptionsFromProviders(providers)
+	const autoKey = `kimchi-dev/${AUTO_MODEL_ID}`
+	if (!getModelDescription(autoKey)) registerModelDescription(autoKey, AUTO_MODEL_DESCRIPTION)
 	return {
 		providers,
 		models: [...models, ...ollamaModelsToMetadata(ollama.models)],

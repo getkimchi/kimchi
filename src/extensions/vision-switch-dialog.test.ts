@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import { __clearModelDescriptionsForTest, registerModelDescription } from "../models.js"
 import { createContext } from "./__mocks__/context.js"
@@ -92,6 +93,37 @@ const DOWN = "\x1b[B"
 const CTRL_R = "\x12"
 
 describe("VisionSwitchComponent render", () => {
+	it.each([1, 8, 20, 34, 50, 80])("keeps every rendered line within a %i-column terminal", async (width) => {
+		const { component } = makeHarness({
+			candidates: [{ model: makeModel({ id: "vision-".repeat(20), name: "視覚モデル".repeat(25) }) }],
+			onSwitch: async () => ({ ok: false, error: "A very long switch error. ".repeat(20) }),
+		})
+		const expectFits = () => {
+			for (const line of component.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+		}
+		expectFits()
+		component.handleInput(ENTER)
+		await vi.waitFor(() => expect(renderText(component)).toContain("switch error"))
+		expectFits()
+		for (const char of "no-matches".repeat(20)) component.handleInput(char)
+		expectFits()
+	})
+
+	it("keeps the compact marker visible when long model and provider names fill the table", () => {
+		const { component } = makeHarness({
+			candidates: [
+				{
+					model: makeModel({ id: "vision-model-".repeat(10), provider: "long-provider-".repeat(10) }),
+					compactNeeded: true,
+				},
+			],
+		})
+		for (const width of [20, 34, 50, 80]) {
+			const row = component.render(width).find((line) => line.includes("→"))
+			expect(row).toContain("⚠")
+			expect(visibleWidth(row ?? "")).toBeLessThanOrEqual(width)
+		}
+	})
 	it("renders the inline selector layout: rules, title, header, rows, and hint", () => {
 		const { component } = makeHarness({})
 		const text = renderText(component)
