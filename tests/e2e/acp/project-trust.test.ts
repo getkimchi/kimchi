@@ -24,6 +24,19 @@ function writeTestSkill(root: string, name: string, description: string): void {
 	writeFileSync(join(root, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\nBody.\n`, "utf-8")
 }
 
+// Kimchi's session files live under ~/.config/kimchi/harness/sessions/<cwd-encoded>/.
+function encodeCwdDir(cwd: string): string {
+	return `--${cwd.replace(/^[\\/]/, "").replace(/[\\/:]/g, "-")}--`
+}
+
+function writeSessionFile(homeDir: string, sessionId: string, cwd: string, entries: unknown[]): void {
+	const sessionDir = join(homeDir, ".config", "kimchi", "harness", "sessions", encodeCwdDir(cwd))
+	mkdirSync(sessionDir, { recursive: true })
+	const fileName = `2026-05-09T00-00-00.000Z_${sessionId}.jsonl`
+	const lines = entries.map((e) => JSON.stringify(e)).join("\n")
+	writeFileSync(join(sessionDir, fileName), `${lines}\n`, "utf-8")
+}
+
 function lastTrustUpdate(fixture: AcpFixture, sessionId: string) {
 	const updates = fixture.client.extNotifications.filter(
 		(n) => n.method === PROJECT_TRUST_UPDATE && (n.params as { sessionId?: string }).sessionId === sessionId,
@@ -237,6 +250,42 @@ describe("ACP integration — project trust surfacing", () => {
 				() => commandNames(fixture, sessionB),
 				(names) => names.includes("skill:e2e-invalid-skill"),
 			)
+		},
+		STARTUP_TIMEOUT_MS + WAIT_MS,
+	)
+
+	it(
+		"pushes trust state on session load, not only on session/new",
+		async () => {
+			fixture = await startAcpFixture({ artifactName: "project-trust-load", responses: [] })
+
+			// A gated project skill so the untrusted push must carry blocked: ["skills"].
+			const projectSkills = join(fixture.workDir, ".kimchi", "skills")
+			writeTestSkill(projectSkills, "e2e-load-gated-skill", "E2E load gated skill")
+
+			// Hand-craft a persisted session in the workDir; loading it (rather
+			// than creating a new one) must still push the trust state — a
+			// client resuming a conversation needs the gate answer as much as
+			// one starting fresh.
+			const sessionId = "trust-load-session"
+			const cwd = fixture.workDir
+			writeSessionFile(fixture.homeDir, sessionId, cwd, [
+				{
+					type: "session",
+					version: 3,
+					id: sessionId,
+					timestamp: "2026-05-09T00:00:00Z",
+					cwd,
+				},
+			])
+
+			await fixture.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			const update = await waitFor(
+				() => lastTrustUpdate(fixture, sessionId),
+				(u) => u !== undefined,
+			)
+			expect(update).toMatchObject({ sessionId, trusted: false, blocked: ["skills"] })
 		},
 		STARTUP_TIMEOUT_MS + WAIT_MS,
 	)

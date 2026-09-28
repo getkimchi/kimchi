@@ -1233,6 +1233,15 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
+		it("advertises the trust ext methods in the initialize capabilities _meta", async () => {
+			const response = await makeTestAgent().initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				set_project_trust: true,
+				get_path_trust: true,
+				set_path_trust: true,
+			})
+		})
+
 		// Sessionless by design (kimchi-studio ADR-0043): onboarding completion is global
 		// per-machine state, so the call carries no sessionId.
 		it("writes the onboarding flag without requiring a session", async () => {
@@ -9292,6 +9301,39 @@ describe("KimchiAcpAgent set_project_trust pin sweep", () => {
 		// decision is not persisted (nothing to assert on disk beyond the
 		// absence of trust.json).
 		expect(result).toMatchObject({ trusted: true })
+		expect(existsSync(join(agentDir, "trust.json"))).toBe(false)
+	})
+
+	it("deny_persist stores the refusal and pins the requester untrusted", async () => {
+		makeTrustAgent()
+
+		const res = await agent.newSession({ cwd: parentDir, mcpServers: [] })
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_project_trust, {
+			sessionId: res.sessionId,
+			decision: "deny_persist",
+		})
+
+		// The refusal is both in the store (future sessions) and mirrored to
+		// the live pin (this session).
+		expect(result).toMatchObject({ trusted: false })
+		expect(isProjectScopeAllowed(parentDir)).toBe(false)
+		const store = new ProjectTrustStore(agentDir)
+		expect(store.getEntry(parentDir)?.decision).toBe(false)
+	})
+
+	it("deny pins the requester untrusted without touching the store", async () => {
+		makeTrustAgent()
+
+		const res = await agent.newSession({ cwd: parentDir, mcpServers: [] })
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_project_trust, {
+			sessionId: res.sessionId,
+			decision: "deny",
+		})
+
+		// In-memory refusal for this connection only: the gate is closed now,
+		// but nothing is persisted — the next session still re-asks.
+		expect(result).toMatchObject({ trusted: false })
+		expect(isProjectScopeAllowed(parentDir)).toBe(false)
 		expect(existsSync(join(agentDir, "trust.json"))).toBe(false)
 	})
 })
