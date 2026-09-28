@@ -326,7 +326,8 @@ async function runHttpFixture() {
 				callback.searchParams.set("state", state)
 				// Remote https redirect URIs are pre-registered with providers that reject
 				// loopback redirects and served by a hosted bounce endpoint (for example
-				// /mcp-oauth/callback-v2) that terminates on the default loopback callback.
+				// https://app.kimchi.dev/mcp-oauth/callback-v2) that terminates on the
+				// default loopback callback.
 				// Emulate that final hop so tests exercise the client's loopback listener
 				// without real TLS or external hosts.
 				const location =
