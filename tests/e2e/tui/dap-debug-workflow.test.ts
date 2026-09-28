@@ -56,6 +56,21 @@ test("DAP degraded state: debug_launch surfaces the missing-adapter error and st
 						},
 					],
 				},
+				// debug_launch is visibility-deferred at session start (tool
+				// gating), so the first call returns "Tool debug_launch not found";
+				// the hidden-tool-guidance backstop then reveals it. The model
+				// retries — this second call executes for real and hits the
+				// availability pre-check error.
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "debug_launch",
+								arguments: JSON.stringify({ program: "app.js" }),
+							},
+						},
+					],
+				},
 				{ stream: ["The debug adapter is missing, so I cannot debug."] },
 			],
 			// No adapter binaries — dlv/debugpy/lldb-dap can exist on a dev

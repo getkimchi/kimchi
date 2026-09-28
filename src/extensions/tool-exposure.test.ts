@@ -15,6 +15,9 @@
 //   - the five lsp_* tools are detection-gated (Chunk 6): registered but
 //     hidden via a visibility vote when no language server is detected for
 //     the session cwd (a dedicated test asserts the detected state)
+//   - the Skill tool is resource-gated: registers at session_start only when
+//     a .claude skills dir exists for the session cwd (gate tests live in
+//     claude-code-skills/index.test.ts)
 //   - the visibility votes (getDisabledToolNames) equal the declared deferral
 //     spec — the drift guard: a new deferral must declare itself here
 //   - the DAP + bash_control reveal round-trips expose their tools exactly once
@@ -37,7 +40,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { EXTENSION_SOURCES } from "./context-budget-tools.js"
-import { DAP_ALWAYS_VISIBLE_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
+import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { withPrintGate } from "./print-mode.js"
@@ -75,6 +78,29 @@ vi.mock("./mcp/config.js", async (importOriginal) => {
 			useProgrammaticConfig: true,
 		}),
 	}
+})
+
+// The adapter falls through to createMcpAdapter({}) when the mocked config
+// carries no configPath — the library then discovers the DEVELOPER MACHINE's
+// real default MCP config (~/.config/mcp/mcp.json) and leaks those tools into
+// the spec. Stub createMcpAdapter so mcpConfigState is the single source of
+// truth: zero servers → nothing registered; >=1 → the bare gateway tool.
+vi.mock("pi-mcp-adapter", async (importOriginal) => {
+	const original = await importOriginal<typeof import("pi-mcp-adapter")>()
+	const stub = (options?: { config?: { mcpServers?: Record<string, unknown> } }) => {
+		// biome-ignore lint/suspicious/noExplicitAny: capture api — only registerTool is used
+		return (api: { registerTool: (tool: any) => void }) => {
+			const servers = options?.config?.mcpServers ?? mcpConfigState.servers
+			if (Object.keys(servers).length === 0) return
+			api.registerTool({
+				name: "mcp",
+				description: "MCP gateway (stubbed for the exposure spec)",
+				parameters: { type: "object", properties: {} },
+				execute: async () => ({ content: [{ type: "text", text: "" }] }),
+			})
+		}
+	}
+	return { ...original, createMcpAdapter: stub }
 })
 
 // =============================================================================
@@ -259,6 +285,8 @@ function sessionStartPayload(): ExtensionContext {
 			theme: {
 				fg: (_style: string, s: string) => s,
 				bold: (s: string) => s,
+				getFgAnsi: (_color?: string) => "",
+				getBgAnsi: (_color?: string) => "",
 			} as unknown as ExtensionUIContext["theme"],
 		},
 		sessionManager: {
@@ -279,9 +307,10 @@ const UPSTREAM_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"
  *  hidden at session start, revealed on the first background bash handle. */
 const BASH_CONTROL_TOOLS = ["bash_control"] as const
 
-/** Every tool that must be advertised at session start, from the canonical
- *  measurement (2026-08-28 post-Chunk-4: 32 tools / ~7,881 est). Kept as a literal spec —
- *  deriving it from the same factories would make this test circular. */
+/** Every tool that must be advertised at session start. Kept as a literal
+ *  spec — deriving it from the same factories would make this test circular.
+ *  (The historical "32 tools / ~7,881 est" comment was stale; the real
+ *  ground truth is measured freshly by this spec itself.) */
 const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	...UPSTREAM_BUILTINS,
 	// todos
@@ -290,21 +319,24 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"mark_todo",
 	"add_todo",
 	"clear_todos",
-	// web-search / web-fetch / questionnaire
+	// web-search / questionnaire — web_fetch is hidden until the first
+	// web_search result (anchor-deferral; backstop covers direct guesses)
 	"web_search",
-	"web_fetch",
 	"questionnaire",
-	// agents
+	// agents — `Agent` is the always-visible anchor; the three continuation
+	// tools are deferred until the first subagent exists
 	"Agent",
-	"resume_subagent",
-	"get_subagent_result",
-	"steer_subagent",
 	// tags / skills (the mcp gateway is config-gated — Chunk 5: it registers
-	// only when >=1 MCP server is configured; see the gate-on test below)
+	// only when >=1 MCP server is configured; see the gate-on test below).
+	// Skill is resource-gated: it registers only when a .claude skills dir
+	// exists (gate tests in claude-code-skills/index.test.ts).
 	"set_phase",
-	"Skill",
-	// dap — always-visible set (deferred session tools below)
-	...DAP_ALWAYS_VISIBLE_TOOL_NAMES,
+	// model-switch / permissions — previously registered but invisible to this
+	// spec; now covered (and print-gated, separately, in Chunk C.6).
+	"set_model",
+	"submit_plan",
+	// dap — all 16 DAP tools are deferred (entry set reveals on the
+	// dap-debugging skill read; session set on debug_launch)
 ])
 
 /** Deferral spec: tools REGISTERED but hidden at session start. A future
@@ -318,10 +350,15 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
  *  visibility-vote mechanics with the deferrals above, so they are asserted
  *  in the same drift-guard bucket. */
 const LSP_TOOL_NAMES = ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_rename"] as const
+const AGENT_CONTINUATION_TOOLS = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
+const WEB_FETCH_TOOLS = ["web_fetch"] as const
 const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
+	...DAP_ENTRY_TOOL_NAMES,
 	...DAP_SESSION_TOOL_NAMES,
 	...BASH_CONTROL_TOOLS,
 	...LSP_TOOL_NAMES,
+	...AGENT_CONTINUATION_TOOLS,
+	...WEB_FETCH_TOOLS,
 ])
 
 /** Extensions that register tools at session_start, mirroring the budget
@@ -355,6 +392,14 @@ async function instantiateAllExtensions(harness: ExposureHarness & { pi: Extensi
 		default?: (api: unknown) => unknown
 	}
 	await bashControl.default?.(pi)
+	// model-switch / permissions are not part of the canonical budget
+	// measurement (their print gates are asserted by this spec instead), so
+	// instantiate them ad hoc like dap/bash-control rather than via
+	// EXTENSION_SOURCES.
+	const modelSwitch = (await import("./model-switch.js")) as { default?: (api: unknown) => unknown }
+	await modelSwitch.default?.(pi)
+	const permissions = (await import("./permissions/index.js")) as { default?: (api: unknown) => unknown }
+	await permissions.default?.(pi)
 	await fire("session_start", sessionStartPayload())
 }
 
@@ -385,13 +430,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 26-tool surface and hides the 17 deferred tools", async () => {
+	it("advertises exactly the documented 18-tool surface and hides the 26 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(26)
+		expect(visible.size).toBe(18)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -402,24 +447,27 @@ describe("tool exposure at session start", () => {
 		expect(deferredInActive).toEqual([])
 	})
 
-	it("print mode drops questionnaire + set_phase at registration (Chunk 7)", async () => {
+	it("print mode drops questionnaire + set_phase + set_model + submit_plan at registration", async () => {
 		await withPrintGate({ print: true }, async () => {
 			const harness = createExposureHarness()
 			await instantiateAllExtensions(harness)
 
 			// Registration gates: unlike deferred tools, these are NOT registered
 			// in --print mode — not merely hidden.
-			expect(harness.registered.has("questionnaire"), "questionnaire must not register in --print").toBe(false)
-			expect(harness.registered.has("set_phase"), "set_phase must not register in --print").toBe(false)
+			for (const name of ["questionnaire", "set_phase", "set_model", "submit_plan"]) {
+				expect(harness.registered.has(name), `${name} must not register in --print`).toBe(false)
+			}
 
-			// The remaining visible surface is the interactive spec minus the two
+			// The remaining visible surface is the interactive spec minus the four
 			// gate-outs; deferred spec is unchanged.
 			const expectedVisible = new Set(
-				[...EXPECTED_SESSION_START_VISIBLE].filter((n) => n !== "questionnaire" && n !== "set_phase"),
+				[...EXPECTED_SESSION_START_VISIBLE].filter(
+					(n) => n !== "questionnaire" && n !== "set_phase" && n !== "set_model" && n !== "submit_plan",
+				),
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(24)
+			expect(visible.size).toBe(14)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}
@@ -437,10 +485,23 @@ describe("tool exposure at session start", () => {
 				// exist even though the print gate would otherwise skip it.
 				expect(harness.registered.has("set_phase"), "set_phase must register in multi-model --print").toBe(true)
 				expect(harness.registered.has("questionnaire"), "questionnaire stays print-gated").toBe(false)
+				// Multi-model print keeps set_model — the orchestrator may switch
+				// roles mid-run.
+				expect(harness.registered.has("set_model"), "set_model must register in multi-model --print").toBe(true)
+				expect(harness.registered.has("submit_plan"), "submit_plan stays print-gated in multi-model").toBe(false)
 			})
 		} finally {
 			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })
 		}
+	})
+
+	it("print + ferment-oneshot keeps submit_plan registered (planning catalog)", async () => {
+		await withPrintGate({ print: true, fermentOneshot: true }, async () => {
+			const harness = createExposureHarness()
+			await instantiateAllExtensions(harness)
+			expect(harness.registered.has("submit_plan"), "submit_plan must register in ferment-oneshot --print").toBe(true)
+			expect(harness.registered.has("set_phase"), "set_phase must register in ferment-oneshot --print").toBe(true)
+		})
 	})
 
 	it("drift guard: every registered tool is either visible or explicitly deferred, and vice versa", async () => {
@@ -472,7 +533,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(17)
+		expect(votes.size).toBe(26)
 	})
 
 	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {
@@ -557,12 +618,107 @@ describe("tool exposure at session start", () => {
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 
-	it("agent workers keep full DAP + bash_control visibility (carve-out)", async () => {
+	it("Agent reveal round-trip exposes the 3 continuation tools exactly once after the first Agent result", async () => {
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		for (const name of AGENT_CONTINUATION_TOOLS) {
+			expect(harness.active.has(name), `${name} hidden before any subagent`).toBe(false)
+		}
+
+		// An errored Agent result (spawn failure / budget rejection) leaves no
+		// subagent in the session — it must NOT reveal the continuation tools.
+		await harness.fireEvent("tool_result", {
+			toolName: "Agent",
+			toolCallId: "a0",
+			input: { prompt: "fails", description: "test", subagent_type: "General-Purpose" },
+			content: [{ type: "text", text: "spawn failed" }],
+			isError: true,
+		})
+		for (const name of AGENT_CONTINUATION_TOOLS) {
+			expect(harness.active.has(name), `${name} stays hidden after an errored Agent result`).toBe(false)
+		}
+
+		await harness.fireEvent("tool_result", {
+			toolName: "Agent",
+			toolCallId: "a1",
+			input: { prompt: "do the thing", description: "test", subagent_type: "General-Purpose" },
+			content: [{ type: "text", text: "agent result" }],
+			isError: false,
+			details: { agentId: "agent-1", status: "completed" },
+		})
+
+		for (const name of AGENT_CONTINUATION_TOOLS) {
+			expect(harness.active.has(name), `${name} visible after the first Agent result`).toBe(true)
+		}
+		const transitionsAfterReveal = harness.activeTransitions.length
+
+		// Second Agent result: reveal is one-way, no further transition.
+		await harness.fireEvent("tool_result", {
+			toolName: "Agent",
+			toolCallId: "a2",
+			input: { prompt: "more", description: "test", subagent_type: "General-Purpose" },
+			content: [{ type: "text", text: "agent result" }],
+			isError: false,
+			details: { agentId: "agent-2", status: "completed" },
+		})
+		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+
+		// Per-session lifecycle: a second session_start (e.g. /new in the same
+		// process) must re-hide the tools — the reveal must not leak forward.
+		await harness.fire("session_start", sessionStartPayload())
+		for (const name of AGENT_CONTINUATION_TOOLS) {
+			expect(harness.active.has(name), `${name} re-hidden in the next session`).toBe(false)
+		}
+	})
+
+	it("web_fetch reveal round-trip exposes it exactly once after the first web_search result", async () => {
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		expect(harness.active.has("web_fetch"), "web_fetch hidden before any search").toBe(false)
+
+		// An errored web_search result must NOT reveal web_fetch.
+		await harness.fireEvent("tool_result", {
+			toolName: "web_search",
+			toolCallId: "w0",
+			input: { query: "test" },
+			content: [{ type: "text", text: "search unavailable" }],
+			isError: true,
+		})
+		expect(harness.active.has("web_fetch"), "web_fetch stays hidden after an errored web_search").toBe(false)
+
+		await harness.fireEvent("tool_result", {
+			toolName: "web_search",
+			toolCallId: "w1",
+			input: { query: "test" },
+			content: [{ type: "text", text: "results" }],
+			isError: false,
+		})
+
+		expect(harness.active.has("web_fetch"), "web_fetch visible after the first web_search result").toBe(true)
+		const transitionsAfterReveal = harness.activeTransitions.length
+
+		await harness.fireEvent("tool_result", {
+			toolName: "web_search",
+			toolCallId: "w2",
+			input: { query: "test 2" },
+			content: [{ type: "text", text: "results" }],
+			isError: false,
+		})
+		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+
+		// Per-session lifecycle: a second session_start must re-hide web_fetch.
+		await harness.fire("session_start", sessionStartPayload())
+		expect(harness.active.has("web_fetch"), "web_fetch re-hidden in the next session").toBe(false)
+	})
+
+	it("agent workers keep full DAP + bash_control + Agent-continuation visibility (carve-out)", async () => {
 		workerState.isWorker = true
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
-		for (const name of [...DAP_ALWAYS_VISIBLE_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
+		for (const name of [...DAP_ENTRY_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES, ...AGENT_CONTINUATION_TOOLS, "web_fetch"]) {
 			expect(harness.active.has(name), `${name} must stay visible in workers`).toBe(true)
 		}
 		// The tactical deferrals (DAP session tools + bash_control) are carved
@@ -572,7 +728,7 @@ describe("tool exposure at session start", () => {
 		// deliberately applies to workers too. Assert the carve-outs precisely
 		// instead of a blanket zero-vote count.
 		const disabled = getDisabledToolNames(harness.pi)
-		for (const name of [...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS]) {
+		for (const name of [...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS, "web_fetch"]) {
 			expect(disabled.has(name), `${name} must not be hidden in workers`).toBe(false)
 		}
 	})

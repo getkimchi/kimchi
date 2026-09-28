@@ -26,7 +26,15 @@ import {
 } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
-import { createLayer1Tools, createLayer2Tools, DAP_SESSION_TOOL_NAMES, type LaunchSessionOptions } from "./dap/tools.js"
+import {
+	createLayer1Tools,
+	createLayer2Tools,
+	DAP_DEBUGGING_SKILL_PATH_MARKER,
+	DAP_ENTRY_TOOL_NAMES,
+	DAP_SESSION_TOOL_NAMES,
+	type LaunchSessionOptions,
+} from "./dap/tools.js"
+import { createDeferredReveal } from "./deferred-reveal.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 
@@ -298,13 +306,32 @@ export default function (pi: ExtensionAPI) {
 	// profile manager filters against disabled votes, so hiding here would
 	// carve them out of worker profiles by side effect.
 	const visibility = createToolVisibility(pi)
-	let sessionToolsRevealed = false
-
-	function revealSessionToolsOnce(): void {
-		if (sessionToolsRevealed || isAgentWorker()) return
-		sessionToolsRevealed = true
-		visibility.enable(DAP_SESSION_TOOL_NAMES)
-	}
+	// Session-tool deferral: 11 session-scoped tools (~4.5k est tokens) stay
+	// hidden until a DAP session actually exists (debug_launch or a Layer 2
+	// one-shot, which auto-launches and terminates a session inside a single
+	// call — revealing there would surface 11 tools whose session no longer
+	// exists by the time the model sees them). Entry-tool deferral: launch +
+	// the four one-shots (~1.5k est tokens) are hidden until the agent loads
+	// the dap-debugging skill (the documented discovery path) or guesses a
+	// debug tool name directly (the generic not-found reveal in
+	// hidden-tool-guidance.ts is the backstop). Reveal is one-way: once a
+	// session exists the tools stay visible for the rest of the session.
+	// Agent workers are carved out: their tool profiles list DAP tools as
+	// shared and the profile manager filters against disabled votes, so hiding
+	// here would carve them out of worker profiles by side effect.
+	const revealSessionTools = createDeferredReveal(pi, visibility, DAP_SESSION_TOOL_NAMES, { hideOnReset: false })
+	const revealEntryTools = createDeferredReveal(pi, visibility, DAP_ENTRY_TOOL_NAMES, { hideOnReset: false })
+	// Skill-load anchor: reading the dap-debugging SKILL.md is the harness's
+	// documented way into debugging, so it reveals the entry tools. Watch
+	// tool_call (pre-execution) — the path is in the call arguments.
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "read") return
+		const path = event.input.path
+		// Normalize separators: Windows read calls commonly carry backslashes.
+		if (typeof path === "string" && path.replaceAll("\\", "/").includes(DAP_DEBUGGING_SKILL_PATH_MARKER)) {
+			revealEntryTools.revealOnce()
+		}
+	})
 
 	// On-demand skill injection: language skills are NOT injected until the
 	// agent calls a debug tool for the first time. This saves ~1K tokens per
@@ -382,7 +409,8 @@ export default function (pi: ExtensionAPI) {
 			...deps,
 			launchSession: async (opts: LaunchSessionOptions) => {
 				const session = await launchSession(opts)
-				revealSessionToolsOnce()
+				revealEntryTools.revealOnce()
+				revealSessionTools.revealOnce()
 				return session
 			},
 		}
@@ -396,11 +424,13 @@ export default function (pi: ExtensionAPI) {
 			pi.registerTool(tool)
 		}
 
-		// Defer session-scoped tools until they're useful (see above). Agents
-		// keep full visibility — they are profile-managed.
-		sessionToolsRevealed = false
+		// Defer session-scoped tools until they're useful, and entry tools
+		// until the skill is loaded (see above) — one batched disable vote for
+		// both sets. Agents keep full visibility — they are profile-managed.
+		revealSessionTools.resetForSession()
+		revealEntryTools.resetForSession()
 		if (!isAgentWorker()) {
-			visibility.disable(DAP_SESSION_TOOL_NAMES)
+			visibility.disable([...DAP_SESSION_TOOL_NAMES, ...DAP_ENTRY_TOOL_NAMES])
 		}
 	})
 

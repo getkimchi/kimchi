@@ -187,13 +187,24 @@ function makeMockPi(): ExtensionAPI & {
 	const handlers = new Map<string, CapturedHandler[]>()
 	const sendMessage = vi.fn()
 	const events = { emit: vi.fn() }
+	// In-memory active-tool set so visibility votes (Agent continuation
+	// deferral) have something real to flip, mirroring the runtime default of
+	// newly registered tools being active.
+	const activeTools = new Set<string>()
 	const pi = {
 		on: vi.fn((event: string, handler: CapturedHandler) => {
 			const existing = handlers.get(event) ?? []
 			existing.push(handler)
 			handlers.set(event, existing)
 		}),
-		registerTool: vi.fn(),
+		registerTool: vi.fn((tool: { name: string }) => {
+			activeTools.add(tool.name)
+		}),
+		getActiveTools: vi.fn(() => [...activeTools]),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools.clear()
+			for (const name of names) activeTools.add(name)
+		}),
 		registerMessageRenderer: vi.fn(),
 		registerEntryRenderer: vi.fn(),
 		registerCommand: vi.fn(),
