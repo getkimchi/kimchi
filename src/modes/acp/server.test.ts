@@ -5879,6 +5879,33 @@ describe("setSessionConfigOption", () => {
 		}
 	})
 
+	it("sets a model whose ref contains a sub-provider slash (regression: kimchi-dev/anthropic/...)", async () => {
+		const fake = new FakeAgentSession("test-session-sub-provider")
+		fake.model = {
+			provider: "kimchi-dev/anthropic",
+			id: "claude-opus-4-6",
+			name: "Opus 4.6",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const res = await agent.setSessionConfigOption({
+			sessionId,
+			configId: "model",
+			value: "kimchi-dev/anthropic/claude-opus-4-6",
+		})
+		expect(fake.model).toMatchObject({ provider: "kimchi-dev/anthropic", id: "claude-opus-4-6" })
+		expect(res.configOptions[1].currentValue).toBe("kimchi-dev/anthropic/claude-opus-4-6")
+	})
+
 	it("rejects invalid permission mode value", async () => {
 		const fake = new FakeAgentSession("test-session-invalid")
 		const sessionFactory: AcpSessionFactory = async () => asSession(fake)

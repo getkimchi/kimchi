@@ -81,7 +81,7 @@ import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import { findModelByRef, refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -735,14 +735,17 @@ export class KimchiAcpAgent implements Agent {
 			return value
 		}
 
-		const { provider, modelId } = splitModelRef(value) || {}
-		if (!provider || !modelId) {
+		// Canonical refs are provider/id; a slash-less value can never match.
+		if (!value.includes("/")) {
 			throw RequestError.invalidParams(
 				undefined,
 				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		const target = modelRegistry.find(provider, modelId)
+		// Refs must match the registry's canonical refs exactly: sub-providers
+		// like kimchi-dev/anthropic put a second slash in the ref, which a
+		// first-slash split cannot round-trip (see findModelByRef).
+		const target = findModelByRef(modelRegistry, value)
 		if (!target) {
 			const available = modelRegistry
 				.getAvailable()
