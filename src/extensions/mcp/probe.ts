@@ -489,6 +489,13 @@ export class UpstreamMcpProbe implements McpProbe {
 					}
 					signal.throwIfAborted()
 					if (!hasOAuthCredentials(probeName, serverUrl)) {
+						// Upstream's mcp-auth handler resolves without a result on {ok:false}
+						// (denied consent or a failed token exchange): thrown errors carry the
+						// real reason, resolved denials reach here without one and get this
+						// generic message — surfacing is best-effort by design.
+						if (authFailureMessage === null) {
+							authFailureMessage = "Interactive OAuth did not complete (consent denied or cancelled)"
+						}
 						// The anonymous connect already listed the tools; a denied consent
 						// must not make the catalog disappear.
 						return { tools: [...capturedTools.values()], needsAuth: true, error: authFailureMessage }

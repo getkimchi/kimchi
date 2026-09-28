@@ -411,7 +411,7 @@ describe("UpstreamMcpProbe", () => {
 		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
 	})
 
-	it("reports needs-auth without tools when the OAuth flow is cancelled or fails", async () => {
+	it("reports the generic denial error when the OAuth flow resolves with an empty catalog", async () => {
 		const name = "google-drive-cancel"
 		const url = "https://drivemcp.example.test/mcp"
 		upstream.mcpAuth.mockResolvedValue(undefined)
@@ -420,7 +420,31 @@ describe("UpstreamMcpProbe", () => {
 
 		expect(upstream.mcpAuth).toHaveBeenCalledOnce()
 		expect(inspectMcpOAuthTokensForUrl(name, url).status).toBe("absent")
-		expect(result).toEqual({ tools: [], needsAuth: true, error: null })
+		expect(result).toEqual({
+			tools: [],
+			needsAuth: true,
+			error: "Interactive OAuth did not complete (consent denied or cancelled)",
+		})
+	})
+
+	it("surfaces the generic denial error with the captured catalog when the mcp-auth handler resolves without storing credentials", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "google-drive-denied"
+		const url = "https://drivemcp.example.test/mcp"
+		// Upstream's mcp-auth handler resolves (does not throw) on {ok:false} —
+		// denied consent or a failed token exchange is swallowed upstream, so the
+		// probe must still surface a reason instead of a silent null error.
+		upstream.mcpAuth.mockResolvedValue(undefined)
+
+		const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+		expect(upstream.mcpAuth).toHaveBeenCalledOnce()
+		expect(inspectMcpOAuthTokensForUrl(name, url).status).toBe("absent")
+		expect(result).toEqual({
+			tools: [{ name: "search" }],
+			needsAuth: true,
+			error: "Interactive OAuth did not complete (consent denied or cancelled)",
+		})
 	})
 
 	it("gives auto-detect URL servers the interactive consent budget when authenticate=true", async () => {
