@@ -150,6 +150,9 @@ test("pasted image on a text-only model opens the switch dialog and submits on t
 			// Filter to the comfortable vision model and select it.
 			terminal.write("vision-b")
 			await waitForText(terminal, "vision-basic", { timeoutMs: INPUT_TIMEOUT_MS })
+			// The DESCRIPTION column surfaces endpoint-provided descriptions in the
+			// gate table, same as /model.
+			await waitForText(terminal, "Comfortable vision model", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
 			trace.step("vision model selected")
 
@@ -323,8 +326,8 @@ test("switching to a smaller vision model confirms compaction, compacts, then su
 			await waitForText(terminal, GATE_TITLE, { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.write("small")
 			await waitForText(terminal, "vision-small", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "compact", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			trace.step("compact badge visible on the small model")
+			await waitForText(terminal, "compact first", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("compact annotation visible on the small model")
 
 			terminal.submit("")
 			await waitForText(terminal, "this will compact your context — continue?", {

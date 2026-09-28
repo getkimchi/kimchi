@@ -3,6 +3,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
+import { __clearModelDescriptionsForTest, registerModelDescription } from "../models.js"
 import { createContext } from "./__mocks__/context.js"
 import {
 	type ShowVisionSwitchDialogOptions,
@@ -100,11 +101,18 @@ describe("VisionSwitchComponent render", () => {
 		expect(lines[lines.length - 1]).toMatch(/^─+$/)
 		expect(text).toContain("Switch to a vision model")
 		expect(text).toContain("text-only")
+		// /model-style capability table: column headers + aligned rows.
+		expect(text).toContain("MODEL")
+		expect(text).toContain("PROVIDER")
+		expect(text).toContain("CONTEXT")
+		expect(text).toContain("DESCRIPTION")
 		expect(text).toContain("alpha")
-		expect(text).toContain("[kimchi-dev]")
+		expect(text).toContain("kimchi-dev")
 		expect(text).toContain("200k")
 		expect(text).toContain("beta")
-		expect(text).toContain("· ⚠ compact")
+		expect(text).toContain("⚠ compact first")
+		// /model-style footer: the highlighted row's human-readable name.
+		expect(text).toContain("Model Name: Vision Model")
 		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)")
 	})
 
@@ -156,6 +164,47 @@ describe("VisionSwitchComponent render", () => {
 		candidates = [{ model: makeModel({ id: "gamma" }), compactNeeded: true }]
 		expect(renderText(component)).toContain("gamma")
 		expect(renderText(component)).not.toContain("alpha")
+	})
+
+	it("renders endpoint-provided descriptions in the DESCRIPTION column", () => {
+		registerModelDescription("kimchi-dev/alpha", "Fast vision workhorse.")
+		registerModelDescription("other/beta", "Slow but roomy.")
+		try {
+			const { component } = makeHarness({})
+			const lines = renderText(component).split("\n")
+			const alphaRow = lines.find((l) => l.includes("alpha"))
+			const betaRow = lines.find((l) => l.includes("beta"))
+			expect(alphaRow).toContain("Fast vision workhorse.")
+			// The compact annotation rides in the same cell, ahead of the
+			// description, like /model's "Default for new sessions." annotation.
+			expect(betaRow).toContain("⚠ compact first · Slow but roomy.")
+		} finally {
+			__clearModelDescriptionsForTest()
+		}
+	})
+
+	it("hides the DESCRIPTION column on narrow terminals but keeps the compact marker", () => {
+		const { component } = makeHarness({})
+		const text = renderText(component, 34)
+		expect(text).not.toContain("DESCRIPTION")
+		const lines = text.split("\n")
+		const betaRow = lines.find((l) => l.includes("beta"))
+		const alphaRow = lines.find((l) => l.includes("alpha"))
+		// Without a description budget the compact signal degrades to a minimal
+		// warning marker instead of disappearing.
+		expect(betaRow).toContain("⚠")
+		expect(alphaRow).not.toContain("⚠")
+	})
+
+	it("fuzzy-filters like the /model selector: subsequence match over provider, id, and name", () => {
+		const { component } = makeHarness({})
+		component.handleInput("o")
+		component.handleInput("b")
+		const text = renderText(component)
+		// "ob" is not a substring of any candidate; fuzzy subsequence matching
+		// still finds beta (provider "other" → id "beta") while alpha is filtered.
+		expect(text).toContain("beta")
+		expect(text).not.toContain("alpha")
 	})
 })
 

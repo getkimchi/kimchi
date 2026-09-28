@@ -100,4 +100,15 @@ describe("humanizeContextWindow", () => {
 	it("renders sub-thousand windows verbatim", () => {
 		expect(humanizeContextWindow(800)).toBe("800")
 	})
+
+	it("matches the /model table's formatTokens rendering", () => {
+		// The /model capability table renders context with formatTokens plus the
+		// ".0M" → "M" cleanup; the vision-switch table must render identically so
+		// the same window never looks different between the two.
+		expect(humanizeContextWindow(1_000)).toBe("1.0k")
+		expect(humanizeContextWindow(8_500)).toBe("8.5k")
+		expect(humanizeContextWindow(9_999)).toBe("10.0k")
+		expect(humanizeContextWindow(9_500_000)).toBe("9.5M")
+		expect(humanizeContextWindow(12_000_000)).toBe("12M")
+	})
 })

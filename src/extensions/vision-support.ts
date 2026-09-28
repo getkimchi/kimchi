@@ -41,12 +41,18 @@ export function visionModelCandidates(available: readonly Model<Api>[]): Model<A
  * Humanized context window for table rows and dialog badges: `200k`, `1M`.
  * Sub-1000 windows render as-is.
  */
+/**
+ * Renders a context-window size exactly the way the /model capability table
+ * renders it (upstream `formatTokens` plus the `.0M` → `M` cleanup from the
+ * kimchi patch), so the same window never renders differently between the
+ * /model table and the vision-switch table.
+ */
 export function humanizeContextWindow(contextWindow: number): string {
-	if (contextWindow >= 1_000_000) {
-		const millions = contextWindow / 1_000_000
-		// Integral millions render compact; fractional ones keep one decimal.
-		return Number.isInteger(millions) ? `${millions}M` : `${millions.toFixed(1)}M`
+	if (contextWindow < 1_000) return `${contextWindow}`
+	if (contextWindow < 10_000) return `${(contextWindow / 1_000).toFixed(1)}k`
+	if (contextWindow < 1_000_000) return `${Math.round(contextWindow / 1_000)}k`
+	if (contextWindow < 10_000_000) {
+		return `${(contextWindow / 1_000_000).toFixed(1)}M`.replace(".0M", "M")
 	}
-	if (contextWindow >= 1000) return `${Math.round(contextWindow / 1000)}k`
-	return `${contextWindow}`
+	return `${Math.round(contextWindow / 1_000_000)}M`
 }
