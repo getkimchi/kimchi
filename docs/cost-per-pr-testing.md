@@ -1,6 +1,6 @@
 # Cost per PR: local attribution and test lab
 
-Task [LLM-3630](https://castai.atlassian.net/browse/LLM-3630) supplies local request/work/commit records. PR lookup, cost aggregation, semantic matching and uploads are the remaining tasks in [LLM-3623](https://castai.atlassian.net/browse/LLM-3623).
+This change supplies local request/work/commit records. PR lookup, cost aggregation, semantic matching and uploads are separate follow-up work.
 
 ## Run the checks
 
