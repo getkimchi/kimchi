@@ -81,22 +81,15 @@ export function buildProjectTrustUpdate(sessionId: string, cwd: string): Project
  * without awaiting. Unaware clients ignore unknown ext notifications.
  */
 export function notifyProjectTrustUpdate(conn: AgentSideConnection, update: ProjectTrustUpdate): void {
-	// Test doubles for AgentSideConnection commonly stub extNotification as
-	// `vi.fn()` (returning undefined), so the SDK's Promise<void> return type
-	// cannot be trusted at this seam — resolve defensively instead of a bare
-	// `.catch` on the (possibly undefined) return value.
-	try {
-		const sent = conn.extNotification(AVAILABLE_EXT_NOTIFICATIONS.project_trust_update, {
+	conn
+		.extNotification(AVAILABLE_EXT_NOTIFICATIONS.project_trust_update, {
 			sessionId: update.sessionId,
 			trusted: update.trusted,
 			blocked: [...update.blocked],
 		})
-		Promise.resolve(sent as Promise<void> | undefined).catch((err: unknown) => {
+		.catch((err: unknown) => {
 			process.stderr.write(`acp project_trust_update notification failed: ${String(err)}\n`)
 		})
-	} catch (err) {
-		process.stderr.write(`acp project_trust_update notification failed: ${String(err)}\n`)
-	}
 }
 
 /**
@@ -182,12 +175,7 @@ export function requireAbsolutePath(raw: unknown): string {
 
 /** The wire form of {@link PathTrustInfo} — plain JSON-RPC result record. */
 export function pathTrustResponse(info: PathTrustInfo): Record<string, unknown> {
-	return {
-		decided: info.decided,
-		trusted: info.trusted,
-		blocked: [...info.blocked],
-		decisionSource: info.decisionSource,
-	}
+	return { ...info, blocked: [...info.blocked] }
 }
 
 /**

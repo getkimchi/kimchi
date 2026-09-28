@@ -1910,43 +1910,20 @@ export class KimchiAcpAgent implements Agent {
 		// project is undecided — and the ancestor-walking lookup would find that
 		// pin BEFORE the decision just recorded on affectedRoot, shadowing it
 		// (the in-memory analogue of why pi's "Trust parent folder" clears the
-		// cwd's store entry with `decision: null`). On grants, clear every live
-		// session's fail-closed pin strictly beneath the affected root so the
-		// walk resolves through the new decision, matching store inheritance.
-		// On revoke, pins below the root either mirror a deeper stored decision
-		// (nearest-wins — still correct) or are fail-closed artifacts (already
-		// consistent with the closed gate), so nothing is cleared.
-		if (trusted) {
-			for (const other of this.sessions.values()) {
-				if (other.cwd !== affectedRoot && isPathWithin(other.cwd, affectedRoot)) {
-					clearProjectScopeTrust(other.cwd)
-				}
-			}
-		}
-
-		// Notify and refresh every live session under the affected root —
-		// grant AND revoke alike. The palette must never advertise skills the
-		// gate will now refuse to load, and every connected client showing trust
-		// state needs the fresh push, not just the requester. Each session's own
-		// cwd decides its gate state (ancestor walk), so sibling sessions under a
-		// newly-trusted parent flip to trusted. `commandsRefresher.request()` is
-		// load-bearing: a trust decision is not a filesystem event, so the
-		// watcher cannot fire on its own. The sweep's reloadSkillCommandsMap
-		// invalidates each session's cached system-prompt block after its loader
-		// reload, so the next prompt rebuild matches the new gate state.
-		for (const [id, other] of this.sessions) {
-			if (!isPathWithin(other.cwd, affectedRoot)) continue
-			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, other.cwd))
-		}
-		if (trusted) {
-			// The watcher's root set must be re-derived on grant: while
-			// untrusted, the project skills dir was never added to the watch set,
-			// so without refresh() post-grant edits to project skills would never
-			// re-advertise palettes. (Roots only grow; revoke keeps watching —
-			// see skill-watcher's roots-never-removed note.)
-			this.skillWatcher.refresh()
-		}
-		this.commandsRefresher.request()
+		// cwd's store entry with `decision: null`). The sweep below re-mirrors
+		// every live session's pin from the store so the walk resolves through
+		// the new decision. Session-scoped decisions (trust_session/deny) live
+		// only in this in-memory map — the store has no entry for them — so the
+		// requester's own cwd is overridden with the in-memory decision instead
+		// of a store lookup. Sessions AT affectedRoot are included: without
+		// them a session pinned untrusted at the parent would keep shadowing a
+		// trust_parent grant.
+		this.refreshTrustAffectedSessions(
+			new ProjectTrustStore(this.agentDir),
+			affectedRoot,
+			trusted,
+			decision === "trust_session" || decision === "deny" ? { cwd, trusted } : undefined,
+		)
 
 		const update = buildProjectTrustUpdate(sessionId, cwd)
 		return { trusted: update.trusted, blocked: [...update.blocked] }
@@ -1996,20 +1973,73 @@ export class KimchiAcpAgent implements Agent {
 		// each pin to the store's current nearest-wins resolution for that
 		// session's cwd (or clearing it when undecided, so the walk falls
 		// through to the written entry) mirrors store semantics exactly.
+		this.refreshTrustAffectedSessions(store, path, trusted)
+
+		return pathTrustResponse(buildPathTrustInfo(store, path))
+	}
+
+	/**
+	 * Shared tail of every trust write (`set_project_trust`, `set_path_trust`):
+	 * re-mirror the in-memory gate pins of every live session under `root`
+	 * (inclusive) from `store`'s nearest-wins resolution, then notify and
+	 * refresh those sessions.
+	 *
+	 * Pin mirroring is store-backed, not clear-on-grant: session start pins a
+	 * fail-closed decision on the session cwd when the project is undecided,
+	 * and that pin is NEARER in the ancestor walk than any decision later
+	 * recorded on an ancestor — it would shadow a grant at or above the root
+	 * (the in-memory analogue of why pi's "Trust parent folder" clears the
+	 * cwd's store entry with `decision: null`). A blind clear on grant is
+	 * equally wrong: a deeper stored grant must keep winning over a new
+	 * ancestor revoke (the set_path_trust e2e caught exactly that stale-pin
+	 * bug). Setting each pin to `store.getEntry(session.cwd)?.decision` — or
+	 * clearing it when null, so the walk falls through to the new entry —
+	 * makes the pins exactly mirror store inheritance. Sessions AT `root`
+	 * itself are included.
+	 *
+	 * `inMemoryOverride` covers session-scoped decisions (trust_session/deny):
+	 * they exist only in this in-memory map, the store has no entry for them,
+	 * so the session whose cwd matches is pinned to the in-memory decision
+	 * instead of a store lookup.
+	 *
+	 * `commandsRefresher.request()` is load-bearing: a trust decision is not a
+	 * filesystem event, so the watcher cannot fire on its own, and the
+	 * palette must never advertise skills the gate will now refuse to load.
+	 * The sweep's reloadSkillCommandsMap invalidates each session's cached
+	 * system-prompt block after its loader reload, so the next prompt rebuild
+	 * matches the new gate state. Notifications are pushed per affected
+	 * session (grant AND revoke alike) — every connected client showing trust
+	 * state needs the fresh push, not just the requester.
+	 */
+	private refreshTrustAffectedSessions(
+		store: ProjectTrustStore,
+		root: string,
+		grant: boolean,
+		inMemoryOverride?: { cwd: string; trusted: boolean },
+	): void {
 		for (const other of this.sessions.values()) {
-			if (!isPathWithin(other.cwd, path)) continue
+			if (!isPathWithin(other.cwd, root)) continue
+			if (inMemoryOverride && other.cwd === inMemoryOverride.cwd) {
+				setProjectScopeTrusted(other.cwd, inMemoryOverride.trusted)
+				continue
+			}
 			const entry = store.getEntry(other.cwd)
 			if (entry === null) clearProjectScopeTrust(other.cwd)
 			else setProjectScopeTrusted(other.cwd, entry.decision)
 		}
-		if (trusted) this.skillWatcher.refresh()
-		this.commandsRefresher.request()
 		for (const [id, other] of this.sessions) {
-			if (!isPathWithin(other.cwd, path)) continue
+			if (!isPathWithin(other.cwd, root)) continue
 			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, other.cwd))
 		}
-
-		return pathTrustResponse(buildPathTrustInfo(store, path))
+		if (grant) {
+			// The watcher's root set must be re-derived on grant: while
+			// untrusted, the project skills dir was never added to the watch set,
+			// so without refresh() post-grant edits to project skills would never
+			// re-advertise palettes. (Roots only grow; revoke keeps watching —
+			// see skill-watcher's roots-never-removed note.)
+			this.skillWatcher.refresh()
+		}
+		this.commandsRefresher.request()
 	}
 
 	private emitUsageUpdate(session: AgentSession, lifetime: TurnUsage): void {
