@@ -176,6 +176,13 @@ export function ensureQuietStartupDefault(settings: Record<string, unknown>): bo
 	return true
 }
 
+/** Use Pi's fixed viewport unless the user explicitly chose regular mode. */
+export function ensureFullscreenDefault(settings: Record<string, unknown>): boolean {
+	if ("tuiMode" in settings) return false
+	settings.tuiMode = "fullscreen"
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {

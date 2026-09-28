@@ -1,5 +1,13 @@
 import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent"
-import { Key, matchesKey, type SettingItem, SettingsList, type TUI, truncateToWidth } from "@earendil-works/pi-tui"
+import {
+	CURSOR_MARKER,
+	Key,
+	matchesKey,
+	type SettingItem,
+	SettingsList,
+	type TUI,
+	truncateToWidth,
+} from "@earendil-works/pi-tui"
 import { getResourceDefinitions, getResourcesByKind, RESOURCE_KINDS } from "./definitions.js"
 import { isResourceEnabled, setResourceOverride } from "./store.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
@@ -12,6 +20,7 @@ type ResourceTab = ResourceKind | "all" | "experimental"
 const TABS: readonly ResourceTab[] = ["all", ...RESOURCE_KINDS, "experimental"]
 
 export class ResourceManagerComponent {
+	focused = false
 	private list: SettingsList
 	private activeTab: ResourceTab
 
@@ -67,10 +76,15 @@ export class ResourceManagerComponent {
 
 	private createList(selectedId?: string): SettingsList {
 		const items = resourceItems(this.activeTab)
+		const theme = getSettingsListTheme()
 		const list = new SettingsList(
 			items,
 			12,
-			getSettingsListTheme(),
+			{
+				...theme,
+				// Pi keeps the cursor row visible when a fullscreen dock is clipped.
+				label: (text, selected) => (this.focused && selected ? CURSOR_MARKER : "") + theme.label(text, selected),
+			},
 			(id, value) => {
 				setResourceOverride(id, value === VALUE_ENABLED)
 				this.list = this.createList(id)

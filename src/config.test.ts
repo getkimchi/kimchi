@@ -6,6 +6,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureFullscreenDefault,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -1289,6 +1290,21 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
+	})
+})
+
+describe("ensureFullscreenDefault", () => {
+	it("seeds fullscreen for existing settings without a renderer preference", () => {
+		const settings: Record<string, unknown> = { quietStartup: true }
+		expect(ensureFullscreenDefault(settings)).toBe(true)
+		expect(settings).toEqual({ quietStartup: true, tuiMode: "fullscreen" })
+		expect(ensureFullscreenDefault(settings)).toBe(false)
+	})
+
+	it.each(["regular", "fullscreen"])("preserves explicit %s mode", (tuiMode) => {
+		const settings = { tuiMode }
+		expect(ensureFullscreenDefault(settings)).toBe(false)
+		expect(settings.tuiMode).toBe(tuiMode)
 	})
 })
 

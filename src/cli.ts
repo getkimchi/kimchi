@@ -37,6 +37,7 @@ import "./session-selector-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureFullscreenDefault,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -539,6 +540,7 @@ try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
 			if (ensureQuietStartupDefault(existing)) changed = true
+			if (ensureFullscreenDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
