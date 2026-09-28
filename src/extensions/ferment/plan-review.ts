@@ -14,7 +14,7 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui"
-import { createModalChrome } from "../modal-chrome.js"
+import { createModalChrome } from "../../components/modal-chrome.js"
 import { isRemoteRunEnabled } from "../remote-run/runner.js"
 import { withWorkingHidden } from "./prompt-ui.js"
 

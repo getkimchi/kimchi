@@ -1,7 +1,7 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
 import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
-import { createModalChrome } from "../modal-chrome.js"
+import { createModalChrome } from "../../components/modal-chrome.js"
 import { MAX_REASON_LENGTH } from "./dialog.js"
 import { FeedbackEditor } from "./editor.js"
 

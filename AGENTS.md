@@ -22,6 +22,16 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
+## Shared TUI components
+
+Reusable TUI building blocks live in `src/components/` (`editor.ts`, `status-line.ts`, `logo.ts`, `tool-block.ts`, `modal-chrome.ts`), each with a co-located test. Follow this pattern:
+
+- **Promotion, not creation** — start UI code feature-local (e.g. inside `src/extensions/<feature>/`) and move it to `src/components/` only when a second consumer arrives. No speculative shared abstractions.
+- **Two shapes, kept distinct** — stateless paint helpers stay factory functions (e.g. `createModalChrome(theme, width)`); stateful behavior (scrolling, focus) stays a class or explicit state object. Never mix both in one module.
+- **Theme is always passed in** — never rely on the module-global `theme` (undefined for extensions loaded through jiti).
+- **Degenerate geometry is part of the contract** — clamp widths/heights to ≥1; never `" ".repeat(-1)`. Tiny-terminal cases belong in the co-located test.
+- **Dependency direction is one-way** — features import from `src/components/`, never the reverse.
+
 ## Live harness checks
 
 Use the bundled `kimchi-tmux` when developing or verifying harness commands, menus, and TUI workflows. Follow the skill for setup, controller usage, and cleanup.
