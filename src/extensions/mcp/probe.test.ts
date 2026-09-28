@@ -10,6 +10,8 @@ const upstream = vi.hoisted(() => ({
 	mcpAuth: vi.fn<(args: string, ctx: unknown) => Promise<void>>(),
 	sessionStart: vi.fn(),
 	sessionShutdown: vi.fn(),
+	// Tests flip this off to simulate pi-mcp-adapter never registering mcp-auth.
+	registerMcpAuthCommand: true,
 }))
 
 const mcpClient = vi.hoisted(() => {
@@ -40,10 +42,12 @@ vi.mock("pi-mcp-adapter", () => ({
 			description: "MCP",
 			handler: async (args, ctx) => upstream.logout(args, ctx),
 		})
-		api.registerCommand("mcp-auth", {
-			description: "Authenticate with an MCP server (OAuth)",
-			handler: async (args, ctx) => upstream.mcpAuth(args, ctx),
-		})
+		if (upstream.registerMcpAuthCommand) {
+			api.registerCommand("mcp-auth", {
+				description: "Authenticate with an MCP server (OAuth)",
+				handler: async (args, ctx) => upstream.mcpAuth(args, ctx),
+			})
+		}
 		api.registerTool({
 			name: "mcp",
 			label: "MCP",
@@ -104,6 +108,7 @@ beforeEach(() => {
 	credentialAccount.value = { status: "absent" }
 	upstream.mcpAuth.mockReset()
 	upstream.options = undefined
+	upstream.registerMcpAuthCommand = true
 	upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
 		if (typeof params === "object" && params !== null && "connect" in params) {
 			return gatewayResult({ tools: [] })
@@ -178,7 +183,7 @@ describe("UpstreamMcpProbe", () => {
 	// instead of the 60s deadline (see the connect-time auth tests below).
 	it.each([
 		{ definition: { command: "node" }, timeoutMs: 15_000 },
-		{ definition: { url: "https://example.test/mcp" }, timeoutMs: 60_000 },
+		// auth: false opts out of OAuth entirely, so the probe deadline still governs.
 		{ definition: { url: "https://example.test/mcp", auth: false as const }, timeoutMs: 60_000 },
 	])("aborts a stalled connection after $timeoutMs ms and cleans up", async ({ definition, timeoutMs }) => {
 		vi.useFakeTimers()
@@ -197,6 +202,31 @@ describe("UpstreamMcpProbe", () => {
 			error: `Probe timed out after ${timeoutMs / 1000} seconds`,
 		})
 		expect(signal?.aborted).toBe(true)
+		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("gives a stalled auto-detect URL connect the 300s consent budget when authenticate=true", async () => {
+		vi.useFakeTimers()
+		upstream.gatewayExecute.mockImplementation(() => new Promise(() => {}))
+		const result = new UpstreamMcpProbe().probeTools(
+			"stalled-auto-detect",
+			{ url: "https://example.test/mcp" },
+			{ authenticate: true },
+		)
+
+		await vi.advanceTimersByTimeAsync(60_000)
+		// Upstream's supportsOAuth auto-detect covers this server, so the 60s probe
+		// deadline is suspended in favor of the interactive consent budget.
+		expect(upstream.sessionShutdown).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(240_000)
+
+		await expect(result).resolves.toMatchObject({
+			tools: [],
+			needsAuth: true,
+			error: "OAuth authentication timed out after 300 seconds",
+		})
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
 		expect(vi.getTimerCount()).toBe(0)
 	})
@@ -391,6 +421,87 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.mcpAuth).toHaveBeenCalledOnce()
 		expect(inspectMcpOAuthTokensForUrl(name, url).status).toBe("absent")
 		expect(result).toEqual({ tools: [], needsAuth: true, error: null })
+	})
+
+	it("gives auto-detect URL servers the interactive consent budget when authenticate=true", async () => {
+		vi.useFakeTimers()
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "auto-detect-slow-consent"
+		const url = "https://drivemcp.example.test/mcp"
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params === "object" && params !== null && "connect" in params) {
+				// 401-at-connect server: attemptAutoAuth parks on consent for 90s —
+				// past the 60s probe deadline but within the 300s consent budget.
+				await new Promise((resolve) => setTimeout(resolve, 90_000))
+				updateMcpOAuthTokensForUrl(name, url, { accessToken: "auto-stored-token" })
+				return gatewayResult({ tools: ["search"] })
+			}
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+
+		// No auth field: upstream's supportsOAuth auto-detect must still get the
+		// suspended-deadline connect window.
+		const probe = new UpstreamMcpProbe().probeTools(name, { url }, { authenticate: true })
+
+		await vi.advanceTimersByTimeAsync(60_000)
+		// The suspended 60s deadline must not have fired mid-consent.
+		expect(upstream.sessionShutdown).not.toHaveBeenCalled()
+		await vi.advanceTimersByTimeAsync(30_000)
+
+		await expect(probe).resolves.toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+	})
+
+	it("keeps an auth-disabled server with an oauth block on the connected path", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"auth-false-oauth",
+			{ url: "https://example.test/mcp", auth: false, oauth: { clientId: "x" } },
+			{ authenticate: false },
+		)
+
+		// Mirrors upstream supportsOAuth: the explicit `auth: false` sentinel wins
+		// over the oauth block, so the server is never badged needs-auth.
+		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+	})
+
+	it("keeps a bearer server with an oauth block on the connected path", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"bearer-oauth",
+			{ url: "https://example.test/mcp", auth: "bearer", oauth: { clientId: "x" } },
+			{ authenticate: true },
+		)
+
+		// An explicit non-oauth auth mode must not trigger the OAuth flow or the
+		// needs-auth badge, even with authenticate=true and no credentials.
+		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+	})
+
+	it("reports needs-auth with the captured catalog when the mcp-auth command is missing", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "missing-mcp-auth-command"
+		const url = "https://drivemcp.example.test/mcp"
+		upstream.registerMcpAuthCommand = false
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+		try {
+			const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
+
+			// Without the guard this would race [undefined, ...] and resolve into a
+			// silent error: null no-op.
+			expect(result).toEqual({
+				tools: [{ name: "search" }],
+				needsAuth: true,
+				error: "pi-mcp-adapter did not register its mcp-auth command",
+			})
+		} finally {
+			warn.mockRestore()
+		}
 	})
 
 	it("treats a credentialed OAuth server as connected without invoking auth", async () => {
@@ -668,6 +779,7 @@ describe("UpstreamMcpProbe", () => {
 	it("surfaces the interactive auth failure when the post-auth reconnect reports auth_required", async () => {
 		const name = "google-drive-reconnect-denied"
 		const url = "https://drivemcp.example.test/mcp"
+		mcpClient.state.tools = [{ name: "search" }]
 		upstream.mcpAuth.mockImplementation(async (args: string) => {
 			// Tokens got stored, but the interactive attempt was denied downstream;
 			// the handler still reports its failure reason.
@@ -690,7 +802,12 @@ describe("UpstreamMcpProbe", () => {
 		try {
 			const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
 
-			expect(result).toEqual({ tools: [], needsAuth: true, error: "consent denied: insufficient scope" })
+			// A denied consent must not make the already-captured catalog disappear.
+			expect(result).toEqual({
+				tools: [{ name: "search" }],
+				needsAuth: true,
+				error: "consent denied: insufficient scope",
+			})
 		} finally {
 			warn.mockRestore()
 		}
@@ -699,13 +816,15 @@ describe("UpstreamMcpProbe", () => {
 	it("surfaces an interactive OAuth failure in the result error instead of swallowing it", async () => {
 		const name = "google-drive-auth-failure"
 		const url = "https://drivemcp.example.test/mcp"
+		mcpClient.state.tools = [{ name: "search" }]
 		upstream.mcpAuth.mockRejectedValue(new Error("OAuth authentication cancelled"))
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 
 		try {
 			const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
 
-			expect(result).toEqual({ tools: [], needsAuth: true, error: "OAuth authentication cancelled" })
+			// A denied consent must not make the already-captured catalog disappear.
+			expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: true, error: "OAuth authentication cancelled" })
 			expect(warn).toHaveBeenCalledWith(
 				`MCP probe: interactive OAuth for "${name}" failed: OAuth authentication cancelled`,
 			)

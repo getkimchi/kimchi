@@ -355,17 +355,28 @@ export class UpstreamMcpProbe implements McpProbe {
 		}
 		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name
-		// Mirrors the adapter's supportsOAuth gate and its return ordering
-		// (pi-mcp-adapter/mcp-auth-flow.ts): URL servers only (stdio cannot run
-		// the browser flow) and an explicit `oauth: false` disables it; an
-		// explicit `auth: "oauth"` wins BEFORE the custom-headers check — headers
-		// only veto the implicit oauth auto-detection, never a declared one.
 		const serverUrl = definition.url
+		const hasHeaders = Boolean(definition.headers && Object.keys(definition.headers).length > 0)
+		// Exact mirror of the adapter's supportsOAuth gate and its return ordering
+		// (pi-mcp-adapter/mcp-auth-flow.ts): URL servers only (stdio cannot run
+		// the browser flow), an explicit `auth: false` or `oauth: false` disables
+		// it, an explicit `auth: "oauth"` wins BEFORE the custom-headers check —
+		// headers only veto the implicit oauth auto-detection, never a declared
+		// one — and auto-detection requires `auth` to be unset with no headers.
+		const supportsOAuthLike =
+			serverUrl !== undefined &&
+			definition.auth !== false &&
+			definition.oauth !== false &&
+			(definition.auth === "oauth" || (definition.auth === undefined && !hasHeaders))
+		// Deliberately NARROWER than supportsOAuthLike: auto-detect servers
+		// (auth unset, no oauth block) must NOT be badged needs-auth up front.
+		// Used ONLY for the needs-auth reporting branch; the connect consent
+		// window uses the upstream-mirrored supportsOAuthLike instead.
 		const declaresOAuth =
 			serverUrl !== undefined &&
+			definition.auth !== false &&
 			definition.oauth !== false &&
-			(definition.auth === "oauth" ||
-				(!(definition.headers && Object.keys(definition.headers).length > 0) && Boolean(definition.oauth)))
+			(definition.auth === "oauth" || (definition.auth === undefined && !hasHeaders && Boolean(definition.oauth)))
 		const hasCredentials = serverUrl !== undefined && hasOAuthCredentials(name, serverUrl)
 		// Scoped to this interactive mcp-auth invocation: aborting it rejects the
 		// fake UI hooks, which unwinds upstream's manual-paste race (and closes the
@@ -404,7 +415,7 @@ export class UpstreamMcpProbe implements McpProbe {
 			// after 60 seconds" with needsAuth: false), so suspend it and race the
 			// connect against the interactive consent budget instead.
 			const connectAuthWindow =
-				options.authenticate === true && declaresOAuth ? createInteractiveAuthWindow(authAbort) : null
+				options.authenticate === true && supportsOAuthLike ? createInteractiveAuthWindow(authAbort) : null
 			if (connectAuthWindow) deadline.suspendDeadline()
 			let connected: GatewayResult
 			try {
@@ -456,9 +467,13 @@ export class UpstreamMcpProbe implements McpProbe {
 					deadline.suspendDeadline()
 					const authWindow = createInteractiveAuthWindow(authAbort)
 					let authFailureMessage: string | null = null
+					const mcpAuthCommand = host.commands.get("mcp-auth")
 					try {
+						if (!mcpAuthCommand) {
+							throw new Error("pi-mcp-adapter did not register its mcp-auth command")
+						}
 						await Promise.race([
-							host.commands.get("mcp-auth")?.handler(probeName, host.context as Parameters<Command["handler"]>[1]),
+							mcpAuthCommand.handler(probeName, host.context as Parameters<Command["handler"]>[1]),
 							authWindow.deadline,
 							aborted,
 						])
@@ -474,7 +489,9 @@ export class UpstreamMcpProbe implements McpProbe {
 					}
 					signal.throwIfAborted()
 					if (!hasOAuthCredentials(probeName, serverUrl)) {
-						return { tools: [], needsAuth: true, error: authFailureMessage }
+						// The anonymous connect already listed the tools; a denied consent
+						// must not make the catalog disappear.
+						return { tools: [...capturedTools.values()], needsAuth: true, error: authFailureMessage }
 					}
 					const reconnected = await Promise.race([executeGateway(host, { connect: probeName }), aborted])
 					signal.throwIfAborted()
@@ -482,7 +499,7 @@ export class UpstreamMcpProbe implements McpProbe {
 					if (reconnectDetails.error === "auth_required") {
 						// A denied/failed interactive attempt can still land here (e.g. tokens
 						// stored but rejected on reconnect); don't discard its reason.
-						return { tools: [], needsAuth: true, error: authFailureMessage ?? null }
+						return { tools: [...capturedTools.values()], needsAuth: true, error: authFailureMessage ?? null }
 					}
 					if (reconnectDetails.error) {
 						return {
