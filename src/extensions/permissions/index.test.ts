@@ -1166,7 +1166,10 @@ describe("plan mode assumption detection", () => {
 		"## Verification Strategy\nRun pnpm test src/api after each chunk.\n\n" +
 		"## Risks\nCache staleness: short default TTL.\n"
 
-	it("Start as ferment persists a ferment artifact under .kimchi/ferments", async () => {
+	it.each([
+		false,
+		true,
+	])("Start as ferment persists a ferment artifact under .kimchi/ferments (unavailable attribution: %s)", async (unavailable) => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1178,6 +1181,11 @@ describe("plan mode assumption detection", () => {
 			// Project-local ferments are gated on project trust — these tests
 			// exercise the trusted persistence path.
 			setProjectScopeTrusted(tmpDir, true)
+			if (unavailable) {
+				const path = join(attributionDir, "work-attribution")
+				rmSync(path, { recursive: true, force: true })
+				writeFileSync(path, "blocked")
+			}
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
 			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
@@ -1186,7 +1194,8 @@ describe("plan mode assumption detection", () => {
 			expect(files).toHaveLength(1)
 
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
-			expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
+			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
+			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			// Status is 'running' because 'Start as ferment' activates the first phase
 			// via the full runtime path when the plan has a structured Chunks section.
 			expect(artifact.status).toMatch(/^(planned|running|active)$/)
@@ -1451,7 +1460,10 @@ describe("plan mode assumption detection", () => {
 	// produce a lossy ferment from raw section splitting. It should persist a draft
 	// ferment via the normal runtime path, notify the user, and leave implementation
 	// tools off.
-	it("Start as ferment falls back to draft-only when the plan has no ## Chunks section", async () => {
+	it.each([
+		false,
+		true,
+	])("Start as ferment falls back to draft-only when the plan has no ## Chunks section (unavailable attribution: %s)", async (unavailable) => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -1461,6 +1473,11 @@ describe("plan mode assumption detection", () => {
 			const ctx = createMockContext(["Start as ferment"])
 			ctx.cwd = tmpDir
 			setProjectScopeTrusted(tmpDir, true)
+			if (unavailable) {
+				const path = join(attributionDir, "work-attribution")
+				rmSync(path, { recursive: true, force: true })
+				writeFileSync(path, "blocked")
+			}
 			await submitPlan(harness, PLAN_WITHOUT_CHUNKS, ctx)
 
 			// 1) The artifact is persisted as a draft (no phase activated).
@@ -1469,7 +1486,8 @@ describe("plan mode assumption detection", () => {
 			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
 			expect(files).toHaveLength(1)
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
-			expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
+			expect(existsSync(join(tmpDir, ".kimchi", "plans"))).toBe(true)
+			if (!unavailable) expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			expect(artifact.status).toBe("draft")
 			expect(artifact.phases ?? []).toHaveLength(0)
 

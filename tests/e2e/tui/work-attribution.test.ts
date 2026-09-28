@@ -77,14 +77,26 @@ test("work and request IDs are durable before the first reply, and commits belon
 				expect(commits.length).toBe(1)
 				expect(commits[0].sha).toBe(sha)
 				expect(commits[0].workId).toBe(started[0].workId)
-				expect(
-					new Set(
-						records()
-							.filter((record) => record.type === "request")
-							.map((record) => record.requestId),
-					).size,
-				).toBe(2)
-				trace.step("real Git commit and second request retain original work ID")
+				const namingDeadline = Date.now() + 15_000
+				const completionRequests = () => fixture.fake.requests.filter((item) => item.url.endsWith("/chat/completions"))
+				const isNamingRequest = (url: string) => url === "/chat/completions"
+				while (!completionRequests().some((item) => isNamingRequest(item.url)) && Date.now() < namingDeadline)
+					await sleep(50)
+				const sent = completionRequests()
+				expect(sent.filter((item) => isNamingRequest(item.url)).length).toBe(1)
+				expect(sent.filter((item) => !isNamingRequest(item.url)).length).toBe(2)
+				const attempts = records().filter((record) => record.type === "request")
+				expect(attempts.length).toBe(sent.length)
+				expect(new Set(attempts.map((record) => record.requestId)).size).toBe(sent.length)
+				for (const dispatched of sent) {
+					const body = dispatched.body
+					const model = typeof body === "object" && body !== null && "model" in body ? body.model : undefined
+					expect(attempts.find((record) => record.requestId === dispatched.headers["x-request-id"])).toMatchObject({
+						workId: started[0].workId,
+						model,
+					})
+				}
+				trace.step("real Git commit, both chat requests and automatic title request retain original work ID")
 			},
 		)
 	} finally {

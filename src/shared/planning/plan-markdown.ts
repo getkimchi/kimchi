@@ -21,6 +21,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { isWorkId } from "../work-id.js"
 
 /** Canonical directory (relative to the project cwd) for plan markdown files. */
 export const PLAN_DIR = ".kimchi/plans"
@@ -97,6 +98,19 @@ export function fermentPlanFileName(fermentName: string, fermentId: string): str
 	return `ferment-${slugifyPlanName(fermentName)}-${fermentId.slice(0, 12)}`
 }
 
+const WORK_ID_PREFIX = "<!-- kimchi-work-id: "
+const WORK_ID_SUFFIX = " -->"
+
+/** Only the first line is metadata; marker examples in the plan body are content. */
+export function readPlanWorkId(text: string): string | undefined {
+	const newline = text.indexOf("\n")
+	let line = newline === -1 ? text : text.slice(0, newline)
+	if (line.endsWith("\r")) line = line.slice(0, -1)
+	if (!line.startsWith(WORK_ID_PREFIX) || !line.endsWith(WORK_ID_SUFFIX)) return undefined
+	const workId = line.slice(WORK_ID_PREFIX.length, -WORK_ID_SUFFIX.length)
+	return isWorkId(workId) ? workId : undefined
+}
+
 export interface SavePlanMarkdownOptions {
 	/** Project working directory — plan files land under `<cwd>/.kimchi/plans/`. */
 	readonly cwd: string
@@ -118,12 +132,15 @@ export function savePlanMarkdown(opts: SavePlanMarkdownOptions): string {
 	const plansDir = resolve(opts.cwd, PLAN_DIR)
 	mkdirSync(plansDir, { recursive: true })
 	const filePath = resolve(plansDir, `${slugifyPlanName(opts.name)}.md`)
-	if (opts.workId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(opts.workId)) {
-		throw new Error("Invalid work UUID")
+	let content = opts.planText
+	if (opts.workId !== undefined) {
+		if (!isWorkId(opts.workId)) throw new Error("Invalid work UUID")
+		const header = `${WORK_ID_PREFIX}${opts.workId}${WORK_ID_SUFFIX}`
+		const previous = readPlanWorkId(opts.planText)
+		content = previous
+			? header + opts.planText.slice(WORK_ID_PREFIX.length + previous.length + WORK_ID_SUFFIX.length)
+			: `${header}\n${opts.planText}`
 	}
-	const content = opts.workId
-		? `<!-- kimchi-work-id: ${opts.workId} -->\n${opts.planText.replace(/<!-- kimchi-work-id: [^\r\n]* -->\n?/g, "")}`
-		: opts.planText
 	writeFileSync(filePath, content, "utf-8")
 	return filePath
 }

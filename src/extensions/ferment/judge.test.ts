@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -1156,6 +1156,27 @@ describe("judgeApiCall", () => {
 		rmSync(attributionDir, { recursive: true, force: true })
 		completeMock.mockReset()
 		captureJudgeContext(undefined, undefined, false)
+	})
+	it.each(["identity", "request"])("grades normally when %s attribution fails", async (stage) => {
+		const ctx = createContext()
+		if (stage === "request") getWorkId(ctx)
+		const path = join(attributionDir, "work-attribution")
+		rmSync(path, { recursive: true, force: true })
+		writeFileSync(path, "blocked")
+		const model = createModel("judge-x")
+		const registry = createContext({
+			modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test", headers: {} }) },
+		}).modelRegistry
+		captureJudgeContext(model, registry, false, ctx)
+		completeMock.mockResolvedValue({ content: [{ type: "text", text: "grade evidence" }], stopReason: "stop" })
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			expect(await judgeApiCall("system", "user")).toEqual({ ok: true, text: "grade evidence" })
+			expect(completeMock).toHaveBeenCalledOnce()
+			expect(warning).toHaveBeenCalled()
+		} finally {
+			warning.mockRestore()
+		}
 	})
 	it("persists the captured work and session before dispatch despite auth changing sessions", async () => {
 		let sessionId = "judge-original"

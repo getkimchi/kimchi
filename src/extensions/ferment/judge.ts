@@ -1,4 +1,4 @@
-import { getWorkId, recordProviderRequest } from "../work-attribution.js"
+import { getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 /**
  * Judge — surviving LLM-as-judge surface after the gate-registry migration.
  *
@@ -92,9 +92,10 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 	const workContext = getJudgeWorkContext()
 	if (!workContext) return { ok: false, reason: "api_error", detail: "Judge work context unavailable" }
 	try {
-		const workId = getWorkId(workContext)
+		const workId = tryWorkAttribution(() => getWorkId(workContext))
 		const auth = await registry.getApiKeyAndHeaders(model)
 		if (!auth.ok || !auth.apiKey) return { ok: false, reason: "no_auth" }
+		const request = workId ? tryWorkAttribution(() => recordProviderRequest(workContext, model, workId)) : undefined
 		const response = await complete(
 			model,
 			{
@@ -103,7 +104,7 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 			},
 			{
 				apiKey: auth.apiKey,
-				headers: { ...auth.headers, "X-Request-Id": recordProviderRequest(workContext, model, workId).requestId },
+				headers: { ...auth.headers, ...(request ? { "X-Request-Id": request.requestId } : {}) },
 				signal: AbortSignal.timeout(45_000),
 				...(maxTokens !== undefined && { maxTokens }),
 			},

@@ -8,7 +8,7 @@ import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestrat
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
-import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
+import { appendWorkRecord, getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
@@ -299,7 +299,7 @@ export async function evaluateFermentV2(
 		diagnostics: diagnostics(failureType, httpStatusCode),
 	})
 	try {
-		const inheritedWorkId = getWorkId(ctx)
+		const inheritedWorkId = tryWorkAttribution(() => getWorkId(ctx))
 		const objective = objectiveText(input.objective, ctx.cwd)
 		const model = resolveFermentV2EvaluatorModel(ctx)
 		if (!model) return unavailable("No evaluator model is available.", "no_model")
@@ -344,7 +344,7 @@ export async function evaluateFermentV2(
 		}
 		const evaluatorSession = createEvaluatorSession(ctx)
 		const workContext = { cwd: ctx.cwd, sessionManager: evaluatorSession }
-		appendWorkRecord(workContext, { type: "work" }, inheritedWorkId)
+		if (inheritedWorkId) tryWorkAttribution(() => appendWorkRecord(workContext, { type: "work" }, inheritedWorkId))
 		evaluatorSession.appendCustomEntry(INTERNAL_SESSION_ENTRY, { kind: "ferment-evaluator" })
 		evaluatorSession.appendSessionInfo("Ferment V2 evaluator")
 		evaluatorSession.appendModelChange(model.provider, model.id)
@@ -356,11 +356,13 @@ export async function evaluateFermentV2(
 				input.signal?.throwIfAborted()
 				deadline = AbortSignal.timeout(timeoutMs)
 				const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
-				const attribution = recordProviderRequest(workContext, model, inheritedWorkId)
+				const attribution = inheritedWorkId
+					? tryWorkAttribution(() => recordProviderRequest(workContext, model, inheritedWorkId))
+					: undefined
 				providerRequestCount++
 				const response = await completeSimple(model, requestContext, {
 					apiKey: auth.apiKey,
-					headers: { ...auth.headers, "X-Request-Id": attribution.requestId },
+					headers: { ...auth.headers, ...(attribution ? { "X-Request-Id": attribution.requestId } : {}) },
 					reasoning: "minimal",
 					thinkingBudgets: correcting ? { minimal: 0 } : undefined,
 					samplingParams: isKimchiManagedJsonModeProvider(model.provider)

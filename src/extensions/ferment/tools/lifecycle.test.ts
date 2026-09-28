@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -563,11 +563,17 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(component).toBeDefined()
 	})
 
-	it("creates a new draft ferment when ferment_id is omitted and no active ferment exists", async () => {
+	it.each(["healthy", "identity", "append"])("saves a draft plan with attribution state: %s", async (stage) => {
 		const { h, execute } = createProposeHarness()
 		expect(h.runtime.getActive()).toBeUndefined()
 		const beforeCount = h.storage.list().length
-		const ctx = createContext({ hasUI: false })
+		const ctx = createContext({ hasUI: false, cwd: attributionDir })
+		const originalWorkId = stage === "append" ? getWorkId(ctx) : undefined
+		if (stage !== "healthy") {
+			const path = join(attributionDir, "work-attribution")
+			rmSync(path, { recursive: true, force: true })
+			writeFileSync(path, "blocked")
+		}
 
 		const result = await execute(
 			"tool-call-1",
@@ -591,7 +597,9 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(active?.name).toBe("Bootstrap Ferment")
 		expect(active?.status).toBe("planned")
 		if (!active) throw new Error("Expected active Ferment")
-		expect(loadRuntimeState(active.id, attributionDir).workId).toBe(getWorkId(ctx))
+		expect(existsSync(join(attributionDir, ".kimchi", "plans"))).toBe(true)
+		if (stage !== "identity")
+			expect(loadRuntimeState(active.id, attributionDir).workId).toBe(originalWorkId ?? getWorkId(ctx))
 	})
 
 	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {

@@ -1,6 +1,12 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type { BeforeProviderHeadersEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 import requestTimingExtension from "./request-timing.js"
+import { createWorkAttributionExtension, getWorkId, setWorkId } from "./work-attribution.js"
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
@@ -48,6 +54,93 @@ async function completeProviderCall(
 }
 
 describe("requestTimingExtension", () => {
+	it("times consecutive fallback-only requests independently", async () => {
+		const mock = createExtensionApi()
+		const ctx = createContext()
+		requestTimingExtension(mock.api)
+		const now = vi.spyOn(Date, "now")
+		try {
+			for (const [start, end] of [
+				[1000, 1030],
+				[2000, 2020],
+			]) {
+				now.mockReturnValue(start)
+				await mock.getHandler("before_provider_request")({}, ctx)
+				now.mockReturnValue(end)
+				await mock.getHandler("after_provider_response")({ status: 200, headers: {} }, ctx)
+				await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+			}
+			expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
+				expect.objectContaining({ requestStartedAt: new Date(1000).toISOString(), durationMs: 30 }),
+				expect.objectContaining({ requestStartedAt: new Date(2000).toISOString(), durationMs: 20 }),
+			])
+		} finally {
+			now.mockRestore()
+		}
+	})
+
+	it.each([false, true])("uses this request's identity with timing registered first: %s", async (timingFirst) => {
+		const dir = mkdtempSync(join(tmpdir(), "request-timing-"))
+		vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+		try {
+			const mock = createExtensionApi()
+			const ctx = createContext({ cwd: dir })
+			if (timingFirst) requestTimingExtension(mock.api)
+			createWorkAttributionExtension()(mock.api)
+			if (!timingFirst) requestTimingExtension(mock.api)
+			const ids: string[] = []
+			const workIds: string[] = []
+			for (const status of [500, 200]) {
+				await mock.getHandler("before_provider_request")({}, ctx)
+				const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+				for (const handler of mock.getHandlers<BeforeProviderHeadersEvent>("before_provider_headers"))
+					await handler(event, ctx)
+				const requestId = event.headers["X-Request-Id"]
+				if (typeof requestId !== "string") throw new Error("Expected an attributed request ID")
+				ids.push(requestId)
+				workIds.push(getWorkId(ctx))
+				setWorkId(ctx)
+				await mock.getHandler("after_provider_response")({ status, headers: {} }, ctx)
+				await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+			}
+			expect(ids[0]).not.toBe(ids[1])
+			expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
+				expect.objectContaining({ requestId: ids[0], workId: workIds[0], isRetry: false }),
+				expect.objectContaining({ requestId: ids[1], workId: workIds[1], isRetry: true }),
+			])
+			await mock.getHandler("before_provider_request")({}, ctx)
+			await mock.getHandler("after_provider_response")({ status: 200, headers: {} }, ctx)
+			await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+			const fallback = mock.getAppendedEntries("request_diagnostics").at(-1)
+			expect(fallback).not.toHaveProperty("requestId")
+			expect(fallback).not.toHaveProperty("workId")
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("discards timing for a request that ends without an HTTP response", async () => {
+		const mock = createExtensionApi()
+		const ctx = createContext()
+		requestTimingExtension(mock.api)
+		const now = vi.spyOn(Date, "now").mockReturnValue(1000)
+		try {
+			await mock.getHandler("before_provider_request")({}, ctx)
+			await mock.getHandler("message_end")({ message: { role: "assistant", stopReason: "error" } }, ctx)
+			now.mockReturnValue(2000)
+			await mock.getHandler("before_provider_request")({}, ctx)
+			now.mockReturnValue(2010)
+			await mock.getHandler("after_provider_response")({ status: 200, headers: {} }, ctx)
+			await mock.getHandler("message_end")({ message: { role: "assistant" } }, ctx)
+			expect(mock.getAppendedEntries("request_diagnostics")).toEqual([
+				expect.objectContaining({ requestStartedAt: new Date(2000).toISOString(), durationMs: 10 }),
+			])
+		} finally {
+			now.mockRestore()
+		}
+	})
+
 	it("registers expected handlers", () => {
 		const { handlers, api } = createMockApi()
 		requestTimingExtension(api)

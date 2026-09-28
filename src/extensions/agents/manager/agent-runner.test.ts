@@ -383,6 +383,33 @@ describe("runAgent — telemetry extension", () => {
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
 	})
 
+	it("starts a child when attribution storage is unavailable", async () => {
+		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(warning).toHaveBeenCalled()
+		warning.mockRestore()
+		expect(mockDefaultResourceLoader).toHaveBeenCalledTimes(1)
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg).toHaveProperty("extensionFactories")
+		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
+		expect(ctorArg?.extensionFactories).toHaveLength(5)
+		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
+		expect(mockReadTelemetryConfig).toHaveBeenCalled()
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
 	it("registers Auto routing only for children that use Auto", async () => {
 		const concreteSession = makeFakeSession({})
 		const autoSession = makeFakeSession({})

@@ -13,7 +13,7 @@
  * matching how resumeFerment / confirmPendingScope resolve the ferments root.
  */
 
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
@@ -536,6 +536,25 @@ describe("resumeFerment scoping-stop budget reset", () => {
 })
 
 describe("saved Ferment work attribution", () => {
+	it("continues a saved Ferment when attribution persistence fails", () => {
+		const ferment = h.eventStorage.create("Saved work")
+		saveRuntimeState(
+			ferment.id,
+			{ ...emptyState(), workId: "11111111-1111-4111-8111-111111111111" },
+			{ root: h.fermentsDir },
+		)
+		writeFileSync(join(h.fermentsDir, "agent"), "blocked")
+		const ctx = createContext({ cwd: h.fermentsDir })
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			resumeFerment(h.pi, ferment.id, ctx, h.runtime)
+			expect(actionableHidden(h.sentMessages)).toHaveLength(1)
+			expect(warning).toHaveBeenCalled()
+		} finally {
+			warning.mockRestore()
+		}
+	})
+
 	it.each(["continue", "leave paused"])("restores saved work before %s can schedule inference", (action) => {
 		const ferment = h.eventStorage.create("Saved work")
 		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })

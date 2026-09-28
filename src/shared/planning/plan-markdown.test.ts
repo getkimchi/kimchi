@@ -75,6 +75,37 @@ describe("savePlanMarkdown", () => {
 		expect(readFileSync(second, "utf-8")).toBe("v2\n")
 	})
 
+	it.each(["\n", "\r\n"])("preserves marker examples and replaces only a leading header (%j)", (newline) => {
+		const workId = "11111111-1111-4111-8111-111111111111"
+		const previous = "22222222-2222-4222-8222-222222222222"
+		const body = [
+			"# Metadata plan",
+			"",
+			"```markdown",
+			`<!-- kimchi-work-id: ${previous} -->`,
+			"# Example",
+			"```",
+			"",
+		].join(newline)
+		const planText = `<!-- kimchi-work-id: ${previous} -->${newline}${body}`
+		const path = savePlanMarkdown({ cwd: tmpDir, name: "Metadata", planText, workId })
+		const saved = readFileSync(path, "utf8")
+		expect(saved).toBe(`<!-- kimchi-work-id: ${workId} -->${newline}${body}`)
+		savePlanMarkdown({ cwd: tmpDir, name: "Metadata", planText: saved, workId })
+		expect(readFileSync(path, "utf8")).toBe(saved)
+	})
+
+	it("rewrites metadata-only plans without adding a newline", () => {
+		const workId = "11111111-1111-4111-8111-111111111111"
+		const path = savePlanMarkdown({
+			cwd: tmpDir,
+			name: "Metadata",
+			planText: "<!-- kimchi-work-id: 22222222-2222-4222-8222-222222222222 -->",
+			workId,
+		})
+		expect(readFileSync(path, "utf8")).toBe(`<!-- kimchi-work-id: ${workId} -->`)
+	})
+
 	it("does not use timestamped filenames", () => {
 		const filePath = savePlanMarkdown({ cwd: tmpDir, name: "Timing Check", planText: "x\n" })
 		expect(filePath).not.toMatch(/plan-\d+\.md$/)

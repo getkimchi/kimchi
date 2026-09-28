@@ -1,4 +1,4 @@
-import { appendWorkRecord, getWorkId } from "../../work-attribution.js"
+import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../../work-attribution.js"
 /**
  * Ferment lifecycle tools: list, scope, update fields, complete.
  *
@@ -1174,15 +1174,20 @@ ${renderGateGuidance("scope_ferment")}`,
 			// same file. Failures are non-fatal but warned so the review flow
 			// can continue without a path.
 			let planPath: string | undefined
+			const workId = tryWorkAttribution(() => getWorkId(ctx))
 			try {
 				planPath = savePlanMarkdown({
 					cwd: ctx.cwd,
 					name: fermentPlanFileName(ferment.name, fermentId),
 					planText: planEntry,
-					workId: getWorkId(ctx),
+					workId,
 				})
-				appendWorkRecord(ctx, { type: "plan", path: planPath })
-				setFermentWorkId(fermentId, getWorkId(ctx))
+				if (workId) {
+					tryWorkAttribution(() => {
+						setFermentWorkId(fermentId, workId)
+						appendWorkRecord(ctx, { type: "plan", path: planPath }, workId)
+					})
+				}
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")

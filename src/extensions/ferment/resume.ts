@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
-import { setWorkId } from "../work-attribution.js"
+import { setWorkId, tryWorkAttribution } from "../work-attribution.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { emitFermentScopingResumed } from "./domain-events-emitter.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
@@ -35,7 +35,7 @@ export function loadFermentSilently(
 		return undefined
 	}
 	const workId = getFermentWorkId(existing.id)
-	if (workId) setWorkId(ctx, workId, pi)
+	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
@@ -89,7 +89,7 @@ export function resumeFerment(
 	}
 
 	const workId = getFermentWorkId(existing.id)
-	if (workId) setWorkId(ctx, workId, pi)
+	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 

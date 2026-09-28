@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
+import { getWorkId, recordProviderRequest } from "./work-attribution.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
@@ -107,7 +108,7 @@ export function deterministicFallback(input: string): string {
 
 /**
  * Suggest a session name from the first user text.
- * When quiet is true, suppresses all user-facing error output.
+ * When quiet is true, suppresses naming errors; attribution failures remain visible.
  */
 export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
 	const base = basename(ctx.cwd)
@@ -129,6 +130,20 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
 
 	if (!apiKey) return fallback
+
+	const sessionId = ctx.sessionManager.getSessionId()
+	const workContext = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
+	const warnAttribution = (error: unknown) => {
+		const message = `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`
+		if (ctx.hasUI) ctx.ui.notify(message, "warning")
+		else console.warn(message)
+	}
+	let workId: string | undefined
+	try {
+		workId = getWorkId(workContext)
+	} catch (error) {
+		warnAttribution(error)
+	}
 
 	try {
 		const maxRetries = getSessionNameMaxRetries(ctx.cwd)
@@ -153,7 +168,26 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 					temperature: 0,
 				}),
 			},
-			{ timeoutMs: SESSION_NAME_TIMEOUT_MS, retry: { maxRetries } },
+			{
+				timeoutMs: SESSION_NAME_TIMEOUT_MS,
+				retry: { maxRetries },
+				fetchImpl: (url, init) => {
+					const headers = new Headers(init?.headers)
+					if (workId) {
+						try {
+							const request = recordProviderRequest(
+								workContext,
+								{ provider: "kimchi-dev", id: SESSION_NAME_MODEL },
+								workId,
+							)
+							headers.set("X-Request-Id", request.requestId)
+						} catch (error) {
+							warnAttribution(error)
+						}
+					}
+					return fetch(url, { ...init, headers })
+				},
+			},
 		)
 
 		if (!response.ok) {

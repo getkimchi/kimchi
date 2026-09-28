@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 
-import { isWorkId } from "../work-attribution.js"
+import { isWorkId } from "../../shared/work-id.js"
 
 export const RUNTIME_STATE_SCHEMA_VERSION = 1
 

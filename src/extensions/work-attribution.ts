@@ -12,6 +12,8 @@ import {
 } from "node:fs"
 import { join, resolve } from "node:path"
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
+import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 
 export interface WorkContext {
@@ -19,19 +21,20 @@ export interface WorkContext {
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
 }
 const WORK_IDENTITY_ENTRY = "work_identity"
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const identities = new Map<string, string>()
 
 function ledgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
 }
-export function isWorkId(value: unknown): value is string {
-	return typeof value === "string" && UUID.test(value)
-}
-export function readPlanWorkId(text: string): string | undefined {
-	const ids = [...text.matchAll(/<!-- kimchi-work-id: ([^\r\n]+) -->/g)].map((match) => match[1])
-	return ids.length === 1 && UUID.test(ids[0]) ? ids[0] : undefined
+/** Attribution is observational: callers may continue without IDs after a visible persistence failure. */
+export function tryWorkAttribution<T>(record: () => T): T | undefined {
+	try {
+		return record()
+	} catch (error) {
+		console.warn("[work-attribution] Attribution unavailable:", error)
+		return undefined
+	}
 }
 export function appendWorkRecord(
 	ctx: WorkContext,
@@ -60,7 +63,7 @@ export function setWorkId(
 	workId: string = randomUUID(),
 	pi?: Pick<ExtensionAPI, "appendEntry">,
 ): string {
-	if (!UUID.test(workId)) throw new Error("Invalid work UUID")
+	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
 	appendWorkRecord(ctx, { type: "work" }, workId)
 	identities.set(ledgerPath(ctx), workId)
 	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId })
@@ -76,7 +79,7 @@ export function getWorkId(ctx: WorkContext): string {
 			// A process may have died during its final append; earlier records remain usable.
 			try {
 				const record = JSON.parse(line)
-				if (record.type === "work" && typeof record.workId === "string" && UUID.test(record.workId)) {
+				if (record.type === "work" && isWorkId(record.workId)) {
 					identities.set(path, record.workId)
 					return record.workId
 				}
@@ -87,7 +90,7 @@ export function getWorkId(ctx: WorkContext): string {
 }
 export function recordProviderRequest(
 	ctx: WorkContext,
-	model?: ExtensionContext["model"],
+	model?: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">,
 	workId = getWorkId(ctx),
 ): { requestId: string; workId: string } {
 	const requestId = randomUUID()

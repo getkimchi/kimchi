@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import * as fs from "node:fs"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,6 +12,10 @@ import { createProcessRegistry } from "../bash-background/process-registry.js"
 import { getSessionRegistry, setSessionRegistry } from "../bash-background/session-registry.js"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
+
+vi.mock("node:fs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:fs")>()),
+}))
 
 let directory: string
 let repository: string
@@ -186,6 +191,56 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 			expect(pinned.sessionManager.getSessionId()).toBe("original-session")
 			expect(workId).toBe("original-work")
 			expect(fields).toMatchObject({ sha: git(repository, "rev-parse", "HEAD"), toolCallId: "background-commit" })
+		} finally {
+			await registry.shutdown()
+		}
+	})
+
+	it.each(["allocation", "cleanup"])("preserves Bash execution when trace %s fails", async (stage) => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const failure = new Error("trace storage unavailable")
+		const hook =
+			stage === "allocation"
+				? vi.spyOn(fs, "mkdtempSync").mockImplementation(() => {
+						throw failure
+					})
+				: vi.spyOn(fs, "rmSync").mockImplementation(() => {
+						throw failure
+					})
+		try {
+			expect(await run("printf still-running")).toBe(0)
+			expect(warning).toHaveBeenCalledWith(expect.stringContaining("work-attribution"), failure)
+		} finally {
+			const tracePath = hook.mock.calls[0]?.[0]
+			hook.mockRestore()
+			if (stage === "cleanup" && tracePath) rmSync(tracePath, { recursive: true, force: true })
+		}
+	})
+
+	it.each(["foreground", "background"])("runs %s Bash when work persistence fails", async (mode) => {
+		const ctx = createContext({ cwd: repository })
+		vi.spyOn(attribution, "getWorkId").mockImplementation(() => {
+			throw new Error("ledger unavailable")
+		})
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const registry = createProcessRegistry()
+		try {
+			const tool =
+				mode === "background"
+					? createBackgroundBashToolDefinition(repository, { registry })
+					: createCommitTrackingBashTool(ctx)
+			const result = await tool.execute(
+				"without-attribution",
+				{ command: "printf bash-still-works" },
+				undefined,
+				undefined,
+				ctx,
+			)
+			expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: "bash-still-works" })]))
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining("work-attribution"),
+				expect.objectContaining({ message: "ledger unavailable" }),
+			)
 		} finally {
 			await registry.shutdown()
 		}

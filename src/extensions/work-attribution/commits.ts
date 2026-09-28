@@ -10,6 +10,9 @@ import {
 
 import { appendWorkRecord, getWorkId, type WorkContext } from "../work-attribution.js"
 
+const MAX_TRACE_BYTES = 8 * 1024 * 1024
+const GIT_LOOKUP_TIMEOUT_MS = 2000
+
 export interface ObservedCommit {
 	sha: string
 	repository: string
@@ -96,7 +99,7 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 					repository = realpathSync(
 						execFileSync("git", ["-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
 							encoding: "utf8",
-							timeout: 2000,
+							timeout: GIT_LOOKUP_TIMEOUT_MS,
 							env,
 							stdio: ["ignore", "pipe", "pipe"],
 						}).trim(),
@@ -114,7 +117,7 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 function readTrace(path: string): string {
 	try {
 		// ponytail: cap transient captures at 8 MiB; stream parsing if large Git commands need attribution.
-		if (statSync(path).size > 8 * 1024 * 1024) throw new Error("Git attribution trace exceeds 8 MiB")
+		if (statSync(path).size > MAX_TRACE_BYTES) throw new Error("Git attribution trace exceeds 8 MiB")
 		return readFileSync(path, "utf8")
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return ""
@@ -129,7 +132,13 @@ export function createCommitTrackingOperations(
 ): BashOperations {
 	return {
 		async exec(command, cwd, options) {
-			const directory = mkdtempSync(join(tmpdir(), "kimchi-git-attribution-"))
+			let directory: string
+			try {
+				directory = mkdtempSync(join(tmpdir(), "kimchi-git-attribution-"))
+			} catch (error) {
+				console.warn("[work-attribution] Could not initialize Git trace:", error)
+				return local.exec(command, cwd, options)
+			}
 			const trace = join(directory, "events")
 			const refs = join(directory, "refs")
 			try {
@@ -146,7 +155,11 @@ export function createCommitTrackingOperations(
 				} catch (error) {
 					console.warn("[work-attribution] Could not record Git commits:", error)
 				} finally {
-					rmSync(directory, { recursive: true, force: true })
+					try {
+						rmSync(directory, { recursive: true, force: true })
+					} catch (error) {
+						console.warn("[work-attribution] Could not remove Git trace:", error)
+					}
 				}
 			}
 		},
@@ -157,14 +170,19 @@ export function createCommitTrackingOperations(
 export function createWorkCommitTrackingOperations(
 	ctx: WorkContext,
 	toolCallId: string,
-	local?: BashOperations,
+	local: BashOperations = createLocalBashOperations(),
 ): BashOperations {
 	const sessionId = ctx.sessionManager.getSessionId()
 	const pinned = { cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } }
-	const workId = getWorkId(pinned)
-	return createCommitTrackingOperations((commit) => {
-		appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
-	}, local)
+	try {
+		const workId = getWorkId(pinned)
+		return createCommitTrackingOperations((commit) => {
+			appendWorkRecord(pinned, { type: "commit", ...commit, toolCallId }, workId)
+		}, local)
+	} catch (error) {
+		console.warn("[work-attribution] Could not initialize Git attribution:", error)
+		return local
+	}
 }
 
 export function createCommitTrackingBashTool(ctx: WorkContext): ReturnType<typeof createBashToolDefinition> {

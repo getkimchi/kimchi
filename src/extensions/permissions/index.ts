@@ -52,7 +52,7 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { appendWorkRecord, getWorkId } from "../work-attribution.js"
+import { appendWorkRecord, getWorkId, tryWorkAttribution } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
@@ -727,9 +727,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Save plan to disk
 			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
 			let planPath: string | undefined
+			const workId = tryWorkAttribution(() => getWorkId(ctx))
 			try {
-				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId: getWorkId(ctx) })
-				appendWorkRecord(ctx, { type: "plan", path: planPath })
+				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText, workId })
+				if (workId) tryWorkAttribution(() => appendWorkRecord(ctx, { type: "plan", path: planPath }, workId))
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
@@ -924,7 +925,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 					})
-					setFermentWorkId(draft.id, getWorkId(ctx), fermentDir)
+					tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
@@ -947,7 +948,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				})
 				// Set the draft active before emitting STARTED so telemetry can capture
 				// the scoping baseline. Keep planning tools until activation succeeds.
-				setFermentWorkId(draft.id, getWorkId(ctx), fermentDir)
+				tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 				defaultFermentRuntime.setActive(draft)
 				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.

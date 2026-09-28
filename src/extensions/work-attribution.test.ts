@@ -6,20 +6,13 @@ import {
 	SessionManager,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
-	type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { savePlanMarkdown } from "../shared/planning/plan-markdown.js"
+import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import requestTimingExtension from "./request-timing.js"
-import {
-	createWorkAttributionExtension,
-	getWorkId,
-	readPlanWorkId,
-	recordProviderRequest,
-	setWorkId,
-} from "./work-attribution.js"
+import { createWorkAttributionExtension, getWorkId, recordProviderRequest, setWorkId } from "./work-attribution.js"
 
 let dir: string
 beforeEach(() => {
@@ -182,27 +175,21 @@ describe("local work attribution", () => {
 		expect(getWorkId(child)).toBe(workId)
 		expect(readPlanWorkId("<!-- kimchi-work-id: ../../escape -->")).toBeUndefined()
 	})
-	it("does not reassign work when reading a historical plan", async () => {
-		const ctx = createContext({ cwd: dir })
-		const original = getWorkId(ctx)
-		const other = createContext({ cwd: dir, sessionManager: { getSessionId: () => "historical" } })
-		const path = savePlanMarkdown({ cwd: dir, name: "historical", planText: "# History", workId: getWorkId(other) })
+	it("reads only leading plan metadata and leaves example UUIDs unrelated", () => {
+		const workId = "11111111-1111-4111-8111-111111111111"
+		const example = "22222222-2222-4222-8222-222222222222"
+		const body = `# Plan\n\`\`\`markdown\n<!-- kimchi-work-id: ${example} -->\n\`\`\`\n`
+		expect(readPlanWorkId(body)).toBeUndefined()
+		expect(readPlanWorkId(`<!-- kimchi-work-id: ${workId} -->`)).toBe(workId)
+		expect(readPlanWorkId(`<!-- kimchi-work-id: ${workId} -->\r\n${body}`)).toBe(workId)
+		expect(readPlanWorkId(`<!-- kimchi-work-id: invalid -->\n${body}`)).toBeUndefined()
+		expect(readPlanWorkId(`<!-- kimchi-work-id: ${workId} --> trailing`)).toBeUndefined()
+	})
+
+	it("does not register tool-result handlers that infer work from arbitrary plan reads", () => {
 		const mock = createExtensionApi()
 		createWorkAttributionExtension()(mock.api)
-		for (const handler of mock.getHandlers<ToolResultEvent>("tool_result"))
-			await handler(
-				{
-					type: "tool_result",
-					toolName: "read",
-					toolCallId: "read",
-					input: { path },
-					content: [],
-					details: {},
-					isError: false,
-				},
-				ctx,
-			)
-		expect(getWorkId(ctx)).toBe(original)
+		expect(mock.getHandlers("tool_result")).toHaveLength(0)
 	})
 
 	it("restores work after shutdown and records a new explicit work separately", async () => {
