@@ -10,11 +10,22 @@ import {
 	readSync,
 	writeFileSync,
 } from "node:fs"
-import { join, resolve } from "node:path"
-import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { dirname, join, resolve } from "node:path"
+import {
+	createEditToolDefinition,
+	createWriteToolDefinition,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent"
 import { readPlanWorkId } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
+import {
+	createTrackedEditTool,
+	createTrackedWriteTool,
+	reconcileFileTransitions,
+} from "./work-attribution/file-transitions.js"
 
 export interface WorkContext {
 	cwd: string
@@ -23,7 +34,7 @@ export interface WorkContext {
 const WORK_IDENTITY_ENTRY = "work_identity"
 const identities = new Map<string, string>()
 
-function ledgerPath(ctx: WorkContext): string {
+export function workLedgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
 }
@@ -40,9 +51,9 @@ export function appendWorkRecord(
 	ctx: WorkContext,
 	fields: { type: string; [key: string]: unknown },
 	workId = getWorkId(ctx),
+	path = workLedgerPath(ctx),
 ): void {
-	const path = ledgerPath(ctx)
-	mkdirSync(join(getAgentDir(), "work-attribution"), { recursive: true, mode: 0o700 })
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
 	const fd = openSync(path, "a+", 0o600)
 	try {
 		const size = fstatSync(fd).size
@@ -65,12 +76,12 @@ export function setWorkId(
 ): string {
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
 	appendWorkRecord(ctx, { type: "work" }, workId)
-	identities.set(ledgerPath(ctx), workId)
+	identities.set(workLedgerPath(ctx), workId)
 	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId })
 	return workId
 }
 export function getWorkId(ctx: WorkContext): string {
-	const path = ledgerPath(ctx)
+	const path = workLedgerPath(ctx)
 	const cached = identities.get(path)
 	if (cached) return cached
 	if (existsSync(path)) {
@@ -114,13 +125,25 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 			} catch (error) {
 				warn(ctx, error)
 			}
+			reconcileFileTransitions(ctx)
 			pi.registerTool(createCommitTrackingBashTool(ctx))
+			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
+			pi.registerTool({
+				...createEditToolDefinition(ctx.cwd),
+				execute: (id, params, signal, update, executionCtx) =>
+					createTrackedEditTool(executionCtx, id).execute(id, params, signal, update),
+			})
+			pi.registerTool({
+				...createWriteToolDefinition(ctx.cwd),
+				execute: (id, params, signal, update, executionCtx) =>
+					createTrackedWriteTool(executionCtx, id).execute(id, params, signal, update),
+			})
 		})
 		const initialized = new Set<string>()
 		function bind(ctx: ExtensionContext): void {
 			const sessionId = ctx.sessionManager.getSessionId()
 			if (initialized.has(sessionId)) return
-			if (!existsSync(ledgerPath(ctx))) {
+			if (!existsSync(workLedgerPath(ctx))) {
 				let copiedWorkId: string | undefined
 				for (const entry of ctx.sessionManager.getBranch().toReversed()) {
 					if (
@@ -147,15 +170,15 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 				const identity = recordProviderRequest(ctx, ctx.model)
 				event.headers["X-Request-Id"] = identity.requestId
 				// Kept local: work identity is used by diagnostics, not uploaded as a header.
-				activeRequests.set(ledgerPath(ctx), identity)
+				activeRequests.set(workLedgerPath(ctx), identity)
 			} catch (error) {
-				activeRequests.delete(ledgerPath(ctx))
+				activeRequests.delete(workLedgerPath(ctx))
 				warn(ctx, error)
 			}
 		})
 		pi.on("session_shutdown", (_event, ctx) => {
-			activeRequests.delete(ledgerPath(ctx))
-			identities.delete(ledgerPath(ctx))
+			activeRequests.delete(workLedgerPath(ctx))
+			identities.delete(workLedgerPath(ctx))
 			initialized.delete(ctx.sessionManager.getSessionId())
 		})
 		pi.registerCommand("work", {
@@ -184,5 +207,5 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 }
 const activeRequests = new Map<string, { requestId: string; workId: string }>()
 export function getActiveRequest(ctx: WorkContext): { requestId: string; workId: string } | undefined {
-	return activeRequests.get(ledgerPath(ctx))
+	return activeRequests.get(workLedgerPath(ctx))
 }

@@ -47,6 +47,7 @@ import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
+import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 
 const RESET = "\x1b[0m"
 const TRANSPARENT_BG = "\x1b[49m"
@@ -4443,7 +4444,7 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				old = null
 			}
-			const result = await writeTool.execute(toolCallId, params, signal, onUpdate)
+			const result = await createTrackedWriteTool(_ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
 			const content = params.content ?? ""
 			if (old !== null && old !== content) {
 				const diff = parseDiff(old, content)
@@ -4565,9 +4566,10 @@ export default function (pi: ExtensionAPI) {
 		parameters: editTool.parameters,
 		async execute(toolCallId, params, signal, onUpdate, _ctx) {
 			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+			const trackedTool = createTrackedEditTool(_ctx, toolCallId)
 			const operations = getEditOperations(params)
 			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null
-			const result = await editTool.execute(toolCallId, params, signal, onUpdate)
+			const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
 			if (operations.length === 0) return result
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
 			const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
