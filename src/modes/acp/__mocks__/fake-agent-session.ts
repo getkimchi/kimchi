@@ -68,7 +68,9 @@ export function asSession(fake: BaseFakeAgentSession): AgentSession {
 export function makeAcpConn(): AgentSideConnection {
 	return {
 		sessionUpdate: async (_p: SessionNotification) => {},
-		extNotification: vi.fn(),
+		// Return a resolved promise — notifyProjectTrustUpdate chains .catch()
+		// on the result, so a bare vi.fn() (undefined) throws a TypeError.
+		extNotification: vi.fn(async (_method: string, _params: unknown) => {}),
 		extMethod: vi.fn(),
 		requestPermission: vi.fn(),
 		unstable_createElicitation: vi.fn(),

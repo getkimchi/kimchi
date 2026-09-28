@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
@@ -12,21 +21,26 @@ import type {
 	TextContent,
 } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	AgentSessionEventListener,
-	ExtensionContext,
-	ExtensionUIContext,
-	ModelRegistry,
-	SessionInfo as PiSessionInfo,
-	ResourceLoader,
-	SessionManager,
-	Skill,
-	Theme,
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type AgentSessionEventListener,
+	type ExtensionContext,
+	type ExtensionUIContext,
+	type ModelRegistry,
+	type SessionInfo as PiSessionInfo,
+	ProjectTrustStore,
+	type ResourceLoader,
+	type SessionManager,
+	type Skill,
+	type Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import {
+	isProjectScopeAllowed,
+	resetProjectScopeTrustForTests,
+	setProjectScopeTrusted,
+} from "../../project-scope-trust.js"
 
 // Mock the browser auth flow so authenticate() can be tested without
 // starting a real callback server or opening a browser.
@@ -1219,6 +1233,15 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
+		it("advertises the trust ext methods in the initialize capabilities _meta", async () => {
+			const response = await makeTestAgent().initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				set_project_trust: true,
+				get_path_trust: true,
+				set_path_trust: true,
+			})
+		})
+
 		// Sessionless by design (kimchi-studio ADR-0043): onboarding completion is global
 		// per-machine state, so the call carries no sessionId.
 		it("writes the onboarding flag without requiring a session", async () => {
@@ -2123,6 +2146,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
 			sessionUpdate: async (_p: SessionNotification) => {},
+			extNotification: async (_method: string, _params: unknown) => {},
 			requestPermission: async (params: RequestPermissionRequest) => {
 				requests.push(params)
 				return { outcome: { outcome: "selected", optionId: "choice-0" } }
@@ -2175,6 +2199,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
 			sessionUpdate: async (_p: SessionNotification) => {},
+			extNotification: async (_method: string, _params: unknown) => {},
 			requestPermission: async (params: RequestPermissionRequest) => {
 				requests.push(params)
 				return {
@@ -6394,6 +6419,7 @@ describe("setSessionConfigOption", () => {
 					updates2.push(msg)
 				}
 			},
+			extNotification: async (_method: string, _params: unknown) => {},
 		} as unknown as AgentSideConnection
 
 		let callCount = 0
@@ -9191,5 +9217,123 @@ describe("extMethod dispatch", () => {
 		})
 
 		await expect(agent.extMethod("_kimchi.dev/no_such_method", {})).rejects.toThrow(/Method not found/)
+	})
+})
+
+describe("KimchiAcpAgent set_project_trust pin sweep", () => {
+	let agent: KimchiAcpAgent
+	let agentDir: string
+	let parentDir: string
+	let childDir: string
+
+	beforeEach(() => {
+		resetProjectScopeTrustForTests()
+		agentDir = mkdtempSync(join(tmpdir(), "acp-trust-agent-"))
+		parentDir = mkdtempSync(join(tmpdir(), "acp-trust-parent-"))
+		childDir = join(parentDir, "proj")
+		mkdirSync(childDir)
+	})
+
+	afterEach(() => {
+		resetProjectScopeTrustForTests()
+		rmSync(agentDir, { recursive: true, force: true })
+		rmSync(parentDir, { recursive: true, force: true })
+	})
+
+	function makeTrustAgent(): Record<string, FakeAgentSession> {
+		const parentFake = new FakeAgentSession("session-parent", parentDir)
+		const childFake = new FakeAgentSession("session-child", childDir)
+		// Map requested cwd → fake session so two sessions with distinct cwds
+		// can share one factory (the real factory is per-request too).
+		const byCwd = new Map([
+			[parentDir, parentFake],
+			[childDir, childFake],
+		])
+		agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir,
+			sessionFactory: async (params) => asSession(byCwd.get(params.cwd) ?? parentFake),
+		})
+		return { parent: parentFake, child: childFake }
+	}
+
+	it("trust_parent flips a fail-closed pin at the affected root itself", async () => {
+		makeTrustAgent()
+		// Session start fail-closes undecided projects by pinning the session
+		// cwd untrusted — here at the parent, the directory trust_parent grants.
+		setProjectScopeTrusted(parentDir, false)
+		setProjectScopeTrusted(childDir, false)
+
+		const res = await agent.newSession({ cwd: childDir, mcpServers: [] })
+		await agent.newSession({ cwd: parentDir, mcpServers: [] })
+
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_project_trust, {
+			sessionId: res.sessionId,
+			decision: "trust_parent",
+		})
+
+		// The store-mirroring sweep must include sessions AT affectedRoot
+		// (here the parent session, whose cwd equals the granted directory):
+		// its own fail-closed pin is nearer in the ancestor walk than the new
+		// grant and would otherwise keep shadowing it.
+		expect(result).toMatchObject({ trusted: true })
+		expect(isProjectScopeAllowed(parentDir)).toBe(true)
+		expect(isProjectScopeAllowed(childDir)).toBe(true)
+		// The store now holds the pi-shaped pair: parent granted, cwd cleared.
+		const store = new ProjectTrustStore(agentDir)
+		expect(store.getEntry(parentDir)?.decision).toBe(true)
+		// getEntry walks ancestors: with the cwd's own entry cleared, the
+		// parent's grant is the nearest deciding entry for the child.
+		expect(store.getEntry(childDir)?.path).toBe(realpathSync(parentDir))
+	})
+
+	it("trust_session keeps the requester's in-memory pin and store-mirrors siblings", async () => {
+		makeTrustAgent()
+		setProjectScopeTrusted(parentDir, false)
+
+		const res = await agent.newSession({ cwd: parentDir, mcpServers: [] })
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_project_trust, {
+			sessionId: res.sessionId,
+			decision: "trust_session",
+		})
+
+		// In-memory grant for this connection; the store stays empty, so the
+		// decision is not persisted (nothing to assert on disk beyond the
+		// absence of trust.json).
+		expect(result).toMatchObject({ trusted: true })
+		expect(existsSync(join(agentDir, "trust.json"))).toBe(false)
+	})
+
+	it("deny_persist stores the refusal and pins the requester untrusted", async () => {
+		makeTrustAgent()
+
+		const res = await agent.newSession({ cwd: parentDir, mcpServers: [] })
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_project_trust, {
+			sessionId: res.sessionId,
+			decision: "deny_persist",
+		})
+
+		// The refusal is both in the store (future sessions) and mirrored to
+		// the live pin (this session).
+		expect(result).toMatchObject({ trusted: false })
+		expect(isProjectScopeAllowed(parentDir)).toBe(false)
+		const store = new ProjectTrustStore(agentDir)
+		expect(store.getEntry(parentDir)?.decision).toBe(false)
+	})
+
+	it("deny pins the requester untrusted without touching the store", async () => {
+		makeTrustAgent()
+
+		const res = await agent.newSession({ cwd: parentDir, mcpServers: [] })
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_project_trust, {
+			sessionId: res.sessionId,
+			decision: "deny",
+		})
+
+		// In-memory refusal for this connection only: the gate is closed now,
+		// but nothing is persisted — the next session still re-asks.
+		expect(result).toMatchObject({ trusted: false })
+		expect(isProjectScopeAllowed(parentDir)).toBe(false)
+		expect(existsSync(join(agentDir, "trust.json"))).toBe(false)
 	})
 })
