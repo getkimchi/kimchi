@@ -6,12 +6,12 @@ For example, an implementation subagent changes an error response and posts the 
 
 Live messages and the group board are experimental features on this branch, scoped to workers within a Kimchi session.
 
-Live tests show that peer feedback can correct code and reviewer tests during a task. The recent controlled comparisons do not establish a repeatable final-quality or cost improvement. The [observed results](communication.md#observed-results) show both useful exchanges and negative outcomes.
+Live tests show that peer feedback can correct code and reviewer tests during a task. The recent controlled comparisons do not establish a repeatable final-quality or cost improvement. The [evidence page](evaluation.md) retains useful exchanges, negative outcomes and the latest comparisons.
 
 ## The user journey
 
 1. The user describes the outcome, scope and checks.
-2. The main agent spawns subagents when the work benefits from it or the user requests it. Each subagent gets a defined scope and checks.
+2. The main agent spawns subagents when the work benefits from it or the user requests it. Each subagent gets a defined scope and checks. A group assignment also names the peer dependency and the exchange needed before dependent work.
 3. Workers exchange questions and handoffs, and post findings or blockers to their group board.
 4. The main agent answers questions or asks the user, then returns feedback to the affected workers.
 5. The main agent checks the combined result and updates the task's progress before reporting completion.
@@ -30,6 +30,7 @@ flowchart TD
     S --> W[Worker TODOs and evidence]
     W -->|Progress snapshots| C
     W <--> F[Optional worker Ferment v2]
+    C <-->|Save and recover findings| J[Parent session journal]
     C -->|Progress and questions| P
     P -->|Verified findings and corrections| S
     P -->|Verify and update| T[Parent TODOs and checked results]
@@ -53,12 +54,12 @@ flowchart TD
 | Mechanism | Purpose | Behavior |
 |---|---|---|
 | Directed messages | Questions and handoffs | The host authorizes contact with the parent or a peer. User questions go through the main agent; replies reference their question. |
-| Group board | Shared findings, warnings and work notes | Append-only posts. Successful worker TODO writes publish snapshots. Peers and the main agent can read entries; the main agent also receives summaries. Posts do not assign work or wake every peer. |
+| Group board | Shared findings, warnings and work notes | Manual posts are append-only; automatic TODO snapshots retain current progress. Peers and the main agent can read entries; the main agent also receives summaries. Posts do not assign work or wake every peer. |
 | Final result | Completed or blocked work | Subagents return the outcome through the existing Agent result/report path. The main agent checks it against the task. |
 
 Local messages use Pi's steering and follow-up queues. Board hints refresh through the existing request-context hook without starting a new turn. A delivery receipt records routing; it does not establish that the receiving agent read or acted on the message.
 
-The host stores the board in memory for one session and group. Access requires at least two eligible workers in one host-created batch, normally background spawns with `communication: "group"`. Retention is bounded; restarting the host loses the board. The host supplies identity and membership. A peer's message cannot grant permissions or expand scope.
+The host scopes the board to one session and group. Worker access requires at least two eligible workers in one host-created batch, normally background spawns with `communication: "group"`. Accepted posts are saved in the parent's session journal. Resuming that session restores the current branch's bounded board view, including its latest TODO progress. The parent can read historical findings; their authors do not become live contacts. The host supplies identity and membership. A peer's message cannot grant permissions or expand scope.
 
 ## Reuse across Kimchi
 
@@ -76,4 +77,4 @@ The [detailed write-up](communication.md) covers these connections, the evidence
 
 [Messaging protocol](subagent-communication-protocol.md) · [Agent configuration](../agents.md) · [Manager](../../src/extensions/agents/manager/agent-manager.ts) · [Board](../../src/extensions/agents/manager/board.ts)
 
-Source checked on branch `feat-agent-comms-imprv`, based on commit `52fb3e2c0b0433056a194a309c777618719625a1` with local reconciliation and communication changes, on 2026-09-16.
+Source checked on branch `feat-agent-comms-imprv` at `9c06bed74a3a3ca9873b62433f09fb1e9672bcfb` with local communication changes, on 2026-09-21.

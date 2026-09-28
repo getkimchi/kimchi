@@ -26,6 +26,7 @@ import { FERMENT_V2_CUSTOM_ENTRY_TYPE, FERMENT_V2_TOOL_NAMES } from "../../ferme
 import { createWorkerFermentV2Extension } from "../../ferment-v2/index.js"
 import { restoreFermentV2 } from "../../ferment-v2/reducer.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import loopGuardExtension from "../../loop-guard.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -349,6 +350,7 @@ function resetUsage(usage: LifetimeUsage): void {
 }
 
 const workerGoalStops = new WeakMap<AgentSession, () => void>()
+const workerLoopAborts = new WeakSet<AgentSession>()
 
 function readWorkerGoalOutcome(session: AgentSession): AgentFermentV2Outcome | undefined {
 	if (!workerGoalStops.has(session)) return undefined
@@ -515,7 +517,6 @@ ${skillLines}`
 	}
 
 	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
-	options.onSystemPrompt?.(systemPrompt)
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
 	if (debugSession) {
@@ -584,6 +585,12 @@ ${skillLines}`
 	}
 	if (enableTodos) extensionFactories.push(todosExtension)
 	if (workerGoal) extensionFactories.push(workerGoal.extension)
+	extensionFactories.push((pi) =>
+		loopGuardExtension(pi, () => {
+			workerLoopAborts.add(session)
+			hardAbort(session)
+		}),
+	)
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
@@ -652,6 +659,7 @@ ${skillLines}`
 		session.setActiveToolsByName(activeTools)
 	}
 
+	options.onSystemPrompt?.(systemPrompt)
 	options.onSessionCreated?.(session)
 
 	let turnCount = 0
@@ -903,8 +911,10 @@ ${skillLines}`
 		responseText,
 		session,
 		fermentV2: readWorkerGoalOutcome(session),
-		aborted: reportAccepted ? false : aborted || budgetAborted,
-		abortReason: reportAccepted ? undefined : abortReason,
+		aborted: reportAccepted ? false : aborted || budgetAborted || workerLoopAborts.has(session),
+		abortReason: reportAccepted
+			? undefined
+			: (abortReason ?? (workerLoopAborts.has(session) ? "loop_guard" : undefined)),
 		steered: softLimitReached,
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
@@ -943,6 +953,7 @@ async function resumeAgentInner(
 		onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 	} = {},
 ): Promise<RunResult> {
+	workerLoopAborts.delete(session)
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
@@ -1103,8 +1114,10 @@ async function resumeAgentInner(
 		responseText,
 		session,
 		fermentV2: readWorkerGoalOutcome(session),
-		aborted: terminationToolCompleted ? false : aborted || budgetAborted,
-		abortReason: terminationToolCompleted ? undefined : abortReason,
+		aborted: terminationToolCompleted ? false : aborted || budgetAborted || workerLoopAborts.has(session),
+		abortReason: terminationToolCompleted
+			? undefined
+			: (abortReason ?? (workerLoopAborts.has(session) ? "loop_guard" : undefined)),
 		steered: softLimitReached,
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,

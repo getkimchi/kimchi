@@ -1,0 +1,588 @@
+{
+  "date": "2026-09-21",
+  "checkout_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+  "purpose": "Diagnose and contain repeated verification in local workers; not a coding-quality or communication-value comparison.",
+  "model": "kimchi-dev/glm-5.3-flash",
+  "thinking": "low",
+  "cohorts": [
+    {
+      "root": "/private/tmp/kimchi-worker-repetition-5unf6o4a",
+      "binary_sha256": "0877c1a4614a42db285c3319a79c953d3d9b3d7c3ffdf3a014268451301ababe",
+      "sealed_inputs_verified": 8,
+      "trials": [
+        {
+          "label": "trial-01-off",
+          "ferment_v2": false,
+          "worker_status": "completed",
+          "worker_outcome": {
+            "outcome": "completed",
+            "reason": null,
+            "turns_used": 4,
+            "max_turns": 35,
+            "ferment_v2": null
+          },
+          "worker_tool_calls": 4,
+          "maximum_same_tool_call_count": 1,
+          "successful_results": 3,
+          "error_results": 1,
+          "guard_messages": 0,
+          "provider_requests": 4,
+          "maximum_prior_result_pairs_in_request": 4,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 30986,
+            "output": 1272,
+            "cacheRead": 87936,
+            "cacheWrite": 0
+          },
+          "seconds": 26.38561511039734,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T12-56-08-951Z_01a0c409-c1f7-71ae-8284-ed06d9242b28.jsonl": "b89a6bf39e656f1e8ad701b5847c23d155d135d531a7ebabe8457dd9c9bf9d14",
+            "2026-09-21T12-56-01-722Z_01a0c409-a5b9-751e-ae52-ca1a63a897dc.jsonl": "9afbb2a43625c9d5fbf5c425d81ff18d8c52faacd49a833a04ab88528c7efe40",
+            "2026-09-21T12-56-08-960Z_01a0c409-c200-7054-8e89-7d3ede4962fb.jsonl": "bd17400b30d31530f804efb2418bc2fda5542db3e0bd1f04639d61a1b75507dc"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-02-on",
+          "ferment_v2": true,
+          "worker_status": "aborted",
+          "worker_outcome": {
+            "outcome": "budget_exhausted",
+            "reason": "max_turns",
+            "turns_used": 43,
+            "max_turns": 35,
+            "ferment_v2": {
+              "id": "6145e744-1c00-4813-aa21-25db3c403413",
+              "revision": 1,
+              "status": "paused",
+              "lastEvaluation": {
+                "verdict": "continue",
+                "reason": "Requirement \"No textual response required; deliverable is file state, confirmed via repeated cmp checks with no input change\" has not been checked against the exact proposed answer; return only the required answer with no extra text.",
+                "model": "kimchi-dev/glm-5.3-flash",
+                "evaluatedAt": "2026-09-21T12:57:10.427Z"
+              }
+            }
+          },
+          "worker_tool_calls": 42,
+          "maximum_same_tool_call_count": 36,
+          "successful_results": 42,
+          "error_results": 0,
+          "guard_messages": 0,
+          "provider_requests": 41,
+          "maximum_prior_result_pairs_in_request": 41,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 67415,
+            "output": 2888,
+            "cacheRead": 387776,
+            "cacheWrite": 0
+          },
+          "seconds": 76.33735036849976,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T12-56-30-394Z_01a0c40a-15ba-781d-b3c7-f672a4c6abb3.jsonl": "e8b839bcf4eec6208bb8448d3b9fd9d06f145112c9f2fc36a5e1f11312f2d2c9",
+            "2026-09-21T12-56-37-831Z_01a0c40a-32c6-75e0-9bcf-d1abd0090d3b.jsonl": "fb0d564acacc0bb6b2ce290d358d7eb88d3269a9d16f303b54dfd6eb2b4bb12b",
+            "2026-09-21T12-56-59-707Z_01a0c40a-883b-73df-8d0c-e36e90baffc5.jsonl": "6409374117911e2f5bf203e6891b4263f4d540dba64872039e7b7687885a171c",
+            "2026-09-21T12-56-37-834Z_01a0c40a-32ca-7345-ba41-033b87601387.jsonl": "b5f358b6c0f656731844976dee7f24b6125edf60b75af65fee5ef03919fd3e21"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-03-on",
+          "ferment_v2": true,
+          "worker_status": "aborted",
+          "worker_outcome": {
+            "outcome": "budget_exhausted",
+            "reason": "max_turns",
+            "turns_used": 43,
+            "max_turns": 35,
+            "ferment_v2": {
+              "id": "c72591c7-a77c-4293-be75-5a099b9e1077",
+              "revision": 1,
+              "status": "paused",
+              "lastEvaluation": {
+                "verdict": "met",
+                "reason": "CURRENT.txt is byte-identical to INPUT.txt per cmp exit 0 and matching sha256 hashes, with the check recorded as evidence on completed todo 2; all requirements are satisfied.",
+                "model": "kimchi-dev/glm-5.3-flash",
+                "evaluatedAt": "2026-09-21T12:58:12.559Z"
+              }
+            }
+          },
+          "worker_tool_calls": 42,
+          "maximum_same_tool_call_count": 36,
+          "successful_results": 7,
+          "error_results": 35,
+          "guard_messages": 0,
+          "provider_requests": 41,
+          "maximum_prior_result_pairs_in_request": 41,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 54629,
+            "output": 4235,
+            "cacheRead": 448192,
+            "cacheWrite": 0
+          },
+          "seconds": 95.07549118995667,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T12-57-56-463Z_01a0c40b-65ef-745a-a697-deb48b3cc2c0.jsonl": "daa44f1ef1ef1076c61f7669358e133311fe14d8dc0821963b2188e4b2a355f2",
+            "2026-09-21T12-57-56-466Z_01a0c40b-65f2-70c9-ba1e-b564f54962de.jsonl": "41a05c7474b603a35509ce09a8a094ac9db64ea94456ef551e79753879debc4a",
+            "2026-09-21T12-57-48-922Z_01a0c40b-487a-71f2-a469-1d278f18dca7.jsonl": "97e7e3b5763fe0b700de9ef80435be2fc98a9a17c19fa2d8f5fb42b5b73f667f",
+            "2026-09-21T12-58-07-863Z_01a0c40b-9277-7118-b94a-2367a2c9f280.jsonl": "630492f4462da387e01f2088aec94e821d141cd8b7db0a7fbe31e814188ed75e"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-04-off",
+          "ferment_v2": false,
+          "worker_status": "completed",
+          "worker_outcome": {
+            "outcome": "completed",
+            "reason": null,
+            "turns_used": 12,
+            "max_turns": 35,
+            "ferment_v2": null
+          },
+          "worker_tool_calls": 11,
+          "maximum_same_tool_call_count": 7,
+          "successful_results": 10,
+          "error_results": 1,
+          "guard_messages": 0,
+          "provider_requests": 12,
+          "maximum_prior_result_pairs_in_request": 11,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 14819,
+            "output": 1310,
+            "cacheRead": 160448,
+            "cacheWrite": 0
+          },
+          "seconds": 33.97741413116455,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T12-59-33-660Z_01a0c40c-e19c-75e5-851b-7e407d1e8866.jsonl": "b4899e33a1a722989bee921cfa9197c955b6f5f5d098c2d2f97149fbb6a53590",
+            "2026-09-21T12-59-33-657Z_01a0c40c-e199-7518-a64a-68253bb513c8.jsonl": "e90e2e13f491dc1808f5544b2208475014b19d4e355c1e128b10075f93a59a81",
+            "2026-09-21T12-59-26-211Z_01a0c40c-c483-72f7-b9bb-af3cedaeab24.jsonl": "49d6089c2bcf1406bdffa41676322c836c283112cfc8933a829105d159fcc185"
+          },
+          "same_batch_launch_verified": true
+        }
+      ]
+    },
+    {
+      "root": "/private/tmp/kimchi-worker-loopguard-vfdo0_6i",
+      "binary_sha256": "c8eb6bb81a309bb5c6e8e09b3a8f10a379ca1ffbcfb1077120e9fb7f9ff3060b",
+      "sealed_inputs_verified": 8,
+      "trials": [
+        {
+          "label": "trial-01-off",
+          "ferment_v2": false,
+          "worker_status": "completed",
+          "worker_outcome": {
+            "outcome": "completed",
+            "reason": null,
+            "turns_used": 7,
+            "max_turns": 35,
+            "ferment_v2": null
+          },
+          "worker_tool_calls": 8,
+          "maximum_same_tool_call_count": 2,
+          "successful_results": 8,
+          "error_results": 0,
+          "guard_messages": 0,
+          "provider_requests": 7,
+          "maximum_prior_result_pairs_in_request": 8,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 19514,
+            "output": 1173,
+            "cacheRead": 120256,
+            "cacheWrite": 0
+          },
+          "seconds": 27.34284210205078,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-03-26-672Z_01a0c410-6fd0-7476-a30c-ccc041efabef.jsonl": "411ed7645ba7bc5168ba1147123408a538c4514dd780519f25c93302e30022b3",
+            "2026-09-21T13-03-19-405Z_01a0c410-536d-787f-90ff-e5c5a0c0a0f6.jsonl": "c3910efa5b7806a05391066dc33d87ac5d047170d8b5f5dc4aa4973d8ca9649f",
+            "2026-09-21T13-03-26-669Z_01a0c410-6fcd-72ff-87b3-cbaf6352fb0a.jsonl": "098d1c8d6c00f329eafb7b46cbd1c59f4555f041eab66400ecf5ab5333e98459"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-02-on",
+          "ferment_v2": true,
+          "worker_status": "aborted",
+          "worker_outcome": {
+            "outcome": "budget_exhausted",
+            "reason": "max_turns",
+            "turns_used": 41,
+            "max_turns": 35,
+            "ferment_v2": {
+              "id": "d144af21-4291-431a-9a35-f13a5dc37a2a",
+              "revision": 1,
+              "status": "paused",
+              "lastEvaluation": {
+                "verdict": "met",
+                "reason": "CURRENT.txt is byte-identical to INPUT.txt (cmp MATCH, matching md5s), verification evidence is recorded in the completed TODO notes, and the input has not changed since the last check, so the objective is fully satisfied.",
+                "model": "kimchi-dev/glm-5.3-flash",
+                "evaluatedAt": "2026-09-21T13:04:22.711Z"
+              }
+            }
+          },
+          "worker_tool_calls": 39,
+          "maximum_same_tool_call_count": 16,
+          "successful_results": 17,
+          "error_results": 22,
+          "guard_messages": 0,
+          "provider_requests": 40,
+          "maximum_prior_result_pairs_in_request": 38,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 64351,
+            "output": 2826,
+            "cacheRead": 392704,
+            "cacheWrite": 0
+          },
+          "seconds": 74.66773581504822,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-04-18-211Z_01a0c411-3923-7b93-b714-652e752380e5.jsonl": "f8c210cfb2f5ba74bd4120e11fe2d276fb70a0ce700082caa7dfc07252cc4fa8",
+            "2026-09-21T13-03-56-648Z_01a0c410-e4e7-73b8-a725-adc54986a30e.jsonl": "09ba0832e680608587f413de06663375303ee55860aa90192d6d25c0d9a610ff",
+            "2026-09-21T13-03-48-908Z_01a0c410-c6ac-7e71-8e1d-5d5b6dc2ef54.jsonl": "dec50819f4a0f6b60417742729559946ff434c5fd07fc086067e6de41bc09569",
+            "2026-09-21T13-03-56-653Z_01a0c410-e4ed-7288-abe3-d2fcd052543e.jsonl": "912587cc0332c89718ded78e186cb5ab7e699bc5822385b3dfd0633651e69933"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-03-on",
+          "ferment_v2": true,
+          "worker_status": "aborted",
+          "worker_outcome": {
+            "outcome": "failed",
+            "reason": "loop_guard",
+            "turns_used": 16,
+            "max_turns": 35,
+            "ferment_v2": {
+              "id": "47e7f6bb-722c-464b-adb1-ee37aae7727d",
+              "revision": 1,
+              "status": "paused"
+            }
+          },
+          "worker_tool_calls": 17,
+          "maximum_same_tool_call_count": 12,
+          "successful_results": 17,
+          "error_results": 0,
+          "guard_messages": 1,
+          "provider_requests": 15,
+          "maximum_prior_result_pairs_in_request": 16,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 36020,
+            "output": 1444,
+            "cacheRead": 175424,
+            "cacheWrite": 0
+          },
+          "seconds": 37.206331968307495,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-05-13-274Z_01a0c412-103a-750f-a93a-13710cbee11e.jsonl": "adb0fc6037c3e0c3b61e574d87658cf97056f453231bc0292654e250174fcaac",
+            "2026-09-21T13-05-05-800Z_01a0c411-f308-73e7-a20c-961b97356d73.jsonl": "24a2dfac8e5174ab95769242226039cabfeef266b6ba0987d874a5c41a9ada66",
+            "2026-09-21T13-05-13-277Z_01a0c412-103d-74d0-b861-9250f6d13b0b.jsonl": "05c8aa219e96bea8ca44801e24b2c3f0e8675c28f7c4fd3c64a57e8357069e5b"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-04-off",
+          "ferment_v2": false,
+          "worker_status": "completed",
+          "worker_outcome": {
+            "outcome": "completed",
+            "reason": null,
+            "turns_used": 10,
+            "max_turns": 35,
+            "ferment_v2": null
+          },
+          "worker_tool_calls": 10,
+          "maximum_same_tool_call_count": 2,
+          "successful_results": 9,
+          "error_results": 1,
+          "guard_messages": 0,
+          "provider_requests": 10,
+          "maximum_prior_result_pairs_in_request": 10,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 15885,
+            "output": 1174,
+            "cacheRead": 180224,
+            "cacheWrite": 0
+          },
+          "seconds": 33.18770098686218,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-05-45-218Z_01a0c412-8d02-745e-b788-87460c36a877.jsonl": "a3c98d1e2f89339ac5620c52aea852baa15f2a43f14d4fbd76eeba013f6336de",
+            "2026-09-21T13-05-52-504Z_01a0c412-a978-718b-a393-06b6738b8133.jsonl": "6c29e31e713ba2efb47d3fa069f517add3d6e545826dcc3b4587e3bc88bdffe9",
+            "2026-09-21T13-05-52-493Z_01a0c412-a96d-71f3-80b8-39d67360c627.jsonl": "e0ea005c7f38dd4d1bafbcd7361e41bf54c9a195ba65f0a3fdfca9796c163020"
+          },
+          "same_batch_launch_verified": true
+        }
+      ]
+    },
+    {
+      "root": "/private/tmp/kimchi-worker-turnguard-5wdxw3lf",
+      "binary_sha256": "e2d088d2e86a704b8f646266b43cc76968f89c0beb75779649e3a58ed5ad2591",
+      "sealed_inputs_verified": 8,
+      "trials": [
+        {
+          "label": "trial-01-off",
+          "ferment_v2": false,
+          "worker_status": "completed",
+          "worker_outcome": {
+            "outcome": "completed",
+            "reason": null,
+            "turns_used": 8,
+            "max_turns": 35,
+            "ferment_v2": null
+          },
+          "worker_tool_calls": 7,
+          "maximum_same_tool_call_count": 1,
+          "successful_results": 6,
+          "error_results": 1,
+          "guard_messages": 0,
+          "provider_requests": 8,
+          "maximum_prior_result_pairs_in_request": 7,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 13326,
+            "output": 1057,
+            "cacheRead": 133056,
+            "cacheWrite": 0
+          },
+          "seconds": 30.095741987228394,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-15-57-588Z_01a0c41b-e514-75f1-9bb0-877d2f300158.jsonl": "1bbfe41c39d56d00e5b85cdd2db1735d767b8f75ea124f8aa05d7ed5d90191c3",
+            "2026-09-21T13-16-07-727Z_01a0c41c-0caf-7399-b795-9a0b2eb4c091.jsonl": "4d84cad5f1b973e01cb8cf4264a3783f8a8a17e7961e6afa26a2ad675e6ec1f9",
+            "2026-09-21T13-16-07-730Z_01a0c41c-0cb2-7687-a7eb-c9f73addf036.jsonl": "440a83604c40b29814246e07b239b091c98abf044f5e5e086b721853543cb728"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-02-on",
+          "ferment_v2": true,
+          "worker_status": "aborted",
+          "worker_outcome": {
+            "outcome": "failed",
+            "reason": "loop_guard",
+            "turns_used": 9,
+            "max_turns": 35,
+            "ferment_v2": {
+              "id": "4ad97ef8-d0dc-45f9-9e38-5ed2cc586db4",
+              "revision": 1,
+              "status": "paused"
+            }
+          },
+          "worker_tool_calls": 8,
+          "maximum_same_tool_call_count": 3,
+          "successful_results": 7,
+          "error_results": 1,
+          "guard_messages": 1,
+          "provider_requests": 9,
+          "maximum_prior_result_pairs_in_request": 8,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 21299,
+            "output": 1247,
+            "cacheRead": 124160,
+            "cacheWrite": 0
+          },
+          "seconds": 28.999775886535645,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-16-36-484Z_01a0c41c-7d04-7168-8375-d80cfe9e17c7.jsonl": "fc4f02aca30f27c90fd1ce745ef685dfde00646983707c6f109ea888d35b765d",
+            "2026-09-21T13-16-30-174Z_01a0c41c-645e-7124-9d70-bae0a96d9d97.jsonl": "160c1fd39b835d7eeeb4b84e8c60689a127cab93f81897e063b5942c702f118e",
+            "2026-09-21T13-16-36-481Z_01a0c41c-7d01-7329-bd84-be066516d37a.jsonl": "d6ed3436d06f73c72bc46e62780aaa093541042c5bb172a19eda3f41b63f7dd5"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-03-on",
+          "ferment_v2": true,
+          "worker_status": "aborted",
+          "worker_outcome": {
+            "outcome": "failed",
+            "reason": "loop_guard",
+            "turns_used": 11,
+            "max_turns": 35,
+            "ferment_v2": {
+              "id": "8c2e7d0a-5946-42d7-a8ad-0c923a114c2c",
+              "revision": 1,
+              "status": "paused"
+            }
+          },
+          "worker_tool_calls": 12,
+          "maximum_same_tool_call_count": 3,
+          "successful_results": 12,
+          "error_results": 0,
+          "guard_messages": 1,
+          "provider_requests": 11,
+          "maximum_prior_result_pairs_in_request": 11,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 27054,
+            "output": 1713,
+            "cacheRead": 206912,
+            "cacheWrite": 0
+          },
+          "seconds": 42.903728008270264,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-17-01-339Z_01a0c41c-de1b-7add-937b-6fe2c0f41875.jsonl": "238c6384de6f52645ace94ebc4f587c526b9e7e25741efc2cd85e348a92b7237",
+            "2026-09-21T13-17-08-617Z_01a0c41c-fa89-747f-ace0-46d08a1bd79c.jsonl": "fa7640e031523bf52071384f2763aa6ad85b4e9bf2261466a4796e82c43a7b7e",
+            "2026-09-21T13-17-08-613Z_01a0c41c-fa85-74a8-80b6-5971e6e25cfc.jsonl": "fcdd7884c5a7f56d927166b6c7ece50a9642f7345a7d1e2a88db3e108481f63c"
+          },
+          "same_batch_launch_verified": true
+        },
+        {
+          "label": "trial-04-off",
+          "ferment_v2": false,
+          "worker_status": "completed",
+          "worker_outcome": {
+            "outcome": "completed",
+            "reason": null,
+            "turns_used": 5,
+            "max_turns": 35,
+            "ferment_v2": null
+          },
+          "worker_tool_calls": 5,
+          "maximum_same_tool_call_count": 1,
+          "successful_results": 5,
+          "error_results": 0,
+          "guard_messages": 0,
+          "provider_requests": 5,
+          "maximum_prior_result_pairs_in_request": 5,
+          "files_match": true,
+          "parent_finish_reason": "settled",
+          "usage": {
+            "input": 17376,
+            "output": 1018,
+            "cacheRead": 143296,
+            "cacheWrite": 0
+          },
+          "seconds": 28.096428632736206,
+          "launch_parameters_verified": true,
+          "isolation_checks": 6,
+          "cleanup": {
+            "live": false,
+            "home_removed": true,
+            "environment_file_removed": true
+          },
+          "journal_sha256": {
+            "2026-09-21T13-17-54-021Z_01a0c41d-abe5-7373-8214-66fc73eeb6eb.jsonl": "2dc255be7c87990fa5890aa37997f41a2321893593817cd5d14583bfd7a1f3d7",
+            "2026-09-21T13-17-46-483Z_01a0c41d-8e73-7a23-93fa-85d001723093.jsonl": "beee8430b0ed2b4901ffbc7c375aced8573b9a245a0ee93f9282b4a214e6b73f",
+            "2026-09-21T13-17-54-016Z_01a0c41d-abe0-76da-8255-c4e14e19acaa.jsonl": "6bef83335cc84ded6c8e1656333411a4bdffcc8db6ed300ca20a4bc54dcc01ba"
+          },
+          "same_batch_launch_verified": true
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Two observations per Ferment setting and build on a trivial file-copy task; no broad cost or quality inference.",
+    "Every started attempt is retained, including the intermediate candidate that missed blocked tool calls.",
+    "The guard bounds loops; it does not establish why the model repeats verification or prove the objective is complete.",
+    "A guard-stopped worker remains aborted; correct bytes and paused objective state are reported separately."
+  ],
+  "findings": [
+    "The SDK worker loader omitted the CLI loop guard.",
+    "The pinned SDK skips tool_result for calls blocked before execution; turn_end retains those results.",
+    "Comparing original assistant arguments avoids changing host-injected timeout values.",
+    "The final guard detected both observed Ferment loops after three identical calls; both ordinary controls completed."
+  ],
+  "validation": {
+    "unit_integration": "1033 tests passed in 44 files",
+    "terminal": "3 built communication workflows passed",
+    "focused": "143 checks passed, including fail-before regressions",
+    "check": "lint and typecheck passed; task files lint clean, one unrelated unused-import warning remains",
+    "build": "passed",
+    "isolation_checks": 72,
+    "sealed_inputs_per_cohort": 8
+  }
+}

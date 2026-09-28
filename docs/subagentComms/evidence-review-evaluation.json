@@ -1,0 +1,3393 @@
+{
+  "protocol": "independent-evidence-review-versioned",
+  "date": "2026-09-21",
+  "scope": "Research-guided review brief; versioned model cohorts remain separate. All started attempts retained. Provider failures and interrupted partial repairs excluded from completed quality comparisons.",
+  "cohorts": [
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-hpe9bwww",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "dcc26382^",
+        "reference_ref": "dcc26382",
+        "workload": "oauth",
+        "binary_sha256": "78d847ed39d789217f8c4f51d6da6300f09917d124bc62f0b461e4b3c679c21b",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 12000000,
+        "wall_seconds": 1200,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "solo",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-hpe9bwww/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "workers",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-hpe9bwww/trial-02"
+          },
+          {
+            "label": "trial-03",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-hpe9bwww/trial-03"
+          },
+          {
+            "label": "trial-04",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-hpe9bwww/trial-04"
+          },
+          {
+            "label": "trial-05",
+            "arm": "workers",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-hpe9bwww/trial-05"
+          },
+          {
+            "label": "trial-06",
+            "arm": "solo",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-hpe9bwww/trial-06"
+          }
+        ],
+        "protocol": "independent-evidence-review-v1",
+        "hypothesis": "Independent checks before peer conclusions improve combined repair; live communication adds value only if it improves quality or reduces work beyond shared-file coordination.",
+        "comparison": "Two repetitions each: solo, ordinary workers, board and messages. Identical review brief, source, model, total ceilings and independent checks. Reverse order in second block.",
+        "primary_outcome": "All 53 public tests, typecheck, style, refresh-discovery and late-fallback timeout checks pass with no protected edits.",
+        "secondary_outcomes": [
+          "New test quality and reproducibility",
+          "Scope and source cohesion",
+          "Actual receipt followed by verification or correction",
+          "Input/output/cache tokens and elapsed time"
+        ],
+        "limits": [
+          "Small repeated OAuth task; not a new holdout",
+          "Ceilings matched, realized compute and worker capacity may differ",
+          "Channel masking also removes communication guidance; comparison is workflow package, not pure transport effect"
+        ],
+        "brief_sha256": "640c0b1d75467da4536fcf4627f578ccf71109eeafc3cfe2ba447eb67a088b47"
+      },
+      "input_verification": {
+        "verified_at": 1790006489.4752169,
+        "verified_sealed_inputs": 1732,
+        "removed_credential_files": 12,
+        "reason": "All started trials stopped before fixing the observed monitor failure. Workspace runner can now change; its exact executed source is retained in frozen-protocol."
+      },
+      "attempts": [
+        {
+          "label": "trial-01",
+          "arm": "solo",
+          "repetition": 1,
+          "classification": "completed",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 304.9,
+          "seconds_to_cleanup": 311.0,
+          "usage": {
+            "input": 330810,
+            "output": 13299,
+            "cacheRead": 1537152,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "production_changes": {
+            "src/extensions/mcp-adapter/mcp-auth-flow.ts": {
+              "added": 3,
+              "removed": 1
+            },
+            "src/modes/acp/ext-methods/mcp.ts": {
+              "added": 6,
+              "removed": 1
+            },
+            "src/extensions/mcp-adapter/server-manager.ts": {
+              "added": 72,
+              "removed": 39
+            }
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager-sse-fallback.test.ts",
+              "src/modes/acp/ext-methods/mcp-skipauth-boundary.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 5,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 0,
+            "passed": 1,
+            "failed": 0,
+            "failures": []
+          }
+        },
+        {
+          "label": "trial-02",
+          "arm": "workers",
+          "repetition": 1,
+          "classification": "completed",
+          "finish_reason": "settled_recovered_monitor_metadata",
+          "seconds_to_parent_settlement": 470.2,
+          "seconds_to_cleanup": 578.4,
+          "usage": {
+            "input": 645591,
+            "output": 45394,
+            "cacheRead": 3146432,
+            "cacheWrite": 0
+          },
+          "workers": [
+            {
+              "role": "Boundary investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "role": "Implementation owner",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            }
+          ],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "monitor_recovery": "Agent deleted live-run.json after completing checks. Recovered metadata from the exact dedicated tmux pane after verifying parent settlement and terminal workers. No inference restart or extra instruction.",
+          "production_changes": {
+            "src/extensions/mcp-adapter/mcp-auth-flow.ts": {
+              "added": 42,
+              "removed": 1
+            },
+            "src/modes/acp/ext-methods/mcp.ts": {
+              "added": 17,
+              "removed": 8
+            },
+            "src/extensions/mcp-adapter/server-manager.ts": {
+              "added": 74,
+              "removed": 41
+            }
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.single-connect.test.ts",
+              "src/extensions/mcp-adapter/mcp-auth-flow.non-interactive.test.ts",
+              "src/modes/acp/ext-methods/probe-auth-boundary.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 11,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 1,
+            "passed": 0,
+            "failed": 1,
+            "failures": [
+              "AssertionError: expired deadline must not start fallback: expected \"spy\" to be called 1 times, but got 2 times\n    at /private/tmp/kimchi-compaction-arms-hpe9bwww/trial-02/deadline-grade/src/extensions/mcp-adapter/server-manager.test.ts:475:68\n    at file:///private/tmp/kimchi-compaction-arms-hpe9bwww/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+            ]
+          }
+        },
+        {
+          "label": "trial-03",
+          "arm": "board",
+          "repetition": 1,
+          "classification": "completed",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 382.1,
+          "seconds_to_cleanup": 387.9,
+          "usage": {
+            "input": 500917,
+            "output": 38822,
+            "cacheRead": 3501760,
+            "cacheWrite": 0
+          },
+          "workers": [
+            {
+              "role": "Boundary investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "role": "Implementation owner",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 4,
+            "parsed_message_receipts": 3,
+            "board_body_returns": 8,
+            "unique_reader_entry_pairs": 8,
+            "known_peer_body_returns": 6,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [
+            {
+              "id": "bd-a406439e",
+              "authorAgentId": "94d3264f-540b-4b9",
+              "kind": "warning",
+              "title": "Boundary findings: skipAuth fix landed in mcp.ts; server-manager.ts currently breaks typecheck/tests"
+            },
+            {
+              "id": "bd-a2b1bed7",
+              "authorAgentId": "e440e4d8-fda0-46e",
+              "kind": "finding",
+              "title": "server-manager.ts connect-once repair landed and verified"
+            }
+          ],
+          "manual_peer_body_returns": 2,
+          "warnings": [
+            {
+              "file": "2026-09-21T15-45-43-668Z_01a0c4a5-02f4-772b-8537-e2f1fd56485c.jsonl",
+              "line": 91,
+              "session_id": "01a0c4a5-02f4-772b-8537-e2f1fd56485c",
+              "tool_call_id": "call_acf41f98d6fa4ed8be684263",
+              "timestamp": 1790005777513,
+              "reason": "non-JSON communication result",
+              "tool": "send_agent_message"
+            }
+          ],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "production_changes": {
+            "src/extensions/mcp-adapter/mcp-auth-flow.ts": {
+              "added": 6,
+              "removed": 1
+            },
+            "src/modes/acp/ext-methods/mcp.ts": {
+              "added": 9,
+              "removed": 0
+            },
+            "src/extensions/mcp-adapter/server-manager.ts": {
+              "added": 66,
+              "removed": 31
+            }
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager-connect-once.test.ts",
+              "src/extensions/mcp-adapter/mcp-auth-flow.lifecycle.test.ts",
+              "src/modes/acp/ext-methods/mcp-boundary.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 9,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 1,
+            "passed": 0,
+            "failed": 1,
+            "failures": [
+              "AssertionError: probe must finish within its total deadline: expected false to be true // Object.is equality\n    at /private/tmp/kimchi-compaction-arms-hpe9bwww/trial-03/deadline-grade/src/extensions/mcp-adapter/server-manager.test.ts:474:68\n    at file:///private/tmp/kimchi-compaction-arms-hpe9bwww/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+            ]
+          }
+        },
+        {
+          "label": "trial-04",
+          "arm": "board",
+          "repetition": 2,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 245.0,
+          "seconds_to_cleanup": 250.8,
+          "usage": {
+            "input": 22781,
+            "output": 168,
+            "cacheRead": 13952,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "production_changes": {
+            "src/extensions/mcp-adapter/mcp-auth-flow.ts": {
+              "added": 0,
+              "removed": 0
+            },
+            "src/modes/acp/ext-methods/mcp.ts": {
+              "added": 0,
+              "removed": 0
+            },
+            "src/extensions/mcp-adapter/server-manager.ts": {
+              "added": 0,
+              "removed": 0
+            }
+          }
+        },
+        {
+          "label": "trial-05",
+          "arm": "workers",
+          "repetition": 2,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 242.6,
+          "seconds_to_cleanup": 248.9,
+          "usage": {
+            "input": 26451,
+            "output": 198,
+            "cacheRead": 26688,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "production_changes": {
+            "src/extensions/mcp-adapter/mcp-auth-flow.ts": {
+              "added": 0,
+              "removed": 0
+            },
+            "src/modes/acp/ext-methods/mcp.ts": {
+              "added": 0,
+              "removed": 0
+            },
+            "src/extensions/mcp-adapter/server-manager.ts": {
+              "added": 0,
+              "removed": 0
+            }
+          }
+        },
+        {
+          "label": "trial-06",
+          "arm": "solo",
+          "repetition": 2,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 239.8,
+          "seconds_to_cleanup": 247.0,
+          "usage": {
+            "input": 25772,
+            "output": 361,
+            "cacheRead": 5568,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "production_changes": {
+            "src/extensions/mcp-adapter/mcp-auth-flow.ts": {
+              "added": 0,
+              "removed": 0
+            },
+            "src/modes/acp/ext-methods/mcp.ts": {
+              "added": 0,
+              "removed": 0
+            },
+            "src/extensions/mcp-adapter/server-manager.ts": {
+              "added": 0,
+              "removed": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-6v5lkdgb",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+        "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
+        "workload": "compaction",
+        "binary_sha256": "78d847ed39d789217f8c4f51d6da6300f09917d124bc62f0b461e4b3c679c21b",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 24000000,
+        "wall_seconds": 1800,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "solo",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "workers",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-02"
+          },
+          {
+            "label": "trial-03",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-03"
+          },
+          {
+            "label": "trial-04",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-04"
+          },
+          {
+            "label": "trial-05",
+            "arm": "workers",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-05"
+          },
+          {
+            "label": "trial-06",
+            "arm": "solo",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-06"
+          }
+        ],
+        "protocol": "independent-evidence-review-v1-compaction",
+        "primary_outcome": "Own checks, build, original and repeated real-process continuation/cancellation, and six corrected lifecycle checks; report protected edits separately.",
+        "brief_sha256": "83a2a4cc7dd5b81ae3055a064b4df15752c6733366dfbfe47a8926505dc17562",
+        "brief_adaptation": "Use the existing three owned note filenames; preserve original read-only investigator and repair-worker responsibilities.",
+        "comparison": "Two repetitions per arm, reverse order in second block; same independent review brief in all arms.",
+        "limits": [
+          "Previously observed second workload, not an unseen holdout",
+          "Small sample; no claim of general superiority",
+          "Total ceilings matched, realized compute may differ"
+        ]
+      },
+      "input_verification": {
+        "verified_at": 1790006489.661394,
+        "verified_sealed_inputs": 1680,
+        "removed_credential_files": 6,
+        "reason": "All started trials stopped before fixing the observed monitor failure. Workspace runner can now change; its exact executed source is retained in frozen-protocol."
+      },
+      "attempts": [
+        {
+          "label": "trial-01",
+          "arm": "solo",
+          "repetition": 1,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 103.5,
+          "seconds_to_cleanup": 110.4,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          }
+        },
+        {
+          "label": "trial-02",
+          "arm": "workers",
+          "repetition": 1,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 101.1,
+          "seconds_to_cleanup": 108.5,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          }
+        },
+        {
+          "label": "trial-03",
+          "arm": "board",
+          "repetition": 1,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 97.8,
+          "seconds_to_cleanup": 103.7,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "glm-5.3-flash"
+            ]
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "manual_posts": [],
+          "manual_peer_body_returns": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          }
+        }
+      ],
+      "unstarted_cleanup": {
+        "labels": [
+          "trial-04",
+          "trial-05",
+          "trial-06"
+        ],
+        "reason": "Model provider remained unavailable after a separate readiness check; no comparison inference launched for these labels. All owned tmux sessions stopped; prepared credential homes removed.",
+        "homes_removed": [
+          "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-04/home",
+          "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-05/home",
+          "/private/tmp/kimchi-compaction-arms-6v5lkdgb/trial-06/home"
+        ]
+      }
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-fm6y53xu",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+        "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
+        "workload": "compaction",
+        "binary_sha256": "c326cc08ca534446e5ea542454c547678c763887c1d4f47e61382e18df01a2db",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 24000000,
+        "wall_seconds": 1800,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "solo",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-fm6y53xu/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "workers",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-fm6y53xu/trial-02"
+          },
+          {
+            "label": "trial-03",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-fm6y53xu/trial-03"
+          },
+          {
+            "label": "trial-04",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-fm6y53xu/trial-04"
+          },
+          {
+            "label": "trial-05",
+            "arm": "workers",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-fm6y53xu/trial-05"
+          },
+          {
+            "label": "trial-06",
+            "arm": "solo",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-fm6y53xu/trial-06"
+          }
+        ],
+        "protocol": "independent-evidence-review-v2-compaction",
+        "comparison": "Two repetitions per arm; solo/workers/board then reverse. At most three parents together. Current validated binary includes unavailable-peer recovery hint and controller metadata recovery.",
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-6v5lkdgb",
+        "primary_outcome": "Own checks, build, original and repeated real-process continuation/cancellation, and six corrected lifecycle checks; protected edits separately.",
+        "brief_sha256": "83a2a4cc7dd5b81ae3055a064b4df15752c6733366dfbfe47a8926505dc17562",
+        "brief_adaptation": "Same existing note filenames and original investigator/repair-worker ownership as v1.",
+        "provider_readiness": "/private/tmp/kimchi-provider-readiness-39ti_fok/result.json",
+        "limits": [
+          "Previously observed second workload, not an unseen holdout",
+          "Small sample; no claim of general superiority",
+          "Total ceilings matched, realized compute may differ"
+        ]
+      },
+      "input_verification": {
+        "verified_at": 1790009146.008171,
+        "sealed_inputs": 1687,
+        "removed_completed_home_inputs": 8,
+        "reason": "Retain exact prior protocol before adding selection of another model to runner"
+      },
+      "attempts": [
+        {
+          "label": "trial-01",
+          "arm": "solo",
+          "repetition": 1,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 16.0,
+          "seconds_to_cleanup": 21.6,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "provider_errors": [
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}"
+          ],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "observer_approvals": []
+        },
+        {
+          "label": "trial-02",
+          "arm": "workers",
+          "repetition": 1,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 15.9,
+          "seconds_to_cleanup": 21.5,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "provider_errors": [
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}"
+          ],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "observer_approvals": []
+        },
+        {
+          "label": "trial-03",
+          "arm": "board",
+          "repetition": 1,
+          "classification": "provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 16.3,
+          "seconds_to_cleanup": 22.0,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "provider_errors": [
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}"
+          ],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "observer_approvals": []
+        },
+        {
+          "label": "trial-06",
+          "arm": "solo",
+          "repetition": 2,
+          "classification": "partial_provider_failure",
+          "finish_reason": "settled",
+          "seconds_to_parent_settlement": 825.4,
+          "seconds_to_cleanup": 831.0,
+          "usage": {
+            "input": 280310,
+            "output": 18833,
+            "cacheRead": 1546304,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "provider_errors": [
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}",
+            "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"The service is temporarily unavailable.\",\"retryable\":true,\"code\":\"no_available_workers\"}}"
+          ],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "partial_artifact_grading": {
+            "label": "trial-06",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 0,
+              "typecheck": 0,
+              "check:compaction-style": 1,
+              "build:binary": 0
+            },
+            "binary_sha256": "1c537213d879bbc01c14f211ce7f8ea8a064ffd20ae8bc750af00d04825d45cc",
+            "process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "adapter": {
+              "exit_code": 1,
+              "passed": 1,
+              "failed": 3,
+              "cases": [
+                {
+                  "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 1 times, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:968:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "sustains four effective compaction cycles in one session",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called once, but got 2 times\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:1090:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      \"Context compacted \u2014 continuing the current task.\",\n      \"info\",\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:1376:22\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            },
+            "repeated_process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run completes two effective compaction cycles without another prompt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "contracts": {
+              "exit_code": 1,
+              "passed": 2,
+              "failed": 4,
+              "cases": [
+                {
+                  "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called once, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:953:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: successful final responses rearm four pressure cycles",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called once, but got 2 times\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:975:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: late completion cannot notify or release a replacement attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      \"Context compacted \u2014 continuing the current task.\",\n      \"info\",\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:1010:34\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: a missing inline adapter does not abort the current run",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      Object {\n        \"onError\": [Function onError],\n      },\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-fm6y53xu/grading/trial-06/src/extensions/model-guard.test.ts:1024:27\n    at file:///private/tmp/kimchi-compaction-arms-fm6y53xu/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            }
+          },
+          "observer_approvals": [
+            {
+              "approved_at": 1790008863.411294,
+              "action": "Yes, just this call",
+              "scope": "Typecheck and model-guard tests inside isolated trial",
+              "basis": "User-authorized isolated testing",
+              "timing_limit": "Total elapsed includes permission wait; no budget extended",
+              "controller_exit_code": 0
+            }
+          ]
+        }
+      ],
+      "unstarted_cleanup": [
+        {
+          "label": "trial-04",
+          "arm": "board",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        },
+        {
+          "label": "trial-05",
+          "arm": "workers",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        }
+      ]
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-hhas_8p0",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "dcc26382^",
+        "reference_ref": "dcc26382",
+        "workload": "oauth",
+        "binary_sha256": "c326cc08ca534446e5ea542454c547678c763887c1d4f47e61382e18df01a2db",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 12000000,
+        "wall_seconds": 1200,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "solo",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-hhas_8p0/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "workers",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-hhas_8p0/trial-02"
+          },
+          {
+            "label": "trial-03",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-hhas_8p0/trial-03"
+          },
+          {
+            "label": "trial-04",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-hhas_8p0/trial-04"
+          },
+          {
+            "label": "trial-05",
+            "arm": "workers",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-hhas_8p0/trial-05"
+          },
+          {
+            "label": "trial-06",
+            "arm": "solo",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-hhas_8p0/trial-06"
+          }
+        ],
+        "protocol": "independent-evidence-review-v2-oauth",
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-hpe9bwww",
+        "comparison": "Two repetitions each: solo, ordinary workers, board and messages, then reverse. Current validated binary includes peer-contact recovery hint. Same task, models, limits and primary checks as v1.",
+        "primary_outcome": "All 53 public tests, typecheck, style, refresh-discovery and late-fallback timeout checks pass with no protected edits.",
+        "secondary_outcomes": [
+          "Added test quality and reproducibility",
+          "Scope and source cohesion",
+          "Actual receipt followed by verification or correction",
+          "Input/output/cache tokens and time to parent settlement",
+          "Additional no-fallback-at-deadline diagnostic; historical reference fails this case"
+        ],
+        "brief_sha256": "640c0b1d75467da4536fcf4627f578ccf71109eeafc3cfe2ba447eb67a088b47",
+        "provider_readiness": "/private/tmp/kimchi-provider-readiness-39ti_fok/result.json",
+        "limits": [
+          "Small repeatedly observed OAuth task, not an unseen holdout",
+          "Ceilings matched; realized compute and worker capacity may differ",
+          "Tool masking also removes channel instructions, so comparison is the available workflow package"
+        ]
+      },
+      "input_verification": {
+        "verified_at": 1790009146.3298209,
+        "sealed_inputs": 1745,
+        "removed_completed_home_inputs": 0,
+        "reason": "Retain exact prior protocol before adding selection of another model to runner"
+      },
+      "attempts": [],
+      "unstarted_cleanup": [
+        {
+          "label": "trial-01",
+          "arm": "solo",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        },
+        {
+          "label": "trial-02",
+          "arm": "workers",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        },
+        {
+          "label": "trial-03",
+          "arm": "board",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        },
+        {
+          "label": "trial-04",
+          "arm": "board",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        },
+        {
+          "label": "trial-05",
+          "arm": "workers",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        },
+        {
+          "label": "trial-06",
+          "arm": "solo",
+          "started": false,
+          "home_removed": true,
+          "reason": "Repeated GLM capacity failures; prepare fresh matched cohort on a separately recorded model"
+        }
+      ]
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-yyvf3hhm",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "76337bd7f794331b6310c7e7f78272b4dd400f5d",
+        "reference_ref": "716bd797c9802b20ef1da4ccde7caace26173a22",
+        "workload": "compaction",
+        "binary_sha256": "c326cc08ca534446e5ea542454c547678c763887c1d4f47e61382e18df01a2db",
+        "model": "kimchi-dev/kimi-k3",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 24000000,
+        "wall_seconds": 1800,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "solo",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-yyvf3hhm/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "workers",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-yyvf3hhm/trial-02"
+          },
+          {
+            "label": "trial-03",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-yyvf3hhm/trial-03"
+          },
+          {
+            "label": "trial-04",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-yyvf3hhm/trial-04"
+          },
+          {
+            "label": "trial-05",
+            "arm": "workers",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-yyvf3hhm/trial-05"
+          },
+          {
+            "label": "trial-06",
+            "arm": "solo",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-yyvf3hhm/trial-06"
+          }
+        ],
+        "primary_outcome": "Own checks, build, original and repeated real-process continuation/cancellation, and six corrected lifecycle checks; protected edits separately.",
+        "brief_sha256": "83a2a4cc7dd5b81ae3055a064b4df15752c6733366dfbfe47a8926505dc17562",
+        "brief_adaptation": "Same existing note filenames and original investigator/repair-worker ownership as v1.",
+        "limits": [
+          "Previously observed second workload, not an unseen holdout",
+          "Small sample; no claim of general superiority",
+          "Total ceilings matched, realized compute may differ"
+        ],
+        "protocol": "independent-evidence-review-v3-kimi-k3-compaction",
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-fm6y53xu",
+        "provider_readiness": "/private/tmp/kimchi-k3-readiness-qt_hftzw/result.json",
+        "comparison": "Fresh matched Kimi K3 cohort: solo/workers/board, then reverse. Same current binary, brief and grader as v2. Do not pool with GLM attempts.",
+        "model_change_reason": "GLM capacity failed before inference in three attempts and interrupted one repair after 13 minutes. Kimi K3 passed isolated native readiness."
+      },
+      "attempts": [
+        {
+          "label": "trial-01",
+          "arm": "solo",
+          "repetition": 1,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 415.8,
+          "seconds_to_cleanup": 421.6,
+          "usage": {
+            "input": 200002,
+            "output": 32179,
+            "cacheRead": 3731648,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "grading": {
+            "label": "trial-01",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 0,
+              "typecheck": 0,
+              "check:compaction-style": 0,
+              "build:binary": 0
+            },
+            "binary_sha256": "020a4fd41781ba61604c6b287a28915e67efa3e6107f44866918fa1fc9c6d9b4",
+            "process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "adapter": {
+              "exit_code": 1,
+              "passed": 1,
+              "failed": 3,
+              "cases": [
+                {
+                  "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 1 times, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-01/src/extensions/model-guard.test.ts:968:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "sustains four effective compaction cycles in one session",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-01/src/extensions/model-guard.test.ts:1076:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called with arguments: [ 'model_guard_compaction', \u2026(1) ]\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m\u001b[2m  [\u001b[22m\n\u001b[32m-   \"model_guard_compaction\",\u001b[90m\n\u001b[32m-   ObjectContaining {\u001b[90m\n\u001b[32m-     \"outcome\": \"insufficient_relief\",\u001b[90m\n\u001b[31m+   \"model_guard_breadcrumb\",\u001b[90m\n\u001b[31m+   {\u001b[90m\n\u001b[31m+     \"text\": \"Mid-turn inline compaction complete: 300,000 tokens before compaction \u2014 run continues\",\u001b[90m\n\u001b[2m    },\u001b[22m\n\u001b[2m  ]\u001b[22m\n\n\u001b[1m  2nd spy call:\n\n\u001b[22m\u001b[2m  [\u001b[22m\n\u001b[32m-   \"model_guard_compaction\",\u001b[90m\n\u001b[32m-   ObjectContaining {\u001b[90m\n\u001b[32m-     \"outcome\": \"insufficient_relief\",\u001b[90m\n\u001b[31m+   \"model_guard_breadcrumb\",\u001b[90m\n\u001b[31m+   {\u001b[90m\n\u001b[31m+     \"text\": \"Mid-turn inline compaction appears ineffective: previous fire at 245,761 tokens did not relieve pressure (still ~250,760) \u2014 suppressing the inline path and falling back to the aborting compaction\",\u001b[90m\n\u001b[2m    },\u001b[22m\n\u001b[2m  ]\u001b[22m\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m2\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1355:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-01/src/extensions/model-guard.test.ts:1091:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "repeated_process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run completes two effective compaction cycles without another prompt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "contracts": {
+              "exit_code": 1,
+              "passed": 3,
+              "failed": 3,
+              "cases": [
+                {
+                  "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: successful final responses rearm four pressure cycles",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-01/src/extensions/model-guard.test.ts:965:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 2 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-01/src/extensions/model-guard.test.ts:986:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: late completion cannot notify or release a replacement attempt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a missing inline adapter does not abort the current run",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      Object {\n        \"onError\": [Function onError],\n      },\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-01/src/extensions/model-guard.test.ts:1024:27\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            }
+          },
+          "observer_approvals": [],
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ]
+        },
+        {
+          "label": "trial-02",
+          "arm": "workers",
+          "repetition": 1,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 588.7,
+          "seconds_to_cleanup": 594.4,
+          "usage": {
+            "input": 803187,
+            "output": 77729,
+            "cacheRead": 4396224,
+            "cacheWrite": 0
+          },
+          "workers": [
+            {
+              "id": "2cade169-7ff5-4c5",
+              "description": "Boundary investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "31b75961-c1a3-4a3",
+              "description": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "7e2d91ef-840c-43d",
+              "description": "Implementation owner",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "45b649eb-277d-4ee",
+              "description": "Repair owner",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "grading": {
+            "label": "trial-02",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 0,
+              "typecheck": 0,
+              "check:compaction-style": 0,
+              "build:binary": 0
+            },
+            "binary_sha256": "0a990140570579f0477f47bd9eb7272fecf4dbdb0c3ffb7c9e1f11c07fc3ee7b",
+            "process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "adapter": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 4,
+              "cases": [
+                {
+                  "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 1 times, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:968:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "sustains four effective compaction cycles in one session",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:1076:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called with arguments: [ 'model_guard_compaction', \u2026(1) ]\u001b[90m\n\nNumber of calls: \u001b[1m0\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1355:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:1091:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 2 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:1371:25\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            },
+            "repeated_process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run completes two effective compaction cycles without another prompt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "contracts": {
+              "exit_code": 1,
+              "passed": 3,
+              "failed": 3,
+              "cases": [
+                {
+                  "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: successful final responses rearm four pressure cycles",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:965:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 2 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:986:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: late completion cannot notify or release a replacement attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      \"Context compacted mid-turn (300,000 tokens \u2192 summary). Continuing automatically.\",\n      \"info\",\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-02/src/extensions/model-guard.test.ts:1010:34\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: a missing inline adapter does not abort the current run",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            }
+          },
+          "observer_approvals": [],
+          "protocol_deviations": [
+            "Parent applied biome formatting after collecting Repair owner despite worker-owned production repair instruction"
+          ],
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ]
+        },
+        {
+          "label": "trial-03",
+          "arm": "board",
+          "repetition": 1,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 483.0,
+          "seconds_to_cleanup": 488.7,
+          "usage": {
+            "input": 765726,
+            "output": 66780,
+            "cacheRead": 4083072,
+            "cacheWrite": 0
+          },
+          "workers": [
+            {
+              "id": "d44c2a04-6647-428",
+              "description": "Boundary investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "1ca7aaca-9d4d-464",
+              "description": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "391c2ebc-85f7-49b",
+              "description": "Implementation owner",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "a6c8cb92-9c5a-490",
+              "description": "Repair owner",
+              "status": "completed",
+              "abortReason": null,
+              "tokensUsed": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 3,
+            "unique_reader_entry_pairs": 3,
+            "known_peer_body_returns": 2,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "grading": {
+            "label": "trial-03",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 0,
+              "typecheck": 0,
+              "check:compaction-style": 0,
+              "build:binary": 0
+            },
+            "binary_sha256": "492d7bbe8847a16413f0f813e0b68e71848ded60b48ab12580a09d32826a935c",
+            "process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "adapter": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 4,
+              "cases": [
+                {
+                  "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      Object {\n        \"allowUnpairedToolCall\": true,\n        \"customInstructions\": \"The context filled while a multi-step tool chain was in progress. Preserve the original user request, the goal and intermediate state of the in-progress task, and everything needed to finish the remaining work. The run resumes automatically on the compacted context \u2014 the next step continues the task, it does not restart it.\",\n      },\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:965:29\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "sustains four effective compaction cycles in one session",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:1076:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called with arguments: [ 'model_guard_compaction', \u2026(1) ]\u001b[90m\n\nNumber of calls: \u001b[1m0\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1355:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:1091:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 1 times, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:1385:18\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            },
+            "repeated_process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run completes two effective compaction cycles without another prompt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "contracts": {
+              "exit_code": 1,
+              "passed": 3,
+              "failed": 3,
+              "cases": [
+                {
+                  "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: successful final responses rearm four pressure cycles",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:965:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 2 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:986:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: late completion cannot notify or release a replacement attempt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a missing inline adapter does not abort the current run",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      Object {\n        \"onError\": [Function onError],\n      },\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-03/src/extensions/model-guard.test.ts:1024:27\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            }
+          },
+          "observer_approvals": [],
+          "manual_post_calls": 0,
+          "directed_message_calls": 0,
+          "board_content": "Three automatic work entries; two from peers, one from reader",
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ]
+        },
+        {
+          "label": "trial-04",
+          "arm": "board",
+          "repetition": 2,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 371.4,
+          "seconds_to_cleanup": 377.1,
+          "usage": {
+            "input": 956895,
+            "output": 52795,
+            "cacheRead": 4886912,
+            "cacheWrite": 0
+          },
+          "workers": [
+            {
+              "id": "947faf9f-fd71-418",
+              "description": "Boundary investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "45cdbbca-13d2-4f4",
+              "description": "Lifecycle investigator",
+              "status": "steered",
+              "abortReason": null,
+              "tokensUsed": null
+            },
+            {
+              "id": "cd0aef7a-fb3c-44a",
+              "description": "Implementation owner",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "a8b9b3a2-2c8a-4c6",
+              "description": "Repair owner",
+              "status": "completed",
+              "abortReason": null,
+              "tokensUsed": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 3,
+            "parsed_message_receipts": 1,
+            "board_body_returns": 7,
+            "unique_reader_entry_pairs": 7,
+            "known_peer_body_returns": 5,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 1,
+          "warnings": [
+            {
+              "file": "2026-09-21T17-01-46-733Z_01a0c4ea-a36d-767f-bda1-f9078b78f7cc.jsonl",
+              "line": 86,
+              "session_id": "01a0c4ea-a36d-767f-bda1-f9078b78f7cc",
+              "tool_call_id": "send_agent_message:44",
+              "timestamp": 1790010222213,
+              "reason": "non-JSON communication result",
+              "tool": "send_agent_message"
+            },
+            {
+              "file": "2026-09-21T17-01-46-736Z_01a0c4ea-a370-76dd-8d61-5ec44020d79f.jsonl",
+              "line": 54,
+              "session_id": "01a0c4ea-a370-76dd-8d61-5ec44020d79f",
+              "tool_call_id": "send_agent_message:30",
+              "timestamp": 1790010219066,
+              "reason": "non-JSON communication result",
+              "tool": "send_agent_message"
+            }
+          ],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "grading": {
+            "label": "trial-04",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 0,
+              "typecheck": 0,
+              "check:compaction-style": 0,
+              "build:binary": 0
+            },
+            "binary_sha256": "9869ff21577acfc05800be6d1515ee2e3451df29fcd75b47d71ba4a224f8d926",
+            "process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "adapter": {
+              "exit_code": 1,
+              "passed": 1,
+              "failed": 3,
+              "cases": [
+                {
+                  "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 1 times, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:968:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "sustains four effective compaction cycles in one session",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called once, but got 2 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:1090:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      \"Context compacted (300,000 tokens \u2192 summary) \u2014 the run continues automatically.\",\n      \"info\",\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:1376:22\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            },
+            "repeated_process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run completes two effective compaction cycles without another prompt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "contracts": {
+              "exit_code": 1,
+              "passed": 2,
+              "failed": 4,
+              "cases": [
+                {
+                  "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: successful final responses rearm four pressure cycles",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:965:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 2 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:986:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: late completion cannot notify or release a replacement attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      \"Context compacted (300,000 tokens \u2192 summary) \u2014 the run continues automatically.\",\n      \"info\",\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:1010:34\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: a missing inline adapter does not abort the current run",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      Object {\n        \"onError\": [Function onError],\n      },\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-04/src/extensions/model-guard.test.ts:1024:27\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            }
+          },
+          "observer_approvals": [],
+          "manual_post_calls": 2,
+          "accepted_manual_posts": 2,
+          "directed_message_calls": 3,
+          "channel_interpretation": "One schema rejection, one operation aborted, one accepted peer status delivered. Recipient recorded inlineCompact design before delivery; then read finding and shared note. No unique causal benefit established.",
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ]
+        },
+        {
+          "label": "trial-05",
+          "arm": "workers",
+          "repetition": 2,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 489.2,
+          "seconds_to_cleanup": 494.8,
+          "usage": {
+            "input": 776885,
+            "output": 72212,
+            "cacheRead": 3532352,
+            "cacheWrite": 0
+          },
+          "workers": [
+            {
+              "id": "e81c3219-e855-470",
+              "description": "Boundary investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "5443186b-ecac-441",
+              "description": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "09d7f2b7-fa87-4f8",
+              "description": "Implementation owner",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            },
+            {
+              "id": "eb8a35dc-d83f-427",
+              "description": "Repair owner",
+              "status": "aborted",
+              "abortReason": "token_budget",
+              "tokensUsed": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "grading": {
+            "label": "trial-05",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 1,
+              "typecheck": 2,
+              "check:compaction-style": 1,
+              "build:binary": 1
+            }
+          },
+          "observer_approvals": [],
+          "outcome_note": "Parent completed with explicit unresolved failures after all four workers exhausted token budgets; build failed, so process and lifecycle checks could not run.",
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ]
+        },
+        {
+          "label": "trial-06",
+          "arm": "solo",
+          "repetition": 2,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 469.7,
+          "seconds_to_cleanup": 475.4,
+          "usage": {
+            "input": 273506,
+            "output": 26305,
+            "cacheRead": 2762688,
+            "cacheWrite": 0
+          },
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "grading": {
+            "label": "trial-06",
+            "protected_changes": [],
+            "own_checks": {
+              "test:compaction-local": 0,
+              "typecheck": 0,
+              "check:compaction-style": 0,
+              "build:binary": 0
+            },
+            "binary_sha256": "c7a0934d9485d55c94ceb685a1d95455db603ca9a773248e2fe2eaa1fb18000b",
+            "process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run stays alive through mid-turn compaction, shrinks the wire, and exits 0",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "adapter": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 4,
+              "cases": [
+                {
+                  "title": "defers when the active branch has an unpaired toolCall; a complete pair permits compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array []\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:965:29\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "sustains four effective compaction cycles in one session",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:1076:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "suppresses repeated attempts after insufficient relief until a below-threshold response",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called with arguments: [ 'model_guard_compaction', \u2026(1) ]\u001b[90m\n\nNumber of calls: \u001b[1m0\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1355:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:1091:23\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "a late completion from an old session generation cannot notify or clear a new attempt",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 1 times, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:1385:18\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            },
+            "repeated_process": {
+              "exit_code": 0,
+              "passed": 2,
+              "failed": 0,
+              "cases": [
+                {
+                  "title": "a --print tool run completes two effective compaction cycles without another prompt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "cancelling during summarization ends the run without scheduling another task request",
+                  "status": "passed",
+                  "failures": []
+                }
+              ]
+            },
+            "contracts": {
+              "exit_code": 1,
+              "passed": 2,
+              "failed": 4,
+              "cases": [
+                {
+                  "title": "event contract: an incomplete current pair defers and a completed pair permits compaction",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a call abandoned before a new user turn does not prevent compaction",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called once, but got 0 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:953:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: successful final responses rearm four pressure cycles",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 4 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:965:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: ineffective attempts stay suppressed until successful positive relief",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to be called 2 times, but got 1 times\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:986:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                },
+                {
+                  "title": "event contract: late completion cannot notify or release a replacement attempt",
+                  "status": "passed",
+                  "failures": []
+                },
+                {
+                  "title": "event contract: a missing inline adapter does not abort the current run",
+                  "status": "failed",
+                  "failures": [
+                    "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times\u001b[90m\n\nReceived: \n\n\u001b[1m  1st spy call:\n\n\u001b[22m    Array [\n      Object {\n        \"onError\": [Function onError],\n      },\n    ]\n\u001b[39m\u001b[90m\n\nNumber of calls: \u001b[1m1\u001b[22m\n\u001b[39m\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1335:10)\n    at Proxy.<anonymous> (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+expect@3.2.4/node_modules/@vitest/expect/dist/index.js:1029:14)\n    at Proxy.methodWrapper (file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/chai@5.3.3/node_modules/chai/index.js:1686:25)\n    at /private/tmp/kimchi-compaction-arms-yyvf3hhm/grading/trial-06/src/extensions/model-guard.test.ts:1024:27\n    at file:///private/tmp/kimchi-compaction-arms-yyvf3hhm/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+                  ]
+                }
+              ]
+            }
+          },
+          "observer_approvals": [
+            {
+              "approved_at": 1790010363.539449,
+              "action": "Yes, just this call",
+              "tool_call_id": "edit:35",
+              "scope": "Reviewed all three replacements in isolated src/extensions/model-guard.ts; task-owned source only",
+              "basis": "User-authorized isolated repair",
+              "cause": "Automatic checker received a truncated diff",
+              "timing_limit": "Elapsed includes permission wait; no budget extended",
+              "tool_call_sha256": "8c1f7fc5f64f3d4e882613f3bb91a43a15d576b9e1237c1de4f1e56c602435cc"
+            }
+          ],
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ]
+        }
+      ],
+      "status": "Six parent attempts complete and independently graded; zero complete acceptance passes; solo repeat has one recorded observer approval",
+      "input_verification": {
+        "verified_at": 1790011377.468051,
+        "sealed_inputs": 1687,
+        "removed_completed_home_inputs": 12,
+        "all_homes_removed": true,
+        "all_trials_stopped": true
+      }
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-qla_i5qg",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "dcc26382^",
+        "reference_ref": "dcc26382",
+        "workload": "oauth",
+        "binary_sha256": "c326cc08ca534446e5ea542454c547678c763887c1d4f47e61382e18df01a2db",
+        "model": "kimchi-dev/kimi-k3",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 12000000,
+        "wall_seconds": 1200,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "solo",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "workers",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-02"
+          },
+          {
+            "label": "trial-03",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-03"
+          },
+          {
+            "label": "trial-04",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-04"
+          },
+          {
+            "label": "trial-05",
+            "arm": "workers",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-05"
+          },
+          {
+            "label": "trial-06",
+            "arm": "solo",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-06"
+          }
+        ],
+        "primary_outcome": "All 53 public tests, typecheck, style, refresh-discovery and late-fallback timeout checks pass with no protected edits.",
+        "secondary_outcomes": [
+          "Added test quality and reproducibility",
+          "Scope and source cohesion",
+          "Actual receipt followed by verification or correction",
+          "Input/output/cache tokens and time to parent settlement",
+          "Additional no-fallback-at-deadline diagnostic; historical reference fails this case"
+        ],
+        "brief_sha256": "640c0b1d75467da4536fcf4627f578ccf71109eeafc3cfe2ba447eb67a088b47",
+        "limits": [
+          "Small repeatedly observed OAuth task, not an unseen holdout",
+          "Ceilings matched; realized compute and worker capacity may differ",
+          "Tool masking also removes channel instructions, so comparison is the available workflow package"
+        ],
+        "protocol": "independent-evidence-review-v3-kimi-k3-oauth",
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-hhas_8p0",
+        "provider_readiness": "/private/tmp/kimchi-k3-readiness-qt_hftzw/result.json",
+        "comparison": "Fresh matched Kimi K3 cohort: solo/workers/board, then reverse. Same current binary, brief and grader as v2. Do not pool with GLM attempts.",
+        "model_change_reason": "Repeated GLM no_available_workers failures, including one interrupted compaction repair. Kimi K3 passed isolated native readiness."
+      },
+      "input_verification": {
+        "verified_at": 1790011377.547311,
+        "sealed_inputs": 1745,
+        "removed_completed_home_inputs": 12,
+        "all_homes_removed": true,
+        "all_trials_stopped": true
+      },
+      "attempts": [
+        {
+          "label": "trial-01",
+          "arm": "solo",
+          "repetition": 1,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 167.2,
+          "seconds_to_cleanup": 172.9,
+          "usage": {
+            "input": 109779,
+            "output": 12357,
+            "cacheRead": 958720,
+            "cacheWrite": 0
+          },
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ],
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "message_routes": [],
+          "manual_posts": [],
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 0,
+            "passed": 1,
+            "failed": 0,
+            "failures": []
+          },
+          "observer_approvals": [],
+          "primary_pass": false
+        },
+        {
+          "label": "trial-02",
+          "arm": "workers",
+          "repetition": 1,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 196.2,
+          "seconds_to_cleanup": 201.9,
+          "usage": {
+            "input": 247010,
+            "output": 40366,
+            "cacheRead": 1773248,
+            "cacheWrite": 0
+          },
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ],
+          "workers": [
+            {
+              "id": "bd3b8455-55b6-429",
+              "description": "Boundary investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "id": "98f3b4ba-e81d-4ae",
+              "description": "Lifecycle investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "id": "4e086dcc-26d9-48d",
+              "description": "Implementation owner",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "message_routes": [],
+          "manual_posts": [],
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.connect-fallback.test.ts",
+              "src/extensions/mcp-adapter/mcp-auth-flow.port-fallback.test.ts",
+              "src/modes/acp/ext-methods/mcp-skipauth-boundary.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 8,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 1,
+            "passed": 0,
+            "failed": 1,
+            "failures": [
+              "AssertionError: expired deadline must not start fallback: expected \"spy\" to be called 1 times, but got 2 times\n    at /private/tmp/kimchi-compaction-arms-qla_i5qg/trial-02/deadline-grade/src/extensions/mcp-adapter/server-manager.test.ts:475:68\n    at file:///private/tmp/kimchi-compaction-arms-qla_i5qg/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+            ]
+          },
+          "observer_approvals": [],
+          "primary_pass": true
+        },
+        {
+          "label": "trial-03",
+          "arm": "board",
+          "repetition": 1,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 242.0,
+          "seconds_to_cleanup": 247.7,
+          "usage": {
+            "input": 453233,
+            "output": 42509,
+            "cacheRead": 2518080,
+            "cacheWrite": 0
+          },
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ],
+          "workers": [
+            {
+              "id": "34172e13-9b56-483",
+              "description": "Boundary investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "id": "d4c3565c-8366-439",
+              "description": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "id": "2611e9c2-0f83-4b0",
+              "description": "Implementation owner",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 4,
+            "parsed_message_receipts": 4,
+            "board_body_returns": 21,
+            "unique_reader_entry_pairs": 20,
+            "known_peer_body_returns": 14,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 2,
+          "message_routes": [
+            {
+              "file": "2026-09-21T17-10-52-190Z_01a0c4f2-f61e-7f32-8c5f-240bc1bb911c.jsonl",
+              "line": 109,
+              "session_id": "01a0c4f2-f61e-7f32-8c5f-240bc1bb911c",
+              "tool_call_id": "reply_to_agent_message:21",
+              "timestamp": 1790010891775,
+              "kind": "answer",
+              "message_id": null,
+              "reply_to": "275cf2ac-d471-4b70-bec2-c96646027a90",
+              "status": "rejected",
+              "accepted": false
+            },
+            {
+              "file": "2026-09-21T17-11-13-003Z_01a0c4f3-476b-726b-a203-25b010d1e0f2.jsonl",
+              "line": 67,
+              "session_id": "01a0c4f3-476b-726b-a203-25b010d1e0f2",
+              "tool_call_id": "send_agent_message:37",
+              "timestamp": 1790010772331,
+              "kind": "status",
+              "message_id": "7888e43d-918a-4222-a037-d4c84be2f48c",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-11-13-004Z_01a0c4f3-476c-724c-9943-b6b6fb19aff7.jsonl",
+              "line": 79,
+              "session_id": "01a0c4f3-476c-724c-9943-b6b6fb19aff7",
+              "tool_call_id": "send_agent_message:41",
+              "timestamp": 1790010832756,
+              "kind": "status",
+              "message_id": null,
+              "reply_to": null,
+              "status": "unavailable",
+              "accepted": false
+            },
+            {
+              "file": "2026-09-21T17-11-13-004Z_01a0c4f3-476c-724c-9943-b6b6fb19aff7.jsonl",
+              "line": 87,
+              "session_id": "01a0c4f3-476c-724c-9943-b6b6fb19aff7",
+              "tool_call_id": "send_agent_message:46",
+              "timestamp": 1790010839936,
+              "kind": "handoff",
+              "message_id": "275cf2ac-d471-4b70-bec2-c96646027a90",
+              "reply_to": null,
+              "status": "queued_for_parent",
+              "accepted": true
+            }
+          ],
+          "manual_posts": [
+            {
+              "file": "2026-09-21T17-11-13-003Z_01a0c4f3-476b-726b-a203-25b010d1e0f2.jsonl",
+              "line": 65,
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-11-13-004Z_01a0c4f3-476c-724c-9943-b6b6fb19aff7.jsonl",
+              "line": 76,
+              "accepted": false
+            },
+            {
+              "file": "2026-09-21T17-11-13-004Z_01a0c4f3-476c-724c-9943-b6b6fb19aff7.jsonl",
+              "line": 78,
+              "accepted": true
+            }
+          ],
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/mcp-auth-flow.regression.test.ts",
+              "src/modes/acp/probe-mcp-skipauth-boundary.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 3,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 0,
+            "passed": 1,
+            "failed": 0,
+            "failures": []
+          },
+          "observer_approvals": [],
+          "primary_pass": false
+        },
+        {
+          "label": "trial-04",
+          "arm": "board",
+          "repetition": 2,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 385.9,
+          "seconds_to_cleanup": 391.5,
+          "usage": {
+            "input": 435279,
+            "output": 45758,
+            "cacheRead": 2883328,
+            "cacheWrite": 0
+          },
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ],
+          "workers": [
+            {
+              "id": "e8c24fde-e888-48d",
+              "description": "Lifecycle investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "id": "88401de5-0c22-41d",
+              "description": "Implementation owner",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "id": "7c78b83c-a7e2-478",
+              "description": "Boundary investigator",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 6,
+            "parsed_message_receipts": 6,
+            "board_body_returns": 18,
+            "unique_reader_entry_pairs": 18,
+            "known_peer_body_returns": 13,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 3,
+            "questions_with_recorded_accepted_reply": 3
+          },
+          "accepted_messages": 6,
+          "message_routes": [
+            {
+              "file": "2026-09-21T17-16-10-983Z_01a0c4f7-d367-71bd-94db-01b3a2ca7a8b.jsonl",
+              "line": 52,
+              "session_id": "01a0c4f7-d367-71bd-94db-01b3a2ca7a8b",
+              "tool_call_id": "send_agent_message:28",
+              "timestamp": 1790011044354,
+              "kind": "question",
+              "message_id": "1aa6a1b5-9221-411e-9b0e-ff14a6336adb",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-16-10-983Z_01a0c4f7-d367-71bd-94db-01b3a2ca7a8b.jsonl",
+              "line": 64,
+              "session_id": "01a0c4f7-d367-71bd-94db-01b3a2ca7a8b",
+              "tool_call_id": "send_agent_message:34",
+              "timestamp": 1790011075433,
+              "kind": "question",
+              "message_id": "76fda789-08a4-4b47-a5f1-5c79f4f46179",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-16-10-986Z_01a0c4f7-d36a-7476-92ad-ac4aaf96215b.jsonl",
+              "line": 51,
+              "session_id": "01a0c4f7-d36a-7476-92ad-ac4aaf96215b",
+              "tool_call_id": "send_agent_message:27",
+              "timestamp": 1790011056183,
+              "kind": "answer",
+              "message_id": "e3697368-6031-428f-befc-9dd347d35ab4",
+              "reply_to": "1aa6a1b5-9221-411e-9b0e-ff14a6336adb",
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-16-10-986Z_01a0c4f7-d36a-7476-92ad-ac4aaf96215b.jsonl",
+              "line": 73,
+              "session_id": "01a0c4f7-d36a-7476-92ad-ac4aaf96215b",
+              "tool_call_id": "send_agent_message:39",
+              "timestamp": 1790011212879,
+              "kind": "question",
+              "message_id": "e393a810-bee1-43bb-a51d-288b496434ef",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-16-10-987Z_01a0c4f7-d36b-7790-af2c-c0eb7f297b97.jsonl",
+              "line": 45,
+              "session_id": "01a0c4f7-d36b-7790-af2c-c0eb7f297b97",
+              "tool_call_id": "send_agent_message:24",
+              "timestamp": 1790011081051,
+              "kind": "answer",
+              "message_id": "bc20bf3d-4a91-4679-b531-ae34bac6129b",
+              "reply_to": "76fda789-08a4-4b47-a5f1-5c79f4f46179",
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-16-10-987Z_01a0c4f7-d36b-7790-af2c-c0eb7f297b97.jsonl",
+              "line": 67,
+              "session_id": "01a0c4f7-d36b-7790-af2c-c0eb7f297b97",
+              "tool_call_id": "send_agent_message:34",
+              "timestamp": 1790011228782,
+              "kind": "answer",
+              "message_id": "2abd3806-6d04-43ae-bbbb-889cd77fd0a5",
+              "reply_to": "e393a810-bee1-43bb-a51d-288b496434ef",
+              "status": "queued_for_running_session",
+              "accepted": true
+            }
+          ],
+          "manual_posts": [
+            {
+              "file": "2026-09-21T17-16-10-983Z_01a0c4f7-d367-71bd-94db-01b3a2ca7a8b.jsonl",
+              "line": 53,
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T17-16-10-986Z_01a0c4f7-d36a-7476-92ad-ac4aaf96215b.jsonl",
+              "line": 44,
+              "accepted": true
+            }
+          ],
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/mcp-auth-flow.strict-port.test.ts",
+              "src/modes/acp/ext-methods/mcp.skipauth.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 5,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 1,
+            "passed": 0,
+            "failed": 1,
+            "failures": [
+              "AssertionError: expired deadline must not start fallback: expected \"spy\" to be called 1 times, but got 2 times\n    at /private/tmp/kimchi-compaction-arms-qla_i5qg/trial-04/deadline-grade/src/extensions/mcp-adapter/server-manager.test.ts:475:68\n    at file:///private/tmp/kimchi-compaction-arms-qla_i5qg/toolchain/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+            ]
+          },
+          "observer_approvals": [],
+          "primary_pass": true
+        },
+        {
+          "label": "trial-05",
+          "arm": "workers",
+          "repetition": 2,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 351.0,
+          "seconds_to_cleanup": 356.7,
+          "usage": {
+            "input": 505032,
+            "output": 48508,
+            "cacheRead": 2038272,
+            "cacheWrite": 0
+          },
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ],
+          "workers": [
+            {
+              "id": "dc979d3c-f756-43c",
+              "description": "Lifecycle investigator",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "id": "6881c802-fbf1-497",
+              "description": "Boundary investigator",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "id": "f7299e43-e8e0-4b7",
+              "description": "Implementation owner",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "message_routes": [],
+          "manual_posts": [],
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.once-connect.test.ts",
+              "src/extensions/mcp-adapter/mcp-auth-flow.port-fallback.test.ts",
+              "src/modes/acp/ext-methods/mcp-skipauth.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 16,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 0,
+            "passed": 1,
+            "failed": 0,
+            "failures": []
+          },
+          "observer_approvals": [],
+          "primary_pass": false
+        },
+        {
+          "label": "trial-06",
+          "arm": "solo",
+          "repetition": 2,
+          "finish_reason": "settled",
+          "classification": "completed",
+          "seconds_to_parent_settlement": 269.3,
+          "seconds_to_cleanup": 275.0,
+          "usage": {
+            "input": 114360,
+            "output": 16826,
+            "cacheRead": 1482112,
+            "cacheWrite": 0
+          },
+          "models": [
+            [
+              "kimchi-dev",
+              "kimi-k3"
+            ]
+          ],
+          "workers": [],
+          "channel_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 0,
+            "unique_reader_entry_pairs": 0,
+            "known_peer_body_returns": 0,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "accepted_messages": 0,
+          "message_routes": [],
+          "manual_posts": [],
+          "warnings": [],
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.oauth-repair.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 3,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "post_inspection_deadline_diagnostic": {
+            "exit_code": 0,
+            "passed": 1,
+            "failed": 0,
+            "failures": []
+          },
+          "observer_approvals": [],
+          "primary_pass": false
+        }
+      ],
+      "status": "Six parent attempts complete and independently graded; primary pass counts solo 0/2, ordinary workers 1/2, board 1/2",
+      "post_inspection_sdk_check": {
+        "claim": "A Client whose connect failed cannot attach another transport even after close",
+        "finding": "False as a general SDK claim. Agent fakeTransport.close omitted onclose, leaving the protocol attached. Real StreamableHTTPClientTransport.close invokes onclose, and the same client reconnects successfully.",
+        "original_probe": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-04/tmp/kimchi-harness-live-8jNAkt/.kimchi/docs/client-reuse-check.mjs",
+        "original_sha256": "8dbe9e390d672cc2976cdd1c8519801b24d2a1fead548710432503592656856e",
+        "counterexample": "/private/tmp/kimchi-compaction-arms-qla_i5qg/trial-04/sdk-close-counterexample.mjs",
+        "counterexample_sha256": "50d70dc3aacfe316891995093bd5085317b4efe943f7ab2cf067dec42736b915",
+        "exit_code": 0,
+        "sdk_version": "1.29.0",
+        "network_calls": 0,
+        "grading_effect": "None; diagnostic added after inspecting outputs. First diagnostic assertion expected HTTP status in message text; corrected to the actual error.code field, with first attempt preserved.",
+        "original_probe_source": "import { Client } from \"@modelcontextprotocol/sdk/client/index.js\"\n\nfunction fakeTransport(start) {\n\tconst t = {\n\t\tstart,\n\t\tclose: async () => {},\n\t\tsend: async () => {},\n\t}\n\treturn t\n}\n\nconst client = new Client({ name: \"reuse-check\", version: \"1.0.0\" })\ntry {\n\tawait client.connect(fakeTransport(async () => {\n\t\tthrow new Error(\"transport refused\")\n\t}))\n} catch (e) {\n\tconsole.log(\"first connect failed:\", e.message)\n}\nawait client.close().catch(() => {})\ntry {\n\tawait client.connect(fakeTransport(async () => {}))\n\tconsole.log(\"second connect: succeeded\")\n} catch (e) {\n\tconsole.log(\"second connect failed:\", e.message)\n}\n",
+        "counterexample_source": "import assert from \"node:assert/strict\";\nimport { Client } from \"../toolchain/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js\";\nimport { StreamableHTTPClientTransport } from \"../toolchain/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js\";\nimport { LATEST_PROTOCOL_VERSION } from \"../toolchain/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js\";\nconst client = new Client({name: \"close-check\", version: \"1.0.0\"});\nconst url = new URL(\"https://example.invalid/mcp\");\nconst failed = new StreamableHTTPClientTransport(url, {fetch: async () => new Response(\"unavailable\", {status: 500})});\nawait assert.rejects(client.connect(failed), {code: 500});\nawait client.close();\nlet initialized = false;\nconst good = new StreamableHTTPClientTransport(url, {fetch: async (_url, init) => {\n  const message = JSON.parse(init.body);\n  if (message.method !== \"initialize\") return new Response(null, {status: 202});\n  initialized = true;\n  return new Response(JSON.stringify({jsonrpc: \"2.0\", id: message.id, result: {\n    protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, serverInfo: {name: \"check\", version: \"1.0.0\"}\n  }}), {status: 200, headers: {\"Content-Type\": \"application/json\"}});\n}});\nawait client.connect(good);\nassert.equal(initialized, true);\nawait client.close();\nconsole.log(JSON.stringify({real_http_failure_then_close_then_client_reuse: \"passed\", network_calls: 0}));\n"
+      }
+    }
+  ],
+  "post_inspection_diagnostic_limit": "Reference also fails the additional no-fallback-at-deadline assertion. This checks an existing weakness and does not replace the frozen acceptance score.",
+  "retained_fixes": {
+    "binary_sha256": "c326cc08ca534446e5ea542454c547678c763887c1d4f47e61382e18df01a2db",
+    "source_sha256": {
+      "scripts/agent-communication/run-experiment.py": "08e04fcbbb9c5c5f84a6221cbdf857f139b50184442a25220071fa0f72946685",
+      "scripts/agent-communication/run-experiment.test.py": "9a3631408bac6b4cf749a39d9d72494a0dc5d1ed7c3fefe6d6d287c6184650ad",
+      "src/extensions/agents/message-tool.ts": "3f33ceca3a8e5c1a6cd7003c3b5ed68d015fc710fc9d2dd2633efe09dd857f42",
+      "src/extensions/agents/message-tool.test.ts": "ce5f0aa19c68788943bb6d979afd7d046e82f7f474da1e61f34d355b457e72fc"
+    },
+    "validation": {
+      "runner_tests": 11,
+      "trace_tests": 12,
+      "agent_tests": 161,
+      "check_exit_code": 0,
+      "build_exit_code": 0,
+      "built_tui_tests": 3,
+      "native_tmux_metadata_recovery": true
+    },
+    "limits": [
+      "Unit tests and one K3 worker trace verify the unavailable-peer hint and subsequent contact refresh / parent fallback. No controlled claim that the hint improves code quality.",
+      "Initial GLM OAuth scores used the earlier binary. Later K3 cohorts use c326cc08; a model change prevents attributing cross-cohort differences to the hint."
+    ],
+    "provider_readiness": {
+      "state": {
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "records": [],
+        "settled": true,
+        "workers_terminal": true
+      },
+      "live_metadata_recovery": true,
+      "stopped": true,
+      "finished_at": 1790006615.289524
+    },
+    "review": "Local diff review found no remaining correctness issue in the retained changes. Experimental brief remains unpromoted.",
+    "live_peer_recovery": {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-qla_i5qg",
+      "trial": "trial-03",
+      "worker_session": "2026-09-21T17-11-13-004Z_01a0c4f3-476c-724c-9943-b6b6fb19aff7.jsonl",
+      "sequence": [
+        "line 79: unavailable receipt with escapeHatch",
+        "line 80: list_agent_contacts",
+        "line 81: no peers, parent reachable",
+        "line 85: send_agent_message to parent with handoff",
+        "line 87: queued_for_parent"
+      ],
+      "parent_session": "2026-09-21T17-10-52-190Z_01a0c4f2-f61e-7f32-8c5f-240bc1bb911c.jsonl",
+      "parent_delivery_line": 105,
+      "handoff_id": "275cf2ac-d471-4b70-bec2-c96646027a90",
+      "limit": "Parent subsequently attempted an unnecessary answer on the closed handoff thread; host rejected it. Final code still fails late fallback."
+    },
+    "source_sha256_note": "Hashes at the earlier recovery-fix validation. Runner model selection changed later; current experiment source hashes are under model_selection_change."
+  },
+  "readiness_diagnostics": [
+    {
+      "capture_root": "/private/tmp/kimchi-provider-readiness-39ti_fok",
+      "result": {
+        "exit_code": 0,
+        "ready": true,
+        "seconds": 7.9,
+        "home_removed": true,
+        "stdout": "READY\n",
+        "stderr_tail": "[model-roles] Warning: explorer model \"kimchi-dev/deepseek-v4-flash\" is not available. Subagents for this role will fall back to the parent model.\n"
+      }
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-context-readiness-bs3idspy",
+      "result": {
+        "results": [
+          {
+            "kind": "full",
+            "exit_code": 0,
+            "ready": true,
+            "seconds": 23.2,
+            "stdout_tail": "READY\n",
+            "stderr_tail": "[model-roles] Warning: explorer model \"kimchi-dev/deepseek-v4-flash\" is not available. Subagents for this role will fall back to the parent model.\n"
+          },
+          {
+            "kind": "empty",
+            "exit_code": 0,
+            "ready": true,
+            "seconds": 36.8,
+            "stdout_tail": "READY\n",
+            "stderr_tail": "[model-roles] Warning: explorer model \"kimchi-dev/deepseek-v4-flash\" is not available. Subagents for this role will fall back to the parent model.\n"
+          }
+        ],
+        "home_removed": true
+      }
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-k3-readiness-qt_hftzw",
+      "result": {
+        "model": "kimchi-dev/kimi-k3",
+        "exit_code": 0,
+        "seconds": 6.0,
+        "ready": true,
+        "home_removed": true
+      }
+    }
+  ],
+  "model_selection_change": {
+    "scope": "Experiment runner only; production binary unchanged",
+    "model_source": "Frozen manifest supplies parent model, worker prompt and launch enforcement",
+    "validation": {
+      "runner_tests": 12,
+      "protocol_tests": 4,
+      "check_exit_code": 0,
+      "regressions_failed_before_fix": true
+    },
+    "fresh_captures": [
+      "/private/tmp/kimchi-compaction-arms-yyvf3hhm",
+      "/private/tmp/kimchi-compaction-arms-qla_i5qg"
+    ],
+    "status": "All twelve K3 attempts complete, independently graded, model routes verified, inputs checked and credential homes removed",
+    "source_sha256": {
+      "scripts/agent-communication/prepare-experiment.py": "93b9a9c68af898c68870197cded0ca574162ab1ff1aea0e8821c187275f1e8eb",
+      "scripts/agent-communication/run-experiment.py": "ca7ed2db3ef905c4eb669e87814caed192f5579c553aa5e533a1bdc00b80a34b",
+      "scripts/agent-communication/run-experiment.test.py": "34200e8b255ea62e9fdbedb286aba896b73d24f00f9dd35bd33b9163fb4e1cab",
+      "scripts/agent-communication/oauth-comparison.py": "7bb9b4ebe0db397576341dc2924c0158e91eba5846348aff1d97bacd5b198763",
+      "scripts/agent-communication/experiment.ts": "9f3a247e7738c48e63c8369bb712875f38462037f012d844afc2ab9081f6c862",
+      "scripts/agent-communication/experiment.test.ts": "219ab8bcd6a97b62b00ebf530d8a54fe9de8d2643854184f5f95e5bd732a2f51"
+    }
+  },
+  "conclusion": {
+    "compaction_primary_passes": {
+      "solo": "0/2",
+      "workers": "0/2",
+      "board": "0/2"
+    },
+    "oauth_primary_passes": {
+      "solo": "0/2",
+      "workers": "1/2",
+      "board": "1/2"
+    },
+    "decision": "Keep communication optional; do not promote the experimental review brief or add another coordinator. Retain verified routing recovery and runner reliability fixes. No repeatable quality advantage over ordinary workers established.",
+    "limits": [
+      "Two repetitions per mode per already-observed task; no significance or general equivalence claim",
+      "One K3 solo compaction repeat received a recorded scoped edit approval",
+      "Some worker budgets exhausted; final parent outputs still graded without raising limits",
+      "Supplemental deadline diagnostic also fails on historical reference",
+      "Elapsed time shares host resources and is not an application-performance benchmark"
+    ]
+  },
+  "completion_receipt": {
+    "final_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+    "review": "accepted; no unresolved finding in retained changes",
+    "decision": "Keep communication optional; do not promote the experimental brief or add another coordinator",
+    "native_runs_completed": 12,
+    "runner_tests": 12,
+    "protocol_tests": 4,
+    "check_exit_code": 0,
+    "binary_and_source_hashes_verified": true,
+    "models_and_cleanup_verified": true,
+    "report_totals_and_links_verified": true,
+    "repo_diff_check": 0,
+    "vault_diff_check": 0,
+    "vault_unrelated_validation_errors": 13,
+    "promoted_vault_note": "agents/memory/kimchi/agents/communication-evaluation.md",
+    "closed_handoff": "agents/handoffs/2026-09-21-communication-research-loop/README.md",
+    "older_durability_handoff": "Left unchanged; outside this research loop"
+  }
+}

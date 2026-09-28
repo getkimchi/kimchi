@@ -13,9 +13,141 @@ function enableCommunication(homeDir: string): void {
 	writeFileSync(path, `${JSON.stringify(settings)}\n`, "utf-8")
 }
 
-test("parent verifies a worker that finished after a soft-limit warning and completes its TODO", async ({
-	terminal,
-}) => {
+for (const mode of ["waiting", "prequeued", "foreground"] as const) {
+	const prequeued = mode === "prequeued"
+	const foreground = mode === "foreground"
+	const name = {
+		waiting: "parent answers a worker question while waiting for that worker to finish",
+		prequeued: "parent answers a question already queued before it waits",
+		foreground: "parent answers a foreground worker before it finishes",
+	}[mode]
+	test(name, async ({ terminal }) => {
+		const call = (id: string, name: string, args: Record<string, unknown>) => ({
+			id,
+			function: { name, arguments: JSON.stringify(args) },
+		})
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `agent-communication-${mode}-question`,
+				seedHome: (homeDir, workDir) => {
+					enableCommunication(homeDir)
+					if (prequeued) {
+						const extensionsDir = join(homeDir, ".config", "kimchi", "harness", "extensions")
+						mkdirSync(extensionsDir, { recursive: true })
+						writeFileSync(
+							join(extensionsDir, "wait-for-question.ts"),
+							`
+	import { existsSync } from "node:fs"
+	import { join } from "node:path"
+	export default function(pi) {
+	 pi.on("tool_call", async (event, ctx) => {
+	  if (event.toolCallId !== "wait-for-child") return
+	  const deadline = Date.now() + 10000
+	  while (!existsSync(join(ctx.cwd, "SENT"))) {
+	   if (Date.now() > deadline) throw new Error("Worker did not send its question")
+	   await new Promise(resolve => setTimeout(resolve, 20))
+	  }
+	 })
+	}
+	`,
+						)
+					}
+					const agentsDir = join(workDir, ".kimchi", "agents")
+					mkdirSync(agentsDir, { recursive: true })
+					writeFileSync(
+						join(agentsDir, "waiting-child.md"),
+						"---\ndescription: waiting child\nprompt_mode: append\nextensions: true\nskills: false\n---\nAsk the parent which option to use. Finish after its reply.",
+					)
+				},
+				models: [{ slug: "basic", displayName: "Fake Basic", input: ["text"] }],
+				responses: [
+					{
+						toolCalls: [
+							call("start-waiting-child", "Agent", {
+								prompt: "Wait for ASK, ask which option to use, then wait for ANSWER before finishing.",
+								description: "waiting child",
+								subagent_type: "waiting-child",
+								communication: "parent",
+								run_in_background: !foreground,
+							}),
+						],
+					},
+					...(foreground
+						? []
+						: [
+								{
+									toolCalls: [call("wait-for-child", "get_subagent_result", { agent_id: "__AGENT_ID__", wait: true })],
+								},
+							]),
+					{
+						toolCalls: [
+							call("answer-waiting-child", "reply_to_agent_message", {
+								message_id: "__MESSAGE_ID__",
+								answer: "Use option A.",
+								max_turns: 3,
+								max_duration: 30,
+							}),
+							call("release-waiting-child", "write", { path: "ANSWER", content: "A" }),
+						],
+					},
+					{ stream: ["PARENT-ANSWERED-DURING-WAIT"] },
+					{
+						forSubagent: true,
+						toolCalls: [call("await-ask", "bash", { command: "while [ ! -f ASK ]; do sleep 0.05; done" })],
+					},
+					{
+						forSubagent: true,
+						toolCalls: [
+							call("ask-during-wait", "send_agent_message", {
+								recipient: { type: "parent" },
+								payload: {
+									kind: "question",
+									question: "Which option should the waiting worker use?",
+									impact: "Required to finish the work.",
+									canContinue: false,
+								},
+							}),
+						],
+					},
+					{
+						forSubagent: true,
+						toolCalls: [
+							call("await-answer", "bash", {
+								command: "printf ready > SENT; while [ ! -f ANSWER ]; do sleep 0.05; done",
+							}),
+						],
+					},
+					{ forSubagent: true, stream: ["WORKER-FINISHED-AFTER-ANSWER"] },
+				],
+			},
+			async (fixture, trace) => {
+				terminal.submit("Start the worker and wait for its result")
+				await waitForText(terminal, foreground ? "waiting child" : "Get Subagent Result", {
+					timeoutMs: STREAM_TIMEOUT_MS,
+				})
+				trace.step("parent is waiting for the running worker")
+				writeFileSync(join(fixture.workDir, "ASK"), "ask now")
+				await waitForText(terminal, "PARENT-ANSWERED-DURING-WAIT", { timeoutMs: STREAM_TIMEOUT_MS })
+				await waitForText(terminal, "WORKER-FINISHED-AFTER-ANSWER", { timeoutMs: STREAM_TIMEOUT_MS })
+				const requests = fixture.fake.requests
+					.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+					.map((request) => JSON.stringify(request.body))
+				const answered = requests.find((body) => body.includes('"tool_call_id":"answer-waiting-child"'))
+				expect(answered).toContain("queued_for_running_session")
+				expect(answered).toContain(
+					foreground ? "Agent sent to background to handle a pending message." : "Status: running",
+				)
+				expect(answered).toContain("Which option should the waiting worker use?")
+				expect(answered).not.toContain("WORKER-FINISHED-AFTER-ANSWER")
+				expect(readFileSync(join(fixture.workDir, "ANSWER"), "utf-8")).toBe("A")
+				trace.step("parent answered before worker completion and the worker finished")
+			},
+		)
+	})
+}
+
+test("parent verifies a finished worker, completes its TODO and closes its resolved question", async ({ terminal }) => {
 	const call = (id: string, name: string, args: Record<string, unknown>) => ({
 		id,
 		function: { name, arguments: JSON.stringify(args) },
@@ -56,10 +188,25 @@ test("parent verifies a worker that finished after a soft-limit warning and comp
 				},
 				{
 					forSubagent: true,
-					toolCalls: [call("worker-read-marker", "read", { path: "INPUT.txt" })],
+					toolCalls: [
+						call("worker-read-marker", "read", { path: "INPUT.txt" }),
+						call("worker-marker-question", "send_agent_message", {
+							recipient: { type: "parent" },
+							payload: {
+								kind: "question",
+								question: "Does the marker match?",
+								impact: "Verification",
+								canContinue: true,
+							},
+						}),
+					],
 				},
 				{ forSubagent: true, stream: ["INPUT.txt contains verified-marker."] },
 				{
+					toolCalls: [call("wait-for-marker", "get_subagent_result", { agent_id: "__AGENT_ID__", wait: true })],
+				},
+				{
+					stream: ["Worker finished; checking its question and artifact."],
 					toolCalls: [
 						call("reconcile-before-check", "reconcile_agent_result", {
 							agent_id: "__AGENT_ID__",
@@ -79,12 +226,28 @@ test("parent verifies a worker that finished after a soft-limit warning and comp
 						}),
 					],
 				},
+				{
+					toolCalls: [
+						call("stale-marker-reply", "reply_to_agent_message", {
+							message_id: "__MESSAGE_ID__",
+							answer: "Already verified. No work remains.",
+							max_turns: 1,
+							max_duration: 30,
+						}),
+					],
+				},
 				{ stream: ["MARKER-REVIEW-DONE"] },
 			],
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			terminal.submit("Delegate the marker read, verify it and reconcile its TODO")
 			await waitForText(terminal, "MARKER-REVIEW-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
+			const requests = fixture.fake.requests
+				.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+				.map((request) => JSON.stringify(request.body))
+			expect(requests.some((body) => body.includes("Closed questions:"))).toBe(true)
+			expect(requests.some((body) => body.includes("thread_closed"))).toBe(true)
+			expect(requests.some((body) => body.includes("Host-mediated answer to your message"))).toBe(false)
 			trace.step("worker finished after its soft limit and parent checked the marker")
 			terminal.write("/todos")
 			await waitForText(terminal, "/todos")
@@ -271,7 +434,7 @@ test("a worker TODO update reaches its peer through the coordination board", asy
 							function: {
 								name: "create_todos",
 								arguments: JSON.stringify({
-									todos: [{ content: "Check source marker", status: "completed", note: "Evidence: source-marker-42" }],
+									todos: [{ content: "Check source marker", status: "in_progress", note: "superseded-marker" }],
 								}),
 							},
 						},
@@ -281,7 +444,31 @@ test("a worker TODO update reaches its peer through the coordination board", asy
 					forSubagent: true,
 					match: (request) => {
 						const body = JSON.stringify(request.body ?? {})
-						return body.includes("ALPHA task") && body.includes("call_alpha_post") && !body.includes("ALPHA-DONE")
+						return (
+							body.includes("ALPHA task") && body.includes("call_alpha_post") && !body.includes("call_alpha_update")
+						)
+					},
+					toolCalls: [
+						{
+							id: "call_alpha_update",
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{ id: 1, content: "Check source marker", status: "completed", note: "Evidence: source-marker-42" },
+									],
+								}),
+							},
+						},
+					],
+				},
+				{
+					forSubagent: true,
+					match: (request) => {
+						const body = JSON.stringify(request.body ?? {})
+						return (
+							body.includes("ALPHA task") && body.includes("call_alpha_update") && !body.includes("call_alpha_ready")
+						)
 					},
 					stream: ["ALPHA: posted and listing contacts"],
 					toolCalls: [
@@ -339,6 +526,7 @@ test("a worker TODO update reaches its peer through the coordination board", asy
 							body.includes("call_beta_read") &&
 							body.includes("TODO progress: 1/1 completed") &&
 							body.includes("source-marker-42") &&
+							!body.includes("superseded-marker") &&
 							!body.includes("BETA-DONE")
 						)
 					},

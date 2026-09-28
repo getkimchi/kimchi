@@ -1818,6 +1818,24 @@ describe("Ferment V2 extension", () => {
 		expect(harness.sendMessage.mock.lastCall?.[0]?.details?.source).not.toBe("evaluation_accepted")
 	})
 
+	it("does not restart a stopped worker to deliver an accepted answer", async () => {
+		const child = createHarness({ cwd, hasUI: false, workerObjective: "verify delegated task" })
+		await child.fire("session_start", { reason: "new" })
+		await child.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await completeVisibleTodo(child)
+		await settleFermentV2(child, "met", false, undefined, "Accepted answer.")
+		expect(child.sendMessage.mock.lastCall?.[0]?.details?.source).toBe("evaluation_accepted")
+		await child.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+
+		child.stopWorker()
+		child.sendMessage.mockClear()
+		await child.fire("agent_end", { type: "agent_end", messages: [] })
+		await child.fire("agent_settled", { type: "agent_settled" })
+
+		expect(child.sendMessage).not.toHaveBeenCalled()
+		expect(child.currentFermentV2()?.status).toBe("paused")
+	})
+
 	it("retries accepted final-answer delivery after pause and resume", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -1862,7 +1880,16 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete" })
 	})
 
-	it("pauses when final-answer delivery rewrites the accepted draft", async () => {
+	it.each([
+		{ stopReason: "stop", text: "Accepted answer with extra text.", status: "complete" },
+		{ stopReason: "error", text: "Partial answer.", status: "paused" },
+		{ stopReason: "aborted", text: "Partial answer.", status: "paused" },
+		{ stopReason: "stop", text: "", status: "paused" },
+	] as const)("replays accepted text for successful delivery: $stopReason, $text", async ({
+		stopReason,
+		text,
+		status,
+	}) => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
@@ -1872,9 +1899,20 @@ describe("Ferment V2 extension", () => {
 		harness.setBranch([...harness.branch, messageEntry(ended.message, null)])
 		await settleFermentV2(harness, "met", false, undefined, "Accepted answer.")
 
-		await finishFinalAnswerTurn(harness, "Accepted answer with extra text.")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		const finalMessage = { ...assistantTextMessage(text), stopReason }
+		await harness.fire("message_start", { type: "message_start", message: finalMessage })
+		const delivered = (await harness.fire("message_end", { type: "message_end", message: finalMessage })) as {
+			message: typeof finalMessage
+		}
+		expect(delivered.message.content).toEqual([
+			{ type: "text", text: status === "complete" ? "Accepted answer." : text },
+		])
+		await harness.fire("turn_end", { ...terminalTurn(stopReason), message: delivered.message })
+		await harness.fire("agent_end", { type: "agent_end", messages: [delivered.message] })
+		await harness.fire("agent_settled", { type: "agent_settled" })
 
-		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", lastEvaluation: { verdict: "met" } })
+		expect(harness.currentFermentV2()).toMatchObject({ status, lastEvaluation: { verdict: "met" } })
 	})
 
 	it("preserves an accepted final answer split across text blocks", async () => {
@@ -2593,8 +2631,8 @@ describe("Ferment V2 extension", () => {
 			completion_confidence: "tested",
 		})
 
-		expect(result.content[0].text).toBe("Recorded. Stop here.")
-		expect(result.terminate).toBe(true)
+		expect(result.content[0].text).toBe("Recorded. Write your final answer now without calling tools.")
+		expect(result.terminate).toBe(false)
 		expect(harness.currentFermentV2()?.status).toBe("active")
 		await settleFermentV2(harness, "met")
 		expect(harness.currentFermentV2()?.status).toBe("complete")
@@ -2610,7 +2648,7 @@ describe("Ferment V2 extension", () => {
 		await completeVisibleTodo(harness)
 
 		const missing = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete" })
-		expect(missing.terminate).toBe(true)
+		expect(missing.terminate).toBe(false)
 		expect(harness.currentFermentV2()?.status).toBe("active")
 		await settleFermentV2(harness, "met")
 		expect(harness.currentFermentV2()?.status).toBe("complete")

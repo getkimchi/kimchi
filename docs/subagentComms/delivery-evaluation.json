@@ -1,0 +1,1122 @@
+{
+  "date": "2026-09-21",
+  "corrected": {
+    "manifest": {
+      "protocol_version": 2,
+      "grader_cases": 15,
+      "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+      "binary_sha256": "fcadb33f5fabdae06439592405728af0a4fb562b3e16e3c916ad034852d79967",
+      "probe_sha256": "95cb5d9d21d3080c25ecf17a3bf4c0d9f1b575a49ff006d993946894748fe273",
+      "fixture_sha256": "0af7ff9278393459675f4a972c21730bc7bc47b37e7e8480611fa1e2b97786db",
+      "driver_sha256": "fbac84d66c90ff1eaca5b697854b25ef079dd4b721f39ad3ebff14386d9aef10",
+      "model": "kimchi-dev/glm-5.3-flash",
+      "thinking": "low",
+      "ferment_v2": false,
+      "recipient_limits": {
+        "max_turns": 35,
+        "output_tokens": 10000,
+        "seconds": 600
+      },
+      "wall_seconds": 660,
+      "conditions": [
+        "artifacts",
+        "early",
+        "board",
+        "delayed",
+        "delayed",
+        "board",
+        "early",
+        "artifacts"
+      ],
+      "replay": "Host-controlled queued source uses native authorized broker and board. No source inference or autonomous discovery is claimed."
+    },
+    "complete": true,
+    "report_sha256": "dc871fd8c82e13c10d109e575adefaa008ddc60682159902d030834e5d9ad9f2",
+    "checkpoint_usage": {
+      "input": 3097,
+      "output": 470,
+      "cacheRead": 10496,
+      "cacheWrite": 0
+    },
+    "trials": [
+      {
+        "label": "trial-01",
+        "condition": "artifacts",
+        "status": "completed",
+        "passed": 15,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 42.304,
+        "usage": {
+          "input": 14557,
+          "output": 3167,
+          "cacheRead": 37952,
+          "cacheWrite": 0
+        },
+        "request_count": 6,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": null,
+        "body_before_first_edit": null,
+        "board_reads": 1,
+        "tool_calls": {
+          "read": 2,
+          "list_agent_contacts": 1,
+          "read_agent_board": 1,
+          "write": 1,
+          "bash": 2
+        },
+        "edits": [
+          {
+            "time": 1789979408101,
+            "passed": 15,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "8b510990ed308dc3a254d61f8b30fa00fbb069e3aa95f9addccb3df3f423686a",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-02",
+        "condition": "early",
+        "status": "completed",
+        "passed": 14,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 20.804,
+        "usage": {
+          "input": 7491,
+          "output": 1433,
+          "cacheRead": 35008,
+          "cacheWrite": 0
+        },
+        "request_count": 5,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 1,
+        "body_before_first_edit": true,
+        "board_reads": 0,
+        "tool_calls": {
+          "read": 2,
+          "write": 1,
+          "bash": 1,
+          "post_agent_note": 1
+        },
+        "edits": [
+          {
+            "time": 1789979447161,
+            "passed": 14,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "7e65ae2d8662cfe49fad790ffc8058992e8663a53f70ae9ab9f07188385a5ba8",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": false,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "completed",
+              "value": 7
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-03",
+        "condition": "board",
+        "status": "completed",
+        "passed": 15,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 17.655,
+        "usage": {
+          "input": 10238,
+          "output": 1168,
+          "cacheRead": 30976,
+          "cacheWrite": 0
+        },
+        "request_count": 5,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 3,
+        "body_before_first_edit": true,
+        "board_reads": 2,
+        "tool_calls": {
+          "read": 2,
+          "read_agent_board": 2,
+          "write": 1,
+          "bash": 1
+        },
+        "edits": [
+          {
+            "time": 1789979470321,
+            "passed": 15,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "0de66cfe22814c9b41e98662dc404d7e3c79ffd2af958aad076ff0217f0d3789",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-04",
+        "condition": "delayed",
+        "status": "completed",
+        "passed": 15,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 29.652,
+        "usage": {
+          "input": 4908,
+          "output": 2126,
+          "cacheRead": 46208,
+          "cacheWrite": 0
+        },
+        "request_count": 6,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 5,
+        "body_before_first_edit": false,
+        "board_reads": 1,
+        "tool_calls": {
+          "ls": 1,
+          "read": 2,
+          "read_agent_board": 1,
+          "write": 1,
+          "bash": 2
+        },
+        "edits": [
+          {
+            "time": 1789979493354,
+            "passed": 15,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "ebda303e28376b94ce1dcf3b60cd66e3f6587d57df0896ae82956826c39da036",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-05",
+        "condition": "delayed",
+        "status": "completed",
+        "passed": 15,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 41.947,
+        "usage": {
+          "input": 5440,
+          "output": 2946,
+          "cacheRead": 77888,
+          "cacheWrite": 0
+        },
+        "request_count": 9,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 5,
+        "body_before_first_edit": false,
+        "board_reads": 1,
+        "tool_calls": {
+          "read": 2,
+          "list_agent_contacts": 1,
+          "read_agent_board": 1,
+          "write": 2,
+          "bash": 3,
+          "post_agent_note": 1
+        },
+        "edits": [
+          {
+            "time": 1789979525013,
+            "passed": 15,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "a57e0b84d645fc9f7a24f9e8af443b8d1793f1ea818bf5b0e4c018f3448c2f70",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          },
+          {
+            "file": "test_regress.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-06",
+        "condition": "board",
+        "status": "completed",
+        "passed": 14,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 28.328,
+        "usage": {
+          "input": 11598,
+          "output": 1999,
+          "cacheRead": 31360,
+          "cacheWrite": 0
+        },
+        "request_count": 5,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 2,
+        "body_before_first_edit": true,
+        "board_reads": 1,
+        "tool_calls": {
+          "read": 2,
+          "read_agent_board": 1,
+          "write": 1,
+          "bash": 2
+        },
+        "edits": [
+          {
+            "time": 1789979565362,
+            "passed": 14,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "83de306ed3fe00a813f96bb0ed7b607bcbd927dd80332d75e845f4a89d8fc3ff",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": false,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "completed",
+              "value": 7
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-07",
+        "condition": "early",
+        "status": "completed",
+        "passed": 15,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 18.011,
+        "usage": {
+          "input": 4530,
+          "output": 1262,
+          "cacheRead": 28416,
+          "cacheWrite": 0
+        },
+        "request_count": 4,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 1,
+        "body_before_first_edit": true,
+        "board_reads": 0,
+        "tool_calls": {
+          "read": 2,
+          "write": 1,
+          "bash": 1
+        },
+        "edits": [
+          {
+            "time": 1789979597157,
+            "passed": 15,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "3c10ee041d9b7b6662e3ba1cce81b801a177a5036f71c7b81ce2a00e4a8d4568",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-08",
+        "condition": "artifacts",
+        "status": "completed",
+        "passed": 14,
+        "total": 15,
+        "protected_files_unchanged": true,
+        "seconds": 53.139,
+        "usage": {
+          "input": 4733,
+          "output": 3881,
+          "cacheRead": 71168,
+          "cacheWrite": 0
+        },
+        "request_count": 8,
+        "source_status": "stopped",
+        "checkpoint_hash": "7e32e4ca106165df17ade5ffea32602368fb8a1541a45f1770f45787646c205a",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": null,
+        "body_before_first_edit": null,
+        "board_reads": 0,
+        "tool_calls": {
+          "read": 2,
+          "list_agent_contacts": 1,
+          "write": 2,
+          "bash": 4
+        },
+        "edits": [
+          {
+            "time": 1789979616947,
+            "passed": 14,
+            "total": 15
+          }
+        ],
+        "consumer_sha256": "5065887911f54c0108ec53a63e5f82ffb56f87e02ffe9b46217752f575c4e047",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          },
+          {
+            "file": "test_regression.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": false,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "completed",
+              "value": 7
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      }
+    ]
+  },
+  "calibration": {
+    "manifest": {
+      "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+      "binary_sha256": "fcadb33f5fabdae06439592405728af0a4fb562b3e16e3c916ad034852d79967",
+      "probe_sha256": "95cb5d9d21d3080c25ecf17a3bf4c0d9f1b575a49ff006d993946894748fe273",
+      "fixture_sha256": "8dcd41e61a347be727096ca099876cf10fa948ecac34d1444454889a1db6c212",
+      "driver_sha256": "df92c5af795d12f86f8a58cd25dd94db53f9b3e4d012be2508b656d658e1a57c",
+      "model": "kimchi-dev/glm-5.3-flash",
+      "thinking": "low",
+      "ferment_v2": false,
+      "recipient_limits": {
+        "max_turns": 35,
+        "output_tokens": 10000,
+        "seconds": 600
+      },
+      "wall_seconds": 660,
+      "conditions": [
+        "artifacts",
+        "early",
+        "board",
+        "delayed",
+        "delayed",
+        "board",
+        "early",
+        "artifacts"
+      ],
+      "replay": "Host-controlled queued source uses native authorized broker and board. No source inference or autonomous discovery is claimed."
+    },
+    "complete": true,
+    "report_sha256": "dc871fd8c82e13c10d109e575adefaa008ddc60682159902d030834e5d9ad9f2",
+    "checkpoint_usage": {
+      "input": 6681,
+      "output": 352,
+      "cacheRead": 6912,
+      "cacheWrite": 0
+    },
+    "trials": [
+      {
+        "label": "trial-01",
+        "condition": "artifacts",
+        "status": "completed",
+        "passed": 14,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 60.558,
+        "usage": {
+          "input": 11611,
+          "output": 1641,
+          "cacheRead": 37504,
+          "cacheWrite": 0
+        },
+        "request_count": 6,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": null,
+        "body_before_first_edit": null,
+        "board_reads": 1,
+        "tool_calls": {
+          "bash": 3,
+          "list_agent_contacts": 1,
+          "read_agent_board": 1,
+          "write": 1
+        },
+        "edits": [
+          {
+            "time": 1789978826566,
+            "passed": 14,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "2c055e9f6312524f36bb481621fea730bf60148d86530cd130e93c9a76809cac",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-02",
+        "condition": "early",
+        "status": "completed",
+        "passed": 14,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 19.94,
+        "usage": {
+          "input": 4356,
+          "output": 1436,
+          "cacheRead": 28224,
+          "cacheWrite": 0
+        },
+        "request_count": 4,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 1,
+        "body_before_first_edit": true,
+        "board_reads": 0,
+        "tool_calls": {
+          "read": 2,
+          "write": 1,
+          "bash": 1
+        },
+        "edits": [
+          {
+            "time": 1789978884306,
+            "passed": 14,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "620ceb9d7811893480f394270edee61db96dd2d93121c957d83dcaf05020b697",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": false,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "completed",
+              "value": 7
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-03",
+        "condition": "board",
+        "status": "completed",
+        "passed": 14,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 36.953,
+        "usage": {
+          "input": 13609,
+          "output": 2538,
+          "cacheRead": 61248,
+          "cacheWrite": 0
+        },
+        "request_count": 8,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 2,
+        "body_before_first_edit": true,
+        "board_reads": 2,
+        "tool_calls": {
+          "read": 2,
+          "read_agent_board": 2,
+          "write": 2,
+          "bash": 3
+        },
+        "edits": [
+          {
+            "time": 1789978987678,
+            "passed": 14,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "055a2ddf70d487452cd10679c0f9eccde5eed2947b60bded3f53ce82b5e1d1c1",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          },
+          {
+            "file": "test_regression.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-04",
+        "condition": "delayed",
+        "status": "completed",
+        "passed": 14,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 20.827,
+        "usage": {
+          "input": 4384,
+          "output": 1435,
+          "cacheRead": 35840,
+          "cacheWrite": 0
+        },
+        "request_count": 5,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 4,
+        "body_before_first_edit": false,
+        "board_reads": 0,
+        "tool_calls": {
+          "ls": 1,
+          "read": 2,
+          "write": 1,
+          "bash": 1
+        },
+        "edits": [
+          {
+            "time": 1789979024732,
+            "passed": 14,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "b1f61f4530cc97bff524871022423affb83993c4e4119c0d12301a614d80ec68",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-05",
+        "condition": "delayed",
+        "status": "completed",
+        "passed": 14,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 36.428,
+        "usage": {
+          "input": 5168,
+          "output": 2406,
+          "cacheRead": 82112,
+          "cacheWrite": 0
+        },
+        "request_count": 10,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 7,
+        "body_before_first_edit": false,
+        "board_reads": 0,
+        "tool_calls": {
+          "bash": 4,
+          "read": 2,
+          "write": 2,
+          "post_agent_note": 1
+        },
+        "edits": [
+          {
+            "time": 1789979050930,
+            "passed": 14,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "5535020a2059e62a38060a8ffc124d3cb0147d0d22da3bd8b7a0b0e947688a0c",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": false,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "completed",
+              "value": 7
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-06",
+        "condition": "board",
+        "status": "completed",
+        "passed": 14,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 26.831,
+        "usage": {
+          "input": 11613,
+          "output": 1887,
+          "cacheRead": 38016,
+          "cacheWrite": 0
+        },
+        "request_count": 6,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 3,
+        "body_before_first_edit": true,
+        "board_reads": 2,
+        "tool_calls": {
+          "read": 2,
+          "read_agent_board": 2,
+          "write": 1,
+          "bash": 1
+        },
+        "edits": [
+          {
+            "time": 1789979090772,
+            "passed": 14,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "2189b56d52e97e030ee92cd717bfa6c7ddbf6ec8b07ebb1c6993f56a08985602",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-07",
+        "condition": "early",
+        "status": "completed",
+        "passed": 13,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 21.196,
+        "usage": {
+          "input": 4202,
+          "output": 1539,
+          "cacheRead": 28736,
+          "cacheWrite": 0
+        },
+        "request_count": 4,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": 1,
+        "body_before_first_edit": true,
+        "board_reads": 0,
+        "tool_calls": {
+          "read": 2,
+          "write": 1,
+          "bash": 1
+        },
+        "edits": [
+          {
+            "time": 1789979115641,
+            "passed": 13,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "64e57b04b49f55bac5f91171041fef7196c69b3fc7dd0d679f8ee8204e20b51a",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-08",
+        "condition": "artifacts",
+        "status": "completed",
+        "passed": 12,
+        "total": 14,
+        "protected_files_unchanged": true,
+        "seconds": 46.595,
+        "usage": {
+          "input": 4937,
+          "output": 3329,
+          "cacheRead": 78592,
+          "cacheWrite": 0
+        },
+        "request_count": 9,
+        "source_status": "stopped",
+        "checkpoint_hash": "e50792b5cece6cf155c5c073f69a0ff0b462340f58377e47faa39fbe0775dd39",
+        "tool_schema_hash": "d1b1c70c143799cea2355d08484b924d3ba2510e7e5806a0e5d2cd2ae0a45f18",
+        "first_body_request": null,
+        "body_before_first_edit": null,
+        "board_reads": 0,
+        "tool_calls": {
+          "read": 2,
+          "ls": 1,
+          "edit": 1,
+          "bash": 5,
+          "write": 1
+        },
+        "edits": [
+          {
+            "time": 1789979136663,
+            "passed": 12,
+            "total": 14
+          }
+        ],
+        "consumer_sha256": "34cd0b42675cba5de6046489c659ea49c547a7da4b025a1a04b25a8bdc5a181f",
+        "own_checks": [
+          {
+            "file": "test_consumer.py",
+            "exit_code": 0
+          },
+          {
+            "file": "test_consumer_regressions.py",
+            "exit_code": 0
+          }
+        ],
+        "unstarted_attempt_check": {
+          "passed": true,
+          "actual": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          },
+          "expected": {
+            "a": {
+              "attempt": 1,
+              "status": "running",
+              "value": null
+            }
+          }
+        },
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      }
+    ]
+  },
+  "calibration_limits": [
+    "The request-only case required running although the original public contract did not explicitly exclude intermediate nonterminal states.",
+    "The original 14 cases omitted a future outcome for a known job whose newer attempt had not started; the retained supplement tests it."
+  ],
+  "setup_failure": {
+    "root": "/private/tmp/kimchi-delivery-575cbsgj",
+    "inference_started": false,
+    "reason": "Sandbox preflight inherited the denied repository cwd; process.cwd raised EPERM. Running the check inside its allowed trial directory fixes it."
+  },
+  "local_capture_roots": {
+    "corrected": "/private/tmp/kimchi-delivery-d9wlxwp3",
+    "calibration": "/private/tmp/kimchi-delivery-k501vwqo"
+  }
+}

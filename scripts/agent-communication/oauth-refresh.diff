@@ -1,0 +1,49 @@
+diff --git a/src/extensions/mcp-adapter/refresh-discovery-regression.test.ts b/src/extensions/mcp-adapter/refresh-discovery-regression.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/extensions/mcp-adapter/refresh-discovery-regression.test.ts
+@@ -0,0 +1,44 @@
++import { mkdtempSync, rmSync } from "node:fs"
++import { tmpdir } from "node:os"
++import { join } from "node:path"
++import { afterEach, expect, it, vi } from "vitest"
++
++const dirs: string[] = []
++afterEach(() => {
++ vi.unstubAllGlobals()
++ vi.unstubAllEnvs()
++ vi.resetModules()
++ for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
++})
++it("refreshes tokens when the authorization server differs from the MCP resource", async () => {
++ const dir = mkdtempSync(join(tmpdir(), "refresh-discovery-")); dirs.push(dir)
++ vi.stubEnv("MCP_OAUTH_DIR", dir)
++ vi.resetModules()
++ const resource = "https://resource.example.test/mcp"
++ const issuer = "https://login.example.test"
++ const requests: string[] = []
++ vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
++  const url = String(input instanceof Request ? input.url : input)
++  const method = init?.method ?? (input instanceof Request ? input.method : "GET")
++  requests.push(method + " " + url)
++  const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } })
++  if (url.includes("/.well-known/oauth-protected-resource")) return json({ resource, authorization_servers: [issuer] })
++  if (url.startsWith(issuer) && url.includes("/.well-known/")) return json({ issuer, authorization_endpoint: issuer + "/authorize", token_endpoint: issuer + "/token", response_types_supported: ["code"], token_endpoint_auth_methods_supported: ["none"], code_challenge_methods_supported: ["S256"] })
++  if (url === issuer + "/token") return json({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600, token_type: "Bearer" })
++  if (url === resource && method === "POST") {
++   const headers = new Headers(init?.headers)
++   if (headers.get("authorization") !== "Bearer new-access") return new Response(null, { status: 401, headers: { "www-authenticate": 'Bearer resource_metadata="https://resource.example.test/.well-known/oauth-protected-resource/mcp"' } })
++   const body = JSON.parse(String(init?.body))
++   if (body.method === "initialize") return json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-11-25", capabilities: {}, serverInfo: { name: "fixture", version: "1" } } })
++   return new Response(null, { status: 202 })
++  }
++  return new Response(null, { status: 404 })
++ }))
++ const store = await import("./mcp-auth.js")
++ await store.updateClientInfo("srv", { clientId: "public-client" }, resource)
++ await store.updateTokens("srv", { accessToken: "expired", refreshToken: "old-refresh", expiresAt: Date.now() / 1000 - 100 }, resource)
++ const flow = await import("./mcp-auth-flow.js")
++ const result = await flow.getValidToken("srv", resource)
++ expect(result?.accessToken, requests.join("\n")).toBe("new-access")
++ expect(requests).toContain("POST " + issuer + "/token")
++})

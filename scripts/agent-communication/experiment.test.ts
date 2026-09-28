@@ -38,6 +38,8 @@ describe("communication comparison protocol", () => {
 		expect(checkLaunch({ ...input, communication: "group" }, "messages", new Set())).toBeUndefined()
 		expect(checkLaunch({ ...input, communication: "group" }, "board", new Set())).toBeUndefined()
 		expect(checkLaunch({ ...input, model: "other" }, "workers", new Set())).toContain("model")
+		expect(checkLaunch({ ...input, model: "kimi-k3" }, "workers", new Set(), "kimi-k3")).toBeUndefined()
+		expect(checkLaunch(input, "workers", new Set(), "kimi-k3")).toContain('model: expected "kimi-k3"')
 		expect(checkLaunch({ ...input, ferment_v2: true }, "workers", new Set())).toContain("ferment_v2")
 		expect(checkLaunch(input, "workers", new Set(["Implementation owner"]))).toContain("already started")
 		expect(checkLaunch(input, "solo", new Set())).toContain("solo arm")
@@ -47,5 +49,25 @@ describe("communication comparison protocol", () => {
 			expect(checkLaunch(launch, arm, new Set())).toBeUndefined()
 			expect(checkLaunch({ ...launch, token_budget: 10000 }, arm, new Set())).toContain("token_budget")
 		}
+	})
+
+	it("distinguishes required values from submitted values after a rejected launch", () => {
+		const reason = checkLaunch(
+			{
+				description: "Lifecycle investigator",
+				subagent_type: "General-Purpose",
+				model: "glm-5.3-flash",
+				thinking: "low",
+				run_in_background: true,
+				token_budget: 10000,
+				communication: "parent",
+			},
+			"board",
+			new Set(),
+		)
+		expect(reason).toContain("no worker started")
+		expect(reason).toContain('communication: expected "group"; received "parent"')
+		expect(reason).toContain("max_turns: expected 35; received (missing)")
+		expect(reason).toContain("max_duration: expected 900; received (missing)")
 	})
 })

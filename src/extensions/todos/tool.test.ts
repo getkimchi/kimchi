@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { renderTodoStateMarkdown } from "./state-markdown.js"
 import { __resetTodoStore, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 import { CREATE_TODOS_TOOL_NAME, registerTodosTool, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 
@@ -98,6 +99,26 @@ describe("todo tools", () => {
 
 		expect(result.content).toEqual([{ type: "text", text: "Updated 1 todos in global." }])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["inspect trace"])
+	})
+
+	it("exposes usable todo IDs after replacing and reordering the list", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		const todos = [
+			{ content: "implement", status: "in_progress" },
+			{ content: "verify", status: "pending" },
+		]
+		await tools.create_todos.execute("create", { todos }, undefined, undefined, ctx)
+		await tools.update_todos.execute("replace", { todos: [...todos].reverse() }, undefined, undefined, ctx)
+
+		const state = renderTodoStateMarkdown("session")
+		const match = state?.match(/implement \(id: (\d+)\)/)
+		expect(match).toBeTruthy()
+		await tools.mark_todo.execute("mark", { id: Number(match?.[1]), status: "completed" }, undefined, undefined, ctx)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map(({ content, status }) => ({ content, status }))).toEqual([
+			{ content: "verify", status: "pending" },
+			{ content: "implement", status: "completed" },
+		])
 	})
 
 	it("marking an unchanged status is a no-op with a corrective notice", async () => {

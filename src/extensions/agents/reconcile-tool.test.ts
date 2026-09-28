@@ -45,8 +45,12 @@ function setup() {
 		},
 		session.getSessionId(),
 	)
+	const closeQuestions = vi.fn().mockReturnValue(["question-1"])
+	const hasBlockingQuestion = vi.fn().mockReturnValue(false)
 	registerReconcileAgentResultTool(api.api, {
 		getRecord: vi.fn((id: string) => (id === record.id ? record : undefined)),
+		closeOpenParentThreadsForAgent: closeQuestions,
+		hasOpenBlockingParentQuestion: hasBlockingQuestion,
 	})
 	const tool = api.getRegisteredTool(RECONCILE_AGENT_RESULT_TOOL_NAME)
 	const run = (params: Record<string, unknown> = {}) =>
@@ -62,7 +66,15 @@ function setup() {
 			undefined,
 			ctx,
 		)
-	return { session, api, record, run, todos: () => getTodosForScope(GLOBAL_TODO_SCOPE, session.getSessionId()) }
+	return {
+		session,
+		api,
+		record,
+		run,
+		closeQuestions,
+		hasBlockingQuestion,
+		todos: () => getTodosForScope(GLOBAL_TODO_SCOPE, session.getSessionId()),
+	}
 }
 
 function appendCheck(
@@ -99,6 +111,17 @@ function appendCheck(
 describe("parent result reconciliation", () => {
 	beforeEach(__resetTodoStore)
 
+	it("preserves an unanswered blocking question even when a parent command exits successfully", async () => {
+		const h = setup()
+		appendCheck(h.session)
+		h.hasBlockingQuestion.mockReturnValue(true)
+		await expect(h.run()).rejects.toThrow(
+			"Answer or decline the worker's blocking question before reconciling its task.",
+		)
+		expect(h.todos()[0].status).toBe("in_progress")
+		expect(h.closeQuestions).not.toHaveBeenCalled()
+	})
+
 	it.each([
 		"completed",
 		"steered",
@@ -113,6 +136,11 @@ describe("parent result reconciliation", () => {
 			note: "Evidence: Parser regression tests pass [agent worker-1, attempt 1; parent bash check-1]",
 		})
 		expect(h.todos()[1]).toMatchObject({ content: "Update docs", status: "pending" })
+		expect(h.closeQuestions).toHaveBeenCalledWith(h.record.id, "parent_verified_completion")
+		expect(result.content).toContainEqual({
+			type: "text",
+			text: expect.stringContaining("Closed questions: question-1. No reply or resume is needed."),
+		})
 		expect(isTodoWriteToolName(RECONCILE_AGENT_RESULT_TOOL_NAME)).toBe(true)
 		h.session.appendMessage({
 			role: "toolResult",
@@ -146,6 +174,7 @@ describe("parent result reconciliation", () => {
 			"The subagent has not completed successfully. Wait, resume it, or record the remaining work as blocked.",
 		)
 		expect(h.todos()[0].status).toBe("in_progress")
+		expect(h.closeQuestions).not.toHaveBeenCalled()
 		expect(h.api.appendEntry).not.toHaveBeenCalled()
 	})
 
@@ -167,6 +196,7 @@ describe("parent result reconciliation", () => {
 		await expect(h.run()).rejects.toThrow(
 			"Only the owning parent can reconcile a communicating subagent from this session.",
 		)
+		expect(h.closeQuestions).not.toHaveBeenCalled()
 	})
 
 	it("rejects a worker invoking the parent tool even with matching records", async () => {
@@ -232,6 +262,7 @@ describe("parent result reconciliation", () => {
 		await expect(h.run()).rejects.toThrow(
 			"Run a successful parent bash check or read the resulting artifact after this worker finishes. Reports and board posts do not qualify.",
 		)
+		expect(h.closeQuestions).not.toHaveBeenCalled()
 	})
 
 	it("rejects an old verification after a worker resumes and finishes again", async () => {

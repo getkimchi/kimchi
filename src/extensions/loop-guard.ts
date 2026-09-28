@@ -126,7 +126,7 @@ export class LoopGuard {
 			mapIncrement(this.editCounts, editTarget)
 			mapIncrement(this.editCountsTotal, editTarget)
 		}
-		const bashPrefix = extractBashPrefix(rec)
+		const bashPrefix = extractBashCommand(rec)
 		if (bashPrefix) {
 			mapIncrement(this.bashCounts, bashPrefix)
 			mapIncrement(this.bashCountsTotal, bashPrefix)
@@ -145,7 +145,7 @@ export class LoopGuard {
 				// in sync with the sliding window.
 				const evictedEdit = extractEditTarget(evicted)
 				if (evictedEdit) mapDecrement(this.editCounts, evictedEdit)
-				const evictedBash = extractBashPrefix(evicted)
+				const evictedBash = extractBashCommand(evicted)
 				if (evictedBash) mapDecrement(this.bashCounts, evictedBash)
 				const evictedBashNorm = extractBashPrefixNormalized(evicted)
 				if (evictedBashNorm) mapDecrement(this.bashCountsNorm, evictedBashNorm)
@@ -220,7 +220,7 @@ export class LoopGuard {
 			outputFingerprint: "",
 		}
 		const callEditTarget = extractEditTarget(hypoForExtract)
-		const callBashPrefix = extractBashPrefix(hypoForExtract)
+		const callBashPrefix = extractBashCommand(hypoForExtract)
 		const topEdit = mapMax(this.editCounts)
 		const topBash = mapMax(this.bashCounts)
 		const topEditTotal = mapMax(this.editCountsTotal)
@@ -555,20 +555,13 @@ function extractEditTarget(rec: ToolHistoryRecord): string | undefined {
 	}
 }
 
-/**
- * Extract a raw command prefix from a bash tool record. Returns
- * undefined for other tools or when the command is missing or non-string.
- *
- * The prefix length is intentionally short: it groups commands that share an
- * invocation intent ("cd /app && make -j8 all 2>&1 | tail -20" matches
- * "cd /app && make -j8 all 2>&1 | tail -60") while keeping distinct commands
- * separate ("cd /app && make test" vs "cd /app && npm test").
- */
-function extractBashPrefix(rec: ToolHistoryRecord): string | undefined {
+/** Keep the full raw command: a long shared cd prefix can hide different work.
+ *  The separate normalized counter already handles equivalent invocations. */
+function extractBashCommand(rec: ToolHistoryRecord): string | undefined {
 	if (rec.toolName !== "bash") return undefined
 	try {
 		const args = JSON.parse(rec.toolArgs) as { command?: unknown }
-		return typeof args.command === "string" ? args.command.slice(0, BASH_PREFIX_LENGTH) : undefined
+		return typeof args.command === "string" ? args.command : undefined
 	} catch {
 		return undefined
 	}
@@ -669,7 +662,7 @@ function truncPreview(s: string): string {
 	return s.length > REASON_ARG_PREVIEW ? `${s.slice(0, REASON_ARG_PREVIEW)}…` : s
 }
 
-export default function loopGuardExtension(pi: ExtensionAPI) {
+export default function loopGuardExtension(pi: ExtensionAPI, abortWorker?: () => void) {
 	const guard = new LoopGuard()
 	let ctx: ExtensionContext | undefined
 	/** True when a subagent loop-guard steer has fired and the subagent
@@ -729,7 +722,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		// Subagents are terminated via ctx.abort() in turn_end instead.
 	})
 
-	pi.on("turn_end", () => {
+	pi.on("turn_end", (event) => {
 		// Subagent abort: after a loop-guard steer fired, the subagent gets
 		// one turn to produce output, then we abort. Whatever it produced
 		// becomes the responseText the orchestrator receives.
@@ -739,42 +732,51 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				count: lastWarnCount,
 				is_subagent: true,
 			})
-			ctx?.abort()
+			if (abortWorker) abortWorker()
+			else ctx?.abort()
 			subagentAbortPending = false
 			return
 		}
-	})
 
-	pi.on("tool_result", (event) => {
-		const record: ToolHistoryRecord = {
-			toolName: event.toolName,
-			toolArgs: stableStringify(event.input),
-			isError: event.isError,
-			outputFingerprint: fingerprint(extractOutputText(event.content)),
-		}
-		const result = guard.record(record)
-		if (result.state === "warn" && result.reason) {
-			warnCount++
-			lastWarnDetector = result.detector
-			lastWarnCount = warnCount
-			emitGuardEvent(LOOP_GUARD_EVENTS.WARN, {
-				detector: result.detector ?? "consecutive_identical",
-				count: warnCount,
-				is_subagent: isAgentWorker(),
-			})
-			pi.sendMessage(
-				{
-					customType: "loop-guard-steer",
-					content: [{ type: "text", text: markHarnessSteer(result.reason) }],
-					display: false,
-				},
-				{ deliverAs: "steer" },
+		// turn_end also includes calls blocked before execution. Keep the model's
+		// original arguments: host timeout clamps change on each execution.
+		if (event.message.role !== "assistant") return
+		for (const toolResult of event.toolResults) {
+			const call = event.message.content.find(
+				(block) => block.type === "toolCall" && block.id === toolResult.toolCallId,
 			)
-			// Subagent: schedule an abort on the next turn_end. The subagent
-			// gets one more turn to produce a summary; that text becomes the
-			// output the orchestrator receives.
-			if (isAgentWorker()) {
-				subagentAbortPending = true
+			if (call?.type !== "toolCall") continue
+			const record: ToolHistoryRecord = {
+				toolName: call.name,
+				toolArgs: stableStringify(call.arguments),
+				isError: toolResult.isError,
+				outputFingerprint: fingerprint(extractOutputText(toolResult.content)),
+			}
+			const result = guard.record(record)
+			if (result.state === "warn" && result.reason) {
+				warnCount++
+				lastWarnDetector = result.detector
+				lastWarnCount = warnCount
+				emitGuardEvent(LOOP_GUARD_EVENTS.WARN, {
+					detector: result.detector ?? "consecutive_identical",
+					count: warnCount,
+					is_subagent: isAgentWorker(),
+				})
+				pi.sendMessage(
+					{
+						customType: "loop-guard-steer",
+						content: [{ type: "text", text: markHarnessSteer(result.reason) }],
+						display: false,
+					},
+					{ deliverAs: "steer" },
+				)
+				// Subagent: schedule an abort on the next turn_end. The subagent
+				// gets one more turn to produce a summary; that text becomes the
+				// output the orchestrator receives.
+				if (isAgentWorker()) {
+					subagentAbortPending = true
+				}
+				break
 			}
 		}
 	})

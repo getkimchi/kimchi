@@ -992,6 +992,30 @@ describe("Bash-only loop detector", () => {
 		expect(guard.isWarned()).toBe(false)
 	})
 
+	it("keeps different commands distinct after a long shared working-directory prefix", () => {
+		const guard = new LoopGuard()
+		const commands = [
+			"git status --short",
+			"git diff --stat",
+			"git log --oneline -5",
+			"pnpm run typecheck",
+			"pnpm run test:oauth-local",
+			"pnpm run check:oauth-style",
+			"ls -la src",
+			"rg TODO src",
+			"cat package.json",
+			"sed -n '1,40p' README.md",
+			"find src -name '*.test.ts'",
+			"pnpm exec vitest list",
+		]
+		feedBashCalls(
+			guard,
+			commands.map((command) => `cd /tmp/isolated-agent-comparison/worker-checkout-with-a-long-name && ${command}`),
+			"fp_same",
+		)
+		expect(guard.isWarned()).toBe(false)
+	})
+
 	it("window counts reset after warn so the model gets a fresh budget", () => {
 		const guard = new LoopGuard()
 		feedBashCalls(guard, Array(12).fill("apt-get install -y some-package"), "fp_a")

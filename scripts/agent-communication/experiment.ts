@@ -33,7 +33,12 @@ export function stripGuidance(text: string, arm: Arm): string {
 	return text
 }
 
-export function checkLaunch(input: Record<string, unknown>, arm: Arm, used: Set<string>): string | undefined {
+export function checkLaunch(
+	input: Record<string, unknown>,
+	arm: Arm,
+	used: Set<string>,
+	model = "glm-5.3-flash",
+): string | undefined {
 	if (arm === "solo") return "This is the solo arm; complete the task without delegation."
 	const role = String(input.description)
 	if (!roles.includes(role)) return `Use only the declared worker descriptions: ${roles.join(", ")}.`
@@ -42,7 +47,7 @@ export function checkLaunch(input: Record<string, unknown>, arm: Arm, used: Set<
 	const owner = role === "Implementation owner" || role === "Repair owner"
 	const required = {
 		subagent_type: "General-Purpose",
-		model: "glm-5.3-flash",
+		model,
 		thinking: "low",
 		run_in_background: true,
 		max_turns: owner ? 70 : 35,
@@ -52,14 +57,17 @@ export function checkLaunch(input: Record<string, unknown>, arm: Arm, used: Set<
 	}
 	const mismatches = Object.entries(required)
 		.filter(([key, value]) => input[key] !== value)
-		.map(([key]) => key)
-	if (input.ferment_v2 === true) mismatches.push("ferment_v2")
+		.map(
+			([key, value]) =>
+				`${key}: expected ${JSON.stringify(value) ?? "(missing)"}; received ${JSON.stringify(input[key]) ?? "(missing)"}`,
+		)
+	if (input.ferment_v2 === true) mismatches.push("ferment_v2: expected false; received true")
 	if (mismatches.length)
-		return `Correct launch fields ${mismatches.join(", ")}: ${JSON.stringify(required)}. Worker Ferment is off. No slot was used.`
+		return `Worker launch rejected; no worker started. Fix these arguments and retry:\n${mismatches.join("\n")}\nKeep the other arguments, prompt and description unchanged.`
 }
 
 /** Experiment-only channel masking and observations; no production policy changes. */
-export function installExperiment(pi: ExtensionAPI, arm: Arm, auditPath: string): void {
+export function installExperiment(pi: ExtensionAPI, arm: Arm, auditPath: string, model = "glm-5.3-flash"): void {
 	const used = new Set<string>()
 	const pending = new Map<string, string>()
 	const log = (event: Record<string, unknown>) =>
@@ -73,7 +81,7 @@ export function installExperiment(pi: ExtensionAPI, arm: Arm, auditPath: string)
 		let reason: string | undefined
 		if (unavailableTool(event.toolName, arm)) reason = `${event.toolName} is unavailable in the ${arm} arm.`
 		if (event.toolName === "Agent") {
-			reason ??= checkLaunch(event.input, arm, used)
+			reason ??= checkLaunch(event.input, arm, used, model)
 			if (!reason && event.input.description === "Repair owner") {
 				const records = new Map<string, { status: string }>()
 				for (const entry of ctx.sessionManager.getEntries()) {
@@ -145,12 +153,21 @@ export function installExperiment(pi: ExtensionAPI, arm: Arm, auditPath: string)
 				}
 			}),
 		}
+		const guidance = JSON.stringify(filtered.messages)
 		log({
 			kind: "request",
 			sessionId: ctx.sessionManager.getSessionId(),
 			parentSession: ctx.sessionManager.getHeader()?.parentSession,
 			tools: filtered.tools?.map((tool) => tool.function?.name ?? tool.name),
-			boardGuidance: JSON.stringify(filtered.messages).includes("## Coordination board"),
+			boardGuidance: guidance.includes("## Coordination board"),
+			coordinationAssignmentGuidance:
+				guidance.includes("These exchanges are part of the task") || guidance.includes("Share the posted entry ID"),
+			initialBoardCheckpoint:
+				guidance.includes("Start by calling list_agent_contacts and read_agent_board") ||
+				guidance.includes("Start with list_agent_contacts and read_agent_board"),
+			finalBoardCheckpoint:
+				guidance.includes("Before your final result, read_agent_board") ||
+				guidance.includes("before dependent work and before your final result"),
 		})
 		return filtered
 	})

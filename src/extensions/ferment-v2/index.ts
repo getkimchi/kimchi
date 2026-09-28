@@ -277,6 +277,7 @@ function registerFermentV2(
 		workerRunEnded = true
 		void abortEvaluation()
 		invalidateContinuation()
+		acceptedFinalAnswerDraft = undefined
 		const current = currentFermentV2
 		if (current?.status === "active") {
 			commitFermentV2(setFermentV2Status(current, current.id, current.revision, "paused", timestamp()))
@@ -1473,7 +1474,7 @@ function registerFermentV2(
 		name: UPDATE_FERMENT_V2_TOOL_NAME,
 		label: "Update Ferment V2",
 		description:
-			"Submit the active objective revision as complete, or mark it blocked. Complete ends this working turn; blocked takes effect immediately. Cannot edit, pause, resume, replace, or clear the objective.",
+			"Submit the active objective revision as complete, then write the final answer for verification. Blocked takes effect immediately. Cannot edit, pause, resume, replace, or clear the objective.",
 		promptSnippet: "Submit the current objective revision as complete, or mark it blocked",
 		promptGuidelines: [
 			"Claim complete only after current evidence proves every requirement is met. Report blocked only when the objective cannot be completed without user or external action after trying viable alternatives; one unavailable preferred tool or check is not a blockage.",
@@ -1536,11 +1537,13 @@ function registerFermentV2(
 						{
 							type: "text" as const,
 							text:
-								params.status === "complete" ? "Recorded. Stop here." : "Objective marked blocked. End this turn now.",
+								params.status === "complete"
+									? "Recorded. Write your final answer now without calling tools."
+									: "Objective marked blocked. End this turn now.",
 						},
 					],
 					details: { fermentV2, reason: params.reason },
-					terminate: true,
+					terminate: params.status === "blocked",
 				}
 			} catch (error) {
 				const message = errorMessage(error)
@@ -1711,10 +1714,16 @@ function registerFermentV2(
 	pi.on("message_end", (event, ctx) => {
 		bindSession(ctx)
 		if (event.message.role === "assistant" && matchesFermentV2(activeFinalAnswer, currentFermentV2, currentSessionId)) {
-			const deliveredText = event.message.content
+			const generatedText = event.message.content
 				.flatMap((block, index) => (block.type === "text" ? [bufferedAssistantText?.get(index) ?? block.text] : []))
 				.join("")
 				.trim()
+			const deliveredText =
+				generatedText &&
+				event.message.stopReason === "stop" &&
+				!event.message.content.some((block) => block.type === "toolCall")
+					? (acceptedFinalAnswerDraftFor(currentFermentV2, currentSessionId) ?? generatedText)
+					: generatedText
 			finalAnswerText = deliveredText
 			releaseFermentV2WorkedDuration(true)
 			let emittedText = false

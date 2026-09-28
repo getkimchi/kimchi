@@ -1,0 +1,1327 @@
+{
+  "experiment": "historical-oauth-repair",
+  "date": "2026-09-21",
+  "conclusion": "No demonstrated coding-quality improvement from added communication. The latest current-build pair completed with all six workers, no loop-guard warnings and passing public/types/style/refresh checks, but both outputs fail a separate late-failure cleanup check. Neither used messages or board reads. Earlier calibration, partial attempts, launch failures and regressions remain separate.",
+  "capture_root": "/private/tmp/kimchi-compaction-arms-sfcev413",
+  "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+  "target_ref": "c2cb469b84b36343787037de6a975c04e41ae165",
+  "reference_ref": "dcc263821827cc7748cc78eadaf3ffb043c89a57",
+  "binary_sha256": "6e04fadc856c232d812eae2d6e3d487f3902e4319c7cc17ce4c40d67de0ff249",
+  "limits": {
+    "model": "kimchi-dev/glm-5.3-flash",
+    "thinking": "low",
+    "worker_ferment": false,
+    "max_output_tokens": 30000,
+    "max_total_tokens": 2000000,
+    "wall_seconds": 600,
+    "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess."
+  },
+  "preflight": {
+    "broken": {
+      "test:oauth-local": 1,
+      "typecheck": 0,
+      "check:oauth-style": 0,
+      "passed": 47,
+      "failed": 6,
+      "total": 53
+    },
+    "fixed": {
+      "test:oauth-local": 0,
+      "typecheck": 0,
+      "check:oauth-style": 0,
+      "passed": 53,
+      "failed": 0,
+      "total": 53
+    }
+  },
+  "isolation_checks": 56,
+  "all_isolation_checks_passed": true,
+  "production_source_unchanged_during_experiment": true,
+  "trials": [
+    {
+      "label": "trial-01",
+      "arm": "solo",
+      "repetition": 1,
+      "staffing_valid": true,
+      "finish_reason": "wall_limit",
+      "seconds": 600.9,
+      "public_checks": {
+        "protected_changes": [],
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      },
+      "supplemental_refresh": {
+        "passed": 1,
+        "total": 1
+      },
+      "usage": {
+        "input": 296024,
+        "output": 25997,
+        "cacheRead": 907392,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_launches": 0,
+      "launch_rejections": 0,
+      "thinking_levels_observed": [
+        "low",
+        "medium"
+      ],
+      "workers_finished_at_stop": [],
+      "successful_parent_production_tool_edits": 4,
+      "tracked_diff": [
+        {
+          "added": 5,
+          "removed": 1,
+          "file": "src/extensions/mcp-adapter/mcp-auth-flow.ts"
+        },
+        {
+          "added": 68,
+          "removed": 32,
+          "file": "src/extensions/mcp-adapter/server-manager.ts"
+        },
+        {
+          "added": 5,
+          "removed": 1,
+          "file": "src/modes/acp/ext-methods/mcp.ts"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "model_verified": true,
+      "channel_masks_verified": true,
+      "capture": "/private/tmp/kimchi-compaction-arms-sfcev413/trial-01/tmp/kimchi-harness-live-wOw3iY",
+      "interventions": [
+        {
+          "time": 1789990022.726507,
+          "action": "Approved one sandboxed pnpm test command at visible Kimchi permission prompt",
+          "reason": "User authorized isolated local tests; no external publication",
+          "timing_limit": "Approval wait counts in frozen wall ceiling; do not treat this as coding latency."
+        }
+      ]
+    },
+    {
+      "label": "trial-02",
+      "arm": "workers",
+      "repetition": 1,
+      "staffing_valid": true,
+      "finish_reason": "token_limit",
+      "seconds": 203.5,
+      "public_checks": {
+        "protected_changes": [
+          "src/extensions/mcp-adapter/types.ts"
+        ],
+        "test:oauth-local": 1,
+        "typecheck": 0,
+        "check:oauth-style": 1,
+        "passed": 52,
+        "failed": 1,
+        "total": 53
+      },
+      "supplemental_refresh": {
+        "passed": 1,
+        "total": 1
+      },
+      "usage": {
+        "input": 206470,
+        "output": 22545,
+        "cacheRead": 1788352,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_launches": 3,
+      "launch_rejections": 0,
+      "thinking_levels_observed": [
+        "low"
+      ],
+      "workers_finished_at_stop": [
+        {
+          "description": "Boundary investigator",
+          "status": "completed"
+        },
+        {
+          "description": "Implementation owner",
+          "status": "completed"
+        }
+      ],
+      "successful_parent_production_tool_edits": 0,
+      "tracked_diff": [
+        {
+          "added": 65,
+          "removed": 49,
+          "file": "src/extensions/mcp-adapter/mcp-auth-flow.ts"
+        },
+        {
+          "added": 87,
+          "removed": 48,
+          "file": "src/extensions/mcp-adapter/server-manager.ts"
+        },
+        {
+          "added": 5,
+          "removed": 0,
+          "file": "src/extensions/mcp-adapter/types.ts"
+        },
+        {
+          "added": 15,
+          "removed": 1,
+          "file": "src/modes/acp/ext-methods/mcp.ts"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "model_verified": true,
+      "channel_masks_verified": true,
+      "capture": "/private/tmp/kimchi-compaction-arms-sfcev413/trial-02/tmp/kimchi-harness-live-xs1cTj"
+    },
+    {
+      "label": "trial-03",
+      "arm": "board",
+      "repetition": 1,
+      "staffing_valid": true,
+      "finish_reason": "token_limit",
+      "seconds": 293.3,
+      "public_checks": {
+        "protected_changes": [],
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      },
+      "supplemental_refresh": {
+        "passed": 0,
+        "total": 1
+      },
+      "usage": {
+        "input": 388715,
+        "output": 27224,
+        "cacheRead": 1593344,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 2,
+        "unique_reader_entry_pairs": 2,
+        "known_peer_body_returns": 2,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_launches": 3,
+      "launch_rejections": 0,
+      "thinking_levels_observed": [
+        "low"
+      ],
+      "workers_finished_at_stop": [
+        {
+          "description": "Boundary investigator",
+          "status": "completed"
+        },
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        },
+        {
+          "description": "Implementation owner",
+          "status": "completed"
+        }
+      ],
+      "successful_parent_production_tool_edits": 0,
+      "tracked_diff": [
+        {
+          "added": 26,
+          "removed": 21,
+          "file": "src/extensions/mcp-adapter/mcp-auth-flow.ts"
+        },
+        {
+          "added": 82,
+          "removed": 33,
+          "file": "src/extensions/mcp-adapter/server-manager.ts"
+        },
+        {
+          "added": 7,
+          "removed": 1,
+          "file": "src/modes/acp/ext-methods/mcp.ts"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "model_verified": true,
+      "channel_masks_verified": true,
+      "capture": "/private/tmp/kimchi-compaction-arms-sfcev413/trial-03/tmp/kimchi-harness-live-zWeuC5"
+    },
+    {
+      "label": "trial-04",
+      "arm": "board",
+      "repetition": 2,
+      "staffing_valid": false,
+      "finish_reason": "settled",
+      "seconds": 355.6,
+      "public_checks": {
+        "protected_changes": [],
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      },
+      "supplemental_refresh": {
+        "passed": 1,
+        "total": 1
+      },
+      "usage": {
+        "input": 271017,
+        "output": 22585,
+        "cacheRead": 1039360,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_launches": 0,
+      "launch_rejections": 8,
+      "thinking_levels_observed": [
+        "low"
+      ],
+      "workers_finished_at_stop": [],
+      "successful_parent_production_tool_edits": 4,
+      "tracked_diff": [
+        {
+          "added": 4,
+          "removed": 1,
+          "file": "src/extensions/mcp-adapter/mcp-auth-flow.ts"
+        },
+        {
+          "added": 87,
+          "removed": 58,
+          "file": "src/extensions/mcp-adapter/server-manager.ts"
+        },
+        {
+          "added": 8,
+          "removed": 1,
+          "file": "src/modes/acp/ext-methods/mcp.ts"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "model_verified": true,
+      "channel_masks_verified": true,
+      "capture": "/private/tmp/kimchi-compaction-arms-sfcev413/trial-04/tmp/kimchi-harness-live-gTz9HJ"
+    },
+    {
+      "label": "trial-05",
+      "arm": "workers",
+      "repetition": 2,
+      "staffing_valid": true,
+      "finish_reason": "token_limit",
+      "seconds": 229.0,
+      "public_checks": {
+        "protected_changes": [],
+        "test:oauth-local": 1,
+        "typecheck": 2,
+        "check:oauth-style": 0,
+        "passed": 52,
+        "failed": 1,
+        "total": 53
+      },
+      "supplemental_refresh": {
+        "passed": 1,
+        "total": 1
+      },
+      "usage": {
+        "input": 130008,
+        "output": 22100,
+        "cacheRead": 1860672,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_launches": 3,
+      "launch_rejections": 0,
+      "thinking_levels_observed": [
+        "low"
+      ],
+      "workers_finished_at_stop": [
+        {
+          "description": "Boundary investigator",
+          "status": "completed"
+        },
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        }
+      ],
+      "successful_parent_production_tool_edits": 0,
+      "tracked_diff": [
+        {
+          "added": 3,
+          "removed": 1,
+          "file": "src/extensions/mcp-adapter/mcp-auth-flow.ts"
+        },
+        {
+          "added": 62,
+          "removed": 15,
+          "file": "src/extensions/mcp-adapter/server-manager.ts"
+        },
+        {
+          "added": 8,
+          "removed": 1,
+          "file": "src/modes/acp/ext-methods/mcp.ts"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "model_verified": true,
+      "channel_masks_verified": true,
+      "capture": "/private/tmp/kimchi-compaction-arms-sfcev413/trial-05/tmp/kimchi-harness-live-Z1o86L"
+    },
+    {
+      "label": "trial-06",
+      "arm": "solo",
+      "repetition": 2,
+      "staffing_valid": true,
+      "finish_reason": "settled",
+      "seconds": 267.0,
+      "public_checks": {
+        "protected_changes": [],
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      },
+      "supplemental_refresh": {
+        "passed": 1,
+        "total": 1
+      },
+      "usage": {
+        "input": 204787,
+        "output": 13426,
+        "cacheRead": 1397504,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_launches": 0,
+      "launch_rejections": 0,
+      "thinking_levels_observed": [
+        "low"
+      ],
+      "workers_finished_at_stop": [],
+      "successful_parent_production_tool_edits": 10,
+      "tracked_diff": [
+        {
+          "added": 3,
+          "removed": 1,
+          "file": "src/extensions/mcp-adapter/mcp-auth-flow.ts"
+        },
+        {
+          "added": 101,
+          "removed": 83,
+          "file": "src/extensions/mcp-adapter/server-manager.ts"
+        },
+        {
+          "added": 10,
+          "removed": 7,
+          "file": "src/modes/acp/ext-methods/mcp.ts"
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "model_verified": true,
+      "channel_masks_verified": true,
+      "capture": "/private/tmp/kimchi-compaction-arms-sfcev413/trial-06/tmp/kimchi-harness-live-oJbKaw"
+    }
+  ],
+  "grading_notes": [
+    "Public suite frozen before inference: 53 checks. Source and model configuration identical at launch; solo-1 native phase handling changed thinking from low to medium.",
+    "Initial grading wrongly restored an out-of-scope types.ts edit, creating an artificial type error in workers-1. grade-v2 preserves production exactly and reports scope violations separately; initial evidence retained.",
+    "Snapshots omit host .kimchi state. Its absent tags.json is not a model scope violation.",
+    "workers-2 passed 53/53 initially and 52/53 on regrade. Browser-open failure test returned authorization required once. Three subsequent full callback-suite repeats passed 7/7, as did three reference repeats; intermittent failure not attributed to communication.",
+    "Supplemental real-SDK refresh discovery check was added after reviewing first outputs. Both historical broken/fixed references pass; only board-1 fails. Keep separate from the frozen score.",
+    "One early second-batch preflight refused changed settings in the still-active solo home. No new session was created; the frozen check passed after that session finished and its credential home was removed.",
+    "Trial-04 is not a communication coding result: eight experiment-guard rejections, zero accepted workers, solo fallback.",
+    "All assistant usage after stop matches monitored usage; count cached input separately from uncached input and output. Budget-limited artifacts are not completed workflows.",
+    "No speed or total-inference saving inferred: approval wait, native thinking change, concurrent execution, bounded samples and failed staffing constrain comparisons."
+  ],
+  "supplemental_patch_sha256": "3a4161aeb2ba42a6944e7ca59ce84812ae0d8b6b0a2f147f0233a017dd69d52e",
+  "original_protocol_seal_sha256": "aabd433bd2072ad5ed30b5b1b7afef351fa2c59e9dddd3b6bcfe6c2ca801d19b",
+  "grader_v2_sha256": "5024e9f59b4fa9506c56464f9c509e5984ea478d71a773d90a0145fec72a0cac",
+  "initial_cohort_conclusion": "No reliable communication quality improvement. One valid communication output passes public checks but introduces a separately reproduced refresh-discovery regression. The second enabled attempt launches no workers and falls back to solo.",
+  "launch_recovery": {
+    "purpose": "launch validation recovery, not coding quality",
+    "capture": "/private/tmp/kimchi-launch-recovery-i9v_21x6",
+    "seconds": 23.826481103897095,
+    "finish_reason": "settled",
+    "usage": {
+      "input": 12764,
+      "output": 1073,
+      "cacheRead": 109824,
+      "cacheWrite": 0
+    },
+    "rejected_calls": 2,
+    "accepted_calls": 2,
+    "additional_rejections": 0,
+    "files": {
+      "lifecycle.txt": "READY\n",
+      "implementation.txt": "READY\n"
+    },
+    "cleanup": {
+      "live": false,
+      "home_removed": true
+    },
+    "rejection_text": [
+      "Worker launch rejected; no worker started. Fix these arguments and retry:\nmax_turns: expected 35; received (missing)\nmax_duration: expected 900; received (missing)\ncommunication: expected \"group\"; received \"parent\"\nKeep the other arguments, prompt and description unchanged.",
+      "Worker launch rejected; no worker started. Fix these arguments and retry:\nmax_turns: expected 70; received (missing)\nmax_duration: expected 900; received (missing)\ncommunication: expected \"group\"; received \"parent\"\nKeep the other arguments, prompt and description unchanged."
+    ],
+    "limits": "Single deliberately invalid-input probe; no old/new outcome or token-savings claim."
+  },
+  "followup": {
+    "capture_root": "/private/tmp/kimchi-compaction-arms-ft16bpi0",
+    "purpose": "comparison",
+    "limits": {
+      "model": "kimchi-dev/glm-5.3-flash",
+      "thinking": "low",
+      "worker_ferment": false,
+      "max_output_tokens": 30000,
+      "max_total_tokens": 2000000,
+      "wall_seconds": 600
+    },
+    "preflight": {
+      "broken": {
+        "test:oauth-local": 1,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 47,
+        "failed": 6,
+        "total": 53
+      },
+      "fixed": {
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      }
+    },
+    "isolation_checks": 38,
+    "all_isolation_checks_passed": true,
+    "frozen_inputs_verified": 1768,
+    "trials": [
+      {
+        "label": "trial-01",
+        "arm": "workers",
+        "finish_reason": "token_limit",
+        "seconds": 223.9,
+        "public_checks": {
+          "protected_changes": [
+            "src/extensions/mcp-adapter/types.ts"
+          ],
+          "test:oauth-local": 0,
+          "typecheck": 2,
+          "check:oauth-style": 1,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "passed": 0,
+          "failed": 1,
+          "success": false
+        },
+        "own_tests": {
+          "exit": 1,
+          "files": [
+            "src/extensions/mcp-adapter/mcp-auth-flow.lifecycle.test.ts",
+            "src/extensions/mcp-adapter/server-manager.transport.test.ts",
+            "src/modes/acp/ext-methods/mcp.skipauth.test.ts"
+          ]
+        },
+        "usage": {
+          "input": 369365,
+          "output": 27132,
+          "cacheRead": 1634304,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 369365,
+          "output": 27132,
+          "cacheRead": 1634304,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "accepted_launches": 3,
+        "launch_rejections": 0,
+        "provider_requests": 87,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "workers": [
+          {
+            "description": "Boundary investigator",
+            "status": "completed",
+            "abortReason": null
+          }
+        ],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-02",
+        "arm": "board",
+        "finish_reason": "token_limit",
+        "seconds": 183.2,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 0,
+          "typecheck": 2,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "passed": 1,
+          "failed": 0,
+          "success": true
+        },
+        "own_tests": {
+          "exit": 1,
+          "files": [
+            "src/extensions/mcp-adapter/server-manager.regression.test.ts",
+            "src/extensions/mcp-adapter/mcp-auth-flow.oauth-fix.test.ts",
+            "src/modes/acp/ext-methods/mcp.boundary.test.ts"
+          ]
+        },
+        "usage": {
+          "input": 324937,
+          "output": 25457,
+          "cacheRead": 1658624,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 324937,
+          "output": 25457,
+          "cacheRead": 1658624,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "accepted_launches": 3,
+        "launch_rejections": 0,
+        "provider_requests": 80,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "workers": [],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-03",
+        "arm": "board",
+        "finish_reason": "token_limit",
+        "seconds": 251.8,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "passed": 1,
+          "failed": 0,
+          "success": true
+        },
+        "own_tests": {
+          "exit": 0,
+          "files": [
+            "src/extensions/mcp-adapter/server-manager.connect-once.test.ts",
+            "src/extensions/mcp-adapter/mcp-auth-flow-status.test.ts",
+            "src/modes/acp/ext-methods/mcp-skipauth.test.ts"
+          ]
+        },
+        "usage": {
+          "input": 251548,
+          "output": 28657,
+          "cacheRead": 1732672,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 251548,
+          "output": 28657,
+          "cacheRead": 1732672,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 11,
+          "unique_reader_entry_pairs": 9,
+          "known_peer_body_returns": 9,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "accepted_launches": 3,
+        "launch_rejections": 3,
+        "provider_requests": 77,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "workers": [
+          {
+            "description": "Boundary investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Lifecycle investigator",
+            "status": "completed",
+            "abortReason": null
+          }
+        ],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-04",
+        "arm": "workers",
+        "finish_reason": "token_limit",
+        "seconds": 192.4,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 1,
+          "typecheck": 2,
+          "check:oauth-style": 1,
+          "passed": 51,
+          "failed": 2,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "passed": 1,
+          "failed": 0,
+          "success": true
+        },
+        "own_tests": {
+          "exit": 0,
+          "files": [
+            "src/extensions/mcp-adapter/mcp-auth-flow.lifecycle.test.ts",
+            "src/extensions/mcp-adapter/server-manager.repair.test.ts",
+            "src/modes/acp/ext-methods/mcp.boundary.test.ts"
+          ]
+        },
+        "usage": {
+          "input": 330949,
+          "output": 26289,
+          "cacheRead": 1687104,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 329641,
+          "output": 26162,
+          "cacheRead": 1649792,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "accepted_launches": 3,
+        "launch_rejections": 0,
+        "provider_requests": 81,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "workers": [],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      }
+    ],
+    "interpretation": "All four hit the global token ceiling before parent final review. Grade saved partial artifacts; do not count these as completed workflows."
+  },
+  "budget_calibration": {
+    "capture_root": "/private/tmp/kimchi-compaction-arms-02e345fm",
+    "purpose": "calibration",
+    "limits": {
+      "model": "kimchi-dev/glm-5.3-flash",
+      "thinking": "low",
+      "worker_ferment": false,
+      "max_output_tokens": 80000,
+      "max_total_tokens": 12000000,
+      "wall_seconds": 1200
+    },
+    "preflight": {
+      "broken": {
+        "test:oauth-local": 1,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 47,
+        "failed": 6,
+        "total": 53
+      },
+      "fixed": {
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      }
+    },
+    "isolation_checks": 20,
+    "all_isolation_checks_passed": true,
+    "frozen_inputs_verified": 1756,
+    "trials": [
+      {
+        "label": "trial-01",
+        "arm": "workers",
+        "finish_reason": "settled",
+        "seconds": 485.2,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "passed": 1,
+          "failed": 0,
+          "success": true
+        },
+        "own_tests": {
+          "files": [
+            "src/modes/acp/ext-methods/mcp.skipauth.test.ts"
+          ],
+          "exit": 0
+        },
+        "usage": {
+          "input": 393479,
+          "output": 38230,
+          "cacheRead": 2499776,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 393479,
+          "output": 38230,
+          "cacheRead": 2499776,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "accepted_launches": 3,
+        "launch_rejections": 3,
+        "provider_requests": 98,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "workers": [
+          {
+            "description": "Lifecycle investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Boundary investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Implementation owner",
+            "status": "aborted",
+            "abortReason": "token_budget"
+          }
+        ],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-02",
+        "arm": "board",
+        "finish_reason": "settled",
+        "seconds": 297.8,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "passed": 1,
+          "failed": 0,
+          "success": true
+        },
+        "own_tests": {
+          "files": [],
+          "exit": null
+        },
+        "usage": {
+          "input": 230204,
+          "output": 20463,
+          "cacheRead": 1399872,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 230204,
+          "output": 20463,
+          "cacheRead": 1399872,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "accepted_launches": 3,
+        "launch_rejections": 0,
+        "provider_requests": 58,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "workers": [
+          {
+            "description": "Boundary investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Lifecycle investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Implementation owner",
+            "status": "completed",
+            "abortReason": null
+          }
+        ],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      }
+    ],
+    "interpretation": "Both parents completed and external checks passed. One normal worker aborted on its individual token budget; its parent repaired the result. No messages or board bodies were exchanged in either trial; no causal communication benefit established."
+  },
+  "validation_of_launch_error_change": {
+    "guard_tests": 4,
+    "runner_tests": 9,
+    "pnpm_run_check": "passed with one existing unused-import warning",
+    "native_probe": "Two rejected launches corrected on first retry; both worker artifacts verified"
+  },
+  "current_build_regression": {
+    "capture_root": "/private/tmp/kimchi-compaction-arms-k4bvnr1o",
+    "purpose": "Current-build coding regression after enabling the existing loop guard in native workers; one retained attempt per mode, no retries.",
+    "binary_sha256": "e2d088d2e86a704b8f646266b43cc76968f89c0beb75779649e3a58ed5ad2591",
+    "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+    "limits": {
+      "model": "kimchi-dev/glm-5.3-flash",
+      "thinking": "low",
+      "worker_ferment": false,
+      "wall_seconds": 1200,
+      "max_output_tokens": 80000,
+      "max_total_tokens": 12000000
+    },
+    "preflight": {
+      "broken": {
+        "test:oauth-local": 1,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 47,
+        "failed": 6,
+        "total": 53
+      },
+      "fixed": {
+        "test:oauth-local": 0,
+        "typecheck": 0,
+        "check:oauth-style": 0,
+        "passed": 53,
+        "failed": 0,
+        "total": 53
+      }
+    },
+    "isolation_checks": 20,
+    "all_isolation_checks_passed": true,
+    "sealed_inputs": 1756,
+    "retained_sealed_inputs_verified": 1752,
+    "removed_home_inputs": 4,
+    "supplemental_calibration": "Initial assertion also required the historical reference to return a timeout error; its fallback completed synchronously at the deadline instead. Retained that failure and narrowed the check to the reviewed contract: no new connection after probeTools returns. Both candidates fail with one connection at return and two after late rejection; reference passes.",
+    "supplemental_patch_sha256": "fc78c5ab8ec9d4dd3a49afbcf91af2e21476bd1ccb170f7cad46f350a9e952ed",
+    "reference_supplemental": {
+      "own_files": [],
+      "refresh": {
+        "exit_code": 0,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      "timeout": {
+        "exit_code": 1,
+        "passed": 0,
+        "failed": 1,
+        "pending": 22
+      },
+      "timeout_after_return": {
+        "exit_code": 0,
+        "passed": 1,
+        "failed": 0,
+        "pending": 22
+      }
+    },
+    "trials": [
+      {
+        "label": "trial-01",
+        "arm": "workers",
+        "finish_reason": "settled",
+        "seconds": 259.5,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "pending": 0
+        },
+        "supplemental_timeout_after_return": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 1,
+          "pending": 22
+        },
+        "own_tests": [],
+        "usage": {
+          "input": 190863,
+          "output": 19692,
+          "cacheRead": 1721216,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 190863,
+          "output": 19692,
+          "cacheRead": 1721216,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "post_agent_note_calls": 0,
+        "accepted_launches": 3,
+        "launch_rejections": 1,
+        "provider_requests": 84,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "launch_batch_sizes": [
+          3,
+          1
+        ],
+        "workers": [
+          {
+            "description": "Lifecycle investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Boundary investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Implementation owner",
+            "status": "completed",
+            "abortReason": null
+          }
+        ],
+        "loop_guard_warnings": 0,
+        "diff": [
+          {
+            "path": "src/extensions/mcp-adapter/mcp-auth-flow.ts",
+            "added": 5,
+            "removed": 1
+          },
+          {
+            "path": "src/modes/acp/ext-methods/mcp.ts",
+            "added": 16,
+            "removed": 1
+          },
+          {
+            "path": "src/extensions/mcp-adapter/server-manager.ts",
+            "added": 54,
+            "removed": 34
+          }
+        ],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      },
+      {
+        "label": "trial-02",
+        "arm": "board",
+        "finish_reason": "settled",
+        "seconds": 190.4,
+        "public_checks": {
+          "protected_changes": [],
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        },
+        "supplemental_refresh": {
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "pending": 0
+        },
+        "supplemental_timeout_after_return": {
+          "exit_code": 1,
+          "passed": 0,
+          "failed": 1,
+          "pending": 22
+        },
+        "own_tests": [],
+        "usage": {
+          "input": 256792,
+          "output": 18985,
+          "cacheRead": 966464,
+          "cacheWrite": 0
+        },
+        "monitor_usage_at_stop": {
+          "input": 256792,
+          "output": 18985,
+          "cacheRead": 966464,
+          "cacheWrite": 0
+        },
+        "communication": {
+          "recorded_message_calls": 0,
+          "parsed_message_receipts": 0,
+          "board_body_returns": 0,
+          "unique_reader_entry_pairs": 0,
+          "known_peer_body_returns": 0,
+          "parent_body_returns": 0,
+          "unclassified_body_returns": 0,
+          "accepted_questions": 0,
+          "questions_with_recorded_accepted_reply": 0
+        },
+        "post_agent_note_calls": 0,
+        "accepted_launches": 3,
+        "launch_rejections": 0,
+        "provider_requests": 55,
+        "model_verified": true,
+        "thinking_levels": [
+          "low"
+        ],
+        "channel_masks_verified": true,
+        "launch_batch_sizes": [
+          3
+        ],
+        "workers": [
+          {
+            "description": "Boundary investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Lifecycle investigator",
+            "status": "completed",
+            "abortReason": null
+          },
+          {
+            "description": "Implementation owner",
+            "status": "completed",
+            "abortReason": null
+          }
+        ],
+        "loop_guard_warnings": 0,
+        "diff": [
+          {
+            "path": "src/extensions/mcp-adapter/mcp-auth-flow.ts",
+            "added": 4,
+            "removed": 1
+          },
+          {
+            "path": "src/modes/acp/ext-methods/mcp.ts",
+            "added": 11,
+            "removed": 1
+          },
+          {
+            "path": "src/extensions/mcp-adapter/server-manager.ts",
+            "added": 65,
+            "removed": 33
+          }
+        ],
+        "cleanup": {
+          "live": false,
+          "home_removed": true
+        }
+      }
+    ],
+    "findings": [
+      "Both final outputs pass all 53 public checks, typechecking, scoped formatting and the separate real-SDK refresh test; neither changed protected files or added tests.",
+      "All six workers completed; no loop-guard warning or abort occurred in this pair. This checks one coding task and does not establish a false-positive rate.",
+      "Both outputs fail the separate late-failure cleanup test: a second connect starts after probeTools has returned. The reference passes the focused contract. This was found after output review and is separate from the frozen score.",
+      "Neither mode sent messages, read board bodies or posted manual notes. Automatic progress is still possible; observed time/token differences do not establish causal communication value.",
+      "The new fallback helpers coordinate both connection callers, but their timeout lifetime is wrong in both outputs. File ownership was preserved; that alone does not establish cohesive behavior."
+    ]
+  }
+}

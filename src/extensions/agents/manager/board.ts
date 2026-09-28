@@ -5,11 +5,15 @@
  * The host supplies author identity, timestamp, and group membership from
  * live agent records — models never assert them.
  *
- * Append-only: no edit/delete/withdraw. Evictions emit body-free events.
+ * Manual posts are append-only. Host snapshots replace superseded progress.
+ * Evictions emit body-free events.
  * Same-group scoping: reads and writes require a live agent in the same group.
  */
 
 import { randomUUID } from "node:crypto"
+import type { SessionEntry } from "@earendil-works/pi-coding-agent"
+
+export const BOARD_ENTRY_CUSTOM_TYPE = "agent-board:entry:v1"
 
 /** Max length of a board entry title (host-truncated). */
 export const BOARD_ENTRY_TITLE_MAX = 120
@@ -19,7 +23,7 @@ export const BOARD_ENTRY_BODY_MAX = 2048
 export const PER_BOARD_CAP = 200
 /** Maximum entries across all boards. */
 export const GLOBAL_BOARD_CAP = 2048
-/** Dedupe window in ms (same author agent, same kind, same normalized content). */
+/** Dedupe window in ms (same author, kind, normalized title and exact body). */
 export const BOARD_DEDUPE_WINDOW_MS = 120_000
 
 export type BoardEntryKind = "note" | "work" | "finding" | "warning"
@@ -33,6 +37,8 @@ export interface BoardEntry {
 	title: string // <= 120 chars, host-truncated + flag in receipt
 	body: string // <= 2048 chars, host-truncated + flag in receipt
 	postedAt: number // Date.now(), host-stamped
+	/** Host-only identity for replaceable progress; absent on manual posts. */
+	snapshotKey?: string
 }
 
 export interface BoardEntrySummary {
@@ -70,7 +76,7 @@ export type BoardEvent =
 	  }
 	| { action: "evicted"; entryId: string; rootSessionId: string; groupId: string }
 
-/** Normalize a string for dedupe: trim whitespace and collapse internal whitespace. */
+/** Keep titles on one line; body whitespace may be significant code or evidence. */
 function normalize(input: string): string {
 	return input.trim().replace(/\s+/g, " ")
 }
@@ -81,11 +87,42 @@ function createBoardId(): string {
 }
 
 /**
- * Dedupe key shape: authorAgentId + kind + normalized title + normalized body
+ * Dedupe key shape: authorAgentId + kind + normalized title + exact body
  * (own namespace — does NOT reuse AgentManager.loopGuardKeys).
  */
-function createDedupeKey(authorAgentId: string, kind: BoardEntryKind, title: string, body: string): string {
-	return `board:${authorAgentId}|${kind}|${normalize(title)}|${normalize(body)}`
+function createDedupeKey(
+	authorAgentId: string,
+	kind: BoardEntryKind,
+	title: string,
+	body: string,
+	snapshotKey?: string,
+): string {
+	return JSON.stringify([authorAgentId, kind, normalize(title), body, snapshotKey ?? ""])
+}
+
+/** Session data may be from an older version or a manually edited journal. */
+function isBoardEntry(value: unknown): value is BoardEntry {
+	if (typeof value !== "object" || value === null) return false
+	const entry = value as Partial<BoardEntry>
+	return (
+		typeof entry.id === "string" &&
+		entry.id.startsWith("bd-") &&
+		typeof entry.rootSessionId === "string" &&
+		entry.rootSessionId.length > 0 &&
+		typeof entry.groupId === "string" &&
+		entry.groupId.length > 0 &&
+		typeof entry.authorAgentId === "string" &&
+		entry.authorAgentId.length > 0 &&
+		["note", "work", "finding", "warning"].includes(entry.kind ?? "") &&
+		typeof entry.title === "string" &&
+		entry.title.length <= BOARD_ENTRY_TITLE_MAX &&
+		typeof entry.body === "string" &&
+		entry.body.length <= BOARD_ENTRY_BODY_MAX &&
+		typeof entry.postedAt === "number" &&
+		Number.isFinite(entry.postedAt) &&
+		entry.postedAt >= 0 &&
+		(entry.snapshotKey === undefined || typeof entry.snapshotKey === "string")
+	)
 }
 
 /**
@@ -115,9 +152,22 @@ export class BoardStore {
 		return board
 	}
 
+	/** Restore only this root's current branch; historical authors gain no live capabilities. */
+	restoreRoot(rootSessionId: string, journal: readonly SessionEntry[]): void {
+		this.cleanupRoot(rootSessionId)
+		const seen = new Set<string>()
+		for (const record of journal) {
+			if (record.type !== "custom" || record.customType !== BOARD_ENTRY_CUSTOM_TYPE) continue
+			const entry = record.data
+			if (!isBoardEntry(entry) || entry.rootSessionId !== rootSessionId || seen.has(entry.id)) continue
+			seen.add(entry.id)
+			this.insert({ ...entry })
+		}
+	}
+
 	/**
 	 * Post a new board entry. Dedupe checks within 120s window (same author,
-	 * kind, normalized title+body). Per-board FIFO at cap 200; global FIFO
+	 * kind, normalized title and exact body). Per-board FIFO at cap 200; global FIFO
 	 * at cap 2048.
 	 */
 	post(
@@ -128,19 +178,16 @@ export class BoardStore {
 		title: string,
 		body: string,
 		now: number,
+		snapshotKey?: string,
 	): {
 		entry: BoardEntry
 		truncated: Array<"title" | "body">
 		evicted?: BoardEntry
 		deduped?: true
 	} {
-		// Normalize BEFORE dedupe lookup so the dedupe key matches stored entries.
-		const normalizedTitle = normalize(title)
-		const normalizedBody = normalize(body)
-
 		const truncated: Array<"title" | "body"> = []
-		let effectiveTitle = normalizedTitle
-		let effectiveBody = normalizedBody
+		let effectiveTitle = normalize(title)
+		let effectiveBody = body
 		if (effectiveTitle.length > BOARD_ENTRY_TITLE_MAX) {
 			effectiveTitle = effectiveTitle.slice(0, BOARD_ENTRY_TITLE_MAX)
 			truncated.push("title")
@@ -151,7 +198,7 @@ export class BoardStore {
 		}
 
 		// Dedupe key uses EFFECTIVE (truncated) values so stored entries match.
-		const dedupeKey = createDedupeKey(authorAgentId, kind, effectiveTitle, effectiveBody)
+		const dedupeKey = createDedupeKey(authorAgentId, kind, effectiveTitle, effectiveBody, snapshotKey)
 		const cutoff = now - BOARD_DEDUPE_WINDOW_MS
 
 		// Sweep expired dedupe keys (postedAt older than the dedupe window).
@@ -175,15 +222,32 @@ export class BoardStore {
 			title: effectiveTitle,
 			body: effectiveBody,
 			postedAt: now,
+			...(snapshotKey ? { snapshotKey } : {}),
 		}
+		return { entry, truncated, evicted: this.insert(entry) }
+	}
 
+	private insert(entry: BoardEntry): BoardEntry | undefined {
+		const { rootSessionId, groupId, authorAgentId, snapshotKey } = entry
 		const key = this.boardKey(rootSessionId, groupId)
 		const board = this.getOrCreateBoard(key)
+		let evicted: BoardEntry | undefined
+		if (snapshotKey) {
+			const previous = board.findIndex(
+				(item) => item.authorAgentId === authorAgentId && item.snapshotKey === snapshotKey,
+			)
+			if (previous >= 0) {
+				evicted = board.splice(previous, 1)[0]
+				this.removeDedupeKey(evicted)
+				this.totalEntries--
+			}
+		}
 		board.push(entry)
 		this.totalEntries++
-		this.dedupeKeys.set(dedupeKey, { postedAt: now, entry })
-
-		let evicted: BoardEntry | undefined
+		this.dedupeKeys.set(createDedupeKey(authorAgentId, entry.kind, entry.title, entry.body, snapshotKey), {
+			postedAt: entry.postedAt,
+			entry,
+		})
 
 		// Per-board eviction: FIFO at cap
 		if (board.length > PER_BOARD_CAP) {
@@ -211,7 +275,7 @@ export class BoardStore {
 			}
 		}
 
-		return { entry, truncated, evicted }
+		return evicted
 	}
 
 	/**
@@ -257,6 +321,13 @@ export class BoardStore {
 		}
 	}
 
+	/** Discovery metadata for deliberate peer posts; progress remains in full reads and parent summaries. */
+	getPeerHint(rootSessionId: string, groupId: string, readerAgentId: string): { total: number; latestId?: string } {
+		const board = this.boards.get(this.boardKey(rootSessionId, groupId)) ?? []
+		const entries = board.filter((entry) => entry.authorAgentId !== readerAgentId && !entry.snapshotKey)
+		return { total: entries.length, latestId: entries.at(-1)?.id }
+	}
+
 	/**
 	 * Get summaries for ALL boards under a given rootSessionId.
 	 * Returns only non-empty boards (total > 0), in insertion order of groupIds.
@@ -285,7 +356,7 @@ export class BoardStore {
 					// Entries are stored with their effective (truncated) values —
 					// reconstruct the dedupe key from those to match what post() stores.
 					// normalize() is idempotent on stored values, so output is byte-identical.
-					this.dedupeKeys.delete(createDedupeKey(entry.authorAgentId, entry.kind, entry.title, entry.body))
+					this.removeDedupeKey(entry)
 				}
 				this.totalEntries -= board.length
 				this.boards.delete(key)
@@ -313,7 +384,7 @@ export class BoardStore {
 	 * owns the key.
 	 */
 	private removeDedupeKey(entry: BoardEntry): void {
-		const key = createDedupeKey(entry.authorAgentId, entry.kind, entry.title, entry.body)
+		const key = createDedupeKey(entry.authorAgentId, entry.kind, entry.title, entry.body, entry.snapshotKey)
 		if (this.dedupeKeys.get(key)?.entry === entry) this.dedupeKeys.delete(key)
 	}
 

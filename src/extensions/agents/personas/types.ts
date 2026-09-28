@@ -13,7 +13,7 @@ import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
-export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity" | "max_duration"
+export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity" | "max_duration" | "loop_guard"
 export type AgentOutcomeKind = "completed" | "budget_exhausted" | "failed" | "stopped"
 
 export interface AgentTaskRef {

@@ -1,0 +1,1980 @@
+{
+  "capture_root": "/private/tmp/kimchi-normal-comparison-fet8u3zh",
+  "report_sha256": "bffb9313c5ca982c0a9408b3c440ddc8f9d3a1b04ba27b5bf78f285740cdcb76",
+  "manifest": {
+    "experiment": "current-communication-vs-normal-workers",
+    "repetition": 1,
+    "cases": [
+      "changed",
+      "mistaken"
+    ],
+    "arms": [
+      "workers",
+      "board"
+    ],
+    "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+    "source_sha256": {
+      "src/extensions/agents/index.ts": "b2814ca4ffa16197ed75d58f22945c536563995d5a21c64f4f90c25d28fb6a99",
+      "src/extensions/agents/messages.ts": "47f3a838ab0b0027a7d29417bfdbcf58673b992017b43163c338077c55476dcd",
+      "src/extensions/agents/reconcile-tool.ts": "e5560d58c7c17dcbdbd38cb6451b65cd334c89d4f932a087bdd1b8acf9747dd2",
+      "src/extensions/agents/manager/agent-manager.ts": "2b15dd7a4db4d91f62abec0f8588a52c5f3522da5f8de444ca951270e6b64e14"
+    },
+    "binary_sha256": "30f5ed2eaa0959d52c6fb1f4ebdc7caac5edbd25c88708da05869527d20b9ed2",
+    "model": "kimchi-dev/glm-5.3-flash",
+    "thinking": "low",
+    "ferment_v2": false,
+    "wall_seconds": 300,
+    "max_output_tokens": 25000,
+    "max_total_tokens": 1000000,
+    "grader_cases": 18,
+    "parent_check": "python3 verify.py",
+    "worker_reread_required": false,
+    "limitation": "Small previously calibrated task; timing is descriptive, not a long-work quality claim."
+  },
+  "trials": [
+    {
+      "repetition": 1,
+      "label": "changed-workers",
+      "arm": "workers",
+      "case": "changed",
+      "finish_reason": "settled",
+      "seconds": 129.93684816360474,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 35981,
+        "output": 9125,
+        "cacheRead": 431680,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 66.71760416030884,
+      "peer_board_read_seconds": [],
+      "source_sha256": {
+        "producer.py": "76c78b7c3ae446557d88f478c990715b06abf0cb8b833e26fc31e0c4dafd93ff",
+        "consumer.py": "f7756dfd051b1351baec89c017be06b46fbd81996e8426fb2abc4e4dee5e6a49",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [
+        {
+          "file": "test_consumer.py",
+          "exit": 0,
+          "output": "ok: test_milliseconds_per_upstream_revision_2\nok: test_negative_and_float\nok: test_rejects_invalid\nok: test_decode_many_preserves_order\n"
+        }
+      ],
+      "definitions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_to_ms",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 30,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 1,
+      "label": "changed-board",
+      "arm": "board",
+      "case": "changed",
+      "finish_reason": "settled",
+      "seconds": 130.54462695121765,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 44512,
+        "output": 10014,
+        "cacheRead": 402752,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 2,
+        "parsed_message_receipts": 2,
+        "board_body_returns": 1,
+        "unique_reader_entry_pairs": 1,
+        "known_peer_body_returns": 1,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 75.00049614906311,
+      "peer_board_read_seconds": [
+        83.501296043396
+      ],
+      "source_sha256": {
+        "producer.py": "12562c19e596e3979b646c9693afa0b3b2caf94e59358e4c8a709ba99896f27b",
+        "consumer.py": "03e070594713a872d53f7d9d8ee622a85a0c1dfb2aa754741cc20c8d85f5c77a",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [],
+      "definitions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 23,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 1,
+      "label": "mistaken-workers",
+      "arm": "workers",
+      "case": "mistaken",
+      "finish_reason": "settled",
+      "seconds": 108.43344116210938,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 38608,
+        "output": 8549,
+        "cacheRead": 321600,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 53.046303033828735,
+      "peer_board_read_seconds": [],
+      "source_sha256": {
+        "producer.py": "c70ee99215a23f0735efc345eb0ea2415ea509a6c842ae99ff43852461a46e88",
+        "consumer.py": "f685590c53812786e735d8e5b33f6cf14fa29a3f4ba3a5fc3a17fbd1d40b73a5",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [
+        {
+          "file": "test_consumer.py",
+          "exit": 0,
+          "output": "consumer tests passed\n"
+        }
+      ],
+      "definitions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 29,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 1,
+      "label": "mistaken-board",
+      "arm": "board",
+      "case": "mistaken",
+      "finish_reason": "settled",
+      "seconds": 134.51724100112915,
+      "grade": {
+        "passed": 15,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": false,
+            "error": "AssertionError: ({'id': '3', 'at_ms': 1000, 'payload': '\u00e9'}, {'id': '3', 'at_ms': 1001, 'payload': '\u00e9'})"
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": false,
+            "error": "AssertionError: ({'id': '4', 'at_ms': -1000, 'payload': []}, {'id': '4', 'at_ms': -1001, 'payload': []})"
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": false,
+            "error": "AssertionError: ([{'id': '0', 'at_ms': 0, 'payload': None}, {'id': '1', 'at_ms': -1, 'payload': False}, {'id': '2', 'at_ms': 1, 'payload': 0}, {'id': '3', 'at_ms': 1000, 'payload': '\u00e9'}, {'id': '4', 'at_ms': -1000, 'payload': []}, {'id': '5', 'at_ms': 1700000000123, 'payload': {'nested': True}}], [{'id': '0', 'at_ms': 0, 'payload': None}, {'id': '1', 'at_ms': -1, 'payload': False}, {'id': '2', 'at_ms': 1, 'payload': 0}, {'id': '3', 'at_ms': 1001, 'payload': '\u00e9'}, {'id': '4', 'at_ms': -1001, 'payload': []}, {'id': '5', 'at_ms': 1700000000123, 'payload': {'nested': True}}])"
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 40173,
+        "output": 9527,
+        "cacheRead": 320128,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": null,
+      "peer_board_read_seconds": [],
+      "source_sha256": {
+        "producer.py": "a5cf32fe4acff666f811fcb034133b00b0da8b2401fa96a584aed31b25a6a3b9",
+        "consumer.py": "ef35bd25e42548a5ca0c8792c16c920d9c819faeba60c866a0608565430d8ed8",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 15,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": false,
+            "error": "AssertionError: ({'id': '3', 'at_ms': 1000, 'payload': '\u00e9'}, {'id': '3', 'at_ms': 1001, 'payload': '\u00e9'})"
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": false,
+            "error": "AssertionError: ({'id': '4', 'at_ms': -1000, 'payload': []}, {'id': '4', 'at_ms': -1001, 'payload': []})"
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": false,
+            "error": "AssertionError: ([{'id': '0', 'at_ms': 0, 'payload': None}, {'id': '1', 'at_ms': -1, 'payload': False}, {'id': '2', 'at_ms': 1, 'payload': 0}, {'id': '3', 'at_ms': 1000, 'payload': '\u00e9'}, {'id': '4', 'at_ms': -1000, 'payload': []}, {'id': '5', 'at_ms': 1700000000123, 'payload': {'nested': True}}], [{'id': '0', 'at_ms': 0, 'payload': None}, {'id': '1', 'at_ms': -1, 'payload': False}, {'id': '2', 'at_ms': 1, 'payload': 0}, {'id': '3', 'at_ms': 1001, 'payload': '\u00e9'}, {'id': '4', 'at_ms': -1001, 'payload': []}, {'id': '5', 'at_ms': 1700000000123, 'payload': {'nested': True}}])"
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [],
+      "definitions": {
+        "producer.py": [
+          "_check_event",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_to_at_ms",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 38,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 2,
+      "label": "changed-workers",
+      "arm": "workers",
+      "case": "changed",
+      "finish_reason": "settled",
+      "seconds": 135.50201201438904,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 34928,
+        "output": 10419,
+        "cacheRead": 479616,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 92.36027908325195,
+      "peer_board_read_seconds": [],
+      "source_sha256": {
+        "producer.py": "a21ff7401c3891eccf436a863adb560d821b018066db57a8c0725eae8ba62141",
+        "consumer.py": "dc627448e499995a4dda457b223f43e87dd32d2f9d8ea3e4207242e6a2fa2210",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [],
+      "definitions": {
+        "producer.py": [
+          "_validate_at_ms",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_validate_timestamp",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 43,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 2,
+      "label": "changed-board",
+      "arm": "board",
+      "case": "changed",
+      "finish_reason": "settled",
+      "seconds": 180.71058583259583,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 70106,
+        "output": 15501,
+        "cacheRead": 588096,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 2,
+        "parsed_message_receipts": 2,
+        "board_body_returns": 13,
+        "unique_reader_entry_pairs": 13,
+        "known_peer_body_returns": 7,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 1,
+        "questions_with_recorded_accepted_reply": 1
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 93.89851403236389,
+      "peer_board_read_seconds": [
+        103.71142292022705,
+        108.59142303466797,
+        125.66942286491394,
+        125.66942286491394,
+        125.66942286491394,
+        109.57742285728455,
+        126.78142285346985
+      ],
+      "source_sha256": {
+        "producer.py": "0e6fbdc322df1692d278d29bb97831d0aac752d86ee3cb73a5fa432fef780bd9",
+        "consumer.py": "14232bb19dd5453c033efa4a415b7a00dd42c00333c6174bbe61519058f29fb5",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [
+        {
+          "file": "test_consumer.py",
+          "exit": 0,
+          "output": ""
+        },
+        {
+          "file": "test_producer.py",
+          "exit": 0,
+          "output": "PASS test_bool_at_ms_rejected\nPASS test_decode_bad_timestamp\nPASS test_decode_many\nPASS test_encode_basic\nPASS test_encode_many_order\nPASS test_float_at_ms_rejected\nPASS test_negative_at_ms\nPASS test_round_trip\nfailures: 0\n"
+        }
+      ],
+      "definitions": {
+        "producer.py": [
+          "_validate_at_ms",
+          "encode",
+          "encode_many",
+          "_validate_timestamp",
+          "decode",
+          "decode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 61,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 2,
+      "label": "mistaken-workers",
+      "arm": "workers",
+      "case": "mistaken",
+      "finish_reason": "settled",
+      "seconds": 124.40970492362976,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 35379,
+        "output": 9196,
+        "cacheRead": 427200,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 70.72269010543823,
+      "peer_board_read_seconds": [],
+      "source_sha256": {
+        "producer.py": "fee8a69dd96a050f6d7d19f9c96c984db05d69c9e85a5c50f062652e5c37fda9",
+        "consumer.py": "2d75cc4519f0723b27cec5325d5fdd785559fb40a719022825144f79fd72ec82",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "consumer tests passed\n\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [
+        {
+          "file": "test_consumer.py",
+          "exit": 0,
+          "output": "consumer tests passed\n"
+        },
+        {
+          "file": "test_producer.py",
+          "exit": 0,
+          "output": "producer tests passed\n"
+        }
+      ],
+      "definitions": {
+        "producer.py": [
+          "_validate_at_ms",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 32,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    },
+    {
+      "repetition": 2,
+      "label": "mistaken-board",
+      "arm": "board",
+      "case": "mistaken",
+      "finish_reason": "settled",
+      "seconds": 94.93318700790405,
+      "grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "public_check": {
+        "exit": 0,
+        "output": "Independent endpoint and batch checks passed\n"
+      },
+      "usage": {
+        "input": 39131,
+        "output": 7188,
+        "cacheRead": 315264,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 6,
+        "unique_reader_entry_pairs": 6,
+        "known_peer_body_returns": 2,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "first_full_score_seconds": 52.356812953948975,
+      "peer_board_read_seconds": [
+        54.17053985595703,
+        54.17053985595703
+      ],
+      "source_sha256": {
+        "producer.py": "673988475cd6a7d87c271c8779922a54167d085b28cb6f14a4f20ee13ddd049e",
+        "consumer.py": "68198a6014e8e08d90366a126919d00a0145b5edf2a28ac746e645cd0eb15438",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "885dc812d307ab1f5a2ed01dccc8d3d0b101866698071d8a6634f6f5ec7047d6",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "handoff_grade": {
+        "passed": 18,
+        "total": 18,
+        "errors": [],
+        "checks": [
+          {
+            "name": "encode-0",
+            "passed": true
+          },
+          {
+            "name": "decode-0",
+            "passed": true
+          },
+          {
+            "name": "encode-1",
+            "passed": true
+          },
+          {
+            "name": "decode-1",
+            "passed": true
+          },
+          {
+            "name": "encode-2",
+            "passed": true
+          },
+          {
+            "name": "decode-2",
+            "passed": true
+          },
+          {
+            "name": "encode-3",
+            "passed": true
+          },
+          {
+            "name": "decode-3",
+            "passed": true
+          },
+          {
+            "name": "encode-4",
+            "passed": true
+          },
+          {
+            "name": "decode-4",
+            "passed": true
+          },
+          {
+            "name": "encode-5",
+            "passed": true
+          },
+          {
+            "name": "decode-5",
+            "passed": true
+          },
+          {
+            "name": "encode_many",
+            "passed": true
+          },
+          {
+            "name": "encode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "decode_many",
+            "passed": true
+          },
+          {
+            "name": "decode_many-empty",
+            "passed": true
+          },
+          {
+            "name": "encode-invalid",
+            "passed": true
+          },
+          {
+            "name": "decode-invalid",
+            "passed": true
+          }
+        ]
+      },
+      "source_replay_exact": true,
+      "handoff_definition": "Source at the later of the two first terminal worker records; later reply continuations count separately.",
+      "parent_production_edits": 0,
+      "parent_production_line_churn": 0,
+      "resumed_worker": {
+        "turns": 0,
+        "output": 0,
+        "tools": []
+      },
+      "reconciliations": [],
+      "own_unittest": {
+        "exit": 5,
+        "output": "consumer tests passed\n\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+      },
+      "own_test_scripts": [
+        {
+          "file": "test_consumer.py",
+          "exit": 0,
+          "output": "consumer tests passed\n"
+        }
+      ],
+      "definitions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_check_timestamp",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "production_lines": 26,
+      "ownership_violations": [],
+      "request_channels_verified": true,
+      "accepted_launches": 2
+    }
+  ],
+  "aggregates": {
+    "workers": {
+      "trials": 4,
+      "final_passed": 72,
+      "handoff_passed": 72,
+      "checks": 72,
+      "mean_seconds": 124.57050156593323,
+      "usage": {
+        "input": 144896,
+        "output": 37289,
+        "cacheRead": 1660096,
+        "cacheWrite": 0
+      }
+    },
+    "board": {
+      "trials": 4,
+      "final_passed": 69,
+      "handoff_passed": 69,
+      "checks": 72,
+      "mean_seconds": 135.17641019821167,
+      "usage": {
+        "input": 193922,
+        "output": 42230,
+        "cacheRead": 1626240,
+        "cacheWrite": 0
+      }
+    }
+  },
+  "limitations": [
+    "Two repeats per case; one small calibrated task and model.",
+    "Concurrent pairs share backend capacity; elapsed time is descriptive.",
+    "Unittest discovery and test-file execution are recorded separately; merely importing a test file does not prove its assertions ran. No broad style/readability score.",
+    "Exact replay covers successful write/edit calls; inspect shell commands before trusting intermediate handoffs."
+  ]
+}

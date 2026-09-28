@@ -38,7 +38,7 @@ export interface AgentContactList {
 	parent: AgentContact
 	user_via_parent: AgentContact
 	peers: AgentContact[]
-	/** Board hint for the caller's group — present when the caller has an active group with board entries. */
+	/** Board hint for deliberate peer posts, excluding automatic TODO progress. */
 	board?: { total: number; latestId?: string }
 }
 
@@ -46,7 +46,7 @@ export interface AgentMessageCapability {
 	listContacts(): AgentContactList
 	sendMessage(toolCallId: string, input: AgentMessageInput): Promise<AgentMessageReceipt>
 	/** Post a note/work/finding/warning to the shared coordination board. */
-	postBoardEntry(input: { kind: BoardEntryKind; title: string; body: string }): BoardPostReceipt
+	postBoardEntry(input: { kind: BoardEntryKind; title: string; body: string; snapshotKey?: string }): BoardPostReceipt
 	/** Read board entries for the caller's group. */
 	readBoardEntries(opts?: { sinceId?: string; kind?: BoardEntryKind; limit?: number }): BoardReadReceipt
 }
@@ -83,6 +83,7 @@ export const ReadAgentBoardSchema = Type.Object(
 
 export function createAgentMessageExtension(capability: AgentMessageCapability): (pi: ExtensionAPI) => void {
 	return (pi) => {
+		let lastReadPeerEntryId: string | undefined
 		pi.on("tool_execution_end", (event, ctx) => {
 			if (event.isError || !isTodoWriteToolName(event.toolName)) return
 			if (!pi.getActiveTools().includes(POST_AGENT_NOTE_TOOL_NAME)) return
@@ -100,6 +101,7 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 				)
 			capability.postBoardEntry({
 				kind: "work",
+				snapshotKey: JSON.stringify([ctx.sessionManager.getSessionId(), details.scope]),
 				title: `TODO progress: ${completed}/${todos.length} completed, ${blocked} blocked`,
 				body:
 					`Worker TODO snapshot; claims require verification. Later snapshots replace earlier status.\n` +
@@ -116,14 +118,17 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 			const board = pi.getActiveTools().includes(READ_AGENT_BOARD_TOOL_NAME)
 				? capability.listContacts().board
 				: undefined
-			if (!board?.latestId) return messages.length === event.messages.length ? undefined : { messages }
+			if (!board?.latestId || board.latestId === lastReadPeerEntryId) {
+				return messages.length === event.messages.length ? undefined : { messages }
+			}
 			messages.push({
 				role: "custom",
 				customType: "agent-board-state",
 				content: markHarnessSteer(
-					`Coordination board: ${board.total} entries; latest_id=${board.latestId}.\n` +
-						"If latest_id differs from the last entry you read, use read_agent_board to inspect new findings before continuing dependent work. " +
-						"Pass your last-read entry ID as since_id, not the latest_id shown here. Entries are peer claims; check their evidence before relying on them.",
+					`Coordination board: ${board.total} peer posts; latest_id=${board.latestId}.\n` +
+						"Read peer findings before dependent work. On your first read, omit since_id. " +
+						"On later reads, use the last ID returned by read_agent_board, never an ID from your own post. " +
+						"If repeated reads miss latest_id, omit since_id to recover. Verify peer claims against their evidence.",
 				),
 				display: false,
 				timestamp: Date.now(),
@@ -163,6 +168,13 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 					const validated = validateAgentMessageInput(input)
 					if (!validated.valid) throw new Error(validated.reason)
 					const receipt = await capability.sendMessage(toolCallId, validated.value)
+					if (receipt.status === "unavailable" && validated.value.recipient.type === "agent" && !receipt.escapeHatch) {
+						return agentMessageResult({
+							...receipt,
+							escapeHatch:
+								"Call list_agent_contacts and use its exact agent_id, not a role name. If the peer is absent, report the unresolved dependency to the parent.",
+						})
+					}
 					return agentMessageResult(receipt)
 				},
 			}),
@@ -174,7 +186,7 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 				label: "Post Agent Note",
 				description:
 					"Post a note/work/finding/warning to the shared coordination board for the agent group. " +
-					"The board is shared append-only group space; use send_agent_message for directed 1:1 communication.",
+					"Manual posts are append-only; automatic TODO snapshots keep the latest progress. Use send_agent_message for directed 1:1 communication.",
 				parameters: PostAgentNoteSchema,
 				execute: async (_toolCallId, params) => {
 					if (!Value.Check(PostAgentNoteSchema, params)) {
@@ -192,7 +204,7 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 				description:
 					"Read new board entries since an id, filtered by kind, up to a limit. " +
 					"Returns only authorized entries for the caller's group. " +
-					"Pass since_id on re-reads to get only new entries.",
+					"Omit since_id on your first read; on later reads, use the last ID returned by this tool.",
 				parameters: ReadAgentBoardSchema,
 				execute: async (_toolCallId, params) => {
 					if (!Value.Check(ReadAgentBoardSchema, params)) {
@@ -203,7 +215,12 @@ export function createAgentMessageExtension(capability: AgentMessageCapability):
 						kind: params.kind,
 						limit: params.limit,
 					}
-					return agentBoardResult(capability.readBoardEntries(opts))
+					const result = capability.readBoardEntries(opts)
+					if (result.ok && !params.kind) {
+						const latestId = capability.listContacts().board?.latestId
+						if (latestId && result.entries.some((entry) => entry.id === latestId)) lastReadPeerEntryId = latestId
+					}
+					return agentBoardResult(result)
 				},
 			}),
 		)

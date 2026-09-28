@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
+import tempfile
 import time
 
 
@@ -20,16 +21,31 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def restore_controller_metadata(run, metadata):
+    """Workspace cleanup cannot change the host's controller target."""
+    path = run / "live-run.json"
+    expected = json.dumps(metadata, indent=2) + "\n"
+    if not path.is_symlink() and path.exists() and path.read_text() == expected:
+        return False
+    with tempfile.NamedTemporaryFile(mode="w", dir=run, delete=False) as temporary:
+        temporary.write(expected)
+    Path(temporary.name).replace(path)
+    return True
+
+
 def seal(root):
+    manifest = json.loads((root / "manifest.json").read_text())
+    _, model = manifest["model"].split("/", 1)
     paths = [root / "manifest.json", root / "runtime/bin/kimchi"]
+    paths.append(Path(__file__).resolve().parents[2] / "resources/skills/kimchi-tmux/scripts/harness-live.mjs")
     for directory in [root / "seed", Path(__file__).parent]:
         paths.extend(path for path in directory.rglob("*") if path.is_file()
                      and "node_modules" not in path.parts and "__pycache__" not in path.parts)
-    for trial in json.loads((root / "manifest.json").read_text())["trials"]:
+    for trial in manifest["trials"]:
         directory = Path(trial["directory"])
         paths.extend(directory / name for name in ["env.json", "sandbox.sb", "kimchi", "home/.config/kimchi/harness/extensions/experiment.ts", "home/.config/kimchi/harness/settings.json"])
         task = root / f"{trial['label']}-prompt.txt"
-        task.write_text(prompt(trial["arm"]) + "\n")
+        task.write_text(prompt(trial["arm"], model) + "\n")
         paths.append(task)
     return {str(path): digest(path) for path in paths}
 
@@ -87,7 +103,8 @@ def sample(run, audit=None):
     usage = Counter(input=0, output=0, cacheRead=0, cacheWrite=0)
     parent = []
     parent_id = None
-    child_sessions = 0
+    child_parents = []
+    parent_path = None
     for path in (run / "sessions").glob("*.jsonl"):
         entries = rows(path)
         if not entries:
@@ -95,8 +112,9 @@ def sample(run, audit=None):
         if entries[0].get("type") == "session" and not entries[0].get("parentSession"):
             parent = entries
             parent_id = entries[0]["id"]
+            parent_path = str(path)
         elif entries[0].get("type") == "session":
-            child_sessions += 1
+            child_parents.append(entries[0].get("parentSession"))
         for entry in entries:
             message = entry.get("message", {})
             if entry.get("type") == "message" and message.get("role") == "assistant":
@@ -115,18 +133,19 @@ def sample(run, audit=None):
                      and entry.get("kind") in {"request", "settled"}] if audit.exists() else []
         settled = settled and bool(lifecycle) and lifecycle[-1]["kind"] == "settled"
     latest_worker = max((record.get("completedAt", 0) or 0 for record in records.values()), default=0)
+    child_sessions = sum(owner in {parent_id, parent_path} for owner in child_parents)
     return {"usage": dict(usage), "records": list(records.values()),
             "settled": settled and last.get("timestamp", 0) >= latest_worker,
             "workers_terminal": launched <= records.keys() and len(records) >= child_sessions
             and all(record["status"] in TERMINAL for record in records.values())}
 
 
-def prompt(arm):
+def prompt(arm, model="glm-5.3-flash"):
     common = "Read TASK.md and complete the isolated compaction repair. All source and installed dependencies are available. Use ordinary TODOs and record concrete checks. Preserve protected files and other owners' edits. Do not install dependencies, research externally, inspect personal data or other trials, commit, or publish. Run all three public verification commands and report actual failures. Finish without asking for another user prompt. "
     if arm == "solo":
         return common + "This is the solo arm: investigate, implement, review and repair the complete task yourself without delegation."
     channel = "Do not set communication." if arm == "workers" else 'Set communication to "group".'
-    return common + f'''Launch exactly three General-Purpose workers together in one tool-call batch, with exact descriptions Lifecycle investigator, Boundary investigator and Implementation owner. Model glm-5.3-flash, thinking low, run_in_background true, max_duration 900, ferment_v2 false. Both investigators use max_turns 35 and token_budget 10000; the Implementation owner uses max_turns 70 and token_budget 20000. {channel} Give each the full TASK scope, its exact ownership, and instructions to read TASK.md before working. Every worker can read all files and use its owned shared notes and available channels. There is no posting or question quota. Inspect emerging findings and relay useful information while they run. Correct rejected launches, but never retry or resume a started worker. Collect all three final results, review the combined work, then launch one Repair owner (General-Purpose, same model/thinking/channel, background, max_turns 70, max_duration 900, token_budget 20000, ferment_v2 false) with the complete task and findings. It owns repair and verification after initial workers finish, and must run all three public checks. Do not repair production directly. Collect its result and report actual verification. No other workers. Do not use reconcile_agent_result in this comparison. Background completion notices arrive after your current tool loop ends. If you have no independent work, end your turn so the notice can wake you, or use get_subagent_result with wait: true. Do not wait by sleeping or polling files through bash. Read the returned worker status and abort reason before deciding what happened.'''
+    return common + f'''Launch exactly three General-Purpose workers together in one tool-call batch, with exact descriptions Lifecycle investigator, Boundary investigator and Implementation owner. Model {model}, thinking low, run_in_background true, max_duration 900, ferment_v2 false. Both investigators use max_turns 35 and token_budget 10000; the Implementation owner uses max_turns 70 and token_budget 20000. {channel} Give each the full TASK scope, its exact ownership, and instructions to read TASK.md before working. Every worker can read all files and use its owned shared notes and available channels. There is no posting or question quota. Inspect emerging findings and relay useful information while they run. Correct rejected launches, but never retry or resume a started worker. Collect all three final results, review the combined work, then launch one Repair owner (General-Purpose, same model/thinking/channel, background, max_turns 70, max_duration 900, token_budget 20000, ferment_v2 false) with the complete task and findings. It owns repair and verification after initial workers finish, and must run all three public checks. Do not repair production directly. Collect its result and report actual verification. No other workers. Do not use reconcile_agent_result in this comparison. Background completion notices arrive after your current tool loop ends. If you have no independent work, end your turn so the notice can wake you, or use get_subagent_result with wait: true. Do not wait by sleeping or polling files through bash. Read the returned worker status and abort reason before deciding what happened.'''
 
 
 def main():
@@ -142,6 +161,7 @@ def main():
         return
     assert args.labels
     manifest = json.loads((root / "manifest.json").read_text())
+    provider, model = manifest["model"].split("/", 1)
     controller = Path(__file__).resolve().parents[2] / "resources/skills/kimchi-tmux/scripts/harness-live.mjs"
     trials = {trial["label"]: trial for trial in manifest["trials"]}
     assert all(check["passed"] for check in json.loads((root / "isolation.json").read_text()))
@@ -153,6 +173,9 @@ def main():
         assert digest(path) == expected, f"Frozen input changed: {path}"
 
     def control(trial, action, *arguments, content=None):
+        if "controller_metadata" in trial:
+            if restore_controller_metadata(Path(trial["run"]), trial["controller_metadata"]):
+                trial.setdefault("controller_metadata_restores", []).append(time.time())
         environment = json.loads((Path(trial["directory"]) / "env.json").read_text())
         return subprocess.run(["node", str(controller), action, *map(str, arguments)],
                               env=environment, input=content, capture_output=True, text=True, timeout=30)
@@ -162,11 +185,12 @@ def main():
         trial = dict(trials[label])
         receipt = root / f"{label}-run.json"
         assert not receipt.exists(), "Never automatically restart an existing trial"
-        result = control(trial, "start", "glm-5.3-flash", "kimchi-dev", "default")
+        result = control(trial, "start", model, provider, "default")
         if result.returncode:
             raise RuntimeError(result.stderr + result.stdout)
         run = Path(next(line[5:] for line in result.stdout.splitlines() if line.startswith("Run: ")))
         trial["run"] = str(run)
+        trial["controller_metadata"] = json.loads((run / "live-run.json").read_text())
         receipt.write_text(json.dumps(trial, indent=2) + "\n")
         for _ in range(40):
             view = control(trial, "status", run).stdout
@@ -209,8 +233,8 @@ def main():
                 view = control(trial, "status", run).stdout
                 (root / f"{trial['label']}-final-tui.txt").write_text(view)
                 environment = json.loads((Path(trial["directory"]) / "env.json").read_text())
-                live = json.loads((run / "live-run.json").read_text())
-                pid = int(subprocess.check_output(["tmux", "display-message", "-p", "-t", live["pane"], "#{pane_pid}"], env=environment, text=True))
+                live = trial["controller_metadata"]
+                pid = int(subprocess.check_output(["tmux", "display-message", "-p", "-t", live.get("pane", f"={live['tmux']}"), "#{pane_pid}"], env=environment, text=True))
                 captured = descendants(pid)
                 control(trial, "stop", run)
                 stop_descendants(captured)

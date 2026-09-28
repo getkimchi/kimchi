@@ -3,6 +3,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../../__mocks__/context.js"
+import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { isAgentWorker, runAsAgentWorker } from "../../agent-worker-context.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE, FERMENT_V2_TOOL_NAMES } from "../../ferment-v2/constants.js"
@@ -379,10 +381,73 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(3)
+		expect(ctorArg?.extensionFactories).toHaveLength(4)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("reports repeated successful worker calls as a loop abort and clears it on resume", async () => {
+		const harness = createExtensionApi()
+		const abortSpy = vi.fn()
+		const childCtx = createContext({ abort: abortSpy })
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				for (const factory of mockDefaultResourceLoader.mock.calls[0][0]?.extensionFactories ?? []) {
+					await runInlineExtension(factory, harness.api)
+				}
+				for (const handler of harness.getHandlers("session_start")) await handler({}, childCtx)
+				for (let i = 0; i < 4; i++) {
+					for (const handler of harness.getHandlers("turn_end")) {
+						await handler(
+							{
+								message: {
+									role: "assistant",
+									content: [
+										{
+											type: "toolCall",
+											id: `call-${i}`,
+											name: "bash",
+											arguments: { command: "cmp INPUT.txt CURRENT.txt" },
+										},
+									],
+								},
+								toolResults: [
+									{
+										toolName: "bash",
+										toolCallId: `call-${i}`,
+										isError: false,
+										content: [{ type: "text", text: "MATCH" }],
+									},
+								],
+							},
+							childCtx,
+						)
+					}
+				}
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		const result = await runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"copy and verify",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+			},
+		)
+		expect(result).toMatchObject({ aborted: true, abortReason: "loop_guard" })
+		expect(abortSpy).toHaveBeenCalledTimes(1)
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
+		const resumed = await resumeAgent(result.session, "Report the successful verification.")
+		expect(resumed).toMatchObject({ aborted: false, abortReason: undefined })
 	})
 
 	it("activates local TODO and Ferment tools only when the worker opts in", async () => {
@@ -515,7 +580,7 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg?.extensionFactories).toHaveLength(4)
+		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).toContain(dapExtension)
 		// The debug tool names must flow into the child session's tool allowlist so the
 		// SDK activates them once the dap extension registers them on session_start.
@@ -594,8 +659,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(5)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(4)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(6)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(5)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -733,8 +798,8 @@ describe("runAgent — telemetry extension", () => {
 			agentMessage: capability,
 		})
 
-		expect(mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories).toHaveLength(4)
-		expect(mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories).toHaveLength(3)
+		expect(mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories).toHaveLength(5)
+		expect(mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories).toHaveLength(4)
 		expect(ordinary.setActiveToolsByName).toHaveBeenCalledWith([])
 		expect(isolated.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -1349,6 +1414,25 @@ describe("runAgent — profile tool access", () => {
 
 		expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.not.objectContaining({ tools: expect.anything() }))
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+	})
+
+	it.each([
+		true,
+		false,
+	])("reports the final prompt after resolving extension tools (extensions=%s)", async (extensions) => {
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions, skills: false }))
+		vi.mocked(buildAgentPrompt).mockReturnValueOnce("Initial tool list").mockReturnValueOnce("Resolved tool list")
+		const session = makeFakeSession({ activeToolNames: ["read", "grep", "web_search"] })
+		mockCreateAgentSession.mockResolvedValue({ session } as unknown as CreateAgentSessionResult)
+		const onSystemPrompt = vi.fn()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+			onSystemPrompt,
+			onSessionCreated: () => expect(onSystemPrompt).toHaveBeenLastCalledWith("Resolved tool list"),
+		})
+
+		expect(onSystemPrompt).toHaveBeenLastCalledWith("Resolved tool list")
 	})
 
 	it("activates requested builtin tools even when the parent session did not have them active", async () => {

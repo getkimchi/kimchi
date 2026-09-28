@@ -1,0 +1,666 @@
+{
+  "scope": "Nine calibration trials, one per channel and evidence case; no statistical or general productivity claim.",
+  "capture_root": "/private/tmp/kimchi-delivery-wh05iqv4",
+  "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+  "binary_sha256": "fcadb33f5fabdae06439592405728af0a4fb562b3e16e3c916ad034852d79967",
+  "protocol_sha256": {
+    "trace.py": "3de7f8b132f684699129013d9b3791e05c9d27b64e67bb62a90b011cf4775b3a",
+    "workers-prompt.txt": "c3ce1c3fc72f82efc77ff63a0372fbbf6c3eb3f97f8942677da61098323dd45d",
+    "delivery-probe.ts": "95cb5d9d21d3080c25ecf17a3bf4c0d9f1b575a49ff006d993946894748fe273",
+    "delivery-diagnostic.py": "9c6f61c27ee906a38205e0d7a02fbc7ec75f01cec68ad76fde4b7fcab95f6e8c",
+    "agreement-fixture.py": "b5453559d0bb277399cf8c23d0fe5fc18881bb5e675f47ec21ae02b174be6fed",
+    "experiment.ts": "019c784f5cdf51141f827a677f1fc9e8ae6b8bc8e0ee5be431a4de8c1c0e8d38",
+    "board-prompt.txt": "56595e42de4b4428aa99aa6a4c5ddb7f963d2e2d2d25973f39105aa6e4879722",
+    "delivery-fixture.py": "0af7ff9278393459675f4a972c21730bc7bc47b37e7e8480611fa1e2b97786db",
+    "messages-prompt.txt": "56595e42de4b4428aa99aa6a4c5ddb7f963d2e2d2d25973f39105aa6e4879722",
+    "run-experiment.py": "54631d204f9b91a3c3852ba9ac45610e45a1de31de0b3114fed535457d5e5046",
+    "agreement-diagnostic.py": "2d615182d457a637ff6336376ca657238051152f2eff13c3dee9844b1489dd20"
+  },
+  "trials": [
+    {
+      "label": "changed-workers",
+      "case": "changed",
+      "arm": "workers",
+      "seconds": 124.72406101226807,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "29a6eaad48289f9d00735bf43b829feeeaafb979e79b32b9942809ae11b25445",
+        "consumer.py": "60c3c447cb167f2efaf0f72976b6cd467cf2f97d7f32d08d4b59cad62adf7fc3",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 52213,
+        "output": 9766,
+        "cacheRead": 331456,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 51.569655895233154,
+      "correct_after_publication_seconds": 12.662925004959106,
+      "source_edits": 4,
+      "functions": {
+        "producer.py": [
+          "_require_int_ms",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_wire_to_ms",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 8
+          },
+          {
+            "file": "test_producer.py",
+            "passed": false,
+            "error": "ModuleNotFoundError(\"No module named 'pytest'\")"
+          }
+        ]
+      }
+    },
+    {
+      "label": "changed-messages",
+      "case": "changed",
+      "arm": "messages",
+      "seconds": 206.63867712020874,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "ab93e99e07cb7878273c4390ec5a2cc564b82b70364de66b792cbfbaa466ef55",
+        "consumer.py": "928721ac642a01f6cfea772f2ccd5a5d8b1528f5db4fb09d2019f2a5744ccc9a",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 95240,
+        "output": 16782,
+        "cacheRead": 493184,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 5,
+        "parsed_message_receipts": 3,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 1,
+        "questions_with_recorded_accepted_reply": 1
+      },
+      "accepted_messages": 2,
+      "launch_rejections": 2,
+      "publication_seconds": 52.13775420188904,
+      "correct_after_publication_seconds": 22.569227933883667,
+      "source_edits": 4,
+      "functions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 6
+          },
+          {
+            "file": "test_producer.py",
+            "passed": true,
+            "functions": 4
+          }
+        ]
+      }
+    },
+    {
+      "label": "changed-board",
+      "case": "changed",
+      "arm": "board",
+      "seconds": 144.06401681900024,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "2a7fc4b7fd15702d5dbca4cdfcf2d65fe95c4b0f4f85991b1030b4d5aa881a6e",
+        "consumer.py": "89818955c7ea2b43246798d9e78150a1e507fe26f7e3e72434728b9fa1ec2d3f",
+        "upstream.json": "5ed63903fb81a47b5f776ff1bb3982d668d5e09f973428cb8f52a121f9ab59d2",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 73568,
+        "output": 11064,
+        "cacheRead": 575168,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 14,
+        "unique_reader_entry_pairs": 12,
+        "known_peer_body_returns": 6,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 59.80642890930176,
+      "correct_after_publication_seconds": 23.223487854003906,
+      "source_edits": 4,
+      "functions": {
+        "producer.py": [
+          "_validate_event",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_timestamp_to_ms",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 5
+          },
+          {
+            "file": "test_producer.py",
+            "passed": true,
+            "functions": 6
+          }
+        ]
+      }
+    },
+    {
+      "label": "unchanged-workers",
+      "case": "unchanged",
+      "arm": "workers",
+      "seconds": 112.77928400039673,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "6962d096f34c74ec5ee4c6f03e133c3af31c9491aa1397f9e1fa3e76248926ac",
+        "consumer.py": "9b6361ad7878d3cc8ffb98e396ff09ddb009295832a116e0a24bb76cffb8769d",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "7fec047ed626623ea5880020938dac3094a1f1c95db3d8db97e0ed47ea0d8c48"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 43846,
+        "output": 8811,
+        "cacheRead": 332480,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 63.335659980773926,
+      "correct_after_publication_seconds": 4.6086390018463135,
+      "source_edits": 2,
+      "functions": {
+        "producer.py": [
+          "_encode_one",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer_scratch.py",
+            "passed": true,
+            "functions": 0
+          },
+          {
+            "file": "test_producer.py",
+            "passed": true,
+            "functions": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "unchanged-messages",
+      "case": "unchanged",
+      "arm": "messages",
+      "seconds": 115.97792291641235,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "35c0c56868d0748e6110e35ef638d97126b1c8fa4af481c130ddc18c28f53935",
+        "consumer.py": "e85b2fc82e931523f4e64f10a73ea82aae51306488ebcd00631571c5326dac37",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "7fec047ed626623ea5880020938dac3094a1f1c95db3d8db97e0ed47ea0d8c48"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 57204,
+        "output": 9316,
+        "cacheRead": 351296,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 58.14087390899658,
+      "correct_after_publication_seconds": -0.004931926727294922,
+      "source_edits": 2,
+      "functions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_at_ms_from_wire",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 10
+          },
+          {
+            "file": "test_producer.py",
+            "passed": true,
+            "functions": 6
+          }
+        ]
+      }
+    },
+    {
+      "label": "unchanged-board",
+      "case": "unchanged",
+      "arm": "board",
+      "seconds": 89.5817551612854,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "e731917e73d5694c35f4b989c6073bf12df163c5a5a4e5f7c6b26372a23b03df",
+        "consumer.py": "c4f9f9fd8a664e51a8b853bfa25e792b6816565273d093672ccc1350a3a17f7c",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "7fec047ed626623ea5880020938dac3094a1f1c95db3d8db97e0ed47ea0d8c48"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 52342,
+        "output": 6201,
+        "cacheRead": 256448,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 52.59704303741455,
+      "correct_after_publication_seconds": 0.9236690998077393,
+      "source_edits": 2,
+      "functions": {
+        "producer.py": [
+          "_validate_at_ms",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_validate_timestamp",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": []
+      }
+    },
+    {
+      "label": "mistaken-workers",
+      "case": "mistaken",
+      "arm": "workers",
+      "seconds": 149.2609851360321,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "3182408c317d72389024aaaf3eee783de204815264a6fe35fed1503317eca8e1",
+        "consumer.py": "b44b78a80b7e092fb277ea0a7067114e93b2a145e1bf56b217ffb03ea732b19e",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 54446,
+        "output": 11287,
+        "cacheRead": 356992,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 83.15923881530762,
+      "correct_after_publication_seconds": 0.30689001083374023,
+      "source_edits": 2,
+      "functions": {
+        "producer.py": [
+          "_check_at_ms",
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "_to_at_ms",
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 0
+          },
+          {
+            "file": "test_producer.py",
+            "passed": true,
+            "functions": 5
+          }
+        ]
+      }
+    },
+    {
+      "label": "mistaken-messages",
+      "case": "mistaken",
+      "arm": "messages",
+      "seconds": 152.53708124160767,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "ca6de0ca41ec8b93a9c09e7c347e120ca7cdaf381365874737c669d9f91231a1",
+        "consumer.py": "74b45486e236e71185d53b5a99c2103390e5554a3960bddf4cb9b7fba8fcf65d",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 45624,
+        "output": 12209,
+        "cacheRead": 452160,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 0,
+        "unique_reader_entry_pairs": 0,
+        "known_peer_body_returns": 0,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 5,
+      "publication_seconds": 91.40460920333862,
+      "correct_after_publication_seconds": 20.431464910507202,
+      "source_edits": 2,
+      "functions": {
+        "producer.py": [
+          "encode",
+          "encode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "_seconds_to_ms",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 7
+          },
+          {
+            "file": "test_producer.py",
+            "passed": true,
+            "functions": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "mistaken-board",
+      "case": "mistaken",
+      "arm": "board",
+      "seconds": 106.01660919189453,
+      "finish_reason": "settled",
+      "source_sha256": {
+        "producer.py": "0ade0b0e5e5cd81670862e98bc0f507597632592de9d9522e6fd63206ea7da02",
+        "consumer.py": "2cbf3fcd7a2e7153c2c88116951854df101e85006a5b8671286a67c0bd73401b",
+        "upstream.json": "d7a173259798b992adc9207be1da94ef480d46a0ce9c7f67c60a3f4595d499a3",
+        "TASK.md": "a38dbcafcb226c4d2ba59979c735f06c24d51f7f8a99174b1fff498304a41736",
+        "verify.py": "f096cc9c6161279f060bc941b51417b9c4c5490bef1451d6548b88517a8d809b",
+        "operator-note.txt": "262cab0dbe8e45404eca6918d5cecd3d5bda7d67ee0274cfb94d103f780d3806"
+      },
+      "score": "18/18",
+      "usage": {
+        "input": 33463,
+        "output": 7663,
+        "cacheRead": 376576,
+        "cacheWrite": 0
+      },
+      "communication": {
+        "recorded_message_calls": 0,
+        "parsed_message_receipts": 0,
+        "board_body_returns": 1,
+        "unique_reader_entry_pairs": 1,
+        "known_peer_body_returns": 1,
+        "parent_body_returns": 0,
+        "unclassified_body_returns": 0,
+        "accepted_questions": 0,
+        "questions_with_recorded_accepted_reply": 0
+      },
+      "accepted_messages": 0,
+      "launch_rejections": 2,
+      "publication_seconds": 48.083842039108276,
+      "correct_after_publication_seconds": 7.979494094848633,
+      "source_edits": 3,
+      "functions": {
+        "producer.py": [
+          "encode",
+          "encode_many",
+          "decode",
+          "decode_many"
+        ],
+        "consumer.py": [
+          "decode",
+          "decode_many"
+        ]
+      },
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "protected": true,
+      "model_verified": true,
+      "channels_verified": true,
+      "public_check_exit": 0,
+      "own_tests": {
+        "scope": "Loads saved test*.py modules and calls test_ functions without parameters; does not execute __main__ guards or count inline checks.",
+        "exit": 0,
+        "checks": [
+          {
+            "file": "test_consumer.py",
+            "passed": true,
+            "functions": 5
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -243,6 +243,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 				finishTodosResponse,
 				completionResponse,
 				finalAnswerResponse,
+				finalAnswerResponse,
 			],
 		},
 		async (fixture, trace) => {
@@ -276,7 +277,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			expect(finalView).not.toContain("Update Ferment V2")
 			await new Promise((resolve) => setTimeout(resolve, 2_000))
 			const requests = chatRequests(fixture.fake.requests)
-			expect(requests).toHaveLength(8)
+			expect(requests).toHaveLength(9)
 			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
 			expect(JSON.stringify(requests[4]?.body)).toContain(COMPACTION_SUMMARY_MARKER)
 			trace.step("Ferment V2 compacted, continued from the summary, then completed")
@@ -348,6 +349,7 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 					],
 				},
 				{ stream: ["Manual-compaction work is complete."] },
+				{ stream: ["Manual-compaction work is complete."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -366,7 +368,7 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			await waitForText(terminal, "Status: complete", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
-			expect(requests).toHaveLength(7)
+			expect(requests).toHaveLength(8)
 			expect(
 				fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))[1]?.aborted,
 			).toBe(true)
@@ -700,6 +702,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 						},
 					],
 				},
+				{ stream: [firstHiddenCandidate] },
 				{
 					stream: ["Reopening tactical work after the rejected completion."],
 					toolCalls: [
@@ -742,6 +745,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 						},
 					],
 				},
+				{ stream: [secondHiddenCandidate] },
 				{ stream: [acceptedFinal] },
 			],
 		},
@@ -754,7 +758,10 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			trace.step("active Ferment V2 preserves the normal thinking block")
 			await waitForChatRequest(fixture.fake.requests, 2)
 			expect(fullText(terminal)).not.toContain(earlyHiddenCandidate)
-			const firstEvaluatorRequest = await waitForChatRequest(fixture.fake.requests, 5)
+			const answerRequest = await waitForChatRequest(fixture.fake.requests, 5)
+			expect(isFermentV2EvaluatorRequest(answerRequest)).toBe(false)
+			expect(JSON.stringify(answerRequest.body)).toContain("Write your final answer now without calling tools.")
+			const firstEvaluatorRequest = await waitForChatRequest(fixture.fake.requests, 6)
 			expect(isFermentV2EvaluatorRequest(firstEvaluatorRequest)).toBe(true)
 			expect(JSON.stringify(firstEvaluatorRequest.body)).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 			expect(JSON.stringify(firstEvaluatorRequest.body)).not.toContain(privateEmail)
@@ -763,11 +770,11 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
 			trace.step("completion candidate stayed hidden while evaluation was pending")
 
-			const continuationRequest = await waitForChatRequest(fixture.fake.requests, 6)
+			const continuationRequest = await waitForChatRequest(fixture.fake.requests, 7)
 			expect(JSON.stringify(continuationRequest.body)).toContain(
 				"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list.",
 			)
-			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 7)
+			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 8)
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Finish behind the evaluator gate")
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Verify the remaining evaluator concern")
 			await waitForText(terminal, "Reopening tactical work after the rejected completion.", { timeoutMs: 5_000 })
@@ -798,9 +805,10 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 	)
 })
 
-test("experimental Ferment V2 preserves exact output when accepted final delivery resumes", async ({ terminal }) => {
+test("Ferment V2 preserves accepted text after a delivery rewrite", async ({ terminal }) => {
 	const sessionFile = "accepted-final-restart.jsonl"
 	const exactOutput = "EXACT-FINAL-RESTART-PAYLOAD"
+	const rewrittenOutput = `Rewritten answer: ${exactOutput}`
 	await runKimchiSession(
 		terminal,
 		{
@@ -812,7 +820,7 @@ test("experimental Ferment V2 preserves exact output when accepted final deliver
 						JSON.stringify(request.body).includes(
 							"If the original objective requires exact output, return exactly that output with no preface or summary.",
 						),
-					stream: [exactOutput],
+					stream: [rewrittenOutput],
 				},
 			],
 			seedHome(homeDir, workDir) {
@@ -829,8 +837,11 @@ test("experimental Ferment V2 preserves exact output when accepted final deliver
 			expect(JSON.stringify(requests[0]?.body)).toContain(
 				"If the original objective requires exact output, return exactly that output with no preface or summary.",
 			)
-			expect(readFileSync(join(fixture.workDir, sessionFile), "utf-8")).toContain('"status":"complete"')
-			trace.step("accepted replay delivered the exact payload without reevaluation")
+			const journal = readFileSync(join(fixture.workDir, sessionFile), "utf-8")
+			expect(journal).toContain('"status":"complete"')
+			expect(journal).not.toContain(rewrittenOutput)
+			expect(fullText(terminal)).not.toContain(rewrittenOutput)
+			trace.step("accepted text reached the screen and journal despite the model rewrite")
 		},
 	)
 })
@@ -891,6 +902,7 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 						},
 					],
 				},
+				{ stream: [hiddenCandidate] },
 				{ streamError: "scripted final delivery failure" },
 			],
 		},

@@ -23,6 +23,43 @@ class RunnerTests(unittest.TestCase):
             {"type": "session", "id": name, "parentSession": parent}, *entries]) + "\n")
         return path
 
+    def test_sealed_worker_prompt_uses_manifest_model(self):
+        trial = self.root / "trial-01"
+        names = ["env.json", "sandbox.sb", "kimchi",
+                 "home/.config/kimchi/harness/extensions/experiment.ts",
+                 "home/.config/kimchi/harness/settings.json"]
+        for path in [self.root / "runtime/bin/kimchi", *(trial / name for name in names)]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("test input")
+        (self.root / "seed").mkdir()
+        (self.root / "manifest.json").write_text(json.dumps({
+            "model": "kimchi-dev/kimi-k3",
+            "trials": [{"label": "trial-01", "arm": "workers", "directory": str(trial)}],
+        }))
+        frozen = runner.seal(self.root)
+        prompt = self.root / "trial-01-prompt.txt"
+        self.assertIn("Model kimi-k3", prompt.read_text())
+        self.assertNotIn("glm-5.3-flash", prompt.read_text())
+        self.assertEqual(frozen[str(prompt)], runner.digest(prompt))
+
+    def test_controller_uses_cached_metadata_after_workspace_cleanup_or_replacement(self):
+        metadata = {"directory": str(self.root), "tmux": "owned-session", "pane": "%7"}
+        path = self.root / "live-run.json"
+        self.assertTrue(runner.restore_controller_metadata(self.root, metadata))
+        self.assertFalse(runner.restore_controller_metadata(self.root, metadata))
+        path.unlink()
+        self.assertTrue(runner.restore_controller_metadata(self.root, metadata))
+        path.write_text('{"tmux": "different-session", "pane": "%1"}')
+        self.assertTrue(runner.restore_controller_metadata(self.root, metadata))
+        target = self.root / "unrelated"
+        target.write_text("preserve this")
+        path.unlink()
+        path.symlink_to(target)
+        self.assertTrue(runner.restore_controller_metadata(self.root, metadata))
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(target.read_text(), "preserve this")
+        self.assertEqual(json.loads(path.read_text()), metadata)
+
     def test_parent_answer_before_worker_completion_is_not_final(self):
         self.session("parent", [
             {"customType": "subagents:record", "data": {"id": "worker", "visibility": "user", "status": "completed", "completedAt": 200}},
@@ -50,6 +87,20 @@ class RunnerTests(unittest.TestCase):
             {"type": "message", "message": {"role": "assistant", "stopReason": "stop", "timestamp": 300}},
         ])
         self.assertFalse(runner.sample(self.root)["workers_terminal"])
+
+    def test_nested_evaluator_is_not_counted_as_another_parent_worker(self):
+        parent = self.session("parent", [
+            {"customType": "subagents:record", "data": {"id": "worker", "visibility": "user", "status": "completed", "completedAt": 200}},
+            {"type": "message", "message": {"role": "assistant", "stopReason": "stop", "timestamp": 300}},
+        ])
+        worker = self.session("worker", [], parent=str(parent))
+        self.session("evaluator", [{"type": "message", "message": {
+            "role": "assistant", "usage": {"input": 10, "output": 2}}}], parent=str(worker))
+        state = runner.sample(self.root)
+        self.assertTrue(state["workers_terminal"])
+        self.assertTrue(state["settled"])
+        self.assertEqual(state["usage"]["input"], 10)
+        self.assertEqual(state["usage"]["output"], 2)
 
     def test_only_parent_settlement_after_latest_request_finishes_the_run(self):
         self.session("parent", [

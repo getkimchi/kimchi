@@ -10,6 +10,7 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
+import { FERMENT_V2_CONTROL_MESSAGE_TYPE } from "./constants.js"
 import {
 	evaluateFermentV2,
 	MAX_TODO_STATE_CHARS,
@@ -263,6 +264,15 @@ describe("Ferment V2 evaluator", () => {
 			systemPrompt: expect.stringContaining("Final delivery replays that draft verbatim after met"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]?.systemPrompt).not.toContain("ignore its presentation format")
+		expect(completeMock.mock.calls[0]?.[1]?.systemPrompt).not.toContain(
+			"compare the complete last [assistant] entry literally",
+		)
+		expect(completeMock.mock.calls[0]?.[1]?.systemPrompt).toContain(
+			"Requested topics, headings or formatting do not prescribe a complete literal answer; use expectedAnswer: null",
+		)
+		expect(completeMock.mock.calls[0]?.[1]?.systemPrompt).toContain(
+			"Use a string only when the objective explicitly requires the complete answer verbatim",
+		)
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
 			systemPrompt: expect.stringContaining("<evidence_policy>"),
 		})
@@ -271,6 +281,32 @@ describe("Ferment V2 evaluator", () => {
 				"Write reason as a task-facing next action or missing evidence; never mention the evaluator, verdict, controller, or completion policy.",
 			),
 		})
+	})
+
+	it("omits its own prior feedback while retaining user requirements, other context and evidence IDs", async () => {
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"Check the final reply."}'))
+		await evaluateFermentV2(
+			{
+				objective: "Final reply: findings and next steps.",
+				messages: [
+					transcriptMessage("custom", "Final reply must be exactly: findings and next steps.", {
+						customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
+					}),
+					...linkedToolMessages("test", "bash", { cmd: "pnpm test" }, "tests passed"),
+					transcriptMessage("custom", "Project context remains available.", { customType: "project-context" }),
+					transcriptMessage("user", "Include the test result."),
+					transcriptMessage("assistant", "Finding: tests passed. Next steps: none."),
+				],
+				todos: [],
+			},
+			evaluatorContext(),
+		)
+		expect(sentFermentV2Prompt()).toContain("Final reply: findings and next steps.")
+		expect(sentTranscript()).not.toContain("Final reply must be exactly")
+		expect(sentTranscript()).toContain("[m3] [toolResult bash for c2.1] tests passed")
+		expect(sentTranscript()).toContain("Project context remains available.")
+		expect(sentTranscript()).toContain("Include the test result.")
+		expect(sentTranscript()).toContain("Finding: tests passed. Next steps: none.")
 	})
 
 	it("redacts the evaluator prompt before the direct provider call", async () => {
@@ -379,7 +415,6 @@ describe("Ferment V2 evaluator", () => {
 							requirement: "Follow the final-response contract",
 							met: true,
 							candidateRef: "last_assistant",
-							observedAnswer: draft,
 							expectedAnswer,
 						},
 					],
@@ -411,7 +446,6 @@ describe("Ferment V2 evaluator", () => {
 							requirement: "Reply exactly OK",
 							met: true,
 							candidateRef: "last_assistant",
-							observedAnswer: "OK",
 							expectedAnswer,
 						},
 					],
@@ -423,7 +457,7 @@ describe("Ferment V2 evaluator", () => {
 	it("accepts a final-answer check without tool evidence", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
-				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK","expectedAnswer":"OK"}],"reason":"ready"}',
+				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","expectedAnswer":"OK"}],"reason":"ready"}',
 			),
 		)
 
@@ -444,7 +478,7 @@ describe("Ferment V2 evaluator", () => {
 
 	it.each([
 		["uses the wrong candidate", { candidateRef: "other" }],
-		["quotes only part of the candidate", { candidateRef: "last_assistant", observedAnswer: "OK" }],
+		["omits the candidate", {}],
 	] as const)("rejects a final-answer check that %s", async (_case, binding) => {
 		completeMock.mockResolvedValue(
 			assistant(
@@ -503,7 +537,7 @@ describe("Ferment V2 evaluator", () => {
 	it("normalizes nullable optional check fields", () => {
 		expect(
 			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","expectedAnswer":"OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
+				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","expectedAnswer":"OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
 			),
 		).toMatchObject({
 			verdict: "continue",
@@ -1294,6 +1328,36 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 
+	it.each([400, 800])("keeps a clipped result only with its complete command (%s chars left)", async (remaining) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"list available shared files","met":true,"failureMode":"the directory could be empty; m2 lists its files","evidence":["m2"],"todoIds":[]}],"reason":"Shared files listed."}',
+			),
+		)
+		const command = `ls ${"/nested".repeat(60)}/docs/subagentComms/`
+		const result = await evaluateFermentV2(
+			{
+				objective: "List the available shared files.",
+				todos: [],
+				messages: [
+					...linkedToolMessages("list-files", "bash", { command }, "board-results.json\n".repeat(100)),
+					transcriptMessage("assistant", "x".repeat(MAX_TRANSCRIPT_CHARS - remaining)),
+				],
+			},
+			evaluatorContext(),
+		)
+		const transcript = sentTranscript()
+		if (remaining === 800) {
+			expect(transcript).toContain(`tool c1.1 bash ${JSON.stringify({ command })}`)
+			expect(transcript).toContain("[m2] [toolResult bash for c1.1]")
+			expect(result.verdict).toBe("met")
+		} else {
+			expect(transcript).not.toContain("[m2]")
+			expect(result.verdict).toBe("continue")
+		}
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
+	})
+
 	it("stays within budget when clipping a unit whose prefixes alone exceed the limit", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
@@ -1344,6 +1408,93 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	it.each([
+		"post_agent_note",
+		"read_agent_board",
+		"send_agent_message",
+	])("accepts a %s receipt as evidence of the communication operation", async (toolName) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"communication","requirement":"record and share the finding","met":true,"failureMode":"the operation could fail; the receipt confirms entry bd-123","evidence":["m2"],"todoIds":[]}],"reason":"Finding shared."}',
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "Record and share the finding on the group board.",
+				todos: [],
+				messages: linkedToolMessages("receipt", toolName, {}, '{"ok":true,"entry":{"id":"bd-123"}}'),
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe("met")
+		expect(sentTranscript()).toContain("[m2] [communication receipt]")
+	})
+
+	it.each(["evidence", "decision"] as const)("checks communication against a retained %s note", async (kind) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"communication","requirement":"post the finding","met":true,"failureMode":"posting might have failed; the retained receipt records entry bd-123","evidence":["l1"],"todoIds":[]}],"reason":"Finding posted."}',
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "Post the finding.",
+				todos: [],
+				messages: [],
+				lessons: [{ todoId: 1, kind, text: "post_agent_note returned ok:true, entry bd-123." }],
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe(kind === "evidence" ? "met" : "continue")
+	})
+
+	it.each([true, false])("requires a verified shared file for a file handoff (verified: %s)", async (verified) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"communication","requirement":"share findings in the review file","met":true,"failureMode":"the shared file could be absent; reading it confirms the finding and reproduction command","evidence":["m2"],"todoIds":[]}],"reason":"Finding shared in the review file."}',
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "Share actionable findings through the shared LIFECYCLE-REVIEW.md file.",
+				todos: [],
+				messages: verified
+					? linkedToolMessages(
+							"verify-review",
+							"read",
+							{ path: "LIFECYCLE-REVIEW.md" },
+							"Callback port ownership fails. Reproduce with pnpm test lifecycle-review.",
+						)
+					: [transcriptMessage("assistant", "I shared the findings in LIFECYCLE-REVIEW.md.")],
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe(verified ? "met" : "continue")
+	})
+
+	it("does not accept an unlinked communication receipt", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"kind":"communication","requirement":"post the finding","met":true,"failureMode":"receipt could belong to another call","evidence":["m1"],"todoIds":[]}],"reason":"Finding posted."}',
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "Post the finding.",
+				todos: [],
+				messages: [
+					transcriptMessage("toolResult", '{"ok":true}', {
+						toolName: "post_agent_note",
+						toolCallId: "missing-call",
+					}),
+				],
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe("continue")
+	})
+
+	it.each([
+		"post_agent_note",
 		"read_agent_board",
 		"get_subagent_result",
 		"resume_subagent",
@@ -1368,7 +1519,7 @@ describe("Ferment V2 evaluator", () => {
 		)
 		expect(result.verdict).toBe("continue")
 		expect(sentTranscript()).toContain("Peer says all tests passed")
-		expect(sentTranscript()).not.toContain("[m2]")
+		expect(sentTranscript()).toContain("[m2] [communication receipt]")
 	})
 })
 

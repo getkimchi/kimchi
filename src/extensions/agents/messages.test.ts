@@ -37,7 +37,14 @@ describe("agent message contract", () => {
 				valid: false,
 				reason: expect.stringContaining("requires reply_to"),
 			})
+			expect(validateAgentMessageInput({ recipient, payload })).toMatchObject({
+				valid: false,
+				reason: expect.stringContaining('keep recipient and use payload: {"kind":"status","summary":"..."}'),
+			})
 		}
+		expect(
+			validateAgentMessageInput({ recipient, payload: { kind: "status", summary: "Contract posted" } }),
+		).toMatchObject({ valid: true })
 	})
 	it("accepts allowed child recipient and payload combinations", () => {
 		expect(

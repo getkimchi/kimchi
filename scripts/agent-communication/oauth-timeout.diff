@@ -1,0 +1,36 @@
+--- a/src/extensions/mcp-adapter/server-manager.test.ts
++++ b/src/extensions/mcp-adapter/server-manager.test.ts
+@@ -446,3 +446,33 @@
+   })
+  }
+ })
++
++
++describe("late HTTP failure after probe timeout", () => {
++ beforeEach(() => {
++  mockConnect.mockReset()
++  mockListTools.mockReset()
++  mockClose.mockReset()
++  vi.mocked(supportsOAuth).mockReturnValue(false)
++  mockClose.mockResolvedValue(undefined)
++  mockListTools.mockResolvedValue({ tools: [], nextCursor: undefined })
++  vi.useFakeTimers()
++ })
++ afterEach(() => {
++  vi.useRealTimers()
++  vi.clearAllMocks()
++ })
++ it("does not start a fallback connection after the probe has returned", async () => {
++  let rejectInitial!: (error: Error) => void
++  mockConnect.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectInitial = reject }))
++  mockConnect.mockResolvedValue(undefined)
++  const manager = new McpServerManager()
++  const pending = manager.probeTools("late-http", { url: "https://mcp.example.test" })
++  await vi.advanceTimersByTimeAsync(16000)
++  await pending
++  const connectionsWhenReturned = mockConnect.mock.calls.length
++  rejectInitial(new Error("late transport failure"))
++  await vi.advanceTimersByTimeAsync(1)
++  expect(mockConnect).toHaveBeenCalledTimes(connectionsWhenReturned)
++ })
++})

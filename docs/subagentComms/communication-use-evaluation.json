@@ -1,0 +1,1503 @@
+{
+  "date": "2026-09-21",
+  "question": "Do opted-in workers use the board and directed messages during a coding task?",
+  "interpretation": "Both channels were used in two explicitly requested cross-review runs. Four guidance-only runs used the board without messages. This does not establish automatic compliance or a quality advantage.",
+  "cohorts": [
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-e5n4lnmu",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "dcc26382^",
+        "reference_ref": "dcc26382",
+        "workload": "oauth",
+        "binary_sha256": "2266f3d1fd75a5f976621d2a5bc144d6b36aa26508a72e83dc974029f82f275b",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 12000000,
+        "wall_seconds": 1200,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-e5n4lnmu/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-e5n4lnmu/trial-02"
+          }
+        ]
+      },
+      "isolation_checks": 20,
+      "retained_sealed_inputs_verified": 1753,
+      "removed_sealed_home_files": 4,
+      "preflight": {
+        "broken": {
+          "test:oauth-local": 1,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 47,
+          "failed": 6,
+          "total": 53
+        },
+        "fixed": {
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        }
+      },
+      "name": "initial-guidance",
+      "source_provenance": {
+        "head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "binary_sha256": "2266f3d1fd75a5f976621d2a5bc144d6b36aa26508a72e83dc974029f82f275b",
+        "source": {
+          "src/extensions/agents/index.ts": "f30c0de38c0d9fb95b08239fd396f60cd701e2b4394ee4bd7e884646698230a4",
+          "src/extensions/agents/index.test.ts": "44314d6b2bd9bc8bfc9589cd56d5a901e81fb27a8ab210b374aa245ed8776a92",
+          "src/extensions/agents/prompt/prompts.ts": "81c577b5e5b02b5e411a4119b51ec74611e4dd03ff937d129661bacadef8f92c",
+          "src/extensions/agents/prompt/prompts.test.ts": "267896b115cda8f98b1095e2b3638c39823f1c1d75b9e894aac6fecc10f82382",
+          "scripts/agent-communication/experiment.ts": "49a8a4c6cca45652f5630689e08a19b33c73df773e4eaae54253212fbbaabae0"
+        },
+        "baseline_capture": "/private/tmp/kimchi-compaction-arms-k4bvnr1o",
+        "baseline_channel_use": {
+          "directed_messages": 0,
+          "board_body_returns": 0
+        },
+        "purpose": "Verify actual board and directed-message use in two native group coding runs after making coordination part of assignments."
+      },
+      "trials": [
+        {
+          "label": "trial-01",
+          "seconds": 404.0,
+          "finish_reason": "settled",
+          "public_checks": {
+            "protected_changes": [
+              "src/extensions/mcp-adapter/types.ts"
+            ],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/mcp-auth-flow.refresh.test.ts",
+              "src/modes/acp/ext-methods/probe-skipauth.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 7,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "usage": {
+            "input": 493001,
+            "output": 30045,
+            "cacheRead": 3228928,
+            "cacheWrite": 0
+          },
+          "monitor_usage_at_stop": {
+            "input": 493001,
+            "output": 30045,
+            "cacheRead": 3228928,
+            "cacheWrite": 0
+          },
+          "channel_use": {
+            "manual_posts": 2,
+            "manual_peer_body_returns": 2,
+            "directed_message_attempts": 0,
+            "accepted_directed_messages": 0,
+            "peer_deliveries_in_history": 0,
+            "peer_deliveries_with_later_assistant": 0,
+            "post_errors": 0
+          },
+          "trace_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 6,
+            "unique_reader_entry_pairs": 6,
+            "known_peer_body_returns": 5,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "workers": [
+            {
+              "role": "Boundary investigator",
+              "id": "c04d219d-627b-49c",
+              "status": "aborted",
+              "abortReason": "loop_guard"
+            },
+            {
+              "role": "Lifecycle investigator",
+              "id": "4e47ca4d-d4d7-4e1",
+              "status": "aborted",
+              "abortReason": "loop_guard"
+            },
+            {
+              "role": "Implementation owner",
+              "id": "da37aced-864f-4e1",
+              "status": "aborted",
+              "abortReason": "loop_guard"
+            }
+          ],
+          "accepted_launches": 3,
+          "launch_rejections": 0,
+          "assignments": [
+            {
+              "call_id": "call_33999dba776e421b8bb9a791",
+              "role": "Lifecycle investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_64d0fcc842ca45ceaea46cb4",
+              "role": "Boundary investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_f374f3202353487d871b1eb4",
+              "role": "Implementation owner",
+              "has_coordination_section": true,
+              "communication": "group"
+            }
+          ],
+          "model_verified": true,
+          "thinking_levels": [
+            "low"
+          ],
+          "guidance_verified_in_first_provider_requests": true,
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "both_channels_used": false,
+          "loop_warning_count": 3,
+          "trace_warnings": []
+        },
+        {
+          "label": "trial-02",
+          "seconds": 357.2,
+          "finish_reason": "settled",
+          "public_checks": {
+            "protected_changes": [
+              "src/extensions/mcp-adapter/types.ts"
+            ],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.http-single-connect.test.ts",
+              "src/extensions/mcp-adapter/mcp-auth-flow.callback-port.test.ts",
+              "src/modes/acp/ext-methods/probe-skip-auth.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 13,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "usage": {
+            "input": 204069,
+            "output": 28274,
+            "cacheRead": 2523456,
+            "cacheWrite": 0
+          },
+          "monitor_usage_at_stop": {
+            "input": 204069,
+            "output": 28274,
+            "cacheRead": 2523456,
+            "cacheWrite": 0
+          },
+          "channel_use": {
+            "manual_posts": 3,
+            "manual_peer_body_returns": 3,
+            "directed_message_attempts": 0,
+            "accepted_directed_messages": 0,
+            "peer_deliveries_in_history": 0,
+            "peer_deliveries_with_later_assistant": 0,
+            "post_errors": 0
+          },
+          "trace_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 3,
+            "unique_reader_entry_pairs": 3,
+            "known_peer_body_returns": 3,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "workers": [
+            {
+              "role": "Boundary investigator",
+              "id": "9c841c65-4d49-46b",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Lifecycle investigator",
+              "id": "443e8f4a-c363-4cf",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Implementation owner",
+              "id": "dc5cdb9f-60df-4f9",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "accepted_launches": 3,
+          "launch_rejections": 0,
+          "assignments": [
+            {
+              "call_id": "call_916d2fed8898435eaeb2589a",
+              "role": "Lifecycle investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_64e97bbeaafb49d2ad554a36",
+              "role": "Boundary investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_e33ad59ba0804efea6b04091",
+              "role": "Implementation owner",
+              "has_coordination_section": true,
+              "communication": "group"
+            }
+          ],
+          "model_verified": true,
+          "thinking_levels": [
+            "low"
+          ],
+          "guidance_verified_in_first_provider_requests": true,
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "both_channels_used": false,
+          "loop_warning_count": 0,
+          "trace_warnings": []
+        }
+      ]
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-lcm738kb",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "dcc26382^",
+        "reference_ref": "dcc26382",
+        "workload": "oauth",
+        "binary_sha256": "78d847ed39d789217f8c4f51d6da6300f09917d124bc62f0b461e4b3c679c21b",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "comparison",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 12000000,
+        "wall_seconds": 1200,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-lcm738kb/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-lcm738kb/trial-02"
+          }
+        ]
+      },
+      "isolation_checks": 20,
+      "retained_sealed_inputs_verified": 1753,
+      "removed_sealed_home_files": 4,
+      "preflight": {
+        "broken": {
+          "test:oauth-local": 1,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 47,
+          "failed": 6,
+          "total": 53
+        },
+        "fixed": {
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        }
+      },
+      "name": "directed-guidance-and-guard-fix",
+      "source_provenance": {
+        "head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "binary_sha256": "78d847ed39d789217f8c4f51d6da6300f09917d124bc62f0b461e4b3c679c21b",
+        "source": {
+          "src/extensions/agents/index.ts": "f599a5f8b37b52c0aa93fa3dea40d6337963741fe03f46870628af79429def14",
+          "src/extensions/agents/index.test.ts": "44314d6b2bd9bc8bfc9589cd56d5a901e81fb27a8ab210b374aa245ed8776a92",
+          "src/extensions/agents/prompt/prompts.ts": "622c3a612981561a73dd29a3c331be708d4d985b7c1004b41d319dfe3ca4ae78",
+          "src/extensions/agents/prompt/prompts.test.ts": "4d6b19e4f43c578b57115fb58d66cf9b3809e95e48f9256ff3b2e01b43d726b2",
+          "src/extensions/loop-guard.ts": "40e413e9c00bc49cc796212a70b6776d0775db166fb4fff6de54b0dac303f081",
+          "src/extensions/loop-guard.test.ts": "bded1f7687e61210a47a79a3f5d077a92f7f275d88373800076ef195d38d81b4",
+          "scripts/agent-communication/experiment.ts": "49a8a4c6cca45652f5630689e08a19b33c73df773e4eaae54253212fbbaabae0"
+        },
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-e5n4lnmu",
+        "purpose": "Verify actual directed peer notification after board posts; full raw bash commands avoid false loop aborts."
+      },
+      "trials": [
+        {
+          "label": "trial-01",
+          "seconds": 357.7,
+          "finish_reason": "settled",
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.connect-once.test.ts",
+              "src/modes/acp/probe-skipauth.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 14,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "usage": {
+            "input": 467154,
+            "output": 34842,
+            "cacheRead": 2563072,
+            "cacheWrite": 0
+          },
+          "monitor_usage_at_stop": {
+            "input": 467154,
+            "output": 34842,
+            "cacheRead": 2563072,
+            "cacheWrite": 0
+          },
+          "channel_use": {
+            "manual_posts": 2,
+            "manual_peer_body_returns": 2,
+            "directed_message_attempts": 0,
+            "accepted_directed_messages": 0,
+            "peer_deliveries_in_history": 0,
+            "peer_deliveries_with_later_assistant": 0,
+            "post_errors": 0
+          },
+          "trace_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 8,
+            "unique_reader_entry_pairs": 8,
+            "known_peer_body_returns": 6,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "workers": [
+            {
+              "role": "Boundary investigator",
+              "id": "0cf9c4a9-59e5-4dd",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Lifecycle investigator",
+              "id": "5145717c-d127-4ce",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "role": "Implementation owner",
+              "id": "2212a063-bdc5-492",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "accepted_launches": 3,
+          "launch_rejections": 0,
+          "assignments": [
+            {
+              "call_id": "call_aa2fa951902e46438ab9283d",
+              "role": "Lifecycle investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_c4879472a9e34a0082c934da",
+              "role": "Boundary investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_70af99be69c742c5a302cc2c",
+              "role": "Implementation owner",
+              "has_coordination_section": true,
+              "communication": "group"
+            }
+          ],
+          "model_verified": true,
+          "thinking_levels": [
+            "low"
+          ],
+          "guidance_verified_in_first_provider_requests": true,
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "both_channels_used": false,
+          "loop_warning_count": 0,
+          "trace_warnings": []
+        },
+        {
+          "label": "trial-02",
+          "seconds": 312.6,
+          "finish_reason": "settled",
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            }
+          },
+          "usage": {
+            "input": 423574,
+            "output": 23929,
+            "cacheRead": 1860480,
+            "cacheWrite": 0
+          },
+          "monitor_usage_at_stop": {
+            "input": 423574,
+            "output": 23929,
+            "cacheRead": 1860480,
+            "cacheWrite": 0
+          },
+          "channel_use": {
+            "manual_posts": 3,
+            "manual_peer_body_returns": 3,
+            "directed_message_attempts": 0,
+            "accepted_directed_messages": 0,
+            "peer_deliveries_in_history": 0,
+            "peer_deliveries_with_later_assistant": 0,
+            "post_errors": 0
+          },
+          "trace_summary": {
+            "recorded_message_calls": 0,
+            "parsed_message_receipts": 0,
+            "board_body_returns": 10,
+            "unique_reader_entry_pairs": 10,
+            "known_peer_body_returns": 8,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 0,
+            "questions_with_recorded_accepted_reply": 0
+          },
+          "workers": [
+            {
+              "role": "Lifecycle investigator",
+              "id": "295d67f1-5b88-4fd",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Boundary investigator",
+              "id": "40cb21a8-4b83-4a1",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Implementation owner",
+              "id": "6ff7f490-014f-40f",
+              "status": "completed",
+              "abortReason": null
+            }
+          ],
+          "accepted_launches": 3,
+          "launch_rejections": 0,
+          "assignments": [
+            {
+              "call_id": "call_477212ee234345579287b31e",
+              "role": "Lifecycle investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_e87090aae8f44965bebc9ebf",
+              "role": "Boundary investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_860987007ffd4be1ad78d415",
+              "role": "Implementation owner",
+              "has_coordination_section": true,
+              "communication": "group"
+            }
+          ],
+          "model_verified": true,
+          "thinking_levels": [
+            "low"
+          ],
+          "guidance_verified_in_first_provider_requests": true,
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "both_channels_used": false,
+          "loop_warning_count": 0,
+          "trace_warnings": []
+        }
+      ]
+    },
+    {
+      "capture_root": "/private/tmp/kimchi-compaction-arms-u_9oz9az",
+      "manifest": {
+        "runner_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "target_ref": "dcc26382^",
+        "reference_ref": "dcc26382",
+        "workload": "oauth",
+        "binary_sha256": "78d847ed39d789217f8c4f51d6da6300f09917d124bc62f0b461e4b3c679c21b",
+        "model": "kimchi-dev/glm-5.3-flash",
+        "thinking": "low",
+        "worker_ferment": false,
+        "purpose": "explicit-communication-use",
+        "max_output_tokens": 80000,
+        "max_total_tokens": 12000000,
+        "wall_seconds": 1200,
+        "budget_note": "Monitor counts all captured parent and worker usage, including cache reads, after responses complete. Concurrent or in-flight responses can exceed the cap; report the observed excess.",
+        "trials": [
+          {
+            "label": "trial-01",
+            "arm": "board",
+            "repetition": 1,
+            "directory": "/private/tmp/kimchi-compaction-arms-u_9oz9az/trial-01"
+          },
+          {
+            "label": "trial-02",
+            "arm": "board",
+            "repetition": 2,
+            "directory": "/private/tmp/kimchi-compaction-arms-u_9oz9az/trial-02"
+          }
+        ],
+        "communication_brief_sha256": "9ef283e980f542c05fa48b3fb85da4d1caac331749fc33fe88016b7ebe1b3bb9",
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-lcm738kb"
+      },
+      "isolation_checks": 20,
+      "retained_sealed_inputs_verified": 1753,
+      "removed_sealed_home_files": 4,
+      "preflight": {
+        "broken": {
+          "test:oauth-local": 1,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 47,
+          "failed": 6,
+          "total": 53
+        },
+        "fixed": {
+          "test:oauth-local": 0,
+          "typecheck": 0,
+          "check:oauth-style": 0,
+          "passed": 53,
+          "failed": 0,
+          "total": 53
+        }
+      },
+      "name": "explicit-cross-review",
+      "source_provenance": {
+        "head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+        "binary_sha256": "78d847ed39d789217f8c4f51d6da6300f09917d124bc62f0b461e4b3c679c21b",
+        "source": {
+          "src/extensions/agents/index.ts": "f599a5f8b37b52c0aa93fa3dea40d6337963741fe03f46870628af79429def14",
+          "src/extensions/agents/index.test.ts": "44314d6b2bd9bc8bfc9589cd56d5a901e81fb27a8ab210b374aa245ed8776a92",
+          "src/extensions/agents/prompt/prompts.ts": "622c3a612981561a73dd29a3c331be708d4d985b7c1004b41d319dfe3ca4ae78",
+          "src/extensions/agents/prompt/prompts.test.ts": "4d6b19e4f43c578b57115fb58d66cf9b3809e95e48f9256ff3b2e01b43d726b2",
+          "src/extensions/loop-guard.ts": "40e413e9c00bc49cc796212a70b6776d0775db166fb4fff6de54b0dac303f081",
+          "src/extensions/loop-guard.test.ts": "bded1f7687e61210a47a79a3f5d077a92f7f275d88373800076ef195d38d81b4",
+          "scripts/agent-communication/experiment.ts": "49a8a4c6cca45652f5630689e08a19b33c73df773e4eaae54253212fbbaabae0"
+        },
+        "previous_capture": "/private/tmp/kimchi-compaction-arms-e5n4lnmu",
+        "purpose": "Verify actual directed peer notification after board posts; full raw bash commands avoid false loop aborts."
+      },
+      "workspace_documentation_changes": [
+        {
+          "path": "scripts/agent-communication/README.md",
+          "frozen_copy": "frozen-protocol/README.md",
+          "sha256": "7f2d2855bd8f882592774fb33e6b20fe971ec837b03bac045a38c314a92c701c",
+          "reason": "Reproduction documentation updated during the capture; frozen copy and model-visible inputs unchanged."
+        }
+      ],
+      "trials": [
+        {
+          "label": "trial-01",
+          "seconds": 618.9,
+          "finish_reason": "settled",
+          "public_checks": {
+            "protected_changes": [],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [
+              "src/extensions/mcp-adapter/server-manager.single-connect.test.ts",
+              "src/extensions/mcp-adapter/mcp-auth-flow.skipauth.test.ts"
+            ],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 1,
+              "passed": 0,
+              "failed": 1,
+              "pending": 22
+            },
+            "own": {
+              "exit_code": 0,
+              "passed": 9,
+              "failed": 0,
+              "pending": 0
+            }
+          },
+          "usage": {
+            "input": 787312,
+            "output": 47332,
+            "cacheRead": 4510720,
+            "cacheWrite": 0
+          },
+          "monitor_usage_at_stop": {
+            "input": 787312,
+            "output": 47332,
+            "cacheRead": 4510720,
+            "cacheWrite": 0
+          },
+          "channel_use": {
+            "manual_posts": 3,
+            "manual_peer_body_returns": 8,
+            "directed_message_attempts": 8,
+            "accepted_directed_messages": 5,
+            "peer_deliveries_in_history": 5,
+            "peer_deliveries_with_later_assistant": 5,
+            "post_errors": 1
+          },
+          "trace_summary": {
+            "recorded_message_calls": 8,
+            "parsed_message_receipts": 7,
+            "board_body_returns": 25,
+            "unique_reader_entry_pairs": 21,
+            "known_peer_body_returns": 18,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 2,
+            "questions_with_recorded_accepted_reply": 2
+          },
+          "workers": [
+            {
+              "role": "Boundary investigator",
+              "id": "d8284e5f-8b74-475",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Lifecycle investigator",
+              "id": "e3af8acf-f9e5-4e9",
+              "status": "aborted",
+              "abortReason": "max_turns"
+            },
+            {
+              "role": "Implementation owner",
+              "id": "247e0cd8-e8f7-42a",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            }
+          ],
+          "accepted_launches": 3,
+          "launch_rejections": 0,
+          "assignments": [
+            {
+              "call_id": "call_e24ce85fe3724807a96466d9",
+              "role": "Lifecycle investigator",
+              "has_coordination_section": false,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_24f58618075e4f9cba41883b",
+              "role": "Boundary investigator",
+              "has_coordination_section": false,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_ac31d2b8a1e342c6a286fdeb",
+              "role": "Implementation owner",
+              "has_coordination_section": false,
+              "communication": "group"
+            }
+          ],
+          "model_verified": true,
+          "thinking_levels": [
+            "low"
+          ],
+          "guidance_verified_in_first_provider_requests": true,
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "both_channels_used": true,
+          "loop_warning_count": 0,
+          "trace_warnings": [
+            {
+              "file": "2026-09-21T15-12-58-065Z_01a0c487-04d1-737b-9976-999bdf37d3cc.jsonl",
+              "line": 53,
+              "session_id": "01a0c487-04d1-737b-9976-999bdf37d3cc",
+              "tool_call_id": "call_b6a842ccc1664aa8ad4569f5",
+              "timestamp": 1790003681078,
+              "reason": "non-JSON communication result",
+              "tool": "send_agent_message"
+            }
+          ],
+          "manual_posts": [
+            {
+              "id": "bd-37b5db90",
+              "authorAgentId": "247e0cd8-e8f7-42a",
+              "kind": "work",
+              "title": "Proposal: single-connect HTTP transport + fallback policy in server-manager.ts",
+              "postedAt": 1790003611032
+            },
+            {
+              "id": "bd-e55efa8d",
+              "authorAgentId": "e3af8acf-f9e5-4e9",
+              "kind": "finding",
+              "title": "mcp-auth-flow.ts: strictPort fallback for dynamic registration + skipAuth non-interactive refresh",
+              "postedAt": 1790003676126
+            },
+            {
+              "id": "bd-b8f4d528",
+              "authorAgentId": "d8284e5f-8b74-475",
+              "kind": "finding",
+              "title": "Boundary fix complete: skipAuth passthrough in handleProbeMcpServer",
+              "postedAt": 1790003696344
+            }
+          ],
+          "manual_peer_reads": [
+            {
+              "file": "2026-09-21T15-12-58-065Z_01a0c487-04d1-737b-9976-999bdf37d3cc.jsonl",
+              "line": 30,
+              "session_id": "01a0c487-04d1-737b-9976-999bdf37d3cc",
+              "tool_call_id": "call_a0a1291dfa1345eaadc3fc99",
+              "timestamp": 1790003612226,
+              "entry_id": "bd-37b5db90",
+              "author_id": "247e0cd8-e8f7-42a",
+              "reader_agent_id": "e3af8acf-f9e5-4e9",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "work",
+              "body_sha256": "1c2a88734bccc502a84928b09d73117fc5db38d42b14dfd9adc7d87afcbfb22c"
+            },
+            {
+              "file": "2026-09-21T15-12-58-065Z_01a0c487-04d1-737b-9976-999bdf37d3cc.jsonl",
+              "line": 65,
+              "session_id": "01a0c487-04d1-737b-9976-999bdf37d3cc",
+              "tool_call_id": "call_7cb8da6a24bc41e5bf0a90dd",
+              "timestamp": 1790003698309,
+              "entry_id": "bd-b8f4d528",
+              "author_id": "d8284e5f-8b74-475",
+              "reader_agent_id": "e3af8acf-f9e5-4e9",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "1544c069b10cb7f84286576fc48cdc6eabc9a7992b349dcf03b437a54a6afc9f"
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a09e5457e107.jsonl",
+              "line": 30,
+              "session_id": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "tool_call_id": "call_9926774a751342f1b70ee550",
+              "timestamp": 1790003615565,
+              "entry_id": "bd-37b5db90",
+              "author_id": "247e0cd8-e8f7-42a",
+              "reader_agent_id": "d8284e5f-8b74-475",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "work",
+              "body_sha256": "1c2a88734bccc502a84928b09d73117fc5db38d42b14dfd9adc7d87afcbfb22c"
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a09e5457e107.jsonl",
+              "line": 55,
+              "session_id": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "tool_call_id": "call_84c62819c29649968a16e15a",
+              "timestamp": 1790003679707,
+              "entry_id": "bd-37b5db90",
+              "author_id": "247e0cd8-e8f7-42a",
+              "reader_agent_id": "d8284e5f-8b74-475",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "work",
+              "body_sha256": "1c2a88734bccc502a84928b09d73117fc5db38d42b14dfd9adc7d87afcbfb22c"
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a09e5457e107.jsonl",
+              "line": 55,
+              "session_id": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "tool_call_id": "call_84c62819c29649968a16e15a",
+              "timestamp": 1790003679707,
+              "entry_id": "bd-e55efa8d",
+              "author_id": "e3af8acf-f9e5-4e9",
+              "reader_agent_id": "d8284e5f-8b74-475",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "6a7eeb3f462ef10abc75cefd1608f2ee08278ba225f48a0dce907032b523d3e8"
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a6c81d400b24.jsonl",
+              "line": 38,
+              "session_id": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "tool_call_id": "call_0b5b563601d74ff59b0b9871",
+              "timestamp": 1790003677406,
+              "entry_id": "bd-e55efa8d",
+              "author_id": "e3af8acf-f9e5-4e9",
+              "reader_agent_id": "247e0cd8-e8f7-42a",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "6a7eeb3f462ef10abc75cefd1608f2ee08278ba225f48a0dce907032b523d3e8"
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a6c81d400b24.jsonl",
+              "line": 48,
+              "session_id": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "tool_call_id": "call_49bc48f271694592ae037fbd",
+              "timestamp": 1790003713174,
+              "entry_id": "bd-e55efa8d",
+              "author_id": "e3af8acf-f9e5-4e9",
+              "reader_agent_id": "247e0cd8-e8f7-42a",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "6a7eeb3f462ef10abc75cefd1608f2ee08278ba225f48a0dce907032b523d3e8"
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a6c81d400b24.jsonl",
+              "line": 48,
+              "session_id": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "tool_call_id": "call_49bc48f271694592ae037fbd",
+              "timestamp": 1790003713174,
+              "entry_id": "bd-b8f4d528",
+              "author_id": "d8284e5f-8b74-475",
+              "reader_agent_id": "247e0cd8-e8f7-42a",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "1544c069b10cb7f84286576fc48cdc6eabc9a7992b349dcf03b437a54a6afc9f"
+            }
+          ],
+          "message_routes": [
+            {
+              "file": "2026-09-21T15-12-58-065Z_01a0c487-04d1-737b-9976-999bdf37d3cc.jsonl",
+              "line": 38,
+              "session_id": "01a0c487-04d1-737b-9976-999bdf37d3cc",
+              "tool_call_id": "call_51ddfc1050994941b51c1297",
+              "timestamp": 1790003646609,
+              "kind": "answer",
+              "message_id": "b8996c11-8001-478c-aa75-1911685e7d40",
+              "reply_to": "5cde5df5-ff6b-4d5b-a923-018532099374",
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-58-065Z_01a0c487-04d1-737b-9976-999bdf37d3cc.jsonl",
+              "line": 56,
+              "session_id": "01a0c487-04d1-737b-9976-999bdf37d3cc",
+              "tool_call_id": "call_95f67c020eba48d897bfff8d",
+              "timestamp": 1790003685549,
+              "kind": "status",
+              "message_id": "7eba390c-63c1-4c07-bab3-dac9b27abce3",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a09e5457e107.jsonl",
+              "line": 35,
+              "session_id": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "tool_call_id": "call_9ee69cb3643d4a498414d14d",
+              "timestamp": 1790003629581,
+              "kind": "answer",
+              "message_id": "d40ac00e-55ea-4d7a-81cc-c5c062d46bfb",
+              "reply_to": "7508414b-0413-4d09-b7f4-b12b6fc3c2a9",
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a09e5457e107.jsonl",
+              "line": 59,
+              "session_id": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "tool_call_id": "call_860491a2a8194ce8a7de650b",
+              "timestamp": 1790003696344,
+              "kind": "answer",
+              "message_id": null,
+              "reply_to": "bd-e55efa8d",
+              "status": "rejected",
+              "accepted": false
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a09e5457e107.jsonl",
+              "line": 63,
+              "session_id": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "tool_call_id": "call_d6b953b60ab44963960178ae",
+              "timestamp": 1790003704296,
+              "kind": "answer",
+              "message_id": null,
+              "reply_to": "7eba390c-63c1-4c07-bab3-dac9b27abce3",
+              "status": "rejected",
+              "accepted": false
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a6c81d400b24.jsonl",
+              "line": 22,
+              "session_id": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "tool_call_id": "call_817127269e01467192a9846a",
+              "timestamp": 1790003619296,
+              "kind": "question",
+              "message_id": "7508414b-0413-4d09-b7f4-b12b6fc3c2a9",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-58-068Z_01a0c487-04d4-750a-b559-a6c81d400b24.jsonl",
+              "line": 23,
+              "session_id": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "tool_call_id": "call_66c635e9c0364ccda7fb21c6",
+              "timestamp": 1790003619296,
+              "kind": "question",
+              "message_id": "5cde5df5-ff6b-4d5b-a923-018532099374",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            }
+          ],
+          "peer_deliveries": [
+            {
+              "session": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "line": 27,
+              "next_assistant_line": 28,
+              "next_tools": [
+                "edit"
+              ]
+            },
+            {
+              "session": "01a0c487-04d4-750a-b559-a6c81d400b24",
+              "line": 32,
+              "next_assistant_line": 33,
+              "next_tools": [
+                "edit"
+              ]
+            },
+            {
+              "session": "01a0c487-04d1-737b-9976-999bdf37d3cc",
+              "line": 36,
+              "next_assistant_line": 37,
+              "next_tools": [
+                "send_agent_message"
+              ]
+            },
+            {
+              "session": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "line": 33,
+              "next_assistant_line": 34,
+              "next_tools": [
+                "send_agent_message"
+              ]
+            },
+            {
+              "session": "01a0c487-04d4-750a-b559-a09e5457e107",
+              "line": 61,
+              "next_assistant_line": 62,
+              "next_tools": [
+                "send_agent_message"
+              ]
+            }
+          ]
+        },
+        {
+          "label": "trial-02",
+          "seconds": 527.9,
+          "finish_reason": "settled",
+          "public_checks": {
+            "protected_changes": [
+              "src/modes/acp/ext-methods/mcp.test.ts"
+            ],
+            "test:oauth-local": 0,
+            "typecheck": 0,
+            "check:oauth-style": 0,
+            "passed": 53,
+            "failed": 0,
+            "total": 53
+          },
+          "supplemental": {
+            "own_files": [],
+            "refresh": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 0
+            },
+            "timeout": {
+              "exit_code": 0,
+              "passed": 1,
+              "failed": 0,
+              "pending": 22
+            }
+          },
+          "usage": {
+            "input": 773261,
+            "output": 43366,
+            "cacheRead": 3224576,
+            "cacheWrite": 0
+          },
+          "monitor_usage_at_stop": {
+            "input": 773261,
+            "output": 43366,
+            "cacheRead": 3224576,
+            "cacheWrite": 0
+          },
+          "channel_use": {
+            "manual_posts": 2,
+            "manual_peer_body_returns": 5,
+            "directed_message_attempts": 6,
+            "accepted_directed_messages": 4,
+            "peer_deliveries_in_history": 4,
+            "peer_deliveries_with_later_assistant": 4,
+            "post_errors": 1
+          },
+          "trace_summary": {
+            "recorded_message_calls": 6,
+            "parsed_message_receipts": 4,
+            "board_body_returns": 17,
+            "unique_reader_entry_pairs": 16,
+            "known_peer_body_returns": 13,
+            "parent_body_returns": 0,
+            "unclassified_body_returns": 0,
+            "accepted_questions": 2,
+            "questions_with_recorded_accepted_reply": 2
+          },
+          "workers": [
+            {
+              "role": "Lifecycle investigator",
+              "id": "cab5020f-d005-499",
+              "status": "completed",
+              "abortReason": null
+            },
+            {
+              "role": "Boundary investigator",
+              "id": "acaf2b8c-b998-4d7",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            },
+            {
+              "role": "Implementation owner",
+              "id": "b8043005-c332-4b7",
+              "status": "aborted",
+              "abortReason": "token_budget"
+            }
+          ],
+          "accepted_launches": 3,
+          "launch_rejections": 0,
+          "assignments": [
+            {
+              "call_id": "call_824aa781f031464c8c58d813",
+              "role": "Lifecycle investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_7915eca3f535448cb1403c52",
+              "role": "Boundary investigator",
+              "has_coordination_section": true,
+              "communication": "group"
+            },
+            {
+              "call_id": "call_6501e3aa69ac41709d90ff69",
+              "role": "Implementation owner",
+              "has_coordination_section": false,
+              "communication": "group"
+            }
+          ],
+          "model_verified": true,
+          "thinking_levels": [
+            "low"
+          ],
+          "guidance_verified_in_first_provider_requests": true,
+          "cleanup": {
+            "live": false,
+            "home_removed": true
+          },
+          "both_channels_used": true,
+          "loop_warning_count": 0,
+          "trace_warnings": [
+            {
+              "file": "2026-09-21T15-12-57-333Z_01a0c487-01f5-75c9-a476-f742ac415e87.jsonl",
+              "line": 23,
+              "session_id": "01a0c487-01f5-75c9-a476-f742ac415e87",
+              "tool_call_id": "call_3e456b3909a14f5299be6c49",
+              "timestamp": 1790003630906,
+              "reason": "non-JSON communication result",
+              "tool": "send_agent_message"
+            },
+            {
+              "file": "2026-09-21T15-12-57-333Z_01a0c487-01f5-75c9-a476-f742ac415e87.jsonl",
+              "line": 27,
+              "session_id": "01a0c487-01f5-75c9-a476-f742ac415e87",
+              "tool_call_id": "call_2cdf7e73af714acc95a246bf",
+              "timestamp": 1790003638364,
+              "reason": "non-JSON communication result",
+              "tool": "send_agent_message"
+            }
+          ],
+          "manual_posts": [
+            {
+              "id": "bd-7788d3db",
+              "authorAgentId": "b8043005-c332-4b7",
+              "kind": "work",
+              "title": "server-manager.ts connection/fallback repair proposal (implementation owner)",
+              "postedAt": 1790003600953
+            },
+            {
+              "id": "bd-7721593a",
+              "authorAgentId": "acaf2b8c-b998-4d7",
+              "kind": "finding",
+              "title": "skipAuth fixed in mcp.ts; ProbeResult contract + probeTools needsAuth mapping is load-bearing for single-connect rework",
+              "postedAt": 1790003655500
+            }
+          ],
+          "manual_peer_reads": [
+            {
+              "file": "2026-09-21T15-12-57-329Z_01a0c487-01f1-762a-9459-e509546322d0.jsonl",
+              "line": 33,
+              "session_id": "01a0c487-01f1-762a-9459-e509546322d0",
+              "tool_call_id": "call_9b5d12590a104c3aa82316fc",
+              "timestamp": 1790003607183,
+              "entry_id": "bd-7788d3db",
+              "author_id": "b8043005-c332-4b7",
+              "reader_agent_id": "cab5020f-d005-499",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "work",
+              "body_sha256": "20a79d299bf387cba81490f301ce7aec0b1a989b321da039a6e5231f508aff21"
+            },
+            {
+              "file": "2026-09-21T15-12-57-329Z_01a0c487-01f1-762a-9459-e509546322d0.jsonl",
+              "line": 48,
+              "session_id": "01a0c487-01f1-762a-9459-e509546322d0",
+              "tool_call_id": "call_d9054398b7d34c8084f054a8",
+              "timestamp": 1790003659723,
+              "entry_id": "bd-7788d3db",
+              "author_id": "b8043005-c332-4b7",
+              "reader_agent_id": "cab5020f-d005-499",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "work",
+              "body_sha256": "20a79d299bf387cba81490f301ce7aec0b1a989b321da039a6e5231f508aff21"
+            },
+            {
+              "file": "2026-09-21T15-12-57-329Z_01a0c487-01f1-762a-9459-e509546322d0.jsonl",
+              "line": 48,
+              "session_id": "01a0c487-01f1-762a-9459-e509546322d0",
+              "tool_call_id": "call_d9054398b7d34c8084f054a8",
+              "timestamp": 1790003659723,
+              "entry_id": "bd-7721593a",
+              "author_id": "acaf2b8c-b998-4d7",
+              "reader_agent_id": "cab5020f-d005-499",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "f375613b327aa6799a72d228792c595df27ebe06a684ce19daa34c4800f07a6c"
+            },
+            {
+              "file": "2026-09-21T15-12-57-333Z_01a0c487-01f5-75c9-a476-f742ac415e87.jsonl",
+              "line": 18,
+              "session_id": "01a0c487-01f5-75c9-a476-f742ac415e87",
+              "tool_call_id": "call_2c280a3f65c04a27b0892a0b",
+              "timestamp": 1790003605318,
+              "entry_id": "bd-7788d3db",
+              "author_id": "b8043005-c332-4b7",
+              "reader_agent_id": "acaf2b8c-b998-4d7",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "work",
+              "body_sha256": "20a79d299bf387cba81490f301ce7aec0b1a989b321da039a6e5231f508aff21"
+            },
+            {
+              "file": "2026-09-21T15-12-57-335Z_01a0c487-01f7-76cb-b7ca-68873288d46e.jsonl",
+              "line": 35,
+              "session_id": "01a0c487-01f7-76cb-b7ca-68873288d46e",
+              "tool_call_id": "call_dea86d18e9784312a53e8145",
+              "timestamp": 1790003659928,
+              "entry_id": "bd-7721593a",
+              "author_id": "acaf2b8c-b998-4d7",
+              "reader_agent_id": "b8043005-c332-4b7",
+              "reader_role": "worker",
+              "own_entry": false,
+              "kind": "finding",
+              "body_sha256": "f375613b327aa6799a72d228792c595df27ebe06a684ce19daa34c4800f07a6c"
+            }
+          ],
+          "message_routes": [
+            {
+              "file": "2026-09-21T15-12-57-329Z_01a0c487-01f1-762a-9459-e509546322d0.jsonl",
+              "line": 39,
+              "session_id": "01a0c487-01f1-762a-9459-e509546322d0",
+              "tool_call_id": "call_0f561bb8744c41e792522888",
+              "timestamp": 1790003645367,
+              "kind": "answer",
+              "message_id": "d92a8e30-6696-426f-915d-4a92148b1dcf",
+              "reply_to": "6788a9eb-6c75-40a4-b8fe-f8d06d8e8223",
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-57-333Z_01a0c487-01f5-75c9-a476-f742ac415e87.jsonl",
+              "line": 29,
+              "session_id": "01a0c487-01f5-75c9-a476-f742ac415e87",
+              "tool_call_id": "call_ad0acbd3c44c4fc08aae457f",
+              "timestamp": 1790003647142,
+              "kind": "answer",
+              "message_id": "9e31acd7-31ff-4042-9fb2-a46355524cde",
+              "reply_to": "af75694d-cf31-4d23-bc39-33c26d52edfb",
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-57-335Z_01a0c487-01f7-76cb-b7ca-68873288d46e.jsonl",
+              "line": 20,
+              "session_id": "01a0c487-01f7-76cb-b7ca-68873288d46e",
+              "tool_call_id": "call_e991039ec6d647ccbb48d213",
+              "timestamp": 1790003610350,
+              "kind": "question",
+              "message_id": "af75694d-cf31-4d23-bc39-33c26d52edfb",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            },
+            {
+              "file": "2026-09-21T15-12-57-335Z_01a0c487-01f7-76cb-b7ca-68873288d46e.jsonl",
+              "line": 21,
+              "session_id": "01a0c487-01f7-76cb-b7ca-68873288d46e",
+              "tool_call_id": "call_8c8e2a4e5beb4670ac86aa1b",
+              "timestamp": 1790003610350,
+              "kind": "question",
+              "message_id": "6788a9eb-6c75-40a4-b8fe-f8d06d8e8223",
+              "reply_to": null,
+              "status": "queued_for_running_session",
+              "accepted": true
+            }
+          ],
+          "peer_deliveries": [
+            {
+              "session": "01a0c487-01f1-762a-9459-e509546322d0",
+              "line": 37,
+              "next_assistant_line": 38,
+              "next_tools": [
+                "send_agent_message",
+                "edit"
+              ]
+            },
+            {
+              "session": "01a0c487-01f7-76cb-b7ca-68873288d46e",
+              "line": 30,
+              "next_assistant_line": 31,
+              "next_tools": [
+                "bash"
+              ]
+            },
+            {
+              "session": "01a0c487-01f7-76cb-b7ca-68873288d46e",
+              "line": 33,
+              "next_assistant_line": 34,
+              "next_tools": [
+                "read_agent_board"
+              ]
+            },
+            {
+              "session": "01a0c487-01f5-75c9-a476-f742ac415e87",
+              "line": 21,
+              "next_assistant_line": 22,
+              "next_tools": [
+                "send_agent_message",
+                "mark_todo",
+                "mark_todo"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "loop_guard_replay": {
+    "before": [
+      {
+        "session": "01a0c472-cae6-7030-b7ff-3f3dc3c48d4e",
+        "tools": 27,
+        "warnings": [
+          {
+            "tool": 26,
+            "detector": "edit_run"
+          }
+        ]
+      },
+      {
+        "session": "01a0c472-cae5-7415-bf4b-271f72bfd9ad",
+        "tools": 26,
+        "warnings": [
+          {
+            "tool": 23,
+            "detector": "bash_repetition"
+          }
+        ]
+      },
+      {
+        "session": "01a0c472-cae2-76cd-a542-648e68937fc9",
+        "tools": 28,
+        "warnings": [
+          {
+            "tool": 27,
+            "detector": "bash_repetition"
+          }
+        ]
+      }
+    ],
+    "after": [
+      {
+        "session": "01a0c472-cae6-7030-b7ff-3f3dc3c48d4e",
+        "tools": 27,
+        "warnings": []
+      },
+      {
+        "session": "01a0c472-cae5-7415-bf4b-271f72bfd9ad",
+        "tools": 26,
+        "warnings": []
+      },
+      {
+        "session": "01a0c472-cae2-76cd-a542-648e68937fc9",
+        "tools": 28,
+        "warnings": []
+      }
+    ]
+  },
+  "validation": {
+    "focused_tests": {
+      "passed": 675,
+      "files": 36
+    },
+    "repository_check": "pass with existing unused import warning",
+    "binary_build": "pass",
+    "built_tui_workflows": 3,
+    "communication_brief_sha256": "9ef283e980f542c05fa48b3fb85da4d1caac331749fc33fe88016b7ebe1b3bb9"
+  },
+  "limits": [
+    "No current normal-worker arm uses the changed cross-review brief; do not infer a causal quality or speed gain.",
+    "Both explicit runs omit the final implementation decision post and parent board-body read.",
+    "Four of six workers in the explicit pair hit turn or output budgets.",
+    "Trial-02 changed a protected pre-existing test; public grading restores grading inputs but preserves candidate production.",
+    "The explicit pair has one late-fallback failure and one pass; both pass refresh, public tests, types and scoped style.",
+    "Three message schema errors, two invalid replies and two oversized posts were retained in the explicit pair."
+  ]
+}

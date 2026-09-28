@@ -1,0 +1,285 @@
+{
+  "capture_root": "/private/tmp/kimchi-peer-hints-b_mmvm8w",
+  "provenance": {
+    "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+    "source_sha256": {
+      "src/extensions/agents/manager/board.ts": "2fe074cff88e8b8c3861a5018214f904bf37264d865805bbc2a9e62563a5e82d",
+      "src/extensions/agents/manager/agent-manager.ts": "0f771a0fa60de132ffac3187c4d958207e293b6ca504be8c1e97afc92beb897d",
+      "src/extensions/agents/message-tool.ts": "1194843eb578182b69649f1d8cc7563ba7c62d0f94f991fb0ccbffdca54184f0"
+    },
+    "before_binary": "415b1f84c5917f01cb729b4df3c21b98f3e92f9f85277fe439720b44ba85ae06",
+    "after_binary": "6e04fadc856c232d812eae2d6e3d487f3902e4319c7cc17ce4c40d67de0ff249",
+    "probe_sha256": "4efdd8b3108063573e339f5069230e9d6c548fe27b7fcf4cad7dd1c33c331fd4",
+    "scope": "Native notification and delivery check; not a coding-quality benchmark."
+  },
+  "intermediate_provenance": {
+    "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+    "source_sha256": {
+      "src/extensions/agents/manager/board.ts": "71cb82a9b4a4087c7c228437f98503869b7fd238e246b77a4fbe6b5f943be15f",
+      "src/extensions/agents/manager/agent-manager.ts": "a8317d9a3523be1c763103b9067efabc5e023553a3daadfd9618a180f27036a9",
+      "src/extensions/agents/message-tool.ts": "58477e226126cb576b79384e4ad661a6c47b2ba325a4ce4aaad179a9edc3a9c2"
+    },
+    "before_binary": "415b1f84c5917f01cb729b4df3c21b98f3e92f9f85277fe439720b44ba85ae06",
+    "after_binary": "636ca4e9168d2ae2db1d293ebb3b1009c2e9e46cc7919c5377f047965c09da91",
+    "probe_sha256": "dc06de4783f9d7a0f9648682fec9dac5261076be1fe75f0dc2dda8e602301f92",
+    "scope": "Native notification and delivery check; not a coding-quality benchmark."
+  },
+  "validation": {
+    "regressions_failed_before": 2,
+    "peer_progress_regression_failed_before_second_change": true,
+    "unit_integration_tests_passed": 1088,
+    "tui_workflows_passed": 3,
+    "check_passed": true,
+    "build_passed": true,
+    "existing_lint_warning": "Unused asSession import in src/modes/acp/ext-methods/set-session-title.test.ts"
+  },
+  "trials": [
+    {
+      "label": "before-hints",
+      "implementation": "before",
+      "finish_reason": "settled",
+      "seconds": 60.32796597480774,
+      "outputs": {
+        "FIRST.txt": "ORBIT-41\n",
+        "OUTPUT.txt": "ORBIT-93\n"
+      },
+      "usage": {
+        "input": 33530,
+        "output": 3732,
+        "cacheRead": 224448,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "description": "Publisher",
+          "session_id": "01a0c3a0-2d36-72c4-b1e4-bb4a1677bdbc",
+          "requests": 7,
+          "hint_count": 6,
+          "hints_for_last_read_entries": 0,
+          "board_reads": [],
+          "tool_errors": []
+        },
+        {
+          "description": "Reader",
+          "session_id": "01a0c3a0-2d2b-75e9-b7f4-0b581469f64e",
+          "requests": 14,
+          "hint_count": 13,
+          "hints_for_last_read_entries": 7,
+          "board_reads": [
+            {
+              "ids": [
+                "bd-299a50a5",
+                "bd-f579e8ad"
+              ],
+              "kinds": [
+                "work",
+                "finding"
+              ],
+              "authors": [
+                "0b70e300-80ff-4c5",
+                "0beb3160-e118-463"
+              ]
+            },
+            {
+              "ids": [
+                "bd-39072fb6",
+                "bd-af6eefe3"
+              ],
+              "kinds": [
+                "work",
+                "warning"
+              ],
+              "authors": [
+                "0b70e300-80ff-4c5",
+                "0beb3160-e118-463"
+              ]
+            },
+            {
+              "ids": [
+                "bd-edf65284"
+              ],
+              "kinds": [
+                "work"
+              ],
+              "authors": [
+                "0b70e300-80ff-4c5"
+              ]
+            }
+          ],
+          "tool_errors": [
+            "bash"
+          ]
+        }
+      ],
+      "total_worker_hints": 19,
+      "total_board_reads": 3,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "isolation_passed": true,
+      "binary_sha256": "415b1f84c5917f01cb729b4df3c21b98f3e92f9f85277fe439720b44ba85ae06"
+    },
+    {
+      "label": "after-hints",
+      "implementation": "intermediate_peer_only",
+      "finish_reason": "settled",
+      "seconds": 39.62691783905029,
+      "outputs": {
+        "FIRST.txt": "ORBIT-41\n",
+        "OUTPUT.txt": "ORBIT-93\n"
+      },
+      "usage": {
+        "input": 26247,
+        "output": 2173,
+        "cacheRead": 178240,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "description": "Publisher: post board revisions",
+          "session_id": "01a0c39f-e96a-7399-a860-259a836f7308",
+          "requests": 8,
+          "hint_count": 7,
+          "hints_for_last_read_entries": 0,
+          "board_reads": [
+            {
+              "ids": [],
+              "kinds": [],
+              "authors": []
+            }
+          ],
+          "tool_errors": []
+        },
+        {
+          "description": "Reader: consume board revisions",
+          "session_id": "01a0c39f-e966-7399-bc00-fdd6ba240d77",
+          "requests": 10,
+          "hint_count": 2,
+          "hints_for_last_read_entries": 0,
+          "board_reads": [
+            {
+              "ids": [
+                "bd-9986ce68",
+                "bd-768ad3df"
+              ],
+              "kinds": [
+                "work",
+                "finding"
+              ],
+              "authors": [
+                "a73b53ed-a056-49f",
+                "88495174-7056-46f"
+              ]
+            },
+            {
+              "ids": [
+                "bd-768ad3df",
+                "bd-a9b60fbf",
+                "bd-c48aaa13"
+              ],
+              "kinds": [
+                "finding",
+                "work",
+                "warning"
+              ],
+              "authors": [
+                "88495174-7056-46f",
+                "a73b53ed-a056-49f",
+                "88495174-7056-46f"
+              ]
+            }
+          ],
+          "tool_errors": []
+        }
+      ],
+      "total_worker_hints": 9,
+      "total_board_reads": 3,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "isolation_passed": true,
+      "binary_sha256": "636ca4e9168d2ae2db1d293ebb3b1009c2e9e46cc7919c5377f047965c09da91"
+    },
+    {
+      "label": "after-manual-hints",
+      "implementation": "final_deliberate_peer_posts",
+      "finish_reason": "settled",
+      "seconds": 39.73194599151611,
+      "outputs": {
+        "FIRST.txt": "ORBIT-41\n",
+        "OUTPUT.txt": "ORBIT-93\n"
+      },
+      "usage": {
+        "input": 29351,
+        "output": 2426,
+        "cacheRead": 177408,
+        "cacheWrite": 0
+      },
+      "workers": [
+        {
+          "description": "Publisher",
+          "session_id": "01a0c3a4-5826-765b-bc56-0d59a38ad08b",
+          "requests": 8,
+          "hint_count": 0,
+          "hints_for_last_read_entries": 0,
+          "board_reads": [],
+          "tool_errors": []
+        },
+        {
+          "description": "Reader",
+          "session_id": "01a0c3a4-581f-77ef-a5bf-12f35ead6c88",
+          "requests": 10,
+          "hint_count": 2,
+          "hints_for_last_read_entries": 0,
+          "board_reads": [
+            {
+              "ids": [
+                "bd-4d3dfb3e",
+                "bd-d595cf48"
+              ],
+              "kinds": [
+                "work",
+                "finding"
+              ],
+              "authors": [
+                "bdbdcc71-54be-40d",
+                "b30b63f7-616a-48d"
+              ]
+            },
+            {
+              "ids": [
+                "bd-cee52e48",
+                "bd-b53f7837"
+              ],
+              "kinds": [
+                "work",
+                "warning"
+              ],
+              "authors": [
+                "bdbdcc71-54be-40d",
+                "b30b63f7-616a-48d"
+              ]
+            }
+          ],
+          "tool_errors": []
+        }
+      ],
+      "total_worker_hints": 2,
+      "total_board_reads": 2,
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "isolation_passed": true,
+      "binary_sha256": "6e04fadc856c232d812eae2d6e3d487f3902e4319c7cc17ce4c40d67de0ff249"
+    }
+  ],
+  "limitations": [
+    "One scripted workflow per implementation; this verifies notification selection and two peer revisions, not broad coding quality.",
+    "Intermediate peer-only filtering retained because a publisher still read routine peer progress. Final hints exclude host-marked automatic snapshots; explicit board reads and parent summaries retain them.",
+    "Top-level tasks were identical but generated worker assignments, tool batching and shell commands varied. Old reader retried unsupported cat -A. Token and time differences cannot be attributed solely to the hint change.",
+    "No caller authorization, directed-message delivery, board retention or Ferment policy changed."
+  ]
+}

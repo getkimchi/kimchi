@@ -1,0 +1,448 @@
+{
+  "scope": "Latest-progress replacement functional before/after; no coding-quality or total-inference-cost claim.",
+  "capture_root": "/private/tmp/kimchi-board-snapshots-jbrm2xxv",
+  "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+  "source_sha256": {
+    "src/extensions/agents/manager/board.ts": "408a4fe2c8b7ae035fcfb3d78d8690dfc881f8ff1d6e5e80d38bf201905c7a54",
+    "src/extensions/agents/manager/agent-manager.ts": "f5d67facd37c0ff622c899a79d184ddf8b53aef63d2d969323554e32e58b1d9b",
+    "src/extensions/agents/message-tool.ts": "9c3e6ea2e6bf75eb131aae4de6ded22e253961f193ac38364ab5714a1094cd28"
+  },
+  "validation": {
+    "regressions_failed_before": 2,
+    "integration_tests_passed": 1085,
+    "tui_workflows_passed": 3,
+    "build": "passed",
+    "check": "passed; existing unused asSession import warning",
+    "final_board_store_tests_passed": 4
+  },
+  "trials": [
+    {
+      "label": "before-progress",
+      "valid_comparison": false,
+      "invalid_reason": "Single worker has no batch group; board operations rejected. Retained setup failure.",
+      "seconds": 45.33633995056152,
+      "finish_reason": "settled",
+      "artifact_correct": true,
+      "usage": {
+        "input": 7222,
+        "output": 2222,
+        "cacheRead": 151168,
+        "cacheWrite": 0
+      },
+      "launches": [
+        {
+          "communication": "group",
+          "description": "Progress owner",
+          "isolated": true,
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000
+        },
+        {
+          "communication": "group",
+          "description": "Progress owner",
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000
+        }
+      ],
+      "board_reads": [
+        {
+          "reader": "parent",
+          "error": true,
+          "bytes": 60,
+          "receipt": {
+            "ok": false,
+            "reason": "unknown_group",
+            "availableGroupIds": []
+          }
+        },
+        {
+          "reader": "parent",
+          "error": true,
+          "bytes": 60,
+          "receipt": {
+            "ok": false,
+            "reason": "unknown_group",
+            "availableGroupIds": []
+          }
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "binary_sha256": "30f5ed2eaa0959d52c6fb1f4ebdc7caac5edbd25c88708da05869527d20b9ed2"
+    },
+    {
+      "label": "after-progress",
+      "valid_comparison": false,
+      "invalid_reason": "Single worker has no batch group; board operations rejected. Retained setup failure.",
+      "seconds": 38.566303968429565,
+      "finish_reason": "settled",
+      "artifact_correct": true,
+      "usage": {
+        "input": 15436,
+        "output": 1866,
+        "cacheRead": 100480,
+        "cacheWrite": 0
+      },
+      "launches": [
+        {
+          "communication": "group",
+          "description": "Progress owner",
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "run_in_background": false,
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000
+        }
+      ],
+      "board_reads": [
+        {
+          "reader": "parent",
+          "error": true,
+          "bytes": 60,
+          "receipt": {
+            "ok": false,
+            "reason": "unknown_group",
+            "availableGroupIds": []
+          }
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "binary_sha256": "415b1f84c5917f01cb729b4df3c21b98f3e92f9f85277fe439720b44ba85ae06"
+    },
+    {
+      "label": "before-progress-v2",
+      "valid_comparison": true,
+      "invalid_reason": null,
+      "seconds": 46.38112497329712,
+      "finish_reason": "settled",
+      "artifact_correct": true,
+      "usage": {
+        "input": 19198,
+        "output": 2606,
+        "cacheRead": 169856,
+        "cacheWrite": 0
+      },
+      "launches": [
+        {
+          "description": "Progress owner",
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "run_in_background": true,
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000,
+          "communication": "group",
+          "isolated": false
+        },
+        {
+          "description": "Progress reader",
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "run_in_background": true,
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000,
+          "communication": "group",
+          "isolated": false
+        }
+      ],
+      "board_reads": [
+        {
+          "reader": "parent",
+          "error": false,
+          "bytes": 2447,
+          "receipt": {
+            "ok": true,
+            "entries": [
+              {
+                "id": "bd-5d5ccbed",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 0/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_8f2c4f57a8de441caafbc0fd; scope: {\"kind\":\"global\"} 1 in_progress: Check output \u2014 phase-zero",
+                "postedAt": 1789986239698
+              },
+              {
+                "id": "bd-68d45ff8",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "finding",
+                "title": "Shared marker",
+                "body": "The final output must be READY",
+                "postedAt": 1789986240878
+              },
+              {
+                "id": "bd-caef7fcf",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "Manual handoff",
+                "body": "Keep this manual note.",
+                "postedAt": 1789986242114
+              },
+              {
+                "id": "bd-222a63cf",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 0/1 completed, 1 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_f17bf999d8d846e8b6a9db66; scope: {\"kind\":\"global\"} 1 blocked: Check output \u2014 phase-one",
+                "postedAt": 1789986243261
+              },
+              {
+                "id": "bd-3dbc6014",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 0/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_fe5bd25fb3554dbbb34038a3; scope: {\"kind\":\"global\"} 1 in_progress: Check output \u2014 phase-two",
+                "postedAt": 1789986244375
+              },
+              {
+                "id": "bd-2405dc7b",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 1/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_aa2643c7cc4e478c8c5f4002; scope: {\"kind\":\"global\"} 1 completed: Check output \u2014 Evidence: READY bytes verified",
+                "postedAt": 1789986247943
+              }
+            ],
+            "total": 6
+          }
+        },
+        {
+          "reader": "worker",
+          "error": false,
+          "bytes": 2447,
+          "receipt": {
+            "ok": true,
+            "entries": [
+              {
+                "id": "bd-5d5ccbed",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 0/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_8f2c4f57a8de441caafbc0fd; scope: {\"kind\":\"global\"} 1 in_progress: Check output \u2014 phase-zero",
+                "postedAt": 1789986239698
+              },
+              {
+                "id": "bd-68d45ff8",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "finding",
+                "title": "Shared marker",
+                "body": "The final output must be READY",
+                "postedAt": 1789986240878
+              },
+              {
+                "id": "bd-caef7fcf",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "Manual handoff",
+                "body": "Keep this manual note.",
+                "postedAt": 1789986242114
+              },
+              {
+                "id": "bd-222a63cf",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 0/1 completed, 1 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_f17bf999d8d846e8b6a9db66; scope: {\"kind\":\"global\"} 1 blocked: Check output \u2014 phase-one",
+                "postedAt": 1789986243261
+              },
+              {
+                "id": "bd-3dbc6014",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 0/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_fe5bd25fb3554dbbb34038a3; scope: {\"kind\":\"global\"} 1 in_progress: Check output \u2014 phase-two",
+                "postedAt": 1789986244375
+              },
+              {
+                "id": "bd-2405dc7b",
+                "rootSessionId": "01a0c37e-4405-786f-959d-05e4d4fb1bbe",
+                "groupId": "batch-1",
+                "authorAgentId": "6b3b5af5-731a-4b6",
+                "kind": "work",
+                "title": "TODO progress: 1/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6e40-731d-ab2d-80754f24a6b0; tool result: call_aa2643c7cc4e478c8c5f4002; scope: {\"kind\":\"global\"} 1 completed: Check output \u2014 Evidence: READY bytes verified",
+                "postedAt": 1789986247943
+              }
+            ],
+            "total": 6
+          }
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "binary_sha256": "30f5ed2eaa0959d52c6fb1f4ebdc7caac5edbd25c88708da05869527d20b9ed2"
+    },
+    {
+      "label": "after-progress-v2",
+      "valid_comparison": true,
+      "invalid_reason": null,
+      "seconds": 43.626060009002686,
+      "finish_reason": "settled",
+      "artifact_correct": true,
+      "usage": {
+        "input": 26402,
+        "output": 2412,
+        "cacheRead": 148544,
+        "cacheWrite": 0
+      },
+      "launches": [
+        {
+          "communication": "group",
+          "description": "Progress owner",
+          "isolated": false,
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "run_in_background": true,
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000
+        },
+        {
+          "communication": "group",
+          "description": "Progress reader",
+          "isolated": false,
+          "max_duration": 180,
+          "max_turns": 24,
+          "model": "glm-5.3-flash",
+          "run_in_background": true,
+          "subagent_type": "General-Purpose",
+          "thinking": "low",
+          "token_budget": 6000
+        }
+      ],
+      "board_reads": [
+        {
+          "reader": "parent",
+          "error": false,
+          "bytes": 1105,
+          "receipt": {
+            "ok": true,
+            "entries": [
+              {
+                "id": "bd-f4a5f970",
+                "rootSessionId": "01a0c37e-418f-76b5-8c7c-272a4b7db388",
+                "groupId": "batch-1",
+                "authorAgentId": "48ffeb10-8ae0-40d",
+                "kind": "finding",
+                "title": "Shared marker",
+                "body": "The final output must be READY followed by a newline.",
+                "postedAt": 1789986240462
+              },
+              {
+                "id": "bd-9ba7d1cb",
+                "rootSessionId": "01a0c37e-418f-76b5-8c7c-272a4b7db388",
+                "groupId": "batch-1",
+                "authorAgentId": "48ffeb10-8ae0-40d",
+                "kind": "work",
+                "title": "Manual handoff",
+                "body": "Keep this manual note.",
+                "postedAt": 1789986241514
+              },
+              {
+                "id": "bd-a66ee245",
+                "rootSessionId": "01a0c37e-418f-76b5-8c7c-272a4b7db388",
+                "groupId": "batch-1",
+                "authorAgentId": "48ffeb10-8ae0-40d",
+                "kind": "work",
+                "title": "TODO progress: 1/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6cd3-7560-96ec-1712d403c3d8; tool result: call_e384dff273224f8985bedb29; scope: {\"kind\":\"global\"} 1 completed: Check output \u2014 Evidence: READY bytes verified",
+                "postedAt": 1789986248923,
+                "snapshotKey": "[\"01a0c37e-6cd3-7560-96ec-1712d403c3d8\",{\"kind\":\"global\"}]"
+              }
+            ],
+            "total": 3
+          }
+        },
+        {
+          "reader": "worker",
+          "error": false,
+          "bytes": 1105,
+          "receipt": {
+            "ok": true,
+            "entries": [
+              {
+                "id": "bd-f4a5f970",
+                "rootSessionId": "01a0c37e-418f-76b5-8c7c-272a4b7db388",
+                "groupId": "batch-1",
+                "authorAgentId": "48ffeb10-8ae0-40d",
+                "kind": "finding",
+                "title": "Shared marker",
+                "body": "The final output must be READY followed by a newline.",
+                "postedAt": 1789986240462
+              },
+              {
+                "id": "bd-9ba7d1cb",
+                "rootSessionId": "01a0c37e-418f-76b5-8c7c-272a4b7db388",
+                "groupId": "batch-1",
+                "authorAgentId": "48ffeb10-8ae0-40d",
+                "kind": "work",
+                "title": "Manual handoff",
+                "body": "Keep this manual note.",
+                "postedAt": 1789986241514
+              },
+              {
+                "id": "bd-a66ee245",
+                "rootSessionId": "01a0c37e-418f-76b5-8c7c-272a4b7db388",
+                "groupId": "batch-1",
+                "authorAgentId": "48ffeb10-8ae0-40d",
+                "kind": "work",
+                "title": "TODO progress: 1/1 completed, 0 blocked",
+                "body": "Worker TODO snapshot; claims require verification. Later snapshots replace earlier status. Session: 01a0c37e-6cd3-7560-96ec-1712d403c3d8; tool result: call_e384dff273224f8985bedb29; scope: {\"kind\":\"global\"} 1 completed: Check output \u2014 Evidence: READY bytes verified",
+                "postedAt": 1789986248923,
+                "snapshotKey": "[\"01a0c37e-6cd3-7560-96ec-1712d403c3d8\",{\"kind\":\"global\"}]"
+              }
+            ],
+            "total": 3
+          }
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      },
+      "binary_sha256": "415b1f84c5917f01cb729b4df3c21b98f3e92f9f85277fe439720b44ba85ae06"
+    }
+  ]
+}

@@ -259,7 +259,7 @@
   },
   "limits": [
     "Live resume probe ended paused/met, not complete; exact accepted-draft delivery remains enforced.",
-    "Structured objective reporting and unknown-group recovery have regression coverage; their new fields were not retested with live inference.",
+    "Structured objective reporting and unknown-group recovery were verified in the separate 2026-09-21 current_build_probe; both worker attempts paused on max_turns.",
     "Host cancellation during evaluation has regression coverage; no live forced-cancellation probe is counted.",
     "Small artificial file-copy tasks establish wiring and lifecycle behavior, not better quality, style, readability, performance or long-work reliability.",
     "No repeated outcome-based reruns; failed and protocol-deviating attempts are retained."
@@ -273,5 +273,100 @@
   },
   "final_binary_sha256": "f4e2029a36c658c8bcdb57e28114c7f176e151d1cc994d7dc905b5f5a42ccbb9",
   "live_revision_probe_binary_sha256": "e23c016dc6165885c962becbf57fdc7fb34a512797ead45f25e7f7ed8c196b3c",
-  "review": "Reviewed lifecycle, cancellation ownership, journal replay, parent authorization, evidence citation and outcome serialization. Fixed missing resume/steer claim exclusion and stale outcome on thrown resume. No unresolved findings in this integration scope."
+  "review": "Reviewed lifecycle, cancellation ownership, journal replay, parent authorization, evidence citation and outcome serialization. Fixed missing resume/steer claim exclusion and stale outcome on thrown resume. No unresolved findings in this integration scope.",
+  "current_build_probe": {
+    "date": "2026-09-21",
+    "checkout_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+    "local_evidence_root": "/private/tmp/kimchi-worker-outcome-02s4_i1_",
+    "binary_sha256": "0877c1a4614a42db285c3319a79c953d3d9b3d7c3ffdf3a014268451301ababe",
+    "model": "kimchi-dev/glm-5.3-flash",
+    "thinking": "low",
+    "attempts": {
+      "parent_runs": 1,
+      "initial_workers": 2,
+      "resumes": 1
+    },
+    "outcomes": [
+      {
+        "status": "aborted",
+        "outcome": "budget_exhausted",
+        "reason": "max_turns",
+        "turns_used": 43,
+        "max_turns": 35,
+        "ferment_v2": {
+          "id": "b074973e-364b-4ec8-8eb1-92ef19168e07",
+          "revision": 1,
+          "status": "paused",
+          "lastEvaluation": {
+            "verdict": "continue",
+            "reason": "Requirement \"Final response reports completion with verification evidence\" has not been checked against the exact proposed answer; return only the required answer with no extra text.",
+            "model": "kimchi-dev/glm-5.3-flash",
+            "evaluatedAt": "2026-09-21T12:44:07.830Z"
+          }
+        }
+      },
+      {
+        "status": "aborted",
+        "outcome": "budget_exhausted",
+        "reason": "max_turns",
+        "turns_used": 32,
+        "max_turns": 26,
+        "ferment_v2": {
+          "id": "b074973e-364b-4ec8-8eb1-92ef19168e07",
+          "revision": 2,
+          "status": "paused"
+        }
+      }
+    ],
+    "parent_outcomes_match_worker_journal": true,
+    "unknown_group_recovery": {
+      "rejected": {
+        "ok": false,
+        "reason": "unknown_group",
+        "availableGroupIds": [
+          "batch-1"
+        ]
+      },
+      "successful_group_id": "batch-1",
+      "entries_returned": 1
+    },
+    "files": {
+      "INPUT.txt": "SECOND\n",
+      "CURRENT.txt": "SECOND\n"
+    },
+    "usage": {
+      "input": 134393,
+      "output": 5391,
+      "cacheRead": 876416,
+      "cacheWrite": 0
+    },
+    "worker_repetition": {
+      "identical_verification_calls": 62,
+      "started_before_completion_evaluation": true,
+      "cause": "Unresolved; the journal shows repeated successful model tool calls, not repeated host continuation messages. No normal-mode control in this functional probe."
+    },
+    "observer": {
+      "original_finish_reason": "limit",
+      "original_seconds": 300.44353580474854,
+      "original_workers_terminal": false,
+      "corrected_replay_workers_terminal": true,
+      "reason": "Counted a nested Ferment evaluator session as another parent worker; now counts direct children while retaining all-session usage.",
+      "regression": "Failed before fix; 10 runner checks pass after."
+    },
+    "sealed_inputs_verified": 6,
+    "journal_sha256": {
+      "2026-09-21T12-43-25-500Z_01a0c3fe-1bbc-7fa0-b24c-7270838612f9.jsonl": "5675ddeb99b083c4044269a761f1d0a59c1d74ebdc9d309acd1487edabd6eea2",
+      "2026-09-21T12-43-32-987Z_01a0c3fe-38fb-706c-9c04-2eb46223dcc2.jsonl": "d9b8d1e5d0c2f69f53fe99c4010a6104dd9390129d85dce09396b91e0798dc43"
+    },
+    "cleanup": {
+      "tmux_stopped": true,
+      "home_removed": true,
+      "environment_file_removed": true
+    },
+    "limits": [
+      "Both Ferment worker attempts exhausted their turn limits; correct files do not establish objective completion.",
+      "Observer fix verified by regression and replay of this captured native run; no additional inference rerun.",
+      "No communication quality, style, readability, performance or cost benefit measured."
+    ]
+  }
 }

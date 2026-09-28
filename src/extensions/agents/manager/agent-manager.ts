@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { basename } from "node:path"
 import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { resolveWorkspaceResources } from "../../../sandbox/cloud/resources.js"
 import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
@@ -1051,10 +1051,8 @@ export class AgentManager {
 			: []
 		let board: { total: number; latestId?: string } | undefined
 		if (active && source?.groupId && root) {
-			const summary = this.getBoardSummary(root, source.groupId)
-			if (summary.total > 0) {
-				board = { total: summary.total, latestId: summary.latest[0]?.id }
-			}
+			const hint = this.boardStore.getPeerHint(root, source.groupId, agentId)
+			if (hint.total > 0) board = hint
 		}
 		return { parent, user_via_parent: user, peers, board }
 	}
@@ -1064,7 +1062,10 @@ export class AgentManager {
 	 * Host stamps authorAgentId, postedAt, rootSessionId, and groupId.
 	 * Host-truncates title/body at caps. Dedupe within 120s window.
 	 */
-	postBoardEntry(agentId: string, input: { kind: BoardEntryKind; title: string; body: string }): BoardPostReceipt {
+	postBoardEntry(
+		agentId: string,
+		input: { kind: BoardEntryKind; title: string; body: string; snapshotKey?: string },
+	): BoardPostReceipt {
 		const record = this.agents.get(agentId)
 		if (!record || (record.status !== "running" && record.status !== "queued")) {
 			return { ok: false, reason: "agent_not_live" }
@@ -1086,6 +1087,7 @@ export class AgentManager {
 			input.title,
 			input.body,
 			Date.now(),
+			input.snapshotKey,
 		)
 
 		if (result.deduped) {
@@ -1155,6 +1157,12 @@ export class AgentManager {
 		return this.boardStore.getSummary(rootSessionId, groupId)
 	}
 
+	restoreBoardForRoot(rootSessionId: string, entries: readonly SessionEntry[]): boolean {
+		if (this.communicationDisabled || this.communicationRootSessionId !== rootSessionId) return false
+		this.boardStore.restoreRoot(rootSessionId, entries)
+		return true
+	}
+
 	/** Read through the coordinator's bound session, including finished workers' notes. */
 	readBoardForRoot(
 		rootSessionId: string,
@@ -1165,11 +1173,12 @@ export class AgentManager {
 			return { ok: false, reason: "not_authorized_for_board" }
 		}
 		const groups = [
-			...new Set(
-				[...this.agents.values()].flatMap((record) =>
+			...new Set([
+				...this.boardStore.getSummariesForRoot(rootSessionId).map((summary) => summary.groupId),
+				...[...this.agents.values()].flatMap((record) =>
 					record.communicationScope?.rootSessionId === rootSessionId && record.groupId ? [record.groupId] : [],
 				),
-			),
+			]),
 		]
 		if (!groups.includes(groupId)) return { ok: false, reason: "unknown_group", availableGroupIds: groups }
 		return {
@@ -1713,7 +1722,11 @@ export class AgentManager {
 								"reply_to does not match a question from this peer addressed to you. Copy the intended openQuestionIds value exactly; no answer was sent.",
 							openQuestionIds,
 						}
-					: { status: "rejected", reason: "Peer reply is not authorized." },
+					: {
+							status: "rejected",
+							reason:
+								"No open question from this peer is addressed to you. For a board finding or other update, send kind=status or handoff without reply_to.",
+						},
 			)
 		}
 		const thread = this.messageThreads.get(messageId)
@@ -2008,12 +2021,25 @@ export class AgentManager {
 		}
 	}
 
-	private closeOpenParentThreadsForAgent(agentId: string, reason: string): void {
+	hasOpenBlockingParentQuestion(agentId: string): boolean {
+		return [...this.messageThreads.values()].some(
+			(thread) =>
+				thread.state === "open" &&
+				thread.sourceAgentId === agentId &&
+				thread.recipient.type !== "agent" &&
+				thread.canContinue === false,
+		)
+	}
+
+	closeOpenParentThreadsForAgent(agentId: string, reason: string): string[] {
+		const closed: string[] = []
 		for (const thread of this.messageThreads.values()) {
 			if (thread.state === "open" && thread.recipient.type !== "agent" && thread.sourceAgentId === agentId) {
 				this.closeMessageThreadForTerminalState(thread.questionMessageId, reason)
+				closed.push(thread.questionMessageId)
 			}
 		}
+		return closed
 	}
 
 	tryReservePendingMessage(targetAgentId: string, payloadBytes: number): boolean {

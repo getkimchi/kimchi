@@ -38,7 +38,10 @@ function findVerification(entries: readonly SessionEntry[], completedAt: number,
 	return undefined
 }
 
-export function registerReconcileAgentResultTool(pi: ExtensionAPI, manager: Pick<AgentManager, "getRecord">): void {
+export function registerReconcileAgentResultTool(
+	pi: ExtensionAPI,
+	manager: Pick<AgentManager, "getRecord" | "closeOpenParentThreadsForAgent" | "hasOpenBlockingParentQuestion">,
+): void {
 	pi.registerTool(
 		defineTool({
 			name: RECONCILE_AGENT_RESULT_TOOL_NAME,
@@ -47,6 +50,7 @@ export function registerReconcileAgentResultTool(pi: ExtensionAPI, manager: Pick
 				"After inspecting a completed communicating subagent's result and verifying its work in this parent session, " +
 				"complete an existing TODO with the check's provenance. Run a relevant bash check or read the resulting artifact " +
 				"after the worker finishes. The host checks provenance; you must judge whether the check covers the task. " +
+				"Answer blocking questions first. Verified completion closes remaining parent/user questions without resuming the worker. " +
 				"Worker reports and board notes alone are not verification. Ferment is optional.",
 			parameters: Type.Object({
 				agent_id: Type.String(),
@@ -83,6 +87,9 @@ export function registerReconcileAgentResultTool(pi: ExtensionAPI, manager: Pick
 				) {
 					throw new Error("The subagent report still contains unfinished work. Resolve it before completing the TODO.")
 				}
+				if (manager.hasOpenBlockingParentQuestion(record.id)) {
+					throw new Error("Answer or decline the worker's blocking question before reconciling its task.")
+				}
 				const scope = resolveTodoScope()
 				if (scope.kind === "ferment")
 					throw new Error("Phase TODOs are managed by Ferment; reconcile a task TODO instead.")
@@ -111,7 +118,12 @@ export function registerReconcileAgentResultTool(pi: ExtensionAPI, manager: Pick
 					},
 					sessionId,
 				)
-				return { content: [{ type: "text" as const, text: `TODO ${params.todo_id} completed. ${evidence}` }], details }
+				const closed = manager.closeOpenParentThreadsForAgent(record.id, "parent_verified_completion")
+				const closure = closed.length ? ` Closed questions: ${closed.join(", ")}. No reply or resume is needed.` : ""
+				return {
+					content: [{ type: "text" as const, text: `TODO ${params.todo_id} completed. ${evidence}${closure}` }],
+					details,
+				}
 			},
 		}),
 	)

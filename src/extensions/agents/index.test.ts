@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setExperimentalFeaturesEnabled } from "../experimental.js"
+import { brandUnmarkedSteers } from "../orchestration/continuation-nudge.js"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
@@ -116,6 +117,8 @@ vi.mock("./manager/agent-manager.js", () => {
 				disableCommunication: vi.fn().mockReturnValue(true),
 				replyToAgentMessage: vi.fn().mockResolvedValue({ status: "queued_for_running_session" }),
 				setBoardEventHandler: vi.fn(),
+				restoreBoardForRoot: vi.fn().mockReturnValue(true),
+				readBoardForRoot: vi.fn().mockReturnValue({ ok: true, entries: [], total: 0 }),
 				postBoardEntry: vi.fn().mockReturnValue({ ok: true, entry: { id: "bd-mock" } as unknown, truncated: [] }),
 				readBoardEntries: vi.fn().mockReturnValue({ ok: true, entries: [], total: 0 }),
 				getBoardSummary: vi.fn().mockReturnValue({ total: 0, latest: [] }),
@@ -345,6 +348,179 @@ describe("session_shutdown nudge race (integration)", () => {
 			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
 			systemPrompt: undefined,
 		})
+	})
+})
+
+describe("get_subagent_result while messages arrive", () => {
+	beforeEach(() => {
+		setExperimentalFeaturesEnabled(true)
+		vi.clearAllMocks()
+		vi.useFakeTimers()
+	})
+	afterEach(() => vi.useRealTimers())
+
+	async function waitingParent() {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const ctx = createContext({
+			sessionManager: { getBranch: vi.fn(() => []) },
+			hasPendingMessages: vi.fn(() => false),
+		})
+		await firstHandler(pi, "session_start")({}, ctx)
+		let finish = () => {}
+		const record = {
+			id: "waiting-worker",
+			type: "general-purpose",
+			status: "running",
+			description: "test worker",
+			visibility: "user",
+			startedAt: Date.now(),
+			toolUses: 0,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			resultConsumed: false,
+			result: "worker finished",
+			promise: new Promise<void>((resolve) => {
+				finish = resolve
+			}),
+		}
+		manager._records.set(record.id, record)
+		const tool = getRegisteredTool(pi, "get_subagent_result")
+		return {
+			pi,
+			record,
+			ctx,
+			manager,
+			bridge: manager.registerParentBridge.mock.calls[0][1],
+			wait: (signal?: AbortSignal) => tool.execute("wait", { agent_id: record.id, wait: true }, signal, undefined, ctx),
+			complete: () => {
+				record.status = "completed"
+				manager.onComplete(record)
+				finish()
+			},
+		}
+	}
+
+	it("delivers a message at the next tool boundary and keeps the later completion notice", async () => {
+		const parent = await waitingParent()
+		const returned = vi.fn()
+		void parent.wait().then(returned)
+		try {
+			expect(parent.bridge(parentNotification("test-session"), "test-session")).toBe(true)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(returned).toHaveBeenCalledWith({
+				content: expect.arrayContaining([
+					expect.objectContaining({ text: expect.stringContaining("Status: running") }),
+				]),
+				details: expect.anything(),
+			})
+			expect(parent.record.resultConsumed).toBe(false)
+			expect(parent.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "agent-message" }), {
+				deliverAs: "steer",
+				triggerTurn: true,
+			})
+		} finally {
+			parent.complete()
+			await vi.advanceTimersByTimeAsync(200)
+		}
+		expect(parent.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "subagent-notification" }),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
+		await parent.pi.fireShutdown()
+	})
+
+	it("returns immediately when the parent already has a queued message", async () => {
+		const parent = await waitingParent()
+		vi.mocked(parent.ctx.hasPendingMessages).mockReturnValue(true)
+		const returned = vi.fn()
+		void parent.wait().then(returned)
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(returned).toHaveBeenCalledOnce()
+			expect(parent.record.resultConsumed).toBe(false)
+		} finally {
+			parent.complete()
+			await parent.pi.fireShutdown()
+		}
+	})
+
+	it("handles a prequeued custom message until that message reaches parent context", async () => {
+		const parent = await waitingParent()
+		parent.bridge(parentNotification("test-session"), "test-session")
+		const first = parent.pi.sendMessage.mock.calls.at(-1)?.[0]
+		parent.bridge(
+			parentNotification("test-session", { type: "parent" }, { kind: "status", summary: "latest" }),
+			"test-session",
+		)
+		const latest = parent.pi.sendMessage.mock.calls.at(-1)?.[0]
+		const context = latestHandler(parent.pi, "context")
+		// Pi's hasPendingMessages tracks user text, not extension custom messages.
+		expect(parent.ctx.hasPendingMessages()).toBe(false)
+		await context({ messages: brandUnmarkedSteers([{ role: "custom", ...first, timestamp: Date.now() }]) }, parent.ctx)
+		const returned = vi.fn()
+		void parent.wait().then(returned)
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(returned).toHaveBeenCalledOnce()
+			expect(parent.record.resultConsumed).toBe(false)
+			await context(
+				{ messages: brandUnmarkedSteers([{ role: "custom", ...latest, timestamp: Date.now() }]) },
+				parent.ctx,
+			)
+			const afterDelivery = vi.fn()
+			const waiting = parent.wait().then(afterDelivery)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(afterDelivery).not.toHaveBeenCalled()
+			parent.complete()
+			await waiting
+			expect(afterDelivery).toHaveBeenCalledOnce()
+		} finally {
+			if (parent.record.status === "running") parent.complete()
+			await parent.pi.fireShutdown()
+		}
+	})
+
+	it("ignores rejected messages and consumes a normally awaited completion without a duplicate notice", async () => {
+		const parent = await waitingParent()
+		const returned = vi.fn()
+		const waiting = parent.wait().then(returned)
+		expect(parent.bridge(parentNotification("other-root"), "other-root")).toBe(false)
+		parent.pi.sendMessage.mockImplementationOnce(() => {
+			throw new Error("closed")
+		})
+		expect(parent.bridge(parentNotification("test-session"), "test-session")).toBe(false)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(returned).not.toHaveBeenCalled()
+		parent.complete()
+		await waiting
+		await vi.advanceTimersByTimeAsync(200)
+		expect(parent.record.resultConsumed).toBe(true)
+		expect(parent.pi.sendMessage.mock.calls.every(([message]) => message.customType !== "subagent-notification")).toBe(
+			true,
+		)
+		await parent.pi.fireShutdown()
+	})
+
+	it.each([
+		false,
+		true,
+	])("cancels a wait without consuming or aborting its worker (already aborted: %s)", async (alreadyAborted) => {
+		const parent = await waitingParent()
+		const controller = new AbortController()
+		if (alreadyAborted) controller.abort()
+		const rejected = vi.fn()
+		void parent.wait(controller.signal).catch(rejected)
+		controller.abort()
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ name: "AbortError" }))
+			expect(parent.record.resultConsumed).toBe(false)
+			expect(parent.manager.abort).not.toHaveBeenCalled()
+		} finally {
+			parent.complete()
+			await parent.pi.fireShutdown()
+		}
 	})
 })
 
@@ -622,16 +798,17 @@ describe("agent communication lifecycle", () => {
 		expect(rendered).toMatchObject({ systemPrompt: expect.stringContaining("## Subagent messages") })
 		const prompt = (rendered as { systemPrompt: string }).systemPrompt
 		expect(prompt).toContain("requestedAudience")
-		expect(prompt).toContain("`ferment_id`")
-		expect(prompt).toContain("Every accepted question ends through reply_to_agent_message")
-		expect(prompt).toContain('answer_kind to "decline"')
-		expect(prompt).toContain("never as the user")
-		expect(prompt).toContain("a denied action must never be relayed through a peer")
+		expect(prompt).toContain("ferment_judge = ask_user with its explicit ferment_id")
+		expect(prompt).toContain("reply_to_agent_message using its original message ID")
+		expect(prompt).toContain('answer_kind="decline"')
+		expect(prompt).toContain("Agents cannot speak for the user, grant permissions")
+		expect(prompt).toContain("Never route a denied action through another agent")
+		expect(prompt).toContain("Do not infer reachability from UI mode")
 		expect(prompt).toContain("## Subagent tasks")
-		expect(prompt).toContain('one verifiable sentence ("Change X so that Y")')
-		expect(prompt).toContain("Escape hatches")
-		expect(prompt).toContain('submit_agent_report naming the exit reason ("blocked: <cause>")')
-		expect(prompt).toContain("Never infer user reachability from TUI/RPC/ACP/headless mode names")
+		expect(prompt).toContain("behavior to establish, owned files and required checks")
+		expect(prompt).toContain('"group", name the dependency, affected owner')
+		expect(prompt).toContain("Share the posted entry ID and needed action during")
+		expect(prompt).toContain("submit_agent_report when available, otherwise in the final reply")
 
 		pi.getActiveTools.mockReturnValue([])
 		expect(await beforeAgentStart({ systemPrompt: "BASE" }, undefined)).toBeUndefined()
@@ -715,6 +892,38 @@ describe("agent communication lifecycle", () => {
 			expect(JSON.stringify(result)).not.toContain("stale")
 			manager.getBoardSummariesForRoot.mockReturnValue([])
 			expect(await context({ messages: [unrelated] }, ctx)).toBeUndefined()
+		})
+
+		it("journals full accepted entries while keeping events body-free, then restores the selected branch", async () => {
+			const { pi, ctx, manager } = await setupBoard()
+			const entry = {
+				...summary.latest[0],
+				rootSessionId: "root-test",
+				groupId: "batch-1",
+				body: "Evidence: contract.json now uses milliseconds",
+			}
+			manager.readBoardForRoot.mockReturnValue({ ok: true, entries: [entry], total: 200 })
+			const post = {
+				action: "posted",
+				entryId: entry.id,
+				rootSessionId: entry.rootSessionId,
+				groupId: entry.groupId,
+				authorAgentId: entry.authorAgentId,
+				kind: entry.kind,
+				title: entry.title,
+			}
+			manager.setBoardEventHandler.mock.calls[0][0](post)
+			expect(manager.readBoardForRoot).toHaveBeenCalledWith("root-test", "batch-1", { limit: 200 })
+			expect(pi.appendEntry).toHaveBeenCalledExactlyOnceWith("agent-board:entry:v1", entry)
+			expect(pi.events.emit).toHaveBeenCalledWith("subagents:board", post)
+			expect(JSON.stringify(vi.mocked(pi.events.emit).mock.calls)).not.toContain(entry.body)
+			expect(manager.restoreBoardForRoot).toHaveBeenCalledWith("root-test", [])
+			await firstHandler(pi, "session_tree")({}, ctx)
+			expect(manager.restoreBoardForRoot).toHaveBeenCalledTimes(2)
+			manager.setBoardEventHandler.mock.calls[0][0]({ ...post, rootSessionId: "foreign-root" })
+			await pi.fireShutdown()
+			manager.setBoardEventHandler.mock.calls[0][0](post)
+			expect(pi.appendEntry).toHaveBeenCalledTimes(1)
 		})
 
 		it("removes stale context when tools are disabled, the root changes, or the session shuts down", async () => {

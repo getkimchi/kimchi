@@ -1,0 +1,474 @@
+{
+  "date": "2026-09-21",
+  "capture_root": "/private/tmp/kimchi-board-dedupe-ygumsjhf",
+  "purpose": "Preserve distinct board findings when title or body includes the dedupe separator",
+  "change": "Encode the existing dedupe fields as a JSON array instead of joining with pipes. Normalization, truncation and duplicate window are unchanged.",
+  "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+  "binary_sha256": {
+    "old": "6e04fadc856c232d812eae2d6e3d487f3902e4319c7cc17ce4c40d67de0ff249",
+    "new": "0877c1a4614a42db285c3319a79c953d3d9b3d7c3ffdf3a014268451301ababe"
+  },
+  "unit_regression": "Before: the distinct second finding incorrectly deduped. After: both retained and exact repeat reuses the second entry.",
+  "validation": {
+    "focused_tests_passed": 156,
+    "files": 3,
+    "check": "pass with one existing unused-import warning",
+    "build": "pass"
+  },
+  "conclusion": "Real authorized group post returns the wrong earlier finding before the fix and the correct distinct finding after it; exact retries still dedupe. No coding quality, speed or token-saving claim.",
+  "deviations": [
+    "Initial singleton probes had no group and correctly returned not_authorized_for_board; retained, excluded from fix evidence.",
+    "Old group worker mistyped the second body as client before submitting the exact collision on its third post. New group worker repeated the first entry once. All calls retained; do not compare call count or elapsed time as a benefit."
+  ],
+  "trials": [
+    {
+      "variant": "old",
+      "valid_group_probe": false,
+      "finish_reason": "settled",
+      "workers": [
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        }
+      ],
+      "provider_requests": 8,
+      "isolation_checks": [
+        {
+          "name": "own-protocol",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "reference-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "other-trial-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "outside-write-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "python",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "binary",
+          "passed": true,
+          "exit_code": 0
+        }
+      ],
+      "actions": [
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "kind": "finding",
+            "title": "contract|v1",
+            "body": "client"
+          },
+          "ok": false,
+          "reason": "not_authorized_for_board",
+          "deduped": false,
+          "returned_entry": null,
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "kind": "finding",
+            "title": "contract",
+            "body": "v1|client"
+          },
+          "ok": false,
+          "reason": "not_authorized_for_board",
+          "deduped": false,
+          "returned_entry": null,
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "kind": "finding",
+            "body": "v1|client",
+            "title": "contract"
+          },
+          "ok": false,
+          "reason": "not_authorized_for_board",
+          "deduped": false,
+          "returned_entry": null,
+          "entries": []
+        },
+        {
+          "tool": "read_agent_board",
+          "arguments": {
+            "kind": "finding",
+            "limit": 10
+          },
+          "ok": false,
+          "reason": "not_authorized_for_board",
+          "deduped": false,
+          "returned_entry": null,
+          "entries": []
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "variant": "new",
+      "valid_group_probe": false,
+      "finish_reason": "settled",
+      "workers": [
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        }
+      ],
+      "provider_requests": 7,
+      "isolation_checks": [
+        {
+          "name": "own-protocol",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "reference-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "other-trial-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "outside-write-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "python",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "binary",
+          "passed": true,
+          "exit_code": 0
+        }
+      ],
+      "actions": [
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "kind": "finding",
+            "title": "contract|v1",
+            "body": "client"
+          },
+          "ok": false,
+          "reason": "not_authorized_for_board",
+          "deduped": false,
+          "returned_entry": null,
+          "entries": []
+        },
+        {
+          "tool": "read_agent_board",
+          "arguments": {
+            "kind": "finding",
+            "limit": 10
+          },
+          "ok": false,
+          "reason": "not_authorized_for_board",
+          "deduped": false,
+          "returned_entry": null,
+          "entries": []
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "variant": "old-group",
+      "valid_group_probe": true,
+      "finish_reason": "settled",
+      "workers": [
+        {
+          "description": "Boundary investigator",
+          "status": "completed"
+        },
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        }
+      ],
+      "provider_requests": 10,
+      "isolation_checks": [
+        {
+          "name": "own-protocol",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "reference-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "other-trial-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "outside-write-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "python",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "binary",
+          "passed": true,
+          "exit_code": 0
+        }
+      ],
+      "actions": [
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "client",
+            "kind": "finding",
+            "title": "contract|v1"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": false,
+          "returned_entry": {
+            "id": "bd-8d9d0a65",
+            "title": "contract|v1",
+            "body": "client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "client",
+            "kind": "finding",
+            "title": "contract"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": false,
+          "returned_entry": {
+            "id": "bd-b2489ad9",
+            "title": "contract",
+            "body": "client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "v1|client",
+            "kind": "finding",
+            "title": "contract"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": true,
+          "returned_entry": {
+            "id": "bd-8d9d0a65",
+            "title": "contract|v1",
+            "body": "client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "read_agent_board",
+          "arguments": {
+            "kind": "finding",
+            "limit": 10
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": false,
+          "returned_entry": null,
+          "entries": [
+            {
+              "id": "bd-8d9d0a65",
+              "title": "contract|v1",
+              "body": "client"
+            },
+            {
+              "id": "bd-b2489ad9",
+              "title": "contract",
+              "body": "client"
+            }
+          ]
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    },
+    {
+      "variant": "new-group",
+      "valid_group_probe": true,
+      "finish_reason": "settled",
+      "workers": [
+        {
+          "description": "Boundary investigator",
+          "status": "completed"
+        },
+        {
+          "description": "Lifecycle investigator",
+          "status": "completed"
+        }
+      ],
+      "provider_requests": 10,
+      "isolation_checks": [
+        {
+          "name": "own-protocol",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "reference-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "other-trial-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "outside-write-denied",
+          "passed": true,
+          "exit_code": 1
+        },
+        {
+          "name": "python",
+          "passed": true,
+          "exit_code": 0
+        },
+        {
+          "name": "binary",
+          "passed": true,
+          "exit_code": 0
+        }
+      ],
+      "actions": [
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "client",
+            "kind": "finding",
+            "title": "contract|v1"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": false,
+          "returned_entry": {
+            "id": "bd-2cafa7cc",
+            "title": "contract|v1",
+            "body": "client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "client",
+            "kind": "finding",
+            "title": "contract|v1"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": true,
+          "returned_entry": {
+            "id": "bd-2cafa7cc",
+            "title": "contract|v1",
+            "body": "client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "v1|client",
+            "kind": "finding",
+            "title": "contract"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": false,
+          "returned_entry": {
+            "id": "bd-77b4152c",
+            "title": "contract",
+            "body": "v1|client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "post_agent_note",
+          "arguments": {
+            "body": "v1|client",
+            "kind": "finding",
+            "title": "contract"
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": true,
+          "returned_entry": {
+            "id": "bd-77b4152c",
+            "title": "contract",
+            "body": "v1|client"
+          },
+          "entries": []
+        },
+        {
+          "tool": "read_agent_board",
+          "arguments": {
+            "kind": "finding",
+            "limit": 10
+          },
+          "ok": true,
+          "reason": null,
+          "deduped": false,
+          "returned_entry": null,
+          "entries": [
+            {
+              "id": "bd-2cafa7cc",
+              "title": "contract|v1",
+              "body": "client"
+            },
+            {
+              "id": "bd-77b4152c",
+              "title": "contract",
+              "body": "v1|client"
+            }
+          ]
+        }
+      ],
+      "cleanup": {
+        "live": false,
+        "home_removed": true
+      }
+    }
+  ]
+}

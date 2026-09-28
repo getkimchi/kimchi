@@ -1,0 +1,265 @@
+{
+  "date": "2026-09-21",
+  "purpose": "Functional recovery comparison and continuation; not a coding-quality or cost benchmark.",
+  "source_head": "9c06bed74a3a3ca9873b62433f09fb1e9672bcfb",
+  "uncommitted_changes": true,
+  "source_sha256": {
+    "src/extensions/agents/index.ts": "c71b745a1cdafb15b1f25bebba5f5b01d5afc478a80efdb963c69a4bda564afb",
+    "src/extensions/agents/manager/agent-manager.ts": "329a122584ebfc29e43761f43c2e51e5cd68e30fbedf5255f9d5b71c810401f4",
+    "src/extensions/agents/manager/board.ts": "58e069e56eed4e75b086fe8716c73c2a9dd243d8183b85a8055e7253cbd04f5b",
+    "src/extensions/agents/prompt/prompts.ts": "bddda0bc60862f0ce7d40341adb6edc7dd04fb0cb5474af2a238bc7b147f5040"
+  },
+  "baseline_binary_sha256": "c326cc08ca534446e5ea542454c547678c763887c1d4f47e61382e18df01a2db",
+  "current_binary_sha256": "5710b7ee7081b9d1a74fac2363eebd5603a853f8ab57581ede50f8b2818e96f1",
+  "checkpoint_sha256": "1b69d0732d00fa9269b687abd820ad025aa5b57835172e2fd2963b9a83904a00",
+  "same_checkpoint_and_read_prompt": true,
+  "read_prompt_sha256": "05726cd41c58f1cf7694f085344db6dfe0b71f55996245031f5766185fd274db",
+  "parent_session_id": "01a0c565-621c-79ed-a914-8f806bc9639e",
+  "group_id": "batch-1",
+  "model": "kimchi-dev/kimi-k3",
+  "thinking": "low",
+  "worker_ferment_v2": true,
+  "launches": [
+    {
+      "description": "Contract timeout investigation",
+      "subagent_type": "General-Purpose",
+      "model": "kimi-k3",
+      "thinking": "low",
+      "run_in_background": true,
+      "communication": "group",
+      "ferment_v2": true,
+      "max_turns": 18,
+      "max_duration": 240,
+      "token_budget": 4500
+    },
+    {
+      "description": "Consumer failure diagnosis",
+      "subagent_type": "General-Purpose",
+      "model": "kimi-k3",
+      "thinking": "low",
+      "run_in_background": true,
+      "communication": "group",
+      "ferment_v2": true,
+      "max_turns": 18,
+      "max_duration": 240,
+      "token_budget": 4500
+    },
+    {
+      "description": "Implement ms timeout fix",
+      "subagent_type": "General-Purpose",
+      "model": "kimi-k3",
+      "thinking": "low",
+      "communication": "parent",
+      "ferment_v2": true,
+      "max_turns": 35,
+      "max_duration": 240,
+      "token_budget": 8000
+    }
+  ],
+  "workers": [
+    {
+      "id": "03146b26-0095-428",
+      "description": "Consumer failure diagnosis",
+      "status": "aborted",
+      "abort_reason": "max_turns",
+      "ferment_status": "paused",
+      "evaluation_count": 2,
+      "last_evaluation": {
+        "verdict": "continue",
+        "reason": "Remaining requirement: Final reply must be exactly the prescribed evaluated draft (group ID, diagnosis entry ID, verbatim failure output, deferred-implementation statement) with no preface or extra content.",
+        "model": "kimchi-dev/kimi-k3",
+        "evaluatedAt": "2026-09-21T19:17:11.453Z"
+      },
+      "session_id": "01a0c565-b1a3-76ed-8e2f-c07dcf52238e"
+    },
+    {
+      "id": "2b2c4379-fd0b-481",
+      "description": "Contract timeout investigation",
+      "status": "aborted",
+      "abort_reason": "token_budget",
+      "ferment_status": "paused",
+      "evaluation_count": 3,
+      "last_evaluation": {
+        "verdict": "continue",
+        "reason": "Requirement \"Final reply includes finding entry ID, group ID, revision-2 + milliseconds summary, and the remaining consumer action (update consumer.py for ms, not to be done now)\" has not been checked against the exact proposed answer; return only the required answer with no extra text.",
+        "model": "kimchi-dev/kimi-k3",
+        "evaluatedAt": "2026-09-21T19:16:59.183Z"
+      },
+      "session_id": "01a0c565-b1a0-728e-9c60-49aa0bf4c3b9"
+    },
+    {
+      "id": "e67cb708-b6e5-424",
+      "description": "Implement ms timeout fix",
+      "status": "completed",
+      "abort_reason": null,
+      "ferment_status": "complete",
+      "evaluation_count": 2,
+      "last_evaluation": {
+        "verdict": "met",
+        "reason": "consumer.py was fixed for revision-2/milliseconds contracts while preserving legacy \u00d71000 behavior, verify.py passes with exit 0, only consumer.py was modified, and the final reply contains the required diff summary, verification output, exit status, and TODO evidence notes.",
+        "model": "kimchi-dev/kimi-k2.7",
+        "evaluatedAt": "2026-09-21T19:21:06.557Z"
+      },
+      "session_id": "01a0c569-a4cc-7438-a276-69f8d27b32a7"
+    }
+  ],
+  "baseline": {
+    "tool_call_id": "read_agent_board:8",
+    "is_error": true,
+    "receipt": {
+      "ok": false,
+      "reason": "unknown_group",
+      "availableGroupIds": []
+    }
+  },
+  "recovery": {
+    "tool_call_id": "read_agent_board:8",
+    "ok": true,
+    "total": 4,
+    "original_entry_ids": [
+      "bd-0f738189",
+      "bd-bbd7d7df",
+      "bd-b3c7ad3c",
+      "bd-ab0638bf"
+    ],
+    "exact_original_payloads_preserved": true,
+    "journal_posts": 8,
+    "superseded_progress_removed": 4
+  },
+  "independent_check": {
+    "command": "python3 verify.py",
+    "exit_code": 0,
+    "stdout": "CONTINUATION_VERIFIED",
+    "protected_files_unchanged": true,
+    "protected_sha256": {
+      "contract.json": "c72d6e7bec63fe8e9d24915a72b65fc7ccb74633be5dd256ea541e079e982721",
+      "verify.py": "465007881a93520d114017240fd3410844defde02f825bc5a6aa75408bedbb27"
+    },
+    "consumer_sha256": "c14618e92f3972bd0f7031783f78f39a6a9ea626d0865cf3c55e78872d86383d"
+  },
+  "prompt_before": {
+    "WORKER_COMMUNICATION_PROMPT": {
+      "words": 341,
+      "chars": 2161
+    },
+    "WORKER_BOARD_PROMPT": {
+      "words": 442,
+      "chars": 2748
+    },
+    "COORDINATOR_MESSAGE_PROMPT": {
+      "words": 585,
+      "chars": 3949
+    },
+    "COORDINATOR_TASK_PROMPT": {
+      "words": 221,
+      "chars": 1416
+    }
+  },
+  "prompt_after": {
+    "WORKER_COMMUNICATION_PROMPT": {
+      "words": 220,
+      "chars": 1459
+    },
+    "WORKER_BOARD_PROMPT": {
+      "words": 166,
+      "chars": 1050
+    },
+    "COORDINATOR_MESSAGE_PROMPT": {
+      "words": 237,
+      "chars": 1694
+    },
+    "COORDINATOR_TASK_PROMPT": {
+      "words": 107,
+      "chars": 743
+    }
+  },
+  "validation": {
+    "focused_tests": 215,
+    "experiment_protocol_tests": 4,
+    "built_tui_tests": 4,
+    "check": "passed; one pre-existing unused-import warning",
+    "build": "passed",
+    "diff_check": "passed",
+    "agents_suite": {
+      "files": 33,
+      "tests": 599
+    },
+    "vault": {
+      "task_owned_errors": 0,
+      "pre_existing_errors": 13,
+      "diff_check": "passed"
+    }
+  },
+  "isolation": [
+    {
+      "name": "own-file",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "repo-denied",
+      "passed": true,
+      "exit_code": 1
+    },
+    {
+      "name": "outside-write-denied",
+      "passed": true,
+      "exit_code": 1
+    },
+    {
+      "name": "python",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "binary",
+      "passed": true,
+      "exit_code": 0
+    }
+  ],
+  "cleanup": {
+    "owned_tmux_session_stopped": true,
+    "owned_descendants_stopped": true,
+    "credentials_removed": true
+  },
+  "limits": [
+    "The baseline could still recover facts from ordinary session text or shared files. Only the board read was compared.",
+    "The initial investigators produced findings and completed TODOs but host attempts aborted at token and turn limits; both Ferment objectives paused after final-answer checking continued.",
+    "This is a short lifecycle test with a revised contract fixture, not a long-duration reliability or general quality comparison.",
+    "No local workers or message threads are restored. Sessions without saved board entries cannot recover them.",
+    "Parent and workers used K3; evaluator sessions used K3 and K2.7. This run does not hold evaluator routing fixed for a quality comparison."
+  ],
+  "local_artifact_root": "/private/var/folders/cx/pkdk8_6n2hv_42mfhpzzq40h0000gn/T/kimchi-board-resume-t4ycw147",
+  "actual_model_routes": {
+    "worker": [
+      "kimchi-dev/kimi-k3"
+    ],
+    "evaluator": [
+      "kimchi-dev/kimi-k2.7",
+      "kimchi-dev/kimi-k3"
+    ],
+    "parent": [
+      "kimchi-dev/kimi-k3"
+    ]
+  },
+  "prompt_totals": {
+    "before": {
+      "words": 1589,
+      "chars": 10274
+    },
+    "after": {
+      "words": 730,
+      "chars": 4946
+    }
+  },
+  "setup_failures": [
+    "The initial TUI fixture used SessionManager.open with a session directory mistaken for cwd; fixed by creating the fixture in its workdir.",
+    "The isolated binary smoke check inherited an inaccessible cwd; fixed the check cwd before inference.",
+    "TMUX could not create a Unix socket under the long artifact path; used a dedicated shorter socket directory before inference."
+  ],
+  "review": {
+    "result": "accepted",
+    "scope": "Task delta against preserved baseline source; root/branch authorization, retention, event privacy, tool-gated prompts and docs.",
+    "unresolved_task_findings": []
+  }
+}

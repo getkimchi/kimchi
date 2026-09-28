@@ -20,7 +20,7 @@ function statusGlyph(status: TodoStatus): string {
 }
 
 function formatTodoLine(todo: TodoItem): string {
-	return `- ${statusGlyph(todo.status)} ${todo.content}`
+	return `- ${statusGlyph(todo.status)} ${todo.content} (id: ${todo.id})`
 }
 
 /** Render a compact progress summary, e.g. "1/3 done · 2 active · 1 blocked". */

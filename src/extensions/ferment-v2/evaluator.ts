@@ -7,6 +7,7 @@ import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestrat
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
+import { FERMENT_V2_CONTROL_MESSAGE_TYPE } from "./constants.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
@@ -32,9 +33,9 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
 	)
 }
 const INVALID_JSON_RETRY_PROMPT =
-	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short, and include observedAnswer only for final_answer checks."
+	"The previous response was not valid JSON. Return one valid JSON object matching the output contract. Keep reason and failureMode short."
 
-// Transport receipts and other agents' reports remain context, not proof of their claims.
+// These results prove communication operations, not the claims they carry.
 const AGENT_CLAIM_TOOLS = new Set([
 	"Agent",
 	"get_subagent_result",
@@ -52,13 +53,14 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 
 <output_contract>
 - Return exactly one JSON object and no markdown:
-{"verdict":"continue|met|impossible","checks":[{"kind":"work|final_answer","requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","candidateRef":"last_assistant","observedAnswer":"complete last assistant entry for final_answer only","expectedAnswer":null,"evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
+{"verdict":"continue|met|impossible","checks":[{"kind":"work|communication|final_answer","requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","candidateRef":"last_assistant","expectedAnswer":null,"evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
 - Write reason as a task-facing next action or missing evidence; never mention the evaluator, verdict, controller, or completion policy.
 </output_contract>
 
 <evidence_policy>
 - Authoritative tool results have IDs such as [m12]. Evidence-labelled Ferment V2 lessons have IDs such as [l3]. Other context is intentionally unnumbered. Cite only shown IDs.
 - Only tool results and lessons labelled evidence can support met. User or assistant claims, plans, tool calls, file edits, decision or dead-end lessons, and command exit status alone are not proof.
+- Use kind=communication for required sharing, agent launches, board reads/posts or message delivery. Verify the channel actually used: tool receipts for messages and board operations, or a file read for a shared-file handoff. Do not require board or messaging tools for file-based sharing. Receipts prove the operation and recorded content, not the claims in that content. Work checks cannot use communication receipts as evidence.
 - Judge evidence against the objective's full scope and likely failure modes, not only supplied examples or self-selected checks.
 </evidence_policy>
 
@@ -66,9 +68,8 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 - Check each requirement separately.
 - The complete latest tool-free [assistant] entry is the proposed answer. Final delivery replays that draft verbatim after met; it is not rewritten or reformatted.
 - Mark final-response wording, formatting, and delivery constraints as kind=final_answer. They are checked against the proposed answer and do not require tool evidence or Todo IDs.
-- For final_answer checks, compare the complete last [assistant] entry literally. Do not infer a cleaner answer or treat quoted text inside a longer response as the answer, then set candidateRef to last_assistant and copy that complete entry into observedAnswer.
-- Omit observedAnswer from work checks. The host rejects a final_answer check whose candidateRef or observedAnswer does not match the proposed answer.
-- Every final_answer check must include expectedAnswer: the complete required literal string for an exact-output constraint, or null for a non-exact constraint. Derive it from the objective, not from the proposed answer. Do not replace an exact-output constraint with an explanation of the work. The host compares the full proposed answer to a string expectedAnswer, including an empty string.
+- For final_answer checks, inspect the complete proposed answer and set candidateRef to last_assistant. Do not infer a cleaner answer or extract quoted text from a longer response. Do not copy the answer into your checks; the host retains the actual draft.
+- Every final_answer check must include expectedAnswer. Requested topics, headings or formatting do not prescribe a complete literal answer; use expectedAnswer: null and check that the answer satisfies those requirements. Use a string only when the objective explicitly requires the complete answer verbatim; derive that string from the objective. The host compares the full proposed answer to that string, including an empty string.
 - Include the Todo IDs that substantiate each requirement. Incidental tactical Todos do not need separate checks.
 - Every met check needs a concrete failureMode that the cited evidence challenges.
 - Every met check needs retained evidence. Partial, missing, or ambiguous evidence means continue.
@@ -113,12 +114,11 @@ export type FermentV2EvaluationResult =
 	  }
 
 interface FermentV2EvaluatorCheck {
-	kind?: "work" | "final_answer"
+	kind?: "work" | "communication" | "final_answer"
 	requirement: string
 	met: boolean
 	failureMode?: string
 	candidateRef?: string
-	observedAnswer?: string
 	expectedAnswer?: string | null
 	evidence: string[]
 	todoIds: number[]
@@ -154,7 +154,7 @@ type RenderedTranscriptEntry = {
 	id: string
 	prefix: string
 	content: string
-	evidence: boolean
+	evidence?: "work" | "communication"
 }
 
 export function resolveFermentV2EvaluatorModel(ctx: ExtensionContext): Model<Api> | undefined {
@@ -203,13 +203,13 @@ function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 		if (
 			typeof candidate.met !== "boolean" ||
 			!Array.isArray(evidence) ||
-			(candidate.kind !== undefined && candidate.kind !== "work" && candidate.kind !== "final_answer") ||
+			(candidate.kind !== undefined &&
+				candidate.kind !== "work" &&
+				candidate.kind !== "communication" &&
+				candidate.kind !== "final_answer") ||
 			(candidate.candidateRef !== undefined &&
 				candidate.candidateRef !== null &&
 				typeof candidate.candidateRef !== "string") ||
-			(candidate.observedAnswer !== undefined &&
-				candidate.observedAnswer !== null &&
-				typeof candidate.observedAnswer !== "string") ||
 			(candidate.kind === "final_answer" &&
 				candidate.expectedAnswer !== null &&
 				typeof candidate.expectedAnswer !== "string") ||
@@ -227,7 +227,6 @@ function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 				? { failureMode: candidate.failureMode.trim() }
 				: {}),
 			...(typeof candidate.candidateRef === "string" ? { candidateRef: candidate.candidateRef } : {}),
-			...(typeof candidate.observedAnswer === "string" ? { observedAnswer: candidate.observedAnswer } : {}),
 			...(typeof candidate.expectedAnswer === "string" || candidate.expectedAnswer === null
 				? { expectedAnswer: candidate.expectedAnswer }
 				: {}),
@@ -329,6 +328,7 @@ export async function evaluateFermentV2(
 		const transcript = renderRecentTranscript(input.messages)
 		const lessons = renderFermentV2Lessons(input.lessons)
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
+		const communicationEvidenceIds = new Set([...transcript.communicationEvidenceIds, ...lessons.evidenceIds])
 		let prompt = `Objective:\n${objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
 		if (getRedactionConfig().enabled) {
 			try {
@@ -423,7 +423,7 @@ export async function evaluateFermentV2(
 			const proposedAnswer = latestFinalAnswerDraft(input.messages)
 			const unsupportedReason =
 				parsed.verdict === "met"
-					? unsupportedMetReason(parsed.checks, evidenceIds, input.todos, proposedAnswer)
+					? unsupportedMetReason(parsed.checks, evidenceIds, communicationEvidenceIds, input.todos, proposedAnswer)
 					: undefined
 			if (unsupportedReason) {
 				return {
@@ -499,6 +499,7 @@ function contentParts(content: unknown): string {
 function unsupportedMetReason(
 	checks: FermentV2EvaluatorCheck[] | undefined,
 	evidenceIds: ReadonlySet<string>,
+	communicationEvidenceIds: ReadonlySet<string>,
 	todos: readonly TodoItem[],
 	proposedAnswer: string | undefined,
 ): string | undefined {
@@ -508,11 +509,7 @@ function unsupportedMetReason(
 		const requirement = JSON.stringify(check.requirement.slice(0, 200))
 		if (!check.met) return `Requirement ${requirement} is not met; continue work and verify it.`
 		if (check.kind === "final_answer") {
-			if (
-				proposedAnswer === undefined ||
-				check.candidateRef !== "last_assistant" ||
-				check.observedAnswer !== proposedAnswer
-			)
+			if (proposedAnswer === undefined || check.candidateRef !== "last_assistant")
 				return `Requirement ${requirement} has not been checked against the exact proposed answer; return only the required answer with no extra text.`
 			if (typeof check.expectedAnswer === "string" && proposedAnswer !== check.expectedAnswer) {
 				return `Requirement ${requirement} requires exactly ${JSON.stringify(check.expectedAnswer)}; return that answer with no extra text.`
@@ -523,7 +520,12 @@ function unsupportedMetReason(
 			return `Requirement ${requirement} does not name the plausible failure mode ruled out by its evidence; inspect the risk and verify it.`
 		if (check.evidence.length === 0)
 			return `Requirement ${requirement} has no retained evidence; run a relevant check and surface its result.`
-		if (!check.evidence.some((evidenceId) => evidenceIds.has(evidenceId)))
+		if (
+			check.kind === "communication" &&
+			!check.evidence.some((id) => communicationEvidenceIds.has(id) || evidenceIds.has(id))
+		)
+			return `Requirement ${requirement} has no retained evidence of sharing; verify the operation through the channel used.`
+		if (check.kind !== "communication" && !check.evidence.some((evidenceId) => evidenceIds.has(evidenceId)))
 			return `Requirement ${requirement} has no cited tool result or Evidence: Todo note; run a check that proves it and record the result on the matching Todo as "Evidence: ...".`
 		const unknownTodoId = check.todoIds.find((todoId) => !todoIds.has(todoId))
 		if (unknownTodoId !== undefined)
@@ -578,6 +580,7 @@ function renderFermentV2Lessons(lessons: readonly FermentV2Lesson[] | undefined)
 function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"][number]>): {
 	text: string
 	evidenceIds: ReadonlySet<string>
+	communicationEvidenceIds: ReadonlySet<string>
 } {
 	const { units, linkedToolResultIndexes, callLabelsById } = buildTranscriptUnits(messages)
 	const keptIndexes = new Set<number>()
@@ -619,20 +622,31 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 	const ordered = kept.sort((a, b) => a.index - b.index)
 	return {
 		text: ordered.map(({ prefix, content }) => prefix + content).join("\n\n"),
-		evidenceIds: new Set(ordered.filter((entry) => entry.evidence).map((entry) => entry.id)),
+		evidenceIds: new Set(ordered.filter((entry) => entry.evidence === "work").map((entry) => entry.id)),
+		communicationEvidenceIds: new Set(
+			ordered.filter((entry) => entry.evidence === "communication").map((entry) => entry.id),
+		),
 	}
 }
 
 function clipTranscriptUnit(entries: readonly RenderedTranscriptEntry[], limit: number): RenderedTranscriptEntry[] {
 	const separatorChars = Math.max(0, entries.length - 1) * 2
-	const prefixChars = entries.reduce((total, entry) => total + entry.prefix.length, 0)
-	let remainingChars = limit - separatorChars - prefixChars
-	if (remainingChars < entries.length) return []
+	// Keep producing calls intact; a result fragment without its arguments can prove the wrong operation.
+	const fixedChars = entries.reduce(
+		(total, entry) => total + entry.prefix.length + (entry.evidence ? 0 : entry.content.length),
+		0,
+	)
+	let remainingChars = limit - separatorChars - fixedChars
+	let evidenceLeft = entries.filter((entry) => entry.evidence).length
+	if (remainingChars < evidenceLeft) return []
 
 	const clipped: RenderedTranscriptEntry[] = []
-	for (const [index, entry] of entries.entries()) {
-		const entriesLeft = entries.length - index
-		const contentChars = Math.floor(remainingChars / entriesLeft)
+	for (const entry of entries) {
+		if (!entry.evidence) {
+			clipped.push(entry)
+			continue
+		}
+		const contentChars = Math.floor(remainingChars / evidenceLeft--)
 		const content = clipTranscriptContent(entry.content, contentChars)
 		remainingChars -= content.length
 		clipped.push({ ...entry, content })
@@ -700,12 +714,13 @@ function renderTranscriptEntry(
 	const rendered = renderMessage(message, callLabelsById)
 	if (!rendered) return undefined
 	const id = `m${index + 1}`
-	const evidence =
-		linkedToolResultIndexes.has(index) && !("toolName" in message && AGENT_CLAIM_TOOLS.has(message.toolName))
+	let evidence: RenderedTranscriptEntry["evidence"]
+	if (linkedToolResultIndexes.has(index))
+		evidence = "toolName" in message && AGENT_CLAIM_TOOLS.has(message.toolName) ? "communication" : "work"
 	return {
 		index,
 		id,
-		prefix: `${evidence ? `[${id}] ` : ""}${rendered.prefix}`,
+		prefix: `${evidence ? `[${id}] ` : ""}${evidence === "communication" ? "[communication receipt] " : ""}${rendered.prefix}`,
 		content: rendered.content,
 		evidence,
 	}
@@ -733,6 +748,8 @@ function renderMessage(
 ): { prefix: string; content: string } | undefined {
 	const record = message as unknown as Record<string, unknown>
 	const role = typeof record.role === "string" ? record.role : "message"
+	// Prior judgments must not become requirements in the next independent check.
+	if (role === "custom" && record.customType === FERMENT_V2_CONTROL_MESSAGE_TYPE) return undefined
 	const toolName = typeof record.toolName === "string" ? ` ${record.toolName}` : ""
 	const callLabel = callLabelsById.get(toolResultCallId(message) ?? "")
 	const resultLink = role === "toolResult" && callLabel ? ` for ${callLabel}` : ""

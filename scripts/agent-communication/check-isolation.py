@@ -44,7 +44,8 @@ def main():
         check("pnpm", [str(directory / "bin/pnpm"), "--version"], True)
         check("binary", [str(root / "runtime/bin/kimchi"), "--version"], True)
         if trial["label"] == "trial-01":
-            check("public-tests", [str(directory / "bin/pnpm"), "run", "test:compaction-local"], True, 120)
+            oauth = manifest.get("workload") == "oauth"
+            check("public-tests", [str(directory / "bin/pnpm"), "run", "test:oauth-local" if oauth else "test:compaction-local"], not oauth, 120)
             check("typecheck", [str(directory / "bin/pnpm"), "run", "typecheck"], True, 120)
     print(f"{len(checks)} isolation and toolchain checks passed")
 

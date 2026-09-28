@@ -48,7 +48,12 @@ vi.mock("../../teleport/provisioning/git-token.js", () => ({
 	resolveGitToken: vi.fn(),
 }))
 
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import {
+	type AgentSession,
+	type ExtensionAPI,
+	type ExtensionContext,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent"
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
@@ -1225,7 +1230,10 @@ describe("AgentManager communication broker", () => {
 				manager.reservePeerReply(otherPeer, "peer-question", source, "peer-reply-1", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
-			).resolves.toEqual({ status: "rejected", reason: "Peer reply is not authorized." })
+			).resolves.toMatchObject({
+				status: "rejected",
+				reason: expect.stringContaining("send kind=status or handoff without reply_to"),
+			})
 			await expect(
 				manager.reservePeerReply(peer, "peer-question", "wrong-source", "peer-reply-2", 1, "answer", () => ({
 					status: "queued_for_running_session",
@@ -1235,7 +1243,10 @@ describe("AgentManager communication broker", () => {
 				manager.reservePeerReply(otherPeer, "unknown-question", source, "peer-reply-unknown", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
-			).resolves.toEqual({ status: "rejected", reason: "Peer reply is not authorized." })
+			).resolves.toMatchObject({
+				status: "rejected",
+				reason: expect.stringContaining("send kind=status or handoff without reply_to"),
+			})
 			await expect(
 				manager.reservePeerReply(peer, "peer-question", source, "peer-reply-3", 1, "answer", () => ({
 					status: "queued_for_running_session",
@@ -2118,6 +2129,49 @@ describe("AgentManager communication broker", () => {
 			steer.resolve()
 			await expect(first).resolves.toMatchObject({ status: "queued_for_running_session" })
 			await expect(replay).resolves.toMatchObject({ status: "queued_for_running_session" })
+		} finally {
+			manager.dispose()
+		}
+	})
+
+	it("closing a verified worker's questions prevents late replies without closing another worker's question", async () => {
+		const manager = new AgentManager(undefined, 0)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			const source = spawnCommunicatingAgent(manager, "parent")
+			const other = spawnCommunicatingAgent(manager, "parent")
+			for (const [agent, id, type] of [
+				[source, "parent-question", "parent"],
+				[source, "user-question", "user"],
+				[other, "other-question", "parent"],
+			] as const) {
+				expect(manager.registerMessageThread(createInitialMessage(manager, agent, id, { type }, "question"))).toEqual({
+					accepted: true,
+				})
+			}
+			const callsBefore = mockResumeAgent.mock.calls.length
+			expect(manager.hasOpenBlockingParentQuestion(source)).toBe(true)
+			expect(manager.closeOpenParentThreadsForAgent(source, "parent_verified_completion")).toEqual([
+				"parent-question",
+				"user-question",
+			])
+			expect(manager.closeOpenParentThreadsForAgent(source, "parent_verified_completion")).toEqual([])
+			expect(manager.hasOpenBlockingParentQuestion(source)).toBe(false)
+			expect(manager.hasOpenBlockingParentQuestion(other)).toBe(true)
+			expect(manager.getMessageThread("other-question")?.state).toBe("open")
+			for (const id of ["parent-question", "user-question"]) {
+				expect(manager.getMessageThread(id)).toMatchObject({
+					state: "closed",
+					closeReason: "parent_verified_completion",
+				})
+				await expect(
+					manager.replyToAgentMessage("root-1", id, `late-${id}`, "Already resolved.", {
+						maxTurns: 1,
+						maxDuration: 30,
+					}),
+				).resolves.toEqual({ status: "rejected", reason: "thread_closed" })
+			}
+			expect(mockResumeAgent).toHaveBeenCalledTimes(callsBefore)
 		} finally {
 			manager.dispose()
 		}
@@ -3014,6 +3068,33 @@ describe("board", () => {
 		expect(manager.readBoardForRoot("root-1", "batch-1")).toMatchObject({ ok: false })
 	})
 
+	it("restores parent-readable findings without restoring workers or their capabilities", () => {
+		const journal = SessionManager.inMemory()
+		const store = new BoardStore()
+		const entry = store.post(
+			"root-1",
+			"saved-group",
+			"old-worker",
+			"finding",
+			"Changed contract",
+			"Evidence: revision 2",
+			1,
+		).entry
+		journal.appendCustomEntry("agent-board:entry:v1", entry)
+		expect(manager.restoreBoardForRoot("foreign-root", journal.getBranch())).toBe(false)
+		expect(manager.restoreBoardForRoot("root-1", journal.getBranch())).toBe(true)
+		expect(manager.readBoardForRoot("root-1", "saved-group")).toEqual({ ok: true, entries: [entry], total: 1 })
+		expect(manager.listAgents()).toEqual([])
+		expect(manager.getAgentCommsCapability("old-worker")).toBeUndefined()
+		expect(manager.postBoardEntry("old-worker", { kind: "note", title: "late", body: "no" })).toEqual({
+			ok: false,
+			reason: "agent_not_live",
+		})
+		manager.disableCommunication("root-1")
+		expect(manager.restoreBoardForRoot("root-1", journal.getBranch())).toBe(false)
+		expect(manager.readBoardForRoot("root-1", "saved-group")).toEqual({ ok: false, reason: "not_authorized_for_board" })
+	})
+
 	it("truncates title at 120 chars and body at 2048 chars, marking truncated fields", () => {
 		const agentId = spawnAgentWithGroup("batch-1", "root-1")
 		const longTitle = "x".repeat(121)
@@ -3061,7 +3142,7 @@ describe("board", () => {
 		const first = manager.postBoardEntry(agentId, {
 			kind: "finding",
 			title: "  Duplicate  test  ",
-			body: "  Same  content  ",
+			body: "Same content",
 		})
 		if (!first.ok) throw new Error("expected ok")
 
@@ -3188,6 +3269,31 @@ describe("board", () => {
 			rootSessionId: "root-1",
 			groupId: "batch-1",
 		})
+	})
+
+	it("advertises peer posts without treating the caller's own progress as new information", () => {
+		const reader = spawnAgentWithGroup("batch-1", "root-1")
+		const peer = spawnAgentWithGroup("batch-1", "root-1")
+		manager.postBoardEntry(reader, { kind: "work", title: "Own progress", body: "Already known" })
+		expect(manager.getCommunicationContacts(reader).board).toBeUndefined()
+		manager.postBoardEntry(peer, {
+			kind: "work",
+			title: "Peer progress",
+			body: "Routine progress",
+			snapshotKey: "peer-session:global",
+		})
+		expect(manager.getCommunicationContacts(reader).board).toBeUndefined()
+		const finding = manager.postBoardEntry(peer, { kind: "finding", title: "Peer finding", body: "Check this" })
+		if (!finding.ok) throw new Error("expected finding")
+		for (let i = 0; i < 4; i++) {
+			manager.postBoardEntry(reader, { kind: "work", title: `Own progress ${i}`, body: "Already known" })
+		}
+		expect(manager.getCommunicationContacts(reader).board).toEqual({ total: 1, latestId: finding.entry.id })
+		expect(manager.getBoardSummary("root-1", "batch-1").total).toBe(7)
+		expect(manager.readBoardEntries(reader)).toMatchObject({ ok: true, total: 7 })
+		const handoff = manager.postBoardEntry(peer, { kind: "work", title: "Manual handoff", body: "Please check" })
+		if (!handoff.ok) throw new Error("expected handoff")
+		expect(manager.getCommunicationContacts(reader).board).toEqual({ total: 2, latestId: handoff.entry.id })
 	})
 
 	it("returns board summary with total and up to 3 latest", () => {

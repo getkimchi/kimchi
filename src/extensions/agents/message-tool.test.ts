@@ -5,6 +5,7 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { applyWriteTodos } from "../todos/store.js"
 import { UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+import { BoardStore } from "./manager/board.js"
 import {
 	type AgentMessageCapability,
 	createAgentMessageExtension,
@@ -62,6 +63,7 @@ describe("agent communication child tools", () => {
 		expect(capability.postBoardEntry).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				title: "TODO progress: 0/1 completed, 0 blocked",
+				snapshotKey: JSON.stringify([ctx.sessionManager.getSessionId(), { kind: "global" }]),
 				body: expect.stringContaining("todo-in_progress"),
 			}),
 		)
@@ -247,6 +249,60 @@ describe("agent communication child tools", () => {
 		expect(mock.appendEntry).not.toHaveBeenCalled()
 	})
 
+	it("silences a read peer hint, keeps incomplete reads visible and discovers later peer updates", async () => {
+		const store = new BoardStore()
+		store.post("root", "group", "peer", "note", "First", "Earlier context", 1)
+		store.post("root", "group", "peer", "finding", "Latest", "New finding", 2)
+		const ownPost = store.post("root", "group", "self", "finding", "Own finding", "Posted after the peer", 3)
+		const capability: AgentMessageCapability = {
+			listContacts: () => {
+				return {
+					parent: { reachable: true },
+					user_via_parent: { reachable: false },
+					peers: [],
+					board: store.getPeerHint("root", "group", "self"),
+				}
+			},
+			sendMessage: vi.fn(),
+			postBoardEntry: vi.fn(),
+			readBoardEntries: vi.fn<AgentMessageCapability["readBoardEntries"]>((opts) => ({
+				ok: true,
+				entries: store.read("root", "group", opts),
+				total: store.getSummary("root", "group").total,
+			})),
+		}
+		const mock = makePi()
+		createAgentMessageExtension(capability)(mock.pi)
+		const context = mock.getHandler<ContextEvent, Partial<Pick<ContextEvent, "messages">>>("context")
+		const messages: ContextEvent["messages"] = [{ role: "user", content: "Do the task", timestamp: 1 }]
+		const hint = () => context({ type: "context", messages }, createContext())
+		const read = mock.tools.find((tool) => tool.name === READ_AGENT_BOARD_TOOL_NAME)
+		if (!read) throw new Error("expected board tool")
+		await read.execute("skipped-peer", { since_id: ownPost.entry.id })
+		expect((await hint())?.messages?.[1]).toMatchObject({
+			content: expect.stringContaining("If repeated reads miss latest_id, omit since_id to recover."),
+		})
+		await read.execute("filtered", { kind: "finding" })
+		expect((await hint())?.messages).toHaveLength(2)
+		await read.execute("partial", { limit: 1 })
+		expect((await hint())?.messages).toHaveLength(2)
+		vi.mocked(capability.readBoardEntries).mockReturnValueOnce({ ok: false, reason: "not_authorized_for_board" })
+		await expect(read.execute("denied")).rejects.toThrow()
+		expect((await hint())?.messages).toHaveLength(2)
+		const before = await hint()
+		await read.execute("full")
+		expect(await context({ type: "context", messages: before?.messages ?? messages }, createContext())).toEqual({
+			messages,
+		})
+		store.post("root", "group", "self", "work", "Own progress", "Already known", 3)
+		store.post("root", "group", "peer", "work", "Peer progress", "Routine update", 3, "peer:global")
+		expect(await hint()).toBeUndefined()
+		const next = store.post("root", "group", "peer", "warning", "Changed", "Recheck the contract", 4)
+		expect((await hint())?.messages?.[1]).toMatchObject({ content: expect.stringContaining(next.entry.id) })
+		await read.execute("next", { since_id: "evicted-cursor" })
+		expect(await hint()).toBeUndefined()
+	})
+
 	it("binds all four tools", () => {
 		const capability: AgentMessageCapability = {
 			listContacts: vi.fn(() => ({
@@ -402,6 +458,29 @@ describe("agent communication child tools", () => {
 		expect(capability.sendMessage).toHaveBeenCalledOnce()
 	})
 
+	it("explains how to recover when a named peer is unavailable without rerouting the message", async () => {
+		const receipt = { status: "unavailable", reason: "The peer route is unavailable." }
+		const capability: AgentMessageCapability = {
+			listContacts: vi.fn(),
+			sendMessage: vi.fn().mockResolvedValue(receipt),
+			postBoardEntry: vi.fn(),
+			readBoardEntries: vi.fn(),
+		}
+		const { pi, tools } = makePi()
+		createAgentMessageExtension(capability)(pi)
+		await expect(
+			tools[1]?.execute("missing-peer", {
+				recipient: { type: "agent", agentId: "lifecycle-investigator" },
+				payload: { kind: "status", summary: "Check the boundary." },
+			}),
+		).rejects.toThrow(/list_agent_contacts.*agent_id/)
+		expect(capability.sendMessage).toHaveBeenCalledExactlyOnceWith("missing-peer", {
+			recipient: { type: "agent", agentId: "lifecycle-investigator" },
+			payload: { kind: "status", summary: "Check the boundary." },
+		})
+		expect(receipt).not.toHaveProperty("escapeHatch")
+	})
+
 	it("post_agent_note calls postBoardEntry with the capability", async () => {
 		const postBoardEntry = vi.fn().mockReturnValue({
 			ok: true as const,
@@ -433,6 +512,7 @@ describe("agent communication child tools", () => {
 
 	it.each([
 		{ index: 2, params: { kind: "invalid", title: "Test", body: "Body" } },
+		{ index: 2, params: { kind: "work", title: "Test", body: "Body", snapshotKey: "forged" } },
 		{ index: 3, params: { limit: 0 } },
 	])("rejects invalid board arguments without calling the host ($index)", async ({ index, params }) => {
 		const capability: AgentMessageCapability = {
@@ -519,7 +599,7 @@ describe("agent communication child tools", () => {
 		const truncated = { ok: true, entry, truncated: ["body"] }
 		const deduped = { ok: true, entry, deduped: true }
 		const capability: AgentMessageCapability = {
-			listContacts: vi.fn(),
+			listContacts: () => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] }),
 			sendMessage: vi.fn(),
 			postBoardEntry: vi.fn().mockReturnValueOnce(truncated).mockReturnValueOnce(deduped),
 			readBoardEntries: vi.fn().mockReturnValue(empty),

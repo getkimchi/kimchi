@@ -1,0 +1,115 @@
+--- a/src/extensions/agents/manager/agent-runner.ts
++++ b/src/extensions/agents/manager/agent-runner.ts
+@@ -496,10 +496,10 @@
+ 
+ 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
+ 
+-	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
++	const effectiveMaxTurns = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? undefined : (normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns))
+ 	const MIN_TOKEN_BUDGET = 1024
+ 	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+-	const effectiveTokenBudget = rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined
++	const effectiveTokenBudget = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? undefined : (rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined)
+ 	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
+ 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
+ 	}
+@@ -538,7 +538,7 @@
+ 	// The subagent budget clamp must be wired with the deadline computed
+ 	// at run time (startTimeMs + maxDuration). Resolve the effective
+ 	// max_duration here so the bash clamp extension sees it at registration.
+-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
++	const effectiveMaxDuration = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? 0 : (options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION)
+ 
+ 	// Repo-native extensions registered directly by the Kimchi CLI are not
+ 	// discovered by a child session's DefaultResourceLoader. Register this
+@@ -673,7 +673,7 @@
+ 	let reportAccepted = false
+ 
+ 	const inactivity = { lastActivityAt: Date.now(), steered: false }
+-	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
++	const inactivityTimeout = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT)
+ 
+ 	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
+ 		{
+@@ -958,11 +958,11 @@
+ 	const cleanupAbort = forwardAbortSignal(session, options.signal)
+ 
+ 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
+-	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+-	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
++	const resumeInactivityTimeout = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT)
++	const effectiveMaxTurns = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? undefined : (normalizeMaxTurns(options.maxTurns))
+ 	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
+-	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
+-	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
++	const effectiveTokenBudget = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? undefined : (options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined)
++	const effectiveMaxDuration = (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? 0 : (options.maxDuration ?? DEFAULT_MAX_DURATION)
+ 	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
+ 		input: 0,
+ 		output: 0,
+--- a/src/extensions/loop-guard.ts
++++ b/src/extensions/loop-guard.ts
+@@ -663,6 +663,7 @@
+ }
+ 
+ export default function loopGuardExtension(pi: ExtensionAPI, abortWorker?: () => void) {
++	if (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") return
+ 	const guard = new LoopGuard()
+ 	let ctx: ExtensionContext | undefined
+ 	/** True when a subagent loop-guard steer has fired and the subagent
+--- a/src/extensions/agents/messages.ts
++++ b/src/extensions/agents/messages.ts
+@@ -5,20 +5,20 @@
+ // ponytail: fixed in-memory caps; add durable quotas only with session rehydration.
+ export const AGENT_MESSAGE_LIMITS = {
+ 	maxPayloadBytes: 16 * 1024,
+-	maxMessagesPerAttempt: 32,
+-	maxOpenQuestionsPerAgent: 8,
+-	maxPendingMessagesPerTarget: 32,
+-	maxMessagesPerThread: 16,
+-	maxReceiptsPerAgent: 64,
+-	maxThreadsPerAgent: 16,
+-	maxMetadataRecords: 1024,
+-	maxPendingPayloadBytes: 2 * 1024 * 1024,
++	maxMessagesPerAttempt: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (32),
++	maxOpenQuestionsPerAgent: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (8),
++	maxPendingMessagesPerTarget: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (32),
++	maxMessagesPerThread: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (16),
++	maxReceiptsPerAgent: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (64),
++	maxThreadsPerAgent: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (16),
++	maxMetadataRecords: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (1024),
++	maxPendingPayloadBytes: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : (2 * 1024 * 1024),
+ 	maxHandoffEvidence: 16,
+ 	maxQuestionOptions: 8,
+ 	maxQuestionOptionLength: 256,
+ 	/** Send-side loop guard: identical source-to-recipient payloads inside this
+ 	 *  window are dropped as accidental model send-loops. */
+-	duplicateMessageWindowMs: 120_000,
++	duplicateMessageWindowMs: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? 0 : 120_000,
+ } as const
+ 
+ export const ParentAgentMessageRecipientSchema = Type.Object(
+--- a/src/extensions/ferment-v2/settings.ts
++++ b/src/extensions/ferment-v2/settings.ts
+@@ -10,8 +10,8 @@
+ 
+ export const DEFAULT_FERMENT_V2_SETTINGS: Readonly<FermentV2Settings> = {
+ 	autoResume: true,
+-	maxUnchangedContinuations: 3,
+-	maxConsecutiveErrors: 3,
++	maxUnchangedContinuations: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : 3,
++	maxConsecutiveErrors: (process.env.KIMCHI_ABLATION_UNBOUNDED === "1") ? Infinity : 3,
+ 	defaultTokenBudget: undefined,
+ 	evaluationTimeoutMs: 600_000,
+ }
+--- a/src/extensions/ferment-v2/reducer.ts
++++ b/src/extensions/ferment-v2/reducer.ts
+@@ -200,7 +200,7 @@
+ }
+ 
+ function isOverBudget(tokenBudget: number | undefined, tokensUsed: number): boolean {
+-	return tokenBudget !== undefined && tokensUsed >= tokenBudget
++	return !(process.env.KIMCHI_ABLATION_UNBOUNDED === "1") && tokenBudget !== undefined && tokensUsed >= tokenBudget
+ }
+ 
+ function requireCurrentFermentV2(

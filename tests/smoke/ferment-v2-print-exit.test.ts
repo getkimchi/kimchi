@@ -37,7 +37,7 @@ async function withFermentV2PrintFixture(
 	}
 }
 
-it("recovers from malformed evaluation, completes headless, and delivers the evaluated draft exactly", {
+it("recovers from malformed evaluation and preserves the accepted draft when final delivery rewrites it", {
 	timeout: 25_000,
 }, async () => {
 	await withFermentV2PrintFixture(
@@ -54,7 +54,7 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","expectedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
 					],
 				},
-				{ stream: ["\n\nNO_TODO_DRAFT\n"] },
+				{ stream: ["Rewritten final answer: NO_TODO_DRAFT"] },
 			],
 		},
 		async ({ fake, homeDir, workDir, sessionPath }) => {
@@ -69,6 +69,7 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 			expect(result.timedOut, failure).toBe(false)
 			expect(result.code, failure).toBe(0)
 			expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
+			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("Rewritten final answer:")
 			expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
 			expect(chatRequests, failure).toHaveLength(4)
@@ -106,7 +107,11 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 			expect(evaluatorRequests, failure).toHaveLength(2)
 			expect(JSON.stringify(evaluatorRequests.at(-1)?.body), failure).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).not.toContain("Return this evaluated draft verbatim")
-			expect(chatRequests, failure).toHaveLength(7)
+			expect(chatRequests, failure).toHaveLength(8)
+			expect(isFermentV2EvaluatorRequest(chatRequests[5]), failure).toBe(false)
+			expect(JSON.stringify(chatRequests[5]?.body), failure).toContain(
+				"Write your final answer now without calling tools.",
+			)
 		},
 	)
 })
@@ -446,6 +451,7 @@ function fermentV2Responses(
 				},
 			],
 		},
+		{ stream: ["UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN"] },
 		{
 			match: isFermentV2EvaluatorRequest,
 			stream: [

@@ -284,6 +284,8 @@ export interface AgentMessageThread {
 	sourceTaskId: string
 	recipient: AgentMessageRecipient
 	expectedResponder: "parent" | "agent"
+	/** Present for questions; retained so reconciliation cannot discard a blocker. */
+	canContinue?: boolean
 	state: "open" | "closed"
 	messageCount: number
 	createdAt: number
@@ -338,7 +340,8 @@ export function validateAgentMessageInput(
 			if (isReply && value.reply_to === undefined) {
 				return {
 					valid: false,
-					reason: "An answer or decline requires reply_to with the exact open question message ID.",
+					reason:
+						'An answer or decline requires reply_to with the exact open question message ID. For an unsolicited peer update, keep recipient and use payload: {"kind":"status","summary":"..."} without reply_to.',
 				}
 			}
 		}
@@ -384,6 +387,7 @@ export function createAgentMessageThread(message: AgentMessage): AgentMessageThr
 		sourceTaskId: message.sourceTaskId,
 		recipient: message.recipient,
 		expectedResponder: message.recipient.type === "agent" ? "agent" : "parent",
+		canContinue: message.payload.canContinue,
 		state: "open",
 		messageCount: 1,
 		createdAt: message.createdAt,

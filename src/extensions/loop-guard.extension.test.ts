@@ -31,6 +31,18 @@ function getHandler(handlers: Map<string, Handler[]>, event: string): Handler {
 	return list[list.length - 1]
 }
 
+function completedTurn(toolResult: { toolName: string; input: unknown; isError: boolean; content: unknown[] }) {
+	return {
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call", name: toolResult.toolName, arguments: toolResult.input }],
+		},
+		toolResults: [
+			{ toolCallId: "call", toolName: toolResult.toolName, isError: toolResult.isError, content: toolResult.content },
+		],
+	}
+}
+
 describe("loopGuardExtension telemetry", () => {
 	beforeEach(() => {
 		vi.resetModules()
@@ -40,7 +52,7 @@ describe("loopGuardExtension telemetry", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("emits LOOP_GUARD_EVENTS.WARN on a warn via pi.events.emit", async () => {
+	it.each([false, true])("counts completed and blocked calls once from turn results (isError=%s)", async (isError) => {
 		const { api, handlers, events } = createMockApi()
 		const emitSpy = events.emit as ReturnType<typeof vi.fn>
 		const { default: loopGuardExtension } = await import("./loop-guard.js")
@@ -54,12 +66,12 @@ describe("loopGuardExtension telemetry", () => {
 		const toolResult = {
 			toolName: "bash",
 			input: { command: "ls" },
-			isError: true,
+			isError,
 			content: [{ type: "text", text: "error output" }],
 		}
-		getHandler(handlers, "tool_result")(toolResult)
-		getHandler(handlers, "tool_result")(toolResult)
-		getHandler(handlers, "tool_result")(toolResult)
+		getHandler(handlers, "turn_end")(completedTurn(toolResult))
+		getHandler(handlers, "turn_end")(completedTurn(toolResult))
+		getHandler(handlers, "turn_end")(completedTurn(toolResult))
 
 		// The warn emit should have fired with the right channel + payload.
 		const warnCalls = emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === LOOP_GUARD_EVENTS.WARN)
@@ -89,16 +101,17 @@ describe("loopGuardExtension telemetry", () => {
 			isError: true,
 			content: [{ type: "text", text: "error output" }],
 		}
-		getHandler(handlers, "tool_result")(toolResult)
-		getHandler(handlers, "tool_result")(toolResult)
-		getHandler(handlers, "tool_result")(toolResult)
+		getHandler(handlers, "turn_end")(completedTurn(toolResult))
+		getHandler(handlers, "turn_end")(completedTurn(toolResult))
+		getHandler(handlers, "turn_end")(completedTurn(toolResult))
 
 		// The warn emit should have fired with is_subagent: true (since we mocked isAgentWorker).
 		const warnCalls = emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === LOOP_GUARD_EVENTS.WARN)
 		expect(warnCalls.length).toBe(1)
 		expect((warnCalls[0][1] as { is_subagent: boolean }).is_subagent).toBe(true)
 
-		// turn_end should fire the abort + SUBAGENT_ABORT event.
+		// The warning turn leaves one recovery turn before the worker aborts.
+		expect(abortFn).not.toHaveBeenCalled()
 		getHandler(handlers, "turn_end")()
 
 		const abortCalls = emitSpy.mock.calls.filter(([ch]: unknown[]) => ch === LOOP_GUARD_EVENTS.SUBAGENT_ABORT)
@@ -133,8 +146,8 @@ describe("loopGuardExtension telemetry", () => {
 			content: [{ type: "text", text: "error output" }],
 		}
 		// These should not throw despite pi.events being undefined.
-		expect(() => getHandler(handlers, "tool_result")(toolResult)).not.toThrow()
-		expect(() => getHandler(handlers, "tool_result")(toolResult)).not.toThrow()
-		expect(() => getHandler(handlers, "tool_result")(toolResult)).not.toThrow()
+		expect(() => getHandler(handlers, "turn_end")(completedTurn(toolResult))).not.toThrow()
+		expect(() => getHandler(handlers, "turn_end")(completedTurn(toolResult))).not.toThrow()
+		expect(() => getHandler(handlers, "turn_end")(completedTurn(toolResult))).not.toThrow()
 	})
 })
