@@ -1,7 +1,6 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.85.1
 #
-# Tracking: publication pending. The issue draft below is ready for `earendil-works/pi`; no upstream issue or PR has been filed for this selector change.
-# Upstream PR plan: docs/pi-coding-agent-patch.md
+# Tracking: publication pending.; no upstream issue or PR has been filed for this selector change.
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
