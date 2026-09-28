@@ -33,7 +33,7 @@ afterEach(() => {
 
 // Capture what session_start actually passes to createBashToolDefinition
 // (and the real definition it gets back) so tests can assert the
-// description override preserves upstream's renderCall/
+// description override preserves upstream's execute/renderCall/
 // renderResult/parameters, and that cwd comes from the session_start ctx
 // rather than being hardcoded.
 let capturedCwd: string | undefined
@@ -835,7 +835,7 @@ describe("bashToolGuardExtension - description override", () => {
 		expect(pi.registeredTools.get("bash")?.description).toBe(bashToolDescription())
 	})
 
-	it("wraps execution while preserving upstream rendering and parameters", () => {
+	it("preserves the upstream execute/renderCall/renderResult/parameters", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI)
 
@@ -843,8 +843,7 @@ describe("bashToolGuardExtension - description override", () => {
 
 		const tool = pi.registeredTools.get("bash")
 		expect(capturedBase).toBeDefined()
-		expect(tool?.execute).toBeTypeOf("function")
-		expect(tool?.execute).not.toBe(capturedBase?.execute)
+		expect(tool?.execute).toBe(capturedBase?.execute)
 		expect(tool?.renderCall).toBe(capturedBase?.renderCall)
 		expect(tool?.renderResult).toBe(capturedBase?.renderResult)
 		expect(tool?.parameters).toBe(capturedBase?.parameters)
