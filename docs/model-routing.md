@@ -71,9 +71,9 @@ the backend routes every session independently.
 For the main session (not subagents), the auto-model extension additionally:
 
 - **Installs the default** — a fresh main session installs `auto` as the
-  saved default once per install for entitled (cast.ai) accounts, and only
-  when the backend catalog advertises it. The `autoDefaultApplied` marker in
-  settings.json keeps a later switch-away permanent.
+  saved default once per install, and only when the backend catalog
+  advertises it. The `autoDefaultApplied` marker in settings.json keeps a
+  later switch-away permanent.
 - **Persists explicit choices** — an explicit launch-time `--model` over an
   auto session is user-initiated and persists.
 - **Unwraps saved defaults** — a persisted default is never wrapped in

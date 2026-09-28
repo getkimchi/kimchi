@@ -11,13 +11,6 @@ import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
-// The Auto-default gate performs a network lookup; default it to a
-// non-entitled account so existing tests never hit the network, and override
-// per test in the default-install describe below.
-vi.mock("./auto-default-gate.js", () => ({
-	shouldDefaultToAuto: vi.fn(async () => false),
-}))
-
 // The marker lives in settings.json; keep it in memory so each test starts
 // with "not yet applied" and can assert whether it was written.
 const autoDefaultStubs = vi.hoisted(() => ({ applied: false }))
@@ -39,7 +32,6 @@ vi.mock("../../settings-watcher.js", () => ({
 	getSettingsManager: () => settingsStubs,
 }))
 
-import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
@@ -342,8 +334,6 @@ describe("createAutoModelRoutingExtension", () => {
 
 describe("catalog-driven Auto default (main session)", () => {
 	beforeEach(() => {
-		vi.mocked(shouldDefaultToAuto).mockClear()
-		vi.mocked(shouldDefaultToAuto).mockResolvedValue(true)
 		autoDefaultStubs.applied = false
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
 	})
@@ -367,7 +357,7 @@ describe("catalog-driven Auto default (main session)", () => {
 		}
 	}
 
-	it("installs Auto as the default for an entitled account when the catalog advertises it", async () => {
+	it("installs Auto as the default when the catalog advertises it", async () => {
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
 		const { setModel, start } = runSessionStart(autoModelExtension)
 
@@ -411,18 +401,6 @@ describe("catalog-driven Auto default (main session)", () => {
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
-	it.each([
-		"startup",
-		"new",
-	] as const)("leaves a fresh %s session on its existing model for a non-entitled account", async () => {
-		vi.mocked(shouldDefaultToAuto).mockResolvedValue(false)
-		const { setModel, start } = runSessionStart(autoModelExtension)
-
-		await start()
-
-		expect(setModel).not.toHaveBeenCalled()
-	})
-
 	it("does not install when the catalog does not advertise auto", async () => {
 		const { setModel, start } = runSessionStart(autoModelExtension, {
 			modelRegistry: { find: () => undefined },
@@ -434,13 +412,12 @@ describe("catalog-driven Auto default (main session)", () => {
 		expect(autoDefaultStubs.applied).toBe(false)
 	})
 
-	it("does not consult the gate when the launch choice is explicit", async () => {
+	it("leaves the model alone when the launch choice is explicit", async () => {
 		populateCliArgs(["--model", "concrete"])
 		const { setModel, start } = runSessionStart(autoModelExtension)
 
 		await start()
 
-		expect(shouldDefaultToAuto).not.toHaveBeenCalled()
 		expect(setModel).not.toHaveBeenCalled()
 	})
 })

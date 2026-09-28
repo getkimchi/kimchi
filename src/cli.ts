@@ -54,7 +54,6 @@ import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
-import { warmAutoDefaultGate } from "./extensions/auto-model/auto-default-gate.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
@@ -356,10 +355,6 @@ try {
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
-		// Kick off the /v1/me identity lookup now (result cached process-wide) so
-		// the fresh-session Auto-default gate never waits on the network in render
-		// paths.
-		warmAutoDefaultGate()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
 		// (set_phase, list_ferments, ferment suite) tools stay out of headless

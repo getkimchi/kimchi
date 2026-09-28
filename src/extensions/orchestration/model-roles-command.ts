@@ -11,6 +11,7 @@ import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
+import { isAutoRoutedRef } from "../auto-model/constants.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -49,7 +50,7 @@ export function modelRefTags(
 ): string[] {
 	// Routed virtual models (kimchi-dev ids starting with `auto`) are neither
 	// concrete catalog slugs nor deprecated — no tags.
-	if (/^kimchi-dev\/auto/.test(ref)) return []
+	if (isAutoRoutedRef(ref)) return []
 	const slug = modelIdFromRef(ref)
 	if (!apiSlugs.has(slug)) return ["unavailable"]
 	if (deprecatedSlugs.has(slug)) return ["deprecated"]

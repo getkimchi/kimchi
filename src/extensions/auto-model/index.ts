@@ -13,7 +13,6 @@ import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
 import { readAutoDefaultApplied, writeAutoDefaultApplied } from "../../config.js"
 import { getSettingsManager } from "../../settings-watcher.js"
 import { setMultiModelEnabled } from "../multi-model.js"
-import { shouldDefaultToAuto } from "./auto-default-gate.js"
 import { syncAutoCapabilities } from "./capabilities.js"
 import { AUTO_MODEL_PROVIDER, isAutoRoutedModel } from "./constants.js"
 import { type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
@@ -267,17 +266,16 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// multi-model.
 			setMultiModelEnabled(sessionId, false)
 
-			// Catalog-driven Auto default: install once per install for entitled
-			// accounts when the backend actually advertises `auto`. Commit the
-			// marker only once the model is genuinely in hand, so a failed lookup
-			// can retry on the next launch. Every later launch (or an unentitled
-			// account) keeps the saved default and merely stops multi-model from
-			// wrapping it.
+			// Catalog-driven Auto default: install once per install when the backend
+			// actually advertises `auto` — the backend catalog decides who sees it,
+			// so there is no client-side entitlement check. Commit the marker only
+			// once the model is genuinely in hand, so a failed lookup can retry on
+			// the next launch. Every later launch keeps the saved default and merely
+			// stops multi-model from wrapping it.
 			if (mainFreshLaunch && !isAutoRoutedModel(ctx.model)) {
-				const installed =
-					(await shouldDefaultToAuto()) && !readAutoDefaultApplied()
-						? ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
-						: undefined
+				const installed = !readAutoDefaultApplied()
+					? ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
+					: undefined
 				if (installed) {
 					// Persist: upstream 0.85.1 made setModel session-only by default, and
 					// the marker + notice below claim a permanent change. Without persist

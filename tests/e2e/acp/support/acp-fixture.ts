@@ -62,8 +62,6 @@ export interface AcpMcpFixture extends AcpFixture {
 export interface AcpFixtureOptions {
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
-	/** Email served by the fake `/v1/me`; an @cast.ai address opts into Auto-by-default. Null serves 404. */
-	userEmail?: string | null
 	providerId?: string
 	defaultProvider?: string
 	/** Pin the fake model by default; false exercises unconfigured startup. */
@@ -235,7 +233,6 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		responses,
 		models,
 		modelInput,
-		userEmail,
 		providerId = "fake",
 		defaultProvider,
 		defaultModel,
@@ -249,7 +246,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
-	const fake = await startFakeOpenAiServer({ responses, models: configuredModels, userEmail })
+	const fake = await startFakeOpenAiServer({ responses, models: configuredModels })
 
 	let proc: ChildProcess | null = null
 	let mcp: McpFixture | undefined
@@ -400,9 +397,8 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// session boots without background HTTP or synchronous tar/exec
 				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
-				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
-				// Keep the Auto-by-default gate's /v1/me lookup on the fake
-				// server; otherwise it would reach the real app API.
+				// Keep the /v1/me identity lookup (telemetry pre-session) on the
+				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
 				...(mcp?.env ?? {}),
 			},

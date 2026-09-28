@@ -37,3 +37,8 @@ export function isAutoRoutedModel<T extends Pick<Model<string>, "provider" | "id
 ): model is T & { provider: typeof AUTO_MODEL_PROVIDER; id: `auto${string}` } {
 	return model?.provider === AUTO_MODEL_PROVIDER && model.id.startsWith("auto")
 }
+
+/** Ref-form check (`provider/id` string) matching isAutoRoutedModel's convention. */
+export function isAutoRoutedRef(ref: string): boolean {
+	return ref.startsWith(`${AUTO_MODEL_PROVIDER}/auto`)
+}
