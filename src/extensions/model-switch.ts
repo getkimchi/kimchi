@@ -106,15 +106,11 @@ export default function modelSwitchExtension(
 			}
 
 			if (!splitModelRef(model)) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,
