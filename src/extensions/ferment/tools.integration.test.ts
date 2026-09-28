@@ -10,7 +10,7 @@
  * that the state machine extraction will formalize.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { getWorkId } from "../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
@@ -151,6 +152,7 @@ let h: Harness
 
 beforeEach(() => {
 	h = createHarness()
+	vi.stubEnv("PI_CODING_AGENT_DIR", join(h.tempDir, "agent"))
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -162,6 +164,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllEnvs()
+	rmSync(join(h.tempDir, "agent"), { recursive: true, force: true })
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -1525,9 +1528,9 @@ describe("propose_ferment_scoping", () => {
 			const saved = readFileSync(planFile, "utf-8")
 			expect(saved).toContain("# Plan: Proposed Ferment")
 			expect(saved).toContain("## Goal")
-			// Tool result is plan + message; file equals the leading plan portion.
+			// The saved artifact adds work metadata to the plan shown in the tool result.
 			const planPortion = result.split("\n\nPlan saved.")[0]
-			expect(saved).toBe(planPortion)
+			expect(saved).toBe(`<!-- kimchi-work-id: ${getWorkId(ctx)} -->\n${planPortion}`)
 			expect(result).toContain(`Plan file: ${planFile}`)
 		})
 
