@@ -2137,6 +2137,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
 			sessionUpdate: async (_p: SessionNotification) => {},
+			extNotification: async (_method: string, _params: unknown) => {},
 			requestPermission: async (params: RequestPermissionRequest) => {
 				requests.push(params)
 				return { outcome: { outcome: "selected", optionId: "choice-0" } }
@@ -2189,6 +2190,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
 			sessionUpdate: async (_p: SessionNotification) => {},
+			extNotification: async (_method: string, _params: unknown) => {},
 			requestPermission: async (params: RequestPermissionRequest) => {
 				requests.push(params)
 				return {
@@ -6408,6 +6410,7 @@ describe("setSessionConfigOption", () => {
 					updates2.push(msg)
 				}
 			},
+			extNotification: async (_method: string, _params: unknown) => {},
 		} as unknown as AgentSideConnection
 
 		let callCount = 0
