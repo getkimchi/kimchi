@@ -81,7 +81,7 @@ import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import { findModelByRef, refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import { refFromModel, resolveModelRef, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -742,19 +742,14 @@ export class KimchiAcpAgent implements Agent {
 				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		// Exact canonical-ref match: robust even if a model id ever contains
-		// a slash, where last-slash splitting alone cannot disambiguate.
-		const target = findModelByRef(modelRegistry, value)
-		if (!target) {
-			const available = modelRegistry
-				.getAvailable()
-				.map((m) => refFromModel(m))
-				.sort()
+		const resolved = resolveModelRef(modelRegistry, value)
+		if (!resolved.model) {
 			throw RequestError.invalidParams(
 				undefined,
-				`model not found: "${value}". available models: multi-model, ${available.join(", ")}`,
+				`model not found: "${value}". available models: multi-model, ${resolved.available.join(", ")}`,
 			)
 		}
+		const target = resolved.model
 
 		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 		setMultiModelEnabled(sessionId, false)

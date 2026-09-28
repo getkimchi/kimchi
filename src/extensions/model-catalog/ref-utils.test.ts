@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { findModelByRef, modelIdFromRef, splitModelRef } from "./ref-utils.js"
+import { findModelByRef, modelIdFromRef, refFromModel, resolveModelRef, splitModelRef } from "./ref-utils.js"
 
 describe("splitModelRef", () => {
 	it("splits a plain provider/model ref", () => {
@@ -33,6 +33,27 @@ describe("modelIdFromRef", () => {
 		expect(modelIdFromRef("kimchi-dev/kimi-k3")).toBe("kimi-k3")
 		expect(modelIdFromRef("provider/model/variant")).toBe("model/variant")
 		expect(modelIdFromRef("kimi-k3")).toBe("kimi-k3")
+	})
+})
+
+describe("resolveModelRef", () => {
+	const registry = {
+		getAvailable: () => [
+			{ provider: "kimchi-dev/anthropic", id: "claude-opus-4-6" },
+			{ provider: "kimchi-dev", id: "kimi-k3" },
+		],
+	}
+
+	it("returns the model on a canonical-ref hit", () => {
+		const result = resolveModelRef(registry as never, "kimchi-dev/anthropic/claude-opus-4-6")
+		expect(result.model && refFromModel(result.model)).toBe("kimchi-dev/anthropic/claude-opus-4-6")
+		expect(result.available).toBeUndefined()
+	})
+
+	it("returns sorted available refs on a miss", () => {
+		const result = resolveModelRef(registry as never, "kimchi-dev/anthropic/claude-opus-4-5")
+		expect(result.model).toBeUndefined()
+		expect(result.available).toEqual(["kimchi-dev/anthropic/claude-opus-4-6", "kimchi-dev/kimi-k3"])
 	})
 })
 
