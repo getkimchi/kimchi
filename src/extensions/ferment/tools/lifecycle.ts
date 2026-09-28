@@ -61,7 +61,7 @@ import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { FIX_PROTOCOL, MAX_BLOCK_RETRIES } from "../state.js"
+import { FIX_PROTOCOL, MAX_BLOCK_RETRIES, setFermentWorkId } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -1182,6 +1182,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					workId: getWorkId(ctx),
 				})
 				appendWorkRecord(ctx, { type: "plan", path: planPath })
+				setFermentWorkId(fermentId, getWorkId(ctx))
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")

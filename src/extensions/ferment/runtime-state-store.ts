@@ -27,6 +27,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 
+import { isWorkId } from "../work-attribution.js"
+
 export const RUNTIME_STATE_SCHEMA_VERSION = 1
 
 /** The latest LLM-grader refusal of a phase — grade + recommendations +
@@ -41,6 +43,8 @@ export interface PersistedPhaseRefusal {
 
 export interface PersistedRuntimeState {
 	schemaVersion: typeof RUNTIME_STATE_SCHEMA_VERSION
+	/** Work that produced the canonical saved plan, reused on cross-session resume. */
+	workId?: string
 	/** Key: `${phaseId}:${stepId}`. Note: fermentId is implicit (per-file). */
 	stepStartCounts: Record<string, number>
 	/** Key: `${phaseId}`. */
@@ -92,6 +96,7 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 		// missing or malformed, fall back to the empty default for that field
 		// rather than the whole snapshot.
 		const merged = emptyState()
+		if (isWorkId(raw.workId)) merged.workId = raw.workId
 		if (raw.stepStartCounts && typeof raw.stepStartCounts === "object") merged.stepStartCounts = raw.stepStartCounts
 		if (raw.blockRetries && typeof raw.blockRetries === "object") merged.blockRetries = raw.blockRetries
 		if (raw.lastBlockHashes && typeof raw.lastBlockHashes === "object") merged.lastBlockHashes = raw.lastBlockHashes

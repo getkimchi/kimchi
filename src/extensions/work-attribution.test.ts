@@ -1,7 +1,13 @@
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { BeforeProviderHeadersEvent, SessionShutdownEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import {
+	type BeforeProviderHeadersEvent,
+	SessionManager,
+	type SessionShutdownEvent,
+	type SessionStartEvent,
+	type ToolResultEvent,
+} from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "./__mocks__/context.js"
@@ -83,6 +89,84 @@ describe("local work attribution", () => {
 			fresh,
 		)
 		expect(getWorkId(fresh)).toBe(parentNext)
+	})
+
+	it("restores the work at a real historical fork point and preserves the fork on resume", async () => {
+		const parent = SessionManager.create(dir, join(dir, "sessions"))
+		const parentCtx = { ...createContext({ cwd: dir }), sessionManager: parent }
+		const api = createExtensionApi()
+		api.appendEntry.mockImplementation((type, data) => {
+			parent.appendCustomEntry(type, data)
+		})
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(
+			{ type: "before_provider_headers", headers: {} },
+			parentCtx,
+		)
+		const original = getWorkId(parentCtx)
+		const forkPoint = parent.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "First task" }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		})
+		await api.getRegisteredCommand("work").handler("new", { ...createCommandContext(), ...parentCtx })
+		expect(getWorkId(parentCtx)).not.toBe(original)
+		const parentFile = parent.getSessionFile()
+		if (!parentFile) throw new Error("Expected persisted parent")
+		const fork = SessionManager.open(parentFile)
+		const forkFile = fork.createBranchedSession(forkPoint)
+		if (!forkFile) throw new Error("Expected persisted fork")
+		const forkCtx = { ...createContext({ cwd: dir }), sessionManager: fork }
+		const forkApi = createExtensionApi()
+		createWorkAttributionExtension()(forkApi.api)
+		await forkApi.getHandler<SessionStartEvent>("session_start")(
+			{ type: "session_start", reason: "fork", previousSessionFile: parentFile },
+			forkCtx,
+		)
+		expect(getWorkId(forkCtx)).toBe(original)
+		await forkApi.getHandler<SessionShutdownEvent>("session_shutdown")(
+			{ type: "session_shutdown", reason: "quit" },
+			forkCtx,
+		)
+		setWorkId(parentCtx)
+		const resumed = SessionManager.open(forkFile)
+		const resumedCtx = { ...createContext({ cwd: dir }), sessionManager: resumed }
+		const resumedApi = createExtensionApi()
+		createWorkAttributionExtension()(resumedApi.api)
+		await resumedApi.getHandler<SessionStartEvent>("session_start")(
+			{ type: "session_start", reason: "resume", previousSessionFile: parentFile },
+			resumedCtx,
+		)
+		expect(getWorkId(resumedCtx)).toBe(original)
+	})
+
+	it("ignores malformed copied work metadata and lets the session's ledger win", async () => {
+		const sessionManager = SessionManager.inMemory(dir)
+		sessionManager.appendCustomEntry("work_identity", { workId: "../../not-a-uuid" })
+		const ctx = { ...createContext({ cwd: dir }), sessionManager }
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "fork" }, ctx)
+		const workId = getWorkId(ctx)
+		expect(workId).toMatch(/^[0-9a-f-]{36}$/)
+		sessionManager.appendCustomEntry("work_identity", { workId: "00000000-0000-4000-8000-000000000000" })
+		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+		const resumed = createExtensionApi()
+		createWorkAttributionExtension()(resumed.api)
+		await resumed.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
+		expect(getWorkId(ctx)).toBe(workId)
 	})
 
 	it("persists plan identity and explicitly continues it in another session", async () => {

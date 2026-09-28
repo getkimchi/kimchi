@@ -18,12 +18,16 @@ export interface WorkContext {
 	cwd: string
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">
 }
+const WORK_IDENTITY_ENTRY = "work_identity"
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const identities = new Map<string, string>()
 
 function ledgerPath(ctx: WorkContext): string {
 	// Session IDs also come from imported sessions; never interpret them as paths.
 	return join(getAgentDir(), "work-attribution", `${encodeURIComponent(ctx.sessionManager.getSessionId())}.jsonl`)
+}
+export function isWorkId(value: unknown): value is string {
+	return typeof value === "string" && UUID.test(value)
 }
 export function readPlanWorkId(text: string): string | undefined {
 	const ids = [...text.matchAll(/<!-- kimchi-work-id: ([^\r\n]+) -->/g)].map((match) => match[1])
@@ -51,10 +55,15 @@ export function appendWorkRecord(
 		closeSync(fd)
 	}
 }
-export function setWorkId(ctx: WorkContext, workId: string = randomUUID()): string {
+export function setWorkId(
+	ctx: WorkContext,
+	workId: string = randomUUID(),
+	pi?: Pick<ExtensionAPI, "appendEntry">,
+): string {
 	if (!UUID.test(workId)) throw new Error("Invalid work UUID")
 	appendWorkRecord(ctx, { type: "work" }, workId)
 	identities.set(ledgerPath(ctx), workId)
+	pi?.appendEntry(WORK_IDENTITY_ENTRY, { workId })
 	return workId
 }
 export function getWorkId(ctx: WorkContext): string {
@@ -97,14 +106,36 @@ function warn(ctx: ExtensionContext, error: unknown): void {
 export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		pi.on("session_start", (_event, ctx) => {
+			try {
+				bind(ctx)
+			} catch (error) {
+				warn(ctx, error)
+			}
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 		})
 		const initialized = new Set<string>()
-		function bind(ctx: WorkContext): void {
+		function bind(ctx: ExtensionContext): void {
 			const sessionId = ctx.sessionManager.getSessionId()
 			if (initialized.has(sessionId)) return
-			if (inheritedWorkId && !existsSync(ledgerPath(ctx))) setWorkId(ctx, inheritedWorkId)
-			else getWorkId(ctx)
+			if (!existsSync(ledgerPath(ctx))) {
+				let copiedWorkId: string | undefined
+				for (const entry of ctx.sessionManager.getBranch().toReversed()) {
+					if (
+						entry.type === "custom" &&
+						entry.customType === WORK_IDENTITY_ENTRY &&
+						typeof entry.data === "object" &&
+						entry.data !== null &&
+						"workId" in entry.data &&
+						isWorkId(entry.data.workId)
+					) {
+						copiedWorkId = entry.data.workId
+						break
+					}
+				}
+				if (inheritedWorkId || copiedWorkId) setWorkId(ctx, inheritedWorkId ?? copiedWorkId)
+				else getWorkId(ctx)
+			} else getWorkId(ctx)
+			pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx) })
 			initialized.add(sessionId)
 		}
 		pi.on("before_provider_headers", (event, ctx) => {
@@ -137,6 +168,7 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 						if (!workId) throw new Error("Plan has no valid work ID")
 						setWorkId(ctx, workId)
 					}
+					if (value) pi.appendEntry(WORK_IDENTITY_ENTRY, { workId: getWorkId(ctx) })
 					const message = `Work ID: ${getWorkId(ctx)}`
 					if (ctx.hasUI) ctx.ui.notify(message, "info")
 					else console.error(message)

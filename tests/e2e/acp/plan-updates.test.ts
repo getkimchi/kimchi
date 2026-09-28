@@ -278,12 +278,20 @@ describe("ACP integration — plan updates from todo writes", () => {
 	it("mirrors the Ferment phase and step lifecycle through the Todo store", { timeout: 180_000 }, async () => {
 		const previousActiveFerment = process.env.KIMCHI_ACTIVE_FERMENT
 		process.env.KIMCHI_ACTIVE_FERMENT = FERMENT_ID
+		let releasePhaseResponse = () => {}
+		const phaseResponseReady = new Promise<void>((resolve) => {
+			releasePhaseResponse = resolve
+		})
 		try {
-			await startWith(fermentLifecycleResponses())
+			const responses = fermentLifecycleResponses()
+			await startWith([{ ...responses[0], holdUntil: phaseResponseReady }, ...responses.slice(1)])
 			seedPlannedFerment(fixture.workDir)
 			fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
 
 			const sessionId = await newSession(fixture, fixture.workDir)
+			// Resume can run during extension binding, before ACP subscribes to Todo writes.
+			// Start the lifecycle only after newSession has attached the plan tracker.
+			releasePhaseResponse()
 			// A streaming model chunk means the auto-resume kick is in flight — it
 			// streams from the moment the prompt starts, long before the plan
 			// snapshot arrives at tool completion. Prompting while the kick runs
@@ -362,6 +370,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 				"Cleared Ferment phase Todo snapshot did not arrive",
 			)
 		} finally {
+			releasePhaseResponse()
 			if (previousActiveFerment === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 			else process.env.KIMCHI_ACTIVE_FERMENT = previousActiveFerment
 		}

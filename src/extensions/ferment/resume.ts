@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
+import { setWorkId } from "../work-attribution.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { emitFermentScopingResumed } from "./domain-events-emitter.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
@@ -10,6 +11,7 @@ import { triggerPendingPlanReview } from "./plan-review-trigger.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
+import { getFermentWorkId } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
@@ -23,6 +25,7 @@ import { checkWorktree } from "./worktree.js"
 export function loadFermentSilently(
 	pi: ExtensionAPI,
 	fermentId: string,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 ): Ferment | undefined {
 	const storage = runtime.getStorage()
@@ -31,6 +34,8 @@ export function loadFermentSilently(
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return undefined
 	}
+	const workId = getFermentWorkId(existing.id)
+	if (workId) setWorkId(ctx, workId, pi)
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
@@ -83,6 +88,8 @@ export function resumeFerment(
 		if (out.ok) existing = out.ferment
 	}
 
+	const workId = getFermentWorkId(existing.id)
+	if (workId) setWorkId(ctx, workId, pi)
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 

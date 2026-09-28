@@ -21,12 +21,14 @@ import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -1184,6 +1186,7 @@ describe("plan mode assumption detection", () => {
 			expect(files).toHaveLength(1)
 
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			// Status is 'running' because 'Start as ferment' activates the first phase
 			// via the full runtime path when the plan has a structured Chunks section.
 			expect(artifact.status).toMatch(/^(planned|running|active)$/)
@@ -1466,6 +1469,7 @@ describe("plan mode assumption detection", () => {
 			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
 			expect(files).toHaveLength(1)
 			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(loadRuntimeState(artifact.id, fermentsDir).workId).toBe(getWorkId(ctx))
 			expect(artifact.status).toBe("draft")
 			expect(artifact.phases ?? []).toHaveLength(0)
 

@@ -35,7 +35,7 @@ import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
-import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
+import { hasActiveFerment, notifyFermentActive, onActiveFermentChange, setFermentWorkId } from "../ferment/state.js"
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
@@ -924,6 +924,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 					})
+					setFermentWorkId(draft.id, getWorkId(ctx), fermentDir)
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
@@ -946,6 +947,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				})
 				// Set the draft active before emitting STARTED so telemetry can capture
 				// the scoping baseline. Keep planning tools until activation succeeds.
+				setFermentWorkId(draft.id, getWorkId(ctx), fermentDir)
 				defaultFermentRuntime.setActive(draft)
 				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.

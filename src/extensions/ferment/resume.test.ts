@@ -13,14 +13,16 @@
  * matching how resumeFerment / confirmPendingScope resolve the ferments root.
  */
 
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { getWorkId, setWorkId } from "../work-attribution.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import {
@@ -31,11 +33,12 @@ import {
 	savePendingProposal,
 } from "./pending-proposal-store.js"
 import { clearPendingPlanReviewTrigger } from "./plan-review-trigger.js"
-import { resumeFerment } from "./resume.js"
+import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { emptyState, saveRuntimeState } from "./runtime-state-store.js"
 import { clearAllPendingScopes, setPendingScope } from "./scoping.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
+import { clearAllScopingGates, clearAllStepStarts, setActive, setRuntimeStatePersistRoot } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 // ─── Harness ─────────────────────────────────────────────────────────────────
@@ -107,6 +110,9 @@ let prevFermentsDir: string | undefined
 
 beforeEach(() => {
 	h = createHarness()
+	vi.stubEnv("PI_CODING_AGENT_DIR", join(h.fermentsDir, "agent"))
+	vi.stubEnv("KIMCHI_FERMENT_LOCK_DIR", join(h.fermentsDir, "locks"))
+	setRuntimeStatePersistRoot(h.fermentsDir)
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -124,6 +130,9 @@ afterEach(() => {
 	setActive(undefined)
 	resetAllScopingStopNudgeCounts()
 	clearPendingPlanReviewTrigger()
+	setRuntimeStatePersistRoot(undefined)
+	vi.unstubAllEnvs()
+	rmSync(h.fermentsDir, { recursive: true, force: true })
 	if (prevFermentsDir === undefined) {
 		process.env.KIMCHI_FERMENTS_DIR = undefined
 	} else {
@@ -523,5 +532,33 @@ describe("resumeFerment scoping-stop budget reset", () => {
 		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
 
 		h.runtime.setActive(undefined)
+	})
+})
+
+describe("saved Ferment work attribution", () => {
+	it.each(["continue", "leave paused"])("restores saved work before %s can schedule inference", (action) => {
+		const ferment = h.eventStorage.create("Saved work")
+		const original = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "original" } })
+		const workId = getWorkId(original)
+		saveRuntimeState(ferment.id, { ...emptyState(), workId }, { root: h.fermentsDir })
+		clearAllStepStarts()
+		const resumed = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "resumed" } })
+		expect(setWorkId(resumed)).not.toBe(workId)
+		vi.mocked(h.pi.sendMessage).mockImplementation(() => {
+			expect(getWorkId(resumed)).toBe(workId)
+		})
+		if (action === "continue") resumeFerment(h.pi, ferment.id, resumed, h.runtime)
+		else loadFermentSilently(h.pi, ferment.id, resumed, h.runtime)
+		expect(getWorkId(resumed)).toBe(workId)
+		expect(h.pi.appendEntry).toHaveBeenCalledWith("work_identity", { workId })
+	})
+
+	it.each([undefined, "invalid"])("keeps current identity for legacy or malformed metadata %s", (workId) => {
+		const ferment = h.eventStorage.create("Old plan")
+		saveRuntimeState(ferment.id, { ...emptyState(), workId }, { root: h.fermentsDir })
+		const ctx = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "legacy" } })
+		const current = getWorkId(ctx)
+		resumeFerment(h.pi, ferment.id, ctx, h.runtime)
+		expect(getWorkId(ctx)).toBe(current)
 	})
 })
