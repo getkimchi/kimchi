@@ -38,6 +38,8 @@ test.use(TUI_TEST_CONFIG)
  * UI only. `responses: []` is intentional.
  */
 
+const AUTO_MODEL = { slug: "auto", displayName: "Auto", contextWindow: 1_000_000, maxTokens: 4096 }
+
 const TWO_MODELS = [
 	{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 },
 	{ slug: "heavy", displayName: "Fake Heavy", contextWindow: 1_000_000, maxTokens: 4096 },
@@ -51,7 +53,7 @@ test("multi-model is listed in the model picker and command suggestions", async 
 		terminal,
 		{
 			artifactName: "multi-model-listed",
-			models: [...TWO_MODELS],
+			models: [...TWO_MODELS, AUTO_MODEL],
 			initialModel: "basic",
 			responses: [],
 			seedHome: (homeDir) => {
@@ -387,7 +389,7 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 		terminal,
 		{
 			artifactName: "multi-model-cursor-resets",
-			models: [...TWO_MODELS],
+			models: [...TWO_MODELS, AUTO_MODEL],
 			responses: [],
 		},
 		async (_fixture, trace) => {
@@ -513,8 +515,7 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			expect(beforeView).toMatch(/\(1 selected\)/)
 			trace.step("initial title and bottom row both show 1 selected")
 
-			// Space toggles the cursor row (row 0 — "auto", which always
-			// sorts first in the role pickers) into the selection. Send
+			// Space toggles the cursor row (row 0) into the selection. Send
 			// Space without a trailing Enter so the picker stays open and
 			// we can observe the updated render.
 			terminal.write(" ")
@@ -593,7 +594,7 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 		terminal,
 		{
 			artifactName: "multi-model-no-orchestrator-custom",
-			models: [...TWO_MODELS],
+			models: [...TWO_MODELS, AUTO_MODEL],
 			responses: [],
 		},
 		async (_fixture, trace) => {
@@ -630,7 +631,7 @@ test("/multi-model offers Auto without experimental features", async ({ terminal
 		{
 			artifactName: "multi-model-auto",
 			// Deliberately reverse the API order so this scenario also verifies sorting.
-			models: [TWO_MODELS[1], TWO_MODELS[0]],
+			models: [TWO_MODELS[1], TWO_MODELS[0], AUTO_MODEL],
 			responses: [],
 		},
 		async (_fixture, trace) => {

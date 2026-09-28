@@ -3,8 +3,8 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "./auto-model/state.js"
 import promptSummaryExtension, { holdPromptSummary, promptSummaryRenderer } from "./prompt-summary.js"
-import { clearAutoRoutingState, setAutoRoutingState } from "./router/state.js"
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
 
@@ -137,6 +137,7 @@ describe("prompt summary auto-model row", () => {
 		setAutoRoutingState("test-session", {
 			status: "resolved",
 			model: { id: "glm-5.3", provider: "kimchi-dev", name: "GLM 5.3" } as Model<string>,
+			requestedId: "auto",
 		})
 
 		await harness.emit("agent_start")
@@ -189,6 +190,7 @@ describe("prompt summary auto-model row", () => {
 		setAutoRoutingState("test-session", {
 			status: "resolved",
 			model: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" } as Model<string>,
+			requestedId: "auto",
 		})
 
 		await harness.emit("agent_start")

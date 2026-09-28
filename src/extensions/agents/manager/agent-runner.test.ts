@@ -3,8 +3,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
-import { AUTO_MODEL_ID, AUTO_MODEL_PI_NAME, AUTO_MODEL_PROVIDER } from "../../router/constants.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
@@ -109,8 +109,8 @@ vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", 
 	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
-vi.mock("../../router/index.js", () => ({
-	createAutoModelExtension: vi.fn(() => () => {}),
+vi.mock("../../auto-model/index.js", () => ({
+	createAutoModelRoutingExtension: vi.fn(() => () => {}),
 }))
 
 import {
@@ -122,11 +122,11 @@ import {
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { createAutoModelExtension } from "../../router/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -141,7 +141,7 @@ const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
-const mockCreateAutoModelExtension = vi.mocked(createAutoModelExtension)
+const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -159,9 +159,11 @@ function runInlineExtension(extension: InlineExtension | undefined, pi: Extensio
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
 const AUTO_MODEL: Model<Api> = {
-	id: AUTO_MODEL_ID,
-	name: AUTO_MODEL_PI_NAME,
-	api: "kimchi-auto",
+	id: "auto",
+	name: "Auto",
+	// Backend-owned `auto` inherits the provider-level runtime api — no
+	// kimchi-auto override. Routing keys on the auto* id prefix, not the api.
+	api: "openai-completions",
 	provider: AUTO_MODEL_PROVIDER,
 	baseUrl: "https://llm.kimchi.dev/openai/v1",
 	reasoning: true,
@@ -388,7 +390,7 @@ describe("runAgent — telemetry extension", () => {
 				>["extensionsResult"],
 			})
 		const autoRoutingExtension: InlineExtension = () => {}
-		mockCreateAutoModelExtension.mockReturnValueOnce(autoRoutingExtension)
+		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingExtension)
 		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "concrete work", {
 			pi: pi as unknown as RunOptions["pi"],
 		})
@@ -399,29 +401,10 @@ describe("runAgent — telemetry extension", () => {
 
 		const concreteFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const autoFactories = mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories ?? []
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: undefined })
+		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledOnce()
+		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(concreteFactories).not.toContain(autoRoutingExtension)
 		expect(autoFactories).toContain(autoRoutingExtension)
-	})
-
-	it("passes forwarded-image vision requirements to the child Auto extension", async () => {
-		const session = makeFakeSession({})
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "inspect the image", {
-			pi: pi as unknown as RunOptions["pi"],
-			model: AUTO_MODEL,
-			requiresVision: true,
-		})
-
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
-		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: true })
 	})
 
 	it("adds the dap extension when the persona requests debug tools", async () => {
