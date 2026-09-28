@@ -319,6 +319,85 @@ describe("createCommandsRefresher", () => {
 		expect(broadcasts).toEqual(["s1", "s1"])
 	})
 
+	it("a filePath-only change updates the recorded palette without re-broadcasting", async () => {
+		// filePath is not part of the advertised-content equality check, but
+		// the recorded palette must still track it (command resolution reads
+		// skillCommands.get(name).filePath). Skipping the assignment on equal
+		// palettes used to keep the stale path forever.
+		const skills = [{ name: "deploy", description: "Ship it", filePath: "/s/deploy/SKILL.md" }]
+		const session = new BaseFakeAgentSession("acp-test-session")
+		session.resourceLoader = makeResourceLoader({ skills })
+		const record = {
+			session: asSession(session),
+			skillCommands: new Map<string, { name: string; description: string; filePath: string }>(),
+		}
+		const broadcasts: string[] = []
+		const refresher = createCommandsRefresher({
+			sessions: () => [["s1", record] as [string, typeof record]],
+			broadcast: (id) => broadcasts.push(id),
+			debounceMs: 0,
+		})
+
+		refresher.request()
+		await waitForCount(() => broadcasts.length, 1)
+
+		// The skill moves; name and description are unchanged.
+		const deploy = skills[0]
+		if (deploy) deploy.filePath = "/s/moved/deploy/SKILL.md"
+		refresher.request()
+		await tick(50)
+
+		// No re-broadcast (advertised content is unchanged)…
+		expect(broadcasts).toEqual(["s1"])
+		// …but the recorded palette reflects the new path.
+		expect(record.skillCommands.get("deploy")?.filePath).toBe("/s/moved/deploy/SKILL.md")
+	})
+
+	it("a failed broadcast reverts the palette so the next sweep retries the notification", async () => {
+		// With the reloaded palette committed before broadcast, a transient
+		// failure was never retried: every later sweep short-circuited on the
+		// now-equal palette and the client stayed out of sync. Reverting on
+		// failure makes the next sweep re-broadcast even though the skills
+		// themselves never change.
+		const skills = [{ name: "deploy", description: "Ship it", filePath: "/s/deploy/SKILL.md" }]
+		const session = new BaseFakeAgentSession("acp-test-session")
+		session.resourceLoader = makeResourceLoader({ skills })
+		const record = {
+			session: asSession(session),
+			skillCommands: new Map<string, { name: string; description: string; filePath: string }>(),
+		}
+		const broadcasts: string[] = []
+		const origWrite = process.stderr.write.bind(process.stderr)
+		const stderrWrites: string[] = []
+		// biome-ignore lint/suspicious/noExplicitAny: test-only stderr capture
+		;(process.stderr.write as any) = (chunk: string | Uint8Array) => {
+			stderrWrites.push(String(chunk))
+			return true
+		}
+		try {
+			let calls = 0
+			const refresher = createCommandsRefresher({
+				sessions: () => [["s1", record] as [string, typeof record]],
+				broadcast: (id) => {
+					if (calls++ === 0) throw new Error("broadcast boom")
+					broadcasts.push(id)
+				},
+				debounceMs: 0,
+			})
+
+			refresher.request()
+			await waitForCount(() => stderrWrites.filter((w) => w.includes("sweep failed")).length, 1)
+			// Skills never change between sweeps — only the revert makes the
+			// second sweep re-attempt the broadcast.
+			refresher.request()
+			await waitForCount(() => broadcasts.length, 1)
+
+			expect(calls).toBe(2)
+		} finally {
+			process.stderr.write = origWrite
+		}
+	})
+
 	it("cancelling before the debounce fires drops the sweep", async () => {
 		const { reloads, record } = makeRecordHolder()
 		const refresher = createCommandsRefresher({

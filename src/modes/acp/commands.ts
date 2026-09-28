@@ -97,7 +97,10 @@ export function skillCommandsEqual(
  * Re-advertise every session's palette after the skills set changes. Each
  * session reloads its own loader (keeping project-local shadowing intact),
  * then `broadcast` re-emits its available_commands_update; sessions whose
- * reload fails keep their stale palette. Sessions whose palette survived the
+ * reload fails keep their stale palette. The reloaded palette is recorded
+ * even when nothing is re-broadcast, so non-advertised fields (filePath)
+ * stay current; a broadcast that throws reverts the palette so the next
+ * sweep retries the notification. Sessions whose palette survived the
  * reload unchanged are not re-broadcast: fs watchers emit deletion/rewrite
  * bursts as several events spread over hundreds of ms, so one deliberate
  * change can kick several sweeps — only the first has anything new to say.
@@ -126,9 +129,23 @@ export function createCommandsRefresher(opts: {
 				continue
 			}
 			if (cancelled) return
-			if (skillCommandsEqual(record.skillCommands, fresh)) continue
+			// Record the reloaded palette unconditionally — the equality check
+			// gates only the notification. Skipping the assignment on equal
+			// palettes would drop fields outside the advertised-content
+			// comparison (e.g. filePath after a skill move or shadowing).
+			const prev = record.skillCommands
 			record.skillCommands = fresh
-			opts.broadcast(sessionId)
+			if (skillCommandsEqual(prev, fresh)) continue
+			try {
+				opts.broadcast(sessionId)
+			} catch (err) {
+				// A broadcast failure reverts the palette so a later sweep
+				// retries the notification — otherwise the committed fresh
+				// palette makes every subsequent sweep short-circuit at the
+				// equality check and the client stays out of sync forever.
+				record.skillCommands = prev
+				throw err
+			}
 		}
 	}
 
