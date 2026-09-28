@@ -1,8 +1,15 @@
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdtempSync, renameSync, watch, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { redactValue, startSettingsChangeWatcher } from "./settings-change-emitter.js"
+
+// Wrap node:fs.watch in a passthrough spy so tests can assert the watch
+// target. Spreading `actual` keeps every other fs function real.
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return { ...actual, watch: vi.fn(actual.watch) }
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -10,8 +17,10 @@ import { redactValue, startSettingsChangeWatcher } from "./settings-change-emitt
 
 type EmittedCall = { event: string; properties: Record<string, string | number | boolean> }
 
-/** Poll until predicate is true or timeoutMs elapses. */
-async function waitFor(fn: () => boolean, timeoutMs = 2000, intervalMs = 20): Promise<void> {
+/** Poll until predicate is true or timeoutMs elapses. Default exceeds the
+ *  watcher's 2s guard interval so guard-based detection always fits, even in
+ *  environments where fs.watch events are not delivered. */
+async function waitFor(fn: () => boolean, timeoutMs = 4000, intervalMs = 20): Promise<void> {
 	const start = Date.now()
 	while (Date.now() - start < timeoutMs) {
 		if (fn()) return
@@ -193,5 +202,70 @@ describe("startSettingsChangeWatcher", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = undefined
 		const noopStop = startSettingsChangeWatcher(() => {})
 		expect(() => noopStop()).not.toThrow()
+	})
+
+	it("watches settings.json itself, never the agent directory (startup-cost regression guard)", async () => {
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
+		stop = startSettingsChangeWatcher((event, properties) => {
+			emitted.push({ event, properties })
+		})
+		await new Promise((r) => setTimeout(r, 50))
+
+		expect(vi.mocked(watch)).toHaveBeenCalledWith(join(tmpDir, "settings.json"), expect.anything(), expect.anything())
+		for (const call of vi.mocked(watch).mock.calls) {
+			expect(call[0]).not.toBe(tmpDir)
+		}
+	})
+
+	it("detects a change even when settings.json is atomically replaced", async () => {
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
+		stop = startSettingsChangeWatcher(
+			(event, properties) => {
+				emitted.push({ event, properties })
+			},
+			{ guardIntervalMs: 20 },
+		)
+		await new Promise((r) => setTimeout(r, 50))
+
+		// Atomic replace: write temp + rename over the original (new inode).
+		writeFileSync(join(tmpDir, "settings.json.tmp"), JSON.stringify({ theme: "light" }))
+		renameSync(join(tmpDir, "settings.json.tmp"), join(tmpDir, "settings.json"))
+
+		await waitFor(() => emitted.length > 0)
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
+		expect(emitted[0]!.properties).toEqual({ key: "theme", value: "light" })
+	})
+
+	it("picks up settings.json when it is created after the watcher starts", async () => {
+		stop = startSettingsChangeWatcher(
+			(event, properties) => {
+				emitted.push({ event, properties })
+			},
+			{ guardIntervalMs: 20 },
+		)
+		await new Promise((r) => setTimeout(r, 20))
+
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
+
+		await waitFor(() => emitted.length > 0)
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
+		expect(emitted[0]!.properties).toEqual({ key: "theme", value: "dark" })
+	})
+
+	it("stop() tears down the watcher and guard timer (no events afterwards)", async () => {
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "dark" }))
+		const stopFn = startSettingsChangeWatcher(
+			(event, properties) => {
+				emitted.push({ event, properties })
+			},
+			{ guardIntervalMs: 10 },
+		)
+		await new Promise((r) => setTimeout(r, 50))
+
+		stopFn()
+		writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ theme: "light" }))
+		await new Promise((r) => setTimeout(r, 150))
+
+		expect(emitted).toHaveLength(0)
 	})
 })
