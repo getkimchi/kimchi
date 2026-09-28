@@ -1,6 +1,6 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.85.1
 #
-# Tracking: publication pending.; no upstream issue or PR has been filed for this selector change.
+# Tracking: publication pending; no upstream issue or PR has been filed for this selector change.
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
@@ -23,8 +23,8 @@
 #     never padded, so the header cannot wrap onto a phantom blank line, and
 #     rows total exactly the terminal width. On narrow terminals the
 #     description column truncates first, then the provider column, the model
-#     id last. The shared renderer lives in src/model-selector-table.ts.
-#     Tracking and removal criteria: docs/pi-coding-agent-patch.md.
+#     id last. The shared renderer lives in src/model-selector-table.ts;
+#     removal criteria for this hunk are in the Removal note below.
 #   - exportToJsonl is awaited: src/cli.ts replaces the prototype with an async
 #     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
 #     is sync, so this hunk looks redundant - it is not. Dropping it prints
@@ -618,7 +618,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd8894046f77385541fd9bd7b88268866a34a526..6902928e6b52d76529dfd9b0d50a3794c0747078 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..23f6a0c0328dbbf3b7226786dded8f0ca228ca5f 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
@@ -681,7 +681,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..6902928e6b52d76529dfd9b0d50a3794
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -256,21 +275,32 @@ export class ModelSelectorComponent extends Container {
+@@ -256,21 +275,34 @@ export class ModelSelectorComponent extends Container {
          const maxVisible = 10;
          const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible));
          const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
@@ -724,12 +724,14 @@ index bd8894046f77385541fd9bd7b88268866a34a526..6902928e6b52d76529dfd9b0d50a3794
 +            for (const row of rows.slice(startIndex, endIndex)) {
 +                const cursor = row.selected ? theme.fg("accent", "→ ") : "  ";
 +                const current = row.current ? theme.fg("accent", "✓ ") : "  ";
-+                this.listContainer.addChild(new Text(`${cursor}${current}${row.id} [${row.provider}]`, 0, 0));
++                const providerBadge = theme.fg("muted", `[${row.provider}]`);
++                const annotation = row.annotation ? theme.fg("muted", ` ${row.annotation}`) : "";
++                this.listContainer.addChild(new Text(`${cursor}${current}${row.id} ${providerBadge}${annotation}`, 0, 0));
 +            }
          }
          // Add scroll indicator if needed
          if (startIndex > 0 || endIndex < this.filteredModels.length) {
-@@ -352,6 +382,11 @@ export class ModelSelectorComponent extends Container {
+@@ -352,6 +384,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
          this.dispose();

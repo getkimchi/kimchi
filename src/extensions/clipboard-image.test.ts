@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 // All mock functions must be vi.hoisted — vi.mock is hoisted and its factory
 // runs before any imports, so it cannot reference module-level consts below it.
@@ -167,9 +167,16 @@ describe("clipboard-image extension", () => {
 	const realPlatform = process.platform
 
 	// The extension registers its paste handler at module scope — before any
-	// beforeEach can clear the mock — so capture the reference once here.
-	const pasteHandler = mockSetPasteImageHandler.mock.calls[0]?.[0] as (() => void) | undefined
-	expect(pasteHandler).toBeTypeOf("function")
+	// beforeEach can clear the mock — so capture the reference once in
+	// beforeAll and assert it in a dedicated test so failures are attributed.
+	let pasteHandler: (() => void) | undefined
+	beforeAll(() => {
+		pasteHandler = mockSetPasteImageHandler.mock.calls[0]?.[0] as (() => void) | undefined
+	})
+
+	it("registers its paste handler at module scope", () => {
+		expect(pasteHandler).toBeTypeOf("function")
+	})
 
 	beforeEach(() => {
 		// Reset module-level state (clipboardHasImage) before each test.
@@ -464,7 +471,6 @@ describe("clipboard-image extension", () => {
 			await settle()
 			const calls = mockSetPendingImageIndicator.mock.calls.map((call) => call[0])
 			expect(calls).toContainEqual(expect.stringContaining("📎 1 image"))
-			expect(calls.some((text) => typeof text === "string" && text.includes("📎")))
 			const last = calls.at(-1)
 			expect(last).toContain("📎 1 image")
 			expect(last).not.toContain("text-only")

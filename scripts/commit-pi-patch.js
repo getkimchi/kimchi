@@ -7,11 +7,18 @@ if (!editDirectory) throw new Error("Usage: pnpm exec node scripts/commit-pi-pat
 
 const patchPath = resolve("patches/@earendil-works__pi-coding-agent@0.85.1.patch")
 const existing = readFileSync(patchPath, "utf8")
-const maintenance = readFileSync("docs/pi-coding-agent-patch.md", "utf8")
-const tracking = maintenance.split("\n").find((line) => line.startsWith("Tracking:"))
-const removal = maintenance.split("\n").find((line) => line.startsWith("Removal:"))
-if (!tracking || !removal) throw new Error("Patch maintenance document must define Tracking and Removal")
-const header = existing.slice(0, existing.indexOf("diff --git"))
+const splitAt = existing.indexOf("diff --git")
+if (splitAt === -1) throw new Error("Checked-in patch has no diff hunks — there is no header to preserve")
+// The maintenance header is the single source of truth for tracking and
+// removal criteria; pnpm patch-commit regenerates only the bare diff.
+const header = existing.slice(0, splitAt)
+for (const field of ["# Tracking:", "# Removal:"]) {
+	if (!header.includes(field)) {
+		throw new Error(
+			`Maintenance header is missing "${field}" — restore it before committing a patch (repo patch policy)`,
+		)
+	}
+}
 
 function pnpm(args) {
 	const cli = process.env.npm_execpath
@@ -24,13 +31,9 @@ function pnpm(args) {
 
 pnpm(["patch-commit", resolve(editDirectory)])
 const generated = readFileSync(patchPath, "utf8")
-// Rebuild the generated patch's maintenance header; never hand-edit its hunks.
-const preserved = header
-	.replace(/# Tracking:[\s\S]*?(?=# Changes:)/, `# ${tracking}\n# Upstream PR plan: docs/pi-coding-agent-patch.md\n`)
-	.replace(
-		/# {5}id last\. Upstream PR candidate[\s\S]*?(?=# {3}- exportToJsonl)/,
-		"#     id last. The shared renderer lives in src/model-selector-table.ts.\n#     Tracking and removal criteria: docs/pi-coding-agent-patch.md.\n",
-	)
-	.replace(/# Removal:[\s\S]*?(?=# History:|$)/, "")
-writeFileSync(patchPath, `${preserved}# ${removal}\n# History: patches/CHANGELOG.md.\n#\n${generated}`)
+const bodyStart = generated.indexOf("diff --git")
+if (bodyStart === -1)
+	throw new Error("pnpm patch-commit did not produce a diff — refusing to write a header-only patch")
+// Re-attach the preserved maintenance header; never hand-edit the hunks.
+writeFileSync(patchPath, `${header}${generated.slice(bodyStart)}`)
 pnpm(["install", "--offline", "--no-frozen-lockfile", "--ignore-scripts"])
