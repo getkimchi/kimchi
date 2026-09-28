@@ -27,9 +27,9 @@ import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
+import { getEffectiveModel } from "./auto-model/state.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
-import { getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────

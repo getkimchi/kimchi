@@ -71,15 +71,6 @@ export class TelemetryContext {
 	 */
 	currentModel = "unknown"
 	/**
-	 * Whether the user-facing selection is the Auto router, tracked from
-	 * session_start / model_select. Unlike {@link currentModel} it is never
-	 * overwritten by assistant message models, which name the router's concrete
-	 * pick — so events that need the user's selection (the accept-rate
-	 * `claude_code.tool_decision` record) can tell an Auto pick from a manual
-	 * selection of the same model.
-	 */
-	selectedModelIsAuto = false
-	/**
 	 * Current turn index, updated on each turn_start event.
 	 * `0` is a sentinel meaning "before the first turn" (e.g. a provider call
 	 * made during session warmup before any user message). Backends should treat
@@ -141,7 +132,6 @@ export class TelemetryContext {
 		this.telemetryId = telemetryId
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
-		this.selectedModelIsAuto = false
 		this.turnIndex = 0
 		this.lastTraceContext = undefined
 		this.sentMessages.clear()

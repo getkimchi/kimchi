@@ -8,7 +8,7 @@ import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { IMAGE_EXT_TO_MIME } from "../utils/image-utils.js"
 import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
-import { isAutoModel } from "./router/constants.js"
+import { isAutoRoutedModel } from "./auto-model/constants.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
 let pendingImages: ImageContent[] = []
@@ -28,7 +28,7 @@ let sessionGeneration = 0
 
 function modelSupportsImages(model: ExtensionContext["model"]): boolean {
 	if (!model) return false
-	if (isAutoModel(model)) return true
+	if (isAutoRoutedModel(model)) return true
 	const models = getAvailableModels()
 	const meta = models.find((m) => m.slug === model.id)
 	return meta?.input_modalities.includes("image") ?? false

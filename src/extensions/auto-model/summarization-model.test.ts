@@ -27,7 +27,7 @@ describe("Auto summarization model adapter", () => {
 	it("uses the session's resolved concrete model before Pi assigns an isolated summary request id", async () => {
 		const auto = model("auto", "kimchi-auto")
 		const target = model("kimi-k2.5", "openai-completions")
-		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target })
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target, requestedId: "auto" })
 		installAutoSummarizationModelAdapter()
 
 		const getAuth = vi.fn(async (requestModel: Model<Api>) => ({ auth: { apiKey: "key" }, model: requestModel }))

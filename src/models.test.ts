@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { readModelDeprecations } from "./model-deprecation.js"
 import {
-	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
@@ -820,19 +819,6 @@ describe("updateModelsConfig", () => {
 		expect(fetch).not.toHaveBeenCalled()
 	})
 
-	it("does not advertise the virtual Auto model as cached concrete metadata", async () => {
-		vi.mocked(fetch).mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({ models: [KIMI] }),
-		} as Response)
-		await updateModelsConfig(modelsJsonPath, "test-key")
-		injectAutoModel(modelsJsonPath)
-
-		const result = await updateModelsConfig(modelsJsonPath, "")
-
-		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
-	})
-
 	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
 		const result = await updateModelsConfig(modelsJsonPath, "")
 
@@ -992,92 +978,6 @@ describe("updateModelsConfig", () => {
 		const sidecar = readModelDeprecations(modelsJsonPath)
 		expect(sidecar.get("old-model")?.replacement_model).toBe("new-model")
 		expect(sidecar.get("gone-model")?.replacement_model).toBe("new-model")
-	})
-})
-
-describe("injectAutoModel", () => {
-	let tempDir: string
-	let modelsJsonPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
-		modelsJsonPath = join(tempDir, "models.json")
-		writeFileSync(
-			modelsJsonPath,
-			JSON.stringify({
-				providers: {
-					"kimchi-dev": {
-						baseUrl: "https://llm.kimchi.dev/openai/v1",
-						api: "openai-completions",
-						models: [
-							{
-								id: "kimi-k2.5",
-								name: "Kimi K2.5",
-								provider: "ai-enabler",
-								reasoning: true,
-								input: ["text", "image"],
-								contextWindow: 262144,
-								maxTokens: 32768,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							},
-						],
-					},
-				},
-			}),
-		)
-	})
-
-	afterEach(() => rmSync(tempDir, { recursive: true, force: true }))
-
-	it("adds exactly kimchi-dev/auto with a model-level API", () => {
-		const providerIds = Object.keys(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers)
-		injectAutoModel(modelsJsonPath)
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const auto = config.providers["kimchi-dev"].models.find((model: { id: string }) => model.id === "auto")
-
-		expect(auto).toMatchObject({
-			id: "auto",
-			name: "Auto — Picks the best model for your tasks automatically.",
-			api: "kimchi-auto",
-			reasoning: true,
-			thinkingLevelMap: { off: "none", max: "max" },
-			input: ["text", "image"],
-		})
-		expect(Object.keys(config.providers)).toEqual(providerIds)
-	})
-
-	it("upserts Auto without duplicates", () => {
-		injectAutoModel(modelsJsonPath)
-		injectAutoModel(modelsJsonPath)
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const autoModels = config.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
-
-		expect(autoModels).toHaveLength(1)
-	})
-
-	it("collision guard: leaves a fetched/backend-owned kimchi-dev/auto entry untouched", () => {
-		// Backend now owns the `auto` name (end state): the normalized catalog
-		// advertises it. The harness injection must NOT shadow it by replacing or
-		// duplicating the entry.
-		const backendAuto = {
-			id: "auto",
-			name: "Auto (backend encoded)",
-			provider: "ai-enabler",
-			reasoning: true,
-			input: ["text"],
-			contextWindow: 1048576,
-			maxTokens: 16384,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		}
-		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		config.providers["kimchi-dev"].models.push(backendAuto)
-		writeFileSync(modelsJsonPath, JSON.stringify(config), "utf-8")
-
-		injectAutoModel(modelsJsonPath)
-
-		const finalConfig = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const autoModels = finalConfig.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
-		expect(autoModels).toEqual([backendAuto])
 	})
 })
 

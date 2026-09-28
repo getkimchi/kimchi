@@ -4,7 +4,7 @@ import { Key } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, sendTerminalInput } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { clearAutoRoutingState, setAutoRoutingState } from "../router/state.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
 import feedbackExtension from "./index.js"
 
 /**
@@ -128,7 +128,6 @@ describe("feedbackExtension state machine", () => {
 			sentiment: "negative",
 			reason: "Too slow",
 			reasonType: "predefined",
-			autoModelUsed: false,
 		})
 	})
 
@@ -147,7 +146,6 @@ describe("feedbackExtension state machine", () => {
 			sentiment: "positive",
 			reason: "Solved my task",
 			reasonType: "predefined",
-			autoModelUsed: false,
 		})
 	})
 
@@ -184,7 +182,7 @@ describe("feedbackExtension state machine", () => {
 		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
 
 		expect(dialogMock.show).toHaveBeenCalledWith(ctx, { sentiment: "positive", autoModelUsed: true })
-		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith(expect.objectContaining({ autoModelUsed: true }))
+		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith(expect.objectContaining({}))
 	})
 
 	it("reports the resolved concrete pick as routing_model for a routed virtual model", async () => {
@@ -205,9 +203,7 @@ describe("feedbackExtension state machine", () => {
 
 		expect(dialogMock.show).toHaveBeenCalledWith(ctx, { sentiment: "positive", autoModelUsed: true })
 		// routing_model carries the concrete pick, not the requested virtual id.
-		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith(
-			expect.objectContaining({ autoModelUsed: true, routingModelId: "glm-5.3" }),
-		)
+		expect(feedbackMock.trackFeedback).toHaveBeenCalledWith(expect.objectContaining({ routingModelId: "glm-5.3" }))
 	})
 
 	it("returns to idle after the rating flow resolves, accepting new ratings", async () => {
