@@ -42,11 +42,42 @@ export interface ProjectTrustUpdate {
  * coarse: the update tells the client *what kind* of resource is gated, never
  * which files exist in the untrusted repo.
  */
-const CATEGORY_PATHS: Record<BlockedTrustCategory, readonly string[]> = {
+export const CATEGORY_PATHS: Record<BlockedTrustCategory, readonly string[]> = {
 	skills: [join(".kimchi", "skills"), join(".claude", "skills"), join(".pi", "agent", "skills")],
 	project_config: [join(".kimchi", "config.json")],
 	pi_settings: [join(".pi", "settings.json")],
 }
+
+/**
+ * Gated readers deliberately NOT surfaced as a blocked category (yet). Every
+ * entry in TRUST_REQUIRING_PROJECT_RESOURCES must appear in CATEGORY_PATHS or
+ * here — a unit test cross-checks it — so a newly gated reader can never be
+ * silently invisible to ACP clients.
+ *
+ * Why these are held back: the client-facing payload stays coarse, and each
+ * would need a product decision on its category vocabulary — e.g.
+ * `.kimchi/mcp.json` wants an `mcp_servers` category (deferred review
+ * finding), permissions/hooks/agents/memory are project_config-adjacent
+ * kimchi state, `.claude/settings*.json` is Claude Code config, and
+ * tags/plans/ferments are workflow state Studio does not render banners for.
+ */
+export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
+	join(".kimchi", "permissions.json"),
+	join(".kimchi", "permissions.local.json"),
+	join(".kimchi", "hooks.json"),
+	join(".kimchi", "hooks.local.json"),
+	join(".kimchi", "hooks"),
+	join(".kimchi", "agents"),
+	join(".kimchi", "agents.json"),
+	join(".kimchi", "agent-memory"),
+	join(".kimchi", "agent-memory-local"),
+	join(".kimchi", "mcp.json"),
+	join(".kimchi", "tags.json"),
+	join(".kimchi", "plans"),
+	join(".kimchi", "ferments"),
+	join(".claude", "settings.json"),
+	join(".claude", "settings.local.json"),
+]
 
 /**
  * Categories that would be gated for `cwd` were it untrusted. Pure fs probe

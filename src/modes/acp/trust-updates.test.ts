@@ -8,15 +8,21 @@ import { join } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
+import {
+	resetProjectScopeTrustForTests,
+	setProjectScopeTrusted,
+	TRUST_REQUIRING_PROJECT_RESOURCES,
+} from "../../project-scope-trust.js"
 import {
 	buildPathTrustInfo,
 	buildProjectTrustUpdate,
+	CATEGORY_PATHS,
 	computeBlockedTrustCategories,
 	isPathWithin,
 	parentTrustPath,
 	parsePathTrustDecision,
 	parseProjectTrustDecision,
+	UNCLASSIFIED_TRUST_PATHS,
 } from "./trust-updates.js"
 
 describe("computeBlockedTrustCategories", () => {
@@ -210,6 +216,29 @@ describe("buildPathTrustInfo", () => {
 			})
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+})
+
+describe("CATEGORY_PATHS vs TRUST_REQUIRING_PROJECT_RESOURCES", () => {
+	// Same cross-check pattern the detection list already uses against the
+	// pi patch: a newly gated reader must be consciously classified here,
+	// never silently invisible to ACP clients.
+	it("every gated resource is surfaced as a category or explicitly unclassified", () => {
+		const surfaced = new Set(Object.values(CATEGORY_PATHS).flat())
+		const accounted = new Set(UNCLASSIFIED_TRUST_PATHS)
+		for (const entry of TRUST_REQUIRING_PROJECT_RESOURCES) {
+			expect(
+				surfaced.has(entry) || accounted.has(entry),
+				`${entry} is neither surfaced to ACP clients nor listed as unclassified — classify it`,
+			).toBe(true)
+		}
+	})
+
+	it("surfaces no paths the trust gate does not actually gate", () => {
+		const known = new Set([...TRUST_REQUIRING_PROJECT_RESOURCES, ".pi/settings.json"])
+		for (const path of [...Object.values(CATEGORY_PATHS).flat(), ...UNCLASSIFIED_TRUST_PATHS]) {
+			expect(known.has(path), `${path} is not a gated resource — remove it`).toBe(true)
 		}
 	})
 })
