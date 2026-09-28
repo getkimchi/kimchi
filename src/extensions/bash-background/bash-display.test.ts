@@ -1,10 +1,11 @@
 import { initTheme } from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
-import { beforeAll, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
 import { bashStatus, bashStatusColor, renderBashCall, renderBashResult, safeBashText } from "./bash-display.js"
-import type { ProcessDisplaySnapshot } from "./process-registry.js"
+import { createProcessRegistry, type ProcessDisplaySnapshot } from "./process-registry.js"
+import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
 
 const display: ProcessDisplaySnapshot = {
 	handle: "c1",
@@ -24,7 +25,102 @@ const display: ProcessDisplaySnapshot = {
 }
 
 beforeAll(() => initTheme("default"))
+afterEach(async () => {
+	await getSessionRegistry()?.shutdown()
+	setSessionRegistry(undefined)
+})
 describe("Bash display", () => {
+	it("folds repeated historical check-ins into the original row, retaining final expansion and errors", () => {
+		setSessionRegistry(createProcessRegistry())
+		const initial = { content: [], details: { display } }
+		const options = { expanded: true, isPartial: false }
+		const ctx = createToolRenderContext({ args: { command: display.command } })
+		let original: ReturnType<typeof renderBashResult>
+		ctx.invalidate = () => {
+			original = renderBashResult({ ...initial }, options, theme, ctx)
+		}
+		original = renderBashResult(initial, options, theme, ctx)
+		const control = createToolRenderContext({ args: { handle: display.handle } })
+		const call = renderBashCall(control.args, theme, control)
+		expect(call.render(100)).toEqual([])
+		const checkins = ["second check-in", "third check-in"].map((output) => ({
+			ctx: createToolRenderContext({ args: { handle: display.handle } }),
+			result: { content: [], details: { display: { ...display, output } } },
+		}))
+		for (const checkin of checkins) {
+			const result = renderBashResult(checkin.result, options, theme, checkin.ctx)
+			expect(result.render(100)).toEqual([])
+			expect(original.render(100).join("\n")).toContain(checkin.result.details.display.output)
+		}
+		const output = Array.from({ length: 100 }, (_, index) => `final line ${index}`).join("\n")
+		renderBashResult(
+			{
+				content: [{ type: "text", text: output }],
+				details: { display: { ...display, state: "exited", exitCode: 7 }, fullOutputPath: "/tmp/final.log" },
+			},
+			options,
+			theme,
+			control,
+		)
+		const final = original.render(100).map(stripTerminalSequences).join("\n")
+		expect(final).toContain("final line 0")
+		expect(final).toContain("final line 99")
+		expect(final).toContain("Failed (exit 7)")
+		expect(final).toContain("Full output: /tmp/final.log")
+		// Expanding old tool calls must not replay an earlier check-in over the final result.
+		for (const checkin of checkins) renderBashResult({ ...checkin.result }, options, theme, checkin.ctx)
+		ctx.invalidate()
+		expect(original.render(100).map(stripTerminalSequences).join("\n")).toBe(final)
+		const error = renderBashResult(
+			{ content: [{ type: "text", text: "Error: unknown handle" }], details: {} },
+			options,
+			theme,
+			control,
+		)
+		expect(call.render(100).join("\n")).toContain("Bash")
+		expect(error.render(100).join("\n")).toContain("Error: unknown handle")
+		setSessionRegistry(createProcessRegistry())
+		expect(renderBashCall(control.args, theme, control).render(100).join("\n")).toContain("Bash")
+	})
+
+	it("keeps the original card live between check-ins and preserves settlement after removal", async () => {
+		const registry = createProcessRegistry()
+		setSessionRegistry(registry)
+		let emit!: (data: Buffer) => void
+		let exit!: (result: { exitCode: number }) => void
+		const handle = registry.spawn(
+			{
+				exec: async (_command, _cwd, { onData, signal }) => {
+					emit = onData
+					return new Promise((resolve) => {
+						exit = resolve
+						signal?.addEventListener("abort", () => resolve({ exitCode: null }), { once: true })
+					})
+				},
+			},
+			"demo",
+			"/tmp",
+			undefined,
+			{ intervalSeconds: 15, deadlineMs: Date.now() + 60000 },
+		)
+		const initial = { content: [], details: { display: registry.displaySnapshot(handle) } }
+		const options = { expanded: true, isPartial: false }
+		const ctx = createToolRenderContext({ args: { command: "demo" } })
+		let original: ReturnType<typeof renderBashResult>
+		ctx.invalidate = vi.fn(() => {
+			original = renderBashResult({ ...initial }, options, theme, ctx)
+		})
+		original = renderBashResult(initial, options, theme, ctx)
+		emit(Buffer.from("output between check-ins\n"))
+		expect(original.render(100).join("\n")).toContain("output between check-ins")
+		expect(original.render(100).join("\n")).not.toContain("Snapshot at check-in")
+		exit({ exitCode: 0 })
+		await registry.whenExited(handle)
+		await registry.remove(handle)
+		expect(original.render(100).join("\n")).toContain("Exited 0")
+		expect(original.render(100).join("\n")).toContain("output between check-ins")
+		expect(ctx.invalidate).toHaveBeenCalled()
+	})
 	it("preserves all ordinary expanded output and its full-output path", () => {
 		const output = Array.from({ length: 100 }, (_, index) => `ordinary line ${index}`).join("\n")
 		const rendered = renderBashResult(

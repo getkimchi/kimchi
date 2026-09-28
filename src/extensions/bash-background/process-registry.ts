@@ -494,6 +494,7 @@ export function createProcessRegistry(): ProcessRegistry {
 				entry.totalOutputBytes += data.length
 				buffer.append(data)
 				accumulator.append(data)
+				notifyDisplay(handle)
 			},
 			signal: controller.signal,
 			// No upstream timeout: background mode manages its own deadline.

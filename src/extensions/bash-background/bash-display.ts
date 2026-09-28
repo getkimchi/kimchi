@@ -5,7 +5,36 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import type { ProcessDisplaySnapshot } from "./process-registry.js"
+import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
+import { getSessionRegistry } from "./session-registry.js"
+
+type BashResult = Parameters<NonNullable<ToolDefinition["renderResult"]>>[0]
+type BashRow = {
+	source: BashResult
+	result: BashResult
+	isPartial: boolean
+	invalidate: () => void
+	unsubscribe?: () => void
+}
+
+// A fresh registry also isolates resumed sessions. Historical control results replay
+// into the original row, while controls without that row keep their own display.
+const sessionRows = new WeakMap<ProcessRegistry, Map<string, BashRow>>()
+
+function rowsForSession(): Map<string, BashRow> | undefined {
+	const registry = getSessionRegistry()
+	if (!registry) return undefined
+	let rows = sessionRows.get(registry)
+	if (!rows) {
+		rows = new Map()
+		sessionRows.set(registry, rows)
+	}
+	return rows
+}
+
+function hiddenControl(ctx: Parameters<NonNullable<ToolDefinition["renderCall"]>>[2]): boolean {
+	return !ctx.state.bashControlError && !!rowsForSession()?.has(stringArg(ctx.args, "handle"))
+}
 
 /** Shell text is data: never send its terminal controls to the user's terminal. */
 export function safeBashText(text: string): string {
@@ -57,6 +86,7 @@ let upstreamBash: ReturnType<typeof createBashToolDefinition> | undefined
 export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, theme, ctx) => ({
 	invalidate() {},
 	render(width) {
+		if (hiddenControl(ctx)) return []
 		const purpose = safeBashText(stringArg(args, "description")).replace(/\s+/g, " ")
 		const command = safeBashText(stringArg(args, "command"))
 		const handle = stringArg(args, "handle") ? `Command ${safeBashText(stringArg(args, "handle"))}` : ""
@@ -75,6 +105,53 @@ export const renderBashCall: NonNullable<ToolDefinition["renderCall"]> = (args, 
 })
 
 export const renderBashResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
+	const display = (result.details as { display?: ProcessDisplaySnapshot } | undefined)?.display
+	const registry = getSessionRegistry()
+	const rows = rowsForSession()
+	if (stringArg(ctx.args, "handle")) {
+		ctx.state.bashControlError = !display
+		const original = display && rows?.get(display.handle)
+		if (original) {
+			if (ctx.state.bashControlResult !== result.details) {
+				ctx.state.bashControlResult = result.details
+				original.result = result
+				original.isPartial = options.isPartial
+				original.invalidate()
+			}
+			return { invalidate() {}, render: () => [] }
+		}
+	} else if (display && rows && registry) {
+		let row: BashRow | undefined = ctx.state.bashRow
+		if (!row) {
+			row = { source: result, result, isPartial: options.isPartial, invalidate: ctx.invalidate }
+			ctx.state.bashRow = row
+			rows.get(display.handle)?.unsubscribe?.()
+			rows.set(display.handle, row)
+			const target = row
+			let subscribed = false
+			target.unsubscribe = registry.observeDisplay(display.handle, (snapshot) => {
+				const final = snapshot.state !== "running" ? registry.finalSnapshot(snapshot.handle) : undefined
+				target.result = {
+					content: [{ type: "text", text: final?.content ?? snapshot.output }],
+					details: { ...final, display: snapshot },
+				}
+				target.isPartial = snapshot.state === "running"
+				if (subscribed) target.invalidate()
+			})
+			subscribed = true
+		} else if (row.source.content !== result.content || row.source.details !== result.details) {
+			// Pi recreates the result wrapper on invalidation; only a new payload is an update.
+			row.source = result
+			row.result = result
+			row.isPartial = options.isPartial
+		}
+		result = row.result
+		options = { ...options, isPartial: row.isPartial || !!registry.getEntry(display.handle) }
+	}
+	return renderBashOutput(result, options, theme, ctx)
+}
+
+const renderBashOutput: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, ctx) => {
 	upstreamBash ??= createBashToolDefinition(process.cwd())
 	const details = result.details as (BashToolDetails & { display?: ProcessDisplaySnapshot }) | undefined
 	const display = details?.display

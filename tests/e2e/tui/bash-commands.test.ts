@@ -186,6 +186,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 						return true
 					},
 					toolCalls: [control],
+					stream: ["The command is still running; watching its output."],
 				},
 				{ stream: ["Inspection complete."] },
 			],
@@ -213,9 +214,12 @@ test("inspect a running Bash command without interrupting it or asking the model
 			expect(requests()).toHaveLength(1)
 			trace.step("initial output visible before the default fifteen-second checkin")
 
-			await waitForText(terminal, /[Ss]till running/, { full: false, timeoutMs: 20_000 })
+			await waitForText(terminal, "The command is still running", { full: false, timeoutMs: 20_000 })
 			expect(requests()).toHaveLength(2)
+			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
+			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
 			trace.step("same command streams output during the control wait")
+			const inputBeforeInspection = editorRow()
 
 			terminal.submit("/commands")
 			await waitForText(terminal, "Enter inspect", { full: false })
@@ -248,10 +252,12 @@ test("inspect a running Bash command without interrupting it or asking the model
 
 			terminal.keyCtrlC()
 			await waitForText(terminal, PROMPT_READY, { full: false })
-			expect(editorRow()).toBe(TUI_TEST_CONFIG.rows - 1)
+			// The single Bash preview grows from one line to three plus its omitted-output notice.
+			expect(editorRow()).toBe(Math.min(TUI_TEST_CONFIG.rows - 1, inputBeforeInspection + 3))
 			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
 			await waitForText(terminal, "output-after-scrolling", { full: false })
 			expect(requests()).toHaveLength(2)
+			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
 			expect(existsSync(join(fixture.workDir, "finished"))).toBe(false)
 			trace.step("Ctrl+C closes inspection without aborting or making a model request")
 
@@ -271,6 +277,9 @@ test("inspect a running Bash command without interrupting it or asking the model
 			terminal.keyEscape()
 			await waitForText(terminal, "Inspection complete.", { full: false })
 			expect(fullText(terminal).match(/Run the streaming command/g)).toHaveLength(1)
+			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
+			expect(fullText(terminal)).toContain("Exited 0")
+			expect(fullText(terminal)).toContain("The command is still running")
 			expect(requests()).toHaveLength(3)
 		},
 	)

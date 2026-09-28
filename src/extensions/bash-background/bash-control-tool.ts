@@ -324,6 +324,7 @@ export function createBashControlToolDefinition(
 		label: "bash_control",
 		description: BASH_CONTROL_TOOL_DESCRIPTION,
 		parameters: bashControlSchema,
+		renderShell: "self",
 		renderCall: renderBashCall,
 		renderResult: renderBashResult,
 		execute: execute as ToolDefinition<typeof bashControlSchema, BashControlDetails>["execute"],
