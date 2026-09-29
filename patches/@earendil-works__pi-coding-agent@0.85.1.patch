@@ -827,7 +827,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1359,8 +1359,60 @@ export class InteractiveMode {
+@@ -1359,8 +1359,65 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -861,11 +861,16 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
 +                    }
 +                    headerLine(width) {
 +                        const left = this.expanded ? this.expandedLeft : this.collapsedLeft;
++                        // Reserve the hint's width first so it stays visible
++                        // on narrow terminals — the summary text truncates.
 +                        const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${this.expanded ? "collapse" : "expand"})`);
-+                        const gap = width - visibleWidth(left) - visibleWidth(hint);
-+                        if (gap < 2)
++                        const hintW = visibleWidth(hint);
++                        const maxLeft = width - hintW - 2;
++                        if (maxLeft < 4)
 +                            return TuiLayouts.truncateToWidth(left, width);
-+                        return left + " ".repeat(gap) + hint;
++                        const truncated = TuiLayouts.truncateToWidth(left, maxLeft);
++                        const pad = width - visibleWidth(truncated) - hintW;
++                        return truncated + " ".repeat(Math.max(0, pad)) + hint;
 +                    }
 +                    setExpanded(expanded) {
 +                        this.expanded = expanded;

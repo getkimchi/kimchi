@@ -83,9 +83,9 @@ test("skill issues are listed first in the summary, conflicts trail as 'Also'", 
 
 			// Issues (not loaded) come first; conflicts (winner loaded) trail.
 			await waitForText(terminal, "[1 skill issue] Some skills were not loaded.", { full: true })
-			await waitForText(terminal, "Also: 1 skill conflict in multiple directories (a winner was loaded).", {
-				full: true,
-			})
+			// 120-col terminal: the hint keeps its width, the summary truncates —
+			// the "(a winner was loaded)" tail is the part that gets cut.
+			await waitForText(terminal, "Also: 1 skill conflict in multiple directories", { full: true })
 			await waitForText(terminal, "(ctrl+o to expand)", { full: true })
 
 			// Expanded detail covers both the failure reason and the collision.
