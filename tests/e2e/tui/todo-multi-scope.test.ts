@@ -1,16 +1,20 @@
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	viewText,
+	waitForText,
+	waitForTurnToSettle,
+} from "./support/assertions.js"
 import { type KimchiFixture, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
 /**
  * Extract the todo state injection from a recorded chat completion request.
- * The state is injected transiently at the tail of the message context via
- * the `context` event (converted to a user-role message before reaching the
- * provider), NOT in the system prompt — the system prompt stays stable so
- * provider-side prompt caching is never disturbed. Returns the message
- * content containing the todo state block, or undefined if none found.
+ * The state is persisted at settlement as a hidden message, converted to a
+ * user-role message for the provider. The system prompt stays unchanged.
  */
 function getMessageWithTodos(fixture: KimchiFixture): string | undefined {
 	const chatRequests = fixture.fake.requests.filter((req) => req.url.includes("/chat/completions"))
@@ -33,14 +37,8 @@ function getMessageWithTodos(fixture: KimchiFixture): string | undefined {
 }
 
 /**
- * The model must see its own todo state on every LLM call in TUI mode.
- * After the model writes todos via update_todos, the ## Current Todos block
- * is injected at the tail of the message context for subsequent requests.
- *
- * The injection happens via the `context` event (fires per LLM call) rather
- * than the system prompt — so state is fresh on every turn, appears even
- * mid-run without a new user prompt, and never mutates the cached prompt
- * prefix.
+ * After a run settles, the next user request must include the saved todo
+ * state in message history, without changing the system prompt.
  */
 test("model sees ## Current Todos injected in context after writing todos (TUI mode)", async ({ terminal }) => {
 	await runKimchiSession(
@@ -65,10 +63,12 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 						},
 					],
 				},
-				// Turn 2 of prompt 1: model stops — force end of first agent run
+				// The first answer leaves work open, triggering one cleanup reminder.
 				{ stream: [] },
-				// Prompt 2 response: model reads its own state from the system prompt
-				{ stream: ["I can see my todos in the system prompt."] },
+				{ stream: ["Bookkeeping checked; work remains open."] },
+				// Prompt 2: the previous run has settled and persisted its todo state.
+				{ stream: ["I can see my todos in the conversation."] },
+				{ stream: ["No bookkeeping changes."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -86,8 +86,9 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 			await waitForText(terminal, "run tests", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo widget appeared with items")
 
-			// Submit a second user input — the context handler injects the
-			// populated todo state at the tail of the next request.
+			await waitForText(terminal, "Bookkeeping checked", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			// State is persisted at settlement, after the cleanup continuation.
 			terminal.submit("Continue working")
 			trace.step("submitted second prompt")
 
