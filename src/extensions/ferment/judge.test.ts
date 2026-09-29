@@ -1113,9 +1113,13 @@ describe("judge renders intent charter", () => {
 })
 
 describe("describeJudgeModel", () => {
-	const judgeModel = { provider: "kimchi-dev", id: "judge-x" } as unknown as Model<Api>
+	// Mirrors DEFAULT_MODEL_ROLES.judge — the role this (unmocked) test env reads.
+	const judgeModel = { provider: "kimchi-dev", id: "glm-5.3" } as unknown as Model<Api>
 	const sessionModel = { provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>
-	const roleResolvingRegistry = { find: () => judgeModel } as unknown as ModelRegistry
+	const roleResolvingRegistry = {
+		find: () => judgeModel,
+		getAvailable: () => [judgeModel],
+	} as unknown as ModelRegistry
 
 	afterEach(() => {
 		// Leave single-model mode behind so sibling describes keep their defaults.
@@ -1129,11 +1133,15 @@ describe("describeJudgeModel", () => {
 
 	it("returns the judge-role model in multi-model mode when the role resolves", () => {
 		captureJudgeContext(sessionModel, roleResolvingRegistry, true)
-		expect(describeJudgeModel()).toBe("kimchi-dev/judge-x")
+		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.3")
 	})
 
 	it("falls back to the captured session model in multi-model mode when the role does not resolve", () => {
-		captureJudgeContext(sessionModel, { find: () => undefined } as unknown as ModelRegistry, true)
+		captureJudgeContext(
+			sessionModel,
+			{ find: () => undefined, getAvailable: () => [] } as unknown as ModelRegistry,
+			true,
+		)
 		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 })

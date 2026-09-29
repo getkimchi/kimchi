@@ -57,8 +57,11 @@ export const TRUST_REQUIRING_PROJECT_RESOURCES: readonly string[] = [
  * cwd-or-ancestor wins), mirroring pi's `ProjectTrustStore` lookup: one
  * decision covers a whole working tree, and ancestor-walking readers
  * (`.kimchi/skills`, `.kimchi/tags.json`) are gated by the session cwd's
- * decision. Cwd-keying also keeps concurrent ACP sessions in one process
- * isolated from each other's trust decisions.
+ * decision. Cwd-keying isolates concurrent ACP sessions on DIFFERENT cwds;
+ * sessions sharing a cwd share one entry — including in-memory-only
+ * `trust_session`/`deny` decisions, which are therefore cwd-scoped (not
+ * connection-scoped) and can be stomped by a later session's fail-closed
+ * start pin at the same cwd.
  *
  * The gate is set from two places, both after trust has been settled:
  * - `settingsTrustSyncExtension` on every session_start (pi resolves project
@@ -70,6 +73,15 @@ const projectScopeTrustByCwd = new Map<string, boolean>()
 /** Record the project-trust decision for a session cwd. */
 export function setProjectScopeTrusted(cwd: string, trusted: boolean): void {
 	projectScopeTrustByCwd.set(resolve(cwd), trusted)
+}
+
+/**
+ * Remove a session cwd's recorded decision (the in-memory mirror of pi's
+ * `decision: null` clearing write). Used when an ancestor's trust grant must
+ * become the nearest decision for cws pinned fail-closed at session start.
+ */
+export function clearProjectScopeTrust(cwd: string): void {
+	projectScopeTrustByCwd.delete(resolve(cwd))
 }
 
 /**

@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox"
 import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
-import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -106,15 +106,11 @@ export default function modelSwitchExtension(
 			}
 
 			if (!splitModelRef(model)) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,
@@ -123,15 +119,11 @@ export default function modelSwitchExtension(
 
 			const target = findModelByRef(ctx.modelRegistry, model)
 			if (!target) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
+							text: `Model not found: ${model}\n\nAvailable models:\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,

@@ -334,7 +334,9 @@ it("shows the region selector after account login and runs EU browser auth when 
 
 it("returns to the auth-method selector when Esc is pressed on the region selector", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
-	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser")
+	// Mock the resolution: an unmocked spy would call through to the real
+	// authenticateViaBrowser, which starts a callback server and opens a browser.
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token" })
 
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)

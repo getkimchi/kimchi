@@ -6,25 +6,15 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import { afterEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession } from "./support/scenarios.js"
+import { commandNames, newSession } from "./support/scenarios.js"
 
 const WATCHER_TIMEOUT_MS = 20_000
 
 function writeTestSkill(root: string, name: string, description: string): void {
 	mkdirSync(join(root, name), { recursive: true })
 	writeFileSync(join(root, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\nBody.\n`, "utf-8")
-}
-
-function commandNames(fixture: AcpFixture, sessionId: string): string[] {
-	const updates = fixture.client.sessionUpdates.filter(
-		(u) => u.sessionId === sessionId && u.update.sessionUpdate === "available_commands_update",
-	)
-	const last = updates[updates.length - 1]
-	if (last?.update.sessionUpdate !== "available_commands_update") return []
-	return last.update.availableCommands.map((c: AvailableCommand) => c.name)
 }
 
 async function lastUpdateIncludes(
