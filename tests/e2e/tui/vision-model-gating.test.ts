@@ -215,7 +215,7 @@ test("gate Remove sends the text clean and the next message sends without a dial
 			await waitForText(terminal, GATE_TITLE, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("gate dialog visible")
 
-			terminal.keyPress("r", { ctrl: true })
+			terminal.keyPress("r", { alt: true })
 			await waitForText(terminal, "Ack clean.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("remove submitted the text without images")
 
@@ -512,7 +512,7 @@ test("deferred Remove sends the unchanged draft later without reattaching the im
 
 			// The run finishes; the deferred dialog opens; choose Remove.
 			await waitForText(terminal, GATE_TITLE, { timeoutMs: STREAM_TIMEOUT_MS })
-			terminal.keyPress("r", { ctrl: true })
+			terminal.keyPress("r", { alt: true })
 			trace.step("deferred remove chosen")
 
 			// The next Enter sends the unchanged text WITHOUT the image and
