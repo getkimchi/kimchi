@@ -30,7 +30,7 @@ Every in-session payload includes:
 
 | Attribute | Value |
 |-----------|-------|
-| `session.id` | The emitting session's own pi session id — the same id the user sees via `/session-id` and in the JSONL filename. Subagents (in-process or subprocess) carry their own; see [Subagent identification](#subagent-identification) |
+| `session.id` | The emitting session's own pi session id — the same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Subagents (in-process or subprocess) carry their own; see [Subagent identification](#subagent-identification) |
 | `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
@@ -66,7 +66,7 @@ session's pi session id; the emitting session's own id is `pi_session_id`.
 | `session.parent_id` | *(absent)* | `P` |
 
 Every event's `session.id` is the emitting session's own pi session id — the
-same id the user sees via `/session-id` and in the JSONL filename. Parent linkage
+same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Parent linkage
 is carried exclusively by `session.parent_id` (and `X-Parent-Session-Id` on
 provider requests); combine the two to reconstruct the spawn tree. The
 former rule that detected in-process subagents by `session.id` equalling the
