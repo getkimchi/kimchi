@@ -193,6 +193,7 @@ describe("debug_state_at", () => {
 		expect(result.backtrace).toHaveLength(2)
 		expect(result.backtrace[0].name).toBe("main")
 		expect(result.evaluated).toHaveLength(1)
+		expect(stub.evaluate).toHaveBeenCalledWith("x + 1", 1)
 		expect(result.evaluated[0].expression).toBe("x + 1")
 		expect(result.evaluated[0].result?.result).toBe("42")
 		expect(result.stdout).toContain("hello")
@@ -457,8 +458,10 @@ describe("debug_last_error", () => {
 describe("debug_trace_calls", () => {
 	it("runs to completion and parses __KIMCHI_TRACE__ sentinels into structured calls", async () => {
 		const stub = createStubSession()
-		// continue rejects with "terminated" — expected for run-to-completion
-		stub.continue.mockRejectedValue(new Error("Debuggee terminated before reaching a stop"))
+		// Launch first stops at entry; tracing must keep going until termination.
+		stub.continue
+			.mockResolvedValueOnce(stop("entry"))
+			.mockRejectedValue(new Error("Debuggee terminated before reaching a stop"))
 		stub.outputLines = [
 			{ category: "stdout", text: `${TRACE_SENTINEL}{"fn":"add","args":[1,2],"result":3}` },
 			{ category: "stdout", text: "some regular output" },
@@ -468,6 +471,7 @@ describe("debug_trace_calls", () => {
 
 		const result = await debugTraceCalls(deps, { sessionId: stub.id, program: "app.ts" })
 
+		expect(stub.continue).toHaveBeenCalledTimes(2)
 		expect(result.calls).toHaveLength(2)
 		expect(result.calls[0].fn).toBe("add")
 		expect(result.calls[0].args).toEqual([1, 2])

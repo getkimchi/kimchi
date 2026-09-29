@@ -12,6 +12,7 @@
 
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { Readable } from "node:stream"
@@ -363,6 +364,86 @@ describe("DAP client (in-memory fake adapter)", () => {
 	})
 
 	describe("nested-session routing (startDebugging)", () => {
+		it("replays the latest breakpoints and exception filters before child configurationDone", async () => {
+			const requests: Array<{ command: string; arguments?: unknown }> = []
+			const sockets: net.Socket[] = []
+			const server = net.createServer((socket) => {
+				sockets.push(socket)
+				let buffer = ""
+				socket.on("data", (data) => {
+					buffer += data.toString()
+					while (true) {
+						const end = buffer.indexOf("\r\n\r\n")
+						if (end < 0) break
+						const length = Number(buffer.slice(0, end).match(/Content-Length: (\d+)/i)?.[1])
+						if (buffer.length < end + 4 + length) break
+						const request = JSON.parse(buffer.slice(end + 4, end + 4 + length))
+						buffer = buffer.slice(end + 4 + length)
+						requests.push(request)
+						socket.write(
+							frame({
+								type: "response",
+								seq: request.seq + 100,
+								request_seq: request.seq,
+								command: request.command,
+								success: true,
+								body: {},
+							}),
+						)
+						if (request.command === "launch") socket.write(frame({ type: "event", seq: 200, event: "initialized" }))
+					}
+				})
+			})
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+			try {
+				const clientP = registry.getOrCreate(FAKE_CONFIG, CWD)
+				await answerInitialize(fake)
+				const client = await clientP
+				const address = server.address()
+				if (!address || typeof address === "string") throw new Error("missing TCP address")
+				client.parentServer = { host: "127.0.0.1", port: address.port }
+				const latest = { source: { path: "a.js" }, breakpoints: [{ line: 8, condition: "i > 1" }] }
+				const other = { source: { path: "b.js" }, breakpoints: [{ line: 2 }] }
+				for (const [command, args] of [
+					["setBreakpoints", { source: { path: "a.js" }, breakpoints: [{ line: 1 }] }],
+					["setBreakpoints", latest],
+					["setBreakpoints", other],
+					["setExceptionBreakpoints", { filters: ["uncaught"] }],
+				] as const) {
+					const response = sendRequest(client, command, args)
+					const request = parseOneFrame(fake.written.at(-1) ?? "")
+					fake.enqueue({ type: "response", seq: 300, request_seq: request?.seq, command, success: true, body: {} })
+					await response
+				}
+				fake.enqueue({ type: "request", seq: 500, command: "startDebugging", arguments: { configuration: {} } })
+				await vi.waitFor(() => expect(client.childClient).toBeDefined())
+				expect(requests.map((r) => r.command)).toEqual([
+					"initialize",
+					"launch",
+					"setBreakpoints",
+					"setBreakpoints",
+					"setExceptionBreakpoints",
+					"configurationDone",
+				])
+				expect(requests.slice(2, 5).map((r) => r.arguments)).toEqual([latest, other, { filters: ["uncaught"] }])
+				// The manager connection can terminate before the child's final output.
+				fake.enqueue({ type: "event", seq: 501, event: "terminated", body: {} })
+				fake.enqueue({
+					type: "event",
+					seq: 502,
+					event: "output",
+					body: { output: "manager done", category: "console" },
+				})
+				await vi.waitFor(() => expect(client.outputLines).toContainEqual({ category: "console", text: "manager done" }))
+				expect(client.terminated).toBe(false)
+				sockets[0].write(frame({ type: "event", seq: 503, event: "terminated", body: {} }))
+				await vi.waitFor(() => expect(client.terminated).toBe(true))
+			} finally {
+				for (const socket of sockets) socket.destroy()
+				await new Promise<void>((resolve) => server.close(() => resolve()))
+			}
+		})
+
 		it("sendRequest routes to childClient when set", async () => {
 			const childFake = createFakeProc()
 			const parentClient: DapClient = {

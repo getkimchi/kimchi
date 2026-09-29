@@ -262,6 +262,8 @@ export interface DapClient {
 	 *  transparently routes to it. The child reader still updates THIS (parent)
 	 *  client's stoppedEvent/outputLines/etc. */
 	childClient?: DapClient
+	/** Latest source and exception breakpoint configuration to replay on a child. */
+	breakpointConfiguration?: Map<string, Pick<DapRequest, "command" | "arguments">>
 	/** Resolves once the child client has completed its initialize + launch +
 	 *  configurationDone handshake (or failed — then `childClient` remains unset
 	 *  and `childSetupError` is set). `sendRequest` awaits this before routing

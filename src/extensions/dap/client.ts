@@ -419,6 +419,8 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 							break
 						}
 						case "terminated": {
+							// The manager may finish before its child has delivered final output.
+							if (client.childClient || client.childClientReady) break
 							const body = message.body as TerminatedEvent
 							state.terminated = true
 							while (state.terminatedWaiters.length > 0) {
@@ -656,6 +658,9 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 	// Wait for the child's `initialized` event (per-connection) before sending
 	// configurationDone, matching the DAP ordering: initialized → configurationDone.
 	await Promise.race([child.initializedPromise, new Promise((r) => setTimeout(r, 5000))])
+	for (const request of parent.breakpointConfiguration?.values() ?? []) {
+		await sendRequest(child, request.command, request.arguments)
+	}
 	try {
 		await sendRequest(child, "configurationDone", {}, 10_000)
 	} catch {
@@ -874,6 +879,12 @@ export async function sendRequest(
 	}
 	if (client.childSetupError) {
 		throw new Error(`DAP child session setup failed (startDebugging): ${client.childSetupError.message}`)
+	}
+	if (command === "setBreakpoints" || command === "setExceptionBreakpoints") {
+		const source = (args as { source?: { path?: string; sourceReference?: number } } | undefined)?.source
+		const key = command === "setBreakpoints" ? `${command}:${source?.path ?? source?.sourceReference}` : command
+		client.breakpointConfiguration ??= new Map()
+		client.breakpointConfiguration.set(key, { command, arguments: args })
 	}
 	const seq = ++client.seq
 	const request: DapRequest = { seq, type: "request", command, arguments: args }

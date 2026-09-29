@@ -326,7 +326,7 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 			const evaluated: EvaluatedExpression[] = []
 			for (const expr of opts.evaluated ?? []) {
 				try {
-					const result = await session.evaluate(expr)
+					const result = await session.evaluate(expr, backtrace[0]?.id)
 					evaluated.push({ expression: expr, result })
 				} catch (e) {
 					evaluated.push({
@@ -439,9 +439,9 @@ export async function debugTraceCalls(
 		timeoutMs,
 		async () => {
 			await session.completeLaunch()
-			// Run the program to completion — continue rejects on terminated.
+			// Entry and breakpoint stops are intermediate; collect output after termination.
 			try {
-				await session.continue()
+				while (true) await session.continue()
 			} catch (err) {
 				if (!isTerminatedError(err)) throw err
 			}

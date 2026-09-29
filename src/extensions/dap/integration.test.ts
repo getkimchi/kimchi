@@ -18,6 +18,7 @@
 // not in node_modules or the npm global prefix.
 
 import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -105,8 +106,9 @@ function makeDeps(cwd: string): ComposedDeps {
 			const adapter =
 				adapterForFile(opts.program, adapters) ?? adapterForDirectory(path.dirname(opts.program), adapters)
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
-			const client = await clientRegistry.getOrCreate(adapter, cwd)
-			const session = sessionRegistry.create({ adapter, cwd, client })
+			const id = randomUUID()
+			const client = await clientRegistry.getOrCreate(adapter, cwd, id)
+			const session = sessionRegistry.create({ adapter, cwd, client, id })
 			await session.launch({ program: opts.program, cwd, stopOnEntry: opts.stopOnEntry })
 			return session
 		},
@@ -181,21 +183,19 @@ describe("DAP integration — Node.js (js-debug)", () => {
 	it.skipIf(!HAS_JS_DEBUG)(
 		"debug_state_at captures locals at breakpoint line",
 		async () => {
-			// Set breakpoint at line 6 (the `total += i` line) — at the first hit,
+			// Set breakpoint at line 5 (the `total += i` line) — at the first hit,
 			// i should be 1 and total should be 0 (before the first addition).
 			const result = await debugStateAt(deps, {
 				file: fixturePath,
-				line: 6,
+				line: 5,
 				evaluated: ["i", "total", "n"],
 			})
 
 			expect(result.hit).toBe(true)
 			expect(result.locals).toBeDefined()
-			// At least one of the evaluated expressions should return a value.
-			const evaluatedValues = result.evaluated.map((e) => e.result?.result).filter(Boolean)
-			expect(evaluatedValues.length).toBeGreaterThan(0)
-			// stdout should contain the result line (program runs to completion after breakpoint)
-			expect(result.stdout).toContain("result=")
+			expect(result.evaluated.map((e) => e.result?.result)).toEqual(["1", "0", "5"])
+			// Capture stops before the addition; the final console.log has not run.
+			expect(result.stdout).not.toContain("result=")
 		},
 		30_000,
 	)
@@ -205,7 +205,7 @@ describe("DAP integration — Node.js (js-debug)", () => {
 		async () => {
 			await debugStateAt(deps, {
 				file: fixturePath,
-				line: 6,
+				line: 5,
 			})
 			// The afterAll no-leak assertion covers this; here we verify the call
 			// returns without error (session.terminate() ran in the finally block).
