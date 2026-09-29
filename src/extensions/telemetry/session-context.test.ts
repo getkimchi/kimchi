@@ -593,4 +593,55 @@ describe("SessionContext", () => {
 		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		expect(ctx.getParentSessionId()).toBeUndefined()
 	})
+
+	it("resolveSessionId falls back to telemetryId before a pi session id is set", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("resolveSessionId returns the pi session id once set", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		expect(ctx.resolveSessionId()).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("setPiSessionId treats an empty id as unset so resolveSessionId falls back", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("session-aaa")
+		ctx.setPiSessionId("")
+		expect(ctx.piSessionId).toBeUndefined()
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	// Task 2 flips this to the pi session id (ctx.resolveSessionId())
+	it("emitted events carry telemetryId as session.id even once a pi session id is set", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const record = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		const attrMap = Object.fromEntries(
+			record.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+		)
+		// Task 2 flips this to the pi session id
+		expect(attrMap["session.id"]).toBe(ctx.telemetryId)
+	})
+
+	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {
+		const ctx1 = new TelemetryContext(makeConfig())
+		const ctx2 = new TelemetryContext(makeConfig())
+		ctx1.setPiSessionId("session-aaa")
+		ctx2.setPiSessionId("session-bbb")
+		expect(ctx1.cumulative).toBe(ctx2.cumulative)
+	})
+
+	it("reset() keeps telemetryId keying and does not throw before a pi session id exists", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		expect(() => ctx.reset()).not.toThrow()
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
 })

@@ -65,6 +65,13 @@ export function _resetSharedAccumulators(): void {
 export class TelemetryContext {
 	config: TelemetryConfig
 	telemetryId: string
+	/**
+	 * The pi session id of the session this context is bound to, captured at
+	 * session_start. Emitted as `session.id` (preferred) and `X-Session-Id`.
+	 * Undefined until session_start fires — resolveSessionId() falls back to
+	 * the process telemetryId then.
+	 */
+	piSessionId: string | undefined
 	telemetryStartMs: number
 	/**
 	 * Current model, updated from message events; used for domain events that lack a pi context.
@@ -145,6 +152,19 @@ export class TelemetryContext {
 		this.shuttingDown = false
 		this.logBuffer = []
 		this.stopLogFlushTimer()
+	}
+
+	/** Capture the pi session id for this context. Called from session_start. */
+	setPiSessionId(sessionId: string | undefined): void {
+		this.piSessionId = sessionId || undefined
+	}
+
+	/**
+	 * The canonical telemetry session id: the local pi session id when known,
+	 * else the process telemetryId (pre-session emissions only).
+	 */
+	resolveSessionId(): string {
+		return this.piSessionId ?? this.telemetryId
 	}
 
 	track(p: Promise<void>): void {
