@@ -123,6 +123,7 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
+import sessionCommandExtension from "./extensions/session-command/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -777,6 +778,7 @@ try {
 			teleportExtension,
 			remoteRunExtension,
 			telemetryExtension(telemetryConfig),
+			sessionCommandExtension,
 			sessionMetadataExtension(),
 			surveysExtension(),
 			toolRenderingExtension,
