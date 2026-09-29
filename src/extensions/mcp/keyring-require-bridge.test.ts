@@ -5,15 +5,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
-	createSecurityToolEntry,
 	createUnderlyingKeyringEntry,
 	inspectMcpCredentialAccount,
 	installKeyringRequireBridge,
-	isMcpKeychainUnavailableError,
 	LEGACY_MCP_OAUTH_SERVICE,
 	MCP_OAUTH_SERVICE,
+	McpKeychainUnavailableError,
 	remapMcpOAuthService,
-	resetSecurityToolHealCache,
 	SecurityToolEntry,
 	type SecurityToolResult,
 } from "./keyring-require-bridge.js"
@@ -102,13 +100,27 @@ describe("inspectMcpCredentialAccount", () => {
 			serverUrl: "https://old.example.test",
 		})
 	})
+
+	it("surfaces a locked keychain instead of reporting the account as unavailable", () => {
+		vi.stubGlobal("process", { ...process, platform: "darwin", env: {} })
+		vi.spyOn(SecurityToolEntry.prototype, "getPassword").mockImplementation(() => {
+			throw new McpKeychainUnavailableError()
+		})
+		try {
+			expect(() => inspectMcpCredentialAccount("locked-server")).toThrow(McpKeychainUnavailableError)
+		} finally {
+			vi.unstubAllGlobals()
+			vi.restoreAllMocks()
+		}
+	})
 })
 
 describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 	afterEach(() => {
-		resetSecurityToolHealCache()
+		vi.restoreAllMocks()
 	})
 
+	const OK: SecurityToolResult = { status: 0, stdout: "", stderr: "" }
 	const NOT_FOUND: SecurityToolResult = {
 		status: 44,
 		stdout: "",
@@ -120,54 +132,32 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		stderr: "security: SecKeychainItemCopyContent: User interaction is not allowed.",
 	}
 
-	interface RecordedCall {
-		args: string[]
-		stdin?: string
+	function envelope(text: string): string {
+		return `b64:${Buffer.from(text, "utf8").toString("base64")}`
 	}
 
 	function fakeRunner(responder: (args: string[]) => SecurityToolResult): {
-		runner: (args: string[], stdin?: string) => SecurityToolResult
-		calls: RecordedCall[]
+		runner: (args: string[]) => SecurityToolResult
+		calls: string[][]
 	} {
-		const calls: RecordedCall[] = []
+		const calls: string[][] = []
 		return {
 			calls,
-			runner: (args, stdin) => {
-				calls.push({ args, ...(stdin === undefined ? {} : { stdin }) })
+			runner: (args) => {
+				calls.push(args)
 				return responder(args)
 			},
 		}
 	}
 
-	it("reads an item and strips only the trailing newline", () => {
-		const { runner } = fakeRunner(() => ({ status: 0, stdout: "{" + '"a":1' + "}\n", stderr: "" }))
-		const entry = createSecurityToolEntry("svc", "acct", runner)
-		expect(entry.getPassword()).toBe('{"a":1}')
-	})
+	/** Runner whose `find-generic-password` returns `stored` and every other verb succeeds. */
+	function storedItem(stored: string): ReturnType<typeof fakeRunner> {
+		return fakeRunner((args) => (args[0] === "find-generic-password" ? { ...OK, stdout: `${stored}\n` } : OK))
+	}
 
-	it("returns null when the item is absent", () => {
-		const { runner } = fakeRunner(() => NOT_FOUND)
-		expect(createSecurityToolEntry("svc", "acct", runner).getPassword()).toBeNull()
-	})
-
-	it("throws the actionable unavailable error when the keychain is locked", () => {
-		for (const op of ["read", "write", "delete"] as const) {
-			const { runner } = fakeRunner(() => LOCKED)
-			const entry = createSecurityToolEntry(`svc-${op}`, `acct-${op}`, runner)
-			const invoke = () =>
-				op === "read" ? entry.getPassword() : op === "write" ? entry.setPassword("x") : entry.deleteCredential()
-			const error = capture(invoke)
-			expect(isMcpKeychainUnavailableError(error)).toBe(true)
-			expect((error as Error).message).toContain("security unlock-keychain")
-			expect((error as Error).message).toContain("kimchi mcp auth")
-		}
-	})
-
-	it("throws the unavailable error when the runner cannot spawn", () => {
-		const { runner } = fakeRunner(() => ({ status: null, stdout: "", stderr: "", error: new Error("ENOENT") }))
-		const error = capture(() => createSecurityToolEntry("svc", "acct", runner).getPassword())
-		expect(isMcpKeychainUnavailableError(error)).toBe(true)
-	})
+	function writes(calls: string[][]): string[][] {
+		return calls.filter((args) => args[0] !== "find-generic-password")
+	}
 
 	function capture(fn: () => void): unknown {
 		try {
@@ -178,143 +168,158 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 		}
 	}
 
-	it("writes with -U, wrapping the secret in a printable-ASCII b64 envelope", () => {
-		const { runner, calls } = fakeRunner(() => ({ status: 0, stdout: "", stderr: "" }))
-		createSecurityToolEntry("svc", "acct", runner).setPassword("tok secret")
-		const expected = `b64:${Buffer.from("tok secret", "utf8").toString("base64")}`
-		expect(calls).toEqual([{ args: ["add-generic-password", "-U", "-s", "svc", "-a", "acct", "-w", expected] }])
+	it("reads an item and strips only the trailing newline", () => {
+		const { runner } = storedItem(envelope('{"a":1}\n'))
+		expect(new SecurityToolEntry("svc", "acct", runner).getPassword()).toBe('{"a":1}\n')
 	})
 
-	it("round-trips non-ASCII payloads (security prints non-ASCII data as hex)", () => {
-		const payload = `secret-smöke-✓ ${JSON.stringify({ token: "日本語" })}`
-		const encoded = `b64:${Buffer.from(payload, "utf8").toString("base64")}`
-		const { runner, calls } = fakeRunner((args) =>
-			args[0] === "find-generic-password"
-				? { status: 0, stdout: `${encoded}\n`, stderr: "" }
-				: { status: 0, stdout: "", stderr: "" },
+	it("returns null when the item is absent", () => {
+		const { runner } = fakeRunner(() => NOT_FOUND)
+		expect(new SecurityToolEntry("svc", "acct", runner).getPassword()).toBeNull()
+	})
+
+	it("throws the actionable unavailable error when the keychain is locked", () => {
+		for (const op of ["read", "write", "delete"] as const) {
+			const entry = new SecurityToolEntry("svc", "acct", fakeRunner(() => LOCKED).runner)
+			const error = capture(() =>
+				op === "read" ? entry.getPassword() : op === "write" ? entry.setPassword("x") : entry.deleteCredential(),
+			)
+			expect(error).toBeInstanceOf(McpKeychainUnavailableError)
+			expect(String(error)).toContain("security unlock-keychain")
+			expect(String(error)).toContain("kimchi mcp auth")
+		}
+	})
+
+	it("throws the unavailable error when the runner cannot spawn", () => {
+		const { runner } = fakeRunner(() => ({ status: null, stdout: "", stderr: "", error: new Error("ENOENT") }))
+		expect(capture(() => new SecurityToolEntry("svc", "acct", runner).getPassword())).toBeInstanceOf(
+			McpKeychainUnavailableError,
 		)
-		const entry = createSecurityToolEntry("svc-utf8", "acct-utf8", runner)
-		entry.setPassword(payload)
-		expect(calls[0].args.at(-1)).toBe(encoded)
-		expect(entry.getPassword()).toBe(payload)
-	})
-
-	it("decodes hex output produced for legacy non-ASCII items", () => {
-		const legacyJson = JSON.stringify({ token: "smörebröd" })
-		const asHex = Buffer.from(legacyJson, "utf8").toString("hex")
-		const { runner } = fakeRunner(() => ({ status: 0, stdout: `${asHex}\n`, stderr: "" }))
-		expect(createSecurityToolEntry("svc-legacyhex", "acct-legacyhex", runner).getPassword()).toBe(legacyJson)
-	})
-
-	it("passes legacy ASCII payloads through unchanged", () => {
-		const legacyJson = '{"serverUrl":"https://x.test/mcp"}'
-		const { runner } = fakeRunner(() => ({ status: 0, stdout: `${legacyJson}\n`, stderr: "" }))
-		expect(createSecurityToolEntry("svc-legacyascii", "acct-legacyascii", runner).getPassword()).toBe(legacyJson)
-	})
-
-	it("self-heals a legacy ACL once per entry after a successful read", () => {
-		const { runner, calls } = fakeRunner(() => ({ status: 0, stdout: "pw\n", stderr: "" }))
-		const entry = createSecurityToolEntry("svc-heal", "acct-heal", runner)
-		entry.getPassword()
-		entry.getPassword()
-		entry.getPassword()
-		expect(calls.filter((c) => c.args[0] === "find-generic-password")).toHaveLength(3)
-		const healed = `b64:${Buffer.from("pw", "utf8").toString("base64")}`
-		expect(calls.filter((c) => c.args[0] === "add-generic-password")).toEqual([
-			{ args: ["add-generic-password", "-U", "-s", "svc-heal", "-a", "acct-heal", "-w", healed] },
-		])
-		expect(entry.getPassword()).toBe("pw")
-	})
-
-	it("does not self-heal again after an explicit write", () => {
-		const { runner, calls } = fakeRunner((args) =>
-			args[0] === "find-generic-password"
-				? { status: 0, stdout: "pw\n", stderr: "" }
-				: { status: 0, stdout: "", stderr: "" },
-		)
-		const entry = createSecurityToolEntry("svc-noreheal", "acct-noreheal", runner)
-		entry.setPassword("pw")
-		entry.getPassword()
-		expect(calls.filter((c) => c.args[0] === "add-generic-password")).toHaveLength(1)
-	})
-
-	it("deletes entries and reports absence as false", () => {
-		const { runner, calls } = fakeRunner((args) =>
-			args.includes("missing") ? NOT_FOUND : { status: 0, stdout: "", stderr: "" },
-		)
-		expect(createSecurityToolEntry("svc", "present", runner).deleteCredential()).toBe(true)
-		expect(createSecurityToolEntry("svc", "missing", runner).deleteCredential()).toBe(false)
-		expect(calls.map((c) => c.args)).toEqual([
-			["delete-generic-password", "-s", "svc", "-a", "present"],
-			["delete-generic-password", "-s", "svc", "-a", "missing"],
-		])
-	})
-
-	it("classifies not-found and locked keychains by exit code when the message text changes", () => {
-		const localizedNotFound: SecurityToolResult = { status: 44, stdout: "", stderr: "no existe en el llavero" }
-		const localizedLocked: SecurityToolResult = { status: 36, stdout: "", stderr: "la interacción no está permitida" }
-		expect(createSecurityToolEntry("svc", "a", fakeRunner(() => localizedNotFound).runner).getPassword()).toBeNull()
-		const error = capture(() =>
-			createSecurityToolEntry("svc", "b", fakeRunner(() => localizedLocked).runner).getPassword(),
-		)
-		expect(isMcpKeychainUnavailableError(error)).toBe(true)
-	})
-
-	it("skips self-heal for ambiguous hex-legacy items instead of persisting a guess", () => {
-		// A payload whose raw form is pure hex: decode() transforms it for the
-		// caller, but healing that guess could permanently corrupt the item, so
-		// the ACL rewrite must be skipped entirely.
-		const payload = JSON.stringify({ legacy: true })
-		const raw = Buffer.from(payload, "utf8").toString("hex")
-		const { runner, calls } = fakeRunner((args) =>
-			args[0] === "find-generic-password"
-				? { status: 0, stdout: `${raw}\n`, stderr: "" }
-				: { status: 0, stdout: "", stderr: "" },
-		)
-		const entry = createSecurityToolEntry("svc-noheal", "acct-noheal", runner)
-		expect(entry.getPassword()).toBe(payload)
-		expect(calls.filter((c) => c.args[0] === "add-generic-password")).toEqual([])
-		// Repeated reads still work and stay transient (raw bytes untouched).
-		expect(entry.getPassword()).toBe(payload)
-	})
-
-	it("heals unambiguous ASCII legacy items with a b64 envelope", () => {
-		const payload = JSON.stringify({ legacy: "ascii" })
-		const { runner, calls } = fakeRunner((args) =>
-			args[0] === "find-generic-password"
-				? { status: 0, stdout: `${payload}\n`, stderr: "" }
-				: { status: 0, stdout: "", stderr: "" },
-		)
-		const entry = createSecurityToolEntry("svc-asciiheal", "acct-asciiheal", runner)
-		expect(entry.getPassword()).toBe(payload)
-		expect(calls.filter((c) => c.args[0] === "add-generic-password")).toEqual([
-			{
-				args: [
-					"add-generic-password",
-					"-U",
-					"-s",
-					"svc-asciiheal",
-					"-a",
-					"acct-asciiheal",
-					"-w",
-					`b64:${Buffer.from(payload, "utf8").toString("base64")}`,
-				],
-			},
-		])
-		// The healed envelope reads back identically.
-		expect(entry.getPassword()).toBe(payload)
 	})
 
 	it("maps a spawn timeout to the unavailable error with a pending-dialog hint", () => {
 		const { runner } = fakeRunner(() => ({
 			status: null,
 			stdout: "",
-			stderr: "security invocation timed out after 120s",
-			error: Object.assign(new Error("spawnSync ETIMEDOUT"), { code: "ETIMEDOUT" }),
+			stderr: "",
+			error: Object.assign(new Error("spawnSync /usr/bin/security ETIMEDOUT"), { code: "ETIMEDOUT" }),
 		}))
-		const error = capture(() => createSecurityToolEntry("svc", "acct", runner).getPassword())
-		expect(isMcpKeychainUnavailableError(error)).toBe(true)
-		expect((error as Error).message).toContain("consent dialog may be pending")
+		const error = capture(() => new SecurityToolEntry("svc", "acct", runner).getPassword())
+		expect(error).toBeInstanceOf(McpKeychainUnavailableError)
+		expect(String(error)).toContain("consent dialog may be pending")
+	})
+
+	it("classifies not-found and locked keychains by exit code when the message text changes", () => {
+		const localizedNotFound: SecurityToolResult = { status: 44, stdout: "", stderr: "no existe en el llavero" }
+		const localizedLocked: SecurityToolResult = { status: 36, stdout: "", stderr: "la interacción no está permitida" }
+		expect(new SecurityToolEntry("svc", "a", fakeRunner(() => localizedNotFound).runner).getPassword()).toBeNull()
+		expect(
+			capture(() => new SecurityToolEntry("svc", "b", fakeRunner(() => localizedLocked).runner).getPassword()),
+		).toBeInstanceOf(McpKeychainUnavailableError)
+	})
+
+	it("writes by recreating the item so its ACL trusts security, wrapping the secret in a b64 envelope", () => {
+		// `add-generic-password -U` preserves an existing item's ACL, so an
+		// in-process legacy item would keep trusting only its old binary.
+		const { runner, calls } = fakeRunner(() => OK)
+		new SecurityToolEntry("svc", "acct", runner).setPassword("tok secret")
+		expect(calls).toEqual([
+			["delete-generic-password", "-s", "svc", "-a", "acct"],
+			["add-generic-password", "-s", "svc", "-a", "acct", "-w", envelope("tok secret")],
+		])
+	})
+
+	it("writes a new item when there is nothing to replace", () => {
+		const { runner, calls } = fakeRunner((args) => (args[0] === "delete-generic-password" ? NOT_FOUND : OK))
+		new SecurityToolEntry("svc", "acct", runner).setPassword("x")
+		expect(calls.at(-1)?.[0]).toBe("add-generic-password")
+	})
+
+	it("round-trips non-ASCII payloads (security prints non-ASCII data as hex)", () => {
+		const payload = `secret-smöke-✓ ${JSON.stringify({ token: "日本語" })}`
+		const { runner, calls } = storedItem(envelope(payload))
+		const entry = new SecurityToolEntry("svc", "acct", runner)
+		entry.setPassword(payload)
+		expect(calls.at(-1)?.at(-1)).toBe(envelope(payload))
+		expect(entry.getPassword()).toBe(payload)
+	})
+
+	it("decodes hex output produced for legacy non-ASCII items", () => {
+		const legacyJson = JSON.stringify({ token: "smörebröd" })
+		const { runner } = storedItem(Buffer.from(legacyJson, "utf8").toString("hex"))
+		expect(new SecurityToolEntry("svc", "acct", runner).getPassword()).toBe(legacyJson)
+	})
+
+	it("passes legacy ASCII payloads through unchanged", () => {
+		const legacyJson = '{"serverUrl":"https://x.test/mcp"}'
+		const { runner } = storedItem(legacyJson)
+		expect(new SecurityToolEntry("svc", "acct", runner).getPassword()).toBe(legacyJson)
+	})
+
+	it("passes a legacy ASCII value that merely starts with b64: through unchanged", () => {
+		const { runner } = storedItem("b64:not base64!")
+		expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe("b64:not base64!")
+	})
+
+	it("does not envelope-decode a hex-legacy value a second time", () => {
+		const legacy = envelope("inner")
+		const { runner } = storedItem(Buffer.from(legacy, "utf8").toString("hex"))
+		expect(new SecurityToolEntry("svc", "acct", runner).getPassword()).toBe(legacy)
+	})
+
+	it("self-heals a plain-ASCII legacy OAuth item by rewriting it into an envelope", () => {
+		const payload = JSON.stringify({ legacy: "ascii" })
+		const { runner, calls } = storedItem(payload)
+		expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe(payload)
+		expect(writes(calls)).toEqual([
+			["delete-generic-password", "-s", MCP_OAUTH_SERVICE, "-a", "acct"],
+			["add-generic-password", "-s", MCP_OAUTH_SERVICE, "-a", "acct", "-w", envelope(payload)],
+		])
+	})
+
+	it("never rewrites an item already stored in the envelope, across any number of processes", () => {
+		const { runner, calls } = storedItem(envelope("pw"))
+		for (let run = 0; run < 3; run++) {
+			expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe("pw")
+		}
+		expect(writes(calls)).toEqual([])
+	})
+
+	it("skips self-heal for ambiguous hex-legacy items instead of persisting a guess", () => {
+		const payload = JSON.stringify({ legacy: true })
+		const { runner, calls } = storedItem(Buffer.from(payload, "utf8").toString("hex"))
+		const entry = new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner)
+		expect(entry.getPassword()).toBe(payload)
+		expect(writes(calls)).toEqual([])
+	})
+
+	it("keeps reads side-effect free outside the kimchi OAuth service", () => {
+		const { runner, calls } = storedItem("legacy-ascii")
+		expect(new SecurityToolEntry("dev.kimchi.mcp-adapter.runtime-check", "acct", runner).getPassword()).toBe(
+			"legacy-ascii",
+		)
+		expect(writes(calls)).toEqual([])
+	})
+
+	it("still returns the credential and warns when the self-heal fails", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const { runner } = fakeRunner((args) =>
+			args[0] === "find-generic-password"
+				? { ...OK, stdout: "pw\n" }
+				: { status: 1, stdout: "", stderr: "write failed" },
+		)
+		expect(new SecurityToolEntry(MCP_OAUTH_SERVICE, "acct", runner).getPassword()).toBe("pw")
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("keychain ACL self-heal failed"))
+	})
+
+	it("deletes entries and reports absence as false", () => {
+		const { runner, calls } = fakeRunner((args) => (args.includes("missing") ? NOT_FOUND : OK))
+		expect(new SecurityToolEntry("svc", "present", runner).deleteCredential()).toBe(true)
+		expect(new SecurityToolEntry("svc", "missing", runner).deleteCredential()).toBe(false)
+		expect(calls).toEqual([
+			["delete-generic-password", "-s", "svc", "-a", "present"],
+			["delete-generic-password", "-s", "svc", "-a", "missing"],
+		])
 	})
 })
 

@@ -139,10 +139,17 @@ accesses them with zero prompts. Payloads are wrapped in a printable-ASCII
 reads also hex-decode legacy items and pass plain ASCII through. A locked or
 interaction-forbidden keychain (headless/SSH) fails with a typed
 `McpKeychainUnavailableError` whose message directs the user to unlock the
-keychain locally and re-run `kimchi mcp auth`. Reads lazily rewrite legacy
-in-process items once per process (`add-generic-password -U`), resetting
-their ACLs so any one-time prompt on first access is also the last. Linux and
-Windows keep the native `@napi-rs/keyring` backend. The kimchi-owned
+keychain locally and re-run `kimchi mcp auth`. Writes delete and re-add the
+item rather than using `add-generic-password -U`, because `-U` preserves the
+existing ACL and would leave a legacy in-process item trusting only its old
+binary. A read of a legacy plain-ASCII item under the kimchi-owned service
+rewrites it into the envelope once, so any one-time prompt on first access is
+also the last; enveloped items are never rewritten, and hex-decoded legacy
+items are left untouched until the next explicit write because their decode is
+a guess. `-w` places the secret on `security`'s argv, visible to `ps` and EDR
+exec telemetry for the duration of the call; this exposure is limited to
+writes and a legacy item's one-time heal. Linux and Windows keep the native
+`@napi-rs/keyring` backend. The kimchi-owned
 service deliberately starts empty — credentials under the shared service are
 never read, so no keychain access-control prompt can leak in from them, and
 users re-authenticate their MCP OAuth servers once after upgrading. This stays
@@ -153,8 +160,9 @@ binaries whose ACLs would prompt on read, and refresh tokens predating the
 rename are expected to be invalid anyway, so users re-authenticate once
 instead. A private, file-backed implementation is available only to isolated
 E2E processes. The
-`mcp keyring-check --json` command always exercises native credential-store
-CRUD and is run by release and canary workflows on each target OS.
+`mcp keyring-check --json` command always exercises real credential-store
+CRUD (`/usr/bin/security` on macOS, `@napi-rs/keyring` elsewhere) and is run by
+release and canary workflows on each target OS.
 
 On Linux, revoked session keyrings are recovered through `keyctl session -`.
 Compiled builds configure the adapter's existing runtime/helper overrides to

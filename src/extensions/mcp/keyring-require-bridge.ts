@@ -100,16 +100,12 @@ export class McpKeychainUnavailableError extends Error {
 	}
 }
 
-export function isMcpKeychainUnavailableError(error: unknown): error is McpKeychainUnavailableError {
-	return error instanceof McpKeychainUnavailableError
-}
-
 /** Result shape of one `/usr/bin/security` invocation. */
 export interface SecurityToolResult {
 	status: number | null
 	stdout: string
 	stderr: string
-	error?: Error
+	error?: NodeJS.ErrnoException
 }
 
 export type SecurityToolRunner = (args: string[], stdin?: string) => SecurityToolResult
@@ -133,17 +129,23 @@ const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
 
 const KEYCHAIN_NOT_FOUND_MARKER = "could not be found"
 const KEYCHAIN_USER_INTERACTION_MARKER = "interaction is not allowed"
+const SECURITY_EXIT_ITEM_NOT_FOUND = 44
+const SECURITY_EXIT_INTERACTION_NOT_ALLOWED = 36
 const SECURITY_TOOL_TIMEOUT_MS = 120_000
+const ENVELOPE_PREFIX = "b64:"
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
 function isUserInteractionNotAllowed(result: SecurityToolResult): boolean {
 	// Exit statuses of /usr/bin/security are not a documented API and vary by
 	// verb and macOS release; the English message text has been stable for far
 	// longer, so substrings classify first and known exit codes are the fallback.
-	return result.stderr.includes(KEYCHAIN_USER_INTERACTION_MARKER) || result.status === 36
+	return (
+		result.stderr.includes(KEYCHAIN_USER_INTERACTION_MARKER) || result.status === SECURITY_EXIT_INTERACTION_NOT_ALLOWED
+	)
 }
 
 function isKeychainItemNotFound(result: SecurityToolResult): boolean {
-	return result.stderr.includes(KEYCHAIN_NOT_FOUND_MARKER) || result.status === 44
+	return result.stderr.includes(KEYCHAIN_NOT_FOUND_MARKER) || result.status === SECURITY_EXIT_ITEM_NOT_FOUND
 }
 
 /** Text with no control characters other than tab/newline and no U+FFFD (guards against mis-decoding genuinely hex-shaped passwords). */
@@ -161,7 +163,7 @@ function failOnUnavailableKeychain(result: SecurityToolResult): void {
 		// A typed error from the runner (e.g. spawn timeout) already carries the
 		// actionable detail — surface it verbatim instead of double-wrapping.
 		if (result.error instanceof McpKeychainUnavailableError) throw result.error
-		if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+		if (result.error.code === "ETIMEDOUT") {
 			throw new McpKeychainUnavailableError(
 				`timed out after ${SECURITY_TOOL_TIMEOUT_MS / 1000}s — a keychain consent dialog may be pending on screen`,
 			)
@@ -171,27 +173,41 @@ function failOnUnavailableKeychain(result: SecurityToolResult): void {
 	if (isUserInteractionNotAllowed(result)) throw new McpKeychainUnavailableError(result.stderr.trim())
 }
 
-/** Assert a `security` verb succeeded; the not-found case is the caller's decision. */
-function checkResult(result: SecurityToolResult, verb: string): void {
+function assertSecuritySucceeded(result: SecurityToolResult, verb: string): void {
+	failOnUnavailableKeychain(result)
 	if (result.status === 0) return
 	throw new Error(`security ${verb} failed (exit ${result.status}): ${result.stderr.trim()}`)
 }
 
 /**
+ * How a raw `find-generic-password -w` value was decoded:
+ * - `envelope`: written by this backend; its ACL already trusts `security`.
+ * - `plain-legacy`: printable ASCII from the old in-process store — decoded
+ *   exactly, so it is safe to rewrite.
+ * - `hex-legacy`: `security` hex-dumped non-ASCII bytes and we guessed at the
+ *   decode — never persisted, since a wrong guess would corrupt the item.
+ */
+type DecodedPayload = { value: string; origin: "envelope" | "plain-legacy" | "hex-legacy" }
+
+function decodeSecurityPayload(raw: string): DecodedPayload {
+	if (raw.startsWith(ENVELOPE_PREFIX)) {
+		const body = raw.slice(ENVELOPE_PREFIX.length)
+		const decoded = Buffer.from(body, "base64").toString("utf8")
+		if (STRICT_BASE64.test(body) && !decoded.includes("\uFFFD")) return { value: decoded, origin: "envelope" }
+	}
+	if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+		const decoded = Buffer.from(raw, "hex").toString("utf8")
+		if (isPrintableText(decoded)) return { value: decoded, origin: "hex-legacy" }
+	}
+	return { value: raw, origin: "plain-legacy" }
+}
+
+/**
  * macOS keychain backend that shells out to Apple's `/usr/bin/security` tool
- * instead of calling the Security framework in-process. Items created and read
- * this way carry an ACL whose trusted application is `security` itself (the
- * tool is the "creating application"), so ANY calling binary — signed CLI,
- * Studio-bundled harness, ad-hoc dev builds — accesses them without the
- * "wants to use your confidential information" prompt that per-binary
- * designated requirements trigger. The rationale is inlined below and in
+ * instead of calling the Security framework in-process. Items it creates trust
+ * `security` itself, so every kimchi binary flavor (release, Studio harness,
+ * ad-hoc dev builds) reads them without a keychain prompt. See
  * docs/mcp-adapter-audit.md.
- *
- * Reads self-heal legacy items: an item originally created in-process trusts
- * only old binary signatures, so its first read through `security` may prompt
- * once; a successful read is re-added with `-U`, resetting the ACL to trust
- * `security` only and making all later access silent (tracked once per
- * process so the rewrite runs a single time per entry).
  */
 export class SecurityToolEntry implements KeyringEntryLike {
 	private readonly service: string
@@ -205,124 +221,50 @@ export class SecurityToolEntry implements KeyringEntryLike {
 	}
 
 	getPassword(): string | null {
-		const result = this.runner(["find-generic-password", "-s", this.service, "-a", this.account, "-w"])
+		const result = this.run("find-generic-password", "-w")
 		if (isKeychainItemNotFound(result)) return null
-		failOnUnavailableKeychain(result)
-		checkResult(result, "find-generic-password")
-		const raw = result.stdout.replace(/\r?\n$/, "")
-		const password = SecurityToolEntry.decode(raw)
-		this.selfHealAcl(raw, password)
-		return password
+		assertSecuritySucceeded(result, "find-generic-password")
+		const decoded = decodeSecurityPayload(result.stdout.replace(/\r?\n$/, ""))
+		if (decoded.origin === "plain-legacy" && this.service === MCP_OAUTH_SERVICE) this.selfHealAcl(decoded.value)
+		return decoded.value
 	}
 
 	setPassword(password: string): void {
-		this.store(password)
-		SecurityToolEntry.healed.add(this.key())
-	}
-
-	private store(password: string): void {
-		// `-w` places the secret in the process argv; `/usr/bin/security` has no
-		// stdin mode for this verb. Accepted tradeoff, and a delta from the
-		// immediate predecessor: the in-process SecItem backend (@napi-rs/keyring)
-		// never exposed secrets via argv, so org-managed Macs running `ps`
-		// observers, Endpoint Security clients, or EDR exec-event telemetry can
-		// now capture OAuth payloads on writes (and on each entry's first-read
-		// self-heal). Chosen because the pre-#1141 production store was plaintext
-		// files readable by the same user, so the practical exposure bound is
-		// unchanged, while at-rest protection and prompt behavior improve.
-		const result = this.runner([
+		// `add-generic-password -U` keeps an existing item's ACL, so an item
+		// created in-process would keep trusting only its old binary signature.
+		// Delete + add recreates it with an ACL that trusts `security`.
+		this.deleteCredential()
+		// `-w` puts the secret on argv (the verb has no stdin mode), visible to
+		// `ps`/EDR exec telemetry for the lifetime of the call. Accepted: the
+		// exposure is limited to writes and a legacy item's one-time heal.
+		const result = this.run(
 			"add-generic-password",
-			"-U",
-			"-s",
-			this.service,
-			"-a",
-			this.account,
 			"-w",
-			SecurityToolEntry.encode(password),
-		])
-		failOnUnavailableKeychain(result)
-		checkResult(result, "add-generic-password")
-	}
-
-	/**
-	 * `/usr/bin/security` prints `-w` output as hex whenever the stored bytes
-	 * are not printable ASCII, round-tripping non-UTF8-safe payloads as hex
-	 * instead of the original text. Writes therefore wrap payloads in a
-	 * printable-ASCII `b64:` envelope; reads decode the envelope, then fall
-	 * back to hex-decoding values written by older in-process storage that
-	 * contained non-ASCII bytes, and finally pass plain ASCII through as-is
-	 * (legacy items and the runtime-check values).
-	 */
-	private static encode(password: string): string {
-		return `b64:${Buffer.from(password, "utf8").toString("base64")}`
-	}
-
-	private static decode(raw: string): string {
-		let value = raw
-		// Hex heuristic: only reached for values written before the b64 envelope.
-		// A legacy item whose payload is genuinely pure-hex ASCII would be
-		// mis-decoded here, but real payloads are JSON (start with "{") or b64
-		// envelopes, so no collision in practice.
-		if (/^[0-9a-fA-F]+$/.test(value) && value.length % 2 === 0) {
-			const hexDecoded = Buffer.from(value, "hex").toString("utf8")
-			if (isPrintableText(hexDecoded)) value = hexDecoded
-		}
-		if (value.startsWith("b64:")) return Buffer.from(value.slice(4), "base64").toString("utf8")
-		return value
+			`${ENVELOPE_PREFIX}${Buffer.from(password).toString("base64")}`,
+		)
+		assertSecuritySucceeded(result, "add-generic-password")
 	}
 
 	deleteCredential(): boolean {
-		const result = this.runner(["delete-generic-password", "-s", this.service, "-a", this.account])
+		const result = this.run("delete-generic-password")
 		if (isKeychainItemNotFound(result)) return false
-		failOnUnavailableKeychain(result)
-		checkResult(result, "delete-generic-password")
-		SecurityToolEntry.healed.delete(this.key())
+		assertSecuritySucceeded(result, "delete-generic-password")
 		return true
 	}
 
-	private selfHealAcl(raw: string, decoded: string): void {
-		// Only heal when the decode is UNAMBIGUOUS — the raw value is already the
-		// canonical text (identity passthrough) or a b64: envelope. When the hex
-		// heuristic fired, the decoded value is a guess: healing it could
-		// permanently overwrite the item with mis-decoded bytes, so leave the item
-		// untouched (the pre-self-heal behavior) and let the next explicit write
-		// reset the ACL instead.
-		if (raw !== decoded && !raw.startsWith("b64:")) return
-		const key = this.key()
-		if (SecurityToolEntry.healed.has(key)) return
+	private run(verb: string, ...args: string[]): SecurityToolResult {
+		return this.runner([verb, "-s", this.service, "-a", this.account, ...args])
+	}
+
+	private selfHealAcl(password: string): void {
 		try {
-			this.store(decoded)
-			SecurityToolEntry.healed.add(key)
-		} catch {
-			// Self-heal is best-effort; the successful read already returned the
-			// credential, and a later explicit write will reset the ACL.
+			this.setPassword(password)
+		} catch (error) {
+			console.warn(
+				`[mcp] keychain ACL self-heal failed for ${this.service}/${this.account}: ${error instanceof Error ? error.message : String(error)}`,
+			)
 		}
 	}
-
-	private key(): string {
-		return `${this.service}\0${this.account}`
-	}
-
-	private static readonly healed = new Set<string>()
-
-	/** Test seam for resetSecurityToolHealCache — keeps `healed` private. */
-	static clearHealCacheForTests(): void {
-		SecurityToolEntry.healed.clear()
-	}
-}
-
-/** Exported for tests: forget the once-per-process self-heal bookkeeping. */
-export function resetSecurityToolHealCache(): void {
-	SecurityToolEntry.clearHealCacheForTests()
-}
-
-/** Exported for tests: construct the macOS `/usr/bin/security`-backed Entry with an injectable runner. */
-export function createSecurityToolEntry(
-	service: string,
-	account: string,
-	runner?: SecurityToolRunner,
-): KeyringEntryLike {
-	return new SecurityToolEntry(service, account, runner)
 }
 
 /** Exported for tests: the platform/env-dependent keyring backend selector. */
@@ -437,7 +379,8 @@ export function inspectMcpCredentialAccount(serverName: string): McpCredentialAc
 		if (!existsSync(legacyPath)) return { status: "absent" }
 		const serverUrl = parseCredentialServerUrl(account, readFileSync(legacyPath, "utf8"))
 		return { status: "present", ...(serverUrl === undefined ? {} : { serverUrl }) }
-	} catch {
+	} catch (error) {
+		if (error instanceof McpKeychainUnavailableError) throw error
 		return { status: "unavailable" }
 	}
 }
