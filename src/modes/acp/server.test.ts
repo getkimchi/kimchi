@@ -476,6 +476,133 @@ function agentEnd(): AgentSessionEvent {
 	return { type: "agent_end", messages: [], willRetry: false }
 }
 
+// message_end carrying a plain-text assistant response, for tests that
+// assert ordering between out-of-turn warning chunks and the turn's content.
+function assistantTextEnd(text: string): AgentSessionEvent {
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	}
+	return { type: "message_end", message }
+}
+
+// Starts a session backed by a FakeAgentSession with the given model plus a
+// recording conn, for tests that assert on the emitted sessionUpdates.
+async function startRecordingSession(model: FakeModel): Promise<{
+	agent: KimchiAcpAgent
+	fake: FakeAgentSession
+	updates: SessionNotification[]
+	sessionId: string
+}> {
+	const localFake = new FakeAgentSession(`session-${model.id}`)
+	localFake.model = model
+	const factory: AcpSessionFactory = async () => asSession(localFake)
+	const { conn, updates } = makeRecordingConn()
+	const localAgent = new KimchiAcpAgent(conn, {
+		extensionFactories: [],
+		agentDir: "/tmp/fake-agent-dir",
+		sessionFactory: factory,
+	})
+	const { sessionId } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+	return { agent: localAgent, fake: localFake, updates, sessionId }
+}
+
+// Every env var pi-ai's env-key auth discovery can read (mirrors
+// @earendil-works/pi-ai's env-api-keys.js at the pinned version). While these
+// are cleared, model availability is controlled solely by the agent dir's
+// auth.json + models.json — a host machine credential (or a leaked test stub)
+// cannot smuggle built-in vision models into a registry-capability assertion.
+const PROVIDER_AUTH_ENV_KEYS = [
+	"AI_GATEWAY_API_KEY",
+	"ANT_LING_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"ANTHROPIC_OAUTH_TOKEN",
+	"AWS_ACCESS_KEY_ID",
+	"AWS_BEARER_TOKEN_BEDROCK",
+	"AWS_CONTAINER_CREDENTIALS_FULL_URI",
+	"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+	"AWS_PROFILE",
+	"AWS_SECRET_ACCESS_KEY",
+	"AWS_WEB_IDENTITY_TOKEN_FILE",
+	"AZURE_OPENAI_API_KEY",
+	"BASETEN_API_KEY",
+	"CEREBRAS_API_KEY",
+	"CLOUDFLARE_API_KEY",
+	"COPILOT_GITHUB_TOKEN",
+	"DEEPSEEK_API_KEY",
+	"FIREWORKS_API_KEY",
+	"GEMINI_API_KEY",
+	"GCLOUD_PROJECT",
+	"GOOGLE_APPLICATION_CREDENTIALS",
+	"GOOGLE_CLOUD_API_KEY",
+	"GOOGLE_CLOUD_LOCATION",
+	"GOOGLE_CLOUD_PROJECT",
+	"GROQ_API_KEY",
+	"HF_TOKEN",
+	"KIMI_API_KEY",
+	"MINIMAX_API_KEY",
+	"MINIMAX_CN_API_KEY",
+	"MOONSHOT_API_KEY",
+	"MISTRAL_API_KEY",
+	"NVIDIA_API_KEY",
+	"OPENCODE_API_KEY",
+	"OPENAI_API_KEY",
+	"OPENROUTER_API_KEY",
+	"QWEN_TOKEN_PLAN_API_KEY",
+	"QWEN_TOKEN_PLAN_CN_API_KEY",
+	"QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY",
+	"RADIUS_API_KEY",
+	"TOGETHER_API_KEY",
+	"XAI_API_KEY",
+	"XIAOMI_API_KEY",
+	"XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+	"XIAOMI_TOKEN_PLAN_CN_API_KEY",
+	"XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+	"ZAI_API_KEY",
+	"ZAI_CODING_CN_API_KEY",
+]
+
+/** Run fn with every provider auth env var removed, restoring them after. */
+async function withoutProviderEnvAuth<T>(fn: () => Promise<T>): Promise<T> {
+	const saved = new Map<string, string | undefined>()
+	for (const key of PROVIDER_AUTH_ENV_KEYS) {
+		saved.set(key, process.env[key])
+		Reflect.deleteProperty(process.env, key)
+	}
+	try {
+		return await fn()
+	} finally {
+		for (const [key, value] of saved) {
+			if (value === undefined) Reflect.deleteProperty(process.env, key)
+			else process.env[key] = value
+		}
+	}
+}
+
+// agent_message_chunk updates narrowed to their text + messageId, in arrival
+// order. Non-text chunks are skipped — they carry no text to assert on.
+const messageChunks = (updates: SessionNotification[]): Array<{ text: string; messageId?: string | null }> =>
+	updates.flatMap((u) => {
+		if (u.update.sessionUpdate !== "agent_message_chunk") return []
+		const { content } = u.update
+		if (content.type !== "text") return []
+		return [{ text: content.text, messageId: u.update.messageId }]
+	})
+
 // Drop the incidental `available_commands_update` re-broadcast on session
 // resume so replay tests can assert on transcript shape alone.
 function replayOnly(updates: SessionNotification[]): SessionNotification[] {
@@ -527,7 +654,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				const original = process.env[key]
 				process.env[key] = value
 				return () => {
-					process.env[key] = original
+					// Assigning undefined stringifies to "undefined", which downstream
+					// env-key auth discovery treats as a configured credential — delete
+					// the property instead so later tests see a truly absent key.
+					if (original === undefined) Reflect.deleteProperty(process.env, key)
+					else process.env[key] = original
 				}
 			}
 			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
@@ -568,6 +699,102 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			} finally {
 				cleanup()
 			}
+		})
+
+		// Auto-routed models (kimchi-dev/auto*) have text-only descriptors but
+		// image-capable backends — an Auto-only registry must still advertise
+		// image support. The raw descriptor check wrongly reported false, so ACP
+		// clients refused image prompts for Auto sessions.
+		it("declares image: true for an Auto-only registry with text-only descriptors", async () => {
+			writeFileSync(
+				resolve(tempAgentDir, "auth.json"),
+				JSON.stringify({ "kimchi-dev": { type: "api_key", key: "fake-key" } }),
+			)
+			writeFileSync(
+				resolve(tempAgentDir, "models.json"),
+				JSON.stringify({
+					providers: {
+						"kimchi-dev": {
+							baseUrl: "https://api.example.test",
+							models: [
+								{
+									id: "auto",
+									name: "Auto",
+									api: "openai-completions",
+									input: ["text"],
+									contextWindow: 128_000,
+									maxTokens: 8_192,
+								},
+							],
+						},
+					},
+				}),
+			)
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// Provider env auth is cleared for the initialize call, so the Auto
+			// model is the ONLY possible source of image support — the assertion
+			// cannot pass because a host credential leaked a vision model in.
+			const response = await withoutProviderEnvAuth(() => testAgent.initialize({ protocolVersion: 1 }))
+			expect(response.agentCapabilities?.promptCapabilities?.image).toBe(true)
+		})
+
+		it("declares image: false when only concrete text-only models are available", async () => {
+			writeFileSync(
+				resolve(tempAgentDir, "auth.json"),
+				JSON.stringify({ "kimchi-dev": { type: "api_key", key: "fake-key" } }),
+			)
+			writeFileSync(
+				resolve(tempAgentDir, "models.json"),
+				JSON.stringify({
+					providers: {
+						"kimchi-dev": {
+							baseUrl: "https://api.example.test",
+							models: [
+								{
+									id: "text-only-model",
+									name: "Text Only",
+									api: "openai-completions",
+									input: ["text"],
+									contextWindow: 128_000,
+									maxTokens: 8_192,
+								},
+							],
+						},
+					},
+				}),
+			)
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// Env auth cleared: the registry contains exactly the concrete text-only
+			// model written above — a leaked env credential cannot flip this to true.
+			const response = await withoutProviderEnvAuth(() => testAgent.initialize({ protocolVersion: 1 }))
+			expect(response.agentCapabilities?.promptCapabilities?.image).toBe(false)
+		})
+
+		// No configured providers → no available models → no image support. The
+		// agent dir is freshly recreated empty by beforeEach, and provider env
+		// auth is cleared for the initialize call, so nothing else can make a
+		// model available.
+		it("declares image: false when no models are available", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await withoutProviderEnvAuth(() => testAgent.initialize({ protocolVersion: 1 }))
+			expect(response.agentCapabilities?.promptCapabilities?.image).toBe(false)
 		})
 
 		it("declares image capability based on available models", async () => {
@@ -1870,14 +2097,27 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
-	// Image blocks are dropped when model doesn't support vision: they should
-	// be silently discarded with a warning.
+	// Image blocks are dropped when the model doesn't support vision: they are
+	// removed from the session prompt, the stderr diagnostic fires once for the
+	// turn, and the client receives exactly one warning chunk — before any
+	// assistant content, with its own message id namespace and a blank-line
+	// separator from the response.
 	it("drops image blocks when model has no vision support", async () => {
-		fake.model = { provider: "test", id: "text-only-model", input: ["text"] }
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
+		const {
+			agent: dropAgent,
+			fake: dropFake,
+			updates,
+			sessionId: sid,
+		} = await startRecordingSession({
+			provider: "test",
+			id: "text-only-model",
+			input: ["text"],
+		})
+		dropFake.promptImpl = async () => {
+			dropFake.emit({ type: "agent_start" })
 			await delay(5)
-			fake.emit(agentEnd())
+			dropFake.emit(assistantTextEnd("the model's textual answer"))
+			dropFake.emit(agentEnd())
 		}
 
 		const writes: string[] = []
@@ -1889,24 +2129,141 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		}
 
 		try {
-			const result = await agent.prompt({
-				sessionId,
+			const result = await dropAgent.prompt({
+				sessionId: sid,
+				prompt: [
+					{ type: "text", text: "describe these images" },
+					{ type: "image", data: "base64data1", mimeType: "image/png" },
+					{ type: "image", data: "base64data2", mimeType: "image/png" },
+				],
+			})
+			expect(result.stopReason).toBe("end_turn")
+			// Images should be dropped, not passed to session.prompt (passed as empty array)
+			expect(dropFake.lastPromptImages).toEqual([])
+		} finally {
+			process.stderr.write = origWrite
+		}
+
+		// The stderr diagnostic fires once for the turn, with the block count.
+		const matches = writes.filter((w) => w.includes("acp prompt: dropping 2 image blocks"))
+		expect(matches).toHaveLength(1)
+
+		// The client-visible warning: one chunk ahead of the assistant response.
+		const chunks = messageChunks(updates)
+		expect(chunks).toHaveLength(2)
+		const [warning, response] = chunks
+		expect(warning.text).toContain("[ACP] dropped 2 image blocks")
+		expect(warning.text).toContain("text-only-model does not accept image input")
+		// Trailing blank line so clients that concatenate chunks keep the
+		// warning visually separate from the assistant response.
+		expect(warning.text.endsWith("\n\n")).toBe(true)
+		expect(warning.text + response.text).toContain("file path.\n\nthe model's textual answer")
+		// Distinct message namespaces: the warning id never collides with the
+		// session's km.* block ids.
+		expect(warning.messageId).toMatch(/^acp-warning\./)
+		expect(response.messageId).toMatch(/^km\./)
+	})
+
+	// The warning is per-turn: the old connection-level dedupe left every drop
+	// after the first fully invisible to the client.
+	it("warns once per dropping turn, with a fresh message id each turn", async () => {
+		const {
+			agent: dropAgent,
+			fake: dropFake,
+			updates,
+			sessionId: sid,
+		} = await startRecordingSession({
+			provider: "test",
+			id: "text-only-model",
+			input: ["text"],
+		})
+		dropFake.promptImpl = async () => {
+			dropFake.emit({ type: "agent_start" })
+			await delay(5)
+			dropFake.emit(agentEnd())
+		}
+
+		for (let turn = 0; turn < 2; turn++) {
+			const result = await dropAgent.prompt({
+				sessionId: sid,
 				prompt: [
 					{ type: "text", text: "describe this image" },
 					{ type: "image", data: "base64data", mimeType: "image/png" },
 				],
 			})
 			expect(result.stopReason).toBe("end_turn")
-			// Images should be dropped, not passed to session.prompt (passed as empty array)
-			expect(fake.lastPromptImages).toEqual([])
-		} finally {
-			process.stderr.write = origWrite
 		}
 
-		const matches = writes.filter((w) =>
-			w.includes("acp prompt: dropping image block (active model has no vision input)"),
-		)
-		expect(matches).toHaveLength(1)
+		const warnings = messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))
+		expect(warnings).toHaveLength(2)
+		expect(warnings[0].text).toBe(warnings[1].text)
+		expect(warnings[0].messageId).not.toBe(warnings[1].messageId)
+	})
+
+	// An image-only prompt on a text-only model must still surface the drop:
+	// the turn ends immediately server-side, but only after the warning chunk
+	// goes out — the user is never left with a silently empty turn.
+	it("warns and ends the turn for an image-only prompt on a text-only model", async () => {
+		const {
+			agent: dropAgent,
+			fake: dropFake,
+			updates,
+			sessionId: sid,
+		} = await startRecordingSession({
+			provider: "test",
+			id: "text-only-model",
+			input: ["text"],
+		})
+
+		const result = await dropAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "image", data: "base64data", mimeType: "image/png" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		// Nothing reaches the session — the turn is fully handled server-side.
+		expect(dropFake.promptCalls).toHaveLength(0)
+
+		const warnings = messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].text).toContain("[ACP] dropped 1 image block")
+	})
+
+	// Auto-routed models (kimchi-dev/auto*) have text-only descriptors but
+	// image-capable backends; the raw `input.includes("image")` check wrongly
+	// dropped their images. The shared modelSupportsImages capability keeps them.
+	it("keeps image blocks for auto-routed models with text-only descriptors", async () => {
+		const {
+			agent: autoAgent,
+			fake: autoFake,
+			updates,
+			sessionId: sid,
+		} = await startRecordingSession({
+			provider: "kimchi-dev",
+			id: "auto",
+			input: ["text"],
+		})
+		autoFake.promptImpl = async () => {
+			autoFake.emit({ type: "agent_start" })
+			await delay(5)
+			autoFake.emit(agentEnd())
+		}
+
+		const result = await autoAgent.prompt({
+			sessionId: sid,
+			prompt: [
+				{ type: "text", text: "describe this image" },
+				{ type: "image", data: "base64data", mimeType: "image/png" },
+			],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		// Images flow through to session.prompt — no drop, no warning.
+		expect(autoFake.lastPromptImages).toHaveLength(1)
+		expect(autoFake.lastPromptImages?.[0]).toMatchObject({
+			type: "image",
+			data: "base64data",
+			mimeType: "image/png",
+		})
+		expect(messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))).toHaveLength(0)
 	})
 
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),

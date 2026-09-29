@@ -4,21 +4,24 @@ import { isAutoRoutedModel } from "./auto-model/constants.js"
 /**
  * Whether a model accepts image attachments, read from the live model's
  * input modalities (`model.input`). This is the single capability source for
- * the submit-time vision gate, switch-candidate filtering, and the /model
- * selector's IMG column — a catalog lookup by slug could disagree with the
- * model actually in use (provider/id collisions, catalog refresh lag),
- * silently dropping attachments.
+ * the submit-time vision gate, switch-candidate filtering, the /model
+ * selector's IMG column, and the ACP server's prompt-time image drop — a
+ * catalog lookup by slug could disagree with the model actually in use
+ * (provider/id collisions, catalog refresh lag), silently dropping attachments.
+ *
+ * A model without input modalities (partial session-level models) is treated
+ * as text-only, matching the ACP server's previous `input?.includes` check.
  *
  * Backend-routed virtual models (`kimchi-dev/auto*`) are image-capable
  * regardless of their descriptor: the backend picks a concrete model per
  * request, so the descriptor's modalities do not reflect the routed pool.
  */
 export function modelSupportsImages(
-	model: { provider: string; id: string; input: readonly string[] } | undefined | null,
+	model: { provider: string; id: string; input?: readonly string[] } | undefined | null,
 ): boolean {
 	if (!model) return false
 	if (isAutoRoutedModel(model)) return true
-	return model.input.includes("image")
+	return model.input?.includes("image") ?? false
 }
 
 /**

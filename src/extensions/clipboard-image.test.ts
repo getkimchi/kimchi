@@ -543,6 +543,54 @@ describe("clipboard-image extension", () => {
 		})
 	})
 
+	describe("acp submissions (rpc source)", () => {
+		// ACP prompts arrive as input events with ctx.mode "rpc" (the ACP server
+		// binds extensions with mode "rpc") + source "rpc" from
+		// session.prompt(text, { source: "rpc", images }). The vision gate is
+		// TUI-only (ctx.ui.custom is a no-op under ACP, so engaging it would
+		// silently swallow the submission); ACP instead gets the server-level
+		// drop + agent_message_chunk warning. These tests pin that the extension
+		// never opens the gate for rpc submissions.
+		it("passes rpc images through on a text-only model without engaging the vision gate", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx({ model: TEXT_MODEL, mode: "rpc" })
+			startSession(pi, ctx)
+
+			const images: ImageContent[] = [img("abc")]
+			const result = (await callInput(pi, ctx, { text: "hi", images, source: "rpc" })) as {
+				action: string
+				text: string
+				images: ImageContent[]
+			}
+			// Not "handled": the submission flows on with images preserved, so the
+			// ACP server can apply its drop + warning for text-only models.
+			expect(result.action).toBe("transform")
+			expect(result.images).toEqual(images)
+			expect(result.text).toBe("[Image #1] hi")
+			expect(ctx.ui.custom).not.toHaveBeenCalled()
+			expect(mockAddImage).toHaveBeenCalledWith(1, images[0])
+		})
+
+		it("passes rpc images through with markers on a vision model", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx({ model: VISION_MODEL, mode: "rpc" })
+			startSession(pi, ctx)
+
+			const images: ImageContent[] = [img("abc")]
+			const result = (await callInput(pi, ctx, { text: "hi", images, source: "rpc" })) as {
+				action: string
+				text: string
+				images: ImageContent[]
+			}
+			expect(result.action).toBe("transform")
+			expect(result.text).toBe("[Image #1] hi")
+			expect(result.images).toEqual(images)
+			expect(ctx.ui.custom).not.toHaveBeenCalled()
+		})
+	})
+
 	describe("vision gate (interactive TUI, text-only model)", () => {
 		it("opens the gate dialog on submit with images; cancel restores the exact draft", async () => {
 			const { pi, ctx, custom, resolveDialog } = startGateSession()
