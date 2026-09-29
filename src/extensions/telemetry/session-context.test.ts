@@ -613,8 +613,7 @@ describe("SessionContext", () => {
 		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
 	})
 
-	// Task 2 flips this to the pi session id (ctx.resolveSessionId())
-	it("emitted events carry telemetryId as session.id even once a pi session id is set", async () => {
+	it("emitted events use the pi session id as session.id once set", async () => {
 		const ctx = new TelemetryContext(makeConfig())
 		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
 		ctx.emit("test.event", { custom: "value" })
@@ -627,8 +626,7 @@ describe("SessionContext", () => {
 		const attrMap = Object.fromEntries(
 			record.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
 		)
-		// Task 2 flips this to the pi session id
-		expect(attrMap["session.id"]).toBe(ctx.telemetryId)
+		expect(attrMap["session.id"]).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
 	})
 
 	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {

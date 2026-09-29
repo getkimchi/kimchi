@@ -210,7 +210,7 @@ export class TelemetryContext {
 			...commonAttrs,
 			...(parentAttr ?? {}),
 		}
-		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
 	}
 
 	emit(
@@ -238,7 +238,7 @@ export class TelemetryContext {
 				"telemetry.cli_version": getVersion(),
 				...(parentAttr ?? {}),
 			})
-			this.logBuffer.push(buildLogRecord(this.telemetryId, "session.type_changed", changeAttrs))
+			this.logBuffer.push(buildLogRecord(this.resolveSessionId(), "session.type_changed", changeAttrs))
 		}
 		this.lastSessionType = session_type
 
@@ -256,7 +256,7 @@ export class TelemetryContext {
 			...commonOverrides,
 			...(parentAttr ?? {}),
 		}
-		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.resolveSessionId(), eventName, toAttrs(merged)))
 	}
 
 	/**
@@ -323,7 +323,7 @@ export class TelemetryContext {
 				this.userEmailReady.then(() =>
 					sendMetrics(
 						this.config,
-						this.telemetryId,
+						this.resolveSessionId(),
 						metrics.map((m) => ({
 							...m,
 							attrs: {
