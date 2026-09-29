@@ -66,7 +66,7 @@ function isNonNudgeStopReason(message: AssistantMessage): boolean {
  *  explicitly waiting on the user. Nudging in that situation would inject an
  *  imperative steer while a human confirmation is still pending — the exact
  *  failure mode that caused unauthorized commits/pushes. */
-function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 	const text = message.content
 		.filter((c) => c.type === "text")
 		.map((c) => c.text)

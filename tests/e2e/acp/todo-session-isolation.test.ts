@@ -77,22 +77,18 @@ describe("ACP integration — todo session isolation", () => {
 					{ content: "beta for A", status: "in_progress" },
 				]),
 				textResponse("Created todos for session A."),
-				// Each request can receive a cleanup reminder before the next session runs.
-				textResponse("Session A work remains open."),
 				// Session B turn 1: create two different todos.
 				todoToolCall("create_todos", [
 					{ content: "alpha for B", status: "pending" },
 					{ content: "beta for B", status: "pending" },
 				]),
 				textResponse("Created todos for session B."),
-				textResponse("Session B work remains open."),
 				// Session A turn 2: mark alpha completed.
 				todoToolCall("update_todos", [
 					{ content: "alpha for A", status: "completed" },
 					{ content: "beta for A", status: "in_progress" },
 				]),
 				textResponse("Updated todos for session A."),
-				textResponse("Session A beta remains open."),
 			],
 			clientCapabilities: FULL_CAPABILITIES,
 			clientMeta: PI_META,

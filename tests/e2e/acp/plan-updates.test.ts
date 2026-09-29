@@ -187,8 +187,6 @@ describe("ACP integration — plan updates from todo writes", () => {
 				],
 			}),
 			textResponse("Todos created."),
-			// The cleanup reminder must not consume the next user action's response.
-			textResponse("No bookkeeping changes; work remains open."),
 			// Turn 2: complete the first, unblock the second into in_progress.
 			toolCallResponse("update_todos", {
 				todos: [
@@ -197,7 +195,6 @@ describe("ACP integration — plan updates from todo writes", () => {
 				],
 			}),
 			textResponse("Todos updated."),
-			textResponse("No bookkeeping changes; deployment remains open."),
 			// Turn 3: clear the list entirely.
 			toolCallResponse("clear_todos", {}),
 			textResponse("Todos cleared."),

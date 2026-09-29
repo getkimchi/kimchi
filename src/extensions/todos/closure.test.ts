@@ -28,9 +28,20 @@ async function harness() {
 		const details = applyWriteTodos({ todos }, manager.getSessionId())
 		manager.appendCustomEntry(TODO_CUSTOM_ENTRY_TYPE, details)
 	}
-	const end = (stopReason = "stop") =>
+	const work = async (toolName = "bash", isError = false) => {
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "work",
+			toolName,
+			content: [{ type: "text", text: "Observed result" }],
+			isError,
+			timestamp: 1,
+		})
+		await fire("tool_execution_end", { toolName, isError })
+	}
+	const end = (stopReason = "stop", text = "Comparison done.") =>
 		fire("turn_end", {
-			message: { role: "assistant", content: [{ type: "text", text: "Comparison done." }], stopReason },
+			message: { role: "assistant", content: [{ type: "text", text }], stopReason },
 			toolResults: [],
 		})
 	return {
@@ -39,6 +50,7 @@ async function harness() {
 		ctx,
 		fire,
 		write,
+		work,
 		end,
 		request,
 		closure: () => api.sendMessage.mock.calls.filter(([message]) => message.customType === "todo-closure"),
@@ -51,7 +63,7 @@ describe("bounded todo cleanup", () => {
 	it("nudges below the staleness threshold after only later items were completed", async () => {
 		const h = await harness()
 		h.write([{ id: 1, content: "Verify inputs", status: "in_progress" }])
-		for (let i = 0; i < 5; i++) await h.fire("tool_execution_end", { toolName: "bash", isError: false })
+		for (let i = 0; i < 5; i++) await h.work()
 		h.write([
 			{ id: 1, content: "Verify inputs", status: "in_progress" },
 			{ id: 2, content: "Collect results", status: "completed" },
@@ -66,6 +78,7 @@ describe("bounded todo cleanup", () => {
 	it("cannot loop after todo edits or replay, but a new user request can be checked", async () => {
 		const h = await harness()
 		h.write([{ content: "Publish after approval", status: "pending" }])
+		await h.work()
 		await h.end()
 		h.write([{ content: "Publish after approval", status: "pending", note: "Deferred" }])
 		await h.end()
@@ -73,17 +86,79 @@ describe("bounded todo cleanup", () => {
 		await h.end()
 		expect(h.closure()).toHaveLength(1)
 		h.request()
+		await h.work()
 		await h.end()
 		expect(h.closure()).toHaveLength(2)
+	})
+
+	it("does not revisit an unchanged deferred list on a new conversational request", async () => {
+		const h = await harness()
+		h.write([{ content: "Publish after approval", status: "pending" }])
+		await h.work()
+		h.request()
+		await h.end("stop", "42")
+		expect(h.closure()).toHaveLength(0)
+	})
+
+	it("does not treat todo bookkeeping as task work", async () => {
+		const h = await harness()
+		h.write([{ content: "Future task", status: "pending" }])
+		await h.work("create_todos")
+		await h.end()
+		expect(h.closure()).toHaveLength(0)
+	})
+
+	it("waits for the user when the final answer asks a question after work", async () => {
+		const h = await harness()
+		h.write([{ content: "Publish after approval", status: "pending" }])
+		await h.work()
+		await h.end("stop", "Verification passed. Should I publish?")
+		expect(h.closure()).toHaveLength(0)
 	})
 
 	it("does not call a completed list stale", async () => {
 		const h = await harness()
 		h.write([{ content: "Finished setup", status: "completed" }])
-		for (let i = 0; i < 26; i++) await h.fire("tool_execution_end", { toolName: "read", isError: false })
+		for (let i = 0; i < 26; i++) await h.work("read")
 		await h.end()
 		expect(h.sendMessage.mock.calls.filter(([message]) => message.customType === "todo-staleness")).toHaveLength(0)
 		expect(h.closure()).toHaveLength(0)
+	})
+
+	it("keeps cleanup bounded when compaction removes the reminder from model context", async () => {
+		const h = await harness()
+		h.write([{ content: "Publish after approval", status: "pending" }])
+		await h.work()
+		await h.end()
+		expect(JSON.stringify(h.manager.buildSessionContext().messages)).toContain("todo-closure")
+		const kept = h.manager.appendCustomMessageEntry("test-checkpoint", "Deferred work remains open", false)
+		h.manager.appendCompaction("Work done; publishing deferred", kept, 1000)
+		expect(JSON.stringify(h.manager.buildSessionContext().messages)).not.toContain("todo-closure")
+		await h.fire("session_compact")
+		await h.end()
+		expect(h.closure()).toHaveLength(1)
+		h.request()
+		await h.work()
+		await h.end()
+		expect(h.closure()).toHaveLength(2)
+	})
+
+	it("counts work reminders separately from the once-per-request cleanup", async () => {
+		const h = await harness()
+		h.write([{ content: "Long task", status: "in_progress" }])
+		for (let i = 0; i < 30; i++) await h.work("read")
+		await h.end()
+		const reminders = () =>
+			h.sendMessage.mock.calls
+				.filter(([message]) => message.customType === "todo-staleness")
+				.map(([message]) => message.details)
+		expect(reminders()).toEqual([9, 17, 25].map((threshold) => ({ reason: "staleness", threshold })))
+		expect(h.closure()).toHaveLength(1)
+		h.write([{ content: "Long task", status: "in_progress", note: "Progress recorded" }])
+		for (let i = 0; i < 9; i++) await h.work("read")
+		await h.end()
+		expect(reminders()).toEqual([9, 17, 25, 9].map((threshold) => ({ reason: "staleness", threshold })))
+		expect(h.closure()).toHaveLength(1)
 	})
 
 	it.each([
@@ -105,6 +180,7 @@ describe("bounded todo cleanup", () => {
 			reason === "worker scope"
 				? registerActiveTodoScopeProvider(() => ({ kind: "ferment-step", phaseId: "p", stepId: "s" }))
 				: () => {}
+		await h.work()
 		await h.end(["error", "aborted", "length"].includes(reason) ? reason : "stop")
 		unregister()
 		expect(h.closure()).toHaveLength(0)
@@ -122,6 +198,7 @@ describe("bounded todo cleanup", () => {
 		h.manager.appendCustomEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry({ ...run, status }))
 		h.request()
 		h.write([{ content: "Verify follow-up", status: "in_progress" }])
+		await h.work()
 		await h.end()
 		expect(h.closure()).toHaveLength(status === "complete" ? 1 : 0)
 	})

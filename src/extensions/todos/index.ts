@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-w
 import { isAgentWorker } from "../agent-worker-context.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
 import { restoreFermentV2 } from "../ferment-v2/reducer.js"
+import { isAwaitingUserAnswer } from "../orchestration/continuation-nudge.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -197,7 +198,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
-		if (message.stopReason !== "stop") return
+		if (message.stopReason !== "stop" || isAwaitingUserAnswer(message)) return
 		const scope = resolveTodoScope()
 		if (scope.kind !== "global") return
 		const todos = getTodosForScope(scope, ctx.sessionManager.getSessionId()).filter(
@@ -210,6 +211,17 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (
 			request < 0 ||
 			branch.slice(request + 1).some((entry) => entry.type === "custom_message" && entry.customType === "todo-closure")
+		)
+			return
+		if (
+			!branch
+				.slice(request + 1)
+				.some(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.role === "toolResult" &&
+						!isTodoWriteToolName(entry.message.toolName),
+				)
 		)
 			return
 		const ferment = restoreFermentV2(

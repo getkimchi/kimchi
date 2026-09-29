@@ -63,9 +63,8 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 						},
 					],
 				},
-				// The first answer leaves work open, triggering one cleanup reminder.
-				{ stream: [] },
-				{ stream: ["Bookkeeping checked; work remains open."] },
+				// Todo-only bookkeeping settles without a cleanup reminder.
+				{ stream: ["Todos created."] },
 				// Prompt 2: the previous run has settled and persisted its todo state.
 				{ stream: ["I can see my todos in the conversation."] },
 				{ stream: ["No bookkeeping changes."] },
@@ -86,9 +85,9 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 			await waitForText(terminal, "run tests", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo widget appeared with items")
 
-			await waitForText(terminal, "Bookkeeping checked", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Todos created.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			// State is persisted at settlement, after the cleanup continuation.
+			// State is persisted at settlement.
 			terminal.submit("Continue working")
 			trace.step("submitted second prompt")
 
