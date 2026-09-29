@@ -221,6 +221,32 @@ describe("manual commit reconciliation", () => {
 		).toEqual(expected.sort())
 	})
 
+	it("retries the whole commit when reading a parent file exhausts the budget", async () => {
+		baseline()
+		await write("first.txt", "first")
+		await write("second.txt", "second")
+		const sha = commit()
+		let clock = 0
+		vi.spyOn(Date, "now").mockImplementation(() => clock)
+		const { execFileSync: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFileSync").mockImplementation((...args) => {
+			const result = execute(...args)
+			const command = args[1]
+			if (Array.isArray(command) && command.includes("ls-tree") && command.includes("second.txt")) clock += 4000
+			return result
+		})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		reconcileFileTransitions(context("interrupted"))
+		expect(contributions()).toEqual([])
+
+		vi.restoreAllMocks()
+		reconcileFileTransitions(context("retry"))
+		reconcileFileTransitions(context("repeat"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, sessionId: "original", paths: ["first.txt", "second.txt"] }),
+		])
+	})
+
 	it.each([
 		"child",
 		"rendered",

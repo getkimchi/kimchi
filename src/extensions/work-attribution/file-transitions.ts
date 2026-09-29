@@ -233,6 +233,113 @@ function records(path: string): Record<string, unknown>[] {
 	}
 	return result
 }
+interface CommitCandidate {
+	sha: string
+	position: number
+	invalidatedBefore: number
+}
+
+function commitsFromReflog(log: Buffer, start: number): CommitCandidate[] {
+	const lines = log.subarray(start).toString("utf8").split("\n")
+	lines.pop() // Never accept an incomplete reflog transaction.
+	const candidates: CommitCandidate[] = []
+	let offset = start
+	let invalidatedBefore = -1
+	for (const line of lines) {
+		const position = offset
+		offset += Buffer.byteLength(line) + 1
+		const action = line.slice(line.indexOf("\t") + 1)
+		if (["commit:", "commit (initial):", "commit (amend):"].some((prefix) => action.startsWith(prefix))) {
+			candidates.push({ sha: line.split(" ")[1], position, invalidatedBefore })
+		} else invalidatedBefore = position
+	}
+	return candidates.slice(-MAX_COMMITS).reverse()
+}
+
+/** Match a complete, single-work edit chain to each file's parent and committed states. */
+function matchCommitTransitions(
+	worktree: string,
+	commit: CommitCandidate,
+	transitions: Transition[],
+	deadline: number,
+): Transition[] {
+	const parents = git(worktree, ["rev-list", "--parents", "-n", "1", commit.sha]).split(" ").slice(1)
+	if (parents.length > 1) return []
+	const parent = parents[0] ?? null
+	const transitionsByPath = new Map<string, Transition[]>()
+	for (const transition of transitions) {
+		if (transition.cursor.bytes > commit.position) continue
+		const group = transitionsByPath.get(transition.path) ?? []
+		group.push(transition)
+		transitionsByPath.set(transition.path, group)
+	}
+
+	const matched: Transition[] = []
+	for (const [path, fileTransitions] of transitionsByPath) {
+		if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
+		const parentFile = treeState(worktree, parent, path)
+		if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
+		// Discarded edits still count as competing ownership evidence.
+		const owners = new Set(fileTransitions.filter((row) => same(row.baselineFile, parentFile)).map((row) => row.workId))
+		if (owners.size !== 1) continue
+		const surviving = fileTransitions.filter((row) => row.cursor.bytes > commit.invalidatedBefore)
+		// Start at the commit parent's clean state, then require every later edit to connect.
+		const starts = surviving.filter((row) => same(row.before, parentFile) && same(row.baselineFile, row.before))
+		if (starts.length !== 1) continue
+		const first = starts[0]
+		const chain = surviving.slice(surviving.indexOf(first))
+		if (
+			!chain.every(
+				(row, index) => row.workId === first.workId && (index === 0 || same(row.before, chain[index - 1].after)),
+			)
+		)
+			continue
+		const after = chain[chain.length - 1].after
+		if (same(first.before, after) || !same(treeState(worktree, commit.sha, path), after)) continue
+		matched.push(...chain)
+	}
+	return matched
+}
+
+/** Keep one contribution per work/session, including every matching file transition. */
+function appendCommitContributions(
+	sha: string,
+	transitions: Transition[],
+	recordedCommits: Record<string, unknown>[],
+): void {
+	const contributions = new Map<string, { owner: Transition; paths: string[]; transitionIds: string[] }>()
+	for (const transition of transitions) {
+		const recorded = recordedCommits.some(
+			(row) =>
+				row.sha === sha &&
+				row.workId === transition.workId &&
+				row.sessionId === transition.sessionId &&
+				row.repository === transition.repository &&
+				row.worktree === transition.worktree &&
+				(!Array.isArray(row.paths) || row.paths.includes(transition.path)),
+		)
+		if (recorded) continue
+		const key = JSON.stringify([transition.sessionId, transition.workId])
+		const contribution = contributions.get(key) ?? { owner: transition, paths: [], transitionIds: [] }
+		if (!contribution.paths.includes(transition.path)) contribution.paths.push(transition.path)
+		contribution.transitionIds.push(transition.transitionId)
+		contributions.set(key, contribution)
+	}
+	for (const { owner, paths, transitionIds } of contributions.values()) {
+		const fields = {
+			type: "commit",
+			source: "native-file-transition",
+			sha,
+			repository: owner.repository,
+			worktree: owner.worktree,
+			paths: paths.sort(),
+			transitionIds,
+		}
+		appendWorkRecord({ cwd: owner.cwd, sessionManager: { getSessionId: () => owner.sessionId } }, fields, owner.workId)
+		recordedCommits.push({ ...fields, workId: owner.workId, sessionId: owner.sessionId })
+	}
+}
+
 /** Only exact, uniquely owned file transitions are evidence of a contribution. */
 export function reconcileFileTransitions(ctx: WorkContext): void {
 	tryWorkAttribution(() => {
@@ -254,10 +361,10 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 			.filter((row) => row.worktree === worktree && row.repository === repository)
 		if (!transitions.length) return
 		const sessionIds = new Set(transitions.map((row) => row.sessionId))
-		const all: Record<string, unknown>[] = []
+		const recordedCommits: Record<string, unknown>[] = []
 		for (const sessionId of sessionIds) {
 			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-			all.push(
+			recordedCommits.push(
 				...records(workLedgerPath({ cwd: ctx.cwd, sessionManager: { getSessionId: () => sessionId } })).filter(
 					(row) => row.type === "commit",
 				),
@@ -265,121 +372,29 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 		}
 		const log = reflog(worktree)
 		const prefixDigests = new Map<number, string>()
-		const valid = transitions.filter((row) => {
+		const validTransitions = transitions.filter((row) => {
 			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
 			if (row.cursor.bytes > log.length) return false
 			if (!prefixDigests.has(row.cursor.bytes))
 				prefixDigests.set(row.cursor.bytes, digest(log.subarray(0, row.cursor.bytes)))
 			return prefixDigests.get(row.cursor.bytes) === row.cursor.digest
 		})
-		if (!valid.length) return
-		const start = Math.min(...valid.map((row) => row.cursor.bytes))
-		const lines = log.subarray(start).toString("utf8").split("\n")
-		lines.pop() // Never accept an incomplete reflog transaction.
-		const candidates: { sha: string; position: number; invalidatedBefore: number }[] = []
-		let offset = start
-		let invalidatedBefore = -1
-		for (const line of lines) {
-			const position = offset
-			offset += Buffer.byteLength(line) + 1
-			const action = line.slice(line.indexOf("\t") + 1)
-			if (["commit:", "commit (initial):", "commit (amend):"].some((prefix) => action.startsWith(prefix))) {
-				candidates.push({ sha: line.split(" ")[1], position, invalidatedBefore })
-			} else invalidatedBefore = position
-		}
+		if (!validTransitions.length) return
+		const start = Math.min(...validTransitions.map((row) => row.cursor.bytes))
+		const candidates = commitsFromReflog(log, start)
+
 		// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
 		const evidence = `sessions-v1:${journalDigest}:${digest(log)}`
 		const progressPath = `${journal}.progress`
 		const progress = records(progressPath).at(-1)
-		const recent = candidates.slice(-MAX_COMMITS).reverse()
 		const completed =
-			progress?.evidence === evidence ? recent.findIndex((row) => row.position === progress.position) : -1
-		const checkpoint = (position: number) => writeFileSync(progressPath, JSON.stringify({ evidence, position }))
-		for (const { sha, position, invalidatedBefore } of recent.slice(completed + 1)) {
+			progress?.evidence === evidence ? candidates.findIndex((row) => row.position === progress.position) : -1
+		for (const candidate of candidates.slice(completed + 1)) {
 			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-			const parents = git(worktree, ["rev-list", "--parents", "-n", "1", sha]).split(" ").slice(1)
-			if (parents.length > 1) {
-				checkpoint(position)
-				continue
-			}
-			const parent = parents[0] ?? null
-			const groups = new Map<string, Transition[]>()
-			for (const row of valid) {
-				if (row.cursor.bytes > position) continue
-				const key = row.path
-				const group = groups.get(key) ?? []
-				group.push(row)
-				groups.set(key, group)
-			}
-			const parentFiles = new Map<string, FileState | null>()
-			const owners = new Map<string, Set<string>>()
-			for (const [path, group] of groups) {
-				if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-				const parentFile = treeState(worktree, parent, path)
-				parentFiles.set(path, parentFile)
-				owners.set(path, new Set(group.filter((row) => same(row.baselineFile, parentFile)).map((row) => row.workId)))
-			}
-			const matched = new Map<string, { owner: Transition; paths: string[]; transitionIds: string[] }>()
-			for (const originalGroup of groups.values()) {
-				if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
-				if (owners.get(originalGroup[0].path)?.size !== 1) continue
-				// Noncommit ref moves may have discarded these changes; keep them only as ambiguity evidence.
-				const group = originalGroup.filter((row) => row.cursor.bytes > invalidatedBefore)
-				if (!group.length) continue
-				// Start at the commit parent's clean state, then require every later edit to connect.
-				const parentFile = parentFiles.get(group[0].path) ?? null
-				const starts = group.filter((row) => same(row.before, parentFile) && same(row.baselineFile, row.before))
-				if (starts.length !== 1) continue
-				const first = starts[0]
-				const chain = group.slice(group.indexOf(first))
-				if (
-					!chain.every(
-						(row, index) => row.workId === first.workId && (index === 0 || same(row.before, chain[index - 1].after)),
-					)
-				)
-					continue
-				const after = chain[chain.length - 1].after
-				if (same(first.before, after) || !same(treeState(worktree, sha, first.path), after)) continue
-
-				for (const contributor of chain) {
-					if (
-						all.some(
-							(row) =>
-								row.type === "commit" &&
-								row.sha === sha &&
-								row.workId === contributor.workId &&
-								row.sessionId === contributor.sessionId &&
-								row.repository === repository &&
-								row.worktree === worktree &&
-								(!Array.isArray(row.paths) || row.paths.includes(contributor.path)),
-						)
-					)
-						continue
-					const key = JSON.stringify([contributor.sessionId, contributor.workId])
-					const match = matched.get(key) ?? { owner: contributor, paths: [], transitionIds: [] }
-					if (!match.paths.includes(contributor.path)) match.paths.push(contributor.path)
-					match.transitionIds.push(contributor.transitionId)
-					matched.set(key, match)
-				}
-			}
-			for (const match of matched.values()) {
-				const fields = {
-					type: "commit",
-					source: "native-file-transition",
-					sha,
-					repository,
-					worktree,
-					paths: match.paths.sort(),
-					transitionIds: match.transitionIds,
-				}
-				appendWorkRecord(
-					{ cwd: match.owner.cwd, sessionManager: { getSessionId: () => match.owner.sessionId } },
-					fields,
-					match.owner.workId,
-				)
-				all.push({ ...fields, workId: match.owner.workId, sessionId: match.owner.sessionId })
-			}
-			checkpoint(position)
+			const matched = matchCommitTransitions(worktree, candidate, validTransitions, deadline)
+			appendCommitContributions(candidate.sha, matched, recordedCommits)
+			// Checkpoint only after the whole candidate was evaluated and its contributions were saved.
+			writeFileSync(progressPath, JSON.stringify({ evidence, position: candidate.position }))
 		}
 	})
 }
