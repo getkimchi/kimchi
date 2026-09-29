@@ -30,13 +30,24 @@ Every in-session payload includes:
 
 | Attribute | Value |
 |-----------|-------|
-| `session.id` | Per-process telemetry session id — shared by the main agent and in-process subagents, so events roll up under one backend session; not a per-agent id, and out-of-process agents (remote, session-review subprocesses) have their own |
+| `session.id` | The emitting session's own pi session id — the same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Subagents (in-process or subprocess) carry their own; see [Subagent identification](#subagent-identification) |
 | `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
 | `mode` | `"coding"` or `"ferment"` |
 
-Pre-session payloads use the **device ID** (from PostHog) as `session.id`.
+Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** as `session.id` — no session exists yet.
+
+### ID scheme
+
+Four distinct ids flow through telemetry — do not conflate them:
+
+| Id | Role |
+|----|------|
+| **pi session id** (UUIDv7) | Canonical id of a pi session. Emitted as `session.id` on every log record and metric, and sent as the `X-Session-Id` provider header. Each session — main agent or subagent — has its own. |
+| **device id** | A UUID generated locally and persisted in `~/.config/kimchi/config.json` (`src/posthog-device.ts`); serves as PostHog's `distinct_id`. Stands in as `session.id` for pre-session events, when no session exists yet. |
+| **account uuid** | Identifies the account (`user.account_uuid`; empty when unknown in-session, omitted entirely on pre-session events while unresolved); orthogonal to sessions. |
+| **process telemetryId** | Internal only — survives solely as the accumulator key for cumulative state (ReplacingMergeTree monotonic-flush grouping). Not the emitted session id. |
 
 ### Subagent identification
 
@@ -47,24 +58,25 @@ is emitted only when the process is inside an Agent-subagent execution
 set for the whole subagent run by `withParentSessionEnv` in
 `extensions/agents/manager/agent-runner.ts`). Its value is the **parent**
 session's pi session id; the emitting session's own id is `pi_session_id`.
-Combine the two to reconstruct the spawn tree:
 
-| Attribute | Main agent event | In-process subagent event |
-|-----------|------------------|---------------------------|
-| `session.id` | process telemetryId `T` | `T` (shared — same process) |
-| `pi_session_id` | parent session id `P` | subagent session id `S` |
+| Attribute | Main agent event | Subagent event (in-process or subprocess) |
+|-----------|------------------|-------------------------------------------|
+| `session.id` | the session's own pi session id `P` | the subagent's own pi session id `S` |
+| `pi_session_id` | `P` | `S` |
 | `session.parent_id` | *(absent)* | `P` |
 
-An event with `session.parent_id != ""` whose `session.id` equals the
-parent's is from an **in-process** subagent (same process — the main agent and
-its in-process subagents share the module-level telemetryId). Two caveats:
+Every event's `session.id` is the emitting session's own pi session id — the
+same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Parent linkage
+is carried exclusively by `session.parent_id` (and `X-Parent-Session-Id` on
+provider requests); combine the two to reconstruct the spawn tree. The
+former rule that detected in-process subagents by `session.id` equalling the
+parent's telemetryId no longer applies — in-process and separate-process
+subagents are indistinguishable in telemetry, which is fine: the tree is
+reconstructible from `session.parent_id` alone.
 
-- The **curator session-review subprocess** also sets `KIMCHI_SUBAGENT=1` and
-  `KIMCHI_PARENT_SESSION_ID`, so its events carry `session.parent_id` too. It
-  is a separate process, so it is distinguished by its own `session.id`
-  (different from the parent's telemetryId).
-- **Remote sandbox agents** never receive the env var, so their events carry
-  no `session.parent_id`.
+One caveat: **remote sandbox agents** never receive the env var, so their events
+carry no `session.parent_id` — they cannot be linked to their spawner (the
+parent's own `remote_execution.*` events are the only trace of the run).
 
 `subagent.spawned` (raised by the *parent*) additionally declares the
 subagent's `agent_type` and `reason`, so spawning events can be paired with
@@ -155,7 +167,10 @@ Common attributes: `run_id`, `workflow_name`, `at` (producer ISO timestamp). Ste
 
 ## Cumulative Metrics (OTLP Sum)
 
-Accumulated across the whole session and flushed every 30s to the **metrics endpoint**.
+Accumulated per process — the accumulator is keyed by the internal process
+telemetryId (see [ID scheme](#id-scheme)), so totals span every session in the
+process — and flushed every 30s to the **metrics endpoint**. Each flush's data
+points carry the flushing session's pi session id as `session.id`.
 
 | Metric Name | Type | Description | Attributes |
 |-------------|------|-------------|------------|

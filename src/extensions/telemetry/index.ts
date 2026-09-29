@@ -702,7 +702,7 @@ function onScopingComplete(raw: unknown): void {
 	scopingTokenSnapshots.delete(payload.fermentId)
 	const attrs: TelemetryAttributes & { ferment_id: string } = {
 		ferment_id: payload.fermentId,
-		session_id: ctx.telemetryId,
+		session_id: ctx.resolveSessionId(),
 		duration_ms: durationMs,
 		steering_count: steeringCount,
 		delta_input_tokens: deltaInput,
@@ -721,7 +721,7 @@ function onUserUnblocked(raw: unknown): void {
 	const payload = raw as UserUnblockedPayload
 	ctx.emitWithIds("user.unblock_time", {
 		ferment_id: payload.fermentId,
-		session_id: ctx.telemetryId,
+		session_id: ctx.resolveSessionId(),
 		duration_ms: payload.durationMs,
 	})
 }
@@ -963,7 +963,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 		})
 		pi.on("before_provider_headers", (event) => {
-			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.telemetryId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.resolveSessionId()
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.conversationId] = conversationId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex] = String(telemetryCtx.turnIndex)

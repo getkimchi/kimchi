@@ -63,7 +63,10 @@ describe("survey telemetry", () => {
 
 		const attrMap = attrs(record)
 		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
+		// Survey flow never fires session_start — session.id falls back to the
+		// process telemetryId (pre-session semantics).
 		expect(attrMap["session.id"]).toBe(ctx.telemetryId)
+		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
 		// The common-attr inject stamps the session's selected model on every

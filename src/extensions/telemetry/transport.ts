@@ -148,7 +148,7 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 
 export async function sendMetrics(
 	config: TelemetryConfig,
-	telemetryId: string,
+	sessionId: string,
 	metrics: MetricData[],
 	sessionStartNano: string,
 	userEmail?: string,
@@ -171,7 +171,7 @@ export async function sendMetrics(
 										startTimeUnixNano: sessionStartNano,
 										...(Number.isInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }),
 										attributes: [
-											strAttr("session.id", telemetryId),
+											strAttr("session.id", sessionId),
 											strAttr("client", "pi"),
 											...Object.entries(m.attrs).map(([k, v]) => strAttr(k, String(v))),
 										],
