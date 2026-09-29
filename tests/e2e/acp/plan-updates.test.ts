@@ -334,7 +334,12 @@ describe("ACP integration — plan updates from todo writes", () => {
 						"Prompt-driven Ferment phase Todo snapshot did not arrive",
 					)
 				})
-			expect(initial.some((entry) => entry.status === "pending" && entry.content.includes(STEP_DESCRIPTION))).toBe(true)
+			// Presence, not status: the manual-fallback paths above can return a
+			// snapshot where the step has already moved past "pending" — on a slow
+			// runner the delayed auto-resume kick and the manual "Continue the Ferment"
+			// prompts can all advance the phase before the snapshot lands. The primary
+			// wait already enforces pending on the happy path, so nothing is lost.
+			expect(initial.some((entry) => entry.content.includes(STEP_DESCRIPTION))).toBe(true)
 
 			await prompt(fixture, sessionId, "Start the step")
 			await waitForPlanSnapshot(
