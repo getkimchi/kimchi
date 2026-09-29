@@ -270,7 +270,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("hidden-skill")
 		})
 
-		it("replaces the upstream read-tool skill instruction with the skill_view instruction", () => {
+		it("renders the skill catalog with the skill_view instruction and no file locations", () => {
 			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
 			const result = buildSystemPrompt({
 				tools,
@@ -278,11 +278,30 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "orchestrator",
 			})
-			// The upstream block's read-tool line must be swapped for the
-			// skill_view-first line, keeping read as the documented fallback.
+			// The catalog routes through the dedicated tool: no read-tool
+			// instruction and no file locations for the model to copy paths from.
 			expect(result).not.toContain("Use the read tool to load a skill's file when the task matches its description.")
-			expect(result).toContain("skill_view tool (name: <skill name>)")
-			expect(result).toContain("If skill_view is not available, read the skill's file at its location instead.")
+			expect(result).toContain("load it with the skill_view tool (name: <skill name>)")
+			expect(result).not.toContain("<location>")
+		})
+
+		it("caps skill descriptions at 500 characters", () => {
+			const long = "word ".repeat(200).trim() // 999 chars
+			const skills = [createSkill({ name: "wordy", description: long })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "orchestrator",
+			})
+			const descriptionLine = result
+				.split("\n")
+				.find((line) => line.includes("<description>"))
+				?.trim()
+			expect(descriptionLine).toBeDefined()
+			// Word-boundary truncation keeps the line near the cap, not at 999 chars.
+			expect(descriptionLine?.length ?? 0).toBeLessThan(600)
+			expect(descriptionLine?.endsWith("…</description>")).toBe(true)
 		})
 
 		it("injects environment info", () => {

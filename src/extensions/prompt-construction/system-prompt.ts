@@ -7,7 +7,7 @@
  * subagent and single-model content lives in this file.
  */
 
-import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
@@ -514,36 +514,52 @@ function formatProjectContext(contextFiles?: readonly ContextFile[]): string {
 	return `## Project Guidelines\n\n${combined}`
 }
 
-const UPSTREAM_SKILL_LOAD_INSTRUCTION =
-	"Use the read tool to load a skill's file when the task matches its description."
+/** Cap on a skill's rendered description — the load path is skill_view, so the
+ *  block carries routing info only. 500 is dsh's field-tested catalog bound. */
+const SKILL_DESCRIPTION_MAX_CHARS = 500
 
-/** Kimchi ships a dedicated skill_view tool; prefer it over a plain file read.
- *  It also returns the linked_files map (references/templates/scripts) and
- *  records usage. read stays as the fallback for surfaces without the tool. */
-const SKILL_VIEW_LOAD_INSTRUCTION =
-	"Load a skill with the skill_view tool (name: <skill name>) before acting on a task that matches its description — it returns the full SKILL.md plus a linked_files map of its references, templates, and scripts. Follow the loaded instructions after loading. If skill_view is not available, read the skill's file at its location instead."
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;")
+}
 
-/** One-time drift warning flag — the upstream wording changing is invisible
- *  otherwise (the replace no-ops and skill_view quietly loses its prompt
- *  endorsement). */
-let warnedSkillInstructionDrift = false
+/** Truncate at a word boundary so the remaining routing vocabulary stays
+ *  readable; descriptions above the cap end with an ellipsis. */
+function truncateDescription(description: string, max: number): string {
+	if (description.length <= max) return description
+	const slice = description.slice(0, max)
+	const lastSpace = slice.lastIndexOf(" ")
+	const cut = lastSpace > max * 0.6 ? lastSpace : max
+	return `${slice.slice(0, cut).trimEnd()}…`
+}
 
+/** Render the model-visible skill catalog. Built here rather than reusing
+ *  pi's upstream block because the load path is the dedicated skill_view
+ *  tool: file locations (the upstream block's read-a-path affordance) and
+ *  the upstream read-tool instruction are dead weight for the model, and
+ *  long descriptions are pure routing noise. */
 function formatSkills(skills?: readonly Skill[]): string {
 	if (!skills || skills.length === 0) return ""
-	const block = formatSkillsForPrompt(skills as Skill[])
-	// The upstream instruction names the read tool; standing system-prompt
-	// instructions outrank any later reminder, so this line decides which
-	// tool the model actually uses. If the upstream wording drifts, the
-	// replace no-ops and the block keeps upstream behavior — warn once so
-	// the drift is visible (a snapshot test also pins the upstream wording).
-	if (block.includes(UPSTREAM_SKILL_LOAD_INSTRUCTION)) {
-		return block.replace(UPSTREAM_SKILL_LOAD_INSTRUCTION, SKILL_VIEW_LOAD_INSTRUCTION)
-	}
-	if (!warnedSkillInstructionDrift) {
-		warnedSkillInstructionDrift = true
-		console.warn(
-			"[skills] upstream <available_skills> instruction wording changed — the skill_view preference no longer applies; update UPSTREAM_SKILL_LOAD_INSTRUCTION",
+	const visible = skills.filter((s) => !s.disableModelInvocation)
+	if (visible.length === 0) return ""
+	const lines = [
+		"The following skills provide specialized instructions for specific tasks.",
+		"Before acting on a task that names or clearly matches a skill, load it with the skill_view tool (name: <skill name>), then follow its instructions.",
+		"",
+		"<available_skills>",
+	]
+	for (const skill of visible) {
+		lines.push("  <skill>")
+		lines.push(`    <name>${escapeXml(skill.name)}</name>`)
+		lines.push(
+			`    <description>${escapeXml(truncateDescription(skill.description, SKILL_DESCRIPTION_MAX_CHARS))}</description>`,
 		)
+		lines.push("  </skill>")
 	}
-	return block
+	lines.push("</available_skills>")
+	return lines.join("\n")
 }
