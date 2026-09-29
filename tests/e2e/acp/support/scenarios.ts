@@ -48,9 +48,15 @@ export function commandNames(fixture: AcpFixture, sessionId: string): string[] {
 	return last.update.availableCommands.map((c) => c.name)
 }
 
-export async function prompt(fixture: AcpFixture, sessionId: string, text: string): Promise<ScenarioResult> {
+export async function prompt(
+	fixture: AcpFixture,
+	sessionId: string,
+	text: string,
+	/** Extra content blocks appended after the text block (e.g. images). */
+	extraBlocks: acp.ContentBlock[] = [],
+): Promise<ScenarioResult> {
 	const promptPromise = fixture.conn
-		.prompt({ sessionId, prompt: [{ type: "text", text }] })
+		.prompt({ sessionId, prompt: [{ type: "text", text }, ...extraBlocks] })
 		.catch((err) => ({ stopReason: "ERROR" as const, error: err }))
 
 	const result = await Promise.race([

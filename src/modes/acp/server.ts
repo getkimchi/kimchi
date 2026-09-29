@@ -1,6 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
+import { randomUUID } from "node:crypto"
 import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
@@ -109,6 +110,7 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
@@ -400,7 +402,7 @@ export class KimchiAcpAgent implements Agent {
 			modelsPath: join(this.agentDir, "models.json"),
 		})
 		const modelRegistry = new ModelRegistry(modelRuntime)
-		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
+		const supportsImages = modelRegistry.getAvailable().some((m) => modelSupportsImages(m))
 
 		// ACP Registry compliance: advertise at least one auth method. Agent Auth
 		// (browser-based OAuth via local callback server) is always declared.
@@ -931,15 +933,15 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
-		// Image support is per-model; check if active model supports vision input.
-		const supportsImages = entry.session.model?.input?.includes("image") ?? false
-		// Warn about unsupported block types (audio, embeddedContext) once per type.
-		// Also warn when dropping image blocks for non-vision models.
+		const supportsImages = modelSupportsImages(entry.session.model)
+		// Warn about unsupported block types (audio, embeddedContext) once per
+		// type. Dropped images do NOT join this dedupe — they additionally surface
+		// to the client as a per-turn agent_message_chunk warning below, so every
+		// dropping turn is visible, not just the first one per connection.
 		for (const b of params.prompt) {
-			if (b.type !== "text" && (b.type !== "image" || !supportsImages) && !this.warnedBlockTypes.has(b.type)) {
+			if (b.type !== "text" && b.type !== "image" && !this.warnedBlockTypes.has(b.type)) {
 				this.warnedBlockTypes.add(b.type)
-				const reason = b.type === "image" ? "active model has no vision input" : "unsupported block type"
-				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
+				process.stderr.write(`acp prompt: dropping ${b.type} block (unsupported block type)\n`)
 			}
 		}
 		let text = params.prompt
@@ -956,6 +958,35 @@ export class KimchiAcpAgent implements Agent {
 
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages ? extractImages(params.prompt) : []
+		// Image blocks a text-only model cannot take: the turn is refused, not
+		// sent text-only — sending it would spend a model turn answering a prompt
+		// missing its attached context, and the TUI vision gate never silently
+		// submits text-only either. The client is informed exactly once per turn
+		// as ordinary assistant text via the standard agent_message_chunk schema
+		// (ACP has no dedicated warning channel), with its own km.-prefixed message
+		// id plus a trailing blank line so clients that concatenate chunks keep it
+		// visually separate.
+		const droppedImages = supportsImages ? 0 : params.prompt.filter((b) => b.type === "image").length
+		if (droppedImages > 0) {
+			const noun = droppedImages === 1 ? "image" : "images"
+			const modelId = entry.session.model?.id ?? "The current model"
+			process.stderr.write(
+				`acp prompt: refusing prompt with ${droppedImages} ${noun} (active model has no vision input)\n`,
+			)
+			this.send({
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					messageId: `km.${randomUUID()}`,
+					content: {
+						type: "text",
+						text: `${modelId} does not accept image input — switch to a model with image support or remove the ${noun} and resend.\n\n`,
+					},
+				},
+			})
+			// Nothing reaches the session — the turn is refused without a model call.
+			return { stopReason: "refusal" }
+		}
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}

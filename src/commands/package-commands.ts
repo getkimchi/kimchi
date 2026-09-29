@@ -88,7 +88,10 @@ function discoverPackageCommands(): Map<string, PackageCommand> {
 
 	for (const entry of packages) {
 		if (typeof entry !== "string" || !entry.startsWith("npm:")) continue
-		const packageName = entry.slice("npm:".length)
+		// Pi stores the full npm spec in settings, but installs under the bare
+		// name. Match its private parseNpmSpec grammar for scopes, ranges and tags.
+		const spec = entry.slice("npm:".length).trim()
+		const packageName = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/)?.[1] ?? spec
 		const pkgRoot = join(dir, "npm", "node_modules", packageName)
 		// Defense-in-depth: an npm: entry containing ../ resolves outside the
 		// package store — skip it (same trust model as the module-path check).

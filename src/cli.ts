@@ -23,6 +23,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
@@ -191,6 +192,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installModelTableRenderer()
 installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
