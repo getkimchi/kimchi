@@ -37,6 +37,44 @@ export function anthropicMessagesApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/anthropic`
 }
 
+// OpenAI models that support the Responses API: everything from gpt-4o onward, the
+// o-series, and GPT-5.x/6. Routed through the native `/openai/v1/responses` instead of
+// chat-completions so litellm's chat→Responses bridge (and its failure modes, e.g.
+// "Missing required parameter: 'tools[N].name'" for custom tools) never sees this traffic.
+// GPT-5.4+ rejects function tools + reasoning_effort on Chat Completions outright, and
+// GPT-6 Astra requires Responses for tool calling, so Responses is the only path that
+// serves tools + reasoning for the modern family.
+//
+// Kept as explicit tables so the gate is auditable. Follow-up: expose
+// `supports_responses_api` in /v1/models/metadata and consume that instead, so new
+// catalog models don't need a harness release.
+const RESPONSES_API_SLUG_PATTERNS: RegExp[] = [
+	/^gpt-4\.1/,
+	/^gpt-4o/,
+	/^gpt-5(?!-search)/,
+	/^gpt-6/,
+	/^o[134](-|$)/,
+]
+
+// OpenAI models that must stay on Chat Completions: legacy generations predate the
+// Responses API, and audio/embedding models are different endpoints entirely.
+// gpt-4o/gpt-4.1 do NOT match /^gpt-4(-|$)/ (next char isn't '-' or end-of-string),
+// and are matched by the Responses table above first.
+const CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS: RegExp[] = [
+	/^gpt-3\.5/,
+	/^gpt-4(-|$)/,
+	/^gpt-audio/,
+	/^text-embedding/,
+]
+
+function supportsResponsesApi(provider: string, slug: string): boolean {
+	if (provider !== "openai") return false
+	return (
+		RESPONSES_API_SLUG_PATTERNS.some((pattern) => pattern.test(slug)) &&
+		!CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS.some((pattern) => pattern.test(slug))
+	)
+}
+
 // HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const MAX_FETCH_ATTEMPTS = 3
@@ -224,7 +262,16 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
-	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
+	// Gated OpenAI reasoning models must map "off" explicitly: pi's openai-responses
+	// impl sends no `reasoning` param when effort is undefined, and OpenAI defaults
+	// gpt-5.x to `medium` — so "thinking off" would silently burn reasoning tokens.
+	const responsesApi = supportsResponsesApi(m.provider, m.slug)
+	const thinkingLevelMap =
+		m.provider === "ai-enabler"
+			? { off: "none", max: "max" }
+			: responsesApi && m.reasoning
+				? { off: "none" }
+				: upstream?.thinkingLevelMap
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
@@ -235,6 +282,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
+		...(responsesApi && { api: "openai-responses" as const }),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
 		...(compat && { compat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),

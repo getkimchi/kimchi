@@ -9,6 +9,7 @@ import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { readModelDeprecations } from "./model-deprecation.js"
 import {
 	__clearModelDescriptionsForTest,
+	buildModelsConfig,
 	getModelDescription,
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -1408,5 +1409,89 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 		vi.restoreAllMocks()
 
 		expect(getModelDescription("kimchi-dev/auto")).toBe("Backend router with vision routing.")
+	})
+})
+
+describe("openai Responses API routing", () => {
+	function openaiModel(slug: string, overrides: Partial<{ reasoning: boolean }> = {}): unknown {
+		return {
+			slug,
+			display_name: slug,
+			provider: "openai",
+			reasoning: overrides.reasoning ?? true,
+			input_modalities: ["text"],
+			is_serverless: false,
+			limits: { context_window: 128000, max_output_tokens: 16384 },
+		}
+	}
+
+	function openaiProviderModels(models: unknown[]) {
+		const { providers } = buildModelsConfig(models as never, "https://example.invalid")
+		return providers["kimchi-dev/openai"]?.models ?? []
+	}
+
+	it("routes Responses-capable OpenAI models through openai-responses", () => {
+		const models = openaiProviderModels([
+			openaiModel("gpt-5.6"),
+			openaiModel("gpt-5.6-terra"),
+			openaiModel("gpt-5.4-mini"),
+			openaiModel("gpt-6-astra"),
+			openaiModel("gpt-4o", { reasoning: false }),
+			openaiModel("gpt-4.1-mini", { reasoning: false }),
+			openaiModel("o4-mini"),
+			openaiModel("o3-2025-04-16"),
+		])
+		expect(models).toHaveLength(8)
+		for (const model of models) {
+			expect(model.api).toBe("openai-responses")
+		}
+	})
+
+	it("disables thinking explicitly on gated reasoning models so 'off' is not OpenAI's medium default", () => {
+		const models = openaiProviderModels([openaiModel("gpt-5.6"), openaiModel("o4-mini")])
+		for (const model of models) {
+			expect(model.thinkingLevelMap?.off).toBe("none")
+		}
+	})
+
+	it("does not set a thinkingLevelMap on non-reasoning gated models", () => {
+		const models = openaiProviderModels([openaiModel("gpt-4o", { reasoning: false })])
+		expect(models[0]?.thinkingLevelMap).toBeUndefined()
+	})
+
+	it("keeps the OpenAI legacy tail and non-chat models on openai-completions", () => {
+		const models = openaiProviderModels([
+			openaiModel("gpt-3.5-turbo", { reasoning: false }),
+			openaiModel("gpt-4", { reasoning: false }),
+			openaiModel("gpt-4-turbo-2024-04-09", { reasoning: false }),
+			openaiModel("gpt-audio", { reasoning: false }),
+			openaiModel("text-embedding-3-small", { reasoning: false }),
+			openaiModel("gpt-5-search-api"),
+		])
+		expect(models).toHaveLength(6)
+		for (const model of models) {
+			expect(model.api).toBeUndefined()
+			expect(model.thinkingLevelMap).toBeUndefined()
+		}
+	})
+
+	it("leaves per-model baseUrl unset so gated models inherit the provider's /openai/v1 base", () => {
+		const models = openaiProviderModels([openaiModel("gpt-5.6")])
+		expect(models[0]?.baseUrl).toBeUndefined()
+	})
+
+	it("does not touch non-openai providers", () => {
+		const { providers } = buildModelsConfig(
+			[
+				{ ...KIMI },
+				{ ...SONNET_46 },
+			] as never,
+			"https://example.invalid",
+		)
+		const kimi = providers["kimchi-dev/ai-enabler"]?.models ?? []
+		const claude = providers["kimchi-dev/anthropic"]?.models ?? []
+		for (const model of [...kimi, ...claude]) {
+			expect(model.api).toBeUndefined()
+		}
 	})
 })
