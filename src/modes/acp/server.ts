@@ -383,10 +383,6 @@ export class KimchiAcpAgent implements Agent {
 			modelsPath: join(this.agentDir, "models.json"),
 		})
 		const modelRegistry = new ModelRegistry(modelRuntime)
-		// Registry-wide image capability, shared with the TUI submit gate:
-		// modelSupportsImages treats backend-routed Auto models as image-capable
-		// even though their descriptors say text-only, so an Auto-only registry
-		// advertises image support instead of falsely rejecting attachments.
 		const supportsImages = modelRegistry.getAvailable().some((m) => modelSupportsImages(m))
 
 		// ACP Registry compliance: advertise at least one auth method. Agent Auth
@@ -919,10 +915,6 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
-		// Image support is per-model; check if active model supports vision input.
-		// Shared with the TUI submit gate (modelSupportsImages) so backend-routed
-		// Auto models — text-only descriptor, image-capable backend — keep their
-		// images instead of being falsely dropped by the raw modality check.
 		const supportsImages = modelSupportsImages(entry.session.model)
 		// Warn about unsupported block types (audio, embeddedContext) once per
 		// type. Dropped images do NOT join this dedupe — they additionally surface
@@ -948,20 +940,18 @@ export class KimchiAcpAgent implements Agent {
 
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages ? extractImages(params.prompt) : []
-		// Image blocks a text-only model cannot take: the turn is BLOCKED, not
-		// sent text-only. Sending it would spend a full model turn answering a
-		// prompt that is missing the attached context — the TUI vision gate never
-		// silently submits text-only either, and ACP clients cannot know at
-		// compose time (the schema exposes no per-model input modalities). The
-		// client is informed exactly once per turn as ordinary assistant text via
-		// the standard agent_message_chunk schema (the [ACP] prefix matches the
-		// warnUnsupportedMethod convention; ACP has no dedicated warning channel),
-		// with its own message id (never a `km.*` block id) plus a trailing blank
-		// line so clients that concatenate chunks keep it visually separate.
+		// Image blocks a text-only model cannot take: the turn is refused, not
+		// sent text-only — sending it would spend a model turn answering a prompt
+		// missing its attached context, and the TUI vision gate never silently
+		// submits text-only either. The client is informed exactly once per turn
+		// as ordinary assistant text via the standard agent_message_chunk schema
+		// (ACP has no dedicated warning channel), with its own km.-prefixed message
+		// id plus a trailing blank line so clients that concatenate chunks keep it
+		// visually separate.
 		const droppedImages = supportsImages ? 0 : params.prompt.filter((b) => b.type === "image").length
 		if (droppedImages > 0) {
 			const noun = droppedImages === 1 ? "image" : "images"
-			const modelId = entry.session.model?.id ?? "unknown model"
+			const modelId = entry.session.model?.id ?? "The current model"
 			process.stderr.write(
 				`acp prompt: refusing prompt with ${droppedImages} ${noun} (active model has no vision input)\n`,
 			)
@@ -969,15 +959,15 @@ export class KimchiAcpAgent implements Agent {
 				sessionId: params.sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
-					messageId: `acp-warning.${randomUUID()}`,
+					messageId: `km.${randomUUID()}`,
 					content: {
 						type: "text",
-						text: `[ACP] ${modelId} does not accept image input — switch to a model with image support or remove the ${noun} and resend.\n\n`,
+						text: `${modelId} does not accept image input — switch to a model with image support or remove the ${noun} and resend.\n\n`,
 					},
 				},
 			})
-			// Nothing reaches the session — the turn ends without a model call.
-			return { stopReason: "end_turn" }
+			// Nothing reaches the session — the turn is refused without a model call.
+			return { stopReason: "refusal" }
 		}
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
@@ -1957,17 +1947,6 @@ function getSessionModelRegistry(
 }
 
 /**
- * The image-input sentence appended to every model row's description. ACP
- * exposes no per-model input modalities, so without this a user holding an
- * image cannot tell which models can take it — the blocked-prompt warning
- * tells them to switch, and this is how they find the switch target. Both
- * sides are spelled out because an absent line guides nobody.
- */
-function modelImageInputDescription(model: Pick<Model<Api>, "provider" | "id" | "input">): string {
-	return modelSupportsImages(model) ? "Accepts images." : "Text-only."
-}
-
-/**
  * A routed virtual model's select option.
  *
  * Routed virtual models (`auto`, `auto-beta`) are the rows that are not plain
@@ -1976,14 +1955,13 @@ function modelImageInputDescription(model: Pick<Model<Api>, "provider" | "id" | 
  * status bar, so a client showing only the selected model still says what the
  * virtual model resolved to. The base name comes from the catalog descriptor
  * (backend display name); the description is the harness's one-liner for what
- * a routed virtual model does, plus the shared image-input sentence (the
- * backend-routed pool accepts image input).
+ * a routed virtual model does.
  */
 function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
 	// The backend may ship the description inside the display name; ACP has a
 	// dedicated description field, so the pair is split apart here.
 	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
-	const description = `${nameDescription ?? AUTO_MODEL_DESCRIPTION} ${modelImageInputDescription(model)}`
+	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
 	const state = getAutoRoutingState(sessionId)
 	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
 		return {
@@ -2005,9 +1983,8 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	} = getOrchestratorModel(session.sessionId, modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
 	// `description` is the optional secondary line ACP clients render beneath an
-	// option's name. Every model row carries an image-input sentence (the schema
-	// exposes no per-model modalities), and the routing entries additionally
-	// explain what they do — a client that ignores the field still shows the name.
+	// option's name. Only the two routing entries carry one — concrete models are
+	// self-describing — and a client that ignores the field still shows the name.
 	const options = [
 		{
 			value: "multi-model",
@@ -2017,13 +1994,7 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		...modelRegistry
 			.getAvailable()
 			.map((m) =>
-				isAutoRoutedModel(m)
-					? autoModelOption(m, session.sessionId)
-					: {
-							value: refFromModel(m),
-							name: m.name,
-							description: modelImageInputDescription(m),
-						},
+				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
 			)
 			.sort((a, b) => a.value.localeCompare(b.value)),
 	]

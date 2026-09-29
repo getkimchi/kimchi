@@ -5,9 +5,9 @@ import { startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
 // End-to-end coverage for the ACP vision support fallback: image blocks on a
-// text-only model are dropped server-side and surfaced to the client as a
-// standard agent_message_chunk warning, while vision-capable (and auto-routed)
-// models keep their images all the way to the backend.
+// text-only model refuse the turn (no model call) and surface a standard
+// agent_message_chunk message, while vision-capable (and auto-routed) models
+// keep their images all the way to the backend.
 
 /** Minimal valid 1x1 PNG, matching the fixture used by the MCP e2e suites. */
 const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -57,19 +57,9 @@ describe("ACP vision image gating", () => {
 
 		expect(fixture.initializeResponse.agentCapabilities?.promptCapabilities?.image).toBe(true)
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		const sessionId = session.sessionId
-		// The model rows carry their image-input sentences, so a user holding an
-		// image can find the switch target the blocked-prompt warning points at.
-		expect(session.models?.availableModels.find((model) => model.modelId === "fake/text-only-model")?.description).toBe(
-			"Text-only.",
-		)
-		expect(session.models?.availableModels.find((model) => model.modelId === "fake/vision-model")?.description).toBe(
-			"Accepts images.",
-		)
-
+		const sessionId = await newSession(fixture, fixture.workDir)
 		const result = await prompt(fixture, sessionId, "describe this image", [imageBlock()])
-		expect(result.stopReason).toBe("end_turn")
+		expect(result.stopReason).toBe("refusal")
 
 		// The turn is blocked: exactly one warning chunk and no model response.
 		const chunks = textChunks(fixture, sessionId)
@@ -79,7 +69,7 @@ describe("ACP vision image gating", () => {
 		expect(warning.text).toContain("switch to a model with image support or remove the image and resend")
 		// The warning keeps its own message-id namespace plus a blank-line
 		// separator, so it renders as its own paragraph.
-		expect(warning.messageId).toMatch(/^acp-warning\./)
+		expect(warning.messageId).toMatch(/^km\./)
 		expect(warning.text.endsWith("\n\n")).toBe(true)
 
 		// Nothing reached the backend — no model turn was spent on the blocked
@@ -101,9 +91,9 @@ describe("ACP vision image gating", () => {
 		const result = await prompt(fixture, sessionId, "describe this image", [imageBlock()])
 		expect(result.stopReason).toBe("end_turn")
 
-		// No drop warning — the image went through.
-		expect(fixture.client.acpWarnings()).toEqual([])
+		// No refusal message — the image went through.
 		const chunks = textChunks(fixture, sessionId)
+		expect(chunks.some((chunk) => chunk.text.includes("does not accept image input"))).toBe(false)
 		expect(chunks.map((chunk) => chunk.text)).toContain("Image received.")
 
 		// The submitted payload reached the fake backend as an image part.

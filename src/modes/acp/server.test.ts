@@ -2107,7 +2107,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 					{ type: "image", data: "base64data2", mimeType: "image/png" },
 				],
 			})
-			expect(result.stopReason).toBe("end_turn")
+			expect(result.stopReason).toBe("refusal")
 		} finally {
 			process.stderr.write = origWrite
 		}
@@ -2128,7 +2128,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		// warning as its own paragraph.
 		expect(warning.text.endsWith("\n\n")).toBe(true)
 		// The warning id never collides with the session's km.* block ids.
-		expect(warning.messageId).toMatch(/^acp-warning\./)
+		expect(warning.messageId).toMatch(/^km\./)
 	})
 
 	// The warning is per-turn: the old connection-level dedupe left every drop
@@ -2153,13 +2153,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 					{ type: "image", data: "base64data", mimeType: "image/png" },
 				],
 			})
-			expect(result.stopReason).toBe("end_turn")
+			expect(result.stopReason).toBe("refusal")
 		}
 
 		// Both turns were blocked before reaching the session.
 		expect(dropFake.promptCalls).toHaveLength(0)
 
-		const warnings = messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))
+		const warnings = messageChunks(updates).filter((chunk) => chunk.text.includes("does not accept image input"))
 		expect(warnings).toHaveLength(2)
 		expect(warnings[0].text).toBe(warnings[1].text)
 		expect(warnings[0].messageId).not.toBe(warnings[1].messageId)
@@ -2184,11 +2184,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			sessionId: sid,
 			prompt: [{ type: "image", data: "base64data", mimeType: "image/png" }],
 		})
-		expect(result.stopReason).toBe("end_turn")
+		expect(result.stopReason).toBe("refusal")
 		// Nothing reaches the session — the turn is fully handled server-side.
 		expect(dropFake.promptCalls).toHaveLength(0)
 
-		const warnings = messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))
+		const warnings = messageChunks(updates).filter((chunk) => chunk.text.includes("does not accept image input"))
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].text).toContain("remove the image and resend")
 	})
@@ -2228,7 +2228,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			data: "base64data",
 			mimeType: "image/png",
 		})
-		expect(messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))).toHaveLength(0)
+		expect(messageChunks(updates).filter((chunk) => chunk.text.includes("does not accept image input"))).toHaveLength(0)
 	})
 
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),
@@ -5440,8 +5440,7 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
-		// Routing entries carry their description; concrete models carry the
-		// image-input sentence (no input modalities on these fake rows → text-only).
+		// Routing entries carry a description; the concrete models below do not.
 		expect(res.models?.availableModels[0]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
@@ -5450,12 +5449,10 @@ describe("newSession model state", () => {
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
 			name: "Claude 3",
-			description: "Text-only.",
 		})
 		expect(res.models?.availableModels[2]).toEqual({
 			modelId: "openai/gpt-4",
 			name: "GPT-4",
-			description: "Text-only.",
 		})
 	})
 
@@ -5525,54 +5522,14 @@ describe("newSession model state", () => {
 		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 			value: "kimchi-dev/auto",
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically. Accepts images.",
+			description: "Picks the best model for your tasks automatically.",
 		})
 		// The description threads through the models surface as well.
 		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/auto")).toEqual({
 			modelId: "kimchi-dev/auto",
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically. Accepts images.",
+			description: "Picks the best model for your tasks automatically.",
 		})
-	})
-
-	// Every concrete model row carries an image-input sentence so a user
-	// holding an image can find the switch target the blocked-prompt warning
-	// points at (the ACP schema exposes no per-model modalities).
-	it("describes each concrete model's image input capability", async () => {
-		const fake = new FakeAgentSession("session-image-descriptions")
-		const available = [
-			{ provider: "test", id: "text-only-model", name: "Text Only", input: ["text"] },
-			{ provider: "test", id: "vision-model", name: "Vision Model", input: ["text", "image"] },
-		]
-		fake.modelRegistry = {
-			...fake.modelRegistry,
-			getAvailable: () => available,
-		}
-		const factory: AcpSessionFactory = async () => asSession(fake)
-		const agent = new KimchiAcpAgent(makeConn(), {
-			extensionFactories: [],
-			agentDir: "/tmp/fake-agent-dir",
-			sessionFactory: factory,
-		})
-
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-		const options = modelSelectOptions(res)
-		expect(options.find((o) => o.value === "test/text-only-model")).toMatchObject({
-			name: "Text Only",
-			description: "Text-only.",
-		})
-		expect(options.find((o) => o.value === "test/vision-model")).toMatchObject({
-			name: "Vision Model",
-			description: "Accepts images.",
-		})
-		// The sentences thread through the models surface as well.
-		expect(res.models?.availableModels.find((m) => m.modelId === "test/vision-model")?.description).toBe(
-			"Accepts images.",
-		)
-		expect(res.models?.availableModels.find((m) => m.modelId === "test/text-only-model")?.description).toBe(
-			"Text-only.",
-		)
 	})
 
 	it("splits a backend display name that carries its description", async () => {
@@ -5603,7 +5560,7 @@ describe("newSession model state", () => {
 		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 			value: "kimchi-dev/auto",
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically. Accepts images.",
+			description: "Picks the best model for your tasks automatically.",
 		})
 	})
 
@@ -5630,7 +5587,7 @@ describe("newSession model state", () => {
 			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")).toEqual({
 				value: "kimchi-dev/auto-beta",
 				name: "Auto Beta",
-				description: "Picks the best model for your tasks automatically. Accepts images.",
+				description: "Picks the best model for your tasks automatically.",
 			})
 		} finally {
 			clearAutoRoutingState(sessionId)
@@ -5679,7 +5636,6 @@ describe("newSession model state", () => {
 		expect(options.find((o) => o.value === "kimchi-dev/kimi-k3")).toEqual({
 			value: "kimchi-dev/kimi-k3",
 			name: "Kimi K3",
-			description: "Text-only.",
 		})
 	})
 

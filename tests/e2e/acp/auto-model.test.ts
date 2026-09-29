@@ -58,7 +58,7 @@ describe("ACP Auto model", () => {
 		// up showing the explanation as the row's title.
 		expect(session.models?.availableModels.find((model) => model.modelId === "kimchi-dev/auto")).toMatchObject({
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically. Accepts images.",
+			description: "Picks the best model for your tasks automatically.",
 		})
 
 		const result = await prompt(fixture, session.sessionId, "Use the saved Auto model")
