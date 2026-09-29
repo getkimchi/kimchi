@@ -101,6 +101,8 @@ describe("sessionCommandExtension", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 		try {
 			await command.handler("", ctx)
+			// No double-printing: with a UI the id must go to notify only.
+			expect(logSpy).not.toHaveBeenCalled()
 		} finally {
 			logSpy.mockRestore()
 		}
