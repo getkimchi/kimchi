@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
+import { emitSteerFired, isSteerDisabled } from "./steer-events.js"
 import { markHarnessSteer } from "./steer-marker.js"
 import { getCurrentPhase } from "./tags.js"
 
@@ -321,6 +322,8 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: true, reason: result.reason }
 		}
 
+		if (isSteerDisabled("review_write_guard")) return { block: false }
+
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,
@@ -329,6 +332,7 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			},
 			{ deliverAs: "steer" },
 		)
+		emitSteerFired(pi, "review_write_guard", "steer", { interactive: ctx.hasUI })
 		return { block: false }
 	})
 

@@ -4,6 +4,7 @@ import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
 import { restoreFermentV2 } from "../ferment-v2/reducer.js"
 import { FERMENT_V2_STATUS } from "../ferment-v2/types.js"
 import { isAwaitingUserAnswer } from "../orchestration/continuation-nudge.js"
+import { emitSteerFired, emitSteerOutcome, isSteerDisabled } from "../steer-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -70,6 +71,27 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 }
 
 export const TODO_EARLY_NUDGE_THRESHOLD = 5
+
+/** Compliance window (non-todo tool calls) after the early todo nudge
+ *  during which adoption is measured (plan E.3). A todo write within the
+ *  window = "complied"; window expiry without one = "repeated". */
+export const EARLY_NUDGE_OUTCOME_WINDOW = 3
+
+// Early-nudge outcome state: per-session work-call count captured when the
+// nudge fired. Cleared on todo write (complied) or window expiry (repeated).
+const earlyNudgeFiredAt = new Map<string, number>()
+
+function markEarlyNudgeFired(sessionId: string, workCallCount: number): void {
+	earlyNudgeFiredAt.set(sessionId, workCallCount)
+}
+
+function getEarlyNudgeFiredAt(sessionId: string): number | undefined {
+	return earlyNudgeFiredAt.get(sessionId)
+}
+
+function clearEarlyNudgeFired(sessionId: string): void {
+	earlyNudgeFiredAt.delete(sessionId)
+}
 
 const TODO_EARLY_NUDGE_MESSAGE = markHarnessSteer(
 	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn.",
@@ -155,9 +177,18 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("tool_execution_end", (event, ctx) => {
-		if (event.isError || isTodoWriteToolName(event.toolName)) return
+		if (event.isError) return
 		const sessionId = ctx.sessionManager.getSessionId()
 
+		// A todo write within the nudge-outcome window = the model complied
+		// with the early nudge.
+		if (isTodoWriteToolName(event.toolName)) {
+			if (getEarlyNudgeFiredAt(sessionId) !== undefined) {
+				clearEarlyNudgeFired(sessionId)
+				emitSteerOutcome(pi, "todo_early_nudge", "complied", { interactive: ctx.hasUI })
+			}
+			return
+		}
 		// Always count non-todo tool calls for the one-shot early nudge —
 		// it tracks work done without a todo list, so it must increment even
 		// when no todos exist (opposite of the staleness counter below).
@@ -169,8 +200,23 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (!hasEverHadTodos(sessionId) && !hasTodoNudgeFired(sessionId)) {
 			const count = getWorkToolCalls(sessionId)
 			if (count >= TODO_EARLY_NUDGE_THRESHOLD) {
-				markTodoNudgeFired(sessionId)
-				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "steer" })
+				if (!isSteerDisabled("todo_early_nudge")) {
+					markTodoNudgeFired(sessionId)
+					pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "steer" })
+					emitSteerFired(pi, "todo_early_nudge", "early_nudge", { interactive: ctx.hasUI })
+					markEarlyNudgeFired(sessionId, count)
+				}
+			}
+		}
+
+		// Nudge outcome tracking (plan E.3): after the early nudge, watch the
+		// next N non-todo tool calls. A todo write within the window is
+		// "complied"; the window expiring without a todo list is "repeated".
+		const nudgeFiredAt = getEarlyNudgeFiredAt(sessionId)
+		if (nudgeFiredAt !== undefined && !hasEverHadTodos(sessionId)) {
+			if (getWorkToolCalls(sessionId) - nudgeFiredAt >= EARLY_NUDGE_OUTCOME_WINDOW) {
+				clearEarlyNudgeFired(sessionId)
+				emitSteerOutcome(pi, "todo_early_nudge", "repeated", { interactive: ctx.hasUI })
 			}
 		}
 
@@ -190,7 +236,14 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			thresholds: TODO_STALENESS_THRESHOLDS,
 			send: (threshold) => {
 				const text = stalenessIndicator(changes)
-				if (text) sendHiddenSteer(pi, TODO_STALENESS_CUSTOM_TYPE, text, { reason: "staleness", threshold })
+				if (text)
+					sendHiddenSteer(
+						pi,
+						TODO_STALENESS_CUSTOM_TYPE,
+						text,
+						{ reason: "staleness", threshold },
+						{ steerKind: "todo_staleness", interactive: ctx.hasUI },
+					)
 			},
 		})
 	})

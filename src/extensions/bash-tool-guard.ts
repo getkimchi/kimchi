@@ -80,6 +80,7 @@ import {
 import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
+import { emitSteerOutcome, isSteerDisabled } from "./steer-events.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
@@ -667,6 +668,9 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			// short-circuits because inspection should never be enforced,
 			// regardless of what the caller asked for.
 			if (options?.isEnabled && !options.isEnabled()) return false
+			// E.4 kill switch: the env flag wires into this same off-path
+			// rather than adding a second disable route.
+			if (isSteerDisabled("bash_tool_guard")) return false
 			const sessionId = ctx?.sessionManager.getSessionId()
 			if (!sessionId) return true
 			// Plan mode is for inspection; the existing exploration-guard
@@ -687,10 +691,51 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		}
 	}
 
+	// Outcome tracking (plan E.3): after a block/warn intervenes on a
+	// category, watch the next N bash calls. If the same category recurs
+	// within the window the steer was ignored ("repeated"); if the window
+	// closes without a recurrence it held ("complied").
+	const GUARD_OUTCOME_WINDOW = 3
+	let pendingOutcome: { category: BashCategory; remaining: number } | undefined
+
+	function recordGuardIntervention(category: BashCategory): void {
+		// A same-category intervention while a window is still open means the
+		// previous steer was ignored — report "repeated", then re-arm so a
+		// further recurrence is also measured.
+		if (pendingOutcome?.category === category) {
+			emitOutcomeRepeated()
+		}
+		pendingOutcome = { category, remaining: GUARD_OUTCOME_WINDOW }
+	}
+
+	function resetOutcomeTracking(): void {
+		pendingOutcome = undefined
+	}
+
+	/** Watch an allowed bash call against the pending outcome window. */
+	function observeAllowedCallForOutcome(): void {
+		if (!pendingOutcome) return
+		pendingOutcome.remaining -= 1
+		if (pendingOutcome.remaining <= 0) {
+			pendingOutcome = undefined
+			if (!isSteerDisabled("bash_tool_guard")) {
+				emitSteerOutcome(pi, "bash_tool_guard", "complied", { interactive: ctx?.hasUI })
+			}
+		}
+	}
+
+	function emitOutcomeRepeated(): void {
+		pendingOutcome = undefined
+		if (!isSteerDisabled("bash_tool_guard")) {
+			emitSteerOutcome(pi, "bash_tool_guard", "repeated", { interactive: ctx?.hasUI })
+		}
+	}
+
 	pi.on("session_start", (_event, sessionCtx) => {
 		ctx = sessionCtx
 		guard.reset()
 		warnOnlySteerSentThisTurn = false
+		resetOutcomeTracking()
 
 		// Re-register the bash tool with the overridden description.
 		// `registerTool()` writes into the real tool-definition registry
@@ -733,6 +778,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 
 		const result = guard.recordCommand(command)
 		if (result.decision === "allow") {
+			observeAllowedCallForOutcome()
 			// Surface user-request overrides so we can measure how often
 			// users explicitly ask for bash usage.
 			if (result.reason === "user-request") {
@@ -753,8 +799,10 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 				category: result.category,
 				tool: result.tool ?? "",
 				count: result.count,
+				interactive: ctx?.hasUI ?? true,
 			}
 			emitGuardEvent(BASH_TOOL_GUARD_EVENTS.BLOCK, payload)
+			recordGuardIntervention(result.category)
 			return {
 				block: true,
 				reason: guard.formatBlockReason(result),
@@ -766,8 +814,10 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			category: result.category,
 			tool: result.tool ?? "",
 			count: result.count,
+			interactive: ctx?.hasUI ?? true,
 		}
 		emitGuardEvent(BASH_TOOL_GUARD_EVENTS.WARN, payload)
+		recordGuardIntervention(result.category)
 
 		// Warn-only mode must not enqueue one steer per parallel bash call.
 		// Upstream drains queued steers one per turn, so duplicates can keep

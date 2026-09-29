@@ -18,8 +18,9 @@
  * The tool reads the session registry via `getSessionRegistry()` so it
  * shares one process table with the background `bash` tool.
  */
-import type { BashToolDetails, ToolDefinition } from "@earendil-works/pi-coding-agent"
+import type { BashToolDetails, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { renderBashCall, renderBashResult } from "./bash-display.js"
 import { awaitCheckin } from "./checkin.js"
 import type { FinalSnapshot, ProcessDisplaySnapshot, TailSnapshot } from "./process-registry.js"
@@ -107,6 +108,9 @@ Use this tool only when a \`bash\` result includes a \`handle\` in its details (
  */
 export function createBashControlToolDefinition(
 	getRegistry = getSessionRegistry,
+	/** The emitting extension api — used only for the check-in steer telemetry.
+	 *  Optional so test harnesses that construct the tool standalone still work. */
+	pi?: ExtensionAPI,
 ): ToolDefinition<typeof bashControlSchema, BashControlDetails> {
 	async function execute(
 		_toolCallId: string,
@@ -286,6 +290,13 @@ export function createBashControlToolDefinition(
 		}
 
 		// Process still running — return tail window + handle.
+		// This is a steer-equivalent nudge ("come back later") delivered on the
+		// blocking tool-result path — emit the fire event here so every check-in
+		// is measurable (plan E.1). The 15s wake-up is not a steer message, so
+		// emitting in bash-control-extension would miss it.
+		if (pi && !isSteerDisabled("bash_control_checkin")) {
+			emitSteerFired(pi, "bash_control_checkin", "checkin")
+		}
 		const statusLine = `\n\n[Background process still running — call bash_control again with handle ${handle} to continue or stop]`
 
 		return {

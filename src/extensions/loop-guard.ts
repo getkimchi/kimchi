@@ -8,6 +8,7 @@ import type {
 	LoopGuardWarnPayload,
 } from "./loop-guard-events.js"
 import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
+import { emitSteerOutcome, isSteerDisabled } from "./steer-events.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export interface ToolHistoryRecord {
@@ -746,6 +747,10 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("tool_result", (event) => {
+		// E.4 kill switch: the loop guard has no pre-existing off switch, so
+		// the env flag short-circuits at the record site (no warnings, no
+		// events, no steer). Default is unset → current behaviour.
+		if (isSteerDisabled("loop_guard")) return
 		const record: ToolHistoryRecord = {
 			toolName: event.toolName,
 			toolArgs: stableStringify(event.input),
@@ -761,7 +766,14 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				detector: result.detector ?? "consecutive_identical",
 				count: warnCount,
 				is_subagent: isAgentWorker(),
+				interactive: ctx?.hasUI ?? true,
 			})
+			// Outcome (plan E.3): a repeat warn after a prior warn means the
+			// previous steer was ignored. The first warn of a session emits
+			// no outcome — there's nothing to comply against yet.
+			if (warnCount > 1 && !isSteerDisabled("loop_guard")) {
+				emitSteerOutcome(pi, "loop_guard", "repeated", { interactive: ctx?.hasUI })
+			}
 			pi.sendMessage(
 				{
 					customType: "loop-guard-steer",

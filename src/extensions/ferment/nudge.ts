@@ -34,6 +34,7 @@ import {
 	isNudgeSuppressed,
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
+import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { decideContinuation } from "./continuation.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
@@ -300,6 +301,13 @@ export function maybeInjectScopingStopNudge(
 		return { kind: "claimed", reason: "exhausted" }
 	}
 
+	// E.4 kill switch: suppress the nudge (and the telemetry) when the
+	// planning-stop surface is disabled via env. The claim budget above
+	// still advances so exhaustion bookkeeping stays honest.
+	if (isSteerDisabled("planning_stop_nudge")) {
+		return { kind: "claimed", reason: "exhausted" }
+	}
+
 	const nudgeText = opts.interactive ? FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE : FERMENT_SCOPING_STOP_NUDGE_ONESHOT
 	safeSendMessage(
 		pi,
@@ -311,5 +319,6 @@ export function maybeInjectScopingStopNudge(
 		},
 		{ triggerTurn: true },
 	)
+	emitSteerFired(pi, "planning_stop_nudge", "scoping_stop", { interactive: opts.interactive })
 	return { kind: "scheduled" }
 }

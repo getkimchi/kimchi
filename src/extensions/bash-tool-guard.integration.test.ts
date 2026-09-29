@@ -794,6 +794,55 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 
 		expect(pi.events.emit).not.toHaveBeenCalled()
 	})
+
+	it("E.3: window closes without recurrence → steer:outcome complied", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+		fireSessionStart(pi)
+
+		// Warn on the read category.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+		// Three allowed calls on other categories/tools close the window.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "git status" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "ls" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "git diff" } })
+
+		const outcomes = vi.mocked(pi.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+		expect(outcomes).toHaveLength(1)
+		expect(outcomes[0]?.[1]).toMatchObject({ kind: "bash_tool_guard", outcome: "complied" })
+	})
+
+	it("E.3: same-category recurrence inside the window → steer:outcome repeated", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+		fireSessionStart(pi)
+
+		// Warn (read), then a second read-quad intervention inside the window.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat bar.ts" } })
+
+		const outcomes = vi.mocked(pi.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+		expect(outcomes.some(([, payload]) => payload.outcome === "repeated")).toBe(true)
+	})
+
+	it("E.4: KIMCHI_DISABLE_GUARD_BASH_TOOL=1 disables the guard via the isEnabled off-path", () => {
+		process.env.KIMCHI_DISABLE_GUARD_BASH_TOOL = "1"
+		try {
+			const pi = createMockPI()
+			bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+			fireSessionStart(pi)
+
+			const res1 = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+			const res2 = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat bar.ts" } })
+
+			// No blocks and no events at all.
+			expect(res1?.block ?? false).toBe(false)
+			expect(res2?.block ?? false).toBe(false)
+			expect(pi.events.emit).not.toHaveBeenCalled()
+		} finally {
+			delete process.env.KIMCHI_DISABLE_GUARD_BASH_TOOL
+		}
+	})
 })
 
 describe("bashToolGuardExtension — per-category thresholds", () => {

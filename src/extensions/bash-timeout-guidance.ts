@@ -27,6 +27,7 @@
 
 import type { TextContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import { emitSteerFired, isSteerDisabled } from "./steer-events.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 const TIMEOUT_PATTERN = /Command timed out after (\d+) seconds/
@@ -61,8 +62,9 @@ export function isBashTimeoutResult(event: ToolResultEvent): boolean {
 }
 
 export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, ctx) => {
 		if (!isBashTimeoutResult(event)) return
+		if (isSteerDisabled("bash_timeout_guidance")) return
 
 		const timeoutSecs = extractTimeoutSeconds(
 			event.content
@@ -83,5 +85,6 @@ export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
 			},
 			{ deliverAs: "steer" },
 		)
+		emitSteerFired(pi, "bash_timeout_guidance", "timeout", { interactive: ctx.hasUI })
 	})
 }
