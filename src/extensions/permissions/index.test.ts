@@ -28,6 +28,7 @@ import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
@@ -103,7 +104,8 @@ beforeEach(() => {
 	attributionDir = mkdtempSync(join(tmpdir(), "plan-attribution-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 })
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	vi.unstubAllEnvs()
 	rmSync(attributionDir, { recursive: true, force: true })
 })

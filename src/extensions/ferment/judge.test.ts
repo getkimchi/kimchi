@@ -6,6 +6,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import {
 	describeJudgeModel,
@@ -1151,7 +1152,8 @@ describe("judgeApiCall", () => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 		captureJudgeContext(undefined, undefined, false, createContext())
 	})
-	afterEach(() => {
+	afterEach(async () => {
+		await flushWorkSummaries()
 		vi.unstubAllEnvs()
 		rmSync(attributionDir, { recursive: true, force: true })
 		completeMock.mockReset()

@@ -5,13 +5,15 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
+import { flushWorkSummaries } from "../../work-attribution/summary.js"
 
 let attributionDir: string
 beforeEach(() => {
 	attributionDir = mkdtempSync(join(tmpdir(), "agent-attribution-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 })
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	vi.unstubAllEnvs()
 	rmSync(attributionDir, { recursive: true, force: true })
 })

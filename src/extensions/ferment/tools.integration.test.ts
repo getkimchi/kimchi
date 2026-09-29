@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId } from "../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
@@ -162,7 +163,8 @@ beforeEach(() => {
 	setActive(undefined)
 })
 
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	vi.unstubAllEnvs()
 	rmSync(join(h.tempDir, "agent"), { recursive: true, force: true })
 	clearFermentCache()

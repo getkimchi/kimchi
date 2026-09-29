@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
+import { flushWorkSummaries } from "../../work-attribution/summary.js"
 import { getWorkId } from "../../work-attribution.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { loadRuntimeState } from "../runtime-state-store.js"
@@ -157,7 +158,8 @@ beforeEach(() => {
 	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 	setRuntimeStatePersistRoot(attributionDir)
 })
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	setRuntimeStatePersistRoot(undefined)
 	vi.unstubAllEnvs()
 	rmSync(attributionDir, { recursive: true, force: true })

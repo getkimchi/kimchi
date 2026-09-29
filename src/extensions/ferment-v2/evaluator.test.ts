@@ -11,6 +11,7 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import * as attribution from "../work-attribution.js"
 import {
 	evaluateFermentV2,
@@ -61,7 +62,8 @@ beforeEach(() => {
 	attributionDir = mkdtempSync(join(tmpdir(), "evaluator-attribution-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
 })
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	vi.unstubAllEnvs()
 	rmSync(attributionDir, { recursive: true, force: true })
 })

@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import { createContext } from "../__mocks__/context.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import fermentExtension from "./index.js"
 import { resetAllFermentStopNudgeCounts } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -24,7 +25,8 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "ferment-stale-ctx-"))
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(tmpDir, "agent"))
 	})
-	afterEach(() => {
+	afterEach(async () => {
+		await flushWorkSummaries()
 		vi.unstubAllEnvs()
 		clearActiveFermentId()
 		setContinuationPolicy("manual")

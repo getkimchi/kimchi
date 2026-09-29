@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { flushWorkSummaries } from "./work-attribution/summary.js"
 
 // All mock functions must be vi.hoisted
 const { completeMock, mockNotify, mockRegisterCommand } = vi.hoisted(() => ({
@@ -60,7 +61,8 @@ import stripImagesExtension from "./strip-images.js"
 
 describe("strip-images extension", () => {
 	let attributionDir: string
-	afterEach(() => {
+	afterEach(async () => {
+		await flushWorkSummaries()
 		vi.unstubAllEnvs()
 		rmSync(attributionDir, { recursive: true, force: true })
 	})
