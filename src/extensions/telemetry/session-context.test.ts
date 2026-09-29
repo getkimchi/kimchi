@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { createContext } from "../__mocks__/context.js"
 import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
@@ -665,5 +666,24 @@ describe("SessionContext", () => {
 		const ctx = new TelemetryContext(makeConfig())
 		expect(() => ctx.reset()).not.toThrow()
 		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)
+	})
+
+	it("handleSessionStart captures the pi session id from ctx", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const ctx = createContext({
+			sessionManager: { getSessionId: () => "019e2af0-153f-77dc-839c-683e23fd301d" },
+			model: { id: "m" },
+		})
+		handleSessionStart(tm, ctx)
+		expect(tm.resolveSessionId()).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+	})
+
+	it("handleSessionStart ignores an empty session id (keeps telemetryId fallback)", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const ctx = createContext({ sessionManager: { getSessionId: () => "" }, model: { id: "m" } })
+		handleSessionStart(tm, ctx)
+		expect(tm.resolveSessionId()).toBe(tm.telemetryId)
 	})
 })
