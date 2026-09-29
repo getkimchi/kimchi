@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
-import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { createContext } from "../__mocks__/context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
@@ -647,9 +647,7 @@ describe("SessionContext", () => {
 		expect(metrics.length).toBeGreaterThan(0)
 		for (const metric of metrics) {
 			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
-			const sessionAttr = dataPoint.attributes.find(
-				(a: { key: string }) => a.key === "session.id",
-			)
+			const sessionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "session.id")
 			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
 		}
 	})
@@ -685,5 +683,21 @@ describe("SessionContext", () => {
 		const ctx = createContext({ sessionManager: { getSessionId: () => "" }, model: { id: "m" } })
 		handleSessionStart(tm, ctx)
 		expect(tm.resolveSessionId()).toBe(tm.telemetryId)
+	})
+
+	it("handleSessionStart re-capture on fork/resume overwrites the previous session id", async () => {
+		const { handleSessionStart } = await import("./handlers/session.js")
+		const tm = new TelemetryContext(makeConfig())
+		const original = createContext({
+			sessionManager: { getSessionId: () => "019e2af0-153f-77dc-839c-683e23fd301d" },
+			model: { id: "m" },
+		})
+		const forked = createContext({
+			sessionManager: { getSessionId: () => "019e2af1-26d4-7f9e-8b0c-1a2b3c4d5e6f" },
+			model: { id: "m" },
+		})
+		handleSessionStart(tm, original)
+		handleSessionStart(tm, forked)
+		expect(tm.resolveSessionId()).toBe("019e2af1-26d4-7f9e-8b0c-1a2b3c4d5e6f")
 	})
 })
