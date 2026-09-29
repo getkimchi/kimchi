@@ -8,7 +8,6 @@ export type FermentV2TodoState = PendingFermentV2Continuation & {
 	total: number
 	blocked: number
 	completed: number
-	cancelled: number
 	settledStatus?: "complete" | "blocked"
 }
 
@@ -55,15 +54,12 @@ export function isReadyForFinalAnswer(
 	)
 }
 
-export function todoCounts(
-	todos: readonly unknown[],
-): Pick<FermentV2TodoState, "total" | "blocked" | "completed" | "cancelled"> {
-	const counts = { total: todos.length, blocked: 0, completed: 0, cancelled: 0 }
+export function todoCounts(todos: readonly unknown[]): Pick<FermentV2TodoState, "total" | "blocked" | "completed"> {
+	const counts = { total: todos.length, blocked: 0, completed: 0 }
 	for (const todo of todos) {
 		if (!isRecord(todo)) continue
 		if (todo.status === "blocked") counts.blocked += 1
 		else if (todo.status === "completed") counts.completed += 1
-		else if (todo.status === "cancelled") counts.cancelled += 1
 	}
 	return counts
 }
@@ -74,13 +70,12 @@ export function todoCounts(
  * empty count keeps whatever the list last settled to.
  */
 export function deriveSettledStatus(
-	counts: Pick<FermentV2TodoState, "total" | "blocked" | "completed" | "cancelled">,
+	counts: Pick<FermentV2TodoState, "total" | "blocked" | "completed">,
 	previousSettledStatus: FermentV2TodoState["settledStatus"],
 ): FermentV2TodoState["settledStatus"] {
 	if (counts.total === 0) return previousSettledStatus
-	const closed = counts.completed + counts.cancelled
-	if (closed === counts.total) return "complete"
-	if (counts.blocked > 0 && closed + counts.blocked === counts.total) return "blocked"
+	if (counts.completed === counts.total) return "complete"
+	if (counts.blocked > 0 && counts.completed + counts.blocked === counts.total) return "blocked"
 	return undefined
 }
 
@@ -93,7 +88,6 @@ export function rebindTodoState(state: FermentV2TodoState, fermentV2: SessionFer
 		total: state.total,
 		blocked: state.blocked,
 		completed: state.completed,
-		cancelled: state.cancelled,
 	}
 }
 
@@ -110,7 +104,7 @@ export function isStatusOnlyTodoSettlement(previous: readonly TodoItem[], next: 
 			before.content !== item.content ||
 			before.activeForm !== item.activeForm ||
 			before.note !== item.note ||
-			(item.status !== before.status && item.status !== "completed" && item.status !== "cancelled")
+			(item.status !== before.status && item.status !== "completed")
 		) {
 			return false
 		}
@@ -159,7 +153,7 @@ export function deriveContinuationDecision(input: {
 	const reason = missingTodoForMet
 		? 'Create a visible Todo list now, mark verified work completed, and record concrete "Evidence: ..." notes before finishing.'
 		: input.verdict === "met"
-			? "Keep a visible, fully settled Todo list before finishing; cancel only superseded approaches with a reason."
+			? "Keep a visible, fully completed Todo list before finishing."
 			: input.reason
 	const fingerprint = fermentV2ProgressFingerprint(input.evaluated, input.todoState, input.lessons)
 	const repeatedGap =

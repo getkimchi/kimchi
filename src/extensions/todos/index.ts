@@ -1,12 +1,35 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
+import { restoreFermentV2 } from "../ferment-v2/reducer.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
+import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoStatePersistence } from "./context-state.js"
 import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
-import { registerTodoReconciliation } from "./reconcile.js"
-import { getWriteTodosDetails } from "./session.js"
-import { restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
+import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
+import {
+	createThresholdSteerTracker,
+	sendHiddenSteer,
+	stalenessIndicator,
+	TODO_STALENESS_CUSTOM_TYPE,
+	TODO_STALENESS_THRESHOLDS,
+} from "./staleness-steers.js"
+import {
+	bumpToolCallsSinceTodoWrite,
+	bumpWorkToolCalls,
+	getTodosForScope,
+	getToolCallsSinceTodoWrite,
+	getWorkToolCalls,
+	hasEverHadTodos,
+	hasTodoNudgeFired,
+	markTodoNudgeFired,
+	resetToolCallsSinceTodoWrite,
+	resolveTodoScope,
+	restoreTodoStoreFromDetails,
+	subscribeTodoStore,
+} from "./store.js"
 import { registerTodosTool } from "./tool.js"
 import {
 	disposeTodoWidget,
@@ -43,6 +66,21 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 	)
 }
 
+export const TODO_EARLY_NUDGE_THRESHOLD = 5
+
+const TODO_EARLY_NUDGE_MESSAGE = markHarnessSteer(
+	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn.",
+)
+
+function hiddenTodoMessage(text: string) {
+	return {
+		customType: TODO_CUSTOM_ENTRY_TYPE,
+		content: [{ type: "text" as const, text }],
+		display: false,
+		details: { reason: "early_nudge" },
+	}
+}
+
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
@@ -59,13 +97,16 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	if (isAgentWorker()) return
 
-	registerTodoReconciliation(pi)
-
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
 
 	const _activeSessionContexts = new Map<string, ExtensionContext>()
 	let unsubscribeTodoStore: (() => void) | undefined
+
+	// One-shot staleness steers: fires once per threshold per write-epoch,
+	// reset whenever the todo store is written (the subscribeTodoStore
+	// listener below resets both the counter and this tracker).
+	const stalenessTracker = createThresholdSteerTracker()
 
 	function setSessionContext(sessionId: string, ctx: ExtensionContext): void {
 		_activeSessionContexts.set(sessionId, ctx)
@@ -80,7 +121,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	const replayAndSync = (ctx: ExtensionContext) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager)
+		resetToolCallsSinceTodoWrite(sessionId)
 		syncTodoWidget(ctx)
 	}
 
@@ -93,6 +137,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore((_, emitterSessionId) => {
+			resetToolCallsSinceTodoWrite(emitterSessionId)
+			stalenessTracker.reset(emitterSessionId)
 			const sessionCtx = getSessionContext(emitterSessionId)
 			if (sessionCtx) syncTodoWidget(sessionCtx)
 		})
@@ -104,12 +150,80 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		replayAndSync(ctx)
 	})
 
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (event.isError || isTodoWriteToolName(event.toolName)) return
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		// Always count non-todo tool calls for the one-shot early nudge —
+		// it tracks work done without a todo list, so it must increment even
+		// when no todos exist (opposite of the staleness counter below).
+		bumpWorkToolCalls(sessionId)
+
+		// One-shot early nudge: if the session has done several non-todo tool
+		// calls and never created a todo list, send a single hidden message
+		// suggesting the model create one. Fires once per session, never recurs.
+		if (!hasEverHadTodos(sessionId) && !hasTodoNudgeFired(sessionId)) {
+			const count = getWorkToolCalls(sessionId)
+			if (count >= TODO_EARLY_NUDGE_THRESHOLD) {
+				markTodoNudgeFired(sessionId)
+				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "steer" })
+			}
+		}
+
+		// Only track staleness when there are existing todos to keep in sync.
+		const scope = resolveTodoScope()
+		if (!getTodosForScope(scope, sessionId).some((todo) => todo.status !== "completed")) return
+
+		bumpToolCallsSinceTodoWrite(sessionId)
+
+		// Staleness pressure as bounded one-shot steers, not as volatile text
+		// inside the persisted state block (which must stay byte-identical
+		// between real writes for prefix-cache stability).
+		const changes = getToolCallsSinceTodoWrite(sessionId)
+		stalenessTracker.fireCrossed({
+			sessionId,
+			count: changes,
+			thresholds: TODO_STALENESS_THRESHOLDS,
+			send: (threshold) => {
+				const text = stalenessIndicator(changes)
+				if (text) sendHiddenSteer(pi, TODO_STALENESS_CUSTOM_TYPE, text, { reason: "staleness", threshold })
+			},
+		})
+	})
+
 	pi.on("turn_end", (event, ctx) => {
 		const message = event.message
 		if (!isRecord(message) || message.role !== "assistant") return
-		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages()) return
+		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
+		if (message.stopReason !== "stop") return
+		const scope = resolveTodoScope()
+		if (scope.kind !== "global") return
+		const todos = getTodosForScope(scope, ctx.sessionManager.getSessionId()).filter(
+			(todo) => todo.status === "pending" || todo.status === "in_progress",
+		)
+		if (todos.length === 0 || !pi.getActiveTools().some(isTodoWriteToolName)) return
+		const branch = ctx.sessionManager.getBranch()
+		const request = branch.findLastIndex((entry) => entry.type === "message" && entry.message.role === "user")
+		// Persisted history bounds cleanup per user request, even after todo writes or replay.
+		if (
+			request < 0 ||
+			branch.slice(request + 1).some((entry) => entry.type === "custom_message" && entry.customType === "todo-closure")
+		)
+			return
+		const ferment = restoreFermentV2(
+			branch.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE ? [entry.data] : [],
+			),
+		)
+		if (ferment && ferment.status !== "complete") return
+		sendHiddenSteer(
+			pi,
+			"todo-closure",
+			`The turn ended with unfinished todos. Check bookkeeping against the work already done in this conversation. Use only todo tools if corrections are needed: mark fully finished work completed and remove obsolete items with update_todos. Preserve deferred, blocked, uncertain, and awaiting-approval work; do not claim an abandoned approach succeeded. Do not perform task work, request approval, or repeat the final answer. If nothing needs correcting, stop.\n\n${JSON.stringify(todos)}`,
+			{ reason: "terminal-turn-closure" },
+		)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {

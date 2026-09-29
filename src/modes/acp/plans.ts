@@ -20,15 +20,14 @@ const TODO_SCOPE_SPECIFICITY: Record<TodoScope["kind"], number> = {
 }
 
 function todoToPlanEntry(todo: TodoItem): PlanEntry {
-	if (todo.status === "blocked" || todo.status === "cancelled") {
+	if (todo.status === "blocked") {
 		return {
-			content:
-				todo.status === "cancelled" ? `${todo.content} (cancelled)${todo.note ? ` — ${todo.note}` : ""}` : todo.content,
+			content: todo.content,
 			priority: "medium",
-			status: todo.status === "cancelled" ? "completed" : "pending",
+			status: "pending",
 			_meta: {
 				"kimchi.dev": {
-					todoStatus: todo.status,
+					todoStatus: "blocked",
 					...(todo.note ? { note: todo.note } : {}),
 				},
 			},

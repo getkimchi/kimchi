@@ -1,0 +1,128 @@
+import { SessionManager } from "@earendil-works/pi-coding-agent"
+import { beforeEach, describe, expect, it } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
+import { createFermentV2, putFermentV2Entry } from "../ferment-v2/reducer.js"
+import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
+import todosExtension from "./index.js"
+import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
+import type { TodoDraft } from "./types.js"
+
+async function harness() {
+	const api = createExtensionApi()
+	const manager = SessionManager.inMemory("/tmp")
+	const ctx = createContext()
+	Object.assign(ctx, { sessionManager: manager, hasUI: false, hasPendingMessages: () => false })
+	api.sendMessage.mockImplementation((message) => {
+		manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details)
+	})
+	todosExtension(api.api)
+	const fire = async (event: string, payload: unknown = {}) => {
+		for (const handler of api.getHandlers(event)) await handler(payload, ctx)
+	}
+	await fire("session_start")
+	const request = () => manager.appendMessage({ role: "user", content: "Verify and compare inputs", timestamp: 1 })
+	request()
+	const write = (todos: TodoDraft[]) => {
+		const details = applyWriteTodos({ todos }, manager.getSessionId())
+		manager.appendCustomEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+	}
+	const end = (stopReason = "stop") =>
+		fire("turn_end", {
+			message: { role: "assistant", content: [{ type: "text", text: "Comparison done." }], stopReason },
+			toolResults: [],
+		})
+	return {
+		...api,
+		manager,
+		ctx,
+		fire,
+		write,
+		end,
+		request,
+		closure: () => api.sendMessage.mock.calls.filter(([message]) => message.customType === "todo-closure"),
+	}
+}
+
+describe("bounded todo cleanup", () => {
+	beforeEach(__resetTodoStore)
+
+	it("nudges below the staleness threshold after only later items were completed", async () => {
+		const h = await harness()
+		h.write([{ id: 1, content: "Verify inputs", status: "in_progress" }])
+		for (let i = 0; i < 5; i++) await h.fire("tool_execution_end", { toolName: "bash", isError: false })
+		h.write([
+			{ id: 1, content: "Verify inputs", status: "in_progress" },
+			{ id: 2, content: "Collect results", status: "completed" },
+			{ id: 3, content: "Compare results", status: "completed" },
+		])
+		await h.end()
+		expect(h.closure()).toHaveLength(1)
+		expect(h.closure()[0][0]).toMatchObject({ display: false, content: expect.stringContaining("Verify inputs") })
+		expect(h.closure()[0][1]).toEqual({ deliverAs: "steer" })
+	})
+
+	it("cannot loop after todo edits or replay, but a new user request can be checked", async () => {
+		const h = await harness()
+		h.write([{ content: "Publish after approval", status: "pending" }])
+		await h.end()
+		h.write([{ content: "Publish after approval", status: "pending", note: "Deferred" }])
+		await h.end()
+		await h.fire("session_tree")
+		await h.end()
+		expect(h.closure()).toHaveLength(1)
+		h.request()
+		await h.end()
+		expect(h.closure()).toHaveLength(2)
+	})
+
+	it("does not call a completed list stale", async () => {
+		const h = await harness()
+		h.write([{ content: "Finished setup", status: "completed" }])
+		for (let i = 0; i < 26; i++) await h.fire("tool_execution_end", { toolName: "read", isError: false })
+		await h.end()
+		expect(h.sendMessage.mock.calls.filter(([message]) => message.customType === "todo-staleness")).toHaveLength(0)
+		expect(h.closure()).toHaveLength(0)
+	})
+
+	it.each([
+		"error",
+		"aborted",
+		"length",
+		"queued input",
+		"no tools",
+		"blocked",
+		"empty",
+		"worker scope",
+	])("skips cleanup for %s", async (reason) => {
+		const h = await harness()
+		h.write([{ content: "Work", status: reason === "blocked" ? "blocked" : "in_progress" }])
+		if (reason === "empty") h.write([])
+		if (reason === "queued input") h.ctx.hasPendingMessages = () => true
+		if (reason === "no tools") h.api.setActiveTools([])
+		const unregister =
+			reason === "worker scope"
+				? registerActiveTodoScopeProvider(() => ({ kind: "ferment-step", phaseId: "p", stepId: "s" }))
+				: () => {}
+		await h.end(["error", "aborted", "length"].includes(reason) ? reason : "stop")
+		unregister()
+		expect(h.closure()).toHaveLength(0)
+	})
+
+	it.each([
+		"active",
+		"paused",
+		"blocked",
+		"budget_limited",
+		"complete",
+	] as const)("respects %s Ferment ownership", async (status) => {
+		const h = await harness()
+		const run = createFermentV2(undefined, "Earlier objective", "run", new Date().toISOString())
+		h.manager.appendCustomEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry({ ...run, status }))
+		h.request()
+		h.write([{ content: "Verify follow-up", status: "in_progress" }])
+		await h.end()
+		expect(h.closure()).toHaveLength(status === "complete" ? 1 : 0)
+	})
+})
