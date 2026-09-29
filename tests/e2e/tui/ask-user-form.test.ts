@@ -47,12 +47,10 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
  *           → review dialog appears via onPlanReviewRequest setTimeout(0)
  *   Turn 2: ask_user / confirm_ferment_completion_criteria (tools restored after confirm)
  *
- * @param nextStream the post-confirmation stream text to wait for — differs per test
  */
 async function startFerment(
 	terminal: import("@microsoft/tui-test").Terminal,
 	trace: import("./support/kimchi-fixture.js").TuiScenarioTrace,
-	nextStream: string,
 ) {
 	// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment\r" can
 	// race startup and skip the intent prompt.
@@ -68,10 +66,6 @@ async function startFerment(
 	terminal.submit("Test intent for ask-user e2e")
 	trace.step("submitted intent")
 
-	// Wait for the model's turn 1 stream to confirm propose_ferment_scoping completed.
-	await waitForText(terminal, "I'll outline the scope.", { timeoutMs: STREAM_TIMEOUT_MS })
-	trace.step("turn 1 stream received — propose_ferment_scoping completed")
-
 	// The review dialog appears directly after propose_ferment_scoping terminates
 	// the turn (the onPlanReviewRequest listener schedules it via setTimeout(0)).
 	// No suppression turn is needed — the dialog appears without agent_end.
@@ -82,11 +76,6 @@ async function startFerment(
 	// Press Enter to accept "Start execution" (default first option in the dialog).
 	terminal.submit("")
 	trace.step("confirmed 'Start execution' (Enter on default option)")
-
-	// Wait for the model's turn 2 stream — tools are restored after confirmation,
-	// so ask_user / confirm_ferment_completion_criteria is now available.
-	await waitForText(terminal, nextStream, { timeoutMs: STREAM_TIMEOUT_MS })
-	trace.step(`post-confirmation stream received: ${nextStream}`)
 }
 
 test("ask_user renders a single-choice question and accepts selection", async ({ terminal }) => {
@@ -139,7 +128,7 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 			],
 		},
 		async (fixture, trace) => {
-			await startFerment(terminal, trace, "Let me ask the user.")
+			await startFerment(terminal, trace)
 
 			// Stage 2: wait for the ask_user prompt — question text + both option labels.
 			await waitForText(terminal, "Which flavor?", { timeoutMs: STREAM_TIMEOUT_MS })
@@ -210,7 +199,7 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 			],
 		},
 		async (_fixture, trace) => {
-			await startFerment(terminal, trace, "Let me confirm the criteria.")
+			await startFerment(terminal, trace)
 
 			// Stage 2: the confirm_ferment_completion_criteria prompt renders a single-choice
 			// select with "Yes, looks good" + the hardcoded "Type your own answer" fallback.
@@ -275,7 +264,7 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 			],
 		},
 		async (_fixture, trace) => {
-			await startFerment(terminal, trace, "Let me confirm.")
+			await startFerment(terminal, trace)
 
 			// Stage 2: the confirm question renders Yes/No options.
 			await waitForText(terminal, "Should we proceed?", { timeoutMs: STREAM_TIMEOUT_MS })

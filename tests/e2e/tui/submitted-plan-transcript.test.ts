@@ -1,4 +1,4 @@
-import { expect, Key, test } from "@microsoft/tui-test"
+import { expect, Key, type Terminal, test } from "@microsoft/tui-test"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import {
 	createKimchiFixture,
@@ -9,6 +9,19 @@ import {
 } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
+
+async function expectCompletePlans(terminal: Terminal): Promise<void> {
+	let seen = viewText(terminal)
+	for (let page = 0; page < 10 && !seen.includes("Keep the existing cache interface."); page++) {
+		terminal.write("\x1b[5~")
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		seen += `\n${viewText(terminal)}`
+	}
+	expect(seen).toContain("Keep the existing cache interface.")
+	for (let index = 1; index <= 60; index++) expect(seen).toContain(`Revised requirement ${index}.`)
+	terminal.write("\x1b[F")
+	await waitForText(terminal, "Revised requirement 60.", { full: false })
+}
 
 test("a tool-only submitted plan stays in chat after cancellation and session restart", async ({ terminal }) => {
 	const plan = "# Cache migration\n\n- Preserve the public API.\n- Verify rollback before deployment."
@@ -75,12 +88,11 @@ test("reworking a plan prints the complete revision and approval keeps it in cha
 			terminal.submit("Revise the plan to include every verification requirement.")
 			await waitForText(terminal, "Revised requirement 60.", { full: false })
 			await waitForText(terminal, "Execute the plan", { full: false })
-			for (let index = 1; index <= 60; index++) expect(fullText(terminal)).toContain(`Revised requirement ${index}.`)
-			trace.step("the full tool-only revision is printed before the unchanged approval menu")
+			await expectCompletePlans(terminal)
+			trace.step("both plans can be read by scrolling before approval")
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "APPROVED_PLAN_EXECUTION_STARTED")
-			expect(fullText(terminal)).toContain("Keep the existing cache interface.")
-			for (let index = 1; index <= 60; index++) expect(fullText(terminal)).toContain(`Revised requirement ${index}.`)
+			await expectCompletePlans(terminal)
 			expect(
 				fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 			).toHaveLength(3)

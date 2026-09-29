@@ -35,6 +35,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import "./session-selector-adapter.js"
 import "./resume-hint-adapter.js"
+import "./fullscreen-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
