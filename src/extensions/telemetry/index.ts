@@ -290,6 +290,7 @@ export type RemoteExecutionStage =
 	| "steer.completed"
 	| "steer.failed"
 	| "review.started"
+	| "ide.opened"
 	| "viewed"
 	| "custom_action"
 	| "done"

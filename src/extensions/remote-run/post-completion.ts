@@ -12,6 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import open from "open"
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { deleteRemoteSession, type RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
@@ -67,6 +68,24 @@ const PUSH_LOCAL_FALLBACK = "Push with my local credentials instead"
 const PUSH_CUSTOM = "Custom instructions (steer the remote agent)"
 const PUSH_CUSTOM_PROMPT = "What should the remote agent do? (run first, then you push)"
 const DONE = "Done"
+const OPEN_IN_IDE = "Open in IDE"
+
+/** Web-IDE deep link for the sandbox: same host as the WS tunnel over https,
+ *  with the workspace dir carried in the fragment. */
+function buildIdeUrl(remoteSession: RemoteSessionMeta): string {
+	return `https://${new URL(remoteSession.wsUrl).hostname}/public/ide/#${remoteSession.cwd}`
+}
+
+/** Non-terminal inspection action: opens the sandbox's web IDE in the local
+ *  browser. The completion menu stays up — review/push/steer/done still apply. */
+async function openIde(ctx: ExtensionContext, remoteSession: RemoteSessionMeta, promptPrefix: string): Promise<void> {
+	trackRemoteExecution("ide.opened", promptPrefix)
+	try {
+		await open(buildIdeUrl(remoteSession))
+	} catch {
+		ctx.ui.notify("Could not open the web IDE in your browser.", "warning")
+	}
+}
 
 /** Options for handleRemoteCompletion. */
 export interface HandleRemoteCompletionOpts {
@@ -127,11 +146,22 @@ export async function handleRemoteCompletion(
 		if (handled) return
 	}
 
-	const choice = await withBlocked(pi.events, "Remote execution complete", () =>
-		withWorkingHidden(ctx.ui, () =>
-			ctx.ui.select("Remote agent run finished. What would you like to do next?", [SYNC, REVIEW, CUSTOM]),
-		),
-	)
+	// Opening the web IDE is the only non-terminal action: re-offer the menu
+	// (the user inspects, then still picks sync/review/custom).
+	const choices = opts?.remoteSession ? [SYNC, REVIEW, CUSTOM, OPEN_IN_IDE] : [SYNC, REVIEW, CUSTOM]
+	let choice: string | undefined
+	for (;;) {
+		choice = await withBlocked(pi.events, "Remote execution complete", () =>
+			withWorkingHidden(ctx.ui, () =>
+				ctx.ui.select("Remote agent run finished. What would you like to do next?", choices),
+			),
+		)
+		if (choice === OPEN_IN_IDE && opts?.remoteSession) {
+			await openIde(ctx, opts.remoteSession, promptPrefix)
+			continue
+		}
+		break
+	}
 
 	// No selection (escape/dismiss) → no-op; a paused ferment stays paused
 	if (!choice) return
@@ -629,6 +659,7 @@ async function handlePrCompletion(
 		isPlannotatorReviewAvailable(pi) || readE2eSeam("KIMCHI_E2E_FAKE_BROWSER_REVIEW") !== undefined
 	const menuOptions = [
 		...(browserReviewAvailable ? [SHOW_DIFF_BROWSER] : []),
+		OPEN_IN_IDE,
 		REQUEST_CHANGES,
 		PUSH_AND_PULL,
 		SYNC,
@@ -684,6 +715,10 @@ async function handlePrCompletion(
 		}
 		// Dismissed: the branch and session stay alive, the ferment stays paused.
 		if (!choice) return true
+		if (choice === OPEN_IN_IDE) {
+			await openIde(ctx, opts.remoteSession, promptPrefix)
+			continue
+		}
 		if (choice === SHOW_DIFF_BROWSER) {
 			if (pendingReview) {
 				ctx.ui.notify("The browser review is already open — decide there, or pick another option here.", "info")

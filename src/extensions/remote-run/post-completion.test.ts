@@ -53,6 +53,8 @@ vi.mock("../ferment/tool-helpers.js", () => ({
 vi.mock("../ferment/runtime.js", () => ({
 	defaultFermentRuntime: { setActive: mockSetActive, getActive: vi.fn(() => undefined) },
 }))
+const { mockOpen } = vi.hoisted(() => ({ mockOpen: vi.fn() }))
+vi.mock("open", () => ({ default: mockOpen }))
 
 // Mock the SSH diff layer — PR-intent tests never spawn real SSH/git.
 const {
@@ -229,6 +231,31 @@ describe("handleRemoteCompletion", () => {
 		})
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("Open in IDE opens the sandbox web IDE then re-offers the menu (non-terminal)", async () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce("Open in IDE")
+			.mockResolvedValueOnce("Pull the changes to my machine and finish")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: "/tmp/transcripts/agent-1.jsonl",
+			agentId: "agent-1",
+			remoteSession: {
+				workspaceId: "ws-1",
+				sessionName: "acp-x",
+				wsUrl: "wss://worker.example.com/ws-1/remote",
+				host: "worker.example.com",
+				cwd: "/home/sandbox/acp-x",
+			},
+		})
+
+		expect(mockOpen).toHaveBeenCalledWith("https://worker.example.com/public/ide/#/home/sandbox/acp-x")
+		// Non-terminal: the menu was re-offered, and the sync path still ran after.
+		expect(ctx.ui.select).toHaveBeenCalledTimes(2)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
 	describe("syncRemoteChanges", () => {
@@ -614,6 +641,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(title).toContain("2 files changed, 8 insertions(+), 3 deletions(-)")
 		expect(options).toEqual([
 			"Review the diff in browser (comment & decide)",
+			"Open in IDE",
 			"Request changes (steer the remote agent)",
 			"Push remote changes, pull and continue locally",
 			"Pull the changes to my machine and finish",
@@ -649,6 +677,21 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(title).toContain("touched file(s) that were already dirty before it started: src/user-dirty.ts")
 	})
 
+	it("Open in IDE opens the sandbox web IDE and the menu stays usable — then Done retires", async () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Open in IDE").mockResolvedValueOnce("Done")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: join(tmp, "t-ide", "a.jsonl"),
+			remoteSession: REMOTE,
+			gitWorkflow: GIT,
+		})
+
+		expect(mockOpen).toHaveBeenCalledWith("https://worker.example.com/public/ide/#/home/sandbox/acp-x")
+		expect(mockDeleteRemoteSession).toHaveBeenCalled()
+	})
+
 	it("degrades to today's Sync/Review/Custom menu when the agent committed nothing", async () => {
 		mockCollectCompletionDiff.mockResolvedValue(undefined)
 		const pi = makePi()
@@ -668,6 +711,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 			"Pull the changes to my machine and finish",
 			"Review the remote agent's results in the local session",
 			"Describe what to do next",
+			"Open in IDE",
 		])
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
@@ -1174,6 +1218,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 
 		const [, options] = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string[]]
 		expect(options).toEqual([
+			"Open in IDE",
 			"Request changes (steer the remote agent)",
 			"Push remote changes, pull and continue locally",
 			"Pull the changes to my machine and finish",
@@ -1251,6 +1296,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		const [, options] = select.mock.calls[1] as [string, string[]]
 		expect(options).toEqual([
 			"Review the diff in browser (comment & decide)",
+			"Open in IDE",
 			"Request changes (steer the remote agent)",
 			"Push remote changes, pull and continue locally",
 			"Pull the changes to my machine and finish",

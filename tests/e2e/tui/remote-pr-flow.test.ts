@@ -169,9 +169,10 @@ test("PR completion dropdown: push is consent-gated and the local pull fails hon
 			await waitForText(terminal, "Done", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("all four dropdown entries visible")
 
-			// Declining push consent: choose Push (index 1) → consent prompt →
-			// Cancel → back at the dropdown. No push, no session deletion.
-			terminal.keyDown() // → Push remote changes, pull and continue locally (1)
+			// Declining push consent: choose Push (index 2, after IDE) → consent
+			// prompt → Cancel → back at the dropdown. No push, no session deletion.
+			terminal.keyDown() // → Open in IDE (1)
+			terminal.keyDown() // → Push remote changes, pull and continue locally (2)
 			terminal.submit("")
 			await waitForText(terminal, "Push kimchi/e2e-fix-login to origin and pull it locally?", {
 				timeoutMs: INPUT_TIMEOUT_MS,
@@ -187,6 +188,7 @@ test("PR completion dropdown: push is consent-gated and the local pull fails hon
 			// Accepting consent: sandbox push (canned) succeeds, then the LOCAL
 			// pull fails honestly (the seeded workdir has no reachable origin) →
 			// error notify with the exact manual commands.
+			terminal.keyDown()
 			terminal.keyDown()
 			terminal.submit("")
 			await waitForText(terminal, "Push kimchi/e2e-fix-login to origin and pull it locally?", {
