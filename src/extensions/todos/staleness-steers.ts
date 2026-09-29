@@ -42,7 +42,7 @@ export function sendHiddenSteer(
 	customType: string,
 	text: string,
 	details: Record<string, unknown>,
-	opts: { steerKind?: SteerKind; steerReason?: string; interactive?: boolean } = {},
+	opts: { steerKind?: SteerKind; steerReason?: string; interactive?: boolean; sessionId?: string } = {},
 ): void {
 	if (opts.steerKind && isSteerDisabled(opts.steerKind)) return
 	pi.sendMessage(
@@ -55,7 +55,10 @@ export function sendHiddenSteer(
 		{ deliverAs: "steer" },
 	)
 	if (opts.steerKind)
-		emitSteerFired(pi, opts.steerKind, opts.steerReason ?? "staleness", { interactive: opts.interactive })
+		emitSteerFired(pi, opts.steerKind, opts.steerReason ?? "staleness", {
+			interactive: opts.interactive,
+			sessionId: opts.sessionId,
+		})
 }
 
 /**

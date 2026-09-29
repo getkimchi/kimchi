@@ -308,7 +308,10 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 				},
 				{ deliverAs: "steer" },
 			)
-			emitSteerFired(pi, "exploration_guard", "turn_end", { interactive: ctx?.hasUI ?? true })
+			emitSteerFired(pi, "exploration_guard", "turn_end", {
+				interactive: ctx?.hasUI ?? true,
+				sessionId: ctx?.sessionManager.getSessionId(),
+			})
 		})
 	})
 }

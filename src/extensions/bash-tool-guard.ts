@@ -694,40 +694,42 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 	// Outcome tracking (plan E.3): after a block/warn intervenes on a
 	// category, watch the next N bash calls. If the same category recurs
 	// within the window the steer was ignored ("repeated"); if the window
-	// closes without a recurrence it held ("complied").
+	// closes without a recurrence it held ("complied"). Windows are keyed
+	// PER CATEGORY — an interleaved intervention on a different category
+	// must not silently abandon the first category's window (that would
+	// systematically drop outcome events and bias the compliance metric).
 	const GUARD_OUTCOME_WINDOW = 3
-	let pendingOutcome: { category: BashCategory; remaining: number } | undefined
+	const pendingOutcomes = new Map<BashCategory, number>()
 
 	function recordGuardIntervention(category: BashCategory): void {
 		// A same-category intervention while a window is still open means the
 		// previous steer was ignored — report "repeated", then re-arm so a
 		// further recurrence is also measured.
-		if (pendingOutcome?.category === category) {
-			emitOutcomeRepeated()
+		if (pendingOutcomes.has(category)) {
+			emitOutcome("repeated")
 		}
-		pendingOutcome = { category, remaining: GUARD_OUTCOME_WINDOW }
+		pendingOutcomes.set(category, GUARD_OUTCOME_WINDOW)
 	}
 
 	function resetOutcomeTracking(): void {
-		pendingOutcome = undefined
+		pendingOutcomes.clear()
 	}
 
-	/** Watch an allowed bash call against the pending outcome window. */
+	/** Watch an allowed bash call against every open outcome window. */
 	function observeAllowedCallForOutcome(): void {
-		if (!pendingOutcome) return
-		pendingOutcome.remaining -= 1
-		if (pendingOutcome.remaining <= 0) {
-			pendingOutcome = undefined
-			if (!isSteerDisabled("bash_tool_guard")) {
-				emitSteerOutcome(pi, "bash_tool_guard", "complied", { interactive: ctx?.hasUI })
+		for (const [category, remaining] of pendingOutcomes) {
+			if (remaining <= 1) {
+				pendingOutcomes.delete(category)
+				emitOutcome("complied")
+			} else {
+				pendingOutcomes.set(category, remaining - 1)
 			}
 		}
 	}
 
-	function emitOutcomeRepeated(): void {
-		pendingOutcome = undefined
+	function emitOutcome(outcome: "complied" | "repeated"): void {
 		if (!isSteerDisabled("bash_tool_guard")) {
-			emitSteerOutcome(pi, "bash_tool_guard", "repeated", { interactive: ctx?.hasUI })
+			emitSteerOutcome(pi, "bash_tool_guard", outcome, { interactive: ctx?.hasUI })
 		}
 	}
 

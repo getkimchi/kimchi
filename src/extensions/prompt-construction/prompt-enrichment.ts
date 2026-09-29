@@ -582,7 +582,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 							{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
 							{ deliverAs: "followUp" },
 						)
-						emitSteerFired(pi, "continuation_nudge", "empty_turn", { interactive: ctx.hasUI })
+						emitSteerFired(pi, "continuation_nudge", "empty_turn", { interactive: ctx.hasUI, sessionId })
 					}
 					return
 				}
@@ -597,7 +597,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 					},
 					{ deliverAs: "followUp" },
 				)
-				emitSteerFired(pi, "continuation_nudge", "continuation", { interactive: ctx.hasUI })
+				emitSteerFired(pi, "continuation_nudge", "continuation", { interactive: ctx.hasUI, sessionId })
 			})
 
 			// Fallback cleanup for an abandoned recovery run: if the response to a

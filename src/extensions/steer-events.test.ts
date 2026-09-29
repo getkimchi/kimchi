@@ -136,14 +136,15 @@ describe("steer-events", () => {
 				pi,
 				emitted,
 				fire: async (event: string, payload: unknown) => {
-					for (const handler of handlers.get(event) ?? []) await handler(payload, {})
+					const ctx = { sessionManager: { getSessionId: () => "session" } }
+					for (const handler of handlers.get(event) ?? []) await handler(payload, ctx)
 				},
 			}
 		}
 
 		it("user Esc-abort of the turn following a steer → steer:aborted with the steer's kind", async () => {
 			const { pi, emitted, fire } = makeTrackingPi()
-			emitSteerFired(pi, "exploration_guard", "turn_end", { interactive: true })
+			emitSteerFired(pi, "exploration_guard", "turn_end", { interactive: true, sessionId: "session" })
 			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
 
 			const aborted = emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)
@@ -170,7 +171,7 @@ describe("steer-events", () => {
 
 		it("extension-source input does NOT clear the tracker (steers flow through input too)", async () => {
 			const { pi, emitted, fire } = makeTrackingPi()
-			emitSteerFired(pi, "todo_early_nudge", "early_nudge")
+			emitSteerFired(pi, "todo_early_nudge", "early_nudge", { sessionId: "session" })
 			await fire("input", { source: "extension", text: "steer text" })
 			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
 
@@ -179,8 +180,8 @@ describe("steer-events", () => {
 
 		it("only the most recent steer is attributed when multiple fire back-to-back", async () => {
 			const { pi, emitted, fire } = makeTrackingPi()
-			emitSteerFired(pi, "exploration_guard", "turn_end")
-			emitSteerFired(pi, "bash_timeout_guidance", "timeout")
+			emitSteerFired(pi, "exploration_guard", "turn_end", { sessionId: "session" })
+			emitSteerFired(pi, "bash_timeout_guidance", "timeout", { sessionId: "session" })
 			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
 
 			const aborted = emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)
@@ -190,7 +191,7 @@ describe("steer-events", () => {
 
 		it("kill switch on that kind suppresses the abort event too", async () => {
 			const { pi, emitted, fire } = makeTrackingPi()
-			emitSteerFired(pi, "loop_guard", "warn")
+			emitSteerFired(pi, "loop_guard", "warn", { sessionId: "session" })
 			process.env[steerDisableFlagName("loop_guard")] = "1"
 			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
 

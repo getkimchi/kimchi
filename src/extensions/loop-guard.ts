@@ -684,6 +684,37 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 	let lastWarnDetector: LoopGuardDetector | undefined
 	let lastWarnCount = 0
 
+	// Outcome tracking (plan E.3). Every warn opens a per-session compliance
+	// window: LOOP_OUTCOME_WINDOW further non-warn tool results and the steer
+	// held ⇒ "complied"; a superseding warn before the window closes means
+	// the previous steer was ignored ⇒ "repeated", and the new warn opens a
+	// fresh window. This gives loop_guard both sides of the compliance metric
+	// instead of reporting 0% by construction.
+	const LOOP_OUTCOME_WINDOW = 5
+	const pendingLoopOutcomeWindows = new Map<string, number>()
+
+	/** Advance the per-session outcome window.
+	 *  `signal` is "warn" when a new warn just fired, "result" for any other
+	 *  tool result. */
+	function tickLoopOutcome(sessionId: string, signal: "warn" | "result"): void {
+		if (signal === "warn") {
+			if (pendingLoopOutcomeWindows.has(sessionId)) {
+				pendingLoopOutcomeWindows.delete(sessionId)
+				emitSteerOutcome(pi, "loop_guard", "repeated", { interactive: ctx?.hasUI })
+			}
+			pendingLoopOutcomeWindows.set(sessionId, LOOP_OUTCOME_WINDOW)
+			return
+		}
+		const remaining = pendingLoopOutcomeWindows.get(sessionId)
+		if (remaining === undefined) return
+		if (remaining <= 1) {
+			pendingLoopOutcomeWindows.delete(sessionId)
+			emitSteerOutcome(pi, "loop_guard", "complied", { interactive: ctx?.hasUI })
+			return
+		}
+		pendingLoopOutcomeWindows.set(sessionId, remaining - 1)
+	}
+
 	// Domain event helper: emit a loop-guard event via pi.events. No-ops
 	// silently when `pi.events` is unavailable on the host.
 	// Typed overloads ensure the payload matches the channel, catching
@@ -707,6 +738,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		warnCount = 0
 		lastWarnDetector = undefined
 		lastWarnCount = 0
+		pendingLoopOutcomeWindows.clear()
 	})
 
 	pi.on("input", (event) => {
@@ -716,6 +748,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		warnCount = 0
 		lastWarnDetector = undefined
 		lastWarnCount = 0
+		pendingLoopOutcomeWindows.clear()
 	})
 
 	pi.on("tool_call", (event) => {
@@ -746,11 +779,12 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		}
 	})
 
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, toolResultCtx) => {
 		// E.4 kill switch: the loop guard has no pre-existing off switch, so
 		// the env flag short-circuits at the record site (no warnings, no
 		// events, no steer). Default is unset → current behaviour.
 		if (isSteerDisabled("loop_guard")) return
+		const resultSessionId = toolResultCtx?.sessionManager.getSessionId() ?? ""
 		const record: ToolHistoryRecord = {
 			toolName: event.toolName,
 			toolArgs: stableStringify(event.input),
@@ -768,12 +802,12 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				is_subagent: isAgentWorker(),
 				interactive: ctx?.hasUI ?? true,
 			})
-			// Outcome (plan E.3): a repeat warn after a prior warn means the
-			// previous steer was ignored. The first warn of a session emits
-			// no outcome — there's nothing to comply against yet.
-			if (warnCount > 1 && !isSteerDisabled("loop_guard")) {
-				emitSteerOutcome(pi, "loop_guard", "repeated", { interactive: ctx?.hasUI })
-			}
+			// Outcome (plan E.3): this warn supersedes any open compliance
+			// window — the previous steer was ignored ("repeated", emitted
+			// inside tickLoopOutcome) — and opens a fresh window of
+			// LOOP_OUTCOME_WINDOW further tool results, after which a clean
+			// follow-through closes as "complied".
+			tickLoopOutcome(resultSessionId, "warn")
 			pi.sendMessage(
 				{
 					customType: "loop-guard-steer",
@@ -788,6 +822,10 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 			if (isAgentWorker()) {
 				subagentAbortPending = true
 			}
+		} else {
+			// No warn: a normal tool result advances any open compliance
+			// window toward "complied".
+			tickLoopOutcome(resultSessionId, "result")
 		}
 	})
 }

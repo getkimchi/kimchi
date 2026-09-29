@@ -85,6 +85,9 @@ export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
 			},
 			{ deliverAs: "steer" },
 		)
-		emitSteerFired(pi, "bash_timeout_guidance", "timeout", { interactive: ctx.hasUI })
+		emitSteerFired(pi, "bash_timeout_guidance", "timeout", {
+			interactive: ctx.hasUI,
+			sessionId: ctx.sessionManager.getSessionId(),
+		})
 	})
 }

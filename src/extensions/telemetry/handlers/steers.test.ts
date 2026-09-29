@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { logEvents, type RecordedEvent } from "../otlp-test-utils.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
-import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./steers.js"
+import { handleSteerAborted, handleSteerFired, handleSteerOutcome, STEER_TELEMETRY_ATTR_ALLOWLIST } from "./steers.js"
 
 vi.mock("../../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -22,6 +22,23 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 function attrsOf(events: RecordedEvent[], eventName: string): Record<string, unknown> | undefined {
 	return events.find((record) => record.eventName === eventName)?.attrs
 }
+
+/** Bare (dot-less) ambient attribute keys the telemetry pipeline stamps on
+ *  every OTLP record — source, session_type, client, ferment_id, etc. These
+ *  are pipeline-owned, not handler-owned, so the allowlist test filters them
+ *  out of the "handler only surfaces OUR attributes" assertion. */
+const AMBIENT_BARE_KEYS = new Set([
+	"client",
+	"source",
+	"session_type",
+	"session_type_changed",
+	"previous_session_type",
+	"ferment_id",
+	"phase_id",
+	"step_id",
+	"run_id",
+	"model",
+])
 
 describe("handlers/steers", () => {
 	let originalFetch: typeof globalThis.fetch
@@ -121,8 +138,13 @@ describe("handlers/steers", () => {
 		})
 		const attrs = attrsOf(events, "steer.fired")
 		expect(attrs).toMatchObject({ kind: "bash_tool_guard", reason: "block", is_subagent: "true", interactive: "false" })
-		for (const [key, value] of Object.entries(attrs ?? {})) {
-			expect(key).not.toMatch(/command|path|text/i)
+		// The producer-leaked fields must not surface, and no value may contain
+		// the leaked content in any key. (The full ambient-id surface is the
+		// pipeline's, not this handler's — we only assert OUR allowlist keys
+		// are the only steer-* attrs and nothing leaked through.)
+		const steerAttrs = Object.keys(attrs ?? {}).filter((k) => !k.includes(".") && !AMBIENT_BARE_KEYS.has(k))
+		expect(steerAttrs.sort()).toEqual([...STEER_TELEMETRY_ATTR_ALLOWLIST["steer:fired"]].sort())
+		for (const value of Object.values(attrs ?? {})) {
 			expect(String(value)).not.toContain("secrets")
 			expect(String(value)).not.toContain("/etc/passwd")
 		}

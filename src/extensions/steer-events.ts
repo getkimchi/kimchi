@@ -101,18 +101,27 @@ export interface SteerSessionShape {
 
 /**
  * Emit a steer-fire event. The subagent flag is derived from the ambient
- * worker context; `interactive` defaults to true and should be overridden
- * with `ctx.hasUI` where a context is available.
+ * worker context; `interactive` defaults to the CLI-args classification and
+ * should be overridden with `ctx.hasUI` where a context is available.
+ * `sessionId` keys the abort tracker (prevents cross-session attribution on
+ * multi-session hosts like ACP); leave it unset only at ctx-less emit sites,
+ * where the single-session fallback key is correct.
  */
 function defaultInteractive(): boolean {
-	const parsed = getParsedCliArgs()
-	return !(parsed.options.print === true || (parsed.options.mode !== undefined && parsed.options.mode !== "text"))
+	try {
+		const parsed = getParsedCliArgs()
+		return !(parsed.options.print === true || (parsed.options.mode !== undefined && parsed.options.mode !== "text"))
+	} catch {
+		// CLI args may be unpopulated on some host paths (older pi versions,
+		// embedded hosts). Treat as interactive rather than failing the steer.
+		return true
+	}
 }
 export function emitSteerFired(
 	pi: ExtensionAPI,
 	kind: SteerKind,
 	reason: string,
-	shape: { interactive?: boolean } = {},
+	shape: { interactive?: boolean; sessionId?: string } = {},
 ): void {
 	if (isSteerDisabled(kind)) return
 	const payload: SteerFiredPayload = {
@@ -123,7 +132,7 @@ export function emitSteerFired(
 	}
 	try {
 		pi.events.emit(STEER_EVENTS.FIRED, payload)
-		trackLastSteerFired(kind, reason, payload.interactive)
+		trackLastSteerFired(shape.sessionId ?? "", kind, reason, payload.interactive)
 	} catch {
 		// pi.events may be unavailable on older hosts or lightweight test
 		// mocks. The steer still functions without telemetry (precedent:
@@ -169,8 +178,8 @@ const STEER_DISABLE_FLAGS: Record<SteerKind, string> = {
 	bash_tool_guard: "KIMCHI_DISABLE_GUARD_BASH_TOOL",
 	bash_timeout_guidance: "KIMCHI_DISABLE_NUDGE_BASH_TIMEOUT",
 	bash_control_checkin: "KIMCHI_DISABLE_NUDGE_BASH_CONTROL_CHECKIN",
-	exploration_guard: "KIMCHI_DISABLE_NUDGE_EXPLORATION",
-	review_write_guard: "KIMCHI_DISABLE_NUDGE_REVIEW_WRITE",
+	exploration_guard: "KIMCHI_DISABLE_GUARD_EXPLORATION",
+	review_write_guard: "KIMCHI_DISABLE_GUARD_REVIEW_WRITE",
 	continuation_nudge: "KIMCHI_DISABLE_NUDGE_CONTINUATION",
 	planning_stop_nudge: "KIMCHI_DISABLE_NUDGE_PLANNING_STOP",
 }
@@ -195,19 +204,31 @@ export function steerDisableFlagName(kind: SteerKind): string {
 // steer:aborted with that kind. Real user input clears the tracker so an
 // unrelated later abort is not attributed to a steer.
 
-/** Most recent steer fired in the session, pending an abort-attribution check. */
-let lastSteerFired: { kind: SteerKind; reason: string; interactive: boolean } | undefined
+/** Most recent steer fired per session, pending an abort-attribution check.
+ *  Keyed by sessionId so concurrent sessions (ACP hosts) can't misattribute
+ *  an abort in one session to a steer fired in another. The empty key is the
+ *  fallback for ctx-less emit sites (correct on single-session hosts). */
+const lastSteerFiredBySession = new Map<string, { kind: SteerKind; reason: string; interactive: boolean }>()
 
-/** Record the fired steer as the abort-attribution candidate. Called by
- *  emitSteerFired; also cleared here when the kill switch suppresses the
- *  steer (a disabled steer cannot be vetoed). */
-function trackLastSteerFired(kind: SteerKind, reason: string, interactive: boolean): void {
-	lastSteerFired = { kind, reason, interactive }
+/** Kinds excluded from abort attribution. bash_control_checkin fires on every
+ *  still-running poll — tracking it would poison the tracker in any session
+ *  with background work (every abort becomes "vetoed a checkin"). Polling a
+ *  handle is not a message the user vetoes anyway. */
+const ABORT_TRACKING_EXCLUDED_KINDS: ReadonlySet<SteerKind> = new Set(["bash_control_checkin"])
+
+/** Record the fired steer as the abort-attribution candidate for its session.
+ *  Called by emitSteerFired. Sessions whose steer kind is excluded from abort
+ *  tracking keep their previous candidate. Note: emitSteerFired early-returns
+ *  WITHOUT tracking when the kill switch suppresses the steer — a disabled
+ *  steer can't be vetoed, so nothing new is recorded. */
+function trackLastSteerFired(sessionId: string, kind: SteerKind, reason: string, interactive: boolean): void {
+	if (ABORT_TRACKING_EXCLUDED_KINDS.has(kind)) return
+	lastSteerFiredBySession.set(sessionId, { kind, reason, interactive })
 }
 
 /** Test-only: clear the module-level abort tracker between tests. */
 export function resetSteerAbortTracker(): void {
-	lastSteerFired = undefined
+	lastSteerFiredBySession.clear()
 }
 
 /**
@@ -217,16 +238,17 @@ export function resetSteerAbortTracker(): void {
  * human-vetoed.
  */
 export function steerAbortTrackerExtension(pi: ExtensionAPI): void {
-	pi.on("input", (event) => {
+	pi.on("input", (event, ctx) => {
 		// Real user input (not an extension's injection) means any later abort
 		// is the user interrupting their own request — attribute nothing.
-		if (event.source !== "extension") lastSteerFired = undefined
+		if (event.source !== "extension") lastSteerFiredBySession.delete(ctx.sessionManager.getSessionId())
 	})
 
-	pi.on("turn_end", (event) => {
-		if (!lastSteerFired) return
-		const steer = lastSteerFired
-		lastSteerFired = undefined
+	pi.on("turn_end", (event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+		const steer = lastSteerFiredBySession.get(sessionId)
+		if (!steer) return
+		lastSteerFiredBySession.delete(sessionId)
 		if (event.message.role !== "assistant") return
 		if (event.message.stopReason !== "aborted") return
 		if (isSteerDisabled(steer.kind)) return

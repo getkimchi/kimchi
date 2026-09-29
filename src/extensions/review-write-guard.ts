@@ -332,7 +332,10 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			},
 			{ deliverAs: "steer" },
 		)
-		emitSteerFired(pi, "review_write_guard", "steer", { interactive: ctx.hasUI })
+		emitSteerFired(pi, "review_write_guard", "steer", {
+			interactive: ctx.hasUI,
+			sessionId: ctx.sessionManager.getSessionId(),
+		})
 		return { block: false }
 	})
 

@@ -143,6 +143,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	function deleteSessionContext(sessionId: string): void {
 		_activeSessionContexts.delete(sessionId)
+		// The sibling maps in this extension follow the same cleanup site
+		// (they leak the same way today) — clear the one this PR added so the
+		// early-nudge bookkeeping can't leak across long-lived hosts.
+		clearEarlyNudgeFired(sessionId)
 	}
 
 	const replayAndSync = (ctx: ExtensionContext) => {
@@ -242,7 +246,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 						TODO_STALENESS_CUSTOM_TYPE,
 						text,
 						{ reason: "staleness", threshold },
-						{ steerKind: "todo_staleness", interactive: ctx.hasUI },
+						{ steerKind: "todo_staleness", interactive: ctx.hasUI, sessionId },
 					)
 			},
 		})
