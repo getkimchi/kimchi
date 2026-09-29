@@ -476,29 +476,6 @@ function agentEnd(): AgentSessionEvent {
 	return { type: "agent_end", messages: [], willRetry: false }
 }
 
-// message_end carrying a plain-text assistant response, for tests that
-// assert ordering between out-of-turn warning chunks and the turn's content.
-function assistantTextEnd(text: string): AgentSessionEvent {
-	const message: AssistantMessage = {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		api: "anthropic-messages",
-		provider: "anthropic",
-		model: "claude",
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		timestamp: 0,
-	}
-	return { type: "message_end", message }
-}
-
 // Starts a session backed by a FakeAgentSession with the given model plus a
 // recording conn, for tests that assert on the emitted sessionUpdates.
 async function startRecordingSession(model: FakeModel): Promise<{
@@ -2097,12 +2074,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
-	// Image blocks are dropped when the model doesn't support vision: they are
-	// removed from the session prompt, the stderr diagnostic fires once for the
-	// turn, and the client receives exactly one warning chunk — before any
-	// assistant content, with its own message id namespace and a blank-line
-	// separator from the response.
-	it("drops image blocks when model has no vision support", async () => {
+	// Image blocks on a text-only model: the turn is BLOCKED — nothing reaches
+	// the session, so no model turn is spent answering a prompt that is missing
+	// its attached context. The client receives exactly one warning chunk, with
+	// its own message id namespace and a trailing blank line.
+	it("blocks the turn when the model has no vision support", async () => {
 		const {
 			agent: dropAgent,
 			fake: dropFake,
@@ -2113,12 +2089,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			id: "text-only-model",
 			input: ["text"],
 		})
-		dropFake.promptImpl = async () => {
-			dropFake.emit({ type: "agent_start" })
-			await delay(5)
-			dropFake.emit(assistantTextEnd("the model's textual answer"))
-			dropFake.emit(agentEnd())
-		}
 
 		const writes: string[] = []
 		const origWrite = process.stderr.write.bind(process.stderr)
@@ -2138,35 +2108,32 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				],
 			})
 			expect(result.stopReason).toBe("end_turn")
-			// Images should be dropped, not passed to session.prompt (passed as empty array)
-			expect(dropFake.lastPromptImages).toEqual([])
 		} finally {
 			process.stderr.write = origWrite
 		}
 
-		// The stderr diagnostic fires once for the turn, with the block count.
-		const matches = writes.filter((w) => w.includes("acp prompt: dropping 2 image blocks"))
+		// Nothing reaches the session: no model turn is spent on the blocked prompt.
+		expect(dropFake.promptCalls).toHaveLength(0)
+		// The stderr diagnostic fires once for the turn, with the image count.
+		const matches = writes.filter((w) => w.includes("acp prompt: refusing prompt with 2 images"))
 		expect(matches).toHaveLength(1)
 
-		// The client-visible warning: one chunk ahead of the assistant response.
+		// The client-visible warning is the turn's only chunk.
 		const chunks = messageChunks(updates)
-		expect(chunks).toHaveLength(2)
-		const [warning, response] = chunks
-		expect(warning.text).toContain("[ACP] dropped 2 image blocks")
+		expect(chunks).toHaveLength(1)
+		const warning = chunks[0]
 		expect(warning.text).toContain("text-only-model does not accept image input")
-		// Trailing blank line so clients that concatenate chunks keep the
-		// warning visually separate from the assistant response.
+		expect(warning.text).toContain("switch to a model with image support or remove the images and resend")
+		// Trailing blank line so clients that concatenate chunks render the
+		// warning as its own paragraph.
 		expect(warning.text.endsWith("\n\n")).toBe(true)
-		expect(warning.text + response.text).toContain("file path.\n\nthe model's textual answer")
-		// Distinct message namespaces: the warning id never collides with the
-		// session's km.* block ids.
+		// The warning id never collides with the session's km.* block ids.
 		expect(warning.messageId).toMatch(/^acp-warning\./)
-		expect(response.messageId).toMatch(/^km\./)
 	})
 
 	// The warning is per-turn: the old connection-level dedupe left every drop
 	// after the first fully invisible to the client.
-	it("warns once per dropping turn, with a fresh message id each turn", async () => {
+	it("warns once per blocked turn, with a fresh message id each turn", async () => {
 		const {
 			agent: dropAgent,
 			fake: dropFake,
@@ -2177,11 +2144,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			id: "text-only-model",
 			input: ["text"],
 		})
-		dropFake.promptImpl = async () => {
-			dropFake.emit({ type: "agent_start" })
-			await delay(5)
-			dropFake.emit(agentEnd())
-		}
 
 		for (let turn = 0; turn < 2; turn++) {
 			const result = await dropAgent.prompt({
@@ -2194,16 +2156,19 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(result.stopReason).toBe("end_turn")
 		}
 
+		// Both turns were blocked before reaching the session.
+		expect(dropFake.promptCalls).toHaveLength(0)
+
 		const warnings = messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))
 		expect(warnings).toHaveLength(2)
 		expect(warnings[0].text).toBe(warnings[1].text)
 		expect(warnings[0].messageId).not.toBe(warnings[1].messageId)
 	})
 
-	// An image-only prompt on a text-only model must still surface the drop:
-	// the turn ends immediately server-side, but only after the warning chunk
-	// goes out — the user is never left with a silently empty turn.
-	it("warns and ends the turn for an image-only prompt on a text-only model", async () => {
+	// An image-only prompt on a text-only model follows the same blocked-turn
+	// path: the warning chunk goes out, the turn ends, and the user is never
+	// left with a silently empty turn.
+	it("blocks an image-only prompt on a text-only model", async () => {
 		const {
 			agent: dropAgent,
 			fake: dropFake,
@@ -2225,7 +2190,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		const warnings = messageChunks(updates).filter((chunk) => chunk.text.startsWith("[ACP]"))
 		expect(warnings).toHaveLength(1)
-		expect(warnings[0].text).toContain("[ACP] dropped 1 image block")
+		expect(warnings[0].text).toContain("remove the image and resend")
 	})
 
 	// Auto-routed models (kimchi-dev/auto*) have text-only descriptors but

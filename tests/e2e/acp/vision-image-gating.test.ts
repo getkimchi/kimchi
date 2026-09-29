@@ -41,9 +41,10 @@ describe("ACP vision image gating", () => {
 		await fixture?.stop()
 	})
 
-	it("drops image blocks on a text-only model and warns the client before the response", async () => {
+	it("blocks image prompts on a text-only model and warns the client without a model turn", async () => {
 		// A vision model stays available so the connection legitimately
 		// advertises image support; the session's concrete model is text-only.
+		// No responses are scripted: the blocked prompt must never reach the model.
 		fixture = await startAcpFixture({
 			artifactName: "acp-vision-drop",
 			models: [
@@ -51,7 +52,7 @@ describe("ACP vision image gating", () => {
 				{ slug: "vision-model", displayName: "Vision Model", input: ["text", "image"] },
 			],
 			defaultModel: "text-only-model",
-			responses: [{ stream: ["I only got the words."] }],
+			responses: [],
 		})
 
 		expect(fixture.initializeResponse.agentCapabilities?.promptCapabilities?.image).toBe(true)
@@ -60,31 +61,21 @@ describe("ACP vision image gating", () => {
 		const result = await prompt(fixture, sessionId, "describe this image", [imageBlock()])
 		expect(result.stopReason).toBe("end_turn")
 
-		// The scripted response arrived, preceded by exactly one drop warning.
+		// The turn is blocked: exactly one warning chunk and no model response.
 		const chunks = textChunks(fixture, sessionId)
-		expect(chunks.map((chunk) => chunk.text)).toContain("I only got the words.")
-		const warnings = chunks.filter((chunk) => chunk.text.startsWith("[ACP]"))
-		expect(warnings).toHaveLength(1)
-		expect(warnings[0].text).toContain("[ACP] dropped 1 image block")
-		expect(warnings[0].text).toContain("text-only-model does not accept image input")
-		// The warning lands before any assistant content and keeps its own
-		// message-id namespace plus a blank-line separator.
-		expect(chunks.indexOf(warnings[0])).toBeLessThan(
-			chunks.findIndex((chunk) => chunk.text === "I only got the words."),
-		)
-		expect(warnings[0].messageId).toMatch(/^acp-warning\./)
-		expect(warnings[0].text.endsWith("\n\n")).toBe(true)
-		expect(warnings[0].text + "I only got the words.").toContain("file path.\n\nI only got the words.")
+		expect(chunks).toHaveLength(1)
+		const warning = chunks[0]
+		expect(warning.text).toContain("text-only-model does not accept image input")
+		expect(warning.text).toContain("switch to a model with image support or remove the image and resend")
+		// The warning keeps its own message-id namespace plus a blank-line
+		// separator, so it renders as its own paragraph.
+		expect(warning.messageId).toMatch(/^acp-warning\./)
+		expect(warning.text.endsWith("\n\n")).toBe(true)
 
-		// The backend saw the text — and never the image.
-		const bodies = chatBodies(fixture)
-		expect(bodies).toHaveLength(1)
-		const userMessage = JSON.stringify(
-			(bodies[0] as { messages: Array<{ role: string }> }).messages.find((message) => message.role === "user"),
-		)
-		expect(userMessage).toContain("describe this image")
-		expect(userMessage).not.toContain("image_url")
-		expect(userMessage).not.toContain(TINY_PNG)
+		// Nothing reached the backend — no model turn was spent on the blocked
+		// prompt. (The fake server still sees the harness's own identity/
+		// telemetry traffic, so assert specifically on chat completions.)
+		expect(chatBodies(fixture)).toHaveLength(0)
 	})
 
 	it("delivers image blocks to the backend on a vision-capable model", async () => {

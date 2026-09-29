@@ -948,22 +948,23 @@ export class KimchiAcpAgent implements Agent {
 
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages ? extractImages(params.prompt) : []
-		// A dropped image is user-visible data loss, so every dropping turn warns
-		// the client — exactly once per turn, as ordinary assistant text via the
-		// standard agent_message_chunk schema (the [ACP] prefix matches the
-		// warnUnsupportedMethod convention; ACP has no dedicated warning channel).
-		// Only blocks that are actually dropped count: a vision-capable (or
-		// auto-routed) model keeps its images and must not warn. Sent BEFORE the
-		// empty-turn early return so image-only prompts still warn instead of
-		// silently ending the turn, and before entry.turn exists so it always
-		// lands ahead of the turn's assistant content. The warning gets its own
-		// message id (never a `km.*` block id) plus a trailing blank line so
-		// clients that concatenate chunks separate it from the assistant response.
+		// Image blocks a text-only model cannot take: the turn is BLOCKED, not
+		// sent text-only. Sending it would spend a full model turn answering a
+		// prompt that is missing the attached context — the TUI vision gate never
+		// silently submits text-only either, and ACP clients cannot know at
+		// compose time (the schema exposes no per-model input modalities). The
+		// client is informed exactly once per turn as ordinary assistant text via
+		// the standard agent_message_chunk schema (the [ACP] prefix matches the
+		// warnUnsupportedMethod convention; ACP has no dedicated warning channel),
+		// with its own message id (never a `km.*` block id) plus a trailing blank
+		// line so clients that concatenate chunks keep it visually separate.
 		const droppedImages = supportsImages ? 0 : params.prompt.filter((b) => b.type === "image").length
 		if (droppedImages > 0) {
-			const noun = droppedImages === 1 ? "block" : "blocks"
+			const noun = droppedImages === 1 ? "image" : "images"
 			const modelId = entry.session.model?.id ?? "unknown model"
-			process.stderr.write(`acp prompt: dropping ${droppedImages} image ${noun} (active model has no vision input)\n`)
+			process.stderr.write(
+				`acp prompt: refusing prompt with ${droppedImages} ${noun} (active model has no vision input)\n`,
+			)
 			this.send({
 				sessionId: params.sessionId,
 				update: {
@@ -971,10 +972,12 @@ export class KimchiAcpAgent implements Agent {
 					messageId: `acp-warning.${randomUUID()}`,
 					content: {
 						type: "text",
-						text: `[ACP] dropped ${droppedImages} image ${noun}: ${modelId} does not accept image input — switch the model or attach the image as a file path.\n\n`,
+						text: `[ACP] ${modelId} does not accept image input — switch to a model with image support or remove the ${noun} and resend.\n\n`,
 					},
 				},
 			})
+			// Nothing reaches the session — the turn ends without a model call.
+			return { stopReason: "end_turn" }
 		}
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
