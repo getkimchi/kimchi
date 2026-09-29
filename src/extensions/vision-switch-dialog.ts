@@ -172,8 +172,7 @@ export class VisionSwitchComponent extends Container {
 			this.done({ kind: "cancel" })
 			return
 		}
-		// Ctrl+R is owned by legacy feedback after a run settles.
-		if (matchesKey(data, Key.alt("r"))) {
+		if (matchesKey(data, Key.ctrl("r"))) {
 			this.done({ kind: "remove" })
 			return
 		}
@@ -199,7 +198,7 @@ export class VisionSwitchComponent extends Container {
 			return
 		}
 		// Plain `r` (and every other printable) always belongs to the search
-		// input — removal is Alt+R only.
+		// input — removal is Ctrl+R only.
 		if (matchesKey(data, Key.backspace) || data === "\x7f") {
 			this.query = this.query.slice(0, -1)
 			this.selectedIndex = 0
@@ -285,7 +284,7 @@ export class VisionSwitchComponent extends Container {
 			lines.push(` ${this.theme.fg("error", this.errorMessage)}`)
 		}
 
-		const hintPlain = "↑↓ navigate · Enter select · Esc cancel · Alt+R remove image(s)"
+		const hintPlain = "↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)"
 		lines.push("")
 		lines.push(` ${this.theme.fg("dim", hintPlain)}`)
 		lines.push("")

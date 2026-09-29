@@ -93,7 +93,7 @@ const ENTER = "\r"
 const ESCAPE = "\x1b"
 const UP = "\x1b[A"
 const DOWN = "\x1b[B"
-const ALT_R = "\x1br"
+const CTRL_R = "\x12"
 
 describe("VisionSwitchComponent render", () => {
 	it.each([1, 8, 20, 34, 50, 80])("keeps every rendered line within a %i-column terminal", async (width) => {
@@ -148,7 +148,7 @@ describe("VisionSwitchComponent render", () => {
 		expect(text).toContain("⚠ compact first")
 		// /model-style footer: the highlighted row's human-readable name.
 		expect(text).toContain("Model Name: Vision Model")
-		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Alt+R remove image(s)")
+		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)")
 	})
 
 	it("does not show the compact badge on fitting rows", () => {
@@ -172,9 +172,9 @@ describe("VisionSwitchComponent render", () => {
 		const { component, done } = makeHarness({ candidates: [] })
 		const text = renderText(component)
 		expect(text).toContain("No vision models available")
-		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Alt+R remove image(s)")
+		expect(text).toContain("↑↓ navigate · Enter select · Esc cancel · Ctrl+R remove image(s)")
 		// Both actions remain functional.
-		component.handleInput(ALT_R)
+		component.handleInput(CTRL_R)
 		expect(done).toHaveBeenCalledWith({ kind: "remove" })
 	})
 
@@ -250,9 +250,9 @@ describe("VisionSwitchComponent input", () => {
 		expect(done).toHaveBeenCalledWith({ kind: "cancel" })
 	})
 
-	it("Alt+R resolves remove", () => {
+	it("Ctrl+R resolves remove", () => {
 		const { component, done } = makeHarness({})
-		component.handleInput(ALT_R)
+		component.handleInput(CTRL_R)
 		expect(done).toHaveBeenCalledWith({ kind: "remove" })
 	})
 
@@ -350,7 +350,7 @@ describe("VisionSwitchComponent input", () => {
 		expect(renderText(component)).toContain("Switching…")
 		// Busy: everything is blocked.
 		component.handleInput(ENTER)
-		component.handleInput(ALT_R)
+		component.handleInput(CTRL_R)
 		component.handleInput(ESCAPE)
 		expect(onSwitch).toHaveBeenCalledTimes(1)
 		expect(done).not.toHaveBeenCalled()
