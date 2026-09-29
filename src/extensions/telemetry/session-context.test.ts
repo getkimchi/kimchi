@@ -629,6 +629,30 @@ describe("SessionContext", () => {
 		expect(attrMap["session.id"]).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
 	})
 
+	it("flushMetrics stamps the pi session id as session.id on metric data points", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.setPiSessionId("019e2af0-153f-77dc-839c-683e23fd301d")
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		expect(metrics.length).toBeGreaterThan(0)
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const sessionAttr = dataPoint.attributes.find(
+				(a: { key: string }) => a.key === "session.id",
+			)
+			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+		}
+	})
+
 	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {
 		const ctx1 = new TelemetryContext(makeConfig())
 		const ctx2 = new TelemetryContext(makeConfig())

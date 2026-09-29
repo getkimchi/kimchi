@@ -30,8 +30,10 @@ const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.mes
 // ---------------------------------------------------------------------------
 // Process-level ID + shared accumulators
 //
-// All agents (main + sub-agents) in the same process share telemetryId so
-// that telemetry rolls up under one session in the backend.
+// telemetryId is an internal accumulator key (ReplacingMergeTree
+// monotonic-flush grouping), not the emitted session id: the per-event
+// `session.id` is the pi session id via resolveSessionId() (see
+// TelemetryContext.piSessionId).
 //
 // Accumulators are keyed by telemetryId (not per-session) so that every
 // flush sends the monotonically increasing total across ALL agents. This is
