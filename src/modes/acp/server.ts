@@ -1957,6 +1957,17 @@ function getSessionModelRegistry(
 }
 
 /**
+ * The image-input sentence appended to every model row's description. ACP
+ * exposes no per-model input modalities, so without this a user holding an
+ * image cannot tell which models can take it — the blocked-prompt warning
+ * tells them to switch, and this is how they find the switch target. Both
+ * sides are spelled out because an absent line guides nobody.
+ */
+function modelImageInputDescription(model: Pick<Model<Api>, "provider" | "id" | "input">): string {
+	return modelSupportsImages(model) ? "Accepts images." : "Text-only."
+}
+
+/**
  * A routed virtual model's select option.
  *
  * Routed virtual models (`auto`, `auto-beta`) are the rows that are not plain
@@ -1965,13 +1976,14 @@ function getSessionModelRegistry(
  * status bar, so a client showing only the selected model still says what the
  * virtual model resolved to. The base name comes from the catalog descriptor
  * (backend display name); the description is the harness's one-liner for what
- * a routed virtual model does.
+ * a routed virtual model does, plus the shared image-input sentence (the
+ * backend-routed pool accepts image input).
  */
 function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
 	// The backend may ship the description inside the display name; ACP has a
 	// dedicated description field, so the pair is split apart here.
 	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
-	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
+	const description = `${nameDescription ?? AUTO_MODEL_DESCRIPTION} ${modelImageInputDescription(model)}`
 	const state = getAutoRoutingState(sessionId)
 	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
 		return {
@@ -1993,8 +2005,9 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	} = getOrchestratorModel(session.sessionId, modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
 	// `description` is the optional secondary line ACP clients render beneath an
-	// option's name. Only the two routing entries carry one — concrete models are
-	// self-describing — and a client that ignores the field still shows the name.
+	// option's name. Every model row carries an image-input sentence (the schema
+	// exposes no per-model modalities), and the routing entries additionally
+	// explain what they do — a client that ignores the field still shows the name.
 	const options = [
 		{
 			value: "multi-model",
@@ -2004,7 +2017,13 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		...modelRegistry
 			.getAvailable()
 			.map((m) =>
-				isAutoRoutedModel(m) ? autoModelOption(m, session.sessionId) : { value: refFromModel(m), name: m.name },
+				isAutoRoutedModel(m)
+					? autoModelOption(m, session.sessionId)
+					: {
+							value: refFromModel(m),
+							name: m.name,
+							description: modelImageInputDescription(m),
+						},
 			)
 			.sort((a, b) => a.value.localeCompare(b.value)),
 	]

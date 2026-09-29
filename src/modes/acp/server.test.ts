@@ -5440,7 +5440,8 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
-		// Routing entries carry a description; the concrete models below do not.
+		// Routing entries carry their description; concrete models carry the
+		// image-input sentence (no input modalities on these fake rows → text-only).
 		expect(res.models?.availableModels[0]).toEqual({
 			modelId: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
@@ -5449,10 +5450,12 @@ describe("newSession model state", () => {
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
 			name: "Claude 3",
+			description: "Text-only.",
 		})
 		expect(res.models?.availableModels[2]).toEqual({
 			modelId: "openai/gpt-4",
 			name: "GPT-4",
+			description: "Text-only.",
 		})
 	})
 
@@ -5522,14 +5525,54 @@ describe("newSession model state", () => {
 		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 			value: "kimchi-dev/auto",
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically.",
+			description: "Picks the best model for your tasks automatically. Accepts images.",
 		})
 		// The description threads through the models surface as well.
 		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/auto")).toEqual({
 			modelId: "kimchi-dev/auto",
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically.",
+			description: "Picks the best model for your tasks automatically. Accepts images.",
 		})
+	})
+
+	// Every concrete model row carries an image-input sentence so a user
+	// holding an image can find the switch target the blocked-prompt warning
+	// points at (the ACP schema exposes no per-model modalities).
+	it("describes each concrete model's image input capability", async () => {
+		const fake = new FakeAgentSession("session-image-descriptions")
+		const available = [
+			{ provider: "test", id: "text-only-model", name: "Text Only", input: ["text"] },
+			{ provider: "test", id: "vision-model", name: "Vision Model", input: ["text", "image"] },
+		]
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => available,
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "test/text-only-model")).toMatchObject({
+			name: "Text Only",
+			description: "Text-only.",
+		})
+		expect(options.find((o) => o.value === "test/vision-model")).toMatchObject({
+			name: "Vision Model",
+			description: "Accepts images.",
+		})
+		// The sentences thread through the models surface as well.
+		expect(res.models?.availableModels.find((m) => m.modelId === "test/vision-model")?.description).toBe(
+			"Accepts images.",
+		)
+		expect(res.models?.availableModels.find((m) => m.modelId === "test/text-only-model")?.description).toBe(
+			"Text-only.",
+		)
 	})
 
 	it("splits a backend display name that carries its description", async () => {
@@ -5560,7 +5603,7 @@ describe("newSession model state", () => {
 		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 			value: "kimchi-dev/auto",
 			name: "Auto",
-			description: "Picks the best model for your tasks automatically.",
+			description: "Picks the best model for your tasks automatically. Accepts images.",
 		})
 	})
 
@@ -5587,7 +5630,7 @@ describe("newSession model state", () => {
 			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")).toEqual({
 				value: "kimchi-dev/auto-beta",
 				name: "Auto Beta",
-				description: "Picks the best model for your tasks automatically.",
+				description: "Picks the best model for your tasks automatically. Accepts images.",
 			})
 		} finally {
 			clearAutoRoutingState(sessionId)
@@ -5636,6 +5679,7 @@ describe("newSession model state", () => {
 		expect(options.find((o) => o.value === "kimchi-dev/kimi-k3")).toEqual({
 			value: "kimchi-dev/kimi-k3",
 			name: "Kimi K3",
+			description: "Text-only.",
 		})
 	})
 

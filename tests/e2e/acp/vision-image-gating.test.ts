@@ -57,7 +57,17 @@ describe("ACP vision image gating", () => {
 
 		expect(fixture.initializeResponse.agentCapabilities?.promptCapabilities?.image).toBe(true)
 
-		const sessionId = await newSession(fixture, fixture.workDir)
+		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const sessionId = session.sessionId
+		// The model rows carry their image-input sentences, so a user holding an
+		// image can find the switch target the blocked-prompt warning points at.
+		expect(session.models?.availableModels.find((model) => model.modelId === "fake/text-only-model")?.description).toBe(
+			"Text-only.",
+		)
+		expect(session.models?.availableModels.find((model) => model.modelId === "fake/vision-model")?.description).toBe(
+			"Accepts images.",
+		)
+
 		const result = await prompt(fixture, sessionId, "describe this image", [imageBlock()])
 		expect(result.stopReason).toBe("end_turn")
 
