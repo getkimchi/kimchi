@@ -4,10 +4,12 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "../ferment-v2/constants.js"
 import { createFermentV2, putFermentV2Entry } from "../ferment-v2/reducer.js"
-import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
+import { FERMENT_V2_STATUS, FERMENT_V2_STATUSES } from "../ferment-v2/types.js"
+import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
+import { TODO_STALENESS_CUSTOM_TYPE } from "./staleness-steers.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
-import type { TodoDraft } from "./types.js"
+import { TODO_STATUS, type TodoDraft } from "./types.js"
 
 async function harness() {
 	const api = createExtensionApi()
@@ -53,7 +55,7 @@ async function harness() {
 		work,
 		end,
 		request,
-		closure: () => api.sendMessage.mock.calls.filter(([message]) => message.customType === "todo-closure"),
+		closure: () => api.sendMessage.mock.calls.filter(([message]) => message.customType === TODO_CLOSURE_CUSTOM_TYPE),
 	}
 }
 
@@ -62,12 +64,12 @@ describe("bounded todo cleanup", () => {
 
 	it("nudges below the staleness threshold after only later items were completed", async () => {
 		const h = await harness()
-		h.write([{ id: 1, content: "Verify inputs", status: "in_progress" }])
+		h.write([{ id: 1, content: "Verify inputs", status: TODO_STATUS.IN_PROGRESS }])
 		for (let i = 0; i < 5; i++) await h.work()
 		h.write([
-			{ id: 1, content: "Verify inputs", status: "in_progress" },
-			{ id: 2, content: "Collect results", status: "completed" },
-			{ id: 3, content: "Compare results", status: "completed" },
+			{ id: 1, content: "Verify inputs", status: TODO_STATUS.IN_PROGRESS },
+			{ id: 2, content: "Collect results", status: TODO_STATUS.COMPLETED },
+			{ id: 3, content: "Compare results", status: TODO_STATUS.COMPLETED },
 		])
 		await h.end()
 		expect(h.closure()).toHaveLength(1)
@@ -77,10 +79,10 @@ describe("bounded todo cleanup", () => {
 
 	it("cannot loop after todo edits or replay, but a new user request can be checked", async () => {
 		const h = await harness()
-		h.write([{ content: "Publish after approval", status: "pending" }])
+		h.write([{ content: "Publish after approval", status: TODO_STATUS.PENDING }])
 		await h.work()
 		await h.end()
-		h.write([{ content: "Publish after approval", status: "pending", note: "Deferred" }])
+		h.write([{ content: "Publish after approval", status: TODO_STATUS.PENDING, note: "Deferred" }])
 		await h.end()
 		await h.fire("session_tree")
 		await h.end()
@@ -93,7 +95,7 @@ describe("bounded todo cleanup", () => {
 
 	it("does not revisit an unchanged deferred list on a new conversational request", async () => {
 		const h = await harness()
-		h.write([{ content: "Publish after approval", status: "pending" }])
+		h.write([{ content: "Publish after approval", status: TODO_STATUS.PENDING }])
 		await h.work()
 		h.request()
 		await h.end("stop", "42")
@@ -102,7 +104,7 @@ describe("bounded todo cleanup", () => {
 
 	it("does not treat todo bookkeeping as task work", async () => {
 		const h = await harness()
-		h.write([{ content: "Future task", status: "pending" }])
+		h.write([{ content: "Future task", status: TODO_STATUS.PENDING }])
 		await h.work("create_todos")
 		await h.end()
 		expect(h.closure()).toHaveLength(0)
@@ -110,7 +112,7 @@ describe("bounded todo cleanup", () => {
 
 	it("waits for the user when the final answer asks a question after work", async () => {
 		const h = await harness()
-		h.write([{ content: "Publish after approval", status: "pending" }])
+		h.write([{ content: "Publish after approval", status: TODO_STATUS.PENDING }])
 		await h.work()
 		await h.end("stop", "Verification passed. Should I publish?")
 		expect(h.closure()).toHaveLength(0)
@@ -118,22 +120,24 @@ describe("bounded todo cleanup", () => {
 
 	it("does not call a completed list stale", async () => {
 		const h = await harness()
-		h.write([{ content: "Finished setup", status: "completed" }])
+		h.write([{ content: "Finished setup", status: TODO_STATUS.COMPLETED }])
 		for (let i = 0; i < 26; i++) await h.work("read")
 		await h.end()
-		expect(h.sendMessage.mock.calls.filter(([message]) => message.customType === "todo-staleness")).toHaveLength(0)
+		expect(
+			h.sendMessage.mock.calls.filter(([message]) => message.customType === TODO_STALENESS_CUSTOM_TYPE),
+		).toHaveLength(0)
 		expect(h.closure()).toHaveLength(0)
 	})
 
 	it("keeps cleanup bounded when compaction removes the reminder from model context", async () => {
 		const h = await harness()
-		h.write([{ content: "Publish after approval", status: "pending" }])
+		h.write([{ content: "Publish after approval", status: TODO_STATUS.PENDING }])
 		await h.work()
 		await h.end()
-		expect(JSON.stringify(h.manager.buildSessionContext().messages)).toContain("todo-closure")
+		expect(JSON.stringify(h.manager.buildSessionContext().messages)).toContain(TODO_CLOSURE_CUSTOM_TYPE)
 		const kept = h.manager.appendCustomMessageEntry("test-checkpoint", "Deferred work remains open", false)
 		h.manager.appendCompaction("Work done; publishing deferred", kept, 1000)
-		expect(JSON.stringify(h.manager.buildSessionContext().messages)).not.toContain("todo-closure")
+		expect(JSON.stringify(h.manager.buildSessionContext().messages)).not.toContain(TODO_CLOSURE_CUSTOM_TYPE)
 		await h.fire("session_compact")
 		await h.end()
 		expect(h.closure()).toHaveLength(1)
@@ -145,16 +149,16 @@ describe("bounded todo cleanup", () => {
 
 	it("counts work reminders separately from the once-per-request cleanup", async () => {
 		const h = await harness()
-		h.write([{ content: "Long task", status: "in_progress" }])
+		h.write([{ content: "Long task", status: TODO_STATUS.IN_PROGRESS }])
 		for (let i = 0; i < 30; i++) await h.work("read")
 		await h.end()
 		const reminders = () =>
 			h.sendMessage.mock.calls
-				.filter(([message]) => message.customType === "todo-staleness")
+				.filter(([message]) => message.customType === TODO_STALENESS_CUSTOM_TYPE)
 				.map(([message]) => message.details)
 		expect(reminders()).toEqual([9, 17, 25].map((threshold) => ({ reason: "staleness", threshold })))
 		expect(h.closure()).toHaveLength(1)
-		h.write([{ content: "Long task", status: "in_progress", note: "Progress recorded" }])
+		h.write([{ content: "Long task", status: TODO_STATUS.IN_PROGRESS, note: "Progress recorded" }])
 		for (let i = 0; i < 9; i++) await h.work("read")
 		await h.end()
 		expect(reminders()).toEqual([9, 17, 25, 9].map((threshold) => ({ reason: "staleness", threshold })))
@@ -172,7 +176,7 @@ describe("bounded todo cleanup", () => {
 		"worker scope",
 	])("skips cleanup for %s", async (reason) => {
 		const h = await harness()
-		h.write([{ content: "Work", status: reason === "blocked" ? "blocked" : "in_progress" }])
+		h.write([{ content: "Work", status: reason === "blocked" ? TODO_STATUS.BLOCKED : TODO_STATUS.IN_PROGRESS }])
 		if (reason === "empty") h.write([])
 		if (reason === "queued input") h.ctx.hasPendingMessages = () => true
 		if (reason === "no tools") h.api.setActiveTools([])
@@ -186,20 +190,14 @@ describe("bounded todo cleanup", () => {
 		expect(h.closure()).toHaveLength(0)
 	})
 
-	it.each([
-		"active",
-		"paused",
-		"blocked",
-		"budget_limited",
-		"complete",
-	] as const)("respects %s Ferment ownership", async (status) => {
+	it.each(FERMENT_V2_STATUSES)("respects %s Ferment ownership", async (status) => {
 		const h = await harness()
 		const run = createFermentV2(undefined, "Earlier objective", "run", new Date().toISOString())
 		h.manager.appendCustomEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry({ ...run, status }))
 		h.request()
-		h.write([{ content: "Verify follow-up", status: "in_progress" }])
+		h.write([{ content: "Verify follow-up", status: TODO_STATUS.IN_PROGRESS }])
 		await h.work()
 		await h.end()
-		expect(h.closure()).toHaveLength(status === "complete" ? 1 : 0)
+		expect(h.closure()).toHaveLength(status === FERMENT_V2_STATUS.COMPLETE ? 1 : 0)
 	})
 })
