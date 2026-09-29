@@ -4,10 +4,12 @@ import {
 	emitSteerFired,
 	emitSteerOutcome,
 	isSteerDisabled,
+	resetSteerAbortTracker,
 	STEER_EVENTS,
 	type SteerFiredPayload,
 	type SteerKind,
 	type SteerOutcomePayload,
+	steerAbortTrackerExtension,
 	steerDisableFlagName,
 } from "./steer-events.js"
 
@@ -105,5 +107,94 @@ describe("steer-events", () => {
 		for (const kind of ALL_KINDS) {
 			expect(isSteerDisabled(kind)).toBe(false)
 		}
+	})
+
+	describe("steer:aborted tracker", () => {
+		type Handler = (...args: unknown[]) => Promise<unknown> | unknown
+
+		beforeEach(() => {
+			resetSteerAbortTracker()
+		})
+
+		function makeTrackingPi() {
+			const handlers = new Map<string, Handler[]>()
+			const emitted: { channel: string; payload: unknown }[] = []
+			const pi = {
+				on: vi.fn((event: string, handler: Handler) => {
+					const list = handlers.get(event) ?? []
+					list.push(handler)
+					handlers.set(event, list)
+				}),
+				events: {
+					emit: (channel: string, payload: unknown) => {
+						emitted.push({ channel, payload })
+					},
+				},
+			} as unknown as ExtensionAPI
+			steerAbortTrackerExtension(pi)
+			return {
+				pi,
+				emitted,
+				fire: async (event: string, payload: unknown) => {
+					for (const handler of handlers.get(event) ?? []) await handler(payload, {})
+				},
+			}
+		}
+
+		it("user Esc-abort of the turn following a steer → steer:aborted with the steer's kind", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "exploration_guard", "turn_end", { interactive: true })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
+
+			const aborted = emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)
+			expect(aborted).toHaveLength(1)
+			expect(aborted[0].payload).toMatchObject({ kind: "exploration_guard", reason: "turn_end", interactive: true })
+		})
+
+		it("no abort for a normal (non-aborted) turn finish", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "continuation_nudge", "empty_turn")
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+
+			expect(emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)).toHaveLength(0)
+		})
+
+		it("real user input clears the tracker — a later abort is not attributed to the steer", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "bash_timeout_guidance", "timeout")
+			await fire("input", { source: "interactive", text: "what now?" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
+
+			expect(emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)).toHaveLength(0)
+		})
+
+		it("extension-source input does NOT clear the tracker (steers flow through input too)", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "todo_early_nudge", "early_nudge")
+			await fire("input", { source: "extension", text: "steer text" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
+
+			expect(emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)).toHaveLength(1)
+		})
+
+		it("only the most recent steer is attributed when multiple fire back-to-back", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "exploration_guard", "turn_end")
+			emitSteerFired(pi, "bash_timeout_guidance", "timeout")
+			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
+
+			const aborted = emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)
+			expect(aborted).toHaveLength(1)
+			expect(aborted[0].payload).toMatchObject({ kind: "bash_timeout_guidance" })
+		})
+
+		it("kill switch on that kind suppresses the abort event too", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "loop_guard", "warn")
+			process.env[steerDisableFlagName("loop_guard")] = "1"
+			await fire("turn_end", { message: { role: "assistant", stopReason: "aborted" } })
+
+			expect(emitted.filter((e) => e.channel === STEER_EVENTS.ABORTED)).toHaveLength(0)
+		})
 	})
 })

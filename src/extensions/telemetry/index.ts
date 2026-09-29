@@ -48,7 +48,7 @@ import {
 	handleSessionShutdown,
 	handleSessionStart,
 } from "./handlers/session.js"
-import { handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
+import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
@@ -835,6 +835,13 @@ function onSteerOutcome(raw: unknown): void {
 	handleSteerOutcome(ctx, raw)
 }
 
+function onSteerAborted(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	handleSteerAborted(ctx, raw)
+}
+
 // ---------------------------------------------------------------------------
 // Permission domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
@@ -934,6 +941,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		// through the attribute allowlist in handlers/steers.ts.
 		pi.events.on(STEER_EVENTS.FIRED, onSteerFired)
 		pi.events.on(STEER_EVENTS.OUTCOME, onSteerOutcome)
+		pi.events.on(STEER_EVENTS.ABORTED, onSteerAborted)
 
 		// Subscribe to permission decision events. The permissions extension
 		// publishes one fact per gated tool decision; telemetry translates them

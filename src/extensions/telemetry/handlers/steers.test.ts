@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { logEvents, type RecordedEvent } from "../otlp-test-utils.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
-import { handleSteerFired, handleSteerOutcome } from "./steers.js"
+import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./steers.js"
 
 vi.mock("../../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -83,6 +83,22 @@ describe("handlers/steers", () => {
 			outcome: "repeated",
 			is_subagent: "false",
 			interactive: "false",
+		})
+	})
+
+	it("steer:aborted → steer.aborted OTLP record with kind, reason, interactive, is_subagent", async () => {
+		const events = await emitted(handleSteerAborted, {
+			kind: "exploration_guard",
+			reason: "turn_end",
+			is_subagent: false,
+			interactive: true,
+		})
+		const attrs = attrsOf(events, "steer.aborted")
+		expect(attrs).toMatchObject({
+			kind: "exploration_guard",
+			reason: "turn_end",
+			is_subagent: "false",
+			interactive: "true",
 		})
 	})
 

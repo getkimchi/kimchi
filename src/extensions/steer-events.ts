@@ -26,6 +26,7 @@ import { isAgentWorker } from "./agent-worker-context.js"
 export const STEER_EVENTS = {
 	FIRED: "steer:fired",
 	OUTCOME: "steer:outcome",
+	ABORTED: "steer:aborted",
 } as const
 
 export type SteerEventChannel = (typeof STEER_EVENTS)[keyof typeof STEER_EVENTS]
@@ -73,6 +74,20 @@ export interface SteerOutcomePayload {
 	interactive: boolean
 }
 
+export interface SteerAbortedPayload {
+	/** Which steer/nudge/guard surface the aborted turn followed. */
+	kind: SteerKind
+	/** The short reason code of the steer that preceded the abort. */
+	reason: string
+	/** True when the abort happened inside an agent worker (subagent).
+	 *  (A user Esc abort is, by definition, the main session — but the
+	 *  payload keeps the flag for shape parity with the other events.) */
+	is_subagent: boolean
+	/** True in interactive sessions (UI present); false in
+	 *  print/protocol/benchmark sessions. */
+	interactive: boolean
+}
+
 /** Session-shape flags shared by every payload. Sites that have a ctx
  *  pass `interactive: ctx.hasUI`; the default is derived from the session's
  *  parsed CLI args so ctx-less emit sites still classify correctly. */
@@ -108,6 +123,7 @@ export function emitSteerFired(
 	}
 	try {
 		pi.events.emit(STEER_EVENTS.FIRED, payload)
+		trackLastSteerFired(kind, reason, payload.interactive)
 	} catch {
 		// pi.events may be unavailable on older hosts or lightweight test
 		// mocks. The steer still functions without telemetry (precedent:
@@ -167,4 +183,63 @@ export function isSteerDisabled(kind: SteerKind): boolean {
 /** Env var name for a steer kind's kill switch (for docs/tests). */
 export function steerDisableFlagName(kind: SteerKind): string {
 	return STEER_DISABLE_FLAGS[kind]
+}
+
+// ---------------------------------------------------------------------------
+// steer:aborted — user-veto outcome for the most recent steer
+// ---------------------------------------------------------------------------
+// Model-compliance outcomes (steer:outcome) don't capture the case where the
+// model obeyed the steer but the *human* vetoed the resulting work with Esc.
+// This small tracker bridges that gap: emitSteerFired records the most recent
+// steer; a turn_end with stopReason "aborted" while a steer is pending emits
+// steer:aborted with that kind. Real user input clears the tracker so an
+// unrelated later abort is not attributed to a steer.
+
+/** Most recent steer fired in the session, pending an abort-attribution check. */
+let lastSteerFired: { kind: SteerKind; reason: string; interactive: boolean } | undefined
+
+/** Record the fired steer as the abort-attribution candidate. Called by
+ *  emitSteerFired; also cleared here when the kill switch suppresses the
+ *  steer (a disabled steer cannot be vetoed). */
+function trackLastSteerFired(kind: SteerKind, reason: string, interactive: boolean): void {
+	lastSteerFired = { kind, reason, interactive }
+}
+
+/** Test-only: clear the module-level abort tracker between tests. */
+export function resetSteerAbortTracker(): void {
+	lastSteerFired = undefined
+}
+
+/**
+ * Extension that emits `steer:aborted` when the user aborts (Esc) the turn
+ * immediately following a harness steer — the "user vetoed the nudge" signal.
+ * The model-compliance three-way read then becomes: complied / model-ignored /
+ * human-vetoed.
+ */
+export function steerAbortTrackerExtension(pi: ExtensionAPI): void {
+	pi.on("input", (event) => {
+		// Real user input (not an extension's injection) means any later abort
+		// is the user interrupting their own request — attribute nothing.
+		if (event.source !== "extension") lastSteerFired = undefined
+	})
+
+	pi.on("turn_end", (event) => {
+		if (!lastSteerFired) return
+		const steer = lastSteerFired
+		lastSteerFired = undefined
+		if (event.message.role !== "assistant") return
+		if (event.message.stopReason !== "aborted") return
+		if (isSteerDisabled(steer.kind)) return
+		const payload: SteerAbortedPayload = {
+			kind: steer.kind,
+			reason: steer.reason,
+			is_subagent: isAgentWorker(),
+			interactive: steer.interactive,
+		}
+		try {
+			pi.events.emit(STEER_EVENTS.ABORTED, payload)
+		} catch {
+			// pi.events may be unavailable on older hosts or lightweight mocks.
+		}
+	})
 }
