@@ -713,6 +713,35 @@ describe("feedbackExtension legacy-terminal rating picker", () => {
 		keyboardCapabilityMock.kittySupport = undefined
 	})
 
+	it.each([
+		"rating",
+		"model-switch",
+	])("leaves Ctrl+R with the active UI prompt during a %s invitation", async (invitation) => {
+		const { api, ctx, getHandler, getHandlers, getShortcutHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+		if (invitation === "model-switch") {
+			await getHandler("model_select")(
+				{
+					previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
+					model: { provider: "kimchi-dev", id: "concrete-model", name: "Concrete" },
+				},
+				ctx,
+			)
+		}
+		for (const handler of getHandlers("ui_prompt_start"))
+			await handler({ type: "ui_prompt_start", reason: "ui_prompt", kind: "custom" }, ctx)
+		for (const [handler] of vi.mocked(ctx.ui.onTerminalInput).mock.calls) expect(handler(CTRL_R)).toBeUndefined()
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+		expect(ratingDialogMock.show).not.toHaveBeenCalled()
+		expect(dialogMock.show).not.toHaveBeenCalled()
+		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
+		for (const handler of getHandlers("ui_prompt_end"))
+			await handler({ type: "ui_prompt_end", reason: "ui_prompt", kind: "custom" }, ctx)
+		await press(ctx, CTRL_R)
+		expect(invitation === "rating" ? ratingDialogMock.show : modelSwitchDialogMock.show).toHaveBeenCalledTimes(1)
+	})
+
 	it("Ctrl+R opens the rating picker, then the details dialog for the picked sentiment", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)

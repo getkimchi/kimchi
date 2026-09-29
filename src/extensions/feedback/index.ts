@@ -28,6 +28,14 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer(FEEDBACK_SUMMARY_CUSTOM_TYPE, feedbackSummaryRenderer)
 	pi.registerEntryRenderer(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, feedbackSummaryRenderer)
 
+	let uiPromptActive = false
+	pi.on("ui_prompt_start", () => {
+		uiPromptActive = true
+	})
+	pi.on("ui_prompt_end", () => {
+		uiPromptActive = false
+	})
+
 	let state: FeedbackState = "idle"
 	let autoModelUsed = false
 	// The concrete model a routed virtual model resolved to for the settled turn
@@ -37,6 +45,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	let routedUsedId: string | undefined
 
 	const reset = () => {
+		uiPromptActive = false
 		state = "idle"
 		autoModelUsed = false
 		routedUsedId = undefined
@@ -74,7 +83,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		stopListeningForCtrlR()
 		unsubscribeCtrlR = ctx.ui.onTerminalInput((data: string) => {
 			// Returning undefined passes the key through untouched.
-			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			if (uiPromptActive || !matchesKey(data, Key.ctrl("r"))) return undefined
 			// Nothing awaits this handler, so a rejection would otherwise be
 			// unhandled — surface it in the UI instead of crashing the process.
 			void handleShortcut(ctx).catch((err: unknown) => {
@@ -96,10 +105,8 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	// happen, whether or not a draft prompt is typed, and passes the key
 	// through untouched the rest of the time.
 	//
-	// Known tradeoff: raw input runs before whatever has focus, and extensions
-	// can't tell whether a selector or overlay (e.g. /model, /help) is up. Opened
-	// right after a response, such UI loses Ctrl+R due to the rating dialog —
-	// including /resume's rename binding while a rating invitation is active.
+	// Raw input runs before the focused component. Leave Ctrl+R unconsumed
+	// while Pi reports an active extension UI prompt, such as the vision dialog.
 	let unsubscribeLegacyRatingKey: (() => void) | undefined
 	const stopListeningForLegacyRatingKey = () => {
 		unsubscribeLegacyRatingKey?.()
@@ -109,7 +116,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		stopListeningForLegacyRatingKey()
 		if (!usesLegacyRatingPrompt()) return
 		unsubscribeLegacyRatingKey = ctx.ui.onTerminalInput((data: string) => {
-			if (!matchesKey(data, Key.ctrl("r"))) return undefined
+			if (uiPromptActive || !matchesKey(data, Key.ctrl("r"))) return undefined
 			// A model-switch invitation takes precedence — its own Ctrl+R
 			// listener (set up on model_select) handles the key.
 			if (getModelSwitchInvitation()) return undefined
@@ -181,7 +188,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	async function handleShortcut(ctx: ExtensionContext, sentiment?: FeedbackSentiment): Promise<void> {
 		// Only fire in TUI mode. In headless modes (print/json/acp/rpc) there is
 		// no keyboard to consume, so the shortcut is inert.
-		if (ctx.mode !== "tui" || !ctx.hasUI) return
+		if (uiPromptActive || ctx.mode !== "tui" || !ctx.hasUI) return
 
 		// Model-switch invitation takes precedence over the rating flow.
 		const activeInvitation = getModelSwitchInvitation()
