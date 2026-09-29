@@ -91,7 +91,16 @@ const AWAITING_USER_PHRASES: RegExp[] = [
  *  that the model may act on instead of waiting (issue_1 entries 2028/2051).
  *  The suppression only ever runs on text-only turns (turns with tool calls
  *  never reach it in `evaluateTurn`), so the blast radius is exactly the
- *  stall-vs-wait ambiguity. */
+ *  stall-vs-wait ambiguity.
+ *
+ *  Accepted false-positive surface: `includes("?")` also matches `?` inside
+ *  URLs with query strings, ternaries in inline code, and rhetorical
+ *  questions in otherwise-drift text — each suppresses drift recovery for
+ *  that turn and leaves a stalled session the user can prod. The trade is
+ *  deliberately asymmetric: a missed nudge stalls, while a nudge fired while
+ *  the model waited on the user produced unauthorized continued work. If
+ *  unrecovered-drift reports ever surface, strip fenced code blocks, inline
+ *  code spans, and URLs from the joined text before these checks. */
 export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 	const text = message.content
 		.filter((c) => c.type === "text")

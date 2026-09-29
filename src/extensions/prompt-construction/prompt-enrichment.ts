@@ -589,8 +589,13 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// otherwise survive until the next user input or tool call and blank
 			// any unrelated extension-triggered response in between. The normal
 			// path clears pending at turn_end; this guard covers the case where
-			// that never runs. It cannot race an in-flight nudge: the agent loop
-			// drains queued followUps before emitting agent_end.
+			// that never runs. It cannot race an in-flight nudge: the agent loop's
+			// continue-while-queued check keeps the loop alive while the followUp
+			// queue is non-empty, so agent_end only fires after a queued nudge's
+			// turn has run. That upstream invariant is guarded end-to-end by the
+			// continuation-nudge TUI test: it asserts the streamed <done> token
+			// stays blanked, which fails if agent_end ever cleared pending while
+			// a queued nudge's response was still in flight.
 			pi.on("agent_end", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
