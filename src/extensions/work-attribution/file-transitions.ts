@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
 import {
@@ -248,6 +248,7 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 		if (!existsSync(journal)) return
 		if (statSync(journal).size > MAX_FILE_BYTES)
 			throw new Error("Work attribution transition journal exceeds reconciliation limit")
+		const journalDigest = digest(readFileSync(journal))
 		const transitions = records(journal)
 			.filter(isTransition)
 			.filter((row) => row.worktree === worktree && row.repository === repository)
@@ -286,11 +287,21 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 				candidates.push({ sha: line.split(" ")[1], position, invalidatedBefore })
 			} else invalidatedBefore = position
 		}
-		// Recent commits make progress even when older evidence exceeds the lookup budget.
-		for (const { sha, position, invalidatedBefore } of candidates.slice(-MAX_COMMITS).reverse()) {
+		// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
+		const evidence = `${journalDigest}:${digest(log)}`
+		const progressPath = `${journal}.progress`
+		const progress = records(progressPath).at(-1)
+		const recent = candidates.slice(-MAX_COMMITS).reverse()
+		const completed =
+			progress?.evidence === evidence ? recent.findIndex((row) => row.position === progress.position) : -1
+		const checkpoint = (position: number) => writeFileSync(progressPath, JSON.stringify({ evidence, position }))
+		for (const { sha, position, invalidatedBefore } of recent.slice(completed + 1)) {
 			if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
 			const parents = git(worktree, ["rev-list", "--parents", "-n", "1", sha]).split(" ").slice(1)
-			if (parents.length > 1) continue
+			if (parents.length > 1) {
+				checkpoint(position)
+				continue
+			}
 			const parent = parents[0] ?? null
 			const groups = new Map<string, Transition[]>()
 			for (const row of valid) {
@@ -365,6 +376,7 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 				)
 				all.push({ ...fields, workId: match.owner.workId })
 			}
+			checkpoint(position)
 		}
 	})
 }

@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { getWorkId, recordProviderRequest, type WorkContext } from "../work-attribution.js"
+import { getWorkId, recordProviderRequest, tryWorkAttribution, type WorkContext } from "../work-attribution.js"
 import { DEFAULT_CONFIG } from "./constants.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierFailureCode, ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
@@ -35,12 +35,7 @@ export async function classifyToolCall(
 	if (!candidates.length) return unavailable("no model available for classifier", "no_candidates")
 	const sessionId = options.context.sessionManager.getSessionId()
 	const context = { cwd: options.context.cwd, sessionManager: { getSessionId: () => sessionId } }
-	let workId: string
-	try {
-		workId = getWorkId(context)
-	} catch {
-		return unavailable("classifier attribution unavailable", "provider_error")
-	}
+	const workId = tryWorkAttribution(() => getWorkId(context))
 	let lastResult = unavailable("classifier budget exhausted", "budget_exhausted")
 	const skips: string[] = []
 
@@ -146,10 +141,13 @@ async function runClassifier(
 	model: Model<Api>,
 	auth: CandidateAuth,
 	call: ClassifyInput,
-	attribution: { context: WorkContext; workId: string },
+	attribution: { context: WorkContext; workId: string | undefined },
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
+	const request = attribution.workId
+		? tryWorkAttribution(() => recordProviderRequest(attribution.context, model, attribution.workId))
+		: undefined
 	const outcome = await withinDeadline(
 		(attemptSignal) =>
 			complete(
@@ -168,7 +166,7 @@ async function runClassifier(
 					apiKey: auth.apiKey,
 					headers: {
 						...auth.headers,
-						"X-Request-Id": recordProviderRequest(attribution.context, model, attribution.workId).requestId,
+						...(request ? { "X-Request-Id": request.requestId } : {}),
 					},
 					signal: attemptSignal,
 					onPayload: (payload: unknown) => {

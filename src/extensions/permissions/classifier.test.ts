@@ -1,10 +1,11 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
@@ -33,6 +34,30 @@ function deferred<T>() {
 }
 
 describe("classifyToolCall", () => {
+	it.each(["identity", "request"])("still classifies when %s storage fails", async (stage) => {
+		if (stage === "request") {
+			getWorkId(options.context)
+			rmSync(join(attributionDir, "work-attribution"), { recursive: true })
+		}
+		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		completeMock.mockResolvedValue(response())
+		const registry = createModelRegistry()
+		const success = classifyToolCall([primary], registry, call, options)
+		await vi.runAllTimersAsync()
+		const result = await success
+		expect(result).toMatchObject({ ok: true, verdict: "safe", usedModelId: primary.id })
+		expect(completeMock).toHaveBeenCalledTimes(1)
+		expect(completeMock.mock.calls[0][2].headers).not.toHaveProperty("X-Request-Id")
+		expect(warn).toHaveBeenCalled()
+
+		completeMock.mockReset().mockRejectedValue(new Error("provider unavailable"))
+		const failure = classifyToolCall([primary], registry, call, options)
+		await vi.runAllTimersAsync()
+		expect(await failure).toMatchObject({ ok: false, verdict: "requires-confirmation", failureCode: "provider_error" })
+		expect(completeMock).toHaveBeenCalledTimes(3)
+	})
+
 	it("persists distinct retry identities before each auxiliary provider call", async () => {
 		const requestIds: string[] = []
 		completeMock.mockImplementation((_model, _context, opts) => {

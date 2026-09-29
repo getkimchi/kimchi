@@ -1,3 +1,4 @@
+import * as childProcess from "node:child_process"
 import { execFileSync } from "node:child_process"
 import {
 	chmodSync,
@@ -19,6 +20,8 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createTrackedEditTool, createTrackedWriteTool, reconcileFileTransitions } from "./file-transitions.js"
+
+vi.mock("node:child_process", { spy: true })
 
 let root: string
 let repo: string
@@ -76,6 +79,55 @@ afterEach(() => {
 })
 
 describe("manual commit reconciliation", () => {
+	it("rechecks completed commits when additional transition evidence becomes available", async () => {
+		baseline()
+		await write("first.txt", "first")
+		await write("second.txt", "second")
+		const dir = join(root, "agent", "work-attribution", "transitions")
+		const journal = join(dir, readdirSync(dir)[0])
+		const evidence = readFileSync(journal, "utf8")
+		writeFileSync(journal, `${evidence.split("\n")[0]}\n`)
+		const sha = commit()
+		reconcileFileTransitions(context("first-launch"))
+		expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["first.txt"] })])
+
+		writeFileSync(journal, evidence)
+		reconcileFileTransitions(context("next-launch"))
+		reconcileFileTransitions(context("repeat-launch"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, paths: ["first.txt"] }),
+			expect.objectContaining({ sha, paths: ["second.txt"] }),
+		])
+	})
+
+	it.each([false, true])("advances through a bounded backlog across launches (mixed newest: %s)", async (mixed) => {
+		baseline()
+		const expected: string[] = []
+		for (let i = 0; i < 4; i++) {
+			await write(`new-${i}.txt`, `agent ${i}`)
+			if (mixed && i === 3) writeFileSync(join(repo, `new-${i}.txt`), "human changed it")
+			const sha = commit()
+			if (!mixed || i !== 3) expected.push(sha)
+		}
+		let clock = 0
+		vi.spyOn(Date, "now").mockImplementation(() => clock)
+		const { execFileSync: execute } = await vi.importActual<typeof childProcess>("node:child_process")
+		vi.spyOn(childProcess, "execFileSync").mockImplementation((...args) => {
+			clock += 250
+			return execute(...args)
+		})
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		reconcileFileTransitions(context("first-launch"))
+		expect(contributions().length).toBeLessThan(expected.length)
+		for (let i = 0; i < 5; i++) reconcileFileTransitions(context(`launch-${i}`))
+		expect(
+			contributions()
+				.map((row) => row.sha)
+				.sort(),
+			warn.mock.calls.map((call) => String(call[1])).join("\n"),
+		).toEqual(expected.sort())
+	})
+
 	it.each([
 		"child",
 		"rendered",
