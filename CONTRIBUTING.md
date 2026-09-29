@@ -36,6 +36,24 @@ Kimchi is licensed under the **Apache License 2.0**. By contributing, you agree 
 4. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
 5. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
 
+## Running a focused unit test
+
+Unit tests are co-located as `*.test.ts` files next to the source they cover under `src/`; the full suite runs with `pnpm run test`. During development you can run a single test file instead of the whole suite:
+
+```sh
+pnpm test src/fs-paths.test.ts
+```
+
+To narrow the run further, filter by test name with `-t`:
+
+```sh
+pnpm test src/fs-paths.test.ts -t "findExistingFile"
+```
+
+The `-t` filter matches against the full test name, including the enclosing `describe` block, so a substring like the block name runs only the tests in that block.
+
+Focused runs are a development aid only — still run `pnpm run check` and `pnpm run test` before opening a PR.
+
 ## What we will and won't accept
 
 **Likely to be accepted:**
