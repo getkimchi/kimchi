@@ -827,7 +827,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e153475a60948 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1359,8 +1359,21 @@ export class InteractiveMode {
+@@ -1359,8 +1359,60 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -839,14 +839,53 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..eef0a63bd562a22d5a8a8c802a7e1534
 +                const collisionCount = skillDiagnostics.filter((d) => d.type === "collision" && d.collision).length;
 +                const issueCount = skillDiagnostics.length - collisionCount;
 +                let summaryText;
-+                if (collisionCount > 0) {
-+                    summaryText = `[${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"}] Some skills were found in multiple directories.` + (issueCount > 0 ? ` Also: ${issueCount} skill issue${issueCount === 1 ? "" : "s"}.` : "");
++                if (issueCount > 0) {
++                    // Issues first: the skill was not loaded at all and needs
++                    // user attention. Conflicts are informational (a winner is
++                    // selected and still loaded), so they trail as "also".
++                    summaryText = `[${issueCount} skill issue${issueCount === 1 ? "" : "s"}] Some skills were not loaded.` + (collisionCount > 0 ? ` Also: ${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"} in multiple directories (a winner was loaded).` : "");
 +                } else {
-+                    summaryText = `[${issueCount} skill issue${issueCount === 1 ? "" : "s"}] Some skills need attention.`;
++                    summaryText = `[${collisionCount} skill conflict${collisionCount === 1 ? "" : "s"}] Some skills were found in multiple directories.`;
 +                }
-+                const collapsedText = theme.fg("dim", summaryText) + " " + keyHint("app.tools.expand", "to see the full list.");
-+                const expandedText = `${theme.fg("dim", "[Skill conflicts]")}\n${warningLines}`;
-+                this.loadedResourcesContainer.addChild(new ExpandableText(() => collapsedText, () => expandedText, this.getStartupExpansionState(), 0, 0));
++                // Plain text row (no Box stroke), but with a right-aligned dim
++                // "(ctrl+o to expand|collapse)" hint like a collapsed tool row.
++                // Local expansion state like a single tool row: a click toggles
++                // only this line, while ctrl+o still propagates to it via
++                // setExpanded() from setToolsExpanded().
++                class SkillConflictsLine {
++                    constructor(collapsedLeft, expandedLeft, details, expanded) {
++                        this.collapsedLeft = collapsedLeft;
++                        this.expandedLeft = expandedLeft;
++                        this.details = details;
++                        this.expanded = expanded;
++                    }
++                    headerLine(width) {
++                        const left = this.expanded ? this.expandedLeft : this.collapsedLeft;
++                        const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${this.expanded ? "collapse" : "expand"})`);
++                        const gap = width - visibleWidth(left) - visibleWidth(hint);
++                        if (gap < 2)
++                            return TuiLayouts.truncateToWidth(left, width);
++                        return left + " ".repeat(gap) + hint;
++                    }
++                    setExpanded(expanded) {
++                        this.expanded = expanded;
++                    }
++                    handleMouse(event) {
++                        if (event.type !== "click" || event.button !== "left")
++                            return undefined;
++                        this.setExpanded(!this.expanded);
++                        return { handled: true };
++                    }
++                    render(width) {
++                        const lines = [this.headerLine(width)];
++                        if (this.expanded)
++                            lines.push(...this.details.split("\n"));
++                        return lines;
++                    }
++                    invalidate() {
++                    }
++                }
++                this.loadedResourcesContainer.addChild(new SkillConflictsLine(summaryText, "[Skill conflicts]", warningLines, this.getStartupExpansionState()));
                  this.loadedResourcesContainer.addChild(new Spacer(1));
              }
              const promptDiagnostics = promptsResult.diagnostics;
