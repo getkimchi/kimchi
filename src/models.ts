@@ -48,24 +48,13 @@ export function anthropicMessagesApi(endpoint?: string): string {
 // Kept as explicit tables so the gate is auditable. Follow-up: expose
 // `supports_responses_api` in /v1/models/metadata and consume that instead, so new
 // catalog models don't need a harness release.
-const RESPONSES_API_SLUG_PATTERNS: RegExp[] = [
-	/^gpt-4\.1/,
-	/^gpt-4o/,
-	/^gpt-5(?!-search)/,
-	/^gpt-6/,
-	/^o[134](-|$)/,
-]
+const RESPONSES_API_SLUG_PATTERNS: RegExp[] = [/^gpt-4\.1/, /^gpt-4o/, /^gpt-5(?!-search)/, /^gpt-6/, /^o[134](-|$)/]
 
 // OpenAI models that must stay on Chat Completions: legacy generations predate the
 // Responses API, and audio/embedding models are different endpoints entirely.
 // gpt-4o/gpt-4.1 do NOT match /^gpt-4(-|$)/ (next char isn't '-' or end-of-string),
 // and are matched by the Responses table above first.
-const CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS: RegExp[] = [
-	/^gpt-3\.5/,
-	/^gpt-4(-|$)/,
-	/^gpt-audio/,
-	/^text-embedding/,
-]
+const CHAT_COMPLETIONS_ONLY_SLUG_PATTERNS: RegExp[] = [/^gpt-3\.5/, /^gpt-4(-|$)/, /^gpt-audio/, /^text-embedding/]
 
 function supportsResponsesApi(provider: string, slug: string): boolean {
 	if (provider !== "openai") return false
