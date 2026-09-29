@@ -113,6 +113,14 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 	// event exists.
 	const interruption = detectInterruption(messages)
 	if (interruption) {
+		// Under backend routing the assistant message keeps the virtual id in
+		// `model`; the concrete pick lands in `responseModel`. Report it as a
+		// separate attribute so interruptions stay sliceable by the routed
+		// backend without a server-side join.
+		const routedModel = messages.findLast(
+			(m): m is AssistantMessage =>
+				m.role === "assistant" && typeof m.responseModel === "string" && m.responseModel !== m.model,
+		)?.responseModel
 		tm.emit(
 			"agent.interrupted",
 			{
@@ -122,6 +130,11 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 				ms_into_turn: tm.promptStartMs > 0 ? Date.now() - tm.promptStartMs : 0,
 			},
 			ctx,
+			// `currentModel` is the user-facing selection: under backend routing
+			// the assistant message keeps the virtual id (`auto`) in
+			// `message.model`, so "quit rate with Auto selected" stays
+			// answerable; `routed_model` carries the concrete pick.
+			{ model: tm.currentModel, ...(routedModel ? { routed_model: routedModel } : {}) },
 		)
 		return
 	}

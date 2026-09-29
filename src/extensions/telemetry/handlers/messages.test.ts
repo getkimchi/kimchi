@@ -596,6 +596,59 @@ describe("handleAgentEnd", () => {
 		expect(attrs).not.toHaveProperty("tool_name")
 	})
 
+	it("reports the auto selection (not the concrete pick) on agent.interrupted in Auto sessions", () => {
+		const { ctx, piCtx } = makeCtx()
+		// Auto session: currentModel holds the virtual id (the concrete pick
+		// lives in responseModel, never overwriting currentModel).
+		ctx.currentModel = "auto"
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "assistant",
+					stopReason: "aborted",
+					content: [{ text: "partial" }],
+					model: "auto",
+					responseModel: "kimi-k3",
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, , , commonOverrides] = emitSpy.mock.calls[0]! as [
+			string,
+			TelemetryAttributes,
+			unknown,
+			TelemetryAttributes,
+		]
+		expect(eventName).toBe("agent.interrupted")
+		expect(commonOverrides.model).toBe("auto")
+		expect(commonOverrides.routed_model).toBe("kimi-k3")
+	})
+
+	it("reports the concrete model on agent.interrupted in non-Auto sessions", () => {
+		const { ctx, piCtx } = makeCtx()
+		ctx.currentModel = "gpt-5"
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [{ role: "assistant", stopReason: "aborted", content: [{ text: "partial" }] }],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, , , commonOverrides] = emitSpy.mock.calls[0]! as [
+			string,
+			TelemetryAttributes,
+			unknown,
+			TelemetryAttributes,
+		]
+		expect(commonOverrides.model).toBe("gpt-5")
+		expect(commonOverrides.routed_model).toBeUndefined()
+	})
+
 	it("does not emit agent.interrupted when the run completed normally", () => {
 		const { ctx, piCtx } = makeCtx()
 		const emitSpy = vi.spyOn(ctx, "emit")
