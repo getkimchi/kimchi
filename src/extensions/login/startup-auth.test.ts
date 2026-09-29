@@ -230,7 +230,12 @@ describe("startup auth gate", () => {
 
 	it.each(["custom", "kimchi-dev/openai"])("syncs the saved key while checking %s authentication", async (provider) => {
 		configMock.loadConfig.mockReturnValue({ apiKey: "rejected-key", region: "us" })
-		const registry = { ...createModelRegistry([createModel("test-model", provider)]), refresh: vi.fn() }
+		const registry = {
+			...createModelRegistry([createModel("test-model", provider)]),
+			refresh: vi.fn(),
+			// The sync loop verifies every kimchi provider reports the synced key.
+			getApiKeyForProvider: vi.fn(async () => "rejected-key"),
+		}
 		const ctx = createContext({ modelRegistry: registry })
 
 		expect(await hasUsableAuth(ctx)).toBe(true)

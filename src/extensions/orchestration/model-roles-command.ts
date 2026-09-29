@@ -13,6 +13,7 @@ import { deriveDeprecationState } from "../../model-deprecation.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { isAutoRoutedRef } from "../auto-model/constants.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
@@ -31,7 +32,6 @@ import {
 	normalizeRoleModels,
 	type RoleModelAssignment,
 	saveModelRoles,
-	splitModelRef,
 } from "./model-roles.js"
 
 function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
@@ -390,18 +390,17 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
 					if (getMultiModelEnabled(ctx.sessionManager)) {
-						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
-						if (parsed) {
-							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
-							if (target) {
-								try {
-									await withSuppressedModelSelectGuard(() => pi.setModel(target))
-								} catch {
-									ctx.ui.notify(
-										`Could not switch to ${DEFAULT_MODEL_ROLES.orchestrator}. The model will be used next session.`,
-										"warning",
-									)
-								}
+						const target = ctx.modelRegistry
+							? findModelByRef(ctx.modelRegistry, DEFAULT_MODEL_ROLES.orchestrator)
+							: undefined
+						if (target) {
+							try {
+								await withSuppressedModelSelectGuard(() => pi.setModel(target))
+							} catch {
+								ctx.ui.notify(
+									`Could not switch to ${DEFAULT_MODEL_ROLES.orchestrator}. The model will be used next session.`,
+									"warning",
+								)
 							}
 						}
 					}
@@ -459,15 +458,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
 				if (roleKey === "orchestrator" && getMultiModelEnabled(ctx.sessionManager)) {
-					const parsed = splitModelRef(newRef)
-					if (parsed) {
-						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
-						if (target) {
-							try {
-								await withSuppressedModelSelectGuard(() => pi.setModel(target))
-							} catch {
-								ctx.ui.notify(`Could not switch to ${newRef}. The model will be used next session.`, "warning")
-							}
+					const target = ctx.modelRegistry ? findModelByRef(ctx.modelRegistry, newRef) : undefined
+					if (target) {
+						try {
+							await withSuppressedModelSelectGuard(() => pi.setModel(target))
+						} catch {
+							ctx.ui.notify(`Could not switch to ${newRef}. The model will be used next session.`, "warning")
 						}
 					}
 				}
