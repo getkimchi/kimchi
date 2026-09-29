@@ -4,14 +4,13 @@
  * Fetches analytics, productivity metrics, and timeseries data from Cast AI.
  */
 
+import { resolveEndpoints } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 import type {
 	GenerateAnalyticsResponse,
 	GenerateProductivityMetricsTimeseriesResponse,
 	GetProductivityMetricsResponse,
 } from "./types.js"
-
-const BASE_URL = "https://api.cast.ai"
 
 interface ApiClientConfig {
 	apiKey: string
@@ -24,7 +23,7 @@ export class CastAiStatsApi {
 
 	constructor(config: ApiClientConfig) {
 		this.apiKey = config.apiKey
-		this.baseUrl = config.baseUrl ?? BASE_URL
+		this.baseUrl = config.baseUrl ?? resolveEndpoints().castApiUrl
 	}
 
 	/**

@@ -1,8 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
-import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -15,7 +16,6 @@ import { setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
-import { resolveEffectiveModel } from "./router/state.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
@@ -106,15 +106,11 @@ export default function modelSwitchExtension(
 			}
 
 			if (!splitModelRef(model)) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,
@@ -123,15 +119,11 @@ export default function modelSwitchExtension(
 
 			const target = findModelByRef(ctx.modelRegistry, model)
 			if (!target) {
-				const available = ctx.modelRegistry
-					.getAvailable()
-					.map((m) => refFromModel(m))
-					.sort()
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
+							text: `Model not found: ${model}\n\nAvailable models:\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 						},
 					],
 					details: null,

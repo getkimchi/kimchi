@@ -37,8 +37,10 @@ import {
 	type LoopGuardSubagentAbortPayload,
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
+import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
 import { resetTelemetryFermentV2Context, setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
+import { handleToolDecision } from "./handlers/permissions.js"
 import {
 	emitSessionStartEvent,
 	handleSessionCompact,
@@ -803,6 +805,17 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Permission domain event handlers (subscribed via pi.events)
+// ---------------------------------------------------------------------------
+
+function onToolDecision(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	handleToolDecision(ctx, raw as Partial<PermissionToolDecisionPayload>)
+}
+
+// ---------------------------------------------------------------------------
 // Workflow domain event handler (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 
@@ -884,6 +897,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		// telemetry translates them into OTLP records for analytics.
 		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
 		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
+
+		// Subscribe to permission decision events. The permissions extension
+		// publishes one fact per gated tool decision; telemetry translates them
+		// into `claude_code.tool_decision` OTLP records (the acceptance signal).
+		pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, onToolDecision)
 
 		// Workflow domain events (kimchi-workflows): one envelope channel covers the whole contract.
 		pi.events.on(WORKFLOW_TELEMETRY_CHANNEL, onWorkflowTelemetry)

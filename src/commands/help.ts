@@ -1,5 +1,6 @@
 import { ANSI, fg } from "../ansi.js"
 import { CLI_OPTIONS, type CliOptionDef } from "../cli-args.js"
+import { listPackageCommands } from "./package-commands.js"
 import { COMMANDS } from "./registry.js"
 
 const SECTION_HEADER = "\x1b[1m"
@@ -75,6 +76,16 @@ export async function printMergedHelp(): Promise<void> {
 	}
 	console.log(`  kimchi ${"".padEnd(cmdPad)}${dim("(no subcommand)")} Launch the coding harness`)
 	console.log()
+
+	const packageCommands = listPackageCommands()
+	if (packageCommands.length > 0) {
+		console.log(`${bold("Package commands:")} ${dim("(installed via kimchi install)")}`)
+		const pkgPad = Math.max(...packageCommands.map((c) => c.name.length)) + 4
+		for (const cmd of packageCommands) {
+			console.log(`  kimchi ${cmd.name.padEnd(pkgPad)}${dim(`(from ${cmd.packageName})`)}`)
+		}
+		console.log()
+	}
 
 	console.log(`${bold("Harness flags")} ${dim("(no subcommand)")}:`)
 	printSection(KIMCHI_FLAGS, maxNameWidth(KIMCHI_FLAGS) + 2)

@@ -1,7 +1,6 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.85.1
 #
-# Tracking: No matching upstream issue exists yet; report remaining generic
-# changes to https://github.com/earendil-works/pi before the next upgrade.
+# Tracking: publication pending; no upstream issue or PR has been filed for this selector change.
 # Changes:
 #   - Kimchi CLI/provider defaults, extension-triggered prompt handling, forced
 #     compaction, model selection, extension UI helpers, and compact visuals.
@@ -10,6 +9,22 @@
 #     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
 #     caller (src/extensions/tags.ts, set_phase) is tool-driven and must stay
 #     session-only, so the plumbing would have no caller. (Upstream candidate.)
+#   - /model selector renders a capability table: MODEL | PROVIDER | CONTEXT |
+#     VISION | DESCRIPTION columns, all left-aligned (content starts under its
+#     column name; the ✓/✗ VISION cell pads to the 6-wide header so
+#     DESCRIPTION content lines up). The DESCRIPTION column combines the
+#     endpoint-provided model description (registry:
+#     process.__kimchiModelDescriptions, populated by src/models.ts from
+#     /v1/models/metadata, persisted through models.json) with the
+#     "Default for new sessions." annotation, replacing the old `· default`
+#     badge. The virtual multi-model row inherits its orchestrator model's
+#     stats/description. Layout width reads tui.terminal.columns (pi-tui's
+#     Terminal exposes `columns`, not `cols`); the last column is clipped,
+#     never padded, so the header cannot wrap onto a phantom blank line, and
+#     rows total exactly the terminal width. On narrow terminals the
+#     description column truncates first, then the provider column, the model
+#     id last. The shared renderer lives in src/model-selector-table.ts;
+#     removal criteria for this hunk are in the Removal note below.
 #   - exportToJsonl is awaited: src/cli.ts replaces the prototype with an async
 #     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
 #     is sync, so this hunk looks redundant - it is not. Dropping it prints
@@ -30,21 +45,15 @@
 # resources (config, permissions, hooks, skills, agents, memory, tags, plans,
 # ferments, MCP servers, pi-agent skills) so a cloned repo that ships them triggers the trust
 # prompt instead of being auto-trusted. The list is checked in cwd AND its
-# ancestors (matching the ancestor-walking skills/tags readers), stopping at
-# the user's home (a user resource) and the OS temp directory (not a project
+# ancestors (matching the ancestor-walking skills/tags readers), stopping at the
+# user's home (a user resource) and the OS temp directory (not a project
 # tree — a stray .kimchi/.claude created there by any tool must not gate
 # unrelated temp-dir sessions). The trust prompt and the untrusted warning
 # (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
 # mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
-#   that routing. Do not re-add a dist hunk for it.
-# Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
-# or Kimchi no longer needs the branded behavior. For the trust hunks: remove
-# once Pi ships native trust-scan extensibility or Kimchi adopts the
-# Pi-standard configDir layout. NOTE: the entry list must stay in sync with
-# TRUST_REQUIRING_PROJECT_RESOURCES in src/project-scope-trust.ts — a unit
-# test cross-checks the two.
-# History: see patches/CHANGELOG.md.
+# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
+# History: patches/CHANGELOG.md.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e61d276ba 100644
@@ -59,10 +68,25 @@ index 763b93f75e27d45326e1329b244846c4bb1c62b5..13e0767394303f9c587e491516dbae4e
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d002ef6363c 100644
+index 66e874efd252470d00d3cdaad2e2b4b6121de15b..904f51ac130b695e5c0f5180528fdc78ec2a547d 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1118,7 +1118,37 @@ export class AgentSession {
+@@ -901,11 +901,12 @@ export class AgentSession {
+             if (currentImages) {
+                 userContent.push(...currentImages);
+             }
+-            messages.push({
++            const userMessage = {
+                 role: "user",
+                 content: userContent,
+                 timestamp: Date.now(),
+-            });
++            };
++            messages.push(userMessage);
+             // Inject any pending "nextTurn" messages as context alongside the user message
+             for (const msg of this._pendingNextTurnMessages) {
+                 messages.push(msg);
+@@ -1118,7 +1119,37 @@ export class AgentSession {
              }
          }
          else if (options?.triggerTurn) {
@@ -101,7 +125,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
          }
          else if (this.isStreaming) {
              // Appending now would put the message between an assistant tool call and its
-@@ -1471,7 +1501,7 @@ export class AgentSession {
+@@ -1471,7 +1502,7 @@ export class AgentSession {
       *
       * @param customInstructions Optional instructions for the compaction summary
       */
@@ -110,7 +134,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
          await this.abort();
          this._compactionAbortController = new AbortController();
          this._emit({ type: "compaction_start", reason: "manual" });
-@@ -1483,14 +1513,21 @@ export class AgentSession {
+@@ -1483,14 +1514,21 @@ export class AgentSession {
              const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -134,7 +158,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
              }
              let extensionCompaction;
              if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -1941,7 +1978,8 @@ export class AgentSession {
+@@ -1941,7 +1979,8 @@ export class AgentSession {
          };
          this._resourceLoader.extendResources(extensionPaths);
          this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
@@ -144,7 +168,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -2047,10 +2085,10 @@ export class AgentSession {
+@@ -2047,10 +2086,10 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -157,7 +181,7 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..de3b3119fc9ce58ab5dc2bafaf5e4d00
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
-@@ -2076,7 +2114,7 @@ export class AgentSession {
+@@ -2076,7 +2115,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {
@@ -594,7 +618,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd8894046f77385541fd9bd7b88268866a34a526..a5666cf0b7063ec4852e6278160e33af21300434 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..23f6a0c0328dbbf3b7226786dded8f0ca228ca5f 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
@@ -657,27 +681,57 @@ index bd8894046f77385541fd9bd7b88268866a34a526..a5666cf0b7063ec4852e6278160e33af
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -262,12 +281,17 @@ export class ModelSelectorComponent extends Container {
-             if (!item)
-                 continue;
-             const isSelected = i === this.selectedIndex;
+@@ -256,21 +275,34 @@ export class ModelSelectorComponent extends Container {
+         const maxVisible = 10;
+         const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible));
+         const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
+-        // Show visible slice of filtered models
+-        for (let i = startIndex; i < endIndex; i++) {
+-            const item = this.filteredModels[i];
+-            if (!item)
+-                continue;
+-            const isSelected = i === this.selectedIndex;
 -            const isCurrent = modelsAreEqual(this.currentModel, item.model);
-+            // kimchi-dev: multi-model virtual row tracking
-+            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
-+            const isCurrent = item._isMultiModel
-+                ? isMultiModelEnabled
-+                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
-             const isDefault = this.isDefaultModel(item.model);
-             const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
-+            const displayId = item._isMultiModel ? 'multi-model' : item.id;
-             const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
-             const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
+-            const isDefault = this.isDefaultModel(item.model);
+-            const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
+-            const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
+-            const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
 -            const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
-+            const modelText = isSelected ? theme.fg("accent", displayId) : displayId;
-             const providerBadge = theme.fg("muted", `[${item.provider}]`);
-             const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
-             this.listContainer.addChild(new Text(line, 0, 0));
-@@ -352,6 +376,11 @@ export class ModelSelectorComponent extends Container {
+-            const providerBadge = theme.fg("muted", `[${item.provider}]`);
+-            const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
+-            this.listContainer.addChild(new Text(line, 0, 0));
++        // Kimchi owns the shared /model and vision-switch table renderer.
++        // Keep a native list fallback for SDK consumers without that adapter.
++        const enabled = process.__kimchiMultiModelEnabled instanceof Map && !!process.__kimchiMultiModelEnabled.get(this.sessionId);
++        const descriptions = process.__kimchiModelDescriptions instanceof Map ? process.__kimchiModelDescriptions : undefined;
++        const rows = this.filteredModels.map((item, index) => ({
++            model: item.model,
++            id: item._isMultiModel ? "multi-model" : item.id,
++            provider: item.provider,
++            selected: index === this.selectedIndex,
++            current: item._isMultiModel ? enabled : !enabled && modelsAreEqual(this.currentModel, item.model),
++            description: descriptions?.get(`${item.model.provider}/${item.model.id}`) ?? "",
++            annotation: this.isDefaultModel(item.model) ? "Default for new sessions." : "",
++        }));
++        const renderTable = process.__kimchiRenderModelTable;
++        if (typeof renderTable === "function") {
++            const table = renderTable(rows, this.tui.terminal.columns, theme, true);
++            if (table.length > 0) this.listContainer.addChild(new Text(table[0], 0, 0));
++            for (const line of table.slice(startIndex + 1, endIndex + 1)) {
++                this.listContainer.addChild(new Text(line, 0, 0));
++            }
++        } else {
++            for (const row of rows.slice(startIndex, endIndex)) {
++                const cursor = row.selected ? theme.fg("accent", "→ ") : "  ";
++                const current = row.current ? theme.fg("accent", "✓ ") : "  ";
++                const providerBadge = theme.fg("muted", `[${row.provider}]`);
++                const annotation = row.annotation ? theme.fg("muted", ` ${row.annotation}`) : "";
++                this.listContainer.addChild(new Text(`${cursor}${current}${row.id} ${providerBadge}${annotation}`, 0, 0));
++            }
+         }
+         // Add scroll indicator if needed
+         if (startIndex > 0 || endIndex < this.filteredModels.length) {
+@@ -352,6 +384,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
          this.dispose();

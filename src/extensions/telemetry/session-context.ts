@@ -193,7 +193,12 @@ export class TelemetryContext {
 		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
 	}
 
-	emit(eventName: string, attrs?: TelemetryAttributes, ctx?: ExtensionContext): void {
+	emit(
+		eventName: string,
+		attrs?: TelemetryAttributes,
+		ctx?: ExtensionContext,
+		commonOverrides?: TelemetryAttributes,
+	): void {
 		const ferment = getActiveFerment()
 		const fermentV2 = getTelemetryFermentV2Context()
 		const eventAttrs: TelemetryAttributes =
@@ -225,6 +230,10 @@ export class TelemetryContext {
 			...fermentTelemetryAttributes(ferment?.id, fermentV2),
 			"user.account_uuid": this.userId ?? "",
 			...commonAttrs,
+			// Caller-supplied overrides for common attributes (e.g. the
+			// tool_decision accept-rate record reports model=auto from the
+			// user's selection instead of the router's concrete pick).
+			...commonOverrides,
 			...(parentAttr ?? {}),
 		}
 		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))

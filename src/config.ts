@@ -4,13 +4,22 @@ import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
+import {
+	DEFAULT_REGION,
+	isRegionId,
+	openAiBaseUrl,
+	REGION_ENV,
+	REGIONS,
+	type RegionEndpoints,
+	type RegionId,
+	regionEndpoints,
+	telemetryLogsUrl,
+	telemetryMetricsUrl,
+} from "./regions.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
-const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
-const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
-const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
 let startupApiKey: string | undefined
 
@@ -36,10 +45,6 @@ export function getApiKeySource(): "environment" | "config" {
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
-
-export const envConfig = {
-	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
-}
 
 export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
 
@@ -185,6 +190,8 @@ export type MigrationState = "done" | "skip-forever"
 export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
+	/** KIMCHI_REGION → global config → DEFAULT_REGION; unknown values count as unset. */
+	region: RegionId
 	llmEndpoint: string
 	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
 	customLlmEndpoint: string | undefined
@@ -229,6 +236,7 @@ export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH
 function readConfigExtras(configPath: string): {
 	apiKey?: string
 	llmEndpoint?: string
+	region?: RegionId
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
@@ -299,6 +307,9 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
+		// Read region — an unknown value is treated as unset, not an error.
+		const region = isRegionId(parsed.region) ? parsed.region : undefined
+
 		// Read deviceId (camelCase, then snake_case for backwards compat)
 		const deviceId =
 			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
@@ -338,6 +349,7 @@ function readConfigExtras(configPath: string): {
 		return {
 			apiKey,
 			llmEndpoint,
+			region,
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
@@ -435,6 +447,12 @@ function parsePreferencesConfig(value: unknown): PreferencesConfig | undefined {
 	}
 }
 
+function effectiveRegion(fileRegion: unknown): RegionId {
+	const envRegion = process.env[REGION_ENV]
+	if (isRegionId(envRegion)) return envRegion
+	return isRegionId(fileRegion) ? fileRegion : DEFAULT_REGION
+}
+
 /**
  * Read telemetry configuration from config.json without requiring an API key.
  * Safe to call before authentication is set up.
@@ -455,10 +473,12 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	let fileEndpoint: string | undefined
 	let fileMetricsEndpoint: string | undefined
 	let fileHeaders: Record<string, string> | undefined
+	let fileRegion: unknown
 
 	try {
 		const raw = readFileSync(path, "utf-8")
 		const parsed = JSON.parse(raw)
+		fileRegion = parsed.region
 		const t = parsed.telemetry
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
@@ -486,6 +506,9 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
+	// Explicit telemetry.* config wins over the region defaults.
+	const region = REGIONS[effectiveRegion(fileRegion)]
+
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
 	if (!hasUserAgent) {
@@ -494,8 +517,8 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	return {
 		enabled,
-		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_LOGS_ENDPOINT,
-		metricsEndpoint: fileMetricsEndpoint ?? DEFAULT_TELEMETRY_METRICS_ENDPOINT,
+		endpoint: fileEndpoint ?? telemetryLogsUrl(region),
+		metricsEndpoint: fileMetricsEndpoint ?? telemetryMetricsUrl(region),
 		headers,
 		apiKey: apiKey ?? "",
 	}
@@ -562,10 +585,14 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 	}
 
+	// Region is account-level, so only the global config may set it.
+	const region = effectiveRegion(globalExtras.region)
+
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
+		region,
+		llmEndpoint: extras.llmEndpoint ?? openAiBaseUrl(REGIONS[region]),
 		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
@@ -577,6 +604,60 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		redaction: extras.redaction,
 		memoryEmbedding: extras.memoryEmbedding,
 		memoryExtraction: extras.memoryExtraction,
+	}
+}
+
+export interface ResolvedEndpoints extends RegionEndpoints {
+	/** Config `llmEndpoint` (project wins over global), else the region's OpenAI base. */
+	llmEndpoint: string
+}
+
+/**
+ * Resolve every external endpoint the CLI talks to from the configured region.
+ * Overrides: KIMCHI_WEB_APP_URL → webAppUrl, KIMCHI_REMOTE_ENDPOINT → platformApiUrl.
+ */
+// The no-options resolution feeds render-time getters (billing links,
+// login URLs) that run on every streaming render — memoize the loadConfig()
+// disk read instead of re-reading and re-parsing the config files each call.
+// Explicit-options callers stay uncached. The cache key covers KIMCHI_REGION
+// and the global config stat, so out-of-process logins are picked up too.
+let resolvedEndpointsConfigCache: { cfg: KimchiConfig; stamp: string } | undefined
+
+function globalConfigStamp(): string {
+	try {
+		const st = statSync(KIMCHI_CONFIG_PATH)
+		return `${process.env[REGION_ENV]}:${st.mtimeMs}:${st.size}`
+	} catch {
+		return `${process.env[REGION_ENV]}:missing`
+	}
+}
+
+/** Drop the memoized config used by the default resolveEndpoints() path. */
+export function invalidateResolvedEndpoints(): void {
+	resolvedEndpointsConfigCache = undefined
+}
+
+export function resolveEndpoints(options?: { configPath?: string; cwd?: string }): ResolvedEndpoints {
+	let cfg: KimchiConfig
+	if (options) {
+		cfg = loadConfig(options)
+	} else {
+		const stamp = globalConfigStamp()
+		if (resolvedEndpointsConfigCache?.stamp !== stamp) {
+			resolvedEndpointsConfigCache = { cfg: loadConfig(), stamp }
+		}
+		cfg = resolvedEndpointsConfigCache.cfg
+	}
+	return { ...endpointsForRegion(cfg.region), llmEndpoint: cfg.llmEndpoint }
+}
+
+/** Endpoints of a given region, with the same env overrides as resolveEndpoints(). */
+export function endpointsForRegion(region: RegionId): RegionEndpoints {
+	const endpoints = regionEndpoints(REGIONS[region])
+	return {
+		...endpoints,
+		webAppUrl: process.env.KIMCHI_WEB_APP_URL ?? endpoints.webAppUrl,
+		platformApiUrl: process.env.KIMCHI_REMOTE_ENDPOINT ?? endpoints.platformApiUrl,
 	}
 }
 
@@ -797,12 +878,17 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 
 export interface WriteApiKeyOptions {
 	llmEndpoint?: string
+	/** Region selected at login. Stored alongside the key; when no custom
+	 *  `llmEndpoint` is given, the region drives every endpoint and any stale
+	 *  custom endpoint is dropped. */
+	region?: RegionId
 }
 
 export function writeApiKey(key: string, configPath?: string, options: WriteApiKeyOptions = {}): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
+		if (options.region) raw.region = options.region
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
 			raw.llmEndpoint = llmEndpoint
@@ -814,6 +900,7 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
 	})
+	invalidateResolvedEndpoints()
 }
 
 export function writeDeviceId(id: string, configPath?: string): void {

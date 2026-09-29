@@ -5,7 +5,7 @@ import { basename, dirname } from "node:path"
 import { readTeleportCompactHintEnabled, readTeleportHelpSeenAt, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
-import { resolveWorkspaceResources, WorkspaceResourcesError } from "../../../sandbox/cloud/resources.js"
+import { resolveWorkspaceSpec, WorkspaceSpecError } from "../../../sandbox/cloud/spec.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { getGitRemoteHost, parseHostFromRemoteUrl, readLocalGitConfig } from "../../../sandbox/git-credentials.js"
@@ -84,18 +84,19 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		ctx.ui.setStatus(STATUS_KEY, undefined)
 	}
 
-	// Resolve workspace resource requests (kimchi_workspace.yaml) only when
-	// this resolution mints the workspace: resources are create-time-only
-	// and immutable server-side — sending them on re-auth is a 400 landmine.
+	// Resolve the workspace spec (kimchi_workspace.yaml) only when this
+	// resolution mints the workspace: spec fields are create-time-only
+	// server-side (resources immutable, dependencies/egress ignored on
+	// upsert) — sending them on re-auth is a 400 landmine or a silent no-op.
 	// Attaching to an existing workspace never reads the file, so a broken
 	// one cannot block a teleport that would ignore it anyway. Invalid
 	// values or a malformed file refuse before the upsert PUT is sent.
-	let workspaceResources: ReturnType<typeof resolveWorkspaceResources>
+	let workspaceSpec: ReturnType<typeof resolveWorkspaceSpec>
 	if (resolved.isNew) {
 		try {
-			workspaceResources = resolveWorkspaceResources(loadWorkspaceFile(ctx.cwd)?.resources)
+			workspaceSpec = resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
 		} catch (err) {
-			if (err instanceof WorkspaceFileError || err instanceof WorkspaceResourcesError) {
+			if (err instanceof WorkspaceFileError || err instanceof WorkspaceSpecError) {
 				refuse(ctx, err.message)
 			}
 			throw err
@@ -170,7 +171,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		try {
 			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, {
 				endpoint: ctx.endpoint,
-				...(workspaceResources ? { resources: workspaceResources } : {}),
+				...(workspaceSpec ? { spec: workspaceSpec } : {}),
 			})
 		} catch (err) {
 			if (signal.aborted) throw err

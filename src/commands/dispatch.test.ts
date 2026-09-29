@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { dispatchSubcommand } from "./dispatch.js"
+import { ECHO_MODULE, installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
 
 describe("dispatchSubcommand", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
 	let errSpy: ReturnType<typeof vi.spyOn>
+	let agentDir: string
 
+	// Isolate package-command discovery from the real machine state — this
+	// machine genuinely has packages installed.
 	beforeEach(() => {
+		agentDir = setupFakeAgentDir()
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 	})
@@ -13,6 +19,8 @@ describe("dispatchSubcommand", () => {
 	afterEach(() => {
 		logSpy.mockRestore()
 		errSpy.mockRestore()
+		vi.unstubAllEnvs()
+		teardownFakeAgentDir(agentDir)
 	})
 
 	it("runs the version subcommand and returns its exit code", async () => {
@@ -98,5 +106,31 @@ describe("dispatchSubcommand", () => {
 		expect(result).toEqual({ kind: "handled", exitCode: 1 })
 		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
 		expect(messages).toContain("Usage: kimchi config")
+	})
+
+	// ---------------------------------------------------------------- package commands
+
+	it("runs a package-provided subcommand and returns its exit code", async () => {
+		installFakePackage(agentDir, "@fake/dispatch", { hello: "./dist/hello.js" }, { "dist/hello.js": ECHO_MODULE })
+
+		const result = await dispatchSubcommand(["hello", "world"])
+
+		expect(result).toEqual({ kind: "handled", exitCode: 7 })
+		expect(logSpy).toHaveBeenCalledWith("package ran: world")
+	})
+
+	it("never lets a package shadow built-in or pi commands", async () => {
+		installFakePackage(agentDir, "@fake/shadow", {
+			version: "./dist/shadow.js", // kimchi built-in
+			install: "./dist/shadow.js", // pi installer
+			hello: "./dist/hello.js", // allowed
+		})
+
+		// The kimchi built-in runs — not the package's module.
+		expect(await dispatchSubcommand(["version"])).toEqual({ kind: "handled", exitCode: 0 })
+		expect(logSpy.mock.calls.flat().join(" ")).not.toContain("package ran")
+
+		// pi's installer is not intercepted — dispatch falls through.
+		expect(await dispatchSubcommand(["install"])).toEqual({ kind: "fallthrough" })
 	})
 })

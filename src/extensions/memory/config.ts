@@ -100,8 +100,20 @@ export const TURN_RECALL_MAX_FACTS = 3
 /** Per-fact character cap in turn recalls (steer messages stay compact). */
 export const TURN_RECALL_MAX_FACT_CHARS = 400
 
-/** Hard cap on progressive re-evaluations per session (cost bound). */
-export const TURN_RECALL_MAX_EVALUATIONS = 5
+/**
+ * Drift-recall embedding query: characters kept from the last assistant
+ * response. The response is the drift signal for terse follow-ups ("yes,
+ * do that"), but in coding sessions it is mostly code — embedding it whole
+ * (up to 2000 chars) dominated the per-turn gateway payload. The tail
+ * carries the most recent context: questions, conclusions, next steps.
+ */
+export const TURN_RECALL_RESPONSE_CHARS = 400
+
+/**
+ * Total cap on the drift-recall embedding query (prompt + response tail) —
+ * the per-turn bound on what memory sends to the embedding endpoint.
+ */
+export const TURN_RECALL_QUERY_MAX_CHARS = 1000
 
 /**
  * Bounded wait for memory searches on the user-visible critical path (the

@@ -34,7 +34,7 @@ const MODEL_SWITCH_SURVEY: SurveyTelemetryDefinition = {
 // stamped from the most recent provider request. Upstream's turn_index counts
 // LLM round-trips per agent run and resets on every prompt, so it cannot
 // identify the rated prompt — it is deliberately not sent here.
-const autoModelUsedAttr = "auto_model_used"
+const routingModelAttr = "routing_model"
 const reasonTypeAttr = "reason_type"
 const modelIDAttr = "model_id"
 const reasonTruncatedAttr = "reason_truncated"
@@ -75,7 +75,10 @@ export function trackFeedback(args: {
 	sentiment: "positive" | "negative"
 	reason: string
 	reasonType: "predefined" | "freeform"
-	autoModelUsed: boolean
+	/** Concrete model id the router resolved to (e.g. `glm-5.3`), when a routed
+	 * virtual model was used. Its presence implies routing — no separate
+	 * was-routed flag is emitted. Omitted otherwise. */
+	routingModelId?: string
 }): void {
 	if (!_isTelemetryEnabled()) return
 	const ctx = _getTelemetryCtx()
@@ -90,7 +93,7 @@ export function trackFeedback(args: {
 		}),
 		extraAttrs: {
 			...ctx.getTraceAttributes(),
-			[autoModelUsedAttr]: args.autoModelUsed,
+			...(args.routingModelId !== undefined && { [routingModelAttr]: args.routingModelId }),
 			[reasonTypeAttr]: args.reasonType,
 			...(reason.truncated && { [reasonTruncatedAttr]: true }),
 		},

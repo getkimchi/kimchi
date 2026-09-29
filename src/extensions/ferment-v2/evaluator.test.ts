@@ -135,9 +135,9 @@ describe("Ferment V2 evaluator", () => {
 		multiModelMock.mockReturnValue(true)
 		const ctx = evaluatorContext(judgeModel)
 		expect(resolveFermentV2EvaluatorModel(ctx)).toBe(judgeModel)
-		expect(ctx.modelRegistry.find).toHaveBeenCalledWith("judge", "independent")
+		expect(ctx.modelRegistry.getAvailable).toHaveBeenCalled()
 
-		vi.mocked(ctx.modelRegistry.find).mockReturnValue(undefined)
+		vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue([])
 		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 	})
 
@@ -1374,6 +1374,7 @@ function evaluatorContext(
 		model: reasoning ? { ...activeModel, reasoning: true } : activeModel,
 		modelRegistry: {
 			find: vi.fn(() => resolvedJudge),
+			getAvailable: vi.fn(() => (resolvedJudge ? [resolvedJudge] : [])),
 			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "test-key" })),
 		},
 	})

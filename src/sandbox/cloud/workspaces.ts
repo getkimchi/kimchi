@@ -1,7 +1,6 @@
 import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
-import { parseInt64 } from "./parse.js"
 import { byteQuantityToBytes, cpuQuantityToMillicores } from "./resources.js"
 import type { AuthenticateOptions, ListWorkspacesOptions, Workspace, WorkspaceStatus } from "./types.js"
 import { RemoteAuthError, RemoteNetworkError } from "./types.js"
@@ -142,17 +141,20 @@ function mapWorkspace(raw: unknown, endpoint: string): Workspace {
 		}
 	}
 
-	// Resource requests (provisioned sizes), in both wire shapes the control
-	// plane has used: current servers nest them under `resources` as
-	// Kubernetes quantity strings ("200m", "512Mi", "10Gi") — the same shape
-	// the client sends on create; the KAP-191 server flattens them to int64
-	// fields (gRPC-gateway emits int64 as JSON strings). Explicit numbers win
-	// when both shapes are present.
-	const res = typeof r.resources === "object" && r.resources !== null ? r.resources : {}
-	const resFields = res as Record<string, unknown>
-	const cpuMillicores = parseInt64(r.cpuMillicores) ?? cpuQuantityToMillicores(resFields.cpu)
-	const ramBytes = parseInt64(r.ramBytes) ?? byteQuantityToBytes(resFields.memory)
-	const pvcSizeBytes = parseInt64(r.pvcSizeBytes) ?? byteQuantityToBytes(resFields.pvcSize)
+	// Resource requests (provisioned sizes) arrive nested under
+	// `spec.resources` as Kubernetes quantity strings ("200m", "512Mi",
+	// "10Gi") — the WorkspaceSpec contract (workspaces_api.proto).
+	// spec is omitted entirely when nothing was provisioned. The deprecated
+	// legacy shapes (flat int64 fields, top-level `resources`) are gone from
+	// the current proto and are not parsed.
+	const spec = typeof r.spec === "object" && r.spec !== null ? (r.spec as Record<string, unknown>) : undefined
+	const res =
+		spec && typeof spec.resources === "object" && spec.resources !== null
+			? (spec.resources as Record<string, unknown>)
+			: undefined
+	const cpuMillicores = cpuQuantityToMillicores(res?.cpu)
+	const ramBytes = byteQuantityToBytes(res?.memory)
+	const pvcSizeBytes = byteQuantityToBytes(res?.pvcSize)
 
 	// Server proto has no last_activity_time field yet — placeholder for v1.
 	return {

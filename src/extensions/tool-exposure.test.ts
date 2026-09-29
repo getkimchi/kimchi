@@ -54,6 +54,12 @@ vi.mock("./multi-model.js", async (importOriginal) => {
 // (ambient ~/.config/kimchi/harness/mcp.json state must not leak into the
 // spec). The metadata cache is also stubbed: with zero servers the factory
 // would otherwise purge and rewrite the developer machine's real cache file.
+//
+// Without useProgrammaticConfig: true, mcp/index.ts passes empty options to
+// createMcpAdapter, which then reads the real MCP config from disk (the agent
+// dir set by PI_CODING_AGENT_DIR) and registers its tools (atlassian_*) into
+// the tool surface under test. The flag makes the adapter use only the
+// servers mocked above.
 // =============================================================================
 
 const mcpConfigState = vi.hoisted(() => ({
@@ -63,7 +69,11 @@ vi.mock("./mcp/config.js", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./mcp/config.js")>()
 	return {
 		...original,
-		loadKimchiMcpConfig: () => ({ config: { mcpServers: mcpConfigState.servers }, warnings: [] }),
+		loadKimchiMcpConfig: () => ({
+			config: { mcpServers: mcpConfigState.servers },
+			warnings: [],
+			useProgrammaticConfig: true,
+		}),
 	}
 })
 

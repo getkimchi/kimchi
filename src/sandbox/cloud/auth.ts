@@ -200,9 +200,12 @@ export async function createOrUpdateWorkspace(
 					agentApiKey: apiKey,
 					...(options?.gitToken ? { gitToken: options.gitToken } : {}),
 				},
-				// Create-time-only resource requests — sent verbatim; omitted
-				// entirely when unset so re-auth PUTs stay byte-identical.
-				...(options?.resources ? { resources: options.resources } : {}),
+				// Create-time-only spec (resources, dependencies, egress policy)
+				// under `spec` — the WorkspaceSpec create API. Never set legacy
+				// top-level fields alongside it (the server rejects the
+				// conflict); omitted entirely when unset so re-auth PUTs stay
+				// byte-identical.
+				...(options?.spec ? { spec: options.spec } : {}),
 			}),
 		},
 		fetchImpl,

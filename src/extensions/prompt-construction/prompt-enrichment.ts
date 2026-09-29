@@ -35,9 +35,11 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	brandUnmarkedSteers,
@@ -64,7 +66,6 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
-import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
@@ -390,8 +391,9 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
 				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
-					const ref = splitModelRef(orchestratorModelRef)
-					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
+					const orchestratorModel = ctx.modelRegistry
+						? findModelByRef(ctx.modelRegistry, orchestratorModelRef)
+						: undefined
 					if (orchestratorModel) {
 						try {
 							await pi.setModel(orchestratorModel)
