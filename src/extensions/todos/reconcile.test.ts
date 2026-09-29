@@ -354,10 +354,29 @@ describe("settled todo reconciliation", () => {
 		expect(h.todos()[0].status).toBe("completed")
 	})
 
-	it("leaves the global list to Ferment V2 until its journal is cleared", async () => {
+	it("reconciles ordinary work after a completed Ferment V2 without clearing its history", async () => {
+		const h = harness()
+		const run = createFermentV2(undefined, "Earlier task", "run", new Date().toISOString())
+		h.manager.appendCustomEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry({ ...run, status: "complete" }))
+		h.manager.appendMessage({ role: "user", content: "Explain the result", timestamp: 5 })
+		const proof = h.manager.appendMessage(assistant("B exceeds A by 1."))
+		applyWriteTodos({ todos: [{ id: 1, content: "Explain the result", status: "in_progress" }] }, h.sessionId)
+		vi.mocked(completeSimple).mockResolvedValue(h.result([{ id: 1, evidence: [proof] }]))
+		await h.end()
+		await h.settle()
+		expect(h.todos()[0].status).toBe("completed")
+		expect(h.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		"active",
+		"paused",
+		"blocked",
+		"budget_limited",
+	] as const)("leaves the global list to %s Ferment V2 until its journal is cleared", async (status) => {
 		const h = harness()
 		const run = createFermentV2(undefined, "Read inputs", "run", new Date().toISOString())
-		h.manager.appendCustomEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry(run))
+		h.manager.appendCustomEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry({ ...run, status }))
 		await h.end()
 		await h.settle()
 		expect(completeSimple).not.toHaveBeenCalled()

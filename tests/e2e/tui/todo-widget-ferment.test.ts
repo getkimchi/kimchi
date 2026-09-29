@@ -278,7 +278,7 @@ test("todo widget shows rolling markers around active work", async ({ terminal }
 			terminal.submit("Create rolling todos")
 
 			await waitForText(terminal, "9/19 done · 10 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "… 7 completed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "… 7 closed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "  8.  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "  9.  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, " 10.  ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
@@ -326,7 +326,7 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 			terminal.submit("")
 
 			await waitForText(terminal, "19/19 done · 0 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "… 10 completed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "… 10 closed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, " 11.  ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, " 19.  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed end window visible")

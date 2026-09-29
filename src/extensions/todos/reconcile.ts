@@ -156,17 +156,15 @@ export function registerTodoReconciliation(pi: ExtensionAPI): void {
 		if (!ready || !ctx.isIdle() || ctx.hasPendingMessages()) return
 		ready = false
 		const scope = resolveTodoScope()
-		// Ferment owns its lists and completion policy, including its global list in V2.
+		// Unfinished Ferment owns its lists; completed history must not block later ordinary work.
 		if (scope.kind !== "global") return
 		const branch = ctx.sessionManager.getBranch()
-		if (
-			restoreFermentV2(
-				branch.flatMap((entry) =>
-					entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE ? [entry.data] : [],
-				),
-			)
+		const ferment = restoreFermentV2(
+			branch.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE ? [entry.data] : [],
+			),
 		)
-			return
+		if (ferment && ferment.status !== "complete") return
 		const sessionId = ctx.sessionManager.getSessionId()
 		const todos = getTodosForScope(scope, sessionId)
 		if (!todos.some((todo) => todo.status === "pending" || todo.status === "in_progress")) return
