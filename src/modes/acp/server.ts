@@ -1,6 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
+import { randomUUID } from "node:crypto"
 import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
@@ -57,6 +58,7 @@ import {
 	ModelRegistry,
 	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
+	ProjectTrustStore,
 	type SessionHeader,
 	SessionManager,
 	SettingsManager,
@@ -81,7 +83,12 @@ import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import {
+	availableModelRefs,
+	findModelByRef,
+	refFromModel,
+	splitModelRef,
+} from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -103,11 +110,12 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
-import { setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { isRegionId, type KimchiRegion, type RegionId, selectableRegions } from "../../regions.js"
 import {
@@ -133,6 +141,8 @@ import {
 	type AcpSkillInfo,
 	buildSkillCommandPrompt,
 	buildSkillListBlock,
+	cachedSkillListBlock,
+	setCachedSkillListBlock,
 	tryParseSkillCommand,
 } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
@@ -140,6 +150,17 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
+import {
+	buildPathTrustInfo,
+	buildProjectTrustUpdate,
+	isPathWithin,
+	notifyProjectTrustUpdate,
+	parentTrustPath,
+	parsePathTrustDecision,
+	parseProjectTrustDecision,
+	pathTrustResponse,
+	requireAbsolutePath,
+} from "./trust-updates.js"
 import type { FileChange, PendingFileChange, TurnContext, TurnUsage } from "./types.js"
 import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
 import { asString, extractImages, truncate } from "./utils.js"
@@ -381,7 +402,7 @@ export class KimchiAcpAgent implements Agent {
 			modelsPath: join(this.agentDir, "models.json"),
 		})
 		const modelRegistry = new ModelRegistry(modelRuntime)
-		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
+		const supportsImages = modelRegistry.getAvailable().some((m) => modelSupportsImages(m))
 
 		// ACP Registry compliance: advertise at least one auth method. Agent Auth
 		// (browser-based OAuth via local callback server) is always declared.
@@ -587,6 +608,7 @@ export class KimchiAcpAgent implements Agent {
 			this.startPlanTracker(record, sessionId)
 
 			this.scheduleAvailableCommandsUpdate(sessionId)
+			this.scheduleProjectTrustUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(session, initialMode.mode)
 			// Seed the tracker with what the client is about to receive, so the
@@ -735,22 +757,18 @@ export class KimchiAcpAgent implements Agent {
 			return value
 		}
 
-		const { provider, modelId } = splitModelRef(value) || {}
-		if (!provider || !modelId) {
+		const parsed = splitModelRef(value)
+		if (!parsed) {
 			throw RequestError.invalidParams(
 				undefined,
 				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		const target = modelRegistry.find(provider, modelId)
+		const target = findModelByRef(modelRegistry, value)
 		if (!target) {
-			const available = modelRegistry
-				.getAvailable()
-				.map((m) => refFromModel(m))
-				.sort()
 			throw RequestError.invalidParams(
 				undefined,
-				`model not found: "${value}". available models: multi-model, ${available.join(", ")}`,
+				`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
 			)
 		}
 
@@ -779,6 +797,7 @@ export class KimchiAcpAgent implements Agent {
 			}
 			this.replayTranscript(existing.session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
+			this.scheduleProjectTrustUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
@@ -876,6 +895,7 @@ export class KimchiAcpAgent implements Agent {
 			// be considered active during replay.
 			this.replayTranscript(session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
+			this.scheduleProjectTrustUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(session, initialMode.mode)
 			// Same seeding as newSession (see there) — a resumed Auto session
@@ -913,15 +933,15 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
-		// Image support is per-model; check if active model supports vision input.
-		const supportsImages = entry.session.model?.input?.includes("image") ?? false
-		// Warn about unsupported block types (audio, embeddedContext) once per type.
-		// Also warn when dropping image blocks for non-vision models.
+		const supportsImages = modelSupportsImages(entry.session.model)
+		// Warn about unsupported block types (audio, embeddedContext) once per
+		// type. Dropped images do NOT join this dedupe — they additionally surface
+		// to the client as a per-turn agent_message_chunk warning below, so every
+		// dropping turn is visible, not just the first one per connection.
 		for (const b of params.prompt) {
-			if (b.type !== "text" && (b.type !== "image" || !supportsImages) && !this.warnedBlockTypes.has(b.type)) {
+			if (b.type !== "text" && b.type !== "image" && !this.warnedBlockTypes.has(b.type)) {
 				this.warnedBlockTypes.add(b.type)
-				const reason = b.type === "image" ? "active model has no vision input" : "unsupported block type"
-				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
+				process.stderr.write(`acp prompt: dropping ${b.type} block (unsupported block type)\n`)
 			}
 		}
 		let text = params.prompt
@@ -938,6 +958,35 @@ export class KimchiAcpAgent implements Agent {
 
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages ? extractImages(params.prompt) : []
+		// Image blocks a text-only model cannot take: the turn is refused, not
+		// sent text-only — sending it would spend a model turn answering a prompt
+		// missing its attached context, and the TUI vision gate never silently
+		// submits text-only either. The client is informed exactly once per turn
+		// as ordinary assistant text via the standard agent_message_chunk schema
+		// (ACP has no dedicated warning channel), with its own km.-prefixed message
+		// id plus a trailing blank line so clients that concatenate chunks keep it
+		// visually separate.
+		const droppedImages = supportsImages ? 0 : params.prompt.filter((b) => b.type === "image").length
+		if (droppedImages > 0) {
+			const noun = droppedImages === 1 ? "image" : "images"
+			const modelId = entry.session.model?.id ?? "The current model"
+			process.stderr.write(
+				`acp prompt: refusing prompt with ${droppedImages} ${noun} (active model has no vision input)\n`,
+			)
+			this.send({
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					messageId: `km.${randomUUID()}`,
+					content: {
+						type: "text",
+						text: `${modelId} does not accept image input — switch to a model with image support or remove the ${noun} and resend.\n\n`,
+					},
+				},
+			})
+			// Nothing reaches the session — the turn is refused without a model call.
+			return { stopReason: "refusal" }
+		}
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
@@ -1071,6 +1120,22 @@ export class KimchiAcpAgent implements Agent {
 				// session is touched. The copied skills land in a watched root, so
 				// the file watcher re-advertises palettes on its own.
 				return { ...handleImportApply({ agentDir: this.agentDir }, params) }
+			case AVAILABLE_EXT_METHODS.set_project_trust:
+				// Session-scoped trust survey answer (LLM-3628): persists the
+				// decision, opens the kimchi project-scope gate, and (on grant)
+				// live-refreshes skills. See handleSetProjectTrust.
+				return this.handleSetProjectTrust(params)
+			case AVAILABLE_EXT_METHODS.get_path_trust:
+				// Sessionless read (LLM-3628): resolved trust state for an
+				// arbitrary path, incl. ancestor inheritance and the canonicalized
+				// deciding entry. See handleGetPathTrust.
+				return this.handleGetPathTrust(params)
+			case AVAILABLE_EXT_METHODS.set_path_trust:
+				// Sessionless write (LLM-3628): persist a trust/deny decision for
+				// any path (root and home included — deliberate power-user
+				// capability), then live-refresh affected sessions. See
+				// handleSetPathTrust.
+				return this.handleSetPathTrust(params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
@@ -1780,6 +1845,241 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	/**
+	 * Push the session's project-trust state to the client after the
+	 * session/new (or loadSession) response — same setImmediate-after-response
+	 * pattern and for the same reason as scheduleAvailableCommandsUpdate: a
+	 * client drops notifications for sessions it hasn't registered yet.
+	 *
+	 * Delivered as a `_kimchi.dev/project_trust_update` extNotification (the
+	 * SDK's SessionUpdate union cannot carry a custom kind); unaware clients
+	 * ignore unknown ext notifications per JSON-RPC rules, so this is purely
+	 * additive.
+	 */
+	private scheduleProjectTrustUpdate(sessionId: string): void {
+		setImmediate(() => {
+			const record = this.sessions.get(sessionId)
+			if (!record) return
+			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(sessionId, record.cwd))
+		})
+	}
+
+	/**
+	 * `_kimchi.dev/set_project_trust` — record the client's trust-survey answer
+	 * for the session's project (LLM-3628).
+	 *
+	 * - "trust" / "deny_persist" persist via pi's ProjectTrustStore (canonical
+	 *   keying is the store's job — the /var vs /private/var trap lives there).
+	 * - "trust_parent" mirrors the TUI's "Trust parent folder" option exactly:
+	 *   it persists { [parent]: true, [cwd]: null } (one level up — the same
+	 *   single-level semantics pi's getProjectTrustOptions offers) and the
+	 *   clearing write keeps the parent's grant the nearest entry for the cwd.
+	 *   Sessions under that parent are refreshed and notified too.
+	 * - "trust_session" opens the gate for this connection only — the mirror
+	 *   of "deny": skills load live, but nothing is stored and the next
+	 *   session asks again.
+	 * - "deny" keeps the decision in-memory for this connection only.
+	 * - The kimchi project-scope gate is updated immediately, and the skill
+	 *   palette + system-prompt skill list refresh live on BOTH grant and
+	 *   revoke (no session restart): the refresher sweep re-runs
+	 *   resources_discover per session, and the per-loader skill-list block
+	 *   cache is invalidated so the next prompt rebuild advertises (or
+	 *   drops) the project skills.
+	 * - "deny" does NOT override an existing persisted grant for the cwd: it
+	 *   is meaningful only for a previously-undecided project, keeping this
+	 *   connection untrusted while the stored decision (if any) keeps
+	 *   governing new sessions. To override a stored grant, the client must
+	 *   send "deny_persist".
+	 * - Other gated categories (project config, .pi settings) keep applying on
+	 *   the next session; the returned `blocked` list tells the client what.
+	 */
+	private async handleSetProjectTrust(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const sessionId = params.sessionId
+		if (typeof sessionId !== "string" || sessionId.length === 0) {
+			throw RequestError.invalidParams(undefined, "sessionId must be a non-empty string")
+		}
+		const record = this.sessions.get(sessionId)
+		if (!record) {
+			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
+		}
+		const decision = parseProjectTrustDecision(params.decision)
+		const trusted = decision === "trust" || decision === "trust_session" || decision === "trust_parent"
+		const cwd = record.cwd
+
+		// The directory whose stored decision governs the requesting session —
+		// the cwd for every decision except trust_parent, which grants the
+		// parent. Also the subtree of live sessions that must be notified and
+		// refreshed: trust is per-directory, not per-session, and the gate
+		// lookup walks ancestors, so a parent grant covers sibling sessions
+		// under it too.
+		let affectedRoot = cwd
+		if (decision === "trust_parent") {
+			const parent = parentTrustPath(cwd)
+			if (parent === undefined) {
+				throw RequestError.invalidParams(undefined, "session cwd is at the filesystem root; no parent to trust")
+			}
+			// Same update shape pi's "Trust parent folder" option writes
+			// (getProjectTrustOptions): grant the parent, clear any decision
+			// pinned on the cwd so the parent's is the nearest entry.
+			new ProjectTrustStore(this.agentDir).setMany([
+				{ path: parent, decision: true },
+				{ path: cwd, decision: null },
+			])
+			setProjectScopeTrusted(parent, true)
+			affectedRoot = parent
+		} else if (decision === "trust") {
+			new ProjectTrustStore(this.agentDir).set(cwd, true)
+			setProjectScopeTrusted(cwd, true)
+		} else if (decision === "deny_persist") {
+			new ProjectTrustStore(this.agentDir).set(cwd, false)
+			setProjectScopeTrusted(cwd, false)
+		} else {
+			// "trust_session" / "deny": in-memory only, nothing persisted. Scope
+			// caveat: the gate pin is keyed by cwd in the process-wide map
+			// (src/project-scope-trust.ts), not by session — so a second session
+			// on the SAME cwd shares the decision, and a new session at that cwd
+			// re-pins fail-closed at start (createSessionSettings), stomping a
+			// prior trust_session grant. Session-granular pins are a known v1
+			// limitation; only different-cwd sessions are isolated.
+			setProjectScopeTrusted(cwd, trusted)
+		}
+
+		// Session start pins a fail-closed decision on the session cwd when the
+		// project is undecided — and the ancestor-walking lookup would find that
+		// pin BEFORE the decision just recorded on affectedRoot, shadowing it
+		// (the in-memory analogue of why pi's "Trust parent folder" clears the
+		// cwd's store entry with `decision: null`). The sweep below re-mirrors
+		// every live session's pin from the store so the walk resolves through
+		// the new decision. Session-scoped decisions (trust_session/deny) live
+		// only in this in-memory map — the store has no entry for them — so the
+		// requester's own cwd is overridden with the in-memory decision instead
+		// of a store lookup. Sessions AT affectedRoot are included: without
+		// them a session pinned untrusted at the parent would keep shadowing a
+		// trust_parent grant.
+		this.refreshTrustAffectedSessions(
+			new ProjectTrustStore(this.agentDir),
+			affectedRoot,
+			trusted,
+			decision === "trust_session" || decision === "deny" ? { cwd, trusted } : undefined,
+		)
+
+		const update = buildProjectTrustUpdate(sessionId, cwd)
+		return { trusted: update.trusted, blocked: [...update.blocked] }
+	}
+
+	/**
+	 * `_kimchi.dev/get_path_trust` — sessionless resolved trust state for an
+	 * arbitrary path (LLM-3628). Runs the store's nearest-wins ancestor walk,
+	 * so an inherited ancestor grant reads as trusted with the ancestor as
+	 * `decisionSource`; undecided paths report decided:false (fail-closed).
+	 * Clients should prefer this over reading trust.json by hand — the store's
+	 * canonicalized keys make hand-editing fragile (trailing slashes and
+	 * /var-vs-/private/var paths silently never match).
+	 */
+	private handleGetPathTrust(params: Record<string, unknown>): Record<string, unknown> {
+		const path = requireAbsolutePath(params.path)
+		return pathTrustResponse(buildPathTrustInfo(new ProjectTrustStore(this.agentDir), path))
+	}
+
+	/**
+	 * `_kimchi.dev/set_path_trust` — sessionless write for an arbitrary path
+	 * (LLM-3628). Persists trust/deny through ProjectTrustStore (which
+	 * canonicalizes the key — the supported write path for this file), then
+	 * live-refreshes every session under the path: gate update, fail-closed
+	 * pin clearing beneath on grant, watcher root re-derivation, refresher
+	 * sweep, and a project_trust_update push per affected session. Any path is
+	 * accepted, home and filesystem root included — a deliberate power-user
+	 * capability; callers own the blast radius.
+	 *
+	 * Known v1 limitation: no "remove" — a written entry can be flipped but
+	 * not forgotten (hand-editing trust.json is the only escape, and fragile).
+	 */
+	private handleSetPathTrust(params: Record<string, unknown>): Record<string, unknown> {
+		const path = requireAbsolutePath(params.path)
+		const decision = parsePathTrustDecision(params.decision)
+		const trusted = decision === "trust"
+
+		const store = new ProjectTrustStore(this.agentDir)
+		store.set(path, trusted)
+		setProjectScopeTrusted(path, trusted)
+
+		// Re-resolve every live session under the written path FROM THE STORE.
+		// A session pinned at start (from the store state then) can shadow the
+		// new entry: its own pin is nearer in the ancestor walk than the path
+		// just written, so a later revoke at the root would be invisible to it
+		// — and a blind clear would equally break a deeper stored grant. Setting
+		// each pin to the store's current nearest-wins resolution for that
+		// session's cwd (or clearing it when undecided, so the walk falls
+		// through to the written entry) mirrors store semantics exactly.
+		this.refreshTrustAffectedSessions(store, path, trusted)
+
+		return pathTrustResponse(buildPathTrustInfo(store, path))
+	}
+
+	/**
+	 * Shared tail of every trust write (`set_project_trust`, `set_path_trust`):
+	 * re-mirror the in-memory gate pins of every live session under `root`
+	 * (inclusive) from `store`'s nearest-wins resolution, then notify and
+	 * refresh those sessions.
+	 *
+	 * Pin mirroring is store-backed, not clear-on-grant: session start pins a
+	 * fail-closed decision on the session cwd when the project is undecided,
+	 * and that pin is NEARER in the ancestor walk than any decision later
+	 * recorded on an ancestor — it would shadow a grant at or above the root
+	 * (the in-memory analogue of why pi's "Trust parent folder" clears the
+	 * cwd's store entry with `decision: null`). A blind clear on grant is
+	 * equally wrong: a deeper stored grant must keep winning over a new
+	 * ancestor revoke (the set_path_trust e2e caught exactly that stale-pin
+	 * bug). Setting each pin to `store.getEntry(session.cwd)?.decision` — or
+	 * clearing it when null, so the walk falls through to the new entry —
+	 * makes the pins exactly mirror store inheritance. Sessions AT `root`
+	 * itself are included.
+	 *
+	 * `inMemoryOverride` covers session-scoped decisions (trust_session/deny):
+	 * they exist only in this in-memory map, the store has no entry for them,
+	 * so the session whose cwd matches is pinned to the in-memory decision
+	 * instead of a store lookup.
+	 *
+	 * `commandsRefresher.request()` is load-bearing: a trust decision is not a
+	 * filesystem event, so the watcher cannot fire on its own, and the
+	 * palette must never advertise skills the gate will now refuse to load.
+	 * The sweep's reloadSkillCommandsMap invalidates each session's cached
+	 * system-prompt block after its loader reload, so the next prompt rebuild
+	 * matches the new gate state. Notifications are pushed per affected
+	 * session (grant AND revoke alike) — every connected client showing trust
+	 * state needs the fresh push, not just the requester.
+	 */
+	private refreshTrustAffectedSessions(
+		store: ProjectTrustStore,
+		root: string,
+		grant: boolean,
+		inMemoryOverride?: { cwd: string; trusted: boolean },
+	): void {
+		for (const other of this.sessions.values()) {
+			if (!isPathWithin(other.cwd, root)) continue
+			if (inMemoryOverride && other.cwd === inMemoryOverride.cwd) {
+				setProjectScopeTrusted(other.cwd, inMemoryOverride.trusted)
+				continue
+			}
+			const entry = store.getEntry(other.cwd)
+			if (entry === null) clearProjectScopeTrust(other.cwd)
+			else setProjectScopeTrusted(other.cwd, entry.decision)
+		}
+		for (const [id, other] of this.sessions) {
+			if (!isPathWithin(other.cwd, root)) continue
+			notifyProjectTrustUpdate(this.conn, buildProjectTrustUpdate(id, other.cwd))
+		}
+		if (grant) {
+			// The watcher's root set must be re-derived on grant: while
+			// untrusted, the project skills dir was never added to the watch set,
+			// so without refresh() post-grant edits to project skills would never
+			// re-advertise palettes. (Roots only grow; revoke keeps watching —
+			// see skill-watcher's roots-never-removed note.)
+			this.skillWatcher.refresh()
+		}
+		this.commandsRefresher.request()
+	}
+
 	private emitUsageUpdate(session: AgentSession, lifetime: TurnUsage): void {
 		const ctx = session.getContextUsage()
 		// Per the issue doc: skip when getContextUsage() returns undefined or
@@ -2251,32 +2551,37 @@ async function createSessionSettings(
 	// sessions in one process, the last-configured session's value governs
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
-	// Cache the skill list block per session so we don't rediscover skills on
-	// every turn's system prompt rebuild. Built lazily on first access; errors
-	// during loader access fall back to an empty block.
-	let cachedSkillListBlock: string | undefined
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
 	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
-	const resourceLoader = new DefaultResourceLoader({
+	// Annotated explicitly: the appendSystemPromptOverride closure references
+	// `resourceLoader` in its own initializer, which TS otherwise flags as
+	// circular (7022).
+	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: [...options.extensionFactories, ...(mcpExtension ? [mcpExtension] : [])],
 		appendSystemPromptOverride: () => {
-			if (cachedSkillListBlock === undefined) {
+			// Per-loader cached so a mid-session project-trust grant can
+			// invalidate it (see invalidateSkillListBlock); built lazily on
+			// first access, errors fall back to an empty block — it is
+			// non-essential.
+			let block = cachedSkillListBlock(resourceLoader)
+			if (block === undefined) {
 				try {
-					cachedSkillListBlock = buildSkillListBlock(resourceLoader)
+					block = buildSkillListBlock(resourceLoader)
 				} catch {
 					// If the loader isn't ready (e.g. during reload before skills
 					// are populated), return empty rather than crashing session
-					// startup — the block is non-essential.
-					cachedSkillListBlock = ""
+					// startup.
+					block = ""
 				}
+				setCachedSkillListBlock(resourceLoader, block)
 			}
 			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
 			// then the skill list block (matches upstream override behaviour).
 			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
-			return [...base, ...(cachedSkillListBlock ? [cachedSkillListBlock] : [])]
+			return [...base, ...(block ? [block] : [])]
 		},
 	})
 	await resourceLoader.reload()

@@ -10,6 +10,8 @@ export interface FakeModel {
 	input?: ("text" | "image")[]
 	contextWindow?: number
 	maxTokens?: number
+	/** Optional description served by /v1/models/metadata (the /model table's DESCRIPTION column). */
+	description?: string
 	/** Extra fields merged verbatim into this model's /v1/models/metadata entry
 	 * (e.g. deprecation protocol fields: deprecated_at, replacement_model). */
 	metadata?: Record<string, unknown>
@@ -126,6 +128,7 @@ export const DEFAULT_MODEL: Required<FakeModel> = {
 	input: ["text"],
 	contextWindow: 8192,
 	maxTokens: 1024,
+	description: "",
 	metadata: {},
 }
 
@@ -139,6 +142,7 @@ export function withModelDefaults(model: FakeModel): Required<FakeModel> {
 		input: model.input ?? DEFAULT_MODEL.input,
 		contextWindow: model.contextWindow ?? DEFAULT_MODEL.contextWindow,
 		maxTokens: model.maxTokens ?? DEFAULT_MODEL.maxTokens,
+		description: model.description ?? "",
 		metadata: model.metadata ?? {},
 	}
 }
@@ -204,6 +208,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 							context_window: model.contextWindow,
 							max_output_tokens: model.maxTokens,
 						},
+						...(model.description ? { description: model.description } : {}),
 						...model.metadata,
 					})),
 				})

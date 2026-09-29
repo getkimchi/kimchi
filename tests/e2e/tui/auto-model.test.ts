@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
+import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import {
 	fullText,
 	INPUT_TIMEOUT_MS,
@@ -36,12 +37,14 @@ const MODELS: FakeModel[] = [
 	},
 	// Listed after the concrete models — mirroring the backend catalog, where
 	// virtual entries follow concrete ones (and upstream's no-default pick then
-	// lands on a concrete model rather than Auto).
+	// lands on a concrete model rather than Auto). Image input matches the
+	// production catalog for Auto: the routed pool serves vision, and the
+	// clipboard gate treats `auto*` as image-capable regardless.
 	{
 		slug: "auto",
 		displayName: "Auto",
 		provider: "ai-enabler",
-		input: ["text"],
+		input: ["text", "image"],
 		contextWindow: 128_000,
 		maxTokens: 8_192,
 	},
@@ -87,6 +90,16 @@ function agentCall(id: string, model?: string, runInBackground = false) {
 	}
 }
 
+/** Poll viewText until the pattern matches (waits for filtered/selected state). */
+async function viewMatches(terminal: Terminal, pattern: RegExp, timeoutMs = INPUT_TIMEOUT_MS): Promise<void> {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		if (pattern.test(viewText(terminal))) return
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${viewText(terminal)}`)
+}
+
 test("/model autocomplete lists the backend-advertised Auto and selects it", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -108,17 +121,13 @@ test("/model autocomplete lists the backend-advertised Auto and selects it", asy
 			trace.step("model autocomplete open")
 
 			terminal.write("auto")
-			// Wait for the filter to apply: the concrete row drops out of the list.
-			const filteredAt = Date.now()
-			while (Date.now() - filteredAt < INPUT_TIMEOUT_MS) {
-				if (!viewText(terminal).includes("routed [kimchi-dev]")) break
-				await new Promise((resolve) => setTimeout(resolve, 50))
-			}
-			// The backend descriptor's display name is the TUI row (the picker has no
-			// description slot; ACP surfaces carry the description — see the ACP e2e).
-			// Upstream 0.85.1 added a "✓ current model" marker column: the row renders
-			// as "→   auto [kimchi-dev]" (cursor, marker column, then the label).
-			expect(viewText(terminal)).toMatch(/→\s+auto \[kimchi-dev\]/)
+			// The DESCRIPTION column shows Auto's fallback description in the
+			// unfiltered list too, so waiting on that text is not enough — poll
+			// until the search filter actually selects the Auto row (cursor on it).
+			// The selector renders a capability table: the row shows the cursor,
+			// the current-model marker column, then MODEL | PROVIDER | CONTEXT |
+			// VISION | DESCRIPTION columns (no bracketed provider anymore).
+			await viewMatches(terminal, /→\s+auto\s+kimchi-dev\s+\S*k\s+✓/)
 			trace.step("Auto highlighted")
 
 			terminal.submit("")

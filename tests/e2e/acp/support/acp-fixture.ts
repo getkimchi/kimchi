@@ -46,6 +46,8 @@ export interface AcpFixture {
 	proc: ChildProcess
 	conn: ClientSideConnection
 	client: RecordingClient
+	/** The initialize() response captured at connection setup, so tests can assert negotiated agent capabilities without a second initialization call. */
+	initializeResponse: acp.InitializeResponse
 	mcp?: McpFixture
 	/**
 	 * Resolve on process exit. Pass `{ signal }` to abort the wait — used by
@@ -450,6 +452,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			proc,
 			conn,
 			client,
+			initializeResponse: initResult,
 			mcp,
 			waitForExit,
 			async stop() {

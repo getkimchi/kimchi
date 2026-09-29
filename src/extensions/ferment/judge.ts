@@ -24,7 +24,8 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { CharterClauseVerdict, FermentCharter, Grade } from "../../ferment/types.js"
-import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
+import { findModelByRef } from "../model-catalog/ref-utils.js"
+import { getModelRoles } from "../orchestration/model-roles.js"
 import { renderCharterFull } from "./charter.js"
 import { getJudgeModel, getJudgeModelRegistry, getJudgeWorkContext, isJudgeMultiModelEnabled } from "./state.js"
 
@@ -66,8 +67,7 @@ function resolveJudgeModel(registry: ModelRegistry | undefined): Model<Api> | un
 	if (!isJudgeMultiModelEnabled()) return getJudgeModel()
 	const judgeAssignment = getModelRoles().judge
 	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
-	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
-	return (judgeRef && registry ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+	return (registry && judgeModelStr ? findModelByRef(registry, judgeModelStr) : undefined) ?? getJudgeModel()
 }
 
 /**
