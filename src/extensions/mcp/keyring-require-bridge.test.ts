@@ -13,6 +13,7 @@ import {
 	LEGACY_MCP_OAUTH_SERVICE,
 	MCP_OAUTH_SERVICE,
 	remapMcpOAuthService,
+	resetSecurityToolHealCache,
 	SecurityToolEntry,
 	type SecurityToolResult,
 } from "./keyring-require-bridge.js"
@@ -104,6 +105,10 @@ describe("inspectMcpCredentialAccount", () => {
 })
 
 describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
+	afterEach(() => {
+		resetSecurityToolHealCache()
+	})
+
 	const NOT_FOUND: SecurityToolResult = {
 		status: 44,
 		stdout: "",
@@ -243,6 +248,73 @@ describe("SecurityToolEntry (macOS /usr/bin/security backend)", () => {
 			["delete-generic-password", "-s", "svc", "-a", "present"],
 			["delete-generic-password", "-s", "svc", "-a", "missing"],
 		])
+	})
+
+	it("classifies not-found and locked keychains by exit code when the message text changes", () => {
+		const localizedNotFound: SecurityToolResult = { status: 44, stdout: "", stderr: "no existe en el llavero" }
+		const localizedLocked: SecurityToolResult = { status: 36, stdout: "", stderr: "la interacción no está permitida" }
+		expect(createSecurityToolEntry("svc", "a", fakeRunner(() => localizedNotFound).runner).getPassword()).toBeNull()
+		const error = capture(() =>
+			createSecurityToolEntry("svc", "b", fakeRunner(() => localizedLocked).runner).getPassword(),
+		)
+		expect(isMcpKeychainUnavailableError(error)).toBe(true)
+	})
+
+	it("skips self-heal for ambiguous hex-legacy items instead of persisting a guess", () => {
+		// A payload whose raw form is pure hex: decode() transforms it for the
+		// caller, but healing that guess could permanently corrupt the item, so
+		// the ACL rewrite must be skipped entirely.
+		const payload = JSON.stringify({ legacy: true })
+		const raw = Buffer.from(payload, "utf8").toString("hex")
+		const { runner, calls } = fakeRunner((args) =>
+			args[0] === "find-generic-password"
+				? { status: 0, stdout: `${raw}\n`, stderr: "" }
+				: { status: 0, stdout: "", stderr: "" },
+		)
+		const entry = createSecurityToolEntry("svc-noheal", "acct-noheal", runner)
+		expect(entry.getPassword()).toBe(payload)
+		expect(calls.filter((c) => c.args[0] === "add-generic-password")).toEqual([])
+		// Repeated reads still work and stay transient (raw bytes untouched).
+		expect(entry.getPassword()).toBe(payload)
+	})
+
+	it("heals unambiguous ASCII legacy items with a b64 envelope", () => {
+		const payload = JSON.stringify({ legacy: "ascii" })
+		const { runner, calls } = fakeRunner((args) =>
+			args[0] === "find-generic-password"
+				? { status: 0, stdout: `${payload}\n`, stderr: "" }
+				: { status: 0, stdout: "", stderr: "" },
+		)
+		const entry = createSecurityToolEntry("svc-asciiheal", "acct-asciiheal", runner)
+		expect(entry.getPassword()).toBe(payload)
+		expect(calls.filter((c) => c.args[0] === "add-generic-password")).toEqual([
+			{
+				args: [
+					"add-generic-password",
+					"-U",
+					"-s",
+					"svc-asciiheal",
+					"-a",
+					"acct-asciiheal",
+					"-w",
+					`b64:${Buffer.from(payload, "utf8").toString("base64")}`,
+				],
+			},
+		])
+		// The healed envelope reads back identically.
+		expect(entry.getPassword()).toBe(payload)
+	})
+
+	it("maps a spawn timeout to the unavailable error with a pending-dialog hint", () => {
+		const { runner } = fakeRunner(() => ({
+			status: null,
+			stdout: "",
+			stderr: "security invocation timed out after 120s",
+			error: Object.assign(new Error("spawnSync ETIMEDOUT"), { code: "ETIMEDOUT" }),
+		}))
+		const error = capture(() => createSecurityToolEntry("svc", "acct", runner).getPassword())
+		expect(isMcpKeychainUnavailableError(error)).toBe(true)
+		expect((error as Error).message).toContain("consent dialog may be pending")
 	})
 })
 

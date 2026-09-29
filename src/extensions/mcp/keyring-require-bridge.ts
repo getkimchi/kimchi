@@ -115,7 +115,14 @@ export interface SecurityToolResult {
 export type SecurityToolRunner = (args: string[], stdin?: string) => SecurityToolResult
 
 const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
-	const result = spawnSync("/usr/bin/security", args, { encoding: "utf8", input: stdin })
+	// A generous bound turns an abandoned keychain consent dialog (possible on
+	// the first read of a legacy ACL item) into a diagnosable error instead of
+	// an indefinite hang. The in-process SecItem path blocked the same way.
+	const result = spawnSync("/usr/bin/security", args, {
+		encoding: "utf8",
+		input: stdin,
+		timeout: SECURITY_TOOL_TIMEOUT_MS,
+	})
 	return {
 		status: result.status,
 		stdout: result.stdout ?? "",
@@ -126,13 +133,17 @@ const defaultSecurityRunner: SecurityToolRunner = (args, stdin) => {
 
 const KEYCHAIN_NOT_FOUND_MARKER = "could not be found"
 const KEYCHAIN_USER_INTERACTION_MARKER = "interaction is not allowed"
+const SECURITY_TOOL_TIMEOUT_MS = 120_000
 
 function isUserInteractionNotAllowed(result: SecurityToolResult): boolean {
-	return result.stderr.includes(KEYCHAIN_USER_INTERACTION_MARKER)
+	// Exit statuses of /usr/bin/security are not a documented API and vary by
+	// verb and macOS release; the English message text has been stable for far
+	// longer, so substrings classify first and known exit codes are the fallback.
+	return result.stderr.includes(KEYCHAIN_USER_INTERACTION_MARKER) || result.status === 36
 }
 
 function isKeychainItemNotFound(result: SecurityToolResult): boolean {
-	return result.stderr.includes(KEYCHAIN_NOT_FOUND_MARKER)
+	return result.stderr.includes(KEYCHAIN_NOT_FOUND_MARKER) || result.status === 44
 }
 
 /** Text with no control characters other than tab/newline and no U+FFFD (guards against mis-decoding genuinely hex-shaped passwords). */
@@ -146,7 +157,17 @@ function isPrintableText(value: string): boolean {
 }
 
 function failOnUnavailableKeychain(result: SecurityToolResult): void {
-	if (result.error) throw new McpKeychainUnavailableError(`failed to run /usr/bin/security: ${result.error.message}`)
+	if (result.error) {
+		// A typed error from the runner (e.g. spawn timeout) already carries the
+		// actionable detail — surface it verbatim instead of double-wrapping.
+		if (result.error instanceof McpKeychainUnavailableError) throw result.error
+		if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+			throw new McpKeychainUnavailableError(
+				`timed out after ${SECURITY_TOOL_TIMEOUT_MS / 1000}s — a keychain consent dialog may be pending on screen`,
+			)
+		}
+		throw new McpKeychainUnavailableError(`failed to run /usr/bin/security: ${result.error.message}`)
+	}
 	if (isUserInteractionNotAllowed(result)) throw new McpKeychainUnavailableError(result.stderr.trim())
 }
 
@@ -188,8 +209,9 @@ export class SecurityToolEntry implements KeyringEntryLike {
 		if (isKeychainItemNotFound(result)) return null
 		failOnUnavailableKeychain(result)
 		checkResult(result, "find-generic-password")
-		const password = SecurityToolEntry.decode(result.stdout.replace(/\r?\n$/, ""))
-		this.selfHealAcl(password)
+		const raw = result.stdout.replace(/\r?\n$/, "")
+		const password = SecurityToolEntry.decode(raw)
+		this.selfHealAcl(raw, password)
 		return password
 	}
 
@@ -200,8 +222,14 @@ export class SecurityToolEntry implements KeyringEntryLike {
 
 	private store(password: string): void {
 		// `-w` places the secret in the process argv; `/usr/bin/security` has no
-		// stdin mode for this verb. Acceptable here: the store previously kept
-		// these OAuth payloads as plaintext files readable by the same user.
+		// stdin mode for this verb. Accepted tradeoff, and a delta from the
+		// immediate predecessor: the in-process SecItem backend (@napi-rs/keyring)
+		// never exposed secrets via argv, so org-managed Macs running `ps`
+		// observers, Endpoint Security clients, or EDR exec-event telemetry can
+		// now capture OAuth payloads on writes (and on each entry's first-read
+		// self-heal). Chosen because the pre-#1141 production store was plaintext
+		// files readable by the same user, so the practical exposure bound is
+		// unchanged, while at-rest protection and prompt behavior improve.
 		const result = this.runner([
 			"add-generic-password",
 			"-U",
@@ -252,11 +280,18 @@ export class SecurityToolEntry implements KeyringEntryLike {
 		return true
 	}
 
-	private selfHealAcl(password: string): void {
+	private selfHealAcl(raw: string, decoded: string): void {
+		// Only heal when the decode is UNAMBIGUOUS — the raw value is already the
+		// canonical text (identity passthrough) or a b64: envelope. When the hex
+		// heuristic fired, the decoded value is a guess: healing it could
+		// permanently overwrite the item with mis-decoded bytes, so leave the item
+		// untouched (the pre-self-heal behavior) and let the next explicit write
+		// reset the ACL instead.
+		if (raw !== decoded && !raw.startsWith("b64:")) return
 		const key = this.key()
 		if (SecurityToolEntry.healed.has(key)) return
 		try {
-			this.store(password)
+			this.store(decoded)
 			SecurityToolEntry.healed.add(key)
 		} catch {
 			// Self-heal is best-effort; the successful read already returned the
@@ -269,6 +304,16 @@ export class SecurityToolEntry implements KeyringEntryLike {
 	}
 
 	private static readonly healed = new Set<string>()
+
+	/** Test seam for resetSecurityToolHealCache — keeps `healed` private. */
+	static clearHealCacheForTests(): void {
+		SecurityToolEntry.healed.clear()
+	}
+}
+
+/** Exported for tests: forget the once-per-process self-heal bookkeeping. */
+export function resetSecurityToolHealCache(): void {
+	SecurityToolEntry.clearHealCacheForTests()
 }
 
 /** Exported for tests: construct the macOS `/usr/bin/security`-backed Entry with an injectable runner. */
