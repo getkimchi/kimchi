@@ -1481,13 +1481,7 @@ describe("openai Responses API routing", () => {
 	})
 
 	it("does not touch non-openai providers", () => {
-		const { providers } = buildModelsConfig(
-			[
-				{ ...KIMI },
-				{ ...SONNET_46 },
-			] as never,
-			"https://example.invalid",
-		)
+		const { providers } = buildModelsConfig([KIMI, SONNET_46] as never, "https://example.invalid")
 		const kimi = providers["kimchi-dev/ai-enabler"]?.models ?? []
 		const claude = providers["kimchi-dev/anthropic"]?.models ?? []
 		for (const model of [...kimi, ...claude]) {
