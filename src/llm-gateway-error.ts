@@ -154,9 +154,10 @@ const EXPLICIT_ZONE_RE = /[Zz]$|[+-]\d{2}:?\d{2}$/
 // pi hands the message along and not the response -- rendered as a relative
 // wait. Without this, "429 Too Many Requests, retry after 30 seconds" yields no
 // deadline at all and the retry backs off blindly against a limit that had just
-// said how long it lasts.
+// said how long it lasts. The leading \b keeps a trigger word from matching
+// inside another word: "unavailable in 5 minutes" is an outage, not a wait.
 const RATE_LIMIT_IN_RE =
-	/(?:retry|try again|available|reset[s]?)\s*(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hours?)\b/i
+	/\b(?:retry|try again|available|reset[s]?)\s*(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hours?)\b/i
 
 const UNIT_MS: Record<string, number> = {
 	ms: 1,
@@ -184,8 +185,10 @@ export function parseRateLimitRetryAt(rawMessage: string, now: number = Date.now
 		const stamp = match[1]
 		// The gateway reports UTC; Date.parse would read an unzoned stamp as local time.
 		const retryAt = Date.parse(EXPLICIT_ZONE_RE.test(stamp) ? stamp : `${stamp}Z`)
-		if (Number.isNaN(retryAt) || retryAt <= now) return undefined
-		return retryAt
+		// A readable deadline that has passed means the limit has already lifted, so a
+		// duration stated alongside it is older still and is not consulted. An unreadable
+		// one says nothing, so the duration below is still worth reading.
+		if (!Number.isNaN(retryAt)) return retryAt > now ? retryAt : undefined
 	}
 
 	// The absolute form is preferred above because it needs no arithmetic; this
@@ -195,7 +198,11 @@ export function parseRateLimitRetryAt(rawMessage: string, now: number = Date.now
 	const amount = Number(relative[1])
 	const unit = UNIT_MS[relative[2].toLowerCase()]
 	if (!Number.isFinite(amount) || amount <= 0 || unit === undefined) return undefined
-	return now + amount * unit
+	// No ceiling is applied here: callers already refuse to wait past RATE_LIMIT_MAX_WAIT_MS,
+	// and clamping would misstate when the limit lifts. Only a deadline that is not a
+	// representable Date is dropped, since it would render as "Invalid Date" in the notice.
+	const retryAt = now + amount * unit
+	return Number.isNaN(new Date(retryAt).getTime()) ? undefined : retryAt
 }
 
 /** The gateway reports UTC; only local wall-clock time tells the user when to come back. */
