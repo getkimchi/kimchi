@@ -26,6 +26,7 @@ import {
 	createTrackedWriteTool,
 	reconcileFileTransitions,
 } from "./work-attribution/file-transitions.js"
+import { flushWorkSummaries, recoverWorkSummaries, updateWorkSummary } from "./work-attribution/summary.js"
 
 export interface WorkContext {
 	cwd: string
@@ -55,19 +56,25 @@ export function appendWorkRecord(
 ): void {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
 	const fd = openSync(path, "a+", 0o600)
+	const record = {
+		...fields,
+		version: 1,
+		sessionId: ctx.sessionManager.getSessionId(),
+		workId,
+		cwd: ctx.cwd,
+		recordedAt: new Date().toISOString(),
+	}
 	try {
 		const size = fstatSync(fd).size
 		const last = Buffer.alloc(1)
 		if (size) readSync(fd, last, 0, 1, size - 1)
 		const prefix = size && last[0] !== 10 ? "\n" : ""
-		writeFileSync(
-			fd,
-			`${prefix}${JSON.stringify({ ...fields, version: 1, sessionId: ctx.sessionManager.getSessionId(), workId, cwd: ctx.cwd, recordedAt: new Date().toISOString() })}\n`,
-		)
+		writeFileSync(fd, `${prefix}${JSON.stringify(record)}\n`)
 		fsyncSync(fd)
 	} finally {
 		closeSync(fd)
 	}
+	updateWorkSummary(record)
 }
 export function setWorkId(
 	ctx: WorkContext,
@@ -120,6 +127,7 @@ function warn(ctx: ExtensionContext, error: unknown): void {
 export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		pi.on("session_start", (_event, ctx) => {
+			recoverWorkSummaries()
 			try {
 				bind(ctx)
 			} catch (error) {
@@ -176,7 +184,11 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 				warn(ctx, error)
 			}
 		})
-		pi.on("session_shutdown", (_event, ctx) => {
+		pi.on("agent_end", async () => {
+			await flushWorkSummaries()
+		})
+		pi.on("session_shutdown", async (_event, ctx) => {
+			await flushWorkSummaries()
 			activeRequests.delete(workLedgerPath(ctx))
 			identities.delete(workLedgerPath(ctx))
 			initialized.delete(ctx.sessionManager.getSessionId())

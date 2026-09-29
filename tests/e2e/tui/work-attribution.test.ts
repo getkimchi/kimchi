@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
@@ -17,6 +17,23 @@ const readLedger = (directory: string) =>
 				.filter(Boolean)
 				.map((line) => JSON.parse(line)),
 		)
+
+async function waitForSummary(
+	agentDir: string,
+	workId: string,
+	minimum: Partial<Record<"sessions" | "requests" | "plans" | "commits", number>>,
+) {
+	const path = join(agentDir, "work", workId, "work.json")
+	const deadline = Date.now() + 15_000
+	while (Date.now() < deadline) {
+		try {
+			const summary = JSON.parse(readFileSync(path, "utf8"))
+			if (Object.entries(minimum).every(([key, count]) => summary[key]?.length >= count)) return summary
+		} catch {}
+		await sleep(50)
+	}
+	throw new Error(`Work summary did not become ready: ${path}`)
+}
 
 test("work and request IDs are durable before the first reply, and commits belong to that work", async ({
 	terminal,
@@ -99,7 +116,19 @@ test("work and request IDs are durable before the first reply, and commits belon
 						model,
 					})
 				}
-				trace.step("real Git commit, both chat requests and automatic title request retain original work ID")
+				const summary = await waitForSummary(fixture.agentDir, started[0].workId, { requests: sent.length, commits: 1 })
+				expect(summary).toMatchObject({
+					version: 1,
+					workId: started[0].workId,
+					sessions: [started[0].sessionId],
+					plans: [],
+				})
+				expect(
+					summary.requests.find((item: { requestId: string }) => item.requestId === request?.headers["x-request-id"]),
+				).toMatchObject({ sessionId: started[0].sessionId, model: "basic" })
+				expect(summary.commits[0]).toMatchObject({ sha, sessionId: started[0].sessionId })
+				expect(summary.requests[0].workId).toBeUndefined()
+				trace.step("readable work summary contains header request IDs and the real Git commit")
 			},
 		)
 	} finally {
@@ -136,7 +165,7 @@ test("a new session continues a saved plan's work before its first model call", 
 			const planPath = join(fixture.workDir, ".kimchi/plans/attribution-plan.md")
 			const plan = readFileSync(planPath, "utf8")
 			const workId = /<!-- kimchi-work-id: ([0-9a-f-]+) -->/.exec(plan)?.[1]
-			expect(workId).toBeDefined()
+			if (!workId) throw new Error("Saved plan has no work ID")
 			trace.step("planning produced a saved plan carrying work identity")
 			terminal.keyPress(Key.Escape)
 			await expect(
@@ -154,7 +183,20 @@ test("a new session continues a saved plan's work before its first model call", 
 			const requests = readLedger(ledgerDir).filter((record) => record.type === "request")
 			expect(new Set(requests.map((record) => record.sessionId)).size).toBe(2)
 			expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
-			trace.step("planning and implementation sessions share work identity")
+			const summary = await waitForSummary(fixture.agentDir, workId, { sessions: 2, requests: 2, plans: 1 })
+			expect(summary.workId).toBe(workId)
+			expect(new Set(summary.sessions)).toEqual(new Set(requests.map((record) => record.sessionId)))
+			expect(summary.plans.some((plan: { path: string }) => realpathSync(plan.path) === realpathSync(planPath))).toBe(
+				true,
+			)
+			for (const request of requests)
+				expect(
+					summary.requests.some(
+						(item: { requestId: string; sessionId: string }) =>
+							item.requestId === request.requestId && item.sessionId === request.sessionId,
+					),
+				).toBe(true)
+			trace.step("one readable work summary merges the saved plan and both sessions")
 		},
 	)
 })
@@ -219,7 +261,17 @@ test("a fresh session links a manual commit to the work that wrote its files", a
 			expect(fresh).toBeDefined()
 			expect(fresh.sessionId).not.toBe(original.sessionId)
 			expect(fresh.workId).not.toBe(original.workId)
-			trace.step("fresh session automatically reconciled the commit to the original work and session")
+			const originalSummary = await waitForSummary(fixture.agentDir, original.workId, { commits: 1, requests: 2 })
+			const freshSummary = await waitForSummary(fixture.agentDir, fresh.workId, { requests: 1 })
+			expect(originalSummary.commits[0]).toMatchObject({ sha, sessionId: original.sessionId, paths: ["manual.txt"] })
+			expect(originalSummary.requests.some((item: { requestId: string }) => item.requestId === fresh.requestId)).toBe(
+				false,
+			)
+			expect(freshSummary.commits).toEqual([])
+			expect(freshSummary.requests.some((item: { requestId: string }) => item.requestId === original.requestId)).toBe(
+				false,
+			)
+			trace.step("original work summary owns the manual commit; fresh work has its own summary")
 		},
 	)
 })
