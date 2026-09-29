@@ -124,11 +124,35 @@ so a narrow local bridge supplies the statically bundled module. The bridged
 the kimchi-owned `dev.kimchi.mcp.oauth` service: macOS partitions keychain
 item access control by code-signing identity, and the adapter's shared service
 name means items created by other binaries embedding the adapter (upstream pi,
-ad-hoc builds) trigger keychain unlock prompts under Kimchi. The kimchi-owned
+ad-hoc builds) trigger keychain unlock prompts under Kimchi.
+
+On macOS the bridge does not even call the native module: all keychain I/O is
+routed through Apple's `/usr/bin/security` CLI (`SecurityToolEntry`). macOS
+binds a generic-password ACL to the *creating process's* code-signing
+designated requirement, so items written in-process by differently signed
+kimchi binaries (ad-hoc dev builds, the Developer ID CLI, the Studio-bundled
+harness) re-prompted on every cross-signature access — and on every ad-hoc
+rebuild, since its requirement is the build's cdhash. Items created via the
+`security` tool trust that Apple-signed tool itself, so every calling binary
+accesses them with zero prompts. Payloads are wrapped in a printable-ASCII
+`b64:` envelope because `security` renders non-ASCII `-w` output as hex;
+reads also hex-decode legacy items and pass plain ASCII through. A locked or
+interaction-forbidden keychain (headless/SSH) fails with a typed
+`McpKeychainUnavailableError` whose message directs the user to unlock the
+keychain locally and re-run `kimchi mcp auth`. Reads lazily rewrite legacy
+in-process items once per process (`add-generic-password -U`), resetting
+their ACLs so any one-time prompt on first access is also the last. Linux and
+Windows keep the native `@napi-rs/keyring` backend. The kimchi-owned
 service deliberately starts empty — credentials under the shared service are
 never read, so no keychain access-control prompt can leak in from them, and
-users re-authenticate their MCP OAuth servers once after upgrading. A private,
-file-backed implementation is available only to isolated E2E processes. The
+users re-authenticate their MCP OAuth servers once after upgrading. This stays
+true with the `/usr/bin/security` backend: its self-heal applies only to items
+under the kimchi-owned service, and the legacy shared service is never
+migrated (decision 2026-09-29): its items are owned by other embedding
+binaries whose ACLs would prompt on read, and refresh tokens predating the
+rename are expected to be invalid anyway, so users re-authenticate once
+instead. A private, file-backed implementation is available only to isolated
+E2E processes. The
 `mcp keyring-check --json` command always exercises native credential-store
 CRUD and is run by release and canary workflows on each target OS.
 
