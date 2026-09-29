@@ -46,6 +46,40 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
+	it("finishes the turn while summary publication is pending, but drains it on shutdown", async () => {
+		const originalRename = asyncFs.rename
+		let release!: () => void
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		vi.spyOn(asyncFs, "rename").mockImplementation(async (...args) => {
+			await blocked
+			return originalRename(...args)
+		})
+		const mock = createExtensionApi()
+		const ctx = context()
+		createWorkAttributionExtension()(mock.api)
+		const request = recordProviderRequest(ctx)
+		const end = (async () => {
+			for (const handler of mock.getHandlers("agent_end")) await handler({ type: "agent_end", messages: [] }, ctx)
+		})()
+		let shutdownFinished = false
+		const shutdown = (async () => {
+			for (const handler of mock.getHandlers("session_shutdown"))
+				await handler({ type: "session_shutdown", reason: "quit" }, ctx)
+			shutdownFinished = true
+		})()
+		try {
+			expect(
+				await Promise.race([end.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 100))]),
+			).toBe(true)
+			expect(shutdownFinished).toBe(false)
+		} finally {
+			release()
+			await Promise.all([end, shutdown])
+		}
+		expect(summary(request.workId).requests).toContainEqual(expect.objectContaining({ requestId: request.requestId }))
+	})
 	it("automatically separates work while merging parent, child, request, plan and commit provenance", async () => {
 		const parent = context()
 		const child = context("child")

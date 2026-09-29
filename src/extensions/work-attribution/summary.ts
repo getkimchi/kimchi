@@ -238,7 +238,7 @@ export function recoverWorkSummaries(): void {
 		warn(error)
 	}
 }
-/** Idle/shutdown awaits queued contention retries; every retry has a finite deadline. */
+/** Shutdown awaits queued contention retries; every retry has a finite deadline. */
 export async function flushWorkSummaries(): Promise<void> {
 	while (pending.size) await Promise.all([...pending.values()].map((update) => update.promise))
 }

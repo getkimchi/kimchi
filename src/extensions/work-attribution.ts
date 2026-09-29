@@ -184,9 +184,6 @@ export function createWorkAttributionExtension(inheritedWorkId?: string): (pi: E
 				warn(ctx, error)
 			}
 		})
-		pi.on("agent_end", async () => {
-			await flushWorkSummaries()
-		})
 		pi.on("session_shutdown", async (_event, ctx) => {
 			await flushWorkSummaries()
 			activeRequests.delete(workLedgerPath(ctx))
