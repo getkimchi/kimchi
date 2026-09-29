@@ -559,6 +559,54 @@ describe("handleAgentEnd", () => {
 		expect(attrs.phase).toBe("tool")
 		expect(attrs.tool_name).toBe("bash")
 		expect(attrs.turn_index).toBe(5)
+		expect(attrs.is_subagent).toBe("false")
+	})
+
+	it("attributes the errored tool, not the most recent sibling, in a parallel tool-call batch", () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		// Results of a parallel batch are emitted in tool-call order: the
+		// aborted bash lands first, the successful read follows.
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "assistant",
+					stopReason: "stop",
+					content: [
+						{ type: "toolCall", name: "bash" },
+						{ type: "toolCall", name: "read" },
+					],
+				},
+				{ role: "toolResult", toolName: "bash", isError: true, content: [{ text: "Operation aborted" }] },
+				{ role: "toolResult", toolName: "read", isError: false, content: [{ text: "ok" }] },
+				{ role: "assistant", stopReason: "aborted", content: [] },
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(attrs.phase).toBe("tool")
+		expect(attrs.tool_name).toBe("bash")
+	})
+
+	it("stamps is_subagent=true when the aborted run belongs to an Agents subagent", () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+		vi.stubEnv("KIMCHI_SUBAGENT", "1")
+		try {
+			handleAgentEnd(ctx, piCtx, {
+				messages: [{ role: "assistant", stopReason: "aborted", content: [{ text: "partial" }] }],
+			} as unknown as AgentEndEvent)
+		} finally {
+			vi.unstubAllEnvs()
+		}
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(attrs.is_subagent).toBe("true")
 	})
 
 	it("marks ms_into_turn as 0 when the prompt start is unknown", () => {

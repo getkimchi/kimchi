@@ -1,6 +1,7 @@
 import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai"
 import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../../startup-context.js"
+import { isAgentWorker } from "../../agent-worker-context.js"
 import type { TelemetryContext } from "../session-context.js"
 import { handleTransportError } from "./transport-errors.js"
 
@@ -126,6 +127,11 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 			{
 				phase: interruption.phase,
 				...(interruption.toolName ? { tool_name: interruption.toolName } : {}),
+				// Subagent runs get their own telemetry instance, so one Esc that
+				// aborts a subagent AND the main run can produce two records;
+				// downstream dashboards deduplicate on this flag (loop_guard
+				// convention) together with session.parent_id.
+				is_subagent: String(isAgentWorker()),
 				turn_index: tm.turnIndex,
 				ms_into_turn: tm.promptStartMs > 0 ? Date.now() - tm.promptStartMs : 0,
 			},
@@ -194,14 +200,16 @@ function detectInterruption(
 	if (content.length > 0) return { phase: "llm" }
 
 	// Empty aborted response: walk the contiguous toolResult block directly
-	// preceding it — an errored result marks the tool that was killed.
+	// preceding it — an errored result marks the tool that was killed. Report
+	// the errored result's own name: with parallel tool calls the block mixes
+	// results, and the most recent name may belong to a sibling call.
 	let toolName: string | undefined
 	for (let i = abortedIdx - 1; i >= 0; i--) {
 		const msg = messages[i]
 		if (msg.role !== "toolResult") break
 		const result = msg as { toolName?: string; isError?: boolean }
 		toolName = toolName ?? result.toolName
-		if (result.isError) return { phase: "tool", toolName }
+		if (result.isError) return { phase: "tool", toolName: result.toolName ?? toolName }
 	}
 	return { phase: "llm" }
 }
