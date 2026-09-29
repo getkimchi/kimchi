@@ -36,7 +36,7 @@ Every in-session payload includes:
 | `source` | Where the event originated (e.g. `"cli"`) |
 | `mode` | `"coding"` or `"ferment"` |
 
-Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** (from PostHog) as `session.id` — no session exists yet.
+Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** as `session.id` — no session exists yet.
 
 ### ID scheme
 
@@ -45,8 +45,8 @@ Four distinct ids flow through telemetry — do not conflate them:
 | Id | Role |
 |----|------|
 | **pi session id** (UUIDv7) | Canonical id of a pi session. Emitted as `session.id` on every log record and metric, and sent as the `X-Session-Id` provider header. Each session — main agent or subagent — has its own. |
-| **device id** (PostHog) | Stands in as `session.id` for pre-session events, when no session exists yet. |
-| **account uuid** | Identifies the account (`user.account_uuid` on all payloads, empty when unknown); orthogonal to sessions. |
+| **device id** | A UUID generated locally and persisted in `~/.config/kimchi/config.json` (`src/posthog-device.ts`); serves as PostHog's `distinct_id`. Stands in as `session.id` for pre-session events, when no session exists yet. |
+| **account uuid** | Identifies the account (`user.account_uuid`; empty when unknown in-session, omitted entirely on pre-session events while unresolved); orthogonal to sessions. |
 | **process telemetryId** | Internal only — survives solely as the accumulator key for cumulative state (ReplacingMergeTree monotonic-flush grouping). Not the emitted session id. |
 
 ### Subagent identification
