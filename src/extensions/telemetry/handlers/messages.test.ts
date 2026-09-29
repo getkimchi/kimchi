@@ -509,4 +509,101 @@ describe("handleAgentEnd", () => {
 
 		expect(emitSpy).not.toHaveBeenCalled()
 	})
+
+	it("emits agent.interrupted with phase llm when the last assistant message was aborted mid-stream", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		ctx.turnIndex = 3
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "do something" })
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "user", content: [{ text: "do something" }] },
+				{ role: "assistant", stopReason: "aborted", content: [{ text: "partial output that was cut" }] },
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("agent.interrupted")
+		expect(attrs.phase).toBe("llm")
+		expect(attrs).not.toHaveProperty("tool_name")
+		expect(attrs.turn_index).toBe(3)
+		expect(attrs.ms_into_turn).toBeGreaterThanOrEqual(0)
+	})
+
+	it("emits agent.interrupted with phase tool and tool_name when a tool was aborted mid-execution", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		ctx.turnIndex = 5
+		handleBeforeAgentStart(ctx, piCtx, { prompt: "run a command" })
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "user", content: [{ text: "run a command" }] },
+				{ role: "assistant", stopReason: "stop", content: [{ type: "toolCall", name: "bash" }] },
+				{ role: "toolResult", toolName: "bash", isError: true, content: [{ text: "Operation aborted" }] },
+				{ role: "assistant", stopReason: "aborted", content: [] },
+			],
+		} as unknown as AgentEndEvent)
+
+		// The interruption is the only emission — the aborted tool result must
+		// NOT also surface as an agent_error record.
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("agent.interrupted")
+		expect(attrs.phase).toBe("tool")
+		expect(attrs.tool_name).toBe("bash")
+		expect(attrs.turn_index).toBe(5)
+	})
+
+	it("marks ms_into_turn as 0 when the prompt start is unknown", () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [{ role: "assistant", stopReason: "aborted", content: [{ text: "partial" }] }],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("agent.interrupted")
+		expect(attrs.ms_into_turn).toBe(0)
+	})
+
+	it("treats an empty aborted message without preceding errored tool results as llm phase", () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{ role: "assistant", stopReason: "stop", content: [{ type: "toolCall", name: "read" }] },
+				{ role: "toolResult", toolName: "read", isError: false, content: [{ text: "ok" }] },
+				{ role: "assistant", stopReason: "aborted", content: [] },
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("agent.interrupted")
+		expect(attrs.phase).toBe("llm")
+		expect(attrs).not.toHaveProperty("tool_name")
+	})
+
+	it("does not emit agent.interrupted when the run completed normally", () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [{ role: "assistant", stopReason: "stop", content: [{ text: "done" }] }],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
 })

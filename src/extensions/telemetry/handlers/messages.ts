@@ -1,4 +1,4 @@
-import type { Message, TextContent } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai"
 import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../../startup-context.js"
 import type { TelemetryContext } from "../session-context.js"
@@ -93,6 +93,7 @@ export function handleBeforeAgentStart(tm: TelemetryContext, ctx: ExtensionConte
 		const modelId = ctx.model?.id
 		if (modelId) tm.currentModel = modelId
 	}
+	tm.promptStartMs = Date.now()
 	tm.emit(
 		"user_message",
 		{
@@ -104,8 +105,28 @@ export function handleBeforeAgentStart(tm: TelemetryContext, ctx: ExtensionConte
 }
 
 export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, event: AgentEndEvent): void {
-	const messages = event.messages
-	if (!messages?.length) return
+	const messages = event.messages ?? []
+
+	// User interruption (Esc / abort): pi appends a final assistant message
+	// with stopReason "aborted" and fires agent_end. This ends a turn, not a
+	// session — session.end{ended_by} never observes it, which is why this
+	// event exists.
+	const interruption = detectInterruption(messages)
+	if (interruption) {
+		tm.emit(
+			"agent.interrupted",
+			{
+				phase: interruption.phase,
+				...(interruption.toolName ? { tool_name: interruption.toolName } : {}),
+				turn_index: tm.turnIndex,
+				ms_into_turn: tm.promptStartMs > 0 ? Date.now() - tm.promptStartMs : 0,
+			},
+			ctx,
+		)
+		return
+	}
+
+	if (!messages.length) return
 	const last = messages[messages.length - 1]
 	if (last.role !== "toolResult" || !last.isError) return
 
@@ -122,4 +143,52 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 		},
 		ctx,
 	)
+}
+
+/**
+ * Classify the activity the user interrupted, from the agent run's new
+ * messages. Pi's abort semantics (pi-agent-core agent-loop):
+ *
+ * - Abort mid-LLM-stream: the assistant response comes back with
+ *   stopReason "aborted" carrying whatever streamed before the cancel.
+ * - Abort while a tool executes: the tool's (aborted) result lands first,
+ *   and the follow-up assistant response — started with an already-aborted
+ *   signal — comes back "aborted" with empty content (pi's own renderer
+ *   special-cases "aborted messages with no content" for this reason).
+ *
+ * Attribute: aborted-with-content → "llm" (streaming when cancelled); empty
+ * abort preceded by an errored tool result → "tool" (that tool was running);
+ * anything else → "llm". Not bulletproof (an Esc pressed before the first
+ * streamed token also yields an empty abort), but "llm" is the right
+ * fallback since no tool was executing in that window.
+ */
+function detectInterruption(
+	messages: AgentEndEvent["messages"],
+): { phase: "llm" | "tool"; toolName?: string } | undefined {
+	let abortedIdx = -1
+	let abortedMsg: AssistantMessage | undefined
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i]
+		if (msg.role === "assistant") {
+			abortedMsg = msg
+			if (msg.stopReason === "aborted") abortedIdx = i
+			break
+		}
+	}
+	if (abortedIdx < 0 || !abortedMsg) return undefined
+
+	const content = Array.isArray(abortedMsg.content) ? abortedMsg.content : []
+	if (content.length > 0) return { phase: "llm" }
+
+	// Empty aborted response: walk the contiguous toolResult block directly
+	// preceding it — an errored result marks the tool that was killed.
+	let toolName: string | undefined
+	for (let i = abortedIdx - 1; i >= 0; i--) {
+		const msg = messages[i]
+		if (msg.role !== "toolResult") break
+		const result = msg as { toolName?: string; isError?: boolean }
+		toolName = toolName ?? result.toolName
+		if (result.isError) return { phase: "tool", toolName }
+	}
+	return { phase: "llm" }
 }

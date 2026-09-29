@@ -78,6 +78,13 @@ export class TelemetryContext {
 	 */
 	turnIndex = 0
 	/**
+	 * Wall-clock ms when the current user prompt began (set by
+	 * handleBeforeAgentStart). Anchor for agent.interrupted's ms_into_turn —
+	 * measuring from prompt start (not pi's per-round turn_start) so the value
+	 * reads as "how long the agent had been working on this prompt".
+	 */
+	promptStartMs = 0
+	/**
 	 * W3C trace context of the most recent provider request, stored by the
 	 * before_provider_headers handler (generated per request, or parsed from an
 	 * externally supplied traceparent). Requested events (api_request, error)
@@ -133,6 +140,7 @@ export class TelemetryContext {
 		this.telemetryStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
+		this.promptStartMs = 0
 		this.lastTraceContext = undefined
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
