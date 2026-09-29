@@ -18,6 +18,7 @@ test("commands preserves the fresh session position and history", async ({ termi
 		},
 		async (_fixture, trace) => {
 			await waitForText(terminal, "default →", { full: false })
+			await waitForText(terminal, "Tip: Press shift+tab to change permissions mode.", { full: false })
 			const baseline = viewText(terminal).split("\n")
 			const history = fullText(terminal)
 			const input = baseline.findIndex((line) => line.includes(PROMPT_READY))
@@ -150,6 +151,10 @@ test("inspect a running Bash command without interrupting it or asking the model
 		id: "inspect_control",
 		function: { name: "bash_control", arguments: "" },
 	}
+	const repeatControl: FakeToolCall = {
+		id: "inspect_control_after_exit",
+		function: { name: "bash_control", arguments: "" },
+	}
 	await runKimchiSession(
 		terminal,
 		{
@@ -187,6 +192,14 @@ test("inspect a running Bash command without interrupting it or asking the model
 					},
 					toolCalls: [control],
 					stream: ["The command is still running; watching its output."],
+				},
+				{
+					match: () => {
+						repeatControl.function.arguments = control.function.arguments
+						return control.function.arguments.length > 0
+					},
+					toolCalls: [repeatControl],
+					stream: ["Checking the completed command once more."],
 				},
 				{ stream: ["Inspection complete."] },
 			],
@@ -280,7 +293,10 @@ test("inspect a running Bash command without interrupting it or asking the model
 			expect(fullText(terminal).match(/Bash ·/g)).toHaveLength(1)
 			expect(fullText(terminal)).toContain("Exited 0")
 			expect(fullText(terminal)).toContain("The command is still running")
-			expect(requests()).toHaveLength(3)
+			expect(fullText(terminal)).toContain("Checking the completed command once more.")
+			expect(fullText(terminal)).not.toContain("unknown handle")
+			expect(requests()).toHaveLength(4)
+			trace.step("an extra poll after completion preserves one final Bash card without an error")
 		},
 	)
 })

@@ -12,7 +12,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createProcessRegistry, OutputRingBuffer, type TailSnapshot } from "./process-registry.js"
+import {
+	createProcessRegistry,
+	MAX_COMPLETED_PROCESSES,
+	OutputRingBuffer,
+	type TailSnapshot,
+} from "./process-registry.js"
 
 // ─── Fake BashOperations ─────────────────────────────────────────────────────
 
@@ -220,7 +225,9 @@ describe("createProcessRegistry — snapshotTail", () => {
 
 		await registry.remove(handle)
 		expect(existsSync(spillPath)).toBe(true)
+		expect(registry.completedSnapshot(handle)?.final).toEqual(snap)
 		await registry.shutdown()
+		expect(registry.completedSnapshot(handle)).toBeUndefined()
 		expect(existsSync(spillPath)).toBe(false)
 	})
 
@@ -247,6 +254,30 @@ describe("createProcessRegistry — snapshotTail", () => {
 })
 
 describe("createProcessRegistry — kill", () => {
+	it("bounds completed history without keeping processes active", async () => {
+		const registry = createProcessRegistry()
+		const handles: string[] = []
+		for (let i = 0; i <= MAX_COMPLETED_PROCESSES; i++) {
+			const ops = createFakeOps()
+			const handle = registry.spawn(ops, "echo done", "/tmp", undefined, {
+				intervalSeconds: 1,
+				deadlineMs: Date.now() + 60_000,
+			})
+			handles.push(handle)
+			ops.emit("done\n")
+			await ops.exit(0)
+			await registry.remove(handle)
+		}
+		expect(registry.completedSnapshot(handles[0])).toBeUndefined()
+		expect(handles.slice(1).every((handle) => registry.completedSnapshot(handle)?.final.content === "done\n")).toBe(
+			true,
+		)
+		expect(registry.size).toBe(0)
+		expect(registry.listDisplaySnapshots()).toEqual([])
+		await registry.shutdown()
+		expect(handles.every((handle) => registry.completedSnapshot(handle) === undefined)).toBe(true)
+	})
+
 	it("aborts the running process and marks it stopped with reason 'stop'", async () => {
 		const ops = createFakeOps(0)
 		const registry = createProcessRegistry()
@@ -455,18 +486,18 @@ describe("display snapshots", () => {
 
 	it("waits for complete UTF-8 characters across output chunks", () => {
 		const ring = new OutputRingBuffer(16)
-		const bytes = Buffer.from("🙂")
+		const bytes = Buffer.from("𐍈")
 		ring.append(bytes.subarray(0, 2))
 		expect(ring.snapshot()).toEqual({ text: "", bytes: 2 })
 		ring.append(bytes.subarray(2))
-		expect(ring.snapshot()).toEqual({ text: "🙂", bytes: 4 })
+		expect(ring.snapshot()).toEqual({ text: "𐍈", bytes: 4 })
 	})
 	it("counts raw bytes independently of UTF-8 replacement and pending characters", () => {
 		const ring = new OutputRingBuffer(16)
-		ring.append(Buffer.from([0xff, 0xf0, 0x9f, 0x99]))
+		ring.append(Buffer.from([0xff, 0xf0, 0x90, 0x8d]))
 		expect(ring.snapshot()).toEqual({ text: "�", bytes: 4 })
-		ring.append(Buffer.from([0x82]))
-		expect(ring.snapshot()).toEqual({ text: "�🙂", bytes: 5 })
+		ring.append(Buffer.from([0x88]))
+		expect(ring.snapshot()).toEqual({ text: "�𐍈", bytes: 5 })
 	})
 	it("does not report an incomplete trailing character as omitted output", async () => {
 		const ops = createFakeOps()
@@ -475,7 +506,7 @@ describe("display snapshots", () => {
 			intervalSeconds: 15,
 			deadlineMs: Date.now() + 60_000,
 		})
-		ops.emit(Buffer.from([0xf0, 0x9f]))
+		ops.emit(Buffer.from([0xf0, 0x90]))
 		expect(registry.displaySnapshot(handle)).toMatchObject({ output: "", outputBytes: 2, omittedBytes: 0 })
 		await registry.shutdown()
 	})
@@ -510,7 +541,7 @@ describe("display snapshots", () => {
 			description: "Reading input",
 		})
 		const initial = registry.displaySnapshot(handle)
-		ops.emit("prefix🙂tail")
+		ops.emit("prefix𐍈tail")
 		const display = registry.displaySnapshot(handle, 6)
 		expect(display).toMatchObject({
 			handle,

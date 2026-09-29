@@ -9,7 +9,7 @@ import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
 
 const display: ProcessDisplaySnapshot = {
 	handle: "c1",
-	command: "cat <<'EOF'\nhello 🌸 世界\nEOF",
+	command: "cat <<'EOF'\nhello 字 世界\nEOF",
 	cwd: "/tmp",
 	description: "Checking output",
 	startedAt: 1000,
@@ -208,7 +208,7 @@ describe("Bash display", () => {
 		expect(rendered).toContain("first")
 	})
 	it.each([1, 2, 7, 20, 80])("keeps hostile and Unicode output within %s terminal cells", (width) => {
-		const hostile = "🌸 世界\x1b]52;c;c2VjcmV0\x07\x1b[31mred\x1b[0m\x08\x00\u202e"
+		const hostile = "字 世界\x1b]52;c;c2VjcmV0\x07\x1b[31mred\x1b[0m\x08\x00\u202e"
 		const result = renderBashResult(
 			{ content: [], details: { display: { ...display, output: hostile } } },
 			{ expanded: true, isPartial: true },
@@ -219,7 +219,7 @@ describe("Bash display", () => {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width)
 			expect(stripTerminalSequences(line)).not.toMatch(/[\p{Cc}\u202e]/u)
 		}
-		expect(safeBashText(hostile)).toBe("🌸 世界red")
+		expect(safeBashText(hostile)).toBe("字 世界red")
 	})
 	it("distinguishes terminal outcomes without inventing success for missing exit status", () => {
 		expect(bashStatusColor(display)).toBe("accent")

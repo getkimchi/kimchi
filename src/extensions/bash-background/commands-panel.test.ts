@@ -188,7 +188,7 @@ describe("CommandsPanel", () => {
 	})
 	it("preserves full multiline script, pauses scroll position, and End follows new output", async () => {
 		tui.terminal.rows = 24
-		const command = "cat <<'EOF'\nhello 🌸 世界\nEOF"
+		const command = "cat <<'EOF'\nhello 字 世界\nEOF"
 		const process = start(registry, command)
 		process.output(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"))
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
@@ -236,8 +236,8 @@ describe("CommandsPanel", () => {
 		expect(after?.deadlineMs).toBe(before?.deadlineMs)
 	})
 	it("safely wraps Unicode and controls through narrow resize", () => {
-		const process = start(registry, "printf '🌸 世界'\nsecond line")
-		process.output("\x1b]52;c;secret\x07\x1b[31m🌸 世界\x1b[0m\b\0")
+		const process = start(registry, "printf '字 世界'\nsecond line")
+		process.output("\x1b]52;c;secret\x07\x1b[31m字 世界\x1b[0m\b\0")
 		panel = new CommandsPanel(registry, tui, vi.fn(), testTheme)
 		panel.handleInput("\r")
 		panel.handleInput("\t")

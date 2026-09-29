@@ -44,6 +44,9 @@ export const DEFAULT_MAX_BUFFER_BYTES = 65_536
 /** Default tail-window size (bytes) returned at each checkin. */
 export const DEFAULT_TAIL_BYTES = 8192
 
+/** Bounded replay history; completed commands are not active registry entries. */
+export const MAX_COMPLETED_PROCESSES = 100
+
 export type ProcessState = "running" | "stopped" | "exited"
 
 export interface SpawnOptions {
@@ -103,6 +106,12 @@ export interface FinalSnapshot {
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
+}
+
+interface CompletedProcessSnapshot {
+	final: FinalSnapshot
+	display: ProcessDisplaySnapshot
+	deadlineSeconds: number
 }
 
 interface OutputSnapshot {
@@ -390,6 +399,8 @@ export interface ProcessRegistry {
 	observeDisplay(handle: string, listener: (snapshot: ProcessDisplaySnapshot) => void, maxBytes?: number): () => void
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
 	finalSnapshot(handle: string): FinalSnapshot | undefined
+	/** Final result for a recently removed command, until eviction or session shutdown. */
+	completedSnapshot(handle: string): CompletedProcessSnapshot | undefined
 	/** Kill a running process and await abort settlement. `reason` defaults to "stop". */
 	kill(handle: string, reason?: string): Promise<void>
 	/** Push the deadline out by `addSeconds` and re-arm the deadline timer. */
@@ -410,6 +421,7 @@ export interface ProcessRegistry {
 
 export function createProcessRegistry(): ProcessRegistry {
 	const entries = new Map<string, ProcessEntry>()
+	const completed = new Map<string, CompletedProcessSnapshot>()
 	const spillPaths = new Set<string>()
 	const displayObservers = new Map<string, Set<() => void>>()
 
@@ -669,7 +681,16 @@ export function createProcessRegistry(): ProcessRegistry {
 		const entry = entries.get(handle)
 		if (!entry) return
 		await kill(handle)
+		const final = finalSnapshot(handle)
+		const display = displaySnapshot(handle)
 		await closeOutput(entry)
+		if (final && display) {
+			completed.set(handle, { final, display, deadlineSeconds: entry.deadlineSeconds })
+			if (completed.size > MAX_COMPLETED_PROCESSES) {
+				const oldest = completed.keys().next().value
+				if (oldest !== undefined) completed.delete(oldest)
+			}
+		}
 		notifyDisplay(handle)
 		displayObservers.delete(handle)
 		entries.delete(handle)
@@ -682,6 +703,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		for (const entry of activeEntries) notifyDisplay(entry.handle)
 		displayObservers.clear()
 		entries.clear()
+		completed.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
 	}
@@ -693,6 +715,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		observeDisplay,
 		snapshotTail,
 		finalSnapshot,
+		completedSnapshot: (handle) => completed.get(handle),
 		kill,
 		extend,
 		setIntervalSeconds,

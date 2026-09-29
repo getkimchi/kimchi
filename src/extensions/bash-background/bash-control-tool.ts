@@ -13,7 +13,7 @@
  *
  *  - `stop`: kill the process via `registry.kill(handle)` (which awaits abort
  *    settlement so final output is flushed), then resolve with the final
- *    tail-window + exit code. Removes the entry so the handle can't be reused.
+ *    tail-window + exit code. Removes the active entry, retaining bounded final results for repeat polls.
  *
  * The tool reads the session registry via `getSessionRegistry()` so it
  * shares one process table with the background `bash` tool.
@@ -76,6 +76,8 @@ After the \`bash\` tool spawns a long-running command in the background and retu
 - action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill), and/or \`checkin_interval\` to change how often you are woken with status updates — for long builds, prefer a longer interval (e.g. 60–300s) over polling every 15s.
 - action "stop": kill the process immediately and return its final tail-window of output plus exit code.
 
+Once exited is true, the command is finished; do not poll again. Repeated calls for recently completed commands return their final result without restarting them.
+
 Use this tool only when a \`bash\` result includes a \`handle\` in its details (i.e. the command is still running in the background). For commands that ran synchronously (timeout <= 5), there is no handle and no need to call this tool.`
 
 /**
@@ -134,6 +136,27 @@ export function createBashControlToolDefinition(
 
 		const entry = registry.getEntry(handle)
 		if (!entry) {
+			const completed = registry.completedSnapshot(handle)
+			if (completed) {
+				const { final, display, deadlineSeconds } = completed
+				const result = {
+					content: [{ type: "text" as const, text: final.content }],
+					details: {
+						handle,
+						exited: true,
+						exitCode: final.exitCode,
+						action,
+						reason: final.reason,
+						display,
+						...(final.truncation?.truncated
+							? { truncation: final.truncation, fullOutputPath: final.fullOutputPath }
+							: {}),
+					},
+				}
+				onUpdate?.(result)
+				if (action === "continue") throwIfTerminal(final, final.content, deadlineSeconds)
+				return result
+			}
 			return {
 				content: [
 					{
