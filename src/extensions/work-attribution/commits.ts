@@ -96,14 +96,20 @@ function collectCommits(trace: string, refs: string): ObservedCommit[] {
 						"GIT_TRACE_REFS",
 					])
 						delete env[name]
-					repository = realpathSync(
-						execFileSync("git", ["-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
-							encoding: "utf8",
-							timeout: GIT_LOOKUP_TIMEOUT_MS,
-							env,
-							stdio: ["ignore", "pipe", "pipe"],
-						}).trim(),
-					)
+					try {
+						repository = realpathSync(
+							execFileSync("git", ["-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+								encoding: "utf8",
+								timeout: GIT_LOOKUP_TIMEOUT_MS,
+								env,
+								stdio: ["ignore", "pipe", "pipe"],
+							}).trim(),
+						)
+					} catch (error) {
+						console.warn("[work-attribution] Could not resolve Git commit repository:", error)
+						pending = undefined
+						continue
+					}
 					repositories.set(worktree, repository)
 				}
 				commits.push({ sha: pending.sha, repository, worktree })

@@ -22,7 +22,8 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
-import { getWorkId, setWorkId } from "../work-attribution.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { getWorkId, recordProviderRequest, setWorkId } from "../work-attribution.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import {
@@ -122,7 +123,8 @@ beforeEach(() => {
 	process.env.KIMCHI_FERMENTS_DIR = h.fermentsDir
 })
 
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -536,6 +538,27 @@ describe("resumeFerment scoping-stop budget reset", () => {
 })
 
 describe("saved Ferment work attribution", () => {
+	it.each(["block", "warn"])("adopts saved work only when the worktree %s permits continuation", (severity) => {
+		const ferment = h.eventStorage.create("Saved worktree")
+		const savedWork = "11111111-1111-4111-8111-111111111111"
+		saveRuntimeState(ferment.id, { ...emptyState(), workId: savedWork }, { root: h.fermentsDir })
+		vi.spyOn(h.eventStorage, "get").mockReturnValue({
+			...ferment,
+			worktree:
+				severity === "block"
+					? { ...ferment.worktree, path: join(tmpdir(), "different-worktree") }
+					: { ...ferment.worktree, branch: "different-branch" },
+		})
+		const ctx = createContext({ cwd: process.cwd(), sessionManager: { getSessionId: () => "current" } })
+		const currentWork = getWorkId(ctx)
+		resumeFerment(h.pi, ferment.id, ctx, h.runtime)
+		expect(h.sentMessages.some((message) => message.customType === "ferment_worktree_warning")).toBe(true)
+		expect(actionableHidden(h.sentMessages)).toHaveLength(severity === "block" ? 0 : 1)
+		expect(recordProviderRequest(ctx).workId).toBe(severity === "block" ? currentWork : savedWork)
+		if (severity === "block") expect(h.pi.appendEntry).not.toHaveBeenCalledWith("work_identity", expect.anything())
+		else expect(h.pi.appendEntry).toHaveBeenCalledWith("work_identity", { workId: savedWork })
+	})
+
 	it("continues a saved Ferment when attribution persistence fails", () => {
 		const ferment = h.eventStorage.create("Saved work")
 		saveRuntimeState(
@@ -563,11 +586,14 @@ describe("saved Ferment work attribution", () => {
 		clearAllStepStarts()
 		const resumed = createContext({ cwd: h.fermentsDir, sessionManager: { getSessionId: () => "resumed" } })
 		expect(setWorkId(resumed)).not.toBe(workId)
-		vi.mocked(h.pi.sendMessage).mockImplementation(() => {
-			expect(getWorkId(resumed)).toBe(workId)
+		vi.mocked(h.pi.sendMessage).mockImplementation((_message, options) => {
+			if (options?.triggerTurn) expect(getWorkId(resumed)).toBe(workId)
 		})
 		if (action === "continue") resumeFerment(h.pi, ferment.id, resumed, h.runtime)
 		else loadFermentSilently(h.pi, ferment.id, resumed, h.runtime)
+		if (action === "continue") {
+			expect(vi.mocked(h.pi.sendMessage).mock.calls.some(([, options]) => options?.triggerTurn)).toBe(true)
+		}
 		expect(getWorkId(resumed)).toBe(workId)
 		expect(h.pi.appendEntry).toHaveBeenCalledWith("work_identity", { workId })
 	})

@@ -88,8 +88,6 @@ export function resumeFerment(
 		if (out.ok) existing = out.ferment
 	}
 
-	const workId = getFermentWorkId(existing.id)
-	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
@@ -116,6 +114,9 @@ export function resumeFerment(
 			return
 		}
 	}
+
+	const workId = getFermentWorkId(existing.id)
+	if (workId) tryWorkAttribution(() => setWorkId(ctx, workId, pi))
 
 	if (existing.status === "draft" && ctx?.hasUI) {
 		runtime.markScopingInteractive(existing.id)

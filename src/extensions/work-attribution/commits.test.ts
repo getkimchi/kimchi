@@ -76,6 +76,32 @@ describe("Git commit observation", () => {
 		])
 	})
 
+	it.each([
+		"first",
+		"middle",
+	])("preserves other commits when a removed worktree is %s in the trace", async (position) => {
+		git(repository, "commit", "--allow-empty", "-m", "base")
+		const worktree = join(directory, "removed tree")
+		git(repository, "worktree", "add", "-b", "disposable", worktree)
+		const commands = [
+			...(position === "middle" ? ["git commit --allow-empty -m before"] : []),
+			`git -C ${quote(worktree)} commit --allow-empty -m removed`,
+			`git worktree remove ${quote(worktree)}`,
+			"git commit --allow-empty -m after",
+		]
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		expect(await run(commands.join(" && "))).toBe(0)
+		const names = position === "middle" ? ["before", "after"] : ["after"]
+		expect(commits).toEqual(
+			names.map((name) => ({
+				sha: git(repository, "reflog", "--format=%H", `--grep-reflog=commit: ${name}`),
+				repository: join(repository, ".git"),
+				worktree: repository,
+			})),
+		)
+		expect(warning).toHaveBeenCalled()
+	})
+
 	it("does not record checkout or reset alongside a real commit", async () => {
 		git(repository, "commit", "--allow-empty", "-m", "base")
 		await run("git commit --allow-empty -m ours; git reset --hard HEAD~; git checkout -b other")
