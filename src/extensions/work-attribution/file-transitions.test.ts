@@ -19,7 +19,9 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
+import { createCommitTrackingBashTool } from "./commits.js"
 import { createTrackedEditTool, createTrackedWriteTool, reconcileFileTransitions } from "./file-transitions.js"
+import { flushWorkSummaries } from "./summary.js"
 
 vi.mock("node:child_process", { spy: true })
 
@@ -72,13 +74,67 @@ beforeEach(() => {
 	git("config", "user.name", "Test")
 	git("config", "user.email", "test@example.test")
 })
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
 })
 
 describe("manual commit reconciliation", () => {
+	it("keeps another session's contribution after a tracked Bash commit", async () => {
+		baseline()
+		const first = context("first")
+		const second = context("second")
+		const workId = getWorkId(first)
+		setWorkId(second, workId)
+		await write("first.txt", "first", first)
+		await write("second.txt", "second", second)
+		await createCommitTrackingBashTool(second).execute(
+			"commit",
+			{ command: "git add . && git commit -qm tracked" },
+			undefined,
+			undefined,
+			second,
+		)
+		const sha = git("rev-parse", "HEAD")
+		reconcileFileTransitions(context("reopened"))
+		reconcileFileTransitions(context("repeated"))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, workId, sessionId: "first", paths: ["first.txt"] }),
+		])
+		await flushWorkSummaries()
+		const summary = JSON.parse(readFileSync(join(root, "agent", "work", workId, "work.json"), "utf8"))
+		expect(summary.commits.map((row: { sessionId: string }) => row.sessionId).sort()).toEqual(["first", "second"])
+	})
+
+	it("retains both sessions when same-work edits compose into one committed file", async () => {
+		baseline()
+		const first = context("first")
+		const second = context("second")
+		const workId = getWorkId(first)
+		setWorkId(second, workId)
+		await edit("one", "first edit", first)
+		await edit("two", "second edit", second)
+		const sha = commit()
+		reconcileFileTransitions(context("reopened"))
+		reconcileFileTransitions(context("repeated"))
+		const matched = contributions().sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+		expect(matched).toEqual([
+			expect.objectContaining({ sha, workId, sessionId: "first", paths: ["file.txt"] }),
+			expect.objectContaining({ sha, workId, sessionId: "second", paths: ["file.txt"] }),
+		])
+		for (const match of matched) {
+			const expected = rows()
+				.filter((row) => row.type === "file_transition" && row.sessionId === match.sessionId)
+				.map((row) => row.transitionId)
+			expect(match.transitionIds).toEqual(expected)
+		}
+		await flushWorkSummaries()
+		const summary = JSON.parse(readFileSync(join(root, "agent", "work", workId, "work.json"), "utf8"))
+		expect(summary.commits.map((row: { sessionId: string }) => row.sessionId).sort()).toEqual(["first", "second"])
+	})
+
 	it("rechecks completed commits when additional transition evidence becomes available", async () => {
 		baseline()
 		await write("first.txt", "first")
@@ -98,6 +154,43 @@ describe("manual commit reconciliation", () => {
 			expect.objectContaining({ sha, paths: ["first.txt"] }),
 			expect.objectContaining({ sha, paths: ["second.txt"] }),
 		])
+	})
+
+	it("backfills a missing session from a completed older checkpoint", async () => {
+		baseline()
+		const first = context("first")
+		const second = context("second")
+		const workId = getWorkId(first)
+		setWorkId(second, workId)
+		await edit("one", "first edit", first)
+		await edit("two", "second edit", second)
+		const sha = commit()
+		reconcileFileTransitions(context("initial"))
+		const directory = join(root, "agent", "work-attribution")
+		for (const file of readdirSync(directory).filter((name) => name.endsWith(".jsonl"))) {
+			const path = join(directory, file)
+			const retained = readFileSync(path, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line))
+				.filter((row) => row.type !== "commit" || row.sessionId !== "second")
+			writeFileSync(path, `${retained.map((row) => JSON.stringify(row)).join("\n")}\n`)
+		}
+		const transitionDirectory = join(directory, "transitions")
+		const progressFile = readdirSync(transitionDirectory).find((name) => name.endsWith(".progress"))
+		if (!progressFile) throw new Error("Expected a completed reconciliation checkpoint")
+		const progressPath = join(transitionDirectory, progressFile)
+		const progress = JSON.parse(readFileSync(progressPath, "utf8"))
+		progress.evidence = progress.evidence.replace(/^sessions-v1:/, "")
+		writeFileSync(progressPath, JSON.stringify(progress))
+		reconcileFileTransitions(context("upgrade"))
+		reconcileFileTransitions(context("repeat"))
+		expect(
+			contributions()
+				.filter((row) => row.sha === sha)
+				.map((row) => row.sessionId)
+				.sort(),
+		).toEqual(["first", "second"])
 	})
 
 	it.each([false, true])("advances through a bounded backlog across launches (mixed newest: %s)", async (mixed) => {

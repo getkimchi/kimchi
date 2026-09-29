@@ -15,6 +15,7 @@ import sessionNameExtension, {
 	suggestSessionName,
 } from "./session-name.js"
 
+import { flushWorkSummaries } from "./work-attribution/summary.js"
 import { getWorkId, setWorkId } from "./work-attribution.js"
 
 const { mockGetRetrySettings, mockLoadConfig, retryDefaults } = vi.hoisted(() => ({
@@ -69,10 +70,11 @@ beforeEach(() => {
 	})
 })
 
-afterEach(() => {
+afterEach(async () => {
+	vi.useRealTimers()
+	await flushWorkSummaries()
 	vi.unstubAllGlobals()
 	vi.unstubAllEnvs()
-	vi.useRealTimers()
 	rmSync(attributionDir, { recursive: true, force: true })
 })
 
@@ -235,7 +237,10 @@ describe("suggestSessionName", () => {
 	it.each(["identity", "request"])("keeps naming available when %s persistence fails", async (stage) => {
 		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
 		const ctx = createContext({ cwd: attributionDir })
-		if (stage === "request") getWorkId(ctx)
+		if (stage === "request") {
+			getWorkId(ctx)
+			await flushWorkSummaries()
+		}
 		const path = join(attributionDir, "work-attribution")
 		rmSync(path, { recursive: true, force: true })
 		writeFileSync(path, "not a directory")

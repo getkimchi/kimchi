@@ -288,7 +288,7 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 			} else invalidatedBefore = position
 		}
 		// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
-		const evidence = `${journalDigest}:${digest(log)}`
+		const evidence = `sessions-v1:${journalDigest}:${digest(log)}`
 		const progressPath = `${journal}.progress`
 		const progress = records(progressPath).at(-1)
 		const recent = candidates.slice(-MAX_COMMITS).reverse()
@@ -341,23 +341,26 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 				const after = chain[chain.length - 1].after
 				if (same(first.before, after) || !same(treeState(worktree, sha, first.path), after)) continue
 
-				if (
-					all.some(
-						(row) =>
-							row.type === "commit" &&
-							row.sha === sha &&
-							row.workId === first.workId &&
-							row.repository === repository &&
-							row.worktree === worktree &&
-							(!Array.isArray(row.paths) || row.paths.includes(first.path)),
+				for (const contributor of chain) {
+					if (
+						all.some(
+							(row) =>
+								row.type === "commit" &&
+								row.sha === sha &&
+								row.workId === contributor.workId &&
+								row.sessionId === contributor.sessionId &&
+								row.repository === repository &&
+								row.worktree === worktree &&
+								(!Array.isArray(row.paths) || row.paths.includes(contributor.path)),
+						)
 					)
-				)
-					continue
-				const key = JSON.stringify([first.sessionId, first.workId])
-				const match = matched.get(key) ?? { owner: first, paths: [], transitionIds: [] }
-				match.paths.push(first.path)
-				match.transitionIds.push(...chain.map((row) => row.transitionId))
-				matched.set(key, match)
+						continue
+					const key = JSON.stringify([contributor.sessionId, contributor.workId])
+					const match = matched.get(key) ?? { owner: contributor, paths: [], transitionIds: [] }
+					if (!match.paths.includes(contributor.path)) match.paths.push(contributor.path)
+					match.transitionIds.push(contributor.transitionId)
+					matched.set(key, match)
+				}
 			}
 			for (const match of matched.values()) {
 				const fields = {
@@ -374,7 +377,7 @@ export function reconcileFileTransitions(ctx: WorkContext): void {
 					fields,
 					match.owner.workId,
 				)
-				all.push({ ...fields, workId: match.owner.workId })
+				all.push({ ...fields, workId: match.owner.workId, sessionId: match.owner.sessionId })
 			}
 			checkpoint(position)
 		}

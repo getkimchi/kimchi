@@ -1,22 +1,14 @@
 import { randomUUID } from "node:crypto"
-import {
-	closeSync,
-	existsSync,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
 import { join } from "node:path"
+import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
-import { lock, lockSync } from "proper-lockfile"
+import { lock } from "proper-lockfile"
 import { isWorkId } from "../../shared/work-id.js"
 
 const LOCK_STALE_MS = 5000
+const MERGE_BATCH_SIZE = 1000
 const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 interface SummaryEntry {
 	sessionId: string
@@ -84,13 +76,12 @@ function validSummary(value: unknown, workId: string): value is WorkSummary {
 		value.commits.every((row) => entry(row, ["sha", "repository", "worktree"]))
 	)
 }
-function readSummary(path: string, workId: string): WorkSummary | undefined {
-	if (!existsSync(path)) return
+async function readSummary(path: string, workId: string): Promise<WorkSummary | undefined> {
 	try {
-		const value = JSON.parse(readFileSync(path, "utf8"))
+		const value = JSON.parse(await readFile(path, "utf8"))
 		if (validSummary(value, workId)) return value
 	} catch (error) {
-		if (!(error instanceof SyntaxError)) throw error
+		if (!(error instanceof SyntaxError) && (!object(error) || error.code !== "ENOENT")) throw error
 	}
 }
 function readRecords(agentDir: string): WorkRecord[] {
@@ -122,103 +113,109 @@ function strings(...values: unknown[]): string[] {
 		),
 	]
 }
-function merge(summary: WorkSummary, record: WorkRecord): void {
-	if (!summary.sessions.includes(record.sessionId)) summary.sessions.push(record.sessionId)
-	const { type, version: _version, workId: _workId, ...item } = record
-	if (type === "work") return
-	if (type === "request") {
-		const existing = summary.requests.find((row) => row.requestId === item.requestId)
-		if (existing) Object.assign(existing, item)
-		else summary.requests.push(item)
-	} else if (type === "plan") {
-		const existing = summary.plans.find((row) => row.sessionId === item.sessionId && row.path === item.path)
-		if (existing) Object.assign(existing, item)
-		else summary.plans.push(item)
-	} else {
-		const existing = summary.commits.find(
-			(row) =>
-				row.sessionId === item.sessionId &&
-				row.sha === item.sha &&
-				row.repository === item.repository &&
-				row.worktree === item.worktree,
-		)
+function planKey(row: SummaryEntry): string {
+	return JSON.stringify([row.sessionId, row.path])
+}
+function commitKey(row: SummaryEntry): string {
+	return JSON.stringify([row.sessionId, row.sha, row.repository, row.worktree])
+}
+async function merge(summary: WorkSummary, records: WorkRecord[]): Promise<void> {
+	const sessions = new Set(summary.sessions)
+	const requests = new Map(summary.requests.map((row) => [JSON.stringify(row.requestId), row]))
+	const plans = new Map(summary.plans.map((row) => [planKey(row), row]))
+	const commits = new Map(summary.commits.map((row) => [commitKey(row), row]))
+	for (let index = 0; index < records.length; index++) {
+		if (index % MERGE_BATCH_SIZE === 0) await setImmediate()
+		const { type, version: _version, workId: _workId, ...item } = records[index]
+		sessions.add(item.sessionId)
+		if (type === "work") continue
+		const entries = type === "request" ? requests : type === "plan" ? plans : commits
+		const key = type === "request" ? JSON.stringify(item.requestId) : type === "plan" ? planKey(item) : commitKey(item)
+		const existing = entries.get(key)
 		if (existing) {
-			const paths = strings(existing.paths, item.paths)
-			const transitionIds = strings(existing.transitionIds, item.transitionIds)
+			const paths = type === "commit" ? strings(existing.paths, item.paths) : []
+			const transitionIds = type === "commit" ? strings(existing.transitionIds, item.transitionIds) : []
 			Object.assign(existing, item)
 			if (paths.length) existing.paths = paths
 			if (transitionIds.length) existing.transitionIds = transitionIds
-		} else summary.commits.push(item)
+		} else entries.set(key, item)
 	}
+	summary.sessions = [...sessions]
+	summary.requests = [...requests.values()]
+	summary.plans = [...plans.values()]
+	summary.commits = [...commits.values()]
 }
-function publish(directory: string, summary: WorkSummary): void {
+async function publish(directory: string, summary: WorkSummary, assertLease: () => void): Promise<void> {
 	const temporary = join(directory, `.work-${randomUUID()}.tmp`)
 	try {
-		const fd = openSync(temporary, "wx", 0o600)
+		const file = await open(temporary, "wx", 0o600)
 		try {
-			writeFileSync(fd, `${JSON.stringify(summary, null, 2)}\n`)
-			fsyncSync(fd)
+			await file.writeFile(`${JSON.stringify(summary, null, 2)}\n`)
+			await file.sync()
 		} finally {
-			closeSync(fd)
+			await file.close()
 		}
-		renameSync(temporary, join(directory, "work.json"))
+		assertLease()
+		await rename(temporary, join(directory, "work.json"))
 	} finally {
-		rmSync(temporary, { force: true })
+		await rm(temporary, { force: true })
 	}
 }
-function update(agentDir: string, workId: string, records: WorkRecord[], complete: boolean): void {
+async function update(
+	agentDir: string,
+	workId: string,
+	records: WorkRecord[],
+	complete: boolean,
+	assertLease: () => void,
+): Promise<void> {
+	assertLease()
 	const directory = join(agentDir, "work", workId)
-	const summary = readSummary(join(directory, "work.json"), workId)
+	const summary = await readSummary(join(directory, "work.json"), workId)
 	const value = summary ?? { version: 1, workId, sessions: [], requests: [], plans: [], commits: [] }
-	if (!summary && !complete) for (const row of readRecords(agentDir)) if (row.workId === workId) merge(value, row)
-	for (const row of records) merge(value, row)
-	publish(directory, value)
+	const history = !summary && !complete ? readRecords(agentDir).filter((row) => row.workId === workId) : []
+	await merge(value, history.concat(records))
+	assertLease()
+	await publish(directory, value, assertLease)
 }
 function refresh(agentDir: string, workId: string, records: WorkRecord[], complete = false): void {
 	const directory = join(agentDir, "work", workId)
-	try {
-		mkdirSync(directory, { recursive: true, mode: 0o700 })
-		let release: () => void
-		try {
-			release = lockSync(directory, { stale: LOCK_STALE_MS })
-		} catch (error) {
-			if (!object(error) || error.code !== "ELOCKED") throw error
-			// Never wait for another process on the provider dispatch path.
-			const queued = pending.get(directory)
-			if (queued) {
-				queued.records.push(...records)
-				queued.complete ||= complete
-				return
-			}
-			const updateQueue: PendingUpdate = { records: [...records], complete, promise: Promise.resolve() }
-			updateQueue.promise = (async () => {
-				try {
-					while (updateQueue.records.length) {
-						const release = await lock(directory, { stale: LOCK_STALE_MS, retries: LOCK_RETRIES })
-						try {
-							const batch = updateQueue.records.splice(0)
-							const completeBatch = updateQueue.complete
-							updateQueue.complete = false
-							update(agentDir, workId, batch, completeBatch)
-						} finally {
-							await release()
-						}
-					}
-				} finally {
-					pending.delete(directory)
-				}
-			})().catch(warn)
-			pending.set(directory, updateQueue)
-			return
-		}
-		try {
-			update(agentDir, workId, records, complete)
-		} finally {
-			release()
-		}
-	} catch (error) {
-		warn(error)
+	const queued = pending.get(directory)
+	if (queued) {
+		queued.records = queued.records.concat(records)
+		queued.complete ||= complete
+		return
 	}
+	const queue: PendingUpdate = { records: [...records], complete, promise: Promise.resolve() }
+	queue.promise = (async () => {
+		try {
+			await mkdir(directory, { recursive: true, mode: 0o700 })
+			while (queue.records.length) {
+				let compromised: Error | undefined
+				const release = await lock(directory, {
+					stale: LOCK_STALE_MS,
+					retries: LOCK_RETRIES,
+					onCompromised: (error) => {
+						compromised = error
+					},
+				})
+				const assertLease = () => {
+					if (compromised) throw compromised
+				}
+				try {
+					const batch = queue.records.splice(0)
+					const completeBatch = queue.complete
+					queue.complete = false
+					await update(agentDir, workId, batch, completeBatch, assertLease)
+				} finally {
+					// A compromised lease has already been removed from proper-lockfile's ownership map.
+					if (!compromised) await release()
+				}
+			}
+		} finally {
+			pending.delete(directory)
+		}
+	})().catch(warn)
+	pending.set(directory, queue)
 }
 /** Called only after the source record has been durably appended. */
 export function updateWorkSummary(value: unknown): void {

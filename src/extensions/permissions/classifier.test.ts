@@ -5,6 +5,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId } from "../work-attribution.js"
 import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
@@ -37,6 +38,7 @@ describe("classifyToolCall", () => {
 	it.each(["identity", "request"])("still classifies when %s storage fails", async (stage) => {
 		if (stage === "request") {
 			getWorkId(options.context)
+			await flushWorkSummaries()
 			rmSync(join(attributionDir, "work-attribution"), { recursive: true })
 		}
 		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
@@ -120,10 +122,11 @@ describe("classifyToolCall", () => {
 		completeMock.mockReset()
 		vi.useFakeTimers()
 	})
-	afterEach(() => {
+	afterEach(async () => {
 		expect(vi.getTimerCount()).toBe(0)
-		vi.restoreAllMocks()
 		vi.useRealTimers()
+		await flushWorkSummaries()
+		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
 		rmSync(attributionDir, { recursive: true, force: true })
 	})

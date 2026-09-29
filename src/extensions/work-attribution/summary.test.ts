@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
+import * as asyncFs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { BeforeProviderHeadersEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
@@ -17,9 +18,10 @@ import {
 	setWorkId,
 } from "../work-attribution.js"
 
-import { flushWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, recoverWorkSummaries } from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
+vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
 vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof fs>()) }))
 
 let dir: string
@@ -44,7 +46,7 @@ function summary(workId: string) {
 }
 
 describe("readable work summaries", () => {
-	it("automatically separates work while merging parent, child, request, plan and commit provenance", () => {
+	it("automatically separates work while merging parent, child, request, plan and commit provenance", async () => {
 		const parent = context()
 		const child = context("child")
 		const workId = getWorkId(parent)
@@ -65,12 +67,16 @@ describe("readable work summaries", () => {
 		appendWorkRecord(child, { ...commit, paths: ["b.ts"], transitionIds: ["second"] })
 		const next = setWorkId(parent)
 		recordProviderRequest(parent)
+		await flushWorkSummaries()
 		const value = summary(workId)
-		expect(value).toMatchObject({ version: 1, workId, sessions: ["parent", "child"] })
-		expect(value.requests).toEqual([
-			expect.objectContaining({ requestId: first.requestId, sessionId: "parent", model: "model" }),
-			expect.objectContaining({ requestId: second.requestId, sessionId: "child" }),
-		])
+		expect(value).toMatchObject({ version: 1, workId, sessions: expect.arrayContaining(["parent", "child"]) })
+		expect(value.requests).toHaveLength(2)
+		expect(value.requests).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ requestId: first.requestId, sessionId: "parent", model: "model" }),
+				expect.objectContaining({ requestId: second.requestId, sessionId: "child" }),
+			]),
+		)
 		expect(value.plans).toEqual([expect.objectContaining({ path: "/project/plan.md", sessionId: "child" })])
 		expect(value.commits).toEqual([
 			expect.objectContaining({
@@ -86,7 +92,7 @@ describe("readable work summaries", () => {
 		expect(summary(next).requests).toHaveLength(1)
 		expect(fs.readFileSync(path(workId), "utf8")).toContain('\n  "workId":')
 	})
-	it("retains different originating sessions for the same commit and ignores native transition journals", () => {
+	it("retains different originating sessions for the same commit and ignores native transition journals", async () => {
 		const workId = getWorkId(context())
 		for (const session of ["parent", "child"])
 			appendWorkRecord(
@@ -100,7 +106,12 @@ describe("readable work summaries", () => {
 			workId,
 			join(dir, "work-attribution", "transitions", "journal.jsonl"),
 		)
-		expect(summary(workId).commits.map((entry: { sessionId: string }) => entry.sessionId)).toEqual(["parent", "child"])
+		await flushWorkSummaries()
+		expect(
+			summary(workId)
+				.commits.map((entry: { sessionId: string }) => entry.sessionId)
+				.sort(),
+		).toEqual(["child", "parent"])
 		expect(summary(workId)).not.toHaveProperty("file_transition")
 	})
 	it.each([
@@ -115,6 +126,7 @@ describe("readable work summaries", () => {
 		const ctx = context()
 		appendWorkRecord(ctx, { type: "request", requestId: "old-request", provider: "test", model: "old" }, workId)
 		appendWorkRecord(context("child"), { type: "plan", path: "/old-plan.md" }, workId)
+		await flushWorkSummaries()
 		fs.appendFileSync(join(dir, "work-attribution", "parent.jsonl"), '{"type":"request"')
 		fs.mkdirSync(dirname(path(workId)), { recursive: true })
 		if (corrupt === undefined) fs.rmSync(path(workId), { force: true })
@@ -125,6 +137,7 @@ describe("readable work summaries", () => {
 			{ type: "session_start", reason: "startup" },
 			context("fresh"),
 		)
+		await flushWorkSummaries()
 		expect(summary(workId)).toMatchObject({
 			workId,
 			sessions: expect.arrayContaining(["parent", "child"]),
@@ -145,19 +158,23 @@ describe("readable work summaries", () => {
 			.split("\n")
 			.map((line) => JSON.parse(line))
 		expect(event.headers["X-Request-Id"]).toBe(rows.find((row) => row.type === "request").requestId)
+		await flushWorkSummaries()
 		expect(warn).toHaveBeenCalled()
 	})
-	it("does not scan unrelated histories for an ordinary append", () => {
+	it("does not scan unrelated histories for an ordinary append", async () => {
 		const workId = getWorkId(context())
+		await flushWorkSummaries()
 		summary(workId)
 		const scan = vi.spyOn(fs, "readdirSync")
 		recordProviderRequest(context())
+		await flushWorkSummaries()
 		expect(scan).not.toHaveBeenCalled()
 		expect(summary(workId).requests).toHaveLength(1)
 	})
 	it("drains an append that arrives while the asynchronous lock is being released", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
+		await flushWorkSummaries()
 		const originalLock = locks.lock
 		let appended = false
 		vi.spyOn(locks, "lock").mockImplementation(async (...args) => {
@@ -181,6 +198,7 @@ describe("readable work summaries", () => {
 	})
 	it("does one recovery scan per agent directory despite child session fanout", async () => {
 		const workId = getWorkId(context())
+		await flushWorkSummaries()
 		const scan = vi.spyOn(fs, "readdirSync")
 		for (const session of ["first", "child", "next-child"]) {
 			const api = createExtensionApi()
@@ -192,6 +210,125 @@ describe("readable work summaries", () => {
 		}
 		expect(scan).toHaveBeenCalledTimes(1)
 	})
+
+	it.each([
+		"write",
+		"rename",
+		"fsync",
+	])("keeps durable requests recoverable after a summary %s failure", async (failure) => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		await flushWorkSummaries()
+		const originalOpen = asyncFs.open
+		vi.spyOn(asyncFs, "open").mockImplementation(async (...args) => {
+			const file = await originalOpen(...args)
+			if (failure === "write")
+				vi.spyOn(file, "writeFile").mockRejectedValue(new Error("injected summary write failure"))
+			if (failure === "fsync") vi.spyOn(file, "sync").mockRejectedValue(new Error("injected summary fsync failure"))
+			return file
+		})
+		if (failure === "rename")
+			vi.spyOn(asyncFs, "rename").mockRejectedValue(new Error("injected summary rename failure"))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const request = recordProviderRequest(ctx)
+		await flushWorkSummaries()
+		expect(summary(workId).requests).toEqual([])
+		expect(fs.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")).toContain(request.requestId)
+		expect(fs.readdirSync(dirname(path(workId))).some((file) => file.endsWith(".tmp"))).toBe(false)
+		expect(warn).toHaveBeenCalled()
+		vi.restoreAllMocks()
+		recoverWorkSummaries()
+		await flushWorkSummaries()
+		expect(summary(workId).requests).toEqual([expect.objectContaining({ requestId: request.requestId })])
+	})
+	it("does not rename a summary when its lease is lost during publication", async () => {
+		const ctx = context()
+		const workId = getWorkId(ctx)
+		await flushWorkSummaries()
+		const originalLock = locks.lock
+		let loseLease: (() => void) | undefined
+		vi.spyOn(locks, "lock").mockImplementation(async (file, options) => {
+			const release = await originalLock(file, options)
+			loseLease = () =>
+				options?.onCompromised?.(Object.assign(new Error("lease lost during fsync"), { code: "ECOMPROMISED" }))
+			return release
+		})
+		const originalOpen = asyncFs.open
+		vi.spyOn(asyncFs, "open").mockImplementation(async (...args) => {
+			const file = await originalOpen(...args)
+			const sync = file.sync.bind(file)
+			vi.spyOn(file, "sync").mockImplementation(async () => {
+				await sync()
+				loseLease?.()
+			})
+			return file
+		})
+		const rename = vi.spyOn(asyncFs, "rename")
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const request = recordProviderRequest(ctx)
+		await flushWorkSummaries()
+		expect(rename).not.toHaveBeenCalled()
+		expect(summary(workId).requests).toEqual([])
+		expect(fs.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")).toContain(request.requestId)
+		expect(warn).toHaveBeenCalled()
+		// This test invokes the observer directly; release the still-owned real fixture lease.
+		await locks.unlock(dirname(path(workId)))
+	})
+	it("survives a real compromised lock and refuses to publish after losing ownership", async () => {
+		const workId = getWorkId(context())
+		await flushWorkSummaries()
+		const requestId = randomUUID()
+		const directory = dirname(path(workId))
+		const release = lockSync(directory)
+		const script = join(dir, "compromised.mts")
+		fs.writeFileSync(
+			script,
+			`import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
+const locks = createRequire(${JSON.stringify(join(process.cwd(), "package.json"))})("proper-lockfile");
+const original = locks.lock;
+locks.lock = async (...args) => { const release = await original(...args); console.log("held"); await delay(3500); return release; };
+const { appendWorkRecord } = await import(${JSON.stringify(new URL("../work-attribution.ts", import.meta.url).pathname)});
+const { flushWorkSummaries } = await import(${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)});
+appendWorkRecord({cwd:"/project",sessionManager:{getSessionId:()=>"compromised"}},{type:"request",requestId:${JSON.stringify(requestId)}},${JSON.stringify(workId)});
+console.log("durable"); await flushWorkSummaries();`,
+		)
+		const child = spawn(process.execPath, ["--import", "tsx", script], {
+			env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+		})
+		let output = "",
+			errors = "",
+			released = false,
+			removed = false
+		child.stdout.on("data", (chunk) => {
+			output += chunk
+			if (!released && output.includes("durable")) {
+				release()
+				released = true
+			}
+			if (!removed && output.includes("held")) {
+				fs.rmSync(`${directory}.lock`, { recursive: true, force: true })
+				removed = true
+			}
+		})
+		child.stderr.on("data", (chunk) => {
+			errors += chunk
+		})
+		const timeout = setTimeout(() => child.kill("SIGKILL"), 10000)
+		try {
+			const code = await new Promise<number | null>((resolve) => child.once("exit", resolve))
+			expect(code, errors).toBe(0)
+			expect(errors).toContain("Work summary unavailable")
+			expect(summary(workId).requests).toEqual([])
+			recoverWorkSummaries()
+			await flushWorkSummaries()
+			expect(summary(workId).requests).toEqual([expect.objectContaining({ requestId, sessionId: "compromised" })])
+		} finally {
+			clearTimeout(timeout)
+			if (!released) release()
+			child.kill()
+		}
+	}, 15000)
 
 	it("serializes simultaneous processes without lost updates or truncated publication", async () => {
 		const workId = randomUUID()
@@ -206,7 +343,7 @@ describe("readable work summaries", () => {
 		fs.writeFileSync(
 			script,
 			`import { appendWorkRecord } from ${JSON.stringify(new URL("../work-attribution.ts", import.meta.url).pathname)};
-import { flushWorkSummaries } from ${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)};
+import { flushWorkSummaries, recoverWorkSummaries } from ${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)};
 const ctx = { cwd: "/project", sessionManager: { getSessionId: () => process.argv[2] } };
 for(let i=0;i<8;i++) appendWorkRecord(ctx,{type:"request",requestId:process.argv[2]+"-"+i},${JSON.stringify(workId)});
 console.log("ready"); await flushWorkSummaries();`,

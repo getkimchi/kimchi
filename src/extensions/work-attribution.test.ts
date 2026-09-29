@@ -12,6 +12,7 @@ import { readPlanWorkId, savePlanMarkdown } from "../shared/planning/plan-markdo
 import { createCommandContext, createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import requestTimingExtension from "./request-timing.js"
+import { flushWorkSummaries } from "./work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, recordProviderRequest, setWorkId } from "./work-attribution.js"
 
 let dir: string
@@ -19,7 +20,8 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-work-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 })
-afterEach(() => {
+afterEach(async () => {
+	await flushWorkSummaries()
 	vi.unstubAllEnvs()
 	rmSync(dir, { recursive: true, force: true })
 })
